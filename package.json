@@ -1,0 +1,41 @@
+{
+	"name": "agent-lens",
+	"version": "0.1.0",
+	"description": "Runtime debugging viewport for AI coding agents",
+	"type": "module",
+	"bin": {
+		"agent-lens": "./src/cli/index.ts"
+	},
+	"main": "./src/index.ts",
+	"types": "./src/index.ts",
+	"scripts": {
+		"dev": "bun run src/cli/index.ts",
+		"build": "bun build --compile src/cli/index.ts --outfile dist/agent-lens",
+		"mcp": "bun run src/mcp/index.ts",
+		"test": "vitest run",
+		"test:unit": "vitest run tests/unit",
+		"test:integration": "vitest run tests/integration",
+		"test:e2e": "vitest run tests/e2e",
+		"test:watch": "vitest watch tests/unit",
+		"lint": "biome check .",
+		"lint:fix": "biome check --write .",
+		"format": "biome format --write .",
+		"check": "biome check . && bun run test"
+	},
+	"dependencies": {
+		"@modelcontextprotocol/sdk": "^1",
+		"@vscode/debugprotocol": "^1",
+		"citty": "^0",
+		"consola": "^3",
+		"zod": "^4"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2",
+		"@types/bun": "latest",
+		"vitest": "^4"
+	},
+	"license": "MIT",
+	"trustedDependencies": [
+		"@biomejs/biome"
+	]
+}
