@@ -1,4 +1,6 @@
 import { defineCommand } from "citty";
+import { GoAdapter } from "../../adapters/go.js";
+import { NodeAdapter } from "../../adapters/node.js";
 import { PythonAdapter } from "../../adapters/python.js";
 import { listAdapters, registerAdapter } from "../../adapters/registry.js";
 import type { OutputMode } from "../format.js";
@@ -35,10 +37,13 @@ export async function runDoctorChecks(): Promise<DoctorResult> {
 	for (const adapter of adapters) {
 		const prereq = await adapter.checkPrerequisites();
 		if (prereq.satisfied) {
-			// Try to get version for python adapter
 			let version: string | undefined;
 			if (adapter.id === "python") {
 				version = await getPythonDebugpyVersion();
+			} else if (adapter.id === "node") {
+				version = await getNodeVersion();
+			} else if (adapter.id === "go") {
+				version = await getDlvVersion();
 			}
 			adapterResults.push({
 				id: adapter.id,
@@ -83,6 +88,51 @@ async function getPythonDebugpyVersion(): Promise<string | undefined> {
 		});
 		// debugpy outputs version like "1.8.0"
 		return result.trim() || undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+async function getNodeVersion(): Promise<string | undefined> {
+	try {
+		const { spawn } = await import("node:child_process");
+		const result = await new Promise<string>((resolve, reject) => {
+			const proc = spawn("node", ["--version"], { stdio: "pipe" });
+			let stdout = "";
+			proc.stdout.on("data", (chunk: Buffer) => {
+				stdout += chunk.toString();
+			});
+			proc.on("close", (code) => {
+				if (code === 0) resolve(stdout.trim());
+				else reject(new Error("Non-zero exit"));
+			});
+			proc.on("error", reject);
+		});
+		// Strip leading "v": "v20.11.0" => "20.11.0"
+		return result.replace(/^v/, "") || undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+async function getDlvVersion(): Promise<string | undefined> {
+	try {
+		const { spawn } = await import("node:child_process");
+		const result = await new Promise<string>((resolve, reject) => {
+			const proc = spawn("dlv", ["version"], { stdio: "pipe" });
+			let stdout = "";
+			proc.stdout.on("data", (chunk: Buffer) => {
+				stdout += chunk.toString();
+			});
+			proc.on("close", (code) => {
+				if (code === 0) resolve(stdout.trim());
+				else reject(new Error("Non-zero exit"));
+			});
+			proc.on("error", reject);
+		});
+		// Parse "Version: 1.23.0" from dlv version output
+		const match = result.match(/Version:\s+(\S+)/);
+		return match ? match[1] : result.split("\n")[0] || undefined;
 	} catch {
 		return undefined;
 	}
@@ -133,6 +183,8 @@ export const doctorCommand = defineCommand({
 
 		// Register adapters directly (doctor doesn't need the daemon)
 		registerAdapter(new PythonAdapter());
+		registerAdapter(new NodeAdapter());
+		registerAdapter(new GoAdapter());
 
 		const result = await runDoctorChecks();
 		process.stdout.write(`${formatDoctor(result, mode)}\n`);

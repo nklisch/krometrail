@@ -6,6 +6,8 @@
  * Detaches stdio so the parent CLI process can exit.
  */
 
+import { GoAdapter } from "../adapters/go.js";
+import { NodeAdapter } from "../adapters/node.js";
 import { PythonAdapter } from "../adapters/python.js";
 import { registerAdapter } from "../adapters/registry.js";
 import { SessionManager } from "../core/session-manager.js";
@@ -15,6 +17,8 @@ import { DaemonServer } from "./server.js";
 
 // Register adapters (same as mcp/index.ts)
 registerAdapter(new PythonAdapter());
+registerAdapter(new NodeAdapter());
+registerAdapter(new GoAdapter());
 
 const limits = ResourceLimitsSchema.parse({});
 const sessionManager = new SessionManager(limits);

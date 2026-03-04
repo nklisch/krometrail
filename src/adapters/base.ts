@@ -11,6 +11,12 @@ export interface DAPConnection {
 	reader: Readable;
 	writer: Writable;
 	process?: ChildProcess;
+	/**
+	 * Adapter-specific arguments to pass in the DAP launch request.
+	 * Merged with the session manager's default launch args.
+	 * Used by adapters like Go/Delve that need mode/program/args in the DAP launch.
+	 */
+	launchArgs?: Record<string, unknown>;
 }
 
 export interface LaunchConfig {

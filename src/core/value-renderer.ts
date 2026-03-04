@@ -21,11 +21,35 @@ export interface RenderOptions {
 export const PYTHON_INTERNAL_NAMES: ReadonlySet<string> = new Set(["__builtins__", "__doc__", "__name__", "__package__", "__spec__", "__loader__", "__file__", "__cached__", "__annotations__"]);
 
 /**
+ * JavaScript internal variable names to filter from the default locals display.
+ */
+export const JS_INTERNAL_NAMES: ReadonlySet<string> = new Set([
+	"__proto__",
+	"constructor",
+	"__defineGetter__",
+	"__defineSetter__",
+	"__lookupGetter__",
+	"__lookupSetter__",
+	"hasOwnProperty",
+	"isPrototypeOf",
+	"propertyIsEnumerable",
+	"toLocaleString",
+	"toString",
+	"valueOf",
+]);
+
+/**
+ * Go internal variable names to filter.
+ * Delve exposes runtime internals that are not useful for debugging.
+ */
+export const GO_INTERNAL_NAMES: ReadonlySet<string> = new Set(["runtime.curg", "runtime.frameoff", "&runtime.g"]);
+
+/**
  * Generic internal variable name patterns to filter.
  * Matches names starting and ending with double underscores.
  */
 export function isInternalVariable(name: string): boolean {
-	return PYTHON_INTERNAL_NAMES.has(name) || /^__\w+__$/.test(name);
+	return PYTHON_INTERNAL_NAMES.has(name) || JS_INTERNAL_NAMES.has(name) || GO_INTERNAL_NAMES.has(name) || /^__\w+__$/.test(name);
 }
 
 /**
@@ -48,7 +72,7 @@ export function renderString(value: string, maxLength: number): string {
  * Render a collection value with type, length, and preview items.
  */
 export function renderCollection(value: string, type: string, previewItems: number): string {
-	const isDict = type === "dict";
+	const isDict = type === "dict" || type.startsWith("map[");
 	const openBracket = isDict ? "{" : "[";
 	const closeBracket = isDict ? "}" : "]";
 
@@ -179,6 +203,30 @@ export function renderDAPVariable(variable: DebugProtocol.Variable, options: Ren
 	// Arrays and other array-like types
 	if (type.endsWith("Array") || type === "array") {
 		return renderCollection(value, type, options.collectionPreviewItems);
+	}
+
+	// JavaScript types from js-debug
+	if (type === "number" || type === "bigint") return value;
+	if (type === "boolean") return value;
+	if (type === "undefined") return "undefined";
+	if (type === "null" || value === "null") return "null";
+	if (type === "symbol") return value;
+	if (type === "function") return `<function ${value.length > 40 ? `${value.slice(0, 40)}...` : value}>`;
+
+	// Go types from Delve: slices, maps, pointers, structs
+	// Go slices: []int, []string, etc.
+	if (type.startsWith("[]")) return renderCollection(value, type, options.collectionPreviewItems);
+	// Go maps: map[string]int, etc.
+	if (type.startsWith("map[")) return renderCollection(value, type, options.collectionPreviewItems);
+	// Go pointers: *main.Foo
+	if (type.startsWith("*")) {
+		const baseType = type.slice(1).replace(/^[a-z_]\w*\./, ""); // strip package prefix
+		return renderObject(value, `*${baseType}`, options.depth, options.maxDepth);
+	}
+	// Go structs: main.User, pkg.Type — strip package prefix for display
+	if (/^[a-z_]\w*\.[A-Z]/.test(type)) {
+		const displayType = type.replace(/^[a-z_]\w*\./, "");
+		return renderObject(value, displayType, options.depth, options.maxDepth);
 	}
 
 	// Objects with variablesReference > 0 (expandable)

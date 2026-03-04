@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { allocatePort, parseCommand } from "../../../src/adapters/python.js";
+import { allocatePort } from "../../../src/adapters/helpers.js";
+import { parseCommand } from "../../../src/adapters/python.js";
 
 describe("parseCommand", () => {
 	it("parses 'python app.py'", () => {

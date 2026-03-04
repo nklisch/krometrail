@@ -153,3 +153,91 @@ describe("convertDAPVariables", () => {
 		expect(result[0].value).toBe('"hello"');
 	});
 });
+
+describe("renderDAPVariable — JavaScript types", () => {
+	it("renders JS number as-is", () => {
+		expect(renderDAPVariable(makeVar("x", "42", "number"), defaultOptions)).toBe("42");
+	});
+
+	it("renders JS bigint as-is", () => {
+		expect(renderDAPVariable(makeVar("x", "9007199254740991n", "bigint"), defaultOptions)).toBe("9007199254740991n");
+	});
+
+	it("renders JS boolean as-is", () => {
+		expect(renderDAPVariable(makeVar("x", "true", "boolean"), defaultOptions)).toBe("true");
+	});
+
+	it("renders JS undefined", () => {
+		expect(renderDAPVariable(makeVar("x", "undefined", "undefined"), defaultOptions)).toBe("undefined");
+	});
+
+	it("renders JS null", () => {
+		expect(renderDAPVariable(makeVar("x", "null", "null"), defaultOptions)).toBe("null");
+	});
+
+	it("renders JS symbol", () => {
+		expect(renderDAPVariable(makeVar("x", "Symbol(foo)", "symbol"), defaultOptions)).toBe("Symbol(foo)");
+	});
+
+	it("renders JS function with type prefix", () => {
+		const result = renderDAPVariable(makeVar("fn", "function add(a, b)", "function"), defaultOptions);
+		expect(result).toContain("<function");
+		expect(result).toContain("add");
+	});
+
+	it("truncates long JS function values", () => {
+		const longFn = "a".repeat(50);
+		const result = renderDAPVariable(makeVar("fn", longFn, "function"), defaultOptions);
+		expect(result).toContain("...");
+	});
+});
+
+describe("renderDAPVariable — Go types", () => {
+	it("renders Go slice as collection", () => {
+		const result = renderDAPVariable(makeVar("nums", "[1, 2, 3]", "[]int"), defaultOptions);
+		expect(result).toContain("[");
+		expect(result).toContain("items");
+	});
+
+	it("renders Go map as collection", () => {
+		const result = renderDAPVariable(makeVar("m", "{a: 1}", "map[string]int"), defaultOptions);
+		expect(result).toContain("{");
+	});
+
+	it("renders Go pointer with stripped package prefix", () => {
+		const result = renderDAPVariable(makeVar("p", "<main.User>", "*main.User", 1), defaultOptions);
+		expect(result).toContain("*User");
+	});
+
+	it("renders Go struct with stripped package prefix", () => {
+		const result = renderDAPVariable(makeVar("u", "main.User {Name: Alice}", "main.User", 1), defaultOptions);
+		expect(result).toContain("User");
+	});
+});
+
+describe("isInternalVariable — JS and Go names", () => {
+	it("matches JS __proto__", () => {
+		expect(isInternalVariable("__proto__")).toBe(true);
+	});
+
+	it("matches JS constructor", () => {
+		expect(isInternalVariable("constructor")).toBe(true);
+	});
+
+	it("matches JS toString", () => {
+		expect(isInternalVariable("toString")).toBe(true);
+	});
+
+	it("matches Go runtime.curg", () => {
+		expect(isInternalVariable("runtime.curg")).toBe(true);
+	});
+
+	it("matches Go runtime.frameoff", () => {
+		expect(isInternalVariable("runtime.frameoff")).toBe(true);
+	});
+
+	it("does not match regular Go variable names", () => {
+		expect(isInternalVariable("total")).toBe(false);
+		expect(isInternalVariable("result")).toBe(false);
+	});
+});

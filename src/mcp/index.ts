@@ -1,5 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { GoAdapter } from "../adapters/go.js";
+import { NodeAdapter } from "../adapters/node.js";
 import { PythonAdapter } from "../adapters/python.js";
 import { registerAdapter } from "../adapters/registry.js";
 import { SessionManager } from "../core/session-manager.js";
@@ -8,6 +10,8 @@ import { registerTools } from "./tools/index.js";
 
 // Register adapters
 registerAdapter(new PythonAdapter());
+registerAdapter(new NodeAdapter());
+registerAdapter(new GoAdapter());
 
 // Create session manager with default limits
 const limits = ResourceLimitsSchema.parse({});

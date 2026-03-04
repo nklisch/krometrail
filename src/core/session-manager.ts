@@ -138,9 +138,6 @@ export class SessionManager {
 		}
 
 		// 3. Launch adapter to get DAPConnection
-		const { script } = await import("../adapters/python.js").then((m) => ({ script: m.parseCommand(options.command).script })).catch(() => ({ script: options.command }));
-		void script;
-
 		const connection = await adapter.launch({
 			command: options.command,
 			cwd: options.cwd,
@@ -171,13 +168,16 @@ export class SessionManager {
 		// 6. configurationDone
 		await dapClient.configurationDone();
 
-		// 7. Send DAP launch request
-		await dapClient.launch({
+		// 7. Send DAP launch request — merge adapter-specific launchArgs over defaults
+		const dapLaunchArgs: Record<string, unknown> = {
+			noDebug: false,
 			program: options.command,
 			stopOnEntry: options.stopOnEntry ?? false,
 			cwd: options.cwd ?? process.cwd(),
 			env: options.env ?? {},
-		} as DebugProtocol.LaunchRequestArguments);
+			...connection.launchArgs,
+		};
+		await dapClient.launch(dapLaunchArgs as DebugProtocol.LaunchRequestArguments);
 
 		// Create session object
 		const sessionId = this.generateSessionId();

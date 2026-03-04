@@ -1,9 +1,9 @@
 import type { ChildProcess } from "node:child_process";
 import { spawn } from "node:child_process";
 import type { Socket } from "node:net";
-import { createServer } from "node:net";
 import { LaunchError } from "../core/errors.js";
 import type { AttachConfig, DAPConnection, DebugAdapter, LaunchConfig, PrerequisiteResult } from "./base.js";
+import { allocatePort, connectTCP } from "./helpers.js";
 
 export class PythonAdapter implements DebugAdapter {
 	id = "python";
@@ -105,12 +105,7 @@ export class PythonAdapter implements DebugAdapter {
 		});
 
 		// Connect TCP socket to debugpy
-		const socket = await new Promise<Socket>((resolve, reject) => {
-			const { createConnection } = require("node:net") as typeof import("node:net");
-			const sock = createConnection({ host: "127.0.0.1", port });
-			sock.once("connect", () => resolve(sock));
-			sock.once("error", reject);
-		});
+		const socket = await connectTCP("127.0.0.1", port);
 
 		this.socket = socket;
 
@@ -128,12 +123,7 @@ export class PythonAdapter implements DebugAdapter {
 		const host = config.host ?? "127.0.0.1";
 		const port = config.port ?? 5678;
 
-		const socket = await new Promise<Socket>((resolve, reject) => {
-			const { createConnection } = require("node:net") as typeof import("node:net");
-			const sock = createConnection({ host, port });
-			sock.once("connect", () => resolve(sock));
-			sock.once("error", reject);
-		});
+		const socket = await connectTCP(host, port);
 
 		this.socket = socket;
 
@@ -167,27 +157,6 @@ export class PythonAdapter implements DebugAdapter {
 			});
 		}
 	}
-}
-
-/**
- * Allocate a free TCP port by binding to port 0, reading the
- * assigned port, and immediately closing the server.
- */
-export function allocatePort(): Promise<number> {
-	return new Promise((resolve, reject) => {
-		const server = createServer();
-		server.listen(0, () => {
-			const addr = server.address();
-			if (!addr || typeof addr === "string") {
-				server.close();
-				reject(new Error("Failed to allocate port"));
-				return;
-			}
-			const port = addr.port;
-			server.close(() => resolve(port));
-		});
-		server.on("error", reject);
-	});
 }
 
 /**
