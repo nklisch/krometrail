@@ -8,6 +8,44 @@ import { SKIP_NO_DEBUGPY } from "../helpers/debugpy-check.js";
 
 const FIXTURE = resolve(import.meta.dirname, "../fixtures/python/simple-loop.py");
 
+/**
+ * Set up a fully initialized DAP session using debugpy.adapter protocol.
+ * debugpy.adapter requires: initialize → launch (triggers initialized) → setBreakpoints → configurationDone → await launch.
+ *
+ * Returns a promise that resolves when the debuggee stops (registered before configurationDone
+ * to avoid the race where `stopped` fires before the caller can call waitForStop).
+ */
+async function initSession(client: DAPClient, connection: DAPConnection, bpLine?: number): Promise<import("../../src/core/dap-client.js").StopResult> {
+	// Register initialized listener BEFORE initialize so we never miss it
+	const initializedEvent = new Promise<void>((r) => {
+		const handler = () => {
+			client.off("initialized", handler);
+			r();
+		};
+		client.on("initialized", handler);
+	});
+
+	await client.initialize();
+
+	// For debugpy.adapter: launch triggers the server which sends `initialized`
+	const launchPromise = client.launch(connection.launchArgs as DebugProtocol.LaunchRequestArguments);
+
+	// Wait for initialized (comes from adapter after server starts)
+	await initializedEvent;
+
+	if (bpLine !== undefined) {
+		await client.setBreakpoints({ path: FIXTURE, name: "simple-loop.py" }, [{ line: bpLine }]);
+	}
+
+	// Register stop listener BEFORE configurationDone so we never miss the stopped event
+	const stopPromise = client.waitForStop(15_000);
+
+	await client.configurationDone();
+	await launchPromise;
+
+	return stopPromise;
+}
+
 describe.skipIf(SKIP_NO_DEBUGPY)("DAPClient integration", () => {
 	let adapter: PythonAdapter;
 	let connection: DAPConnection;
@@ -44,14 +82,7 @@ describe.skipIf(SKIP_NO_DEBUGPY)("DAPClient integration", () => {
 		client = new DAPClient({ requestTimeoutMs: 10_000, stopTimeoutMs: 30_000 });
 		client.attachStreams(connection.reader, connection.writer);
 
-		await client.initialize();
-
-		// Set breakpoint at line 6 (inside the loop)
-		await client.setBreakpoints({ path: FIXTURE, name: "simple-loop.py" }, [{ line: 6 }]);
-		await client.configurationDone();
-		await client.launch({ program: FIXTURE, stopOnEntry: false } as DebugProtocol.LaunchRequestArguments);
-
-		const stopResult = await client.waitForStop(10_000);
+		const stopResult = await initSession(client, connection, 6);
 		expect(stopResult.type).toBe("stopped");
 		if (stopResult.type === "stopped") {
 			expect(stopResult.event.body.reason).toBe("breakpoint");
@@ -63,12 +94,7 @@ describe.skipIf(SKIP_NO_DEBUGPY)("DAPClient integration", () => {
 		client = new DAPClient({ requestTimeoutMs: 10_000, stopTimeoutMs: 30_000 });
 		client.attachStreams(connection.reader, connection.writer);
 
-		await client.initialize();
-		await client.setBreakpoints({ path: FIXTURE, name: "simple-loop.py" }, [{ line: 6 }]);
-		await client.configurationDone();
-		await client.launch({ program: FIXTURE, stopOnEntry: false } as DebugProtocol.LaunchRequestArguments);
-
-		const stopResult = await client.waitForStop(10_000);
+		const stopResult = await initSession(client, connection, 6);
 		expect(stopResult.type).toBe("stopped");
 
 		if (stopResult.type === "stopped") {
@@ -84,12 +110,7 @@ describe.skipIf(SKIP_NO_DEBUGPY)("DAPClient integration", () => {
 		client = new DAPClient({ requestTimeoutMs: 10_000, stopTimeoutMs: 30_000 });
 		client.attachStreams(connection.reader, connection.writer);
 
-		await client.initialize();
-		await client.setBreakpoints({ path: FIXTURE, name: "simple-loop.py" }, [{ line: 6 }]);
-		await client.configurationDone();
-		await client.launch({ program: FIXTURE, stopOnEntry: false } as DebugProtocol.LaunchRequestArguments);
-
-		const stopResult = await client.waitForStop(10_000);
+		const stopResult = await initSession(client, connection, 6);
 		if (stopResult.type !== "stopped") return;
 
 		const threadId = stopResult.event.body.threadId ?? 1;
@@ -111,12 +132,7 @@ describe.skipIf(SKIP_NO_DEBUGPY)("DAPClient integration", () => {
 		client = new DAPClient({ requestTimeoutMs: 10_000, stopTimeoutMs: 30_000 });
 		client.attachStreams(connection.reader, connection.writer);
 
-		await client.initialize();
-		await client.setBreakpoints({ path: FIXTURE, name: "simple-loop.py" }, [{ line: 6 }]);
-		await client.configurationDone();
-		await client.launch({ program: FIXTURE, stopOnEntry: false } as DebugProtocol.LaunchRequestArguments);
-
-		const stopResult = await client.waitForStop(10_000);
+		const stopResult = await initSession(client, connection, 6);
 		if (stopResult.type !== "stopped") return;
 
 		const threadId = stopResult.event.body.threadId ?? 1;
@@ -132,12 +148,7 @@ describe.skipIf(SKIP_NO_DEBUGPY)("DAPClient integration", () => {
 		client = new DAPClient({ requestTimeoutMs: 10_000, stopTimeoutMs: 30_000 });
 		client.attachStreams(connection.reader, connection.writer);
 
-		await client.initialize();
-		await client.setBreakpoints({ path: FIXTURE, name: "simple-loop.py" }, [{ line: 6 }]);
-		await client.configurationDone();
-		await client.launch({ program: FIXTURE, stopOnEntry: false } as DebugProtocol.LaunchRequestArguments);
-
-		const stopResult = await client.waitForStop(10_000);
+		const stopResult = await initSession(client, connection, 6);
 		if (stopResult.type !== "stopped") return;
 		const threadId = stopResult.event.body.threadId ?? 1;
 
@@ -151,12 +162,7 @@ describe.skipIf(SKIP_NO_DEBUGPY)("DAPClient integration", () => {
 		client = new DAPClient({ requestTimeoutMs: 10_000, stopTimeoutMs: 30_000 });
 		client.attachStreams(connection.reader, connection.writer);
 
-		await client.initialize();
-		await client.setBreakpoints({ path: FIXTURE, name: "simple-loop.py" }, [{ line: 6 }]);
-		await client.configurationDone();
-		await client.launch({ program: FIXTURE, stopOnEntry: false } as DebugProtocol.LaunchRequestArguments);
-
-		const stopResult = await client.waitForStop(10_000);
+		const stopResult = await initSession(client, connection, 6);
 		if (stopResult.type !== "stopped") return;
 		const threadId = stopResult.event.body.threadId ?? 1;
 

@@ -1,9 +1,22 @@
 import type { ChildProcess } from "node:child_process";
 import { spawn } from "node:child_process";
+import { access } from "node:fs/promises";
 import type { Socket } from "node:net";
-import { isAbsolute, resolve as resolvePath } from "node:path";
+import { homedir } from "node:os";
+import { isAbsolute, join, resolve as resolvePath } from "node:path";
 import type { AttachConfig, DAPConnection, DebugAdapter, LaunchConfig, PrerequisiteResult } from "./base.js";
 import { allocatePort, connectTCP, spawnAndWait } from "./helpers.js";
+
+/**
+ * Build an augmented PATH that includes common Go binary install locations
+ * ($GOPATH/bin, ~/go/bin) so dlv is found even when not in the shell PATH.
+ */
+function goEnv(extra?: Record<string, string>): NodeJS.ProcessEnv {
+	const goBin = process.env.GOPATH ? join(process.env.GOPATH, "bin") : join(homedir(), "go", "bin");
+	const currentPath = process.env.PATH ?? "";
+	const augmentedPath = currentPath.includes(goBin) ? currentPath : `${goBin}:${currentPath}`;
+	return { ...process.env, PATH: augmentedPath, ...extra };
+}
 
 export class GoAdapter implements DebugAdapter {
 	id = "go";
@@ -18,7 +31,7 @@ export class GoAdapter implements DebugAdapter {
 	 */
 	async checkPrerequisites(): Promise<PrerequisiteResult> {
 		return new Promise((resolve) => {
-			const proc = spawn("dlv", ["version"], { stdio: "pipe" });
+			const proc = spawn("dlv", ["version"], { stdio: "pipe", env: goEnv() });
 			proc.on("close", (code) => {
 				if (code === 0) {
 					resolve({ satisfied: true });
@@ -49,12 +62,19 @@ export class GoAdapter implements DebugAdapter {
 		const parsed = parseGoCommand(config.command);
 		const absProgram = isAbsolute(parsed.program) ? parsed.program : resolvePath(cwd, parsed.program);
 
+		// Validate the program path exists for exec mode (binary) and absolute file paths
+		if (parsed.mode === "exec" || (parsed.mode === "debug" && isAbsolute(parsed.program))) {
+			await access(absProgram).catch(() => {
+				throw new LaunchError(`Program not found: ${absProgram}`, "");
+			});
+		}
+
 		// Spawn Delve as a DAP server
 		const { process: dlvProc } = await spawnAndWait({
 			cmd: "dlv",
 			args: ["dap", "--listen", `127.0.0.1:${port}`],
 			cwd,
-			env: config.env,
+			env: goEnv(config.env),
 			readyPattern: /DAP server listening at/i,
 			timeoutMs: 15_000,
 			label: "dlv",
@@ -89,6 +109,7 @@ export class GoAdapter implements DebugAdapter {
 		const { process: dlvProc } = await spawnAndWait({
 			cmd: "dlv",
 			args: ["dap", "--listen", `127.0.0.1:${port}`],
+			env: goEnv(config.env),
 			readyPattern: /DAP server listening at/i,
 			timeoutMs: 10_000,
 			label: "dlv",

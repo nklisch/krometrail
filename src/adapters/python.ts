@@ -1,6 +1,8 @@
 import type { ChildProcess } from "node:child_process";
 import { spawn } from "node:child_process";
+import { access } from "node:fs/promises";
 import type { Socket } from "node:net";
+import { isAbsolute, resolve as resolvePath } from "node:path";
 import { LaunchError } from "../core/errors.js";
 import type { AttachConfig, DAPConnection, DebugAdapter, LaunchConfig, PrerequisiteResult } from "./base.js";
 import { allocatePort, connectTCP } from "./helpers.js";
@@ -49,70 +51,84 @@ export class PythonAdapter implements DebugAdapter {
 	}
 
 	/**
-	 * Launch a Python script under debugpy.
+	 * Launch a Python script via debugpy.adapter (DAP server mode).
+	 * The adapter accepts `launch` requests and starts the debuggee as a child process.
 	 */
 	async launch(config: LaunchConfig): Promise<DAPConnection> {
 		const port = config.port ?? (await allocatePort());
 		const { script, args } = parseCommand(config.command);
+		const cwd = config.cwd ?? process.cwd();
 
-		const debugpyArgs = ["python3", "-m", "debugpy", "--listen", `0.0.0.0:${port}`, "--wait-for-client"];
-
-		// Handle -m module case
-		if (script === "-m") {
-			debugpyArgs.push("-m", ...args);
-		} else {
-			debugpyArgs.push(script, ...args);
+		// Validate script path exists before spawning (skip for -m module mode)
+		if (script !== "-m") {
+			const absScript = isAbsolute(script) ? script : resolvePath(cwd, script);
+			await access(absScript).catch(() => {
+				throw new LaunchError(`Script not found: ${absScript}`, "");
+			});
 		}
 
-		const [cmd, ...spawnArgs] = debugpyArgs;
-		const stderrBuffer: string[] = [];
-
-		const child = spawn(cmd, spawnArgs, {
-			cwd: config.cwd,
+		// Start debugpy in DAP adapter server mode — this mode accepts `launch` requests
+		// and starts the debuggee as a subprocess (unlike --listen which requires `attach`).
+		const child = spawn("python3", ["-m", "debugpy.adapter", "--host", "127.0.0.1", "--port", String(port)], {
+			cwd,
 			env: { ...process.env, ...config.env },
 			stdio: ["pipe", "pipe", "pipe"],
 		});
 
 		this.process = child;
 
-		// Wait for debugpy to start listening
-		await new Promise<void>((resolve, reject) => {
-			const timeout = setTimeout(() => {
-				child.kill();
-				reject(new LaunchError(`debugpy did not start within 10 seconds. stderr: ${stderrBuffer.join("")}`, stderrBuffer.join("")));
-			}, 10_000);
-
-			child.stderr?.on("data", (data: Buffer) => {
-				const text = data.toString();
-				stderrBuffer.push(text);
-				if (text.toLowerCase().includes("waiting") || text.toLowerCase().includes("listening")) {
-					clearTimeout(timeout);
-					resolve();
-				}
-			});
-
-			child.on("error", (err) => {
-				clearTimeout(timeout);
-				reject(new LaunchError(`Failed to spawn debugpy: ${err.message}`, stderrBuffer.join("")));
-			});
-
-			child.on("close", (code) => {
-				clearTimeout(timeout);
-				if (code !== null && code !== 0) {
-					reject(new LaunchError(`debugpy exited with code ${code}. stderr: ${stderrBuffer.join("")}`, stderrBuffer.join("")));
-				}
-			});
+		const stderrBuffer: string[] = [];
+		child.stderr?.on("data", (data: Buffer) => {
+			stderrBuffer.push(data.toString());
 		});
 
-		// Connect TCP socket to debugpy
-		const socket = await connectTCP("127.0.0.1", port);
+		// Handle early spawn failure
+		const earlyError = await new Promise<Error | null>((resolve) => {
+			child.on("error", (err) => resolve(new LaunchError(`Failed to spawn debugpy: ${err.message}`, stderrBuffer.join(""))));
+			child.on("close", (code) => {
+				if (code !== null && code !== 0) {
+					resolve(new LaunchError(`debugpy exited with code ${code}. stderr: ${stderrBuffer.join("")}`, stderrBuffer.join("")));
+				} else {
+					resolve(null);
+				}
+			});
+			setTimeout(() => resolve(null), 300);
+		});
+
+		if (earlyError) throw earlyError;
+
+		// Poll TCP until the adapter server is ready
+		const socket = await connectTCP("127.0.0.1", port, 25, 200).catch((err) => {
+			child.kill();
+			throw new LaunchError(`Could not connect to debugpy on port ${port}: ${err.message}. stderr: ${stderrBuffer.join("")}`, stderrBuffer.join(""));
+		});
 
 		this.socket = socket;
+
+		// Build DAP launch arguments for the debuggee
+		const absScript = script !== "-m" ? (isAbsolute(script) ? script : resolvePath(cwd, script)) : undefined;
+		const launchArgs: Record<string, unknown> = {
+			type: "python",
+			cwd,
+			env: config.env ?? {},
+			// _dapFlow signals session-manager to use the debugpy.adapter protocol:
+			// send `launch` first (without awaiting), wait for `initialized`, then setBreakpoints/configurationDone.
+			_dapFlow: "launch-first",
+		};
+
+		if (script === "-m") {
+			launchArgs.module = args[0];
+			launchArgs.args = args.slice(1);
+		} else {
+			launchArgs.program = absScript;
+			launchArgs.args = args;
+		}
 
 		return {
 			reader: socket,
 			writer: socket,
 			process: child,
+			launchArgs,
 		};
 	}
 

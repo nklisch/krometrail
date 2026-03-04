@@ -40,9 +40,17 @@ describe.skipIf(SKIP_NO_DEBUGPY)("PythonAdapter integration", () => {
 		const json = JSON.stringify(req);
 		connection.writer.write(`Content-Length: ${Buffer.byteLength(json)}\r\n\r\n${json}`);
 
-		// Read back the response
+		// Read back the response — debugpy sends telemetry events first, so accumulate until we see a response
 		const response = await new Promise<string>((resolve) => {
-			connection.reader.once("data", (d: Buffer) => resolve(d.toString()));
+			let accumulated = "";
+			const onData = (d: Buffer) => {
+				accumulated += d.toString();
+				if (accumulated.includes('"type":"response"') || accumulated.includes('"type": "response"')) {
+					connection.reader.off("data", onData);
+					resolve(accumulated);
+				}
+			};
+			connection.reader.on("data", onData);
 		});
 		expect(response).toContain("Content-Length");
 		expect(response).toContain("response");

@@ -92,6 +92,11 @@ export interface DebugSession {
 	tokenStats: TokenStats;
 	/** Fields explicitly set by user in viewportConfig (not auto-compressed) */
 	explicitViewportFields: Set<string>;
+	/**
+	 * Pending stop event registered before configurationDone during launch.
+	 * Used by continue() to avoid the race where stopped fires before waitForStop is registered.
+	 */
+	pendingStopPromise: Promise<StopResult> | null;
 }
 
 // --- Launch Result ---
@@ -148,36 +153,75 @@ export class SessionManager {
 		const dapClient = new DAPClient({ requestTimeoutMs: 10_000, stopTimeoutMs: this.limits.stepTimeoutMs });
 		dapClient.attachStreams(connection.reader, connection.writer);
 
-		// Run initialize handshake
-		await dapClient.initialize();
-
-		// 5. Set initial breakpoints
-		const viewportConfig = ViewportConfigSchema.parse(options.viewportConfig ?? {});
-		// Track which fields were explicitly set by the user (not defaulted)
-		const explicitViewportFields = new Set<string>(Object.keys(options.viewportConfig ?? {}));
-		const breakpointMap = new Map<string, Breakpoint[]>();
-
-		if (options.breakpoints) {
-			for (const { file, breakpoints } of options.breakpoints) {
-				const absFile = resolve(options.cwd ?? process.cwd(), file);
-				await dapClient.setBreakpoints({ path: absFile, name: file }, toSourceBreakpoints(breakpoints));
-				breakpointMap.set(absFile, breakpoints);
-			}
-		}
-
-		// 6. configurationDone
-		await dapClient.configurationDone();
-
-		// 7. Send DAP launch request — merge adapter-specific launchArgs over defaults
+		// Build DAP launch arguments — merge adapter-specific launchArgs over defaults.
+		// Strip internal protocol flags (prefixed with _) before sending to the adapter.
+		const dapFlow = (connection.launchArgs?._dapFlow as string | undefined) ?? "standard";
+		const { _dapFlow: _ignored, ...adapterLaunchArgs } = connection.launchArgs ?? {};
 		const dapLaunchArgs: Record<string, unknown> = {
 			noDebug: false,
 			program: options.command,
 			stopOnEntry: options.stopOnEntry ?? false,
 			cwd: options.cwd ?? process.cwd(),
 			env: options.env ?? {},
-			...connection.launchArgs,
+			...adapterLaunchArgs,
 		};
-		await dapClient.launch(dapLaunchArgs as DebugProtocol.LaunchRequestArguments);
+
+		// Register `initialized` event listener before initialize() so we never miss it.
+		const initializedPromise = new Promise<void>((resolve) => {
+			const handler = () => {
+				dapClient.off("initialized", handler);
+				resolve();
+			};
+			dapClient.on("initialized", handler);
+		});
+
+		// 5. Initialize — gets capabilities, does NOT wait for `initialized` event.
+		await dapClient.initialize();
+
+		const viewportConfig = ViewportConfigSchema.parse(options.viewportConfig ?? {});
+		const explicitViewportFields = new Set<string>(Object.keys(options.viewportConfig ?? {}));
+		const breakpointMap = new Map<string, Breakpoint[]>();
+
+		// Register stop listener before configurationDone to avoid race where
+		// the stopped event fires before the caller can register waitForStop.
+		// Only needed when breakpoints are set (or stopOnEntry) — i.e., a stop is expected.
+		const expectStop = !!(options.breakpoints?.length || options.stopOnEntry);
+		const pendingStopPromise: Promise<StopResult> | null = expectStop ? dapClient.waitForStop(this.limits.stepTimeoutMs) : null;
+
+		if (dapFlow === "launch-first") {
+			// debugpy.adapter protocol: `launch` triggers the server which sends `initialized`.
+			// Must send launch first, wait for initialized, then setBreakpoints/configurationDone.
+			const launchPromise = dapClient.launch(dapLaunchArgs as DebugProtocol.LaunchRequestArguments);
+
+			// Wait for `initialized` event (arrives after server starts, triggered by launch).
+			await initializedPromise;
+
+			// Set breakpoints now that the server is ready.
+			if (options.breakpoints) {
+				for (const { file, breakpoints } of options.breakpoints) {
+					const absFile = resolve(options.cwd ?? process.cwd(), file);
+					await dapClient.setBreakpoints({ path: absFile, name: file }, toSourceBreakpoints(breakpoints));
+					breakpointMap.set(absFile, breakpoints);
+				}
+			}
+
+			await dapClient.configurationDone();
+			await launchPromise;
+		} else {
+			// Standard DAP protocol: initialized arrives quickly after initialize response.
+			await initializedPromise;
+
+			if (options.breakpoints) {
+				for (const { file, breakpoints } of options.breakpoints) {
+					const absFile = resolve(options.cwd ?? process.cwd(), file);
+					await dapClient.setBreakpoints({ path: absFile, name: file }, toSourceBreakpoints(breakpoints));
+					breakpointMap.set(absFile, breakpoints);
+				}
+			}
+
+			await dapClient.configurationDone();
+			await dapClient.launch(dapLaunchArgs as DebugProtocol.LaunchRequestArguments);
+		}
 
 		// Create session object
 		const sessionId = this.generateSessionId();
@@ -206,6 +250,7 @@ export class SessionManager {
 			diffMode: false,
 			tokenStats: { viewportTokensConsumed: 0, viewportCount: 0 },
 			explicitViewportFields,
+			pendingStopPromise,
 		};
 
 		// 9. Start session timeout
@@ -249,7 +294,9 @@ export class SessionManager {
 		// 8. If stopOnEntry, wait for stop and build viewport
 		let viewport: string | undefined;
 		if (options.stopOnEntry) {
-			const stopResult = await dapClient.waitForStop(this.limits.stepTimeoutMs);
+			// Use pendingStopPromise (registered before configurationDone) to avoid race conditions.
+			const stopResult = await (session.pendingStopPromise ?? dapClient.waitForStop(this.limits.stepTimeoutMs));
+			session.pendingStopPromise = null;
 			if (stopResult.type === "stopped") {
 				session.state = "stopped";
 				session.lastStoppedThreadId = stopResult.event.body.threadId ?? null;
@@ -295,15 +342,33 @@ export class SessionManager {
 
 	/**
 	 * Continue execution until next stop.
+	 * Accepts both `stopped` and `running` states:
+	 * - `stopped`: sends DAP continue, then waits for next stop event.
+	 * - `running`: the debuggee is already running (e.g., just launched with breakpoints),
+	 *   so just waits for the next stop event without resending continue.
+	 *   Uses pendingStopPromise if available to avoid race conditions.
 	 */
 	async continue(sessionId: string, timeoutMs?: number): Promise<string> {
-		return this.withStoppedSession(sessionId, "debug_continue", async (session) => {
+		const session = this.getSession(sessionId);
+		this.assertState(session, "stopped", "running");
+		this.checkAndIncrementAction(session, "debug_continue");
+
+		let stopResultPromise: Promise<StopResult>;
+
+		if (session.state === "stopped") {
 			const threadId = this.getThreadId(session);
 			await session.dapClient.continue(threadId);
 			session.state = "running";
-			const stopResult = await session.dapClient.waitForStop(timeoutMs ?? this.limits.stepTimeoutMs);
-			return this.handleStopResult(session, stopResult);
-		});
+			stopResultPromise = session.dapClient.waitForStop(timeoutMs ?? this.limits.stepTimeoutMs);
+		} else {
+			// Use pendingStopPromise if registered during launch to avoid race conditions,
+			// otherwise fall back to a fresh waitForStop.
+			stopResultPromise = session.pendingStopPromise ?? session.dapClient.waitForStop(timeoutMs ?? this.limits.stepTimeoutMs);
+			session.pendingStopPromise = null;
+		}
+
+		const stopResult = await stopResultPromise;
+		return this.handleStopResult(session, stopResult);
 	}
 
 	/**
@@ -802,7 +867,7 @@ export class SessionManager {
 	 * Falls back to 1 (DAP convention for single-threaded programs with no explicit thread).
 	 */
 	private getThreadId(session: DebugSession): number {
-		return this.getThreadId(session);
+		return session.lastStoppedThreadId ?? 1;
 	}
 
 	/**

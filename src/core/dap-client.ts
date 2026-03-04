@@ -96,20 +96,12 @@ export class DAPClient {
 	}
 
 	/**
-	 * Run the full DAP initialization handshake:
-	 * 1. Send `initialize` request, store capabilities.
-	 * 2. Wait for `initialized` event.
-	 * 3. Return capabilities (caller sets breakpoints between this and configurationDone).
+	 * Send the DAP `initialize` request and store capabilities from the response.
+	 * Does NOT wait for the `initialized` event — the caller must handle event timing.
+	 * For standard adapters, `initialized` arrives quickly after the response.
+	 * For debugpy.adapter, `initialized` only arrives after `launch` is sent.
 	 */
 	async initialize(): Promise<DebugProtocol.Capabilities> {
-		const initializedPromise = new Promise<void>((resolve) => {
-			const handler = () => {
-				this.off("initialized", handler);
-				resolve();
-			};
-			this.on("initialized", handler);
-		});
-
 		const response = await this.send<DebugProtocol.InitializeResponse>("initialize", {
 			clientID: "agent-lens",
 			adapterID: "agent-lens",
@@ -119,8 +111,6 @@ export class DAPClient {
 		});
 
 		this._capabilities = response.body ?? {};
-
-		await initializedPromise;
 
 		return this._capabilities;
 	}

@@ -32,9 +32,9 @@ export interface SpawnAndWaitOptions {
 	args: string[];
 	/** Working directory */
 	cwd?: string;
-	/** Environment variables */
-	env?: Record<string, string>;
-	/** Regex pattern to match on stderr indicating readiness */
+	/** Environment variables (full env, merged over process.env if not already) */
+	env?: NodeJS.ProcessEnv;
+	/** Regex pattern to match on stdout or stderr indicating readiness */
 	readyPattern: RegExp;
 	/** Timeout in ms for the process to become ready */
 	timeoutMs?: number;
@@ -44,19 +44,20 @@ export interface SpawnAndWaitOptions {
 
 export interface SpawnResult {
 	process: ChildProcess;
-	/** Stderr output accumulated before readiness */
+	/** Output accumulated before readiness (stdout + stderr combined) */
 	stderrBuffer: string;
 }
 
 /**
- * Spawn a debugger process and wait for a readiness pattern on stderr.
+ * Spawn a debugger process and wait for a readiness pattern on stdout or stderr.
  * Rejects with LaunchError on timeout, non-zero exit, or spawn failure.
  */
 export function spawnAndWait(options: SpawnAndWaitOptions): Promise<SpawnResult> {
 	const { cmd, args, cwd, env, readyPattern, timeoutMs = 10_000, label } = options;
 
 	return new Promise((resolve, reject) => {
-		const stderrChunks: string[] = [];
+		let resolved = false;
+		const outputChunks: string[] = [];
 
 		const child = spawn(cmd, args, {
 			cwd,
@@ -64,31 +65,35 @@ export function spawnAndWait(options: SpawnAndWaitOptions): Promise<SpawnResult>
 			stdio: ["pipe", "pipe", "pipe"],
 		});
 
-		const getStderr = () => stderrChunks.join("");
+		const getOutput = () => outputChunks.join("");
 
 		const timeout = setTimeout(() => {
 			child.kill();
-			reject(new LaunchError(`${label} did not start within ${timeoutMs}ms. stderr: ${getStderr()}`, getStderr()));
+			reject(new LaunchError(`${label} did not start within ${timeoutMs}ms. output: ${getOutput()}`, getOutput()));
 		}, timeoutMs);
 
-		child.stderr?.on("data", (data: Buffer) => {
+		const onData = (data: Buffer) => {
 			const text = data.toString();
-			stderrChunks.push(text);
-			if (readyPattern.test(text)) {
+			outputChunks.push(text);
+			if (!resolved && readyPattern.test(text)) {
+				resolved = true;
 				clearTimeout(timeout);
-				resolve({ process: child, stderrBuffer: getStderr() });
+				resolve({ process: child, stderrBuffer: getOutput() });
 			}
-		});
+		};
+
+		child.stdout?.on("data", onData);
+		child.stderr?.on("data", onData);
 
 		child.on("error", (err) => {
 			clearTimeout(timeout);
-			reject(new LaunchError(`Failed to spawn ${label}: ${err.message}`, getStderr()));
+			reject(new LaunchError(`Failed to spawn ${label}: ${err.message}`, getOutput()));
 		});
 
 		child.on("close", (code) => {
 			clearTimeout(timeout);
-			if (code !== null && code !== 0) {
-				reject(new LaunchError(`${label} exited with code ${code}. stderr: ${getStderr()}`, getStderr()));
+			if (!resolved && code !== null && code !== 0) {
+				reject(new LaunchError(`${label} exited with code ${code}. output: ${getOutput()}`, getOutput()));
 			}
 		});
 	});

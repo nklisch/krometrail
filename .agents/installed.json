@@ -1,0 +1,383 @@
+{
+	"version": 1,
+	"skills": [
+		{
+			"name": "skilltap",
+			"description": "Manage agent skills with the skilltap CLI — install, update, remove, and list skills from any git host or npm.",
+			"repo": "https://github.com/nklisch/skilltap-skills.git",
+			"ref": null,
+			"sha": "2f53cee33821d3c92c4437715d2685bc455c4c54",
+			"scope": "project",
+			"path": ".agents/skills/skilltap",
+			"tap": "skilltap-skills",
+			"also": ["claude-code"],
+			"installedAt": "2026-03-04T08:14:16.232Z",
+			"updatedAt": "2026-03-04T08:14:16.232Z",
+			"trust": {
+				"tier": "publisher",
+				"publisher": {
+					"name": "nklisch",
+					"platform": "github"
+				},
+				"tap": "skilltap-skills"
+			}
+		},
+		{
+			"name": "skilltap-find",
+			"description": "Discover and search for agent skills via configured taps and the npm registry.",
+			"repo": "https://github.com/nklisch/skilltap-skills.git",
+			"ref": null,
+			"sha": "2f53cee33821d3c92c4437715d2685bc455c4c54",
+			"scope": "project",
+			"path": ".agents/skills/skilltap-find",
+			"tap": "skilltap-skills",
+			"also": ["claude-code"],
+			"installedAt": "2026-03-04T08:14:17.369Z",
+			"updatedAt": "2026-03-04T08:14:17.369Z",
+			"trust": {
+				"tier": "publisher",
+				"publisher": {
+					"name": "nklisch",
+					"platform": "github"
+				},
+				"tap": "skilltap-skills"
+			}
+		},
+		{
+			"name": "research",
+			"description": "\"Research external libs, APIs, and patterns. Use when investigating technology choices.\"",
+			"repo": "https://github.com/nklisch/skills.git",
+			"ref": null,
+			"sha": "c1e80f4a1ecfa5226f2d7f597230aa15256e5f6e",
+			"scope": "project",
+			"path": ".agents/skills/research",
+			"tap": "skills",
+			"also": ["claude-code"],
+			"installedAt": "2026-03-04T08:14:18.421Z",
+			"updatedAt": "2026-03-04T14:42:20.780Z",
+			"trust": {
+				"tier": "publisher",
+				"publisher": {
+					"name": "nklisch",
+					"platform": "github"
+				},
+				"tap": "skills"
+			}
+		},
+		{
+			"name": "extract-patterns",
+			"description": "\"Discover and document reusable code patterns. Use after implementation to capture conventions.\"",
+			"repo": "https://github.com/nklisch/skills.git",
+			"ref": null,
+			"sha": "36519b91d3df406eec10d275459c9fea0b200e6f",
+			"scope": "project",
+			"path": ".agents/skills/extract-patterns",
+			"tap": "skills",
+			"also": ["claude-code"],
+			"installedAt": "2026-03-04T08:14:19.644Z",
+			"updatedAt": "2026-03-04T08:14:19.644Z",
+			"trust": {
+				"tier": "publisher",
+				"publisher": {
+					"name": "nklisch",
+					"platform": "github"
+				},
+				"tap": "skills"
+			}
+		},
+		{
+			"name": "refactor-plan",
+			"description": "\"Plan refactoring work. Use when code quality or structure needs improvement.\"",
+			"repo": "https://github.com/nklisch/skills.git",
+			"ref": null,
+			"sha": "c1e80f4a1ecfa5226f2d7f597230aa15256e5f6e",
+			"scope": "project",
+			"path": ".agents/skills/refactor-plan",
+			"tap": "skills",
+			"also": ["claude-code"],
+			"installedAt": "2026-03-04T08:14:20.859Z",
+			"updatedAt": "2026-03-04T14:42:34.608Z",
+			"trust": {
+				"tier": "publisher",
+				"publisher": {
+					"name": "nklisch",
+					"platform": "github"
+				},
+				"tap": "skills"
+			}
+		},
+		{
+			"name": "design",
+			"description": "\"Create detailed DESIGN.md with implementation units. Use when translating a vision into code specs.\"",
+			"repo": "https://github.com/nklisch/skills.git",
+			"ref": null,
+			"sha": "c1e80f4a1ecfa5226f2d7f597230aa15256e5f6e",
+			"scope": "project",
+			"path": ".agents/skills/design",
+			"tap": "skills",
+			"also": ["claude-code"],
+			"installedAt": "2026-03-04T08:14:21.695Z",
+			"updatedAt": "2026-03-04T14:42:49.646Z",
+			"trust": {
+				"tier": "publisher",
+				"publisher": {
+					"name": "nklisch",
+					"platform": "github"
+				},
+				"tap": "skills"
+			}
+		},
+		{
+			"name": "implement",
+			"description": "\"Write code from a DESIGN.md. Use when a design exists and code needs to be written.\"",
+			"repo": "https://github.com/nklisch/skills.git",
+			"ref": null,
+			"sha": "c1e80f4a1ecfa5226f2d7f597230aa15256e5f6e",
+			"scope": "project",
+			"path": ".agents/skills/implement",
+			"tap": "skills",
+			"also": ["claude-code"],
+			"installedAt": "2026-03-04T08:14:22.465Z",
+			"updatedAt": "2026-03-04T14:43:01.590Z",
+			"trust": {
+				"tier": "publisher",
+				"publisher": {
+					"name": "nklisch",
+					"platform": "github"
+				},
+				"tap": "skills"
+			}
+		},
+		{
+			"name": "verify",
+			"description": "\"Verify implementation against design. Use when code has been written and needs checking.\"",
+			"repo": "https://github.com/nklisch/skills.git",
+			"ref": null,
+			"sha": "c1e80f4a1ecfa5226f2d7f597230aa15256e5f6e",
+			"scope": "project",
+			"path": ".agents/skills/verify",
+			"tap": "skills",
+			"also": ["claude-code"],
+			"installedAt": "2026-03-04T08:14:23.168Z",
+			"updatedAt": "2026-03-04T14:43:14.023Z",
+			"trust": {
+				"tier": "publisher",
+				"publisher": {
+					"name": "nklisch",
+					"platform": "github"
+				},
+				"tap": "skills"
+			}
+		},
+		{
+			"name": "fix",
+			"description": "\"Fix gaps from VERIFICATION.md. Use when verification found issues that need resolution.\"",
+			"repo": "https://github.com/nklisch/skills.git",
+			"ref": null,
+			"sha": "36519b91d3df406eec10d275459c9fea0b200e6f",
+			"scope": "project",
+			"path": ".agents/skills/fix",
+			"tap": "skills",
+			"also": ["claude-code"],
+			"installedAt": "2026-03-04T08:14:24.004Z",
+			"updatedAt": "2026-03-04T08:14:24.004Z",
+			"trust": {
+				"tier": "publisher",
+				"publisher": {
+					"name": "nklisch",
+					"platform": "github"
+				},
+				"tap": "skills"
+			}
+		},
+		{
+			"name": "quality-gate",
+			"description": "\"Final quality assessment for a feature or phase. Use when checking if work is complete enough to move on.\"",
+			"repo": "https://github.com/nklisch/skills.git",
+			"ref": null,
+			"sha": "36519b91d3df406eec10d275459c9fea0b200e6f",
+			"scope": "project",
+			"path": ".agents/skills/quality-gate",
+			"tap": "skills",
+			"also": ["claude-code"],
+			"installedAt": "2026-03-04T08:14:24.884Z",
+			"updatedAt": "2026-03-04T08:14:24.884Z",
+			"trust": {
+				"tier": "publisher",
+				"publisher": {
+					"name": "nklisch",
+					"platform": "github"
+				},
+				"tap": "skills"
+			}
+		},
+		{
+			"name": "zod-v4",
+			"description": "Zod v4 validation library reference. Auto-loads when working with Zod schemas, validation, z.object, z.string, z.infer, safeParse, transforms, discriminatedUnion.",
+			"repo": "https://github.com/nklisch/skills.git",
+			"ref": null,
+			"sha": "36519b91d3df406eec10d275459c9fea0b200e6f",
+			"scope": "project",
+			"path": ".agents/skills/zod-v4",
+			"tap": "skills",
+			"also": ["claude-code"],
+			"installedAt": "2026-03-04T08:14:26.090Z",
+			"updatedAt": "2026-03-04T08:14:26.090Z",
+			"trust": {
+				"tier": "publisher",
+				"publisher": {
+					"name": "nklisch",
+					"platform": "github"
+				},
+				"tap": "skills"
+			}
+		},
+		{
+			"name": "biome-v2",
+			"description": "Biome v2 linter/formatter reference. Auto-loads when working with biome.json, biome config, linting rules, formatting, import organization, biome check.",
+			"repo": "https://github.com/nklisch/skills.git",
+			"ref": null,
+			"sha": "36519b91d3df406eec10d275459c9fea0b200e6f",
+			"scope": "project",
+			"path": ".agents/skills/biome-v2",
+			"tap": "skills",
+			"also": ["claude-code"],
+			"installedAt": "2026-03-04T08:14:26.786Z",
+			"updatedAt": "2026-03-04T08:14:26.786Z",
+			"trust": {
+				"tier": "publisher",
+				"publisher": {
+					"name": "nklisch",
+					"platform": "github"
+				},
+				"tap": "skills"
+			}
+		},
+		{
+			"name": "drizzle-v0",
+			"description": "Drizzle ORM v0.45+ reference for PostgreSQL. Auto-loads when working with drizzle-orm, pgTable, schema definitions, drizzle queries, migrations, drizzle-kit.",
+			"repo": "https://github.com/nklisch/skills.git",
+			"ref": null,
+			"sha": "36519b91d3df406eec10d275459c9fea0b200e6f",
+			"scope": "project",
+			"path": ".agents/skills/drizzle-v0",
+			"tap": "skills",
+			"also": ["claude-code"],
+			"installedAt": "2026-03-04T08:14:27.496Z",
+			"updatedAt": "2026-03-04T08:14:27.496Z",
+			"trust": {
+				"tier": "publisher",
+				"publisher": {
+					"name": "nklisch",
+					"platform": "github"
+				},
+				"tap": "skills"
+			}
+		},
+		{
+			"name": "hono-v4",
+			"description": "Hono v4 web framework reference. Auto-loads when working with Hono routes, middleware, zValidator, streamSSE, HTTPException, hono/factory, RPC client.",
+			"repo": "https://github.com/nklisch/skills.git",
+			"ref": null,
+			"sha": "36519b91d3df406eec10d275459c9fea0b200e6f",
+			"scope": "project",
+			"path": ".agents/skills/hono-v4",
+			"tap": "skills",
+			"also": ["claude-code"],
+			"installedAt": "2026-03-04T08:14:28.555Z",
+			"updatedAt": "2026-03-04T08:14:28.555Z",
+			"trust": {
+				"tier": "publisher",
+				"publisher": {
+					"name": "nklisch",
+					"platform": "github"
+				},
+				"tap": "skills"
+			}
+		},
+		{
+			"name": "tanstack-query-v5",
+			"description": "TanStack Query v5 (React Query) reference. Auto-loads when working with useQuery, useMutation, useInfiniteQuery, queryOptions, QueryClient, invalidateQueries.",
+			"repo": "https://github.com/nklisch/skills.git",
+			"ref": null,
+			"sha": "36519b91d3df406eec10d275459c9fea0b200e6f",
+			"scope": "project",
+			"path": ".agents/skills/tanstack-query-v5",
+			"tap": "skills",
+			"also": ["claude-code"],
+			"installedAt": "2026-03-04T08:14:29.414Z",
+			"updatedAt": "2026-03-04T08:14:29.414Z",
+			"trust": {
+				"tier": "publisher",
+				"publisher": {
+					"name": "nklisch",
+					"platform": "github"
+				},
+				"tap": "skills"
+			}
+		},
+		{
+			"name": "tanstack-router-v1",
+			"description": "TanStack Router v1 reference. Auto-loads when working with createFileRoute, file-based routing, useNavigate, useParams, useSearch, Link, route loaders.",
+			"repo": "https://github.com/nklisch/skills.git",
+			"ref": null,
+			"sha": "36519b91d3df406eec10d275459c9fea0b200e6f",
+			"scope": "project",
+			"path": ".agents/skills/tanstack-router-v1",
+			"tap": "skills",
+			"also": ["claude-code"],
+			"installedAt": "2026-03-04T08:14:30.354Z",
+			"updatedAt": "2026-03-04T08:14:30.354Z",
+			"trust": {
+				"tier": "publisher",
+				"publisher": {
+					"name": "nklisch",
+					"platform": "github"
+				},
+				"tap": "skills"
+			}
+		},
+		{
+			"name": "zustand-v5",
+			"description": "Zustand v5 state management reference. Auto-loads when working with zustand stores, create, createStore, useShallow, persist, devtools, immer middleware.",
+			"repo": "https://github.com/nklisch/skills.git",
+			"ref": null,
+			"sha": "36519b91d3df406eec10d275459c9fea0b200e6f",
+			"scope": "project",
+			"path": ".agents/skills/zustand-v5",
+			"tap": "skills",
+			"also": ["claude-code"],
+			"installedAt": "2026-03-04T08:14:31.185Z",
+			"updatedAt": "2026-03-04T08:14:31.185Z",
+			"trust": {
+				"tier": "publisher",
+				"publisher": {
+					"name": "nklisch",
+					"platform": "github"
+				},
+				"tap": "skills"
+			}
+		},
+		{
+			"name": "tanstack-table-v8",
+			"description": "TanStack Table v8 headless table reference. Auto-loads when working with useReactTable, createColumnHelper, ColumnDef, flexRender, sorting, filtering, pagination.",
+			"repo": "https://github.com/nklisch/skills.git",
+			"ref": null,
+			"sha": "36519b91d3df406eec10d275459c9fea0b200e6f",
+			"scope": "project",
+			"path": ".agents/skills/tanstack-table-v8",
+			"tap": "skills",
+			"also": ["claude-code"],
+			"installedAt": "2026-03-04T08:14:31.956Z",
+			"updatedAt": "2026-03-04T08:14:31.956Z",
+			"trust": {
+				"tier": "publisher",
+				"publisher": {
+					"name": "nklisch",
+					"platform": "github"
+				},
+				"tap": "skills"
+			}
+		}
+	]
+}
