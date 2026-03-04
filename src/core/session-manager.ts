@@ -13,6 +13,17 @@ import { ViewportConfigSchema } from "./types.js";
 import { convertDAPVariables, renderDAPVariable } from "./value-renderer.js";
 import { computeViewportDiff, isDiffEligible, renderViewport, renderViewportDiff } from "./viewport.js";
 
+// --- Helpers ---
+
+function toSourceBreakpoints(bps: Breakpoint[]): DebugProtocol.SourceBreakpoint[] {
+	return bps.map((bp) => ({
+		line: bp.line,
+		condition: bp.condition,
+		hitCondition: bp.hitCondition,
+		logMessage: bp.logMessage,
+	}));
+}
+
 // --- Launch Options ---
 
 export interface LaunchOptions {
@@ -152,13 +163,7 @@ export class SessionManager {
 		if (options.breakpoints) {
 			for (const { file, breakpoints } of options.breakpoints) {
 				const absFile = resolve(options.cwd ?? process.cwd(), file);
-				const sourceBreakpoints: DebugProtocol.SourceBreakpoint[] = breakpoints.map((bp) => ({
-					line: bp.line,
-					condition: bp.condition,
-					hitCondition: bp.hitCondition,
-					logMessage: bp.logMessage,
-				}));
-				await dapClient.setBreakpoints({ path: absFile, name: file }, sourceBreakpoints);
+				await dapClient.setBreakpoints({ path: absFile, name: file }, toSourceBreakpoints(breakpoints));
 				breakpointMap.set(absFile, breakpoints);
 			}
 		}
@@ -292,16 +297,13 @@ export class SessionManager {
 	 * Continue execution until next stop.
 	 */
 	async continue(sessionId: string, timeoutMs?: number): Promise<string> {
-		const session = this.getSession(sessionId);
-		this.assertState(session, "stopped");
-		this.checkAndIncrementAction(session, "debug_continue");
-
-		const threadId = session.lastStoppedThreadId ?? 1;
-		await session.dapClient.continue(threadId);
-		session.state = "running";
-
-		const stopResult = await session.dapClient.waitForStop(timeoutMs ?? this.limits.stepTimeoutMs);
-		return this.handleStopResult(session, stopResult);
+		return this.withStoppedSession(sessionId, "debug_continue", async (session) => {
+			const threadId = this.getThreadId(session);
+			await session.dapClient.continue(threadId);
+			session.state = "running";
+			const stopResult = await session.dapClient.waitForStop(timeoutMs ?? this.limits.stepTimeoutMs);
+			return this.handleStopResult(session, stopResult);
+		});
 	}
 
 	/**
@@ -314,7 +316,7 @@ export class SessionManager {
 		let viewport = "";
 		for (let i = 0; i < count; i++) {
 			this.checkAndIncrementAction(session, "debug_step");
-			const threadId = session.lastStoppedThreadId ?? 1;
+			const threadId = this.getThreadId(session);
 
 			if (direction === "over") {
 				await session.dapClient.next(threadId);
@@ -339,36 +341,27 @@ export class SessionManager {
 	 * then removing the temp breakpoint.
 	 */
 	async runTo(sessionId: string, file: string, line: number, timeoutMs?: number): Promise<string> {
-		const session = this.getSession(sessionId);
-		this.assertState(session, "stopped");
-		this.checkAndIncrementAction(session, "debug_run_to");
+		return this.withStoppedSession(sessionId, "debug_run_to", async (session) => {
+			const absFile = resolve(session.connection.process?.pid ? process.cwd() : process.cwd(), file);
+			const existing = session.breakpointMap.get(absFile) ?? [];
 
-		const absFile = resolve(session.connection.process?.pid ? process.cwd() : process.cwd(), file);
-		const existing = session.breakpointMap.get(absFile) ?? [];
+			// Add temp breakpoint
+			const allBps = [...existing, { line } as Breakpoint];
+			await session.dapClient.setBreakpoints({ path: absFile, name: file }, toSourceBreakpoints(allBps));
 
-		// Add temp breakpoint
-		const tempBp: Breakpoint = { line };
-		const allBps = [...existing, tempBp];
-		await session.dapClient.setBreakpoints(
-			{ path: absFile, name: file },
-			allBps.map((bp) => ({ line: bp.line, condition: bp.condition, hitCondition: bp.hitCondition, logMessage: bp.logMessage })),
-		);
+			// Continue
+			const threadId = this.getThreadId(session);
+			await session.dapClient.continue(threadId);
+			session.state = "running";
 
-		// Continue
-		const threadId = session.lastStoppedThreadId ?? 1;
-		await session.dapClient.continue(threadId);
-		session.state = "running";
+			const stopResult = await session.dapClient.waitForStop(timeoutMs ?? this.limits.stepTimeoutMs);
+			const viewport = await this.handleStopResult(session, stopResult);
 
-		const stopResult = await session.dapClient.waitForStop(timeoutMs ?? this.limits.stepTimeoutMs);
-		const viewport = await this.handleStopResult(session, stopResult);
+			// Restore original breakpoints (remove temp)
+			await session.dapClient.setBreakpoints({ path: absFile, name: file }, toSourceBreakpoints(existing));
 
-		// Restore original breakpoints (remove temp)
-		await session.dapClient.setBreakpoints(
-			{ path: absFile, name: file },
-			existing.map((bp) => ({ line: bp.line, condition: bp.condition, hitCondition: bp.hitCondition, logMessage: bp.logMessage })),
-		);
-
-		return viewport;
+			return viewport;
+		});
 	}
 
 	/**
@@ -378,15 +371,7 @@ export class SessionManager {
 		const session = this.getSession(sessionId);
 		const absFile = resolve(process.cwd(), file);
 
-		const response = await session.dapClient.setBreakpoints(
-			{ path: absFile, name: file },
-			breakpoints.map((bp) => ({
-				line: bp.line,
-				condition: bp.condition,
-				hitCondition: bp.hitCondition,
-				logMessage: bp.logMessage,
-			})),
-		);
+		const response = await session.dapClient.setBreakpoints({ path: absFile, name: file }, toSourceBreakpoints(breakpoints));
 
 		session.breakpointMap.set(absFile, breakpoints);
 		this.logAction(session, "debug_set_breakpoints", `Set ${breakpoints.length} breakpoints in ${file}`);
@@ -415,118 +400,112 @@ export class SessionManager {
 	 * Evaluate an expression in a stack frame.
 	 */
 	async evaluate(sessionId: string, expression: string, frameIndex = 0, maxDepth = 2): Promise<string> {
-		const session = this.getSession(sessionId);
-		this.assertState(session, "stopped");
-		this.checkAndIncrementAction(session, "debug_evaluate");
+		return this.withStoppedSession(sessionId, "debug_evaluate", async (session) => {
+			const frameId = await this.getFrameId(session, frameIndex);
+			const response = await session.dapClient.evaluate(expression, frameId, "repl");
 
-		const frameId = await this.getFrameId(session, frameIndex);
-		const response = await session.dapClient.evaluate(expression, frameId, "repl");
+			const rendered = renderDAPVariable(
+				{
+					name: expression,
+					value: response.body.result,
+					type: response.body.type,
+					variablesReference: response.body.variablesReference,
+					evaluateName: expression,
+					presentationHint: undefined,
+					namedVariables: undefined,
+					indexedVariables: undefined,
+					memoryReference: undefined,
+				},
+				{
+					depth: 0,
+					maxDepth,
+					stringTruncateLength: session.viewportConfig.stringTruncateLength,
+					collectionPreviewItems: session.viewportConfig.collectionPreviewItems,
+				},
+			);
 
-		const rendered = renderDAPVariable(
-			{
-				name: expression,
-				value: response.body.result,
-				type: response.body.type,
-				variablesReference: response.body.variablesReference,
-				evaluateName: expression,
-				presentationHint: undefined,
-				namedVariables: undefined,
-				indexedVariables: undefined,
-				memoryReference: undefined,
-			},
-			{
-				depth: 0,
-				maxDepth,
-				stringTruncateLength: session.viewportConfig.stringTruncateLength,
-				collectionPreviewItems: session.viewportConfig.collectionPreviewItems,
-			},
-		);
-
-		this.logAction(session, "debug_evaluate", `Evaluated: ${expression} = ${rendered}`);
-		return rendered;
+			this.logAction(session, "debug_evaluate", `Evaluated: ${expression} = ${rendered}`);
+			return rendered;
+		});
 	}
 
 	/**
 	 * Get variables for a scope.
 	 */
 	async getVariables(sessionId: string, scope: "local" | "global" | "closure" | "all" = "local", frameIndex = 0, filter?: string, maxDepth = 1): Promise<string> {
-		const session = this.getSession(sessionId);
-		this.assertState(session, "stopped");
-		this.checkAndIncrementAction(session, "debug_variables");
+		return this.withStoppedSession(sessionId, "debug_variables", async (session) => {
+			const frameId = await this.getFrameId(session, frameIndex);
+			const scopesResponse = await session.dapClient.scopes(frameId);
+			const scopes = scopesResponse.body?.scopes ?? [];
 
-		const frameId = await this.getFrameId(session, frameIndex);
-		const scopesResponse = await session.dapClient.scopes(frameId);
-		const scopes = scopesResponse.body?.scopes ?? [];
+			const targetScopes =
+				scope === "all"
+					? scopes
+					: scopes.filter((s) => {
+							const name = s.name.toLowerCase();
+							if (scope === "local") return name === "locals" || name === "local";
+							if (scope === "global") return name === "globals" || name === "global";
+							if (scope === "closure") return name === "closure" || name === "free variables";
+							return false;
+						});
 
-		const targetScopes =
-			scope === "all"
-				? scopes
-				: scopes.filter((s) => {
-						const name = s.name.toLowerCase();
-						if (scope === "local") return name === "locals" || name === "local";
-						if (scope === "global") return name === "globals" || name === "global";
-						if (scope === "closure") return name === "closure" || name === "free variables";
-						return false;
-					});
+			const lines: string[] = [];
+			const filterRegex = filter ? new RegExp(filter) : null;
 
-		const lines: string[] = [];
-		const filterRegex = filter ? new RegExp(filter) : null;
+			for (const s of targetScopes) {
+				const varsResponse = await session.dapClient.variables(s.variablesReference);
+				const vars = varsResponse.body?.variables ?? [];
+				const converted = convertDAPVariables(vars, session.viewportConfig).filter((v) => !filterRegex || filterRegex.test(v.name));
 
-		for (const s of targetScopes) {
-			const varsResponse = await session.dapClient.variables(s.variablesReference);
-			const vars = varsResponse.body?.variables ?? [];
-			const converted = convertDAPVariables(vars, session.viewportConfig).filter((v) => !filterRegex || filterRegex.test(v.name));
+				if (scope === "all" && converted.length > 0) {
+					lines.push(`[${s.name}]`);
+				}
 
-			if (scope === "all" && converted.length > 0) {
-				lines.push(`[${s.name}]`);
+				const maxName = Math.max(...converted.map((v) => v.name.length), 4);
+				for (const v of converted) {
+					lines.push(`  ${v.name.padEnd(maxName)}  = ${v.value}`);
+				}
 			}
 
-			const maxName = Math.max(...converted.map((v) => v.name.length), 4);
-			for (const v of converted) {
-				lines.push(`  ${v.name.padEnd(maxName)}  = ${v.value}`);
-			}
-		}
-
-		void maxDepth;
-		return lines.join("\n");
+			void maxDepth;
+			return lines.join("\n");
+		});
 	}
 
 	/**
 	 * Get the full stack trace.
 	 */
 	async getStackTrace(sessionId: string, maxFrames = 20, includeSource = false): Promise<string> {
-		const session = this.getSession(sessionId);
-		this.assertState(session, "stopped");
-		this.checkAndIncrementAction(session, "debug_stack_trace");
+		return this.withStoppedSession(sessionId, "debug_stack_trace", async (session) => {
+			const threadId = this.getThreadId(session);
+			const response = await session.dapClient.stackTrace(threadId, 0, maxFrames);
+			const frames = response.body?.stackFrames ?? [];
 
-		const threadId = session.lastStoppedThreadId ?? 1;
-		const response = await session.dapClient.stackTrace(threadId, 0, maxFrames);
-		const frames = response.body?.stackFrames ?? [];
+			const lines: string[] = [];
+			for (let i = 0; i < frames.length; i++) {
+				const f = frames[i];
+				const marker = i === 0 ? "→" : " ";
+				const file = f.source?.path ?? f.source?.name ?? "<unknown>";
+				const shortFile = file.split("/").pop() ?? file;
+				lines.push(`${marker} #${i} ${shortFile}:${f.line}  ${f.name}()`);
 
-		const lines: string[] = [];
-		for (let i = 0; i < frames.length; i++) {
-			const f = frames[i];
-			const marker = i === 0 ? "→" : " ";
-			const file = f.source?.path ?? f.source?.name ?? "<unknown>";
-			const shortFile = file.split("/").pop() ?? file;
-			lines.push(`${marker} #${i} ${shortFile}:${f.line}  ${f.name}()`);
-
-			if (includeSource && f.source?.path) {
-				try {
-					const sourceLines = await this.readSourceFile(session, f.source.path);
-					const start = Math.max(0, f.line - 2);
-					const end = Math.min(sourceLines.length - 1, f.line + 1);
-					for (let l = start; l <= end; l++) {
-						const arrow = l + 1 === f.line ? "→" : " ";
-						lines.push(`    ${arrow}${String(l + 1).padStart(4)}│ ${sourceLines[l]}`);
+				if (includeSource && f.source?.path) {
+					try {
+						const sourceLines = await this.readSourceFile(session, f.source.path);
+						const start = Math.max(0, f.line - 2);
+						const end = Math.min(sourceLines.length - 1, f.line + 1);
+						for (let l = start; l <= end; l++) {
+							const arrow = l + 1 === f.line ? "→" : " ";
+							lines.push(`    ${arrow}${String(l + 1).padStart(4)}│ ${sourceLines[l]}`);
+						}
+					} catch {
+						// Skip source if unavailable
 					}
-				} catch {
-					// Skip source if unavailable
 				}
 			}
-		}
 
-		return lines.join("\n");
+			return lines.join("\n");
+		});
 	}
 
 	/**
@@ -645,7 +624,7 @@ export class SessionManager {
 	 * Build a ViewportSnapshot from the current DAP state.
 	 */
 	private async buildViewport(session: DebugSession): Promise<ViewportSnapshot> {
-		const threadId = session.lastStoppedThreadId ?? 1;
+		const threadId = this.getThreadId(session);
 		const config = session.viewportConfig;
 
 		// Get stack trace
@@ -819,6 +798,25 @@ export class SessionManager {
 	}
 
 	/**
+	 * Get the thread ID for the session.
+	 * Falls back to 1 (DAP convention for single-threaded programs with no explicit thread).
+	 */
+	private getThreadId(session: DebugSession): number {
+		return this.getThreadId(session);
+	}
+
+	/**
+	 * Retrieve session, assert it is stopped, increment action count, then call fn.
+	 * Use this for all actions that require a stopped session.
+	 */
+	private async withStoppedSession<T>(sessionId: string, toolName: string, fn: (session: DebugSession) => Promise<T>): Promise<T> {
+		const session = this.getSession(sessionId);
+		this.assertState(session, "stopped");
+		this.checkAndIncrementAction(session, toolName);
+		return fn(session);
+	}
+
+	/**
 	 * Generate a unique session ID.
 	 */
 	private generateSessionId(): string {
@@ -861,7 +859,7 @@ export class SessionManager {
 		if (frameIndex === 0 && session.lastStoppedFrameId !== null) {
 			return session.lastStoppedFrameId;
 		}
-		const threadId = session.lastStoppedThreadId ?? 1;
+		const threadId = this.getThreadId(session);
 		const response = await session.dapClient.stackTrace(threadId, 0, frameIndex + 1);
 		const frames = response.body?.stackFrames ?? [];
 		if (!frames[frameIndex]) throw new Error(`No frame at index ${frameIndex}`);

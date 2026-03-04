@@ -37,6 +37,8 @@ const globalArgs = {
 	},
 };
 
+type OutputMode = "text" | "json" | "quiet";
+
 /**
  * Helper: create a DaemonClient, ensuring daemon is running first.
  */
@@ -69,6 +71,37 @@ async function resolveSessionId(client: DaemonClient, explicitSession?: string):
 	throw new Error(`Multiple active sessions. Use --session to specify one:\n${sessionList}`);
 }
 
+/**
+ * Helper: wrap a CLI command with standard mode resolution, client lifecycle,
+ * session resolution, error handling, and cleanup.
+ *
+ * For commands that don't need a session ID upfront (e.g. launch), pass
+ * `{ needsSession: false }` and the handler receives `null` as sessionId.
+ */
+async function runCommand(
+	args: { json?: boolean; quiet?: boolean; session?: string },
+	handler: (client: DaemonClient, sessionId: string, mode: OutputMode) => Promise<void>,
+	opts?: { needsSession: false },
+): Promise<void>;
+async function runCommand(args: { json?: boolean; quiet?: boolean; session?: string }, handler: (client: DaemonClient, sessionId: string, mode: OutputMode) => Promise<void>): Promise<void>;
+async function runCommand(
+	args: { json?: boolean; quiet?: boolean; session?: string },
+	handler: (client: DaemonClient, sessionId: string, mode: OutputMode) => Promise<void>,
+	opts?: { needsSession?: false },
+): Promise<void> {
+	const mode = resolveOutputMode(args) as OutputMode;
+	const client = await getClient();
+	try {
+		const sessionId = opts?.needsSession === false ? "" : await resolveSessionId(client, args.session);
+		await handler(client, sessionId, mode);
+	} catch (err) {
+		process.stderr.write(`${formatError(err as Error, mode)}\n`);
+		process.exit(1);
+	} finally {
+		client.dispose();
+	}
+}
+
 // --- Session Lifecycle ---
 
 export const launchCommand = defineCommand({
@@ -96,28 +129,23 @@ export const launchCommand = defineCommand({
 		...globalArgs,
 	},
 	async run({ args }) {
-		const mode = resolveOutputMode(args);
-		const client = await getClient();
-		try {
-			const breakpoints = args.break ? [parseBreakpointString(args.break)] : undefined;
-
-			const result = await client.call<LaunchResultPayload>("session.launch", {
-				command: args.command,
-				language: args.language,
-				breakpoints: breakpoints?.map((fb) => ({
-					file: fb.file,
-					breakpoints: fb.breakpoints,
-				})),
-				stopOnEntry: args["stop-on-entry"],
-			});
-
-			process.stdout.write(`${formatLaunch(result, mode)}\n`);
-		} catch (err) {
-			process.stderr.write(`${formatError(err as Error, mode)}\n`);
-			process.exit(1);
-		} finally {
-			client.dispose();
-		}
+		await runCommand(
+			args,
+			async (client, _sessionId, mode) => {
+				const breakpoints = args.break ? [parseBreakpointString(args.break)] : undefined;
+				const result = await client.call<LaunchResultPayload>("session.launch", {
+					command: args.command,
+					language: args.language,
+					breakpoints: breakpoints?.map((fb) => ({
+						file: fb.file,
+						breakpoints: fb.breakpoints,
+					})),
+					stopOnEntry: args["stop-on-entry"],
+				});
+				process.stdout.write(`${formatLaunch(result, mode)}\n`);
+			},
+			{ needsSession: false },
+		);
 	},
 });
 
@@ -125,18 +153,10 @@ export const stopCommand = defineCommand({
 	meta: { name: "stop", description: "Terminate a debug session" },
 	args: { ...globalArgs },
 	async run({ args }) {
-		const mode = resolveOutputMode(args);
-		const client = await getClient();
-		try {
-			const sessionId = await resolveSessionId(client, args.session);
+		await runCommand(args, async (client, sessionId, mode) => {
 			const result = await client.call<StopResultPayload>("session.stop", { sessionId });
 			process.stdout.write(`${formatStop(result, sessionId, mode)}\n`);
-		} catch (err) {
-			process.stderr.write(`${formatError(err as Error, mode)}\n`);
-			process.exit(1);
-		} finally {
-			client.dispose();
-		}
+		});
 	},
 });
 
@@ -144,18 +164,10 @@ export const statusCommand = defineCommand({
 	meta: { name: "status", description: "Check session status" },
 	args: { ...globalArgs },
 	async run({ args }) {
-		const mode = resolveOutputMode(args);
-		const client = await getClient();
-		try {
-			const sessionId = await resolveSessionId(client, args.session);
+		await runCommand(args, async (client, sessionId, mode) => {
 			const result = await client.call<StatusResultPayload>("session.status", { sessionId });
 			process.stdout.write(`${formatStatus(result, mode)}\n`);
-		} catch (err) {
-			process.stderr.write(`${formatError(err as Error, mode)}\n`);
-			process.exit(1);
-		} finally {
-			client.dispose();
-		}
+		});
 	},
 });
 
@@ -171,21 +183,13 @@ export const continueCommand = defineCommand({
 		...globalArgs,
 	},
 	async run({ args }) {
-		const mode = resolveOutputMode(args);
-		const client = await getClient();
-		try {
-			const sessionId = await resolveSessionId(client, args.session);
+		await runCommand(args, async (client, sessionId, mode) => {
 			const result = await client.call<ViewportPayload>("session.continue", {
 				sessionId,
 				timeoutMs: args.timeout ? Number.parseInt(args.timeout, 10) : undefined,
 			});
 			process.stdout.write(`${formatViewport(result.viewport, mode)}\n`);
-		} catch (err) {
-			process.stderr.write(`${formatError(err as Error, mode)}\n`);
-			process.exit(1);
-		} finally {
-			client.dispose();
-		}
+		});
 	},
 });
 
@@ -204,10 +208,7 @@ export const stepCommand = defineCommand({
 		...globalArgs,
 	},
 	async run({ args }) {
-		const mode = resolveOutputMode(args);
-		const client = await getClient();
-		try {
-			const sessionId = await resolveSessionId(client, args.session);
+		await runCommand(args, async (client, sessionId, mode) => {
 			const direction = args.direction as "over" | "into" | "out";
 			if (!["over", "into", "out"].includes(direction)) {
 				throw new Error(`Invalid step direction: ${direction}. Must be 'over', 'into', or 'out'.`);
@@ -218,12 +219,7 @@ export const stepCommand = defineCommand({
 				count: args.count ? Number.parseInt(args.count, 10) : undefined,
 			});
 			process.stdout.write(`${formatViewport(result.viewport, mode)}\n`);
-		} catch (err) {
-			process.stderr.write(`${formatError(err as Error, mode)}\n`);
-			process.exit(1);
-		} finally {
-			client.dispose();
-		}
+		});
 	},
 });
 
@@ -242,10 +238,7 @@ export const runToCommand = defineCommand({
 		...globalArgs,
 	},
 	async run({ args }) {
-		const mode = resolveOutputMode(args);
-		const client = await getClient();
-		try {
-			const sessionId = await resolveSessionId(client, args.session);
+		await runCommand(args, async (client, sessionId, mode) => {
 			const { file, line } = parseLocation(args.location);
 			const result = await client.call<ViewportPayload>("session.runTo", {
 				sessionId,
@@ -254,12 +247,7 @@ export const runToCommand = defineCommand({
 				timeoutMs: args.timeout ? Number.parseInt(args.timeout, 10) : undefined,
 			});
 			process.stdout.write(`${formatViewport(result.viewport, mode)}\n`);
-		} catch (err) {
-			process.stderr.write(`${formatError(err as Error, mode)}\n`);
-			process.exit(1);
-		} finally {
-			client.dispose();
-		}
+		});
 	},
 });
 
@@ -286,11 +274,7 @@ export const breakCommand = defineCommand({
 		...globalArgs,
 	},
 	async run({ args }) {
-		const mode = resolveOutputMode(args);
-		const client = await getClient();
-		try {
-			const sessionId = await resolveSessionId(client, args.session);
-
+		await runCommand(args, async (client, sessionId, mode) => {
 			if (args.exceptions) {
 				await client.call("session.setExceptionBreakpoints", {
 					sessionId,
@@ -315,12 +299,7 @@ export const breakCommand = defineCommand({
 			} else {
 				throw new Error("Usage: agent-lens break <file:line> | --exceptions <filter> | --clear <file>");
 			}
-		} catch (err) {
-			process.stderr.write(`${formatError(err as Error, mode)}\n`);
-			process.exit(1);
-		} finally {
-			client.dispose();
-		}
+		});
 	},
 });
 
@@ -328,18 +307,10 @@ export const breakpointsCommand = defineCommand({
 	meta: { name: "breakpoints", description: "List all active breakpoints" },
 	args: { ...globalArgs },
 	async run({ args }) {
-		const mode = resolveOutputMode(args);
-		const client = await getClient();
-		try {
-			const sessionId = await resolveSessionId(client, args.session);
+		await runCommand(args, async (client, sessionId, mode) => {
 			const result = await client.call<BreakpointsListPayload>("session.listBreakpoints", { sessionId });
 			process.stdout.write(`${formatBreakpointsList(result, mode)}\n`);
-		} catch (err) {
-			process.stderr.write(`${formatError(err as Error, mode)}\n`);
-			process.exit(1);
-		} finally {
-			client.dispose();
-		}
+		});
 	},
 });
 
@@ -364,10 +335,7 @@ export const evalCommand = defineCommand({
 		...globalArgs,
 	},
 	async run({ args }) {
-		const mode = resolveOutputMode(args);
-		const client = await getClient();
-		try {
-			const sessionId = await resolveSessionId(client, args.session);
+		await runCommand(args, async (client, sessionId, mode) => {
 			const result = await client.call<string>("session.evaluate", {
 				sessionId,
 				expression: args.expression,
@@ -375,12 +343,7 @@ export const evalCommand = defineCommand({
 				maxDepth: args.depth ? Number.parseInt(args.depth, 10) : undefined,
 			});
 			process.stdout.write(`${formatEvaluate(args.expression, result, mode)}\n`);
-		} catch (err) {
-			process.stderr.write(`${formatError(err as Error, mode)}\n`);
-			process.exit(1);
-		} finally {
-			client.dispose();
-		}
+		});
 	},
 });
 
@@ -402,10 +365,7 @@ export const varsCommand = defineCommand({
 		...globalArgs,
 	},
 	async run({ args }) {
-		const mode = resolveOutputMode(args);
-		const client = await getClient();
-		try {
-			const sessionId = await resolveSessionId(client, args.session);
+		await runCommand(args, async (client, sessionId, mode) => {
 			const result = await client.call<string>("session.variables", {
 				sessionId,
 				scope: args.scope,
@@ -413,12 +373,7 @@ export const varsCommand = defineCommand({
 				filter: args.filter,
 			});
 			process.stdout.write(`${formatVariables(result, mode)}\n`);
-		} catch (err) {
-			process.stderr.write(`${formatError(err as Error, mode)}\n`);
-			process.exit(1);
-		} finally {
-			client.dispose();
-		}
+		});
 	},
 });
 
@@ -437,22 +392,14 @@ export const stackCommand = defineCommand({
 		...globalArgs,
 	},
 	async run({ args }) {
-		const mode = resolveOutputMode(args);
-		const client = await getClient();
-		try {
-			const sessionId = await resolveSessionId(client, args.session);
+		await runCommand(args, async (client, sessionId, mode) => {
 			const result = await client.call<string>("session.stackTrace", {
 				sessionId,
 				maxFrames: args.frames ? Number.parseInt(args.frames, 10) : undefined,
 				includeSource: args.source,
 			});
 			process.stdout.write(`${formatStackTrace(result, mode)}\n`);
-		} catch (err) {
-			process.stderr.write(`${formatError(err as Error, mode)}\n`);
-			process.exit(1);
-		} finally {
-			client.dispose();
-		}
+		});
 	},
 });
 
@@ -467,10 +414,7 @@ export const sourceCommand = defineCommand({
 		...globalArgs,
 	},
 	async run({ args }) {
-		const mode = resolveOutputMode(args);
-		const client = await getClient();
-		try {
-			const sessionId = await resolveSessionId(client, args.session);
+		await runCommand(args, async (client, sessionId, mode) => {
 			const { file, startLine, endLine } = parseSourceRange(args.target);
 			const result = await client.call<string>("session.source", {
 				sessionId,
@@ -483,16 +427,16 @@ export const sourceCommand = defineCommand({
 			} else {
 				process.stdout.write(`${result}\n`);
 			}
-		} catch (err) {
-			process.stderr.write(`${formatError(err as Error, mode)}\n`);
-			process.exit(1);
-		} finally {
-			client.dispose();
-		}
+		});
 	},
 });
 
 // --- Session Intelligence ---
+
+function collectExpressions(firstExpr: string, args: Record<string, unknown>): string[] {
+	const extraArgs = args._ as string[] | undefined;
+	return [firstExpr, ...(extraArgs ?? [])];
+}
 
 export const watchCommand = defineCommand({
 	meta: { name: "watch", description: "Add watch expressions" },
@@ -505,31 +449,16 @@ export const watchCommand = defineCommand({
 		...globalArgs,
 	},
 	async run({ args }) {
-		const mode = resolveOutputMode(args);
-		const client = await getClient();
-		try {
-			const sessionId = await resolveSessionId(client, args.session);
-			// Citty collects remaining positional args in args._
-			const extraArgs = (args as Record<string, unknown>)._ as string[] | undefined;
-			const expressions = [args.expressions, ...(extraArgs ?? [])];
-			const result = await client.call<string[]>("session.watch", {
-				sessionId,
-				expressions,
-			});
+		await runCommand(args, async (client, sessionId, mode) => {
+			const expressions = collectExpressions(args.expressions, args as Record<string, unknown>);
+			const result = await client.call<string[]>("session.watch", { sessionId, expressions });
 			if (mode === "json") {
 				process.stdout.write(`${JSON.stringify({ watchExpressions: result }, null, 2)}\n`);
 			} else {
 				process.stdout.write(`Watch expressions (${result.length} total):\n`);
-				for (const expr of result) {
-					process.stdout.write(`  ${expr}\n`);
-				}
+				for (const expr of result) process.stdout.write(`  ${expr}\n`);
 			}
-		} catch (err) {
-			process.stderr.write(`${formatError(err as Error, mode)}\n`);
-			process.exit(1);
-		} finally {
-			client.dispose();
-		}
+		});
 	},
 });
 
@@ -544,30 +473,16 @@ export const unwatchCommand = defineCommand({
 		...globalArgs,
 	},
 	async run({ args }) {
-		const mode = resolveOutputMode(args);
-		const client = await getClient();
-		try {
-			const sessionId = await resolveSessionId(client, args.session);
-			const extraArgs = (args as Record<string, unknown>)._ as string[] | undefined;
-			const expressions = [args.expressions, ...(extraArgs ?? [])];
-			const result = await client.call<string[]>("session.unwatch", {
-				sessionId,
-				expressions,
-			});
+		await runCommand(args, async (client, sessionId, mode) => {
+			const expressions = collectExpressions(args.expressions, args as Record<string, unknown>);
+			const result = await client.call<string[]>("session.unwatch", { sessionId, expressions });
 			if (mode === "json") {
 				process.stdout.write(`${JSON.stringify({ watchExpressions: result }, null, 2)}\n`);
 			} else {
 				process.stdout.write(`Watch expressions (${result.length} total):\n`);
-				for (const expr of result) {
-					process.stdout.write(`  ${expr}\n`);
-				}
+				for (const expr of result) process.stdout.write(`  ${expr}\n`);
 			}
-		} catch (err) {
-			process.stderr.write(`${formatError(err as Error, mode)}\n`);
-			process.exit(1);
-		} finally {
-			client.dispose();
-		}
+		});
 	},
 });
 
@@ -582,10 +497,7 @@ export const logCommand = defineCommand({
 		...globalArgs,
 	},
 	async run({ args }) {
-		const mode = resolveOutputMode(args);
-		const client = await getClient();
-		try {
-			const sessionId = await resolveSessionId(client, args.session);
+		await runCommand(args, async (client, sessionId, mode) => {
 			const result = await client.call<string>("session.sessionLog", {
 				sessionId,
 				format: args.detailed ? "detailed" : "summary",
@@ -595,12 +507,7 @@ export const logCommand = defineCommand({
 			} else {
 				process.stdout.write(`${result}\n`);
 			}
-		} catch (err) {
-			process.stderr.write(`${formatError(err as Error, mode)}\n`);
-			process.exit(1);
-		} finally {
-			client.dispose();
-		}
+		});
 	},
 });
 
@@ -624,10 +531,7 @@ export const outputCommand = defineCommand({
 		...globalArgs,
 	},
 	async run({ args }) {
-		const mode = resolveOutputMode(args);
-		const client = await getClient();
-		try {
-			const sessionId = await resolveSessionId(client, args.session);
+		await runCommand(args, async (client, sessionId, mode) => {
 			const stream = args.stderr ? "stderr" : args.stdout ? "stdout" : "both";
 			const result = await client.call<string>("session.output", {
 				sessionId,
@@ -639,12 +543,7 @@ export const outputCommand = defineCommand({
 			} else {
 				process.stdout.write(result || "No output captured.\n");
 			}
-		} catch (err) {
-			process.stderr.write(`${formatError(err as Error, mode)}\n`);
-			process.exit(1);
-		} finally {
-			client.dispose();
-		}
+		});
 	},
 });
 
