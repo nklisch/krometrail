@@ -1,7 +1,7 @@
 import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import type { AgentDriver, RunResult, Scenario, ValidationResult, Workspace } from "./config.js";
+import type { AgentDriver, RunMode, RunResult, Scenario, ValidationResult, Workspace } from "./config.js";
 import { spawnCapture } from "./spawn.js";
 
 const MCP_SERVER_PATH = resolve(import.meta.dirname, "../../../src/mcp/index.ts");
@@ -129,7 +129,7 @@ function extractResultSummary(stdout: string): string | null {
 
 // --- Full scenario run ---
 
-export async function runScenario(agent: AgentDriver, scenario: Scenario, traceDir: string): Promise<RunResult> {
+export async function runScenario(agent: AgentDriver, scenario: Scenario, traceDir: string, mode: RunMode = "tools"): Promise<RunResult> {
 	const timestamp = new Date().toISOString();
 	const workspace = await prepareWorkspace(scenario);
 
@@ -157,7 +157,7 @@ export async function runScenario(agent: AgentDriver, scenario: Scenario, traceD
 		} catch {
 			// Skill file missing — continue without it
 		}
-		console.error(`[harness] ${agent.name} × ${scenario.name} → ${workspace.workDir}`);
+		console.error(`[harness] ${agent.name} × ${scenario.name} [${mode}] → ${workspace.workDir}`);
 
 		agentRunResult = await agent.run({
 			workDir: workspace.workDir,
@@ -166,6 +166,7 @@ export async function runScenario(agent: AgentDriver, scenario: Scenario, traceD
 			timeoutMs: scenario.timeoutSeconds * 1000,
 			maxBudgetUsd: scenario.maxBudgetUsd,
 			skillContent,
+			mode,
 		});
 
 		const postCheck = await runCommand(scenario.visibleTestCommand, workspace.workDir);
@@ -185,6 +186,7 @@ export async function runScenario(agent: AgentDriver, scenario: Scenario, traceD
 
 	const result: RunResult = {
 		scenario: scenario.name,
+		mode,
 		scenarioMeta: {
 			description: scenario.description,
 			language: scenario.language,
@@ -207,15 +209,15 @@ export async function runScenario(agent: AgentDriver, scenario: Scenario, traceD
 		resultSummary: extractResultSummary(agentRunResult.stdout),
 	};
 
-	await saveRunTrace(traceDir, agent.name, scenario.name, result, agentRunResult);
+	await saveRunTrace(traceDir, agent.name, scenario.name, mode, result, agentRunResult);
 
 	return result;
 }
 
 // --- Trace saving ---
 
-async function saveRunTrace(suiteDir: string, agentName: string, scenarioName: string, result: RunResult, agentRun: { stdout: string; stderr: string }): Promise<void> {
-	const traceDir = join(suiteDir, agentName, scenarioName);
+async function saveRunTrace(suiteDir: string, agentName: string, scenarioName: string, mode: RunMode, result: RunResult, agentRun: { stdout: string; stderr: string }): Promise<void> {
+	const traceDir = join(suiteDir, agentName, scenarioName, mode);
 	await mkdir(traceDir, { recursive: true });
 
 	await writeFile(join(traceDir, "result.json"), JSON.stringify(result, null, 2));

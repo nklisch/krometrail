@@ -16,8 +16,10 @@
 
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
-import type { RunResult, TokenUsage, ToolEvent } from "./lib/config.js";
+import type { RunMode, RunResult, TokenUsage, ToolEvent } from "./lib/config.js";
 import { getTracesDir } from "./lib/trace.js";
+
+const MODE_NAMES: RunMode[] = ["tools", "baseline"];
 
 // ============================================
 // TYPES — site-consumable report shape
@@ -27,6 +29,8 @@ import { getTracesDir } from "./lib/trace.js";
 interface ReportResult {
 	scenario: string;
 	agent: string;
+	/** Run mode — "tools" or "baseline". Old results without mode default to "tools". */
+	mode: RunMode;
 	passed: boolean;
 	durationMs: number;
 	timedOut: boolean;
@@ -46,6 +50,8 @@ interface ReportResult {
 
 interface AgentSummary {
 	name: string;
+	/** Run mode this summary covers, or null if mixed/unknown. */
+	mode: RunMode | null;
 	model: string | null;
 	version: string | null;
 	runs: number;
@@ -114,32 +120,50 @@ function parseArgs(): { dir?: string; format: "markdown" | "json"; out?: string 
 
 async function loadResults(suiteDir: string): Promise<RunResult[]> {
 	const results: RunResult[] = [];
-	let agents: string[] = [];
+	let agentNames: string[] = [];
 
 	try {
 		const entries = await readdir(suiteDir, { withFileTypes: true });
-		agents = entries.filter((e) => e.isDirectory()).map((e) => e.name);
+		agentNames = entries.filter((e) => e.isDirectory()).map((e) => e.name);
 	} catch {
 		return results;
 	}
 
-	for (const agent of agents) {
-		const agentDir = join(suiteDir, agent);
-		let scenarios: string[] = [];
+	for (const agentName of agentNames) {
+		const agentDir = join(suiteDir, agentName);
+		let scenarioNames: string[] = [];
 		try {
 			const entries = await readdir(agentDir, { withFileTypes: true });
-			scenarios = entries.filter((e) => e.isDirectory()).map((e) => e.name);
+			scenarioNames = entries.filter((e) => e.isDirectory()).map((e) => e.name);
 		} catch {
 			continue;
 		}
 
-		for (const scenario of scenarios) {
-			const resultPath = join(agentDir, scenario, "result.json");
-			try {
-				const raw = await readFile(resultPath, "utf-8");
-				results.push(JSON.parse(raw) as RunResult);
-			} catch {
-				// skip
+		for (const scenarioName of scenarioNames) {
+			const scenarioDir = join(agentDir, scenarioName);
+
+			// New structure: agent/scenario/mode/result.json
+			let foundAnyMode = false;
+			for (const mode of MODE_NAMES) {
+				const resultPath = join(scenarioDir, mode, "result.json");
+				try {
+					const raw = await readFile(resultPath, "utf-8");
+					results.push(JSON.parse(raw) as RunResult);
+					foundAnyMode = true;
+				} catch {
+					// mode dir not present — skip
+				}
+			}
+
+			// Backwards compat: old structure — agent/scenario/result.json (no mode nesting)
+			if (!foundAnyMode) {
+				const resultPath = join(scenarioDir, "result.json");
+				try {
+					const raw = await readFile(resultPath, "utf-8");
+					results.push(JSON.parse(raw) as RunResult);
+				} catch {
+					// skip
+				}
 			}
 		}
 	}
@@ -170,6 +194,7 @@ function slimResult(r: RunResult): ReportResult {
 	return {
 		scenario: r.scenario,
 		agent: r.agent,
+		mode: r.mode ?? "tools",
 		passed: r.passed,
 		durationMs: r.durationMs,
 		timedOut: r.timedOut,
@@ -183,20 +208,24 @@ function slimResult(r: RunResult): ReportResult {
 }
 
 function buildAgentSummaries(results: RunResult[]): AgentSummary[] {
-	const agentMap = new Map<string, RunResult[]>();
+	// Group by agent + mode so tools vs baseline are shown separately.
+	const agentMap = new Map<string, { name: string; mode: RunMode | null; runs: RunResult[] }>();
 	for (const r of results) {
-		const list = agentMap.get(r.agent) ?? [];
-		list.push(r);
-		agentMap.set(r.agent, list);
+		const resultMode = r.mode ?? "tools";
+		const key = `${r.agent}::${resultMode}`;
+		const entry = agentMap.get(key) ?? { name: r.agent, mode: resultMode, runs: [] };
+		entry.runs.push(r);
+		agentMap.set(key, entry);
 	}
 
-	return [...agentMap.entries()].map(([name, runs]) => {
+	return [...agentMap.values()].map(({ name, mode, runs }) => {
 		const passed = runs.filter((r) => r.passed).length;
 		const tokenRuns = runs.filter((r) => r.metrics.tokens);
 		const avgTokens = tokenRuns.length > 0 ? Math.round(tokenRuns.reduce((a, r) => a + (r.metrics.tokens?.total ?? 0), 0) / tokenRuns.length) : null;
 		const totalTurns = runs.reduce((a, r) => a + (r.metrics.numTurns ?? 0), 0);
 		return {
 			name,
+			mode,
 			model: runs.find((r) => r.metrics.model)?.metrics.model ?? null,
 			version: runs.find((r) => r.metrics.agentVersion)?.metrics.agentVersion ?? null,
 			runs: runs.length,
@@ -315,12 +344,18 @@ function fmtTools(toolCalls: Record<string, number>): string {
 		.join(", ");
 }
 
+/** True if any results have explicit mode data (new runs); false means all-tools old data. */
+function hasModeData(results: ReportResult[]): boolean {
+	return results.some((r) => r.mode !== undefined);
+}
+
 function generateMarkdown(report: Report): string {
 	if (report.results.length === 0) {
 		return "# Agent Lens — Agent Test Report\n\nNo results found.\n";
 	}
 
 	const lines: string[] = [];
+	const withModes = hasModeData(report.results);
 
 	lines.push("# Agent Lens — Agent Test Report");
 	lines.push("");
@@ -329,55 +364,100 @@ function generateMarkdown(report: Report): string {
 	lines.push(`**Pass rate:** ${Math.round(report.summary.passRate * 100)}% (${report.summary.passed}/${report.summary.totalRuns})`);
 	lines.push("");
 
-	// Agent summary
+	// Agent summary — include Mode column when comparison data is present
 	lines.push("## Agents");
 	lines.push("");
-	lines.push("| Agent | Model | Version | Scenarios | Passed | Pass Rate | Avg Duration | Avg Tokens | Total Turns |");
-	lines.push("|-------|-------|---------|-----------|--------|-----------|--------------|------------|-------------|");
-	for (const a of report.agents) {
-		lines.push(`| ${a.name} | ${a.model ?? "?"} | ${a.version ?? "?"} | ${a.runs} | ${a.passed} | ${Math.round(a.passRate * 100)}% | ${fmt(a.avgDurationMs)} | ${a.avgTokens ? `${(a.avgTokens / 1000).toFixed(1)}k` : "n/a"} | ${a.totalTurns} |`);
+	if (withModes) {
+		lines.push("| Agent | Mode | Model | Version | Scenarios | Passed | Pass Rate | Avg Duration | Avg Tokens | Total Turns |");
+		lines.push("|-------|------|-------|---------|-----------|--------|-----------|--------------|------------|-------------|");
+		for (const a of report.agents) {
+			lines.push(`| ${a.name} | ${a.mode ?? "—"} | ${a.model ?? "?"} | ${a.version ?? "?"} | ${a.runs} | ${a.passed} | ${Math.round(a.passRate * 100)}% | ${fmt(a.avgDurationMs)} | ${a.avgTokens ? `${(a.avgTokens / 1000).toFixed(1)}k` : "n/a"} | ${a.totalTurns} |`);
+		}
+	} else {
+		lines.push("| Agent | Model | Version | Scenarios | Passed | Pass Rate | Avg Duration | Avg Tokens | Total Turns |");
+		lines.push("|-------|-------|---------|-----------|--------|-----------|--------------|------------|-------------|");
+		for (const a of report.agents) {
+			lines.push(`| ${a.name} | ${a.model ?? "?"} | ${a.version ?? "?"} | ${a.runs} | ${a.passed} | ${Math.round(a.passRate * 100)}% | ${fmt(a.avgDurationMs)} | ${a.avgTokens ? `${(a.avgTokens / 1000).toFixed(1)}k` : "n/a"} | ${a.totalTurns} |`);
+		}
 	}
 	lines.push("");
 
-	// Per-scenario
+	// Per-scenario results
 	lines.push("## Results");
 	lines.push("");
+
+	// Collect agent names (deduplicated, ignoring mode)
+	const agentNames = [...new Set(report.results.map((r) => r.agent))].sort();
+
 	for (const scenario of report.scenarios) {
 		const scenarioResults = report.results.filter((r) => r.scenario === scenario.name);
 		lines.push(`### ${scenario.name}`);
 		lines.push(`*${scenario.language} — ${scenario.description}*`);
 		lines.push("");
-		lines.push("| Agent | Result | Duration | Turns | Tokens | Debug Tools |");
-		lines.push("|-------|--------|----------|-------|--------|-------------|");
-		for (const r of scenarioResults) {
-			lines.push(`| ${r.agent} | ${r.passed ? "**PASS**" : "FAIL"} | ${fmt(r.durationMs)} | ${r.metrics.numTurns ?? "n/a"} | ${fmtTokens(r.metrics.tokens)} | ${fmtTools(r.metrics.toolCalls)} |`);
+
+		if (withModes && agentNames.length > 0) {
+			// Paired comparison: one row per agent, tools vs baseline side by side
+			lines.push("| Agent | With Tools | Without Tools | Lift |");
+			lines.push("|-------|-----------|---------------|------|");
+			for (const agentName of agentNames) {
+				const toolsResult = scenarioResults.find((r) => r.agent === agentName && (r.mode ?? "tools") === "tools");
+				const baselineResult = scenarioResults.find((r) => r.agent === agentName && r.mode === "baseline");
+
+				const fmtCell = (r: ReportResult | undefined): string => {
+					if (!r) return "—";
+					const status = r.passed ? "**PASS**" : "FAIL";
+					const dur = fmt(r.durationMs);
+					const turns = r.metrics.numTurns != null ? `${r.metrics.numTurns}t` : "";
+					const detail = [dur, turns].filter(Boolean).join(", ");
+					return `${status} (${detail})`;
+				};
+
+				const liftIcon = (): string => {
+					if (!toolsResult || !baselineResult) return "—";
+					if (toolsResult.passed && !baselineResult.passed) return "+1 (tools wins)";
+					if (!toolsResult.passed && baselineResult.passed) return "-1 (baseline wins)";
+					if (toolsResult.passed && baselineResult.passed) return "tie (both pass)";
+					return "tie (both fail)";
+				};
+
+				lines.push(`| ${agentName} | ${fmtCell(toolsResult)} | ${fmtCell(baselineResult)} | ${liftIcon()} |`);
+			}
+		} else {
+			// Single-mode view
+			lines.push("| Agent | Result | Duration | Turns | Tokens | Debug Tools |");
+			lines.push("|-------|--------|----------|-------|--------|-------------|");
+			for (const r of scenarioResults) {
+				lines.push(`| ${r.agent} | ${r.passed ? "**PASS**" : "FAIL"} | ${fmt(r.durationMs)} | ${r.metrics.numTurns ?? "n/a"} | ${fmtTokens(r.metrics.tokens)} | ${fmtTools(r.metrics.toolCalls)} |`);
+			}
 		}
 		lines.push("");
 
+		// Result summaries (tools mode only to avoid noise)
 		for (const r of scenarioResults) {
-			if (r.resultSummary) {
+			if (r.resultSummary && (r.mode ?? "tools") === "tools") {
 				lines.push(`> **${r.agent}:** ${r.resultSummary}`);
 				lines.push("");
 			}
 		}
 	}
 
-	// Tool usage
+	// Tool usage (tools-mode runs only)
+	const toolsResults = report.results.filter((r) => (r.mode ?? "tools") === "tools");
 	const toolTotals = new Map<string, number>();
-	for (const r of report.results) {
+	for (const r of toolsResults) {
 		for (const [tool, count] of Object.entries(r.metrics.toolCalls ?? {})) {
 			toolTotals.set(tool, (toolTotals.get(tool) ?? 0) + count);
 		}
 	}
 
 	if (toolTotals.size > 0) {
-		lines.push("## Tool Usage");
+		lines.push("## Tool Usage (tools mode)");
 		lines.push("");
 		lines.push("| Tool | Total Calls | Avg per Run |");
 		lines.push("|------|-------------|-------------|");
 		for (const [tool, total] of [...toolTotals.entries()].sort((a, b) => b[1] - a[1])) {
 			const short = tool.replace(/^mcp__agent-lens__/, "");
-			lines.push(`| ${short} | ${total} | ${(total / report.results.length).toFixed(1)} |`);
+			lines.push(`| ${short} | ${total} | ${(total / Math.max(toolsResults.length, 1)).toFixed(1)} |`);
 		}
 		lines.push("");
 	}

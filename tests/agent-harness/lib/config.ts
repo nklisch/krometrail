@@ -1,5 +1,10 @@
 import { z } from "zod";
 
+// --- Run Mode ---
+
+/** Whether the agent has access to agent-lens MCP debugging tools. */
+export type RunMode = "tools" | "baseline";
+
 // --- Scenario Config (scenario.json) ---
 
 export const ScenarioConfigSchema = z.object({
@@ -74,6 +79,8 @@ export interface AgentRunOptions {
 	env?: Record<string, string>;
 	/** Agent-lens skill file content to inject into the agent's context */
 	skillContent?: string;
+	/** Run mode — controls whether MCP debugging tools are passed to the agent */
+	mode: RunMode;
 }
 
 export interface AgentRunResult {
@@ -141,6 +148,8 @@ export interface ValidationResult {
 export interface RunResult {
 	/** Scenario name */
 	scenario: string;
+	/** Run mode — "tools" had agent-lens MCP available, "baseline" did not */
+	mode: RunMode;
 	/** Scenario metadata for self-contained reports */
 	scenarioMeta: {
 		description: string;
