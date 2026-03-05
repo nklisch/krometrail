@@ -1,0 +1,18 @@
+{
+	"scenario": {
+		"name": "python-dict-iteration-mutation",
+		"language": "python",
+		"description": "Promotional prices overwrite catalog prices before the average original price is calculated, so the average includes mutated values instead of the originals",
+		"timeout_seconds": 240,
+		"max_budget_usd": 1.0
+	},
+	"setup": {
+		"commands": []
+	},
+	"visible_test": {
+		"command": "python3 -m pytest test_promotions.py -x -q 2>&1"
+	},
+	"validation": {
+		"command": "python3 -m pytest test_validation.py -x -q 2>&1"
+	}
+}

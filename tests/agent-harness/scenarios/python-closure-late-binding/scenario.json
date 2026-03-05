@@ -1,0 +1,18 @@
+{
+	"scenario": {
+		"name": "python-closure-late-binding",
+		"language": "python",
+		"description": "Closures created in a loop capture variables by reference, so all validators use the last iteration's bounds instead of their own",
+		"timeout_seconds": 180,
+		"max_budget_usd": 0.75
+	},
+	"setup": {
+		"commands": []
+	},
+	"visible_test": {
+		"command": "python3 -m pytest test_validators.py -x -q 2>&1"
+	},
+	"validation": {
+		"command": "python3 -m pytest test_validation.py -x -q 2>&1"
+	}
+}

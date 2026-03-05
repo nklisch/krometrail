@@ -1,0 +1,18 @@
+{
+	"scenario": {
+		"name": "python-default-mutable",
+		"language": "python",
+		"description": "A mutable default argument (ledger=[]) persists across function calls, so each day's sales ledger contains items from all previous days",
+		"timeout_seconds": 180,
+		"max_budget_usd": 0.75
+	},
+	"setup": {
+		"commands": []
+	},
+	"visible_test": {
+		"command": "python3 -m pytest test_sales.py -x -q 2>&1"
+	},
+	"validation": {
+		"command": "python3 -m pytest test_validation.py -x -q 2>&1"
+	}
+}

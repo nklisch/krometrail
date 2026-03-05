@@ -1,0 +1,18 @@
+{
+	"scenario": {
+		"name": "python-shadow-variable",
+		"language": "python",
+		"description": "A variable used for validation in the first loop is not reset before the second loop that accumulates the total, so the result includes the last validation value",
+		"timeout_seconds": 120,
+		"max_budget_usd": 0.5
+	},
+	"setup": {
+		"commands": []
+	},
+	"visible_test": {
+		"command": "python3 -m pytest test_orders.py -x -q 2>&1"
+	},
+	"validation": {
+		"command": "python3 -m pytest test_validation.py -x -q 2>&1"
+	}
+}
