@@ -10,7 +10,7 @@ This also directly supports [showcase narrative #6](showcase-narratives.md) (too
 
 ## Scope
 
-**Primary focus: Claude Code.** All three modes (mcp, cli, baseline) are actively tested with Claude Code. Other agent drivers (Codex, etc.) are stubbed out in the harness but not actively tested — cross-agent comparison can be expanded later once the scenarios and reporting are proven with Claude Code.
+Starting with Claude Code as the first agent under test. All three modes (mcp, cli, baseline) are proven here first. Other agent drivers (Codex, etc.) are stubbed in the harness and will be enabled as we expand to cross-agent comparison.
 
 ## Design
 
@@ -82,7 +82,7 @@ Each driver interprets the mode:
 - `cli`: no MCP config; skill file via `--append-system-prompt`
 - `baseline`: neither
 
-**Codex** (`codex.ts`, stubbed — not actively tested):
+**Codex** (`codex.ts`, stubbed):
 - `mcp`/`cli`: skill content prepended to prompt (MCP support to be wired up when Codex testing begins)
 - `baseline`: no skill content
 

@@ -9,8 +9,8 @@
  *   - cli:      agent-lens CLI + skill file available — agent uses bash commands
  *   - mcp:      agent-lens MCP server configured — agent can use debug_* tools
  *
- * NOTE: Currently focused on Claude Code as the primary agent under test.
- * Other agent drivers (Codex, etc.) are stubbed but not actively tested.
+ * Starting with Claude Code as the first agent under test. Other drivers
+ * (Codex, etc.) are stubbed and will be enabled for cross-agent comparison.
  *
  * This test suite is NOT run in CI. Run it manually:
  *

@@ -177,7 +177,9 @@ export async function runScenario(agent: AgentDriver, scenario: Scenario, traceD
 				// Skill file missing — continue without it
 			}
 		}
-		// In cli mode, install wrapper script so `agent-lens` is callable via bash
+		// In cli mode only, install wrapper script so `agent-lens` is callable via bash.
+		// In mcp mode, the agent uses MCP tools — no CLI wrapper is installed.
+		// In baseline mode, no agent-lens access at all.
 		let env: Record<string, string> | undefined;
 		if (mode === "cli") {
 			const binDir = await installCliWrapper(workspace.workDir);

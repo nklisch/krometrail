@@ -1,8 +1,8 @@
 /**
  * Codex agent driver.
  *
- * NOTE: Codex support is stubbed out but not actively tested. The primary focus
- * is Claude Code. This driver can be expanded when we begin cross-agent testing.
+ * NOTE: Stubbed — not yet actively tested. Starting with Claude Code first.
+ * This driver will be expanded when we begin cross-agent testing.
  *
  * Codex uses the CLI (bash commands) rather than MCP tools — the agent-lens
  * skill file is included in the system prompt to tell Codex how to use the CLI.

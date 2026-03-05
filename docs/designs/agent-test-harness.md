@@ -18,7 +18,7 @@ We need a harness that:
 
 **Scenarios are data, not code.** A scenario is a directory of files plus a config. Adding a new test case means creating a folder, not writing test infrastructure.
 
-**Agent-agnostic by design.** The harness isolates agent-specific details (how to spawn, how to pass MCP config, how to set permissions) in thin driver modules. Currently focused on Claude Code as the primary agent under test. Other drivers (Codex, etc.) are stubbed but not actively tested — cross-agent comparison can be expanded later once scenarios and reporting are proven.
+**Agent-agnostic.** The harness runs against any agent binary that supports MCP or CLI. Agent-specific details (how to spawn, how to pass MCP config, how to set permissions) are isolated in thin driver modules. Starting with Claude Code as the first agent under test; other drivers (Codex, etc.) will follow once scenarios and reporting are proven.
 
 **Cheap to run, expensive to skip.** These tests cost real money (LLM API calls). They must be opt-in, never in default CI. But skipping them entirely means shipping blind — so the harness should make it trivial to run a quick smoke test (one scenario, one agent) during development.
 
@@ -214,9 +214,9 @@ export const claudeCode: AgentDriver = {
 };
 ```
 
-### Codex Driver (stubbed, not actively tested)
+### Codex Driver (stubbed)
 
-A Codex driver is included for future cross-agent testing but is not the current focus. See the source at `drivers/codex.ts`.
+A Codex driver is included for future cross-agent testing. See the source at `drivers/codex.ts`.
 
 New agents are added by creating a new driver module. The harness discovers drivers from a registry — no framework code changes needed.
 
@@ -446,8 +446,8 @@ tests/agent-harness/
     config.ts                       # Types for scenario.toml, agent options
     trace.ts                        # Trace capture and storage
   drivers/
-    claude-code.ts                  # Claude Code agent driver (primary)
-    codex.ts                        # Codex agent driver (stubbed, not actively tested)
+    claude-code.ts                  # Claude Code agent driver
+    codex.ts                        # Codex agent driver (stubbed)
   scenarios/
     python-discount-bug/
       scenario.toml
