@@ -1,0 +1,18 @@
+{
+	"scenario": {
+		"name": "python-generator-exhaustion",
+		"language": "python",
+		"description": "A generator expression is consumed on the first pass; the second pass silently yields nothing, producing empty totals",
+		"timeout_seconds": 240,
+		"max_budget_usd": 1.0
+	},
+	"setup": {
+		"commands": []
+	},
+	"visible_test": {
+		"command": "python3 -m pytest test_transactions.py -x -q 2>&1"
+	},
+	"validation": {
+		"command": "python3 -m pytest test_validation.py -x -q 2>&1"
+	}
+}

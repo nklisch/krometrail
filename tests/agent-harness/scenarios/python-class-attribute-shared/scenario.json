@@ -1,0 +1,18 @@
+{
+	"scenario": {
+		"name": "python-class-attribute-shared",
+		"language": "python",
+		"description": "A mutable class attribute (list) is shared across all instances; each new cart inherits every previous customer's items",
+		"timeout_seconds": 300,
+		"max_budget_usd": 1.5
+	},
+	"setup": {
+		"commands": []
+	},
+	"visible_test": {
+		"command": "python3 -m pytest test_cart.py -x -q 2>&1"
+	},
+	"validation": {
+		"command": "python3 -m pytest test_validation.py -x -q 2>&1"
+	}
+}

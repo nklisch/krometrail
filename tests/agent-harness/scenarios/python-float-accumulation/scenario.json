@@ -1,0 +1,18 @@
+{
+	"scenario": {
+		"name": "python-float-accumulation",
+		"language": "python",
+		"description": "Floating point accumulation error causes an equality check to trigger a 'correction' that actually makes the result wrong after rounding",
+		"timeout_seconds": 300,
+		"max_budget_usd": 1.5
+	},
+	"setup": {
+		"commands": []
+	},
+	"visible_test": {
+		"command": "python3 -m pytest test_bill.py -x -q 2>&1"
+	},
+	"validation": {
+		"command": "python3 -m pytest test_validation.py -x -q 2>&1"
+	}
+}
