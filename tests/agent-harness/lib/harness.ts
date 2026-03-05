@@ -1,10 +1,11 @@
-import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { AgentDriver, RunMode, RunResult, Scenario, ValidationResult, Workspace } from "./config.js";
 import { spawnCapture } from "./spawn.js";
 
 const MCP_SERVER_PATH = resolve(import.meta.dirname, "../../../src/mcp/index.ts");
+const CLI_ENTRY_PATH = resolve(import.meta.dirname, "../../../src/cli/index.ts");
 const SKILL_PATH = resolve(import.meta.dirname, "../../../skill/SKILL.md");
 
 // Read agent-lens version once at module load
@@ -50,6 +51,22 @@ async function captureGitDiff(workDir: string): Promise<{ diff: string; filesCha
 	return { diff, filesChanged };
 }
 
+// --- CLI wrapper for "cli" mode ---
+
+/**
+ * Install a wrapper script so the agent can call `agent-lens` via bash.
+ * Returns the bin directory to prepend to PATH.
+ */
+async function installCliWrapper(workDir: string): Promise<string> {
+	const binDir = join(workDir, ".bin");
+	await mkdir(binDir, { recursive: true });
+	const wrapper = `#!/usr/bin/env bash\nexec bun run "${CLI_ENTRY_PATH}" "$@"\n`;
+	const wrapperPath = join(binDir, "agent-lens");
+	await writeFile(wrapperPath, wrapper);
+	await chmod(wrapperPath, 0o755);
+	return binDir;
+}
+
 // --- MCP config generation ---
 
 function generateMcpConfig(workDir: string): object {
@@ -87,7 +104,7 @@ export async function prepareWorkspace(scenario: Scenario): Promise<Workspace> {
 	})();
 
 	await cp(scenario.srcDir, workDir, { recursive: true });
-	await writeFile(join(workDir, ".gitignore"), "__pycache__/\n*.pyc\nnode_modules/\n");
+	await writeFile(join(workDir, ".gitignore"), "__pycache__/\n*.pyc\nnode_modules/\n.bin/\n");
 	await initGitRepo(workDir);
 
 	for (const cmd of scenario.setupCommands) {
@@ -160,6 +177,13 @@ export async function runScenario(agent: AgentDriver, scenario: Scenario, traceD
 				// Skill file missing — continue without it
 			}
 		}
+		// In cli mode, install wrapper script so `agent-lens` is callable via bash
+		let env: Record<string, string> | undefined;
+		if (mode === "cli") {
+			const binDir = await installCliWrapper(workspace.workDir);
+			env = { PATH: `${binDir}:${process.env.PATH ?? ""}` };
+		}
+
 		console.error(`[harness] ${agent.name} × ${scenario.name} [${mode}] → ${workspace.workDir}`);
 
 		agentRunResult = await agent.run({
@@ -170,6 +194,7 @@ export async function runScenario(agent: AgentDriver, scenario: Scenario, traceD
 			maxBudgetUsd: scenario.maxBudgetUsd,
 			skillContent,
 			mode,
+			env,
 		});
 
 		const postCheck = await runCommand(scenario.visibleTestCommand, workspace.workDir);
