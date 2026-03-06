@@ -1,10 +1,14 @@
 import type { DebugAdapter } from "./base.js";
 import { CppAdapter } from "./cpp.js";
+import { CSharpAdapter } from "./csharp.js";
 import { GoAdapter } from "./go.js";
 import { JavaAdapter } from "./java.js";
+import { KotlinAdapter } from "./kotlin.js";
 import { NodeAdapter } from "./node.js";
 import { PythonAdapter } from "./python.js";
+import { RubyAdapter } from "./ruby.js";
 import { RustAdapter } from "./rust.js";
+import { SwiftAdapter } from "./swift.js";
 
 const adapters = new Map<string, DebugAdapter>();
 
@@ -35,6 +39,10 @@ export function registerAllAdapters(): void {
 	registerAdapter(new RustAdapter());
 	registerAdapter(new JavaAdapter());
 	registerAdapter(new CppAdapter());
+	registerAdapter(new RubyAdapter());
+	registerAdapter(new CSharpAdapter());
+	registerAdapter(new SwiftAdapter());
+	registerAdapter(new KotlinAdapter());
 }
 
 export function listAdapters(): DebugAdapter[] {

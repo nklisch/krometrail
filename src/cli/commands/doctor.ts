@@ -60,6 +60,14 @@ export async function runDoctorChecks(): Promise<DoctorResult> {
 				version = await getJavacVersion();
 			} else if (adapter.id === "cpp") {
 				version = await getGdbVersion();
+			} else if (adapter.id === "ruby") {
+				version = await getRdbgVersion();
+			} else if (adapter.id === "csharp") {
+				version = await getNetcoredbgVersion();
+			} else if (adapter.id === "swift") {
+				version = await getSwiftcVersion();
+			} else if (adapter.id === "kotlin") {
+				version = await getKotlincVersion();
 			}
 			adapterResults.push({
 				id: adapter.id,
@@ -234,6 +242,117 @@ async function getGdbVersion(): Promise<string | undefined> {
 		});
 		// Parse "GNU gdb ... 14.1" => "14.1"
 		const match = result.match(/GNU gdb[^\d]*(\d+\.\d+)/);
+		return match ? match[1] : result.split("\n")[0] || undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+async function getRdbgVersion(): Promise<string | undefined> {
+	try {
+		const { spawn } = await import("node:child_process");
+		const result = await new Promise<string>((resolve, reject) => {
+			const proc = spawn("rdbg", ["--version"], { stdio: "pipe" });
+			let output = "";
+			proc.stdout.on("data", (chunk: Buffer) => {
+				output += chunk.toString();
+			});
+			proc.stderr?.on("data", (chunk: Buffer) => {
+				output += chunk.toString();
+			});
+			proc.on("close", (code) => {
+				if (code === 0) resolve(output.trim());
+				else reject(new Error("Non-zero exit"));
+			});
+			proc.on("error", reject);
+		});
+		// Parse "rdbg 1.9.0" => "1.9.0"
+		const match = result.match(/rdbg\s+(\S+)/i);
+		return match ? match[1] : result.split("\n")[0] || undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+async function getNetcoredbgVersion(): Promise<string | undefined> {
+	try {
+		const { spawn } = await import("node:child_process");
+		const { existsSync } = await import("node:fs");
+		const { homedir, platform } = await import("node:os");
+		const { join } = await import("node:path");
+
+		// Find netcoredbg binary: PATH first, then cache
+		const ext = platform() === "win32" ? ".exe" : "";
+		const cached = join(homedir(), ".agent-lens", "adapters", "netcoredbg", `netcoredbg${ext}`);
+		const cmd = existsSync(cached) ? cached : "netcoredbg";
+
+		const result = await new Promise<string>((resolve, reject) => {
+			const proc = spawn(cmd, ["--version"], { stdio: "pipe" });
+			let output = "";
+			proc.stdout.on("data", (chunk: Buffer) => {
+				output += chunk.toString();
+			});
+			proc.stderr?.on("data", (chunk: Buffer) => {
+				output += chunk.toString();
+			});
+			proc.on("close", (code) => {
+				if (code === 0) resolve(output.trim());
+				else reject(new Error("Non-zero exit"));
+			});
+			proc.on("error", reject);
+		});
+		return result.split("\n")[0]?.trim() || undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+async function getSwiftcVersion(): Promise<string | undefined> {
+	try {
+		const { spawn } = await import("node:child_process");
+		const result = await new Promise<string>((resolve, reject) => {
+			const proc = spawn("swiftc", ["--version"], { stdio: "pipe" });
+			let output = "";
+			proc.stdout.on("data", (chunk: Buffer) => {
+				output += chunk.toString();
+			});
+			proc.stderr?.on("data", (chunk: Buffer) => {
+				output += chunk.toString();
+			});
+			proc.on("close", (code) => {
+				if (code === 0) resolve(output.trim());
+				else reject(new Error("Non-zero exit"));
+			});
+			proc.on("error", reject);
+		});
+		// Parse "Swift version 5.10 ..." => "5.10"
+		const match = result.match(/Swift version\s+(\S+)/i);
+		return match ? match[1] : result.split("\n")[0] || undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+async function getKotlincVersion(): Promise<string | undefined> {
+	try {
+		const { spawn } = await import("node:child_process");
+		const result = await new Promise<string>((resolve, reject) => {
+			const proc = spawn("kotlinc", ["-version"], { stdio: "pipe" });
+			let output = "";
+			proc.stdout.on("data", (chunk: Buffer) => {
+				output += chunk.toString();
+			});
+			proc.stderr.on("data", (chunk: Buffer) => {
+				output += chunk.toString();
+			});
+			proc.on("close", (code) => {
+				if (code === 0) resolve(output.trim());
+				else reject(new Error("Non-zero exit"));
+			});
+			proc.on("error", reject);
+		});
+		// Parse "info: kotlinc-jvm 2.0.0 (JRE ...)" => "2.0.0"
+		const match = result.match(/kotlinc-jvm\s+(\S+)/i);
 		return match ? match[1] : result.split("\n")[0] || undefined;
 	} catch {
 		return undefined;

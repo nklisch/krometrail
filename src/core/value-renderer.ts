@@ -45,11 +45,37 @@ export const JS_INTERNAL_NAMES: ReadonlySet<string> = new Set([
 export const GO_INTERNAL_NAMES: ReadonlySet<string> = new Set(["runtime.curg", "runtime.frameoff", "&runtime.g"]);
 
 /**
+ * Ruby internal variable names to filter.
+ * rdbg exposes these as locals but they are rarely useful for debugging.
+ */
+export const RUBY_INTERNAL_NAMES: ReadonlySet<string> = new Set(["__method__", "__dir__", "__LINE__", "__FILE__", "__ENCODING__"]);
+
+/**
+ * C# internal variable names to filter.
+ * netcoredbg exposes synthetic .NET runtime variables.
+ */
+export const CSHARP_INTERNAL_NAMES: ReadonlySet<string> = new Set(["$exception", "$returnvalue", "$stowedexception"]);
+
+/**
+ * Swift internal variable names to filter.
+ * lldb-dap exposes LLDB injected locals.
+ */
+export const SWIFT_INTERNAL_NAMES: ReadonlySet<string> = new Set(["$__lldb_injected_self"]);
+
+/**
  * Generic internal variable name patterns to filter.
  * Matches names starting and ending with double underscores.
  */
 export function isInternalVariable(name: string): boolean {
-	return PYTHON_INTERNAL_NAMES.has(name) || JS_INTERNAL_NAMES.has(name) || GO_INTERNAL_NAMES.has(name) || /^__\w+__$/.test(name);
+	return (
+		PYTHON_INTERNAL_NAMES.has(name) ||
+		JS_INTERNAL_NAMES.has(name) ||
+		GO_INTERNAL_NAMES.has(name) ||
+		RUBY_INTERNAL_NAMES.has(name) ||
+		CSHARP_INTERNAL_NAMES.has(name) ||
+		SWIFT_INTERNAL_NAMES.has(name) ||
+		/^__\w+__$/.test(name)
+	);
 }
 
 /**
