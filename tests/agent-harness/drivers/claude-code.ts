@@ -165,6 +165,8 @@ const claudeCode: AgentDriver = {
 		}
 
 		const sessionLog: string[] = [];
+		// Track pending tool calls so we can log results when they arrive
+		const pendingCalls = new Map<string, string>();
 
 		const result = await spawnCapture("claude", args, {
 			cwd: options.workDir,
@@ -174,6 +176,45 @@ const claudeCode: AgentDriver = {
 			onStdoutLine(line) {
 				try {
 					const data = JSON.parse(line) as Record<string, unknown>;
+
+					// Track tool calls as they're issued
+					if (data.type === "assistant" && data.message) {
+						const msg = data.message as { content?: Array<{ type: string; name?: string; id?: string }> };
+						for (const block of msg.content ?? []) {
+							if (block.type === "tool_use" && block.id && block.name) {
+								pendingCalls.set(block.id, block.name);
+							}
+						}
+					}
+
+					// Log tool results for debug tools
+					if (data.type === "user" && data.message) {
+						const msg = data.message as { content?: Array<{ type: string; tool_use_id?: string; content?: unknown; is_error?: boolean }> };
+						for (const block of msg.content ?? []) {
+							if (block.type === "tool_result" && block.tool_use_id) {
+								const toolName = pendingCalls.get(block.tool_use_id);
+								if (toolName?.startsWith("mcp__agent-lens__")) {
+									pendingCalls.delete(block.tool_use_id);
+									let output = "";
+									if (typeof block.content === "string") {
+										output = block.content;
+									} else if (Array.isArray(block.content)) {
+										output = (block.content as Array<{ type: string; text?: string }>)
+											.filter((c) => c.type === "text" && c.text)
+											.map((c) => c.text!)
+											.join("\n");
+									}
+									const preview = output.slice(0, 200).replace(/\n/g, " ");
+									const suffix = output.length > 200 ? "…" : "";
+									const errFlag = block.is_error ? " [error]" : "";
+									const formatted = `[tool-result] ${toolName}${errFlag} → ${preview}${suffix}`;
+									sessionLog.push(formatted);
+									console.error(`  claude-code │ ${formatted}`);
+								}
+							}
+						}
+					}
+
 					const formatted = formatEvent(data);
 					if (formatted) {
 						sessionLog.push(formatted);
