@@ -85,6 +85,41 @@ Each language has specific setup requirements and features. See the reference fo
 - [C/C++](references/cpp.md) — GDB v14+ / LLDB, auto-compile source files
 - [Java](references/java.md) — java-debug-adapter, JDWP attach
 
+## Debugging servers and services
+
+For HTTP servers (Flask, Express, Go net/http, etc.), `debug_launch` starts the server and returns immediately — it does NOT block waiting for a breakpoint. Use this workflow:
+
+1. **Launch the server under the debugger with breakpoints set**
+2. **Send HTTP requests via Bash** (curl, wget, etc.) to trigger the code path
+3. **Call `debug_continue`** — it will catch the breakpoint hit and return the viewport
+
+### Example: debug a Flask pricing endpoint
+
+```
+debug_launch({
+  command: "python app.py",
+  breakpoints: [{ file: "pricing.py", breakpoints: [{ line: 45 }] }]
+})
+# → Session started, status: running (server is listening)
+
+# Send a request to trigger the breakpoint — use Bash tool:
+# curl -X POST http://localhost:5001/price -H 'Content-Type: application/json' -d '{"item": "ABC", "qty": 5}'
+
+debug_continue({ session_id: "..." })
+# → Viewport shows source, locals, and stack at line 45
+
+debug_variables({ session_id: "..." })
+# → Inspect the request data and computed values
+
+debug_stop({ session_id: "..." })
+```
+
+### Tips for multi-service architectures
+
+- Debug **one service at a time** — launch it under the debugger while running the others normally
+- Write a small script that calls the function directly, or that sends HTTP requests to the running service to trigger the code path you want to debug
+- Use `debug_evaluate` to test corrected expressions before editing code
+
 ## Debugging strategy
 
 1. **Start with a hypothesis.** Read the failing test and code. Form a theory about what's wrong.

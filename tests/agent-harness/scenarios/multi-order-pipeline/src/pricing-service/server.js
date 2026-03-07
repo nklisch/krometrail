@@ -16,9 +16,6 @@ import { clearCache, cacheStats } from "./cache.js";
 const app = express();
 
 // Parse JSON and URL-encoded bodies — both middleware are active.
-// BUG 6: When Go's priceSingle sends Content-Type: application/x-www-form-urlencoded
-// with a JSON body, express.urlencoded() parses the JSON bytes as form data,
-// producing garbled keys. req.body.productId will be undefined.
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -42,14 +39,10 @@ app.post("/price", async (req, res) => {
 
 app.post("/price/single", async (req, res) => {
 	try {
-		// When Content-Type is wrong (application/x-www-form-urlencoded with JSON body),
-		// express.urlencoded() will parse the raw JSON bytes as URL-encoded form data.
-		// The result: req.body has mangled keys, productId is undefined.
 		const productId = req.body?.productId;
 		const quantity = parseInt(req.body?.quantity) || 1;
 
 		if (!productId) {
-			// Fallback for garbled requests — return zero pricing
 			return res.json({
 				productId: null,
 				quantity,

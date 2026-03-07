@@ -27,6 +27,18 @@ describe("parseCommand", () => {
 		expect(result.args).toEqual(["pytest", "tests/", "-v"]);
 	});
 
+	it("parses 'python -c \"code\"'", () => {
+		const result = parseCommand('python -c "import sys; print(sys.path)"');
+		expect(result.script).toBe("-c");
+		expect(result.args).toEqual(['"import', "sys;", "print(sys.path)\""]);
+	});
+
+	it("parses 'python3 -c code'", () => {
+		const result = parseCommand("python3 -c print('hello')");
+		expect(result.script).toBe("-c");
+		expect(result.args).toEqual(["print('hello')"]);
+	});
+
 	it("parses bare 'app.py'", () => {
 		const result = parseCommand("app.py");
 		expect(result.script).toBe("app.py");

@@ -31,9 +31,6 @@ async function fetchProduct(productId, quantity = 1) {
 /**
  * Fetch all products in a category, following pagination links.
  * Used for building promotion eligibility lists.
- *
- * BUG 4: The catalog's next_page URL drops the category filter.
- * Following it returns all products instead of just the requested category.
  */
 export async function fetchAllProducts(category) {
 	let url = `${CATALOG_URL}/products?category=${category}`;
@@ -58,8 +55,6 @@ export async function fetchAllProducts(category) {
 async function getBasePrice(productId, quantity) {
 	const cached = getCachedPrice(productId);
 	if (cached !== null) {
-		// BUG 5: cache hit — but cached value may be from a different quantity tier.
-		// Returns single-unit price for bulk orders.
 		return cached;
 	}
 

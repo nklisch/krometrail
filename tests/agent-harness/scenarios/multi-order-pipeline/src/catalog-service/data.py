@@ -18,80 +18,68 @@ CATEGORIES = [
 ]
 
 # NOTE: Electronics products were imported from a CSV export.
-# Weight values from that import came through as strings and were never normalized.
-# All other categories were entered manually with correct numeric types.
+# Home and office category products were entered manually.
 PRODUCTS_RAW = [
-    # --- Electronics (CSV import — weight_kg stored as string) ---
+    # --- Electronics (CSV import) ---
     {
         "id": "ELEC-001", "name": "Wireless Mouse", "category": "electronics",
-        "weight_kg": "0.15",   # BUG 1: string from CSV import, should be 0.15
+        "weight_kg": "0.15",
         "base_price": 29.99, "stock": 150, "supplier_id": "SUP-001",
         "description": "Ergonomic wireless mouse, 2.4GHz",
     },
     {
         "id": "ELEC-002", "name": "USB Hub", "category": "electronics",
-        "weight_kg": "0.32",   # BUG 1: string from CSV import
-        "base_price": 39.99, "stock": 80, "supplier_id": "SUP-001",
+        "weight_kg": "0.32",        "base_price": 39.99, "stock": 80, "supplier_id": "SUP-001",
         "description": "7-port USB 3.0 hub with power adapter",
     },
     {
         "id": "ELEC-003", "name": "Webcam HD", "category": "electronics",
-        "weight_kg": "0.45",   # BUG 1: string from CSV import
-        "base_price": 59.99, "stock": 60, "supplier_id": "SUP-001",
+        "weight_kg": "0.45",        "base_price": 59.99, "stock": 60, "supplier_id": "SUP-001",
         "description": "1080p webcam with built-in microphone",
     },
     {
         "id": "ELEC-004", "name": "Mechanical Keyboard", "category": "electronics",
-        "weight_kg": "0.85",   # BUG 1: string from CSV import
-        "base_price": 79.99, "stock": 45, "supplier_id": "SUP-001",
+        "weight_kg": "0.85",        "base_price": 79.99, "stock": 45, "supplier_id": "SUP-001",
         "description": "Compact TKL mechanical keyboard, Cherry MX Blue",
     },
     {
         "id": "ELEC-005", "name": "Monitor Stand", "category": "electronics",
-        "weight_kg": "1.20",   # BUG 1: string from CSV import
-        "base_price": 49.99, "stock": 30, "supplier_id": "SUP-001",
+        "weight_kg": "1.20",        "base_price": 49.99, "stock": 30, "supplier_id": "SUP-001",
         "description": "Adjustable monitor riser with storage drawer",
     },
     {
         "id": "ELEC-006", "name": "Cable Organizer", "category": "electronics",
-        "weight_kg": "0.10",   # BUG 1: string from CSV import
-        "base_price": 14.99, "stock": 200, "supplier_id": "SUP-001",
+        "weight_kg": "0.10",        "base_price": 14.99, "stock": 200, "supplier_id": "SUP-001",
         "description": "Flexible cable management sleeve, 1m",
     },
     {
         "id": "ELEC-007", "name": "Laptop Sleeve", "category": "electronics",
-        "weight_kg": "0.30",   # BUG 1: string from CSV import
-        "base_price": 24.99, "stock": 100, "supplier_id": "SUP-001",
+        "weight_kg": "0.30",        "base_price": 24.99, "stock": 100, "supplier_id": "SUP-001",
         "description": "Neoprene laptop sleeve, fits 13-15 inch",
     },
     {
         "id": "ELEC-008", "name": "Mouse Pad XL", "category": "electronics",
-        "weight_kg": "0.20",   # BUG 1: string from CSV import
-        "base_price": 12.99, "stock": 250, "supplier_id": "SUP-001",
+        "weight_kg": "0.20",        "base_price": 12.99, "stock": 250, "supplier_id": "SUP-001",
         "description": "Extended desk mat, 90x40cm, anti-slip base",
     },
     {
         "id": "ELEC-009", "name": "USB-C Adapter", "category": "electronics",
-        "weight_kg": "0.05",   # BUG 1: string from CSV import
-        "base_price": 19.99, "stock": 300, "supplier_id": "SUP-001",
+        "weight_kg": "0.05",        "base_price": 19.99, "stock": 300, "supplier_id": "SUP-001",
         "description": "USB-C to USB-A multiport adapter",
     },
     {
         "id": "ELEC-010", "name": "Power Strip", "category": "electronics",
-        "weight_kg": "0.80",   # BUG 1: string from CSV import
-        "base_price": 34.99, "stock": 70, "supplier_id": "SUP-001",
+        "weight_kg": "0.80",        "base_price": 34.99, "stock": 70, "supplier_id": "SUP-001",
         "description": "6-outlet surge-protected power strip, 2m cord",
     },
     {
         "id": "ELEC-011", "name": "Ethernet Cable 5m", "category": "electronics",
-        "weight_kg": "0.25",   # BUG 1: string from CSV import
-        "base_price": 9.99, "stock": 400, "supplier_id": "SUP-001",
+        "weight_kg": "0.25",        "base_price": 9.99, "stock": 400, "supplier_id": "SUP-001",
         "description": "Cat6 shielded ethernet cable, 5 metres",
     },
     {
         "id": "ELEC-012", "name": "HDMI Cable 2m", "category": "electronics",
-        "weight_kg": "0.18",   # BUG 1: string from CSV import
-        "base_price": 11.99, "stock": 350, "supplier_id": "SUP-001",
+        "weight_kg": "0.18",        "base_price": 11.99, "stock": 350, "supplier_id": "SUP-001",
         "description": "HDMI 2.1 cable supporting 8K@60Hz",
     },
     # --- Home (manually entered — weight_kg is numeric) ---
@@ -164,7 +152,7 @@ def _build_products() -> dict:
             id=raw["id"],
             name=raw["name"],
             category=raw["category"],
-            weight_kg=raw["weight_kg"],  # preserved as-is (string for electronics)
+            weight_kg=raw["weight_kg"],
             base_price=raw["base_price"],
             stock=raw["stock"],
             supplier_id=raw["supplier_id"],

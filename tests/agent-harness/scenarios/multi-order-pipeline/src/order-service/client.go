@@ -54,9 +54,7 @@ func priceItems(items []CartItem) ([]PricedItem, error) {
 		if r.err != nil {
 			return nil, fmt.Errorf("pricing item %d: %w", r.idx, r.err)
 		}
-		results[i] = r.item // BUG 3: uses loop counter i, not r.idx
-		// When goroutines complete out of order, r.idx != i and prices are
-		// placed in wrong slots. Should be: results[r.idx] = r.item
+		results[i] = r.item
 	}
 
 	return results, nil
@@ -126,10 +124,6 @@ func priceSingle(item CartItem) (*PricedItem, error) {
 	if err != nil {
 		return nil, err
 	}
-	// BUG 6: wrong Content-Type — copied from an earlier form-encoded prototype.
-	// The pricing service uses express.json() which only parses application/json.
-	// With this header, express.urlencoded() parses the JSON body as form data,
-	// yielding undefined for all fields.
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	resp, err := httpClient.Do(req)
@@ -169,7 +163,7 @@ func fetchProduct(productID string) (*Product, error) {
 	}
 
 	if product.WeightKg == 0 && product.Category == "electronics" {
-		log.Printf("WARN: product %s (%s) has weight_kg=0 — possible decode error from string weight", productID, product.Name)
+		log.Printf("WARN: product %s (%s) has weight_kg=0, skipping weight-based shipping", productID, product.Name)
 	}
 
 	return &product, nil

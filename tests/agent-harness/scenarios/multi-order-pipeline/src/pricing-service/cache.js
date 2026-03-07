@@ -15,9 +15,6 @@ const priceCache = new Map();
  * @returns {number|null} cached price, or null if missing/expired
  */
 export function getCachedPrice(productId) {
-	// BUG 5: cache key is just productId — ignores quantity.
-	// A product fetched at qty=1 and cached will be returned for qty=30,
-	// even though qty=30 qualifies for a cheaper tier.
 	const entry = priceCache.get(productId);
 	if (entry && Date.now() - entry.timestamp < TTL_MS) {
 		return entry.price;

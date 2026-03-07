@@ -59,8 +59,8 @@ export class PythonAdapter implements DebugAdapter {
 		const { script, args } = parseCommand(config.command);
 		const cwd = config.cwd ?? process.cwd();
 
-		// Validate script path exists before spawning (skip for -m module mode)
-		if (script !== "-m") {
+		// Validate script path exists before spawning (skip for -m module and -c code modes)
+		if (script !== "-m" && script !== "-c") {
 			const absScript = isAbsolute(script) ? script : resolvePath(cwd, script);
 			await access(absScript).catch(() => {
 				throw new LaunchError(`Script not found: ${absScript}`, "");
@@ -119,6 +119,8 @@ export class PythonAdapter implements DebugAdapter {
 		if (script === "-m") {
 			launchArgs.module = args[0];
 			launchArgs.args = args.slice(1);
+		} else if (script === "-c") {
+			launchArgs.code = args.join(" ");
 		} else {
 			launchArgs.program = absScript;
 			launchArgs.args = args;
@@ -185,6 +187,12 @@ export function parseCommand(command: string): { script: string; args: string[] 
 	if (parts[i] === "-m") {
 		// e.g. "python -m pytest tests/" => script: "-m", args: ["pytest", "tests/"]
 		return { script: "-m", args: parts.slice(i + 1) };
+	}
+
+	// Handle -c inline code case
+	if (parts[i] === "-c") {
+		// e.g. "python -c 'import sys; print(sys.path)'" => script: "-c", args: ["import sys; ..."]
+		return { script: "-c", args: parts.slice(i + 1) };
 	}
 
 	// Bare script or remaining path

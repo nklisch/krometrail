@@ -220,6 +220,11 @@ export function registerTools(server: McpServer, sessionManager: SessionManager)
 					? `Status: ${result.status}\nActions: ${result.actionCount ?? 0}, Elapsed: ${result.elapsedMs ?? 0}ms, Viewport tokens: ${result.tokenStats?.viewportTokensConsumed ?? 0}\n\n${result.viewport}`
 					: `Status: ${result.status}\nActions: ${result.actionCount ?? 0}, Elapsed: ${result.elapsedMs ?? 0}ms, Viewport tokens: ${result.tokenStats?.viewportTokensConsumed ?? 0}`;
 
+				// Hint for running sessions (e.g. servers waiting for traffic)
+				if (result.status === "running") {
+					text += "\n\nThe program is running but hasn't hit a breakpoint yet. If debugging a server, send it a request (e.g. curl) via Bash, then call debug_continue to catch the breakpoint hit.";
+				}
+
 				// Append capabilities summary
 				try {
 					const caps = sessionManager.getCapabilities(session_id);

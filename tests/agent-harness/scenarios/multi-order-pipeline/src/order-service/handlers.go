@@ -50,9 +50,6 @@ func (h *Handler) handleOrder(w http.ResponseWriter, r *http.Request) {
 		priced := pricedItems[i]
 
 		// discount is a dollar amount off the base price.
-		// BUG 2: discount from the pricing service is actually a fractional rate
-		// (e.g., 0.15 means 15% off), not a dollar amount.
-		// applyDiscount(79.99, 0.15) returns 79.84 instead of 67.99.
 		unitPrice := applyDiscount(priced.BasePrice, priced.Discount)
 		lineTotal := math.Round(unitPrice*float64(cartItem.Quantity)*100) / 100
 
@@ -142,11 +139,6 @@ func (h *Handler) repriceItem(w http.ResponseWriter, r *http.Request) {
 // applyDiscount subtracts a discount from the base price.
 // discount is a dollar amount off the base price.
 func applyDiscount(basePrice, discount float64) float64 {
-	// BUG 2: discount is actually a fractional rate (0.15 = 15% off),
-	// but this function treats it as a dollar amount.
-	// For an item at $79.99 with a 15% discount (discount=0.15):
-	//   correct:  79.99 * (1 - 0.15) = 67.99
-	//   this bug: 79.99 - 0.15       = 79.84
 	result := basePrice - discount
 	if result < 0 {
 		result = 0

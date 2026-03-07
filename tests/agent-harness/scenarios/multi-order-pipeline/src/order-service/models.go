@@ -16,14 +16,12 @@ type PricedItem struct {
 	ProductID  string  `json:"productId"`
 	Quantity   int     `json:"quantity"`
 	BasePrice  float64 `json:"basePrice"`
-	Discount   float64 `json:"discount"`   // fractional rate: 0.15 = 15% off
+	Discount   float64 `json:"discount"`
 	FinalPrice float64 `json:"finalPrice"` // pre-computed by pricing service
 	Tax        float64 `json:"tax"`
 }
 
 // Product is a product record from the catalog service.
-// WeightKg is declared as float64 — if the catalog sends a JSON string instead
-// of a number, json.Unmarshal will silently leave the field as 0.0 (the zero value).
 type Product struct {
 	ID       string  `json:"id"`
 	Name     string  `json:"name"`

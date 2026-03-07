@@ -37,9 +37,6 @@ def list_products():
     page_products = filtered[start:end]
     has_more = end < total
 
-    # BUG 4: next_page URL never includes the category filter.
-    # When the pricing service follows pagination for a category query,
-    # subsequent pages return all products instead of the filtered set.
     next_page = f"/products?page={page + 1}" if has_more else None
 
     return jsonify({
