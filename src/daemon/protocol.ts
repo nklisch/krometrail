@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
+import type { BrowserSessionInfo, Marker } from "../browser/types.js";
 import { BreakpointSchema, FileBreakpointsSchema } from "../core/types.js";
 
 // --- JSON-RPC 2.0 Base Types ---
@@ -83,6 +84,12 @@ export type RpcMethods = {
 		params: undefined;
 		result: Array<{ id: string; status: string; language: string; actionCount: number }>;
 	};
+
+	// Browser recording
+	"browser.start": { params: BrowserStartParams; result: BrowserSessionInfo };
+	"browser.mark": { params: BrowserMarkParams; result: Marker };
+	"browser.status": { params: Record<string, never>; result: BrowserSessionInfo | null };
+	"browser.stop": { params: BrowserStopParams; result: undefined };
 };
 
 // --- Param Schemas (Zod) ---
@@ -225,6 +232,30 @@ export const OutputParamsSchema = z.object({
 	sinceAction: z.number().optional(),
 });
 export type OutputParams = z.infer<typeof OutputParamsSchema>;
+
+// --- Browser Param Schemas ---
+
+export const BrowserStartParamsSchema = z.object({
+	port: z.number().default(9222),
+	profile: z.string().optional(),
+	attach: z.boolean().default(false),
+	allTabs: z.boolean().default(false),
+	tabFilter: z.string().optional(),
+});
+export type BrowserStartParams = z.infer<typeof BrowserStartParamsSchema>;
+
+export const BrowserMarkParamsSchema = z.object({
+	label: z.string().optional(),
+});
+export type BrowserMarkParams = z.infer<typeof BrowserMarkParamsSchema>;
+
+export const BrowserStopParamsSchema = z.object({
+	closeBrowser: z.boolean().default(false),
+});
+export type BrowserStopParams = z.infer<typeof BrowserStopParamsSchema>;
+
+// Re-export browser types for protocol consumers
+export type { BrowserSessionInfo, Marker } from "../browser/types.js";
 
 // --- Result Payloads ---
 

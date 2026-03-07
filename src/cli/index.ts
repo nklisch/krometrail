@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { defineCommand, runMain } from "citty";
+import { browserCommand } from "./commands/browser.js";
 import {
 	attachCommand,
 	breakCommand,
@@ -50,6 +51,7 @@ const main = defineCommand({
 		threads: threadsCommand,
 		doctor: doctorCommand,
 		skill: skillCommand,
+		browser: browserCommand,
 		// Hidden: internal daemon entry point
 		_daemon: () =>
 			defineCommand({

@@ -1,11 +1,15 @@
 import { unlinkSync, writeFileSync } from "node:fs";
 import type { Server, Socket } from "node:net";
 import { createServer } from "node:net";
+import { BrowserRecorder } from "../browser/recorder/index.js";
 import { AdapterNotFoundError, AdapterPrerequisiteError, AgentLensError, LaunchError, SessionLimitError, SessionNotFoundError, SessionStateError } from "../core/errors.js";
 import type { SessionManager } from "../core/session-manager.js";
 import type { JsonRpcRequest, JsonRpcResponse } from "./protocol.js";
 import {
 	AttachParamsSchema,
+	BrowserMarkParamsSchema,
+	BrowserStartParamsSchema,
+	BrowserStopParamsSchema,
 	ContinueParamsSchema,
 	EvaluateParamsSchema,
 	LaunchParamsSchema,
@@ -58,6 +62,7 @@ export class DaemonServer {
 	private idleTimer: ReturnType<typeof setTimeout> | null = null;
 	private startedAt: number = Date.now();
 	private activeConnections: Set<Socket> = new Set();
+	private browserRecorder: BrowserRecorder | null = null;
 
 	constructor(sessionManager: SessionManager, options: DaemonOptions) {
 		this.sessionManager = sessionManager;
@@ -138,6 +143,16 @@ export class DaemonServer {
 		if (this.server) {
 			await new Promise<void>((resolve) => this.server?.close(() => resolve()));
 			this.server = null;
+		}
+
+		// Stop browser recording if active
+		if (this.browserRecorder) {
+			try {
+				await this.browserRecorder.stop();
+			} catch {
+				// Ignore errors during cleanup
+			}
+			this.browserRecorder = null;
 		}
 
 		// Dispose all sessions
@@ -355,6 +370,42 @@ export class DaemonServer {
 				return null;
 			}
 
+			// --- Browser Recording ---
+			case "browser.start": {
+				const p = BrowserStartParamsSchema.parse(params);
+				if (this.browserRecorder?.isRecording()) {
+					throw new Error("Browser recording is already active. Call browser.stop first.");
+				}
+				this.browserRecorder = new BrowserRecorder({
+					port: p.port,
+					attach: p.attach,
+					profile: p.profile,
+					allTabs: p.allTabs,
+					tabFilter: p.tabFilter,
+				});
+				return this.browserRecorder.start();
+			}
+
+			case "browser.mark": {
+				const p = BrowserMarkParamsSchema.parse(params);
+				if (!this.browserRecorder?.isRecording()) {
+					throw new Error("No active browser recording. Call browser.start first.");
+				}
+				return this.browserRecorder.placeMarker(p.label);
+			}
+
+			case "browser.status": {
+				return this.browserRecorder?.getSessionInfo() ?? null;
+			}
+
+			case "browser.stop": {
+				const p = BrowserStopParamsSchema.parse(params);
+				if (!this.browserRecorder) return null;
+				await this.browserRecorder.stop(p.closeBrowser);
+				this.browserRecorder = null;
+				return null;
+			}
+
 			default: {
 				throw Object.assign(new Error(`Method not found: ${method}`), { rpcCode: RPC_METHOD_NOT_FOUND });
 			}
@@ -372,7 +423,8 @@ export class DaemonServer {
 
 		this.idleTimer = setTimeout(() => {
 			const sessions = this.sessionManager.listSessions();
-			if (sessions.length === 0) {
+			const browserActive = this.browserRecorder?.isRecording() ?? false;
+			if (sessions.length === 0 && !browserActive) {
 				this.shutdown()
 					.then(() => process.exit(0))
 					.catch(() => process.exit(1));
