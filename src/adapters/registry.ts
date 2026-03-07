@@ -17,6 +17,9 @@ export function registerAdapter(adapter: DebugAdapter): void {
 	for (const ext of adapter.fileExtensions) {
 		adapters.set(ext, adapter);
 	}
+	for (const alias of adapter.aliases ?? []) {
+		adapters.set(alias, adapter);
+	}
 }
 
 export function getAdapter(idOrExtension: string): DebugAdapter | undefined {

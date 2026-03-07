@@ -1,8 +1,10 @@
 import { resolve as resolvePath } from "node:path";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { listAdapters } from "../../adapters/registry.js";
 import { configToOptions, parseLaunchJson } from "../../core/launch-json.js";
 import type { SessionManager } from "../../core/session-manager.js";
+import { listDetectors } from "../../frameworks/index.js";
 
 /**
  * Breakpoint schema with agent-facing descriptions for MCP tool inputs.
@@ -19,6 +21,18 @@ const FileBreakpointsMcpSchema = z.object({
 	file: z.string().describe("Source file path (relative or absolute)"),
 	breakpoints: z.array(BreakpointMcpSchema),
 });
+
+const ViewportConfigSchema = z
+	.object({
+		source_context_lines: z.number().optional().describe("Lines of source shown above/below the current line. Default: 5"),
+		stack_depth: z.number().optional().describe("Max call stack frames shown. Default: 10"),
+		locals_max_depth: z.number().optional().describe("Object expansion depth for local variables. Default: 3"),
+		locals_max_items: z.number().optional().describe("Max items shown per collection/object. Default: 20"),
+		string_truncate_length: z.number().optional().describe("Max string length before truncation. Default: 200"),
+		collection_preview_items: z.number().optional().describe("Items shown in inline collection previews. Default: 5"),
+	})
+	.optional()
+	.describe("Override default viewport rendering parameters");
 
 /**
  * Map the MCP tool's snake_case viewport_config input to the camelCase
@@ -48,6 +62,24 @@ function mapViewportConfig(
 }
 
 /**
+ * Build a human-readable summary of supported languages and frameworks
+ * from the live adapter/detector registries (single source of truth).
+ */
+function buildLanguageDescription(): string {
+	const parts = listAdapters().map((a) => {
+		const names = [a.id, ...(a.aliases ?? [])].join("/");
+		const exts = a.fileExtensions.join(" ");
+		return `${names} (${exts})`;
+	});
+	return `Supported: ${parts.join(", ")}. Omit to auto-detect from the file extension in the command.`;
+}
+
+function buildFrameworkDescription(): string {
+	const ids = listDetectors().map((d) => d.id);
+	return `Override framework auto-detection. Known frameworks: ${ids.join(", ")}. Use 'none' to disable auto-detection.`;
+}
+
+/**
  * Register all debug tools with the MCP server.
  * Each tool:
  * 1. Validates input with Zod schema
@@ -56,18 +88,17 @@ function mapViewportConfig(
  * 4. Handles errors with descriptive messages
  */
 export function registerTools(server: McpServer, sessionManager: SessionManager): void {
+	const frameworkIds = listDetectors().map((d) => d.id);
+
 	// Tool 1: debug_launch
 	server.tool(
 		"debug_launch",
-		"Launch a debug target process. Sets initial breakpoints and returns a session handle. The viewport shows source, locals, and call stack at each stop. " +
-			"Automatically detects test frameworks (pytest, jest, go test) and web frameworks (Django, Flask) to configure the debugger appropriately.",
+		`Launch a debug target process. Sets initial breakpoints and returns a session handle. The viewport shows source, locals, and call stack at each stop. ` +
+			`Automatically detects test/web frameworks (${frameworkIds.join(", ")}) to configure the debugger appropriately.`,
 		{
-			command: z.string().describe("Command to execute, e.g. 'python app.py' or 'pytest tests/' or 'flask run'. " + "Test and web frameworks are auto-detected and configured for debugging."),
-			language: z.enum(["python", "javascript", "typescript", "go", "rust", "java", "cpp"]).optional().describe("Override automatic language detection based on file extension"),
-			framework: z
-				.string()
-				.optional()
-				.describe("Override framework auto-detection. Use a framework name (e.g., 'pytest', 'jest', 'django', 'flask', 'mocha', 'gotest') to force detection, or 'none' to disable it."),
+			command: z.string().describe(`Command to execute, e.g. 'python app.py' or '${frameworkIds[0]} tests/'. Test and web frameworks are auto-detected and configured for debugging.`),
+			language: z.string().optional().describe(buildLanguageDescription()),
+			framework: z.string().optional().describe(buildFrameworkDescription()),
 			breakpoints: z
 				.array(FileBreakpointsMcpSchema)
 				.optional()
@@ -78,17 +109,7 @@ export function registerTools(server: McpServer, sessionManager: SessionManager)
 				),
 			cwd: z.string().optional().describe("Working directory for the debug target"),
 			env: z.record(z.string(), z.string()).optional().describe("Additional environment variables for the debug target"),
-			viewport_config: z
-				.object({
-					source_context_lines: z.number().optional(),
-					stack_depth: z.number().optional(),
-					locals_max_depth: z.number().optional(),
-					locals_max_items: z.number().optional(),
-					string_truncate_length: z.number().optional(),
-					collection_preview_items: z.number().optional(),
-				})
-				.optional()
-				.describe("Override default viewport rendering parameters"),
+			viewport_config: ViewportConfigSchema,
 			stop_on_entry: z.boolean().optional().describe("Pause on the first executable line. Default: false"),
 			launch_config: z
 				.object({
@@ -568,29 +589,17 @@ export function registerTools(server: McpServer, sessionManager: SessionManager)
 	server.tool(
 		"debug_attach",
 		"Attach to an already-running process for debugging. " +
-			"Use when the target is a long-running service (web server, daemon) " +
-			"or when you need to debug a process you didn't launch. " +
-			"Python: the process must be running with debugpy listening (python -m debugpy --listen 5678 app.py). " +
-			"Node.js: the process must be running with --inspect (node --inspect app.js). " +
-			"Go: Delve will attach to the process by PID.",
+			"Use when the target is a long-running service (web server, daemon) or when you need to debug a process you didn't launch. " +
+			"The process must already be listening for a debugger: python needs 'python -m debugpy --listen 5678 app.py', " +
+			"node/typescript needs '--inspect' flag (node --inspect app.js), go attaches by PID via Delve.",
 		{
-			language: z.enum(["python", "javascript", "typescript", "go"]).describe("Language of the target process. Required for attach (no command to infer from)."),
-			pid: z.number().optional().describe("Process ID to attach to. Use for Go (Delve attaches by PID)."),
+			language: z.string().describe(`Language of the target process. Required for attach (no command to infer from). ${buildLanguageDescription()}`),
+			pid: z.number().optional().describe("Process ID to attach to (Go/Delve)."),
 			port: z.number().optional().describe("Debug server port. Python debugpy default: 5678. Node.js inspector default: 9229."),
 			host: z.string().optional().describe("Debug server host. Default: '127.0.0.1'"),
 			cwd: z.string().optional().describe("Working directory for source file resolution"),
 			breakpoints: z.array(FileBreakpointsMcpSchema).optional().describe("Breakpoints to set after attaching"),
-			viewport_config: z
-				.object({
-					source_context_lines: z.number().optional(),
-					stack_depth: z.number().optional(),
-					locals_max_depth: z.number().optional(),
-					locals_max_items: z.number().optional(),
-					string_truncate_length: z.number().optional(),
-					collection_preview_items: z.number().optional(),
-				})
-				.optional()
-				.describe("Override default viewport rendering parameters"),
+			viewport_config: ViewportConfigSchema,
 		},
 		async ({ language, pid, port, host, cwd, breakpoints, viewport_config }) => {
 			try {

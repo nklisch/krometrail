@@ -41,6 +41,9 @@ export interface DebugAdapter {
 	/** File extensions this adapter handles */
 	fileExtensions: string[];
 
+	/** Alternative language names that map to this adapter, e.g., ["javascript", "typescript", "ts", "js"] */
+	aliases?: string[];
+
 	/** Human-readable name for error messages */
 	displayName: string;
 

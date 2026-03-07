@@ -8,7 +8,8 @@ import { getJsDebugAdapterPath } from "./js-debug-adapter.js";
 
 export class NodeAdapter implements DebugAdapter {
 	id = "node";
-	fileExtensions = [".js", ".mjs", ".cjs"];
+	fileExtensions = [".js", ".mjs", ".cjs", ".ts", ".mts", ".cts", ".tsx"];
+	aliases = ["javascript", "typescript", "js", "ts"];
 	displayName = "Node.js (inspector)";
 
 	private adapterProcess: ChildProcess | null = null;
