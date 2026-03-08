@@ -1,4 +1,4 @@
-import type { RecordedEvent } from "../types.js";
+import type { EventType, RecordedEvent } from "../types.js";
 
 interface InputEventData {
 	type: "click" | "submit" | "change" | "marker";
@@ -89,17 +89,14 @@ export class InputTracker {
 
 		// Keyboard marker events are surfaced as marker placement requests by the orchestrator
 		if (parsed.type === "marker") {
-			return {
-				id: crypto.randomUUID(),
-				timestamp: parsed.ts,
-				type: "marker",
-				tabId,
-				summary: `Keyboard marker: ${parsed.label ?? "unnamed"}`,
-				data: { label: parsed.label, source: "keyboard" },
-			};
+			return this.buildEvent("marker", tabId, parsed.ts, `Keyboard marker: ${parsed.label ?? "unnamed"}`, { label: parsed.label, source: "keyboard" });
 		}
 
 		return this.buildUserInputEvent(parsed, tabId);
+	}
+
+	private buildEvent(type: EventType, tabId: string, ts: number, summary: string, data: Record<string, unknown>): RecordedEvent {
+		return { id: crypto.randomUUID(), timestamp: ts, type, tabId, summary, data };
 	}
 
 	private buildUserInputEvent(parsed: InputEventData, tabId: string): RecordedEvent | null {
@@ -108,38 +105,17 @@ export class InputTracker {
 		switch (parsed.type) {
 			case "click": {
 				const text = parsed.text ? ` "${parsed.text}"` : "";
-				return {
-					id: crypto.randomUUID(),
-					timestamp: parsed.ts,
-					type: "user_input",
-					tabId,
-					summary: `Click ${selector}${text}`,
-					data: { action: "click", selector, text: parsed.text, tag: parsed.tag },
-				};
+				return this.buildEvent("user_input", tabId, parsed.ts, `Click ${selector}${text}`, { action: "click", selector, text: parsed.text, tag: parsed.tag });
 			}
 
 			case "submit": {
 				const fieldCount = parsed.fields ? Object.keys(parsed.fields).length : 0;
-				return {
-					id: crypto.randomUUID(),
-					timestamp: parsed.ts,
-					type: "user_input",
-					tabId,
-					summary: `Form submit ${selector} (${fieldCount} fields)`,
-					data: { action: "submit", selector, formAction: parsed.action, fields: parsed.fields },
-				};
+				return this.buildEvent("user_input", tabId, parsed.ts, `Form submit ${selector} (${fieldCount} fields)`, { action: "submit", selector, formAction: parsed.action, fields: parsed.fields });
 			}
 
 			case "change": {
 				const displayValue = parsed.value === "[MASKED]" ? "[MASKED]" : `"${parsed.value ?? ""}"`;
-				return {
-					id: crypto.randomUUID(),
-					timestamp: parsed.ts,
-					type: "user_input",
-					tabId,
-					summary: `Change ${selector} → ${displayValue}`,
-					data: { action: "change", selector, value: parsed.value, tag: parsed.tag },
-				};
+				return this.buildEvent("user_input", tabId, parsed.ts, `Change ${selector} → ${displayValue}`, { action: "change", selector, value: parsed.value, tag: parsed.tag });
 			}
 
 			default:

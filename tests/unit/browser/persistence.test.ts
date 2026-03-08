@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BufferConfigSchema, RollingBuffer } from "../../../src/browser/recorder/rolling-buffer.js";
 import { PersistencePipeline } from "../../../src/browser/storage/persistence.js";
+import { ScreenshotCapture, ScreenshotConfigSchema } from "../../../src/browser/storage/screenshot.js";
 import type { BrowserSessionInfo, RecordedEvent } from "../../../src/browser/types.js";
 
 // Minimal CDPClient mock
@@ -166,11 +167,16 @@ describe("PersistencePipeline", () => {
 			sendToTarget: vi.fn().mockResolvedValue({ data: Buffer.alloc(10).toString("base64") }),
 		} as unknown as import("../../../src/browser/recorder/cdp-client.js").CDPClient;
 
-		const marker = buffer.placeMarker(undefined, false);
-		await pipeline.onMarkerPlaced(marker, buffer, sessionInfo, mockCdp, "tab1");
+		// Pipeline with screenshot capture enabled
+		const screenshotCapture = new ScreenshotCapture(ScreenshotConfigSchema.parse({ onMarker: true }));
+		const pipelineWithScreenshots = new PersistencePipeline({ dataDir, markerPaddingMs: 5000 }, screenshotCapture);
 
-		const screenshotDir = resolve(pipeline.getSessionDir("sess1")!, "screenshots");
+		const marker = buffer.placeMarker(undefined, false);
+		await pipelineWithScreenshots.onMarkerPlaced(marker, buffer, sessionInfo, mockCdp, "tab1");
+
+		const screenshotDir = resolve(pipelineWithScreenshots.getSessionDir("sess1")!, "screenshots");
 		const files = readdirSync(screenshotDir);
 		expect(files.length).toBeGreaterThan(0);
+		pipelineWithScreenshots.close();
 	});
 });

@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { CDPConnectionError } from "../../core/errors.js";
 
 export interface CDPClientOptions {
 	/** Chrome CDP WebSocket URL, e.g. ws://localhost:9222/json/version */
@@ -23,11 +24,11 @@ interface PendingRequest {
 export async function fetchBrowserWsUrl(port: number): Promise<string> {
 	const resp = await fetch(`http://localhost:${port}/json/version`);
 	if (!resp.ok) {
-		throw new Error(`Chrome CDP HTTP endpoint returned ${resp.status}`);
+		throw new CDPConnectionError(`Chrome CDP HTTP endpoint returned ${resp.status}`);
 	}
 	const info = (await resp.json()) as { webSocketDebuggerUrl?: string };
 	if (!info.webSocketDebuggerUrl) {
-		throw new Error("Chrome CDP endpoint did not return webSocketDebuggerUrl");
+		throw new CDPConnectionError("Chrome CDP endpoint did not return webSocketDebuggerUrl");
 	}
 	return info.webSocketDebuggerUrl;
 }
@@ -67,7 +68,7 @@ export class CDPClient extends EventEmitter {
 
 			ws.onerror = () => {
 				if (!this.connected) {
-					reject(new Error(`Failed to connect to Chrome CDP at ${this.options.browserWsUrl}`));
+					reject(new CDPConnectionError(`Failed to connect to Chrome CDP at ${this.options.browserWsUrl}`));
 				}
 				// If already connected, onclose will fire next
 			};
@@ -75,7 +76,7 @@ export class CDPClient extends EventEmitter {
 			ws.onclose = () => {
 				const wasConnected = this.connected;
 				this.connected = false;
-				this.rejectPending(new Error("CDP WebSocket closed"));
+				this.rejectPending(new CDPConnectionError("CDP WebSocket closed"));
 				if (wasConnected) {
 					this.scheduleReconnect();
 				}

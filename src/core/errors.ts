@@ -123,3 +123,46 @@ export class LaunchError extends AgentLensError {
 		this.name = "LaunchError";
 	}
 }
+
+/**
+ * Chrome executable not found.
+ */
+export class ChromeNotFoundError extends AgentLensError {
+	constructor() {
+		super("Chrome not found. Install Chrome or use --attach to connect to an existing instance.", "CHROME_NOT_FOUND");
+		this.name = "ChromeNotFoundError";
+	}
+}
+
+/**
+ * Chrome CDP connection failed (WebSocket or HTTP endpoint unavailable).
+ */
+export class CDPConnectionError extends AgentLensError {
+	constructor(
+		message: string,
+		public readonly cause?: Error,
+	) {
+		super(message, "CDP_CONNECTION_FAILED");
+		this.name = "CDPConnectionError";
+	}
+}
+
+/**
+ * Browser tab not found by targetId.
+ */
+export class TabNotFoundError extends AgentLensError {
+	constructor(public readonly targetId: string) {
+		super(`Tab not found: ${targetId}`, "TAB_NOT_FOUND");
+		this.name = "TabNotFoundError";
+	}
+}
+
+/**
+ * Browser recorder is in an invalid state for the requested operation.
+ */
+export class BrowserRecorderStateError extends AgentLensError {
+	constructor(message: string) {
+		super(message, "BROWSER_RECORDER_STATE");
+		this.name = "BrowserRecorderStateError";
+	}
+}

@@ -41,6 +41,10 @@ export class EventNormalizer {
 		}
 	}
 
+	private buildEvent(type: EventType, tabId: string, summary: string, data: Record<string, unknown>): RecordedEvent {
+		return { id: crypto.randomUUID(), timestamp: Date.now(), type, tabId, summary, data };
+	}
+
 	private normalizeNetworkRequest(params: Record<string, unknown>, tabId: string): RecordedEvent | null {
 		const requestId = params.requestId as string;
 		const request = params.request as Record<string, unknown>;
@@ -56,20 +60,13 @@ export class EventNormalizer {
 			startTime: Date.now(),
 		});
 
-		return {
-			id: crypto.randomUUID(),
-			timestamp: Date.now(),
-			type: "network_request" as EventType,
-			tabId,
-			summary: `${method} ${url}`,
-			data: {
-				requestId,
-				url,
-				method,
-				headers: request.headers ?? {},
-				postData: request.postData,
-			},
-		};
+		return this.buildEvent("network_request", tabId, `${method} ${url}`, {
+			requestId,
+			url,
+			method,
+			headers: request.headers ?? {},
+			postData: request.postData,
+		});
 	}
 
 	private normalizeNetworkResponse(params: Record<string, unknown>, tabId: string): RecordedEvent | null {
@@ -88,23 +85,16 @@ export class EventNormalizer {
 
 		const durationStr = durationMs !== undefined ? ` (${durationMs}ms)` : "";
 
-		return {
-			id: crypto.randomUUID(),
-			timestamp: Date.now(),
-			type: "network_response" as EventType,
-			tabId,
-			summary: `${status} ${method} ${url}${durationStr}`,
-			data: {
-				requestId,
-				url,
-				method,
-				status,
-				statusText: (response.statusText as string) ?? "",
-				headers: response.headers ?? {},
-				mimeType: response.mimeType,
-				durationMs,
-			},
-		};
+		return this.buildEvent("network_response", tabId, `${status} ${method} ${url}${durationStr}`, {
+			requestId,
+			url,
+			method,
+			status,
+			statusText: (response.statusText as string) ?? "",
+			headers: response.headers ?? {},
+			mimeType: response.mimeType,
+			durationMs,
+		});
 	}
 
 	private normalizeNetworkFailed(params: Record<string, unknown>, tabId: string): RecordedEvent | null {
@@ -118,20 +108,13 @@ export class EventNormalizer {
 		if (url.startsWith("chrome-extension://")) return null;
 		this.pendingRequests.delete(requestId);
 
-		return {
-			id: crypto.randomUUID(),
-			timestamp: Date.now(),
-			type: "network_response" as EventType,
-			tabId,
-			summary: `FAILED ${method} ${url}: ${errorText}`,
-			data: {
-				requestId,
-				url,
-				method,
-				failed: true,
-				errorText,
-			},
-		};
+		return this.buildEvent("network_response", tabId, `FAILED ${method} ${url}: ${errorText}`, {
+			requestId,
+			url,
+			method,
+			failed: true,
+			errorText,
+		});
 	}
 
 	private normalizeWebSocketFrame(params: Record<string, unknown>, tabId: string, direction: "SEND" | "RECV"): RecordedEvent {
@@ -139,19 +122,12 @@ export class EventNormalizer {
 		const payload = ((response?.payloadData as string) ?? "").slice(0, 200);
 		const url = (params.url as string) ?? "";
 
-		return {
-			id: crypto.randomUUID(),
-			timestamp: Date.now(),
-			type: "websocket" as EventType,
-			tabId,
-			summary: `WS ${direction}: ${payload}`,
-			data: {
-				url,
-				direction,
-				payload,
-				requestId: params.requestId,
-			},
-		};
+		return this.buildEvent("websocket", tabId, `WS ${direction}: ${payload}`, {
+			url,
+			direction,
+			payload,
+			requestId: params.requestId,
+		});
 	}
 
 	private normalizeConsole(params: Record<string, unknown>, tabId: string): RecordedEvent | null {
@@ -166,19 +142,12 @@ export class EventNormalizer {
 			.join(" ")
 			.slice(0, 500);
 
-		return {
-			id: crypto.randomUUID(),
-			timestamp: Date.now(),
-			type: "console" as EventType,
-			tabId,
-			summary: `[${level}] ${text}`,
-			data: {
-				level,
-				text,
-				args: args.map((a) => ({ type: a.type, value: a.value ?? a.description })),
-				stackTrace: params.stackTrace,
-			},
-		};
+		return this.buildEvent("console", tabId, `[${level}] ${text}`, {
+			level,
+			text,
+			args: args.map((a) => ({ type: a.type, value: a.value ?? a.description })),
+			stackTrace: params.stackTrace,
+		});
 	}
 
 	private normalizeException(params: Record<string, unknown>, tabId: string): RecordedEvent {
@@ -190,20 +159,13 @@ export class EventNormalizer {
 		const location = frame ? ` at ${frame.url}:${frame.lineNumber}` : "";
 		const summary = `Uncaught ${text.split("\n")[0]}${location}`;
 
-		return {
-			id: crypto.randomUUID(),
-			timestamp: Date.now(),
-			type: "page_error" as EventType,
-			tabId,
-			summary: summary.slice(0, 300),
-			data: {
-				text,
-				stackTrace: detail?.stackTrace,
-				lineNumber: detail?.lineNumber,
-				columnNumber: detail?.columnNumber,
-				url: detail?.url,
-			},
-		};
+		return this.buildEvent("page_error", tabId, summary.slice(0, 300), {
+			text,
+			stackTrace: detail?.stackTrace,
+			lineNumber: detail?.lineNumber,
+			columnNumber: detail?.columnNumber,
+			url: detail?.url,
+		});
 	}
 
 	private normalizeNavigation(params: Record<string, unknown>, tabId: string): RecordedEvent {
@@ -215,29 +177,15 @@ export class EventNormalizer {
 		const isMainFrame = !frame?.parentId;
 		const summary = isMainFrame ? `Navigated to ${url}` : `Subframe navigated to ${url}${name ? ` (${name})` : ""}`;
 
-		return {
-			id: crypto.randomUUID(),
-			timestamp: Date.now(),
-			type: "navigation" as EventType,
-			tabId,
-			summary,
-			data: {
-				url,
-				frameId: frame?.id,
-				isMainFrame,
-			},
-		};
+		return this.buildEvent("navigation", tabId, summary, {
+			url,
+			frameId: frame?.id,
+			isMainFrame,
+		});
 	}
 
 	private normalizeLoadEvent(tabId: string): RecordedEvent {
-		return {
-			id: crypto.randomUUID(),
-			timestamp: Date.now(),
-			type: "navigation" as EventType,
-			tabId,
-			summary: "Page loaded (DOMContentLoaded)",
-			data: { loadType: "load" },
-		};
+		return this.buildEvent("navigation", tabId, "Page loaded (DOMContentLoaded)", { loadType: "load" });
 	}
 
 	private normalizePerformance(params: Record<string, unknown>, tabId: string): RecordedEvent {
@@ -256,14 +204,9 @@ export class EventNormalizer {
 
 		const summary = parts.length > 0 ? parts.join(", ") : "Performance metrics";
 
-		return {
-			id: crypto.randomUUID(),
-			timestamp: Date.now(),
-			type: "performance" as EventType,
-			tabId,
-			summary,
-			data: { metrics: Object.fromEntries(metrics.map((m) => [m.name, m.value])) },
-		};
+		return this.buildEvent("performance", tabId, summary, {
+			metrics: Object.fromEntries(metrics.map((m) => [m.name, m.value])),
+		});
 	}
 
 	private mapConsoleLevel(cdpType: string): string {

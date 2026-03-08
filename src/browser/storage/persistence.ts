@@ -1,19 +1,24 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
+import { z } from "zod";
 import type { CDPClient } from "../recorder/cdp-client.js";
 import type { RollingBuffer } from "../recorder/rolling-buffer.js";
 import type { BrowserSessionInfo, Marker, RecordedEvent } from "../types.js";
 import { BrowserDatabase } from "./database.js";
 import { EventWriter } from "./event-writer.js";
 import { NetworkExtractor } from "./network-extractor.js";
+import { RetentionConfigSchema, RetentionManager, type RetentionConfig } from "./retention.js";
+import type { ScreenshotCapture } from "./screenshot.js";
 
-export interface PersistenceConfig {
+export const PersistenceConfigSchema = z.object({
 	/** Root data directory. Default: ~/.agent-lens/browser */
-	dataDir: string;
+	dataDir: z.string().default(resolve(homedir(), ".agent-lens", "browser")),
 	/** Ms of context around each marker to persist. Should match buffer.markerPaddingMs. */
-	markerPaddingMs: number;
-}
+	markerPaddingMs: z.number().default(120_000),
+});
+
+export type PersistenceConfig = z.infer<typeof PersistenceConfigSchema>;
 
 interface ActiveSession {
 	writer: EventWriter;
@@ -36,13 +41,15 @@ function slugify(url: string): string {
 }
 
 export class PersistencePipeline {
+	private config: PersistenceConfig;
 	private db: BrowserDatabase;
 	private activeSessions = new Map<string, ActiveSession>();
 	private networkExtractor = new NetworkExtractor();
 
-	constructor(private config: PersistenceConfig) {
-		const dbPath = resolve(config.dataDir, "index.db");
-		mkdirSync(config.dataDir, { recursive: true });
+	constructor(config: Partial<PersistenceConfig>, private screenshotCapture?: ScreenshotCapture) {
+		this.config = PersistenceConfigSchema.parse(config);
+		const dbPath = resolve(this.config.dataDir, "index.db");
+		mkdirSync(this.config.dataDir, { recursive: true });
 		this.db = new BrowserDatabase(dbPath);
 	}
 
@@ -87,7 +94,13 @@ export class PersistencePipeline {
 
 		await this.networkExtractor.extractBodies(newEvents, cdpClient, tabSessionId, resolve(session.dir, "network"), this.db, sessionInfo.id);
 
-		await this.captureScreenshot(cdpClient, tabSessionId, resolve(session.dir, "screenshots"), marker.timestamp);
+		if (this.screenshotCapture) {
+			try {
+				await this.screenshotCapture.capture(cdpClient, tabSessionId, resolve(session.dir, "screenshots"), marker.timestamp);
+			} catch {
+				// Screenshot capture may fail if tab is navigating or closed
+			}
+		}
 
 		session.openMarkerWindows.push({
 			markerId: marker.id,
@@ -136,6 +149,14 @@ export class PersistencePipeline {
 	}
 
 	/**
+	 * Run retention cleanup to remove recordings older than the retention period.
+	 */
+	async runRetentionCleanup(config?: Partial<RetentionConfig>): Promise<{ deleted: number }> {
+		const manager = new RetentionManager(RetentionConfigSchema.parse(config ?? {}));
+		return manager.cleanup(this.db);
+	}
+
+	/**
 	 * End a session, flushing remaining data.
 	 */
 	endSession(sessionId: string): void {
@@ -178,19 +199,5 @@ export class PersistencePipeline {
 		const session: ActiveSession = { writer, dir, persistedEventIds: new Set(), openMarkerWindows: [] };
 		this.activeSessions.set(info.id, session);
 		return session;
-	}
-
-	private async captureScreenshot(cdpClient: CDPClient, tabSessionId: string, screenshotDir: string, timestamp: number): Promise<void> {
-		try {
-			const result = (await cdpClient.sendToTarget(tabSessionId, "Page.captureScreenshot", {
-				format: "png",
-				quality: 80,
-			})) as { data: string };
-
-			const filePath = resolve(screenshotDir, `${timestamp}.png`);
-			writeFileSync(filePath, Buffer.from(result.data, "base64"));
-		} catch {
-			// Screenshot capture may fail if tab is navigating or closed
-		}
 	}
 }

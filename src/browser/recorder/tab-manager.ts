@@ -1,3 +1,4 @@
+import { TabNotFoundError } from "../../core/errors.js";
 import type { CDPClient } from "./cdp-client.js";
 
 export interface TabInfo {
@@ -63,7 +64,7 @@ export class TabManager {
 	async startRecording(targetId: string): Promise<string> {
 		const tab = this.tabs.get(targetId);
 		if (!tab) {
-			throw new Error(`Tab not found: ${targetId}`);
+			throw new TabNotFoundError(targetId);
 		}
 
 		const sessionId = await this.cdpClient.attachToTarget(targetId);

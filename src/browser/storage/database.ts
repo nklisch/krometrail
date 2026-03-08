@@ -1,5 +1,6 @@
 import Database from "bun:sqlite";
 import { resolve } from "node:path";
+import { z } from "zod";
 import { EventWriter } from "./event-writer.js";
 
 export interface SessionRow {
@@ -43,22 +44,26 @@ export interface NetworkBodyRow {
 	content_type: string | null;
 }
 
-export interface SessionFilter {
-	after?: number;
-	before?: number;
-	urlContains?: string;
-	hasMarkers?: boolean;
-	hasErrors?: boolean;
-	limit?: number;
-}
+export const SessionFilterSchema = z.object({
+	after: z.number().optional(),
+	before: z.number().optional(),
+	urlContains: z.string().optional(),
+	hasMarkers: z.boolean().optional(),
+	hasErrors: z.boolean().optional(),
+	limit: z.number().int().positive().optional(),
+});
 
-export interface EventQueryFilter {
-	types?: string[];
-	timeRange?: { start: number; end: number };
-	statusCodes?: number[];
-	limit?: number;
-	offset?: number;
-}
+export type SessionFilter = z.infer<typeof SessionFilterSchema>;
+
+export const EventQueryFilterSchema = z.object({
+	types: z.array(z.string()).optional(),
+	timeRange: z.object({ start: z.number(), end: z.number() }).optional(),
+	statusCodes: z.array(z.number().int()).optional(),
+	limit: z.number().int().positive().optional(),
+	offset: z.number().int().nonnegative().optional(),
+});
+
+export type EventQueryFilter = z.infer<typeof EventQueryFilterSchema>;
 
 export class BrowserDatabase {
 	private db: Database;
