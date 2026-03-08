@@ -54,3 +54,7 @@ bun run lint:fix         # Biome auto-fix
 - Adapters implement the `DebugAdapter` interface in `src/adapters/base.ts`
 - Viewport output is the contract — if the format changes, e2e tests should break
 - Do not include "Co-Authored-By" or any AI signature lines in commit messages
+
+## Bun adapter (unsupported)
+
+`src/adapters/bun.ts` exists but is **not registered** in `registerAllAdapters()`. Bun 1.3.x uses WebKit JSC inspector protocol (not V8 CDP) — `Debugger.paused` events never fire regardless of how breakpoints are set. js-debug is V8/CDP-only and cannot bridge to WebKit protocol. The adapter code is kept for reference. Re-enable when Bun's CDP supports programmatic pause (`Debugger.paused`), or rewrite using `@rttnd/bun-inspector-protocol` (WebKit protocol wrapper). Relevant Bun issues: #4842, #9290, #13994.
