@@ -251,6 +251,7 @@ export const BrowserStartParamsSchema = z.object({
 	allTabs: z.boolean().default(false),
 	tabFilter: z.string().optional(),
 	url: z.string().optional(),
+	screenshotIntervalMs: z.number().optional(),
 });
 export type BrowserStartParams = z.infer<typeof BrowserStartParamsSchema>;
 

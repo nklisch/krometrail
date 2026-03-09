@@ -81,7 +81,7 @@ describe.skipIf(SKIP)("E2E Browser: agent investigation workflow", () => {
 			session_id: sessionId,
 			event_types: ["network_response"],
 			status_codes: [422],
-			max_results: 50,
+			limit: 50,
 		});
 
 		// Should find at least 2 (both attempts got 422s)
@@ -112,7 +112,7 @@ describe.skipIf(SKIP)("E2E Browser: agent investigation workflow", () => {
 		const inputs = await ctx.callTool("session_search", {
 			session_id: sessionId,
 			event_types: ["user_input"],
-			max_results: 20,
+			limit: 20,
 		});
 
 		// Agent sees form fills and button clicks

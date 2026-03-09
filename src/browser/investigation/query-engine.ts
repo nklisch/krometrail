@@ -226,14 +226,14 @@ export class QueryEngine {
 			const screenshotDir = resolve(recordingDir, "screenshots");
 			if (existsSync(screenshotDir)) {
 				const files = readdirSync(screenshotDir)
-					.filter((f) => f.endsWith(".png"))
+					.filter((f) => f.endsWith(".jpg") || f.endsWith(".png"))
 					.sort();
 				if (files.length > 0) {
 					const targetTs = fullEvent.timestamp;
 					let nearest = files[0];
 					let nearestDist = Number.POSITIVE_INFINITY;
 					for (const f of files) {
-						const ts = Number.parseInt(f.replace(".png", ""), 10);
+						const ts = Number.parseInt(f.replace(/\.(jpg|png)$/, ""), 10);
 						const dist = Math.abs(ts - targetTs);
 						if (dist < nearestDist) {
 							nearest = f;

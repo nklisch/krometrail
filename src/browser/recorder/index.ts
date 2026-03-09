@@ -11,7 +11,7 @@ import { ChromeLauncher } from "./chrome-launcher.js";
 import { EventNormalizer } from "./event-normalizer.js";
 import { EventPipeline } from "./event-pipeline.js";
 import { InputTracker } from "./input-tracker.js";
-import { setupMarkerOverlay } from "./marker-overlay.js";
+import { setupControlPanel } from "./marker-overlay.js";
 import { type BufferConfig, BufferConfigSchema, RollingBuffer } from "./rolling-buffer.js";
 import { TabManager } from "./tab-manager.js";
 
@@ -254,8 +254,16 @@ export class BrowserRecorder {
 			})
 			.catch(() => {});
 
-		// Inject marker overlay (floating button + Ctrl+Shift+M shortcut)
-		const overlayCleanup = await setupMarkerOverlay(this.cdpClient, sessionId, (label) => this.placeMarker(label));
+		// Inject control panel (mark + snap buttons, keyboard shortcuts)
+		const snapshotCallback =
+			this.screenshotCapture && this.persistence
+				? async () => {
+						if (!this.cdpClient) return;
+						const sessDir = this.persistence?.getOrCreateSessionDir(this.buildSessionInfo());
+						if (sessDir) await this.screenshotCapture?.capture(this.cdpClient, sessionId, `${sessDir}/screenshots`).catch(() => {});
+					}
+				: null;
+		const overlayCleanup = await setupControlPanel(this.cdpClient, sessionId, (label) => this.placeMarker(label), snapshotCallback, this.config.screenshots?.intervalMs ?? 0);
 		this.overlayCleanups.set(targetId, overlayCleanup);
 
 		// Start periodic screenshot capture if configured

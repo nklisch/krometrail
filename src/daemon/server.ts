@@ -411,6 +411,8 @@ export class DaemonServer {
 					allTabs: p.allTabs,
 					tabFilter: p.tabFilter,
 					url: p.url,
+					persistence: {},
+					...(p.screenshotIntervalMs !== undefined && { screenshots: { intervalMs: p.screenshotIntervalMs } }),
 				});
 				return this.browserRecorder.start();
 			}

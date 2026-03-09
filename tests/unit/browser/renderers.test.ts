@@ -73,7 +73,7 @@ function makeInspectResult(overrides: Partial<InspectResult> = {}): InspectResul
 			contentType: "application/json",
 			size: 50,
 		},
-		screenshot: "/tmp/screenshots/1709826625000.png",
+		screenshot: "/tmp/screenshots/1709826625000.jpg",
 		...overrides,
 	};
 }

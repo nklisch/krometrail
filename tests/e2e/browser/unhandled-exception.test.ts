@@ -80,7 +80,7 @@ describe.skipIf(SKIP)("E2E Browser: unhandled exception investigation", () => {
 		const searchResult = await ctx.callTool("session_search", {
 			session_id: sessionId,
 			event_types: ["page_error"],
-			max_results: 1,
+			limit: 1,
 		});
 		const eventId = extractEventId(searchResult);
 
@@ -104,7 +104,7 @@ describe.skipIf(SKIP)("E2E Browser: unhandled exception investigation", () => {
 			session_id: sessionId,
 			event_types: ["console"],
 			console_levels: ["log"],
-			max_results: 50,
+			limit: 50,
 		});
 
 		// The error page logs "About to throw exception" and "About to access null property"
@@ -119,12 +119,12 @@ describe.skipIf(SKIP)("E2E Browser: unhandled exception investigation", () => {
 		const navEvents = await ctx.callTool("session_search", {
 			session_id: sessionId,
 			event_types: ["navigation"],
-			max_results: 5,
+			limit: 5,
 		});
 		const errorEvents = await ctx.callTool("session_search", {
 			session_id: sessionId,
 			event_types: ["page_error"],
-			max_results: 1,
+			limit: 1,
 		});
 
 		const navEventId = extractEventId(navEvents);
@@ -132,8 +132,8 @@ describe.skipIf(SKIP)("E2E Browser: unhandled exception investigation", () => {
 
 		const diffResult = await ctx.callTool("session_diff", {
 			session_id: sessionId,
-			before: navEventId,
-			after: errorEventId,
+			from: navEventId,
+			to: errorEventId,
 			include: ["console_new"],
 		});
 

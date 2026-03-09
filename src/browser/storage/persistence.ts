@@ -152,6 +152,14 @@ export class PersistencePipeline {
 	}
 
 	/**
+	 * Get or create the recording directory for a session.
+	 * Unlike getSessionDir, this initialises the session if it doesn't exist yet.
+	 */
+	getOrCreateSessionDir(sessionInfo: BrowserSessionInfo): string {
+		return this.ensureSession(sessionInfo).dir;
+	}
+
+	/**
 	 * Run retention cleanup to remove recordings older than the retention period.
 	 */
 	async runRetentionCleanup(config?: Partial<RetentionConfig>): Promise<{ deleted: number }> {

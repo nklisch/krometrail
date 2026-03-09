@@ -10,8 +10,9 @@ import { gracefulDispose } from "./helpers.js";
 const execAsync = promisify(exec);
 
 /**
- * Find the lldb-dap binary, checking PATH first, then macOS-specific locations.
+ * Find the lldb-dap binary, checking PATH first, then platform-specific locations.
  * On macOS, tries `xcrun -f lldb-dap` as fallback.
+ * On Linux, checks common Swift toolchain paths under /usr/libexec/swift/.
  * Returns the found path or null.
  */
 export async function findLldbDap(): Promise<string | null> {
@@ -31,6 +32,17 @@ export async function findLldbDap(): Promise<string | null> {
 			if (path) return path;
 		} catch {
 			// not found via xcrun
+		}
+	}
+
+	// Linux fallback: check common Swift toolchain paths
+	if (process.platform === "linux") {
+		try {
+			const { stdout } = await execAsync("find /usr/libexec/swift -name lldb-dap -type f 2>/dev/null | head -1");
+			const path = stdout.trim();
+			if (path) return path;
+		} catch {
+			// not found
 		}
 	}
 

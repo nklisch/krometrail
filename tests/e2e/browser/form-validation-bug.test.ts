@@ -80,7 +80,7 @@ describe.skipIf(SKIP)("E2E Browser: form validation bug investigation", () => {
 			session_id: sessionId,
 			event_types: ["network_response"],
 			status_codes: [422],
-			max_results: 50,
+			limit: 50,
 		});
 
 		expect(searchResult).toContain("422");
@@ -110,7 +110,7 @@ describe.skipIf(SKIP)("E2E Browser: form validation bug investigation", () => {
 			session_id: sessionId,
 			event_types: ["network_response"],
 			status_codes: [422],
-			max_results: 50,
+			limit: 50,
 		});
 		const eventId = extractEventId(searchResult);
 

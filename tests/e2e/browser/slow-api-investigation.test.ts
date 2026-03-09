@@ -77,7 +77,7 @@ describe.skipIf(SKIP)("E2E Browser: slow API and WebSocket failure investigation
 			session_id: sessionId,
 			event_types: ["network_response"],
 			url_pattern: "**/api/dashboard**",
-			max_results: 50,
+			limit: 50,
 		});
 
 		expect(responses).toContain("/api/dashboard");
@@ -91,7 +91,7 @@ describe.skipIf(SKIP)("E2E Browser: slow API and WebSocket failure investigation
 			session_id: sessionId,
 			event_types: ["network_response"],
 			url_pattern: "**/api/dashboard**",
-			max_results: 50,
+			limit: 50,
 		});
 		const eventId = extractEventId(responses);
 

@@ -10,6 +10,8 @@ export const ScreenshotConfigSchema = z.object({
 	onNavigation: z.boolean().default(true),
 	/** Capture on marker placement. Default: true. */
 	onMarker: z.boolean().default(true),
+	/** JPEG quality (0–100). Default: 60. */
+	quality: z.number().min(0).max(100).default(60),
 });
 
 export type ScreenshotConfig = z.infer<typeof ScreenshotConfigSchema>;
@@ -26,11 +28,11 @@ export class ScreenshotCapture {
 	async capture(cdpClient: CDPClient, tabSessionId: string, screenshotDir: string, timestamp?: number): Promise<string> {
 		const ts = timestamp ?? Date.now();
 		const result = (await cdpClient.sendToTarget(tabSessionId, "Page.captureScreenshot", {
-			format: "png",
-			quality: 80,
+			format: "jpeg",
+			quality: this.config.quality,
 		})) as { data: string };
 
-		const filePath = resolve(screenshotDir, `${ts}.png`);
+		const filePath = resolve(screenshotDir, `${ts}.jpg`);
 		writeFileSync(filePath, Buffer.from(result.data, "base64"));
 		return filePath;
 	}

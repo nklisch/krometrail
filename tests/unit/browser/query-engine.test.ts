@@ -69,7 +69,7 @@ beforeEach(() => {
 	db.insertNetworkBody({ eventId: "evt-net-2", sessionId: SESSION_ID, responseBodyPath: bodyFile, responseSize: 50, contentType: "application/json" });
 
 	// Screenshot
-	writeFileSync(resolve(recordingDir, "screenshots", `${BASE_TS + 3000}.png`), "fake-png-data");
+	writeFileSync(resolve(recordingDir, "screenshots", `${BASE_TS + 3000}.jpg`), "fake-jpg-data");
 
 	db.updateSessionCounts(SESSION_ID);
 	db.updateSessionCounts(SESSION_ID_2);

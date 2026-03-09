@@ -85,7 +85,7 @@ describe.skipIf(SKIP)("E2E Browser: multi-page session lifecycle", () => {
 			session_id: sessionId,
 			event_types: ["network_response"],
 			status_codes: [401],
-			max_results: 50,
+			limit: 50,
 		});
 
 		expect(searchResult).toContain("401");
@@ -100,7 +100,7 @@ describe.skipIf(SKIP)("E2E Browser: multi-page session lifecycle", () => {
 		const navEvents = await ctx.callTool("session_search", {
 			session_id: sessionId,
 			event_types: ["navigation"],
-			max_results: 10,
+			limit: 10,
 		});
 
 		// Use the first and a later navigation event
@@ -108,8 +108,8 @@ describe.skipIf(SKIP)("E2E Browser: multi-page session lifecycle", () => {
 		if (eventIds.length >= 2) {
 			const diffResult = await ctx.callTool("session_diff", {
 				session_id: sessionId,
-				before: eventIds[0],
-				after: eventIds[eventIds.length - 1],
+				from: eventIds[0],
+				to: eventIds[eventIds.length - 1],
 				include: ["storage", "url", "network_new"],
 			});
 
@@ -126,7 +126,7 @@ describe.skipIf(SKIP)("E2E Browser: multi-page session lifecycle", () => {
 		const inputs = await ctx.callTool("session_search", {
 			session_id: sessionId,
 			event_types: ["user_input"],
-			max_results: 20,
+			limit: 20,
 		});
 
 		expect(inputs).toContain("Found");

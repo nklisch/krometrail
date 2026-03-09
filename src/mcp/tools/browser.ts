@@ -62,8 +62,12 @@ export function registerBrowserTools(server: McpServer, queryEngine: QueryEngine
 				),
 			all_tabs: z.boolean().optional().describe("Record all browser tabs. Default: first/active tab only"),
 			tab_filter: z.string().optional().describe("Glob pattern — record only tabs whose URL matches, e.g. '**/app/**'"),
+		screenshot_interval_ms: z
+			.number()
+			.optional()
+			.describe("Periodic screenshot interval in ms. 0 or omit to disable. Example: 5000 for a screenshot every 5s"),
 		},
-		async ({ url, port, profile, attach, all_tabs, tab_filter }) => {
+		async ({ url, port, profile, attach, all_tabs, tab_filter, screenshot_interval_ms }) => {
 			const client = await getDaemonClient(30_000);
 			try {
 				const info = await client.call<BrowserSessionInfo>("browser.start", {
@@ -73,6 +77,7 @@ export function registerBrowserTools(server: McpServer, queryEngine: QueryEngine
 					allTabs: all_tabs ?? false,
 					tabFilter: tab_filter,
 					url,
+					screenshotIntervalMs: screenshot_interval_ms,
 				});
 				return { content: [{ type: "text" as const, text: formatSessionInfo(info) }] };
 			} catch (err) {
