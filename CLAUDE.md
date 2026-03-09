@@ -37,6 +37,16 @@ bun run lint             # Biome check
 bun run lint:fix         # Biome auto-fix
 ```
 
+## Release checklist
+
+After tagging a release, run the install script to update the local CLI binary:
+
+```bash
+bash scripts/install.sh
+```
+
+This builds `dist/agent-lens` and copies it to `~/.local/bin/agent-lens`. Run this whenever you push a release so your system has the latest CLI.
+
 ## Stack
 
 - **Runtime:** Bun
