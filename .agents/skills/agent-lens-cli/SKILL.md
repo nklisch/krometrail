@@ -103,7 +103,7 @@ Exception filters: Python: `raised`, `uncaught`, `userUnhandled` · Node.js: `al
 agent-lens vars                           # local scope
 agent-lens vars --scope global
 agent-lens vars --filter "^user" --frame 2
-agent-lens eval "cart.items[0].__dict__"
+agent-lens eval "cart.total"
 agent-lens eval "order.total" --frame 1 --depth 3
 agent-lens stack
 agent-lens stack --frames 5 --source
@@ -183,7 +183,7 @@ agent-lens skill    # print the skill file
 ```sh
 agent-lens launch "python order.py" --break order.py:147
 agent-lens vars
-agent-lens eval "order.discount"
+agent-lens eval "order.discount_pct"
 agent-lens step over
 agent-lens continue
 agent-lens stop
