@@ -4,9 +4,133 @@ import { SessionDiffer } from "../../browser/investigation/diff.js";
 import type { InspectParams, OverviewOptions, QueryEngine } from "../../browser/investigation/query-engine.js";
 import { renderDiff, renderInspectResult, renderSearchResults, renderSessionList, renderSessionOverview } from "../../browser/investigation/renderers.js";
 import { ReplayContextGenerator } from "../../browser/investigation/replay-context.js";
+import type { BrowserSessionInfo, Marker } from "../../browser/types.js";
+import { DaemonClient, ensureDaemon } from "../../daemon/client.js";
+import { getDaemonSocketPath } from "../../daemon/protocol.js";
 import { errorResponse } from "./utils.js";
 
+async function getDaemonClient(timeoutMs = 30_000): Promise<DaemonClient> {
+	const socketPath = getDaemonSocketPath();
+	await ensureDaemon(socketPath);
+	return new DaemonClient({ socketPath, requestTimeoutMs: timeoutMs });
+}
+
+function formatSessionInfo(info: BrowserSessionInfo): string {
+	const lines: string[] = [];
+	const startedAt = new Date(info.startedAt).toISOString();
+	lines.push(`Browser recording active since ${startedAt}`);
+	lines.push(`Events: ${info.eventCount}  Markers: ${info.markerCount}  Buffer age: ${Math.round(info.bufferAgeMs / 1000)}s`);
+	if (info.tabs.length > 0) {
+		lines.push("Tabs:");
+		for (const tab of info.tabs) {
+			const title = tab.title ? `"${tab.title}" ` : "";
+			lines.push(`  ${title}(${tab.url})`);
+		}
+	}
+	return lines.join("\n");
+}
+
 export function registerBrowserTools(server: McpServer, queryEngine: QueryEngine): void {
+	// Tool: browser_start
+	server.tool(
+		"browser_start",
+		"Launch Chrome and start recording browser events (network, console, user input). " +
+			"Returns a session info summary once Chrome is ready. " +
+			"Use browser_status to check recording state, browser_mark to place markers, browser_stop to end the session. " +
+			"After stopping, use session_list and session_overview to investigate what was recorded.",
+		{
+			url: z.string().optional().describe("URL to open when launching Chrome"),
+			port: z.number().optional().describe("Chrome remote debugging port. Default: 9222"),
+			profile: z.string().optional().describe("Chrome profile name — creates an isolated profile under ~/.agent-lens/chrome-profiles/"),
+			attach: z.boolean().optional().describe("Attach to an already-running Chrome instance instead of launching one. Chrome must have been started with --remote-debugging-port=9222"),
+			all_tabs: z.boolean().optional().describe("Record all browser tabs. Default: first/active tab only"),
+			tab_filter: z.string().optional().describe("Record only tabs whose URL matches this pattern"),
+		},
+		async ({ url, port, profile, attach, all_tabs, tab_filter }) => {
+			const client = await getDaemonClient(30_000);
+			try {
+				const info = await client.call<BrowserSessionInfo>("browser.start", {
+					port: port ?? 9222,
+					profile,
+					attach: attach ?? false,
+					allTabs: all_tabs ?? false,
+					tabFilter: tab_filter,
+					url,
+				});
+				return { content: [{ type: "text" as const, text: formatSessionInfo(info) }] };
+			} catch (err) {
+				return errorResponse(err);
+			} finally {
+				client.dispose();
+			}
+		},
+	);
+
+	// Tool: browser_status
+	server.tool(
+		"browser_status",
+		"Show the current browser recording status — whether Chrome is active, how many events and markers have been captured, and which tabs are being recorded.",
+		{},
+		async () => {
+			const client = await getDaemonClient();
+			try {
+				const info = await client.call<BrowserSessionInfo | null>("browser.status", {});
+				if (!info) {
+					return { content: [{ type: "text" as const, text: "No active browser recording. Use browser_start to begin." }] };
+				}
+				return { content: [{ type: "text" as const, text: formatSessionInfo(info) }] };
+			} catch (err) {
+				return errorResponse(err);
+			} finally {
+				client.dispose();
+			}
+		},
+	);
+
+	// Tool: browser_mark
+	server.tool(
+		"browser_mark",
+		"Place a named marker in the browser recording buffer at the current moment. " +
+			"Markers let you annotate significant events (e.g. 'submitted form', 'saw error') so you can quickly find them later with session_overview or session_search using around_marker.",
+		{
+			label: z.string().optional().describe("Label for the marker, e.g. 'form submitted' or 'error appeared'"),
+		},
+		async ({ label }) => {
+			const client = await getDaemonClient();
+			try {
+				const marker = await client.call<Marker>("browser.mark", { label });
+				const time = new Date(marker.timestamp).toISOString();
+				const markerLabel = marker.label ? `"${marker.label}"` : "(unlabeled)";
+				return { content: [{ type: "text" as const, text: `Marker placed: ${markerLabel} at ${time} (id: ${marker.id})` }] };
+			} catch (err) {
+				return errorResponse(err);
+			} finally {
+				client.dispose();
+			}
+		},
+	);
+
+	// Tool: browser_stop
+	server.tool(
+		"browser_stop",
+		"Stop the active browser recording session and flush all buffered events to the database. " +
+			"After stopping, use session_list to find the recorded session and session_overview to investigate it.",
+		{
+			close_browser: z.boolean().optional().describe("Also close the Chrome browser. Default: false"),
+		},
+		async ({ close_browser }) => {
+			const client = await getDaemonClient();
+			try {
+				await client.call("browser.stop", { closeBrowser: close_browser ?? false });
+				return { content: [{ type: "text" as const, text: "Browser recording stopped. Use session_list to find the recorded session." }] };
+			} catch (err) {
+				return errorResponse(err);
+			} finally {
+				client.dispose();
+			}
+		},
+	);
+
 	// Tool 1: session_list
 	server.tool(
 		"session_list",
