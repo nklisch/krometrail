@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>React Counter Fixture</title>
+</head>
+<body>
+  <div id="root"></div>
+  <script src="/vendor/react.development.js"></script>
+  <script src="/vendor/react-dom.development.js"></script>
+  <script>
+    var e = React.createElement;
+
+    // CountDisplay — child component receiving count as prop
+    function CountDisplay(props) {
+      return e('div', { 'data-testid': 'count-display', style: { fontSize: '24px' } },
+        'Count: ' + props.count
+      );
+    }
+
+    // ResetButton — separate component to test unmount/remount
+    function ResetButton(props) {
+      return e('button', {
+        'data-testid': 'reset-btn',
+        onClick: () => { props.onReset(); }
+      }, 'Reset');
+    }
+
+    // Counter — parent component with state
+    function Counter() {
+      var state = React.useState(0);
+      var count = state[0];
+      var setCount = state[1];
+
+      var showReset = React.useState(true);
+      var isShowingReset = showReset[0];
+      var setShowReset = showReset[1];
+
+      return e('div', { 'data-testid': 'counter' },
+        e('h1', null, 'React Counter'),
+        e(CountDisplay, { count: count }),
+        e('div', { style: { marginTop: '10px' } },
+          e('button', {
+            'data-testid': 'increment-btn',
+            onClick: () => { setCount((c) => c + 1); }
+          }, 'Increment'),
+          e('button', {
+            'data-testid': 'decrement-btn',
+            onClick: () => { setCount((c) => c - 1); },
+            style: { marginLeft: '8px' }
+          }, 'Decrement'),
+          e('button', {
+            'data-testid': 'toggle-reset-btn',
+            onClick: () => { setShowReset((s) => !s); },
+            style: { marginLeft: '8px' }
+          }, isShowingReset ? 'Hide Reset' : 'Show Reset')
+        ),
+        isShowingReset ? e(ResetButton, { onReset: () => { setCount(0); } }) : null
+      );
+    }
+
+    var container = document.getElementById('root');
+    var root = ReactDOM.createRoot(container);
+    root.render(e(Counter, null));
+  </script>
+</body>
+</html>

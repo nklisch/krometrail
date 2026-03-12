@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>React Bugs Fixture</title>
+  <style>
+    section { border: 1px solid #ccc; padding: 12px; margin: 12px; }
+    h2 { margin-top: 0; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script src="/vendor/react.development.js"></script>
+  <script src="/vendor/react-dom.development.js"></script>
+  <script>
+    var e = React.createElement;
+
+    // =====================================================================
+    // 1. InfiniteLooper — triggers infinite re-render loop when activated
+    // =====================================================================
+    function InfiniteLooper() {
+      var state = React.useState(0);
+      var count = state[0];
+      var setCount = state[1];
+
+      var active = React.useState(false);
+      var isActive = active[0];
+      var setActive = active[1];
+
+      React.useEffect(() => {
+        if (!isActive) return;
+        // setState in effect with state as dep -> infinite loop
+        setCount((c) => c + 1);
+      }, [isActive, count]);
+
+      return e('section', { 'data-testid': 'infinite-looper' },
+        e('h2', null, 'InfiniteLooper'),
+        e('p', null, 'Render count: ' + count),
+        e('button', {
+          'data-testid': 'activate-infinite-loop',
+          onClick: () => { setActive(true); }
+        }, isActive ? 'Running...' : 'Activate Infinite Loop')
+      );
+    }
+
+    // =====================================================================
+    // 2. StaleClosureDemo — useCallback with empty deps capturing state
+    // =====================================================================
+    function StaleClosureDemo() {
+      var state = React.useState(0);
+      var value = state[0];
+      var setValue = state[1];
+
+      // Callback with empty deps — captures initial value (stale closure)
+      var staleCallback = React.useCallback(() => {
+        return value; // Always returns 0 — stale closure
+      }, []); // Empty deps: never updates
+
+      return e('section', { 'data-testid': 'stale-closure-demo' },
+        e('h2', null, 'StaleClosureDemo'),
+        e('p', null, 'Current value: ' + value),
+        e('p', null, 'Callback returns: ' + staleCallback()),
+        e('button', {
+          'data-testid': 'increment-stale',
+          onClick: () => { setValue((v) => v + 1); }
+        }, 'Increment (stale callback stays at 0)')
+      );
+    }
+
+    // =====================================================================
+    // 3. MissingCleanupDemo — useEffect with setInterval, no cleanup
+    // =====================================================================
+    function MissingCleanupDemo() {
+      var state = React.useState(0);
+      var ticks = state[0];
+      var setTicks = state[1];
+
+      var renderCount = React.useState(0);
+      var renders = renderCount[0];
+      var setRenders = renderCount[1];
+
+      // Effect with setInterval but NO cleanup function returned
+      React.useEffect(() => {
+        var interval = setInterval(() => {
+          setTicks((t) => t + 1);
+        }, 5000);
+        // Intentionally no return/cleanup — memory leak pattern
+      }, [renders]);
+
+      return e('section', { 'data-testid': 'missing-cleanup-demo' },
+        e('h2', null, 'MissingCleanupDemo'),
+        e('p', null, 'Ticks: ' + ticks),
+        e('p', null, 'Re-renders: ' + renders),
+        e('button', {
+          'data-testid': 'force-rerender',
+          onClick: () => { setRenders((r) => r + 1); }
+        }, 'Force Re-render (leaks interval)')
+      );
+    }
+
+    // =====================================================================
+    // 4. ContextFloodDemo — context provider with 25+ consumers
+    // =====================================================================
+    var FloodContext = React.createContext(0);
+
+    function FloodConsumer(props) {
+      var value = React.useContext(FloodContext);
+      return e('span', {
+        'data-testid': 'flood-consumer-' + props.id,
+        style: { display: 'inline-block', margin: '2px', padding: '2px 6px', background: '#eef' }
+      }, props.id + ':' + value);
+    }
+
+    function ContextFloodDemo() {
+      var state = React.useState(0);
+      var ctxValue = state[0];
+      var setCtxValue = state[1];
+
+      // Build 25 consumers
+      var consumers = [];
+      for (var i = 0; i < 25; i++) {
+        consumers.push(e(FloodConsumer, { key: i, id: i }));
+      }
+
+      return e('section', { 'data-testid': 'context-flood-demo' },
+        e('h2', null, 'ContextFloodDemo'),
+        e(FloodContext.Provider, { value: ctxValue },
+          e('p', null, 'Context value: ' + ctxValue),
+          e('button', {
+            'data-testid': 'flood-context',
+            onClick: () => { setCtxValue((v) => v + 1); }
+          }, 'Change Context (floods 25 consumers)'),
+          e('div', { style: { marginTop: '8px' } }, consumers)
+        )
+      );
+    }
+
+    // =====================================================================
+    // Root App
+    // =====================================================================
+    function App() {
+      return e('div', null,
+        e('h1', null, 'React Bug Patterns'),
+        e(InfiniteLooper, null),
+        e(StaleClosureDemo, null),
+        e(MissingCleanupDemo, null),
+        e(ContextFloodDemo, null)
+      );
+    }
+
+    // Test controls for programmatic activation via Runtime.evaluate
+    window.__TEST_CONTROLS__ = {
+      activateInfiniteLoop: () => {
+        var btn = document.querySelector('[data-testid="activate-infinite-loop"]');
+        if (btn) btn.click();
+      },
+      incrementStale: () => {
+        var btn = document.querySelector('[data-testid="increment-stale"]');
+        if (btn) btn.click();
+      },
+      forceRerender: () => {
+        var btn = document.querySelector('[data-testid="force-rerender"]');
+        if (btn) btn.click();
+      },
+      floodContext: () => {
+        var btn = document.querySelector('[data-testid="flood-context"]');
+        if (btn) btn.click();
+      }
+    };
+
+    var container = document.getElementById('root');
+    var root = ReactDOM.createRoot(container);
+    root.render(e(App, null));
+  </script>
+</body>
+</html>

@@ -1,5 +1,6 @@
 import type { EventType, RecordedEvent } from "../../types.js";
 import { getDetectionScript } from "./detector.js";
+import { ReactObserver } from "./react-observer.js";
 
 /** Parsed __BL__ framework event from the injection script. */
 export interface FrameworkBLEvent {
@@ -16,6 +17,7 @@ export interface FrameworkTrackerConfig {
 
 export class FrameworkTracker {
 	private config: FrameworkTrackerConfig;
+	private reactObserver: ReactObserver | null = null;
 
 	constructor(frameworkState: boolean | string[] | undefined) {
 		if (!frameworkState) {
@@ -34,12 +36,22 @@ export class FrameworkTracker {
 
 	/**
 	 * Returns injection scripts to install via Page.addScriptToEvaluateOnNewDocument.
-	 * In Phase 14, this returns only the detection script.
-	 * Phase 15+ adds per-framework observer scripts.
+	 * Detection script is always first (index 0); observer scripts follow.
 	 */
 	getInjectionScripts(): string[] {
 		if (!this.isEnabled()) return [];
-		return [getDetectionScript(this.config.frameworks)];
+
+		const scripts: string[] = [getDetectionScript(this.config.frameworks)];
+
+		// Phase 15: React observer
+		if (this.config.frameworks.includes("react")) {
+			this.reactObserver = new ReactObserver();
+			scripts.push(this.reactObserver.getInjectionScript());
+		}
+
+		// Phase 16+: Vue, Solid, Svelte observers will be added here
+
+		return scripts;
 	}
 
 	/**
@@ -80,10 +92,7 @@ export class FrameworkTracker {
 
 		switch (event.type) {
 			case "framework_detect":
-				return (
-					`[${fw}] ${fw.charAt(0).toUpperCase() + fw.slice(1)} ${d.version ?? "?"} detected` +
-					(d.rootCount != null ? ` (${d.rootCount} root${(d.rootCount as number) !== 1 ? "s" : ""})` : "")
-				);
+				return `[${fw}] ${fw.charAt(0).toUpperCase() + fw.slice(1)} ${d.version ?? "?"} detected` + (d.rootCount != null ? ` (${d.rootCount} root${(d.rootCount as number) !== 1 ? "s" : ""})` : "");
 
 			case "framework_state": {
 				const name = (d.componentName as string) ?? "?";

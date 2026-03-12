@@ -47,11 +47,39 @@ describe("FrameworkTracker", () => {
 			expect(new FrameworkTracker(false).getInjectionScripts()).toEqual([]);
 		});
 
-		it("returns [detectionScript] when enabled", () => {
-			const scripts = new FrameworkTracker(true).getInjectionScripts();
-			expect(scripts).toHaveLength(1);
-			expect(scripts[0]).toBeTruthy();
+		it("returns 2 scripts when react is enabled (detection + observer)", () => {
+			const scripts = new FrameworkTracker(["react"]).getInjectionScripts();
+			expect(scripts).toHaveLength(2);
 			expect(typeof scripts[0]).toBe("string");
+			expect(typeof scripts[1]).toBe("string");
+		});
+
+		it("first script is detection, second is react observer", () => {
+			const scripts = new FrameworkTracker(["react"]).getInjectionScripts();
+			expect(scripts[0]).toContain("framework_detect");
+			expect(scripts[1]).toContain("onCommitFiberRoot");
+		});
+
+		it("returns 1 script when only vue is enabled (no observer yet)", () => {
+			const scripts = new FrameworkTracker(["vue"]).getInjectionScripts();
+			expect(scripts).toHaveLength(1);
+		});
+
+		it("returns 1 script when only solid is enabled (no observer yet)", () => {
+			const scripts = new FrameworkTracker(["solid"]).getInjectionScripts();
+			expect(scripts).toHaveLength(1);
+		});
+
+		it("returns 2 scripts when true (all frameworks — react observer included)", () => {
+			const scripts = new FrameworkTracker(true).getInjectionScripts();
+			expect(scripts).toHaveLength(2);
+			expect(scripts[0]).toContain("framework_detect");
+			expect(scripts[1]).toContain("onCommitFiberRoot");
+		});
+
+		it("detection script is always at index 0", () => {
+			const scripts = new FrameworkTracker(["react"]).getInjectionScripts();
+			expect(scripts[0]).toContain("__REACT_DEVTOOLS_GLOBAL_HOOK__");
 		});
 	});
 

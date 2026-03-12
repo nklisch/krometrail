@@ -1,5 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -8,6 +8,15 @@ import { BrowserRecorder, type BrowserRecorderConfig } from "../../src/browser/r
 import { findChromeBinary, isChromeAvailable } from "./chrome-check.js";
 
 const TEST_APP_DIR = resolve(import.meta.dirname, "../fixtures/browser/test-app");
+
+export interface BrowserTestOptions {
+	/** Path to fixture directory. Default: tests/fixtures/browser/test-app */
+	fixturePath?: string;
+	/** Framework state config for BrowserRecorder. Default: undefined (disabled) */
+	frameworkState?: boolean | string[];
+	/** Additional recorder config overrides */
+	recorderConfig?: Partial<BrowserRecorderConfig>;
+}
 
 export interface BrowserTestContext {
 	/** Port the test-app server is running on. */
@@ -51,16 +60,28 @@ export interface BrowserTestContext {
 /**
  * Set up the full browser test environment.
  *
- * 1. Start the test-app Bun server on a random port
+ * 1. Start the fixture server on a random port (default: test-app)
  * 2. Launch headless Chrome with CDP
  * 3. Create & start BrowserRecorder with persistence to a temp dir
  * 4. Create an MCP client pointing at the same temp data dir (in finishRecording)
  *
  * Returns a BrowserTestContext with driving utilities.
  */
-export async function setupBrowserTest(options?: Partial<{ recorderConfig: Partial<BrowserRecorderConfig> }>): Promise<BrowserTestContext> {
-	// 1. Start test-app server
-	const { port: appPort, process: serverProc } = await startTestServer();
+export async function setupBrowserTest(options?: BrowserTestOptions): Promise<BrowserTestContext> {
+	const fixtureDir = options?.fixturePath ?? TEST_APP_DIR;
+
+	// Auto-install fixture dependencies if needed
+	const pkgJson = join(fixtureDir, "package.json");
+	const nodeModules = join(fixtureDir, "node_modules");
+	if (existsSync(pkgJson) && !existsSync(nodeModules)) {
+		const installResult = Bun.spawnSync(["bun", "install"], { cwd: fixtureDir, stdout: "pipe", stderr: "pipe" });
+		if (installResult.exitCode !== 0) {
+			throw new Error(`bun install failed in ${fixtureDir}: ${installResult.stderr}`);
+		}
+	}
+
+	// 1. Start fixture server
+	const { port: appPort, process: serverProc } = await startFixtureServer(fixtureDir);
 	const appUrl = `http://localhost:${appPort}`;
 
 	// 2. Launch headless Chrome
@@ -81,6 +102,7 @@ export async function setupBrowserTest(options?: Partial<{ recorderConfig: Parti
 		allTabs: false,
 		persistence: { dataDir },
 		screenshots: { onNavigation: true, onMarker: true, intervalMs: 0 },
+		...(options?.frameworkState !== undefined ? { frameworkState: options.frameworkState } : {}),
 		...options?.recorderConfig,
 	};
 	const recorder = new BrowserRecorder(recorderConfig);
@@ -202,8 +224,8 @@ export async function setupBrowserTest(options?: Partial<{ recorderConfig: Parti
 
 // --- Internal helpers ---
 
-async function startTestServer(): Promise<{ port: number; process: ChildProcess }> {
-	const proc = spawn("bun", ["run", join(TEST_APP_DIR, "server.ts"), "0"], { stdio: ["ignore", "pipe", "pipe"] });
+async function startFixtureServer(fixtureDir: string): Promise<{ port: number; process: ChildProcess }> {
+	const proc = spawn("bun", ["run", join(fixtureDir, "server.ts"), "0"], { stdio: ["ignore", "pipe", "pipe"] });
 	const port = await new Promise<number>((resolve, reject) => {
 		let output = "";
 		proc.stdout!.on("data", (chunk: Buffer) => {
@@ -212,7 +234,7 @@ async function startTestServer(): Promise<{ port: number; process: ChildProcess 
 			if (match) resolve(Number.parseInt(match[1], 10));
 		});
 		proc.on("error", reject);
-		setTimeout(() => reject(new Error("Test server startup timeout")), 10_000);
+		setTimeout(() => reject(new Error("Test server startup timeout")), 15_000);
 	});
 	return { port, process: proc };
 }
