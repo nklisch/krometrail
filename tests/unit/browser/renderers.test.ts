@@ -51,6 +51,7 @@ function makeOverview(overrides: Partial<SessionOverview> = {}): SessionOverview
 		timeline: [makeEventRow("e1", "navigation", "Navigated to /app", BASE_TS + 1000), makeEventRow("e2", "navigation", "Navigated to /checkout", BASE_TS + 10000)],
 		networkSummary: { total: 10, succeeded: 8, failed: 2, notable: ["422 POST /api/submit (30ms)", "500 GET /api/health (200ms)"] },
 		errorSummary: [makeEventRow("e3", "page_error", "TypeError: Cannot read property", BASE_TS + 5000)],
+		frameworkSummary: null,
 		...overrides,
 	};
 }

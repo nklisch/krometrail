@@ -40,6 +40,7 @@ export class QueryEngine {
 			timeline: [],
 			networkSummary: null,
 			errorSummary: null,
+			frameworkSummary: null,
 		};
 
 		// Navigation timeline
@@ -66,6 +67,11 @@ export class QueryEngine {
 			result.errorSummary = candidates.filter((e) => this.isErrorEvent(e));
 		}
 
+		// Framework summary
+		if (!options?.include || options.include.includes("framework")) {
+			result.frameworkSummary = this.summarizeFramework(sessionId);
+		}
+
 		// Time range focus around marker
 		if (options?.aroundMarker) {
 			const marker = markers.find((m) => m.id === options.aroundMarker);
@@ -90,7 +96,7 @@ export class QueryEngine {
 		// Resolve aroundMarker into a timeRange (only if no explicit timeRange provided)
 		if (params.filters?.aroundMarker && !params.filters.timeRange) {
 			const markers = this.db.queryMarkers(sessionId);
-				const ref = params.filters?.aroundMarker;
+			const ref = params.filters?.aroundMarker;
 			const marker = markers.find((m) => m.id === ref || m.label === ref);
 			if (!marker) throw new Error(`Marker not found: ${params.filters.aroundMarker}`);
 			params = {
@@ -108,7 +114,19 @@ export class QueryEngine {
 
 		// When post-filtering by status codes, fetch all events first so the
 		// limit is applied after filtering, not before.
-		const needsPostFilter = !!(params.filters?.statusCodes?.length || params.filters?.urlPattern);
+		const needsPostFilter = !!(params.filters?.statusCodes?.length || params.filters?.urlPattern || params.filters?.framework || params.filters?.component || params.filters?.pattern);
+
+		// Framework filter — auto-narrow to framework event types if not already specified
+		if (params.filters?.framework && (!params.filters.eventTypes || params.filters.eventTypes.length === 0)) {
+			params = {
+				...params,
+				filters: {
+					...params.filters,
+					eventTypes: ["framework_detect", "framework_state", "framework_error"],
+				},
+			};
+		}
+
 		let results = this.db.queryEvents(sessionId, {
 			types: params.filters?.eventTypes,
 			timeRange: params.filters?.timeRange,
@@ -145,6 +163,24 @@ export class QueryEngine {
 		if (params.filters?.containsText) {
 			const text = params.filters.containsText.toLowerCase();
 			results = results.filter((e) => e.summary.toLowerCase().includes(text));
+		}
+
+		// Post-filter by framework name — match [framework] or [framework:severity] prefix in summary
+		if (params.filters?.framework) {
+			const fw = params.filters.framework;
+			results = results.filter((e) => e.summary.startsWith(`[${fw}]`) || e.summary.startsWith(`[${fw}:`));
+		}
+
+		// Post-filter by component name — substring match on component name in summary
+		if (params.filters?.component) {
+			const comp = params.filters.component;
+			results = results.filter((e) => e.type.startsWith("framework_") && e.summary.includes(comp));
+		}
+
+		// Post-filter by bug pattern name — match pattern name in framework_error summaries
+		if (params.filters?.pattern) {
+			const pat = params.filters.pattern;
+			results = results.filter((e) => e.type === "framework_error" && e.summary.includes(pat));
 		}
 
 		if (needsPostFilter) {
@@ -320,6 +356,50 @@ export class QueryEngine {
 		}
 		return false;
 	}
+
+	private summarizeFramework(sessionId: string): FrameworkSummary | null {
+		const detectEvents = this.db.queryEvents(sessionId, { types: ["framework_detect"] });
+		if (detectEvents.length === 0) return null;
+
+		const frameworks: FrameworkSummary["frameworks"] = [];
+		for (const e of detectEvents) {
+			const full = this.getFullEvent(sessionId, e.event_id);
+			if (full) {
+				frameworks.push({
+					name: full.data.framework as string,
+					version: (full.data.version as string) ?? "unknown",
+					componentCount: (full.data.componentCount as number) ?? 0,
+					storeDetected: full.data.storeDetected as string | undefined,
+				});
+			}
+		}
+
+		const stateEvents = this.db.queryEvents(sessionId, { types: ["framework_state"] });
+		const errorEvents = this.db.queryEvents(sessionId, { types: ["framework_error"] });
+
+		const errors = { high: 0, medium: 0, low: 0 };
+		for (const e of errorEvents) {
+			const severity = e.summary.match(/\[.*?:(high|medium|low)\]/)?.[1];
+			if (severity && severity in errors) {
+				errors[severity as keyof typeof errors]++;
+			}
+		}
+
+		const componentCounts = new Map<string, number>();
+		for (const e of stateEvents) {
+			const match = e.summary.match(/\[.*?\] (.+?):/);
+			if (match) {
+				const name = match[1];
+				componentCounts.set(name, (componentCounts.get(name) ?? 0) + 1);
+			}
+		}
+		const topComponents = [...componentCounts.entries()]
+			.sort((a, b) => b[1] - a[1])
+			.slice(0, 10)
+			.map(([name, updateCount]) => ({ name, updateCount }));
+
+		return { frameworks, stateEventCount: stateEvents.length, errors, topComponents };
+	}
 }
 
 // --- Query types ---
@@ -334,7 +414,7 @@ export interface SessionListFilter {
 }
 
 export interface OverviewOptions {
-	include?: ("timeline" | "markers" | "errors" | "network_summary")[];
+	include?: ("timeline" | "markers" | "errors" | "network_summary" | "framework")[];
 	aroundMarker?: string;
 	timeRange?: { start: number; end: number };
 }
@@ -349,6 +429,12 @@ export interface SearchParams {
 		timeRange?: { start: number; end: number };
 		containsText?: string;
 		aroundMarker?: string; // marker ID, implies ±120s/+30s time range
+		/** Filter by framework name. Implies eventTypes narrowed to framework_* types. */
+		framework?: string;
+		/** Filter by component name (substring match on summary). */
+		component?: string;
+		/** Filter by bug pattern name (exact match on framework_error events). */
+		pattern?: string;
 	};
 	maxResults?: number;
 }
@@ -374,12 +460,29 @@ export interface SessionSummary {
 	errorCount: number;
 }
 
+export interface FrameworkSummary {
+	/** Detected frameworks with version info. */
+	frameworks: Array<{
+		name: string;
+		version: string;
+		componentCount: number;
+		storeDetected?: string;
+	}>;
+	/** Total framework_state events in the session. */
+	stateEventCount: number;
+	/** Total framework_error events, grouped by severity. */
+	errors: { high: number; medium: number; low: number };
+	/** Top components by update frequency (most active first). */
+	topComponents: Array<{ name: string; updateCount: number }>;
+}
+
 export interface SessionOverview {
 	session: { id: string; startedAt: number; url: string; title: string };
 	markers: MarkerRow[];
 	timeline: EventRow[];
 	networkSummary: NetworkSummary | null;
 	errorSummary: EventRow[] | null;
+	frameworkSummary: FrameworkSummary | null;
 }
 
 export interface NetworkSummary {

@@ -61,7 +61,7 @@ function makeQueryEngine(overrides: Partial<QueryEngine> = {}): QueryEngine {
 		getNetworkBody: () => undefined,
 		readNetworkBody: () => undefined,
 		listSessions: () => [],
-		getOverview: () => ({ session: { id: "s1", startedAt: 0, url: "", title: "" }, markers: [], timeline: [], networkSummary: null, errorSummary: null }),
+		getOverview: () => ({ session: { id: "s1", startedAt: 0, url: "", title: "" }, markers: [], timeline: [], networkSummary: null, errorSummary: null, frameworkSummary: null }),
 		inspect: () => {
 			throw new Error("not implemented");
 		},

@@ -62,20 +62,11 @@ export function registerBrowserTools(server: McpServer, queryEngine: QueryEngine
 				),
 			all_tabs: z.boolean().optional().describe("Record all browser tabs. Default: first/active tab only"),
 			tab_filter: z.string().optional().describe("Glob pattern — record only tabs whose URL matches, e.g. '**/app/**'"),
-		screenshot_interval_ms: z
-			.number()
-			.optional()
-			.describe("Periodic screenshot interval in ms. 0 or omit to disable. Example: 5000 for a screenshot every 5s"),
-		framework_state: z
-			.union([z.boolean(), z.array(z.enum(["react", "vue", "solid", "svelte"]))])
-			.optional()
-			.describe(
-				"Enable framework state observation. " +
-					"true = auto-detect all supported frameworks. " +
-					'["react"] = only React. ' +
-					'["react", "vue"] = both. ' +
-					"Default: false (disabled).",
-			),
+			screenshot_interval_ms: z.number().optional().describe("Periodic screenshot interval in ms. 0 or omit to disable. Example: 5000 for a screenshot every 5s"),
+			framework_state: z
+				.union([z.boolean(), z.array(z.enum(["react", "vue", "solid", "svelte"]))])
+				.optional()
+				.describe("Enable framework state observation. " + "true = auto-detect all supported frameworks. " + '["react"] = only React. ' + '["react", "vue"] = both. ' + "Default: false (disabled)."),
 		},
 		async ({ url, port, profile, attach, all_tabs, tab_filter, screenshot_interval_ms, framework_state }) => {
 			const client = await getDaemonClient(30_000);
@@ -225,7 +216,7 @@ export function registerBrowserTools(server: McpServer, queryEngine: QueryEngine
 		{
 			session_id: z.string().describe("Session ID from session_list"),
 			include: z
-				.array(z.enum(["timeline", "markers", "errors", "network_summary"]))
+				.array(z.enum(["timeline", "markers", "errors", "network_summary", "framework"]))
 				.optional()
 				.describe("What to include. Default: all"),
 			around_marker: z.string().optional().describe("Center overview on this marker ID"),
@@ -258,13 +249,28 @@ export function registerBrowserTools(server: McpServer, queryEngine: QueryEngine
 	server.tool(
 		"session_search",
 		"Search recorded browser session events. Supports natural language search (uses FTS5) " +
-			"and structured filters (event type, status code, time range). " +
+			"and structured filters (event type, status code, time range, framework, component, pattern). " +
 			"Use natural language for exploratory search, structured filters for precise queries.",
 		{
 			session_id: z.string().describe("Session ID"),
 			query: z.string().optional().describe("Natural language search query, e.g. 'validation error' or 'phone format'"),
 			event_types: z
-				.array(z.enum(["navigation", "network_request", "network_response", "console", "page_error", "user_input", "websocket", "performance", "marker"]))
+				.array(
+					z.enum([
+						"navigation",
+						"network_request",
+						"network_response",
+						"console",
+						"page_error",
+						"user_input",
+						"websocket",
+						"performance",
+						"marker",
+						"framework_detect",
+						"framework_state",
+						"framework_error",
+					]),
+				)
 				.optional()
 				.describe("Filter by event type"),
 			status_codes: z.array(z.number()).optional().describe("Filter network responses by HTTP status code, e.g. [400, 422, 500]"),
@@ -281,8 +287,11 @@ export function registerBrowserTools(server: McpServer, queryEngine: QueryEngine
 			contains_text: z.string().optional().describe("Case-insensitive substring match on event summary"),
 			limit: z.number().optional().describe("Max results. Default: 10"),
 			token_budget: z.number().optional().describe("Max tokens for the response. Default: 2000"),
+			framework: z.enum(["react", "vue", "solid", "svelte"]).optional().describe("Filter by framework. Automatically narrows to framework event types."),
+			component: z.string().optional().describe("Filter by component name (substring match), e.g. 'UserProfile'"),
+			pattern: z.string().optional().describe("Filter by bug pattern name, e.g. 'stale_closure', 'infinite_rerender'"),
 		},
-		async ({ session_id, query, event_types, status_codes, time_range, around_marker, url_pattern, console_levels, contains_text, limit, token_budget }) => {
+		async ({ session_id, query, event_types, status_codes, time_range, around_marker, url_pattern, console_levels, contains_text, limit, token_budget, framework, component, pattern }) => {
 			try {
 				const results = queryEngine.search(session_id, {
 					query,
@@ -294,6 +303,9 @@ export function registerBrowserTools(server: McpServer, queryEngine: QueryEngine
 						urlPattern: url_pattern,
 						consoleLevels: console_levels,
 						containsText: contains_text,
+						framework,
+						component,
+						pattern,
 					},
 					maxResults: limit ?? 10,
 				});
@@ -354,9 +366,9 @@ export function registerBrowserTools(server: McpServer, queryEngine: QueryEngine
 			from: z.string().describe("First moment — timestamp (ISO or HH:MM:SS) or event ID"),
 			to: z.string().describe("Second moment — timestamp (ISO or HH:MM:SS) or event ID"),
 			include: z
-				.array(z.enum(["form_state", "storage", "url", "console_new", "network_new"]))
+				.array(z.enum(["form_state", "storage", "url", "console_new", "network_new", "framework_state"]))
 				.optional()
-				.describe("What to diff. Default: all"),
+				.describe("What to diff. Default: form_state, storage, url, console_new, network_new (framework_state must be explicitly requested)"),
 			token_budget: z.number().optional().describe("Max tokens. Default: 2000"),
 		},
 		async ({ session_id, from, to, include, token_budget }) => {

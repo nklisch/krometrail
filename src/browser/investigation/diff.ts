@@ -4,7 +4,7 @@ export interface DiffParams {
 	sessionId: string;
 	before: string; // timestamp or event_id
 	after: string; // timestamp or event_id
-	include?: ("form_state" | "storage" | "url" | "console_new" | "network_new")[];
+	include?: ("form_state" | "storage" | "url" | "console_new" | "network_new" | "framework_state")[];
 }
 
 export interface DiffResult {
@@ -42,6 +42,20 @@ export interface DiffResult {
 		timestamp: number;
 		summary: string;
 	}>;
+
+	/** Framework component changes between the two moments. */
+	frameworkChanges?: FrameworkDiffEntry[];
+	/** Store mutations between the two moments. */
+	storeMutations?: Array<{ storeId: string; mutationType: string; actionName?: string; timestamp: number }>;
+	/** Bug patterns active between the two moments. */
+	frameworkErrors?: Array<{ pattern: string; componentName: string; severity: string; detail: string }>;
+}
+
+export interface FrameworkDiffEntry {
+	componentName: string;
+	changeType: "mounted" | "unmounted" | "updated";
+	/** State changes for updated components. */
+	changes?: Array<{ key: string; prev: unknown; next: unknown }>;
 }
 
 export class SessionDiffer {
@@ -109,6 +123,14 @@ export class SessionDiffer {
 				timestamp: e.timestamp,
 				summary: e.summary,
 			}));
+		}
+
+		// Framework state diff
+		if (include.has("framework_state")) {
+			const fw = this.diffFrameworkState(params.sessionId, beforeTs, afterTs);
+			if (fw.frameworkChanges.length > 0) result.frameworkChanges = fw.frameworkChanges;
+			if (fw.storeMutations) result.storeMutations = fw.storeMutations;
+			if (fw.frameworkErrors) result.frameworkErrors = fw.frameworkErrors;
 		}
 
 		return result;
@@ -224,6 +246,85 @@ export class SessionDiffer {
 		}
 
 		return changes.length > 0 ? changes : undefined;
+	}
+
+	private diffFrameworkState(
+		sessionId: string,
+		before: number,
+		after: number,
+	): {
+		frameworkChanges: FrameworkDiffEntry[];
+		storeMutations: DiffResult["storeMutations"];
+		frameworkErrors: DiffResult["frameworkErrors"];
+	} {
+		const stateEvents = this.queryEngine.search(sessionId, {
+			filters: {
+				eventTypes: ["framework_state"],
+				timeRange: { start: before, end: after },
+			},
+			maxResults: 100,
+		});
+
+		const componentChanges = new Map<string, FrameworkDiffEntry>();
+		const storeMutations: NonNullable<DiffResult["storeMutations"]> = [];
+
+		for (const e of stateEvents) {
+			const full = this.queryEngine.getFullEvent(sessionId, e.event_id);
+			if (!full) continue;
+
+			const d = full.data;
+			const name = d.componentName as string;
+			const changeType = d.changeType as string;
+
+			if (changeType === "store_mutation") {
+				storeMutations.push({
+					storeId: (d.storeId as string) ?? "unknown",
+					mutationType: (d.mutationType as string) ?? "direct",
+					actionName: d.actionName as string | undefined,
+					timestamp: full.timestamp,
+				});
+				continue;
+			}
+
+			const mappedType = changeType === "mount" ? ("mounted" as const) : changeType === "unmount" ? ("unmounted" as const) : ("updated" as const);
+
+			const existing = componentChanges.get(name);
+			if (!existing || mappedType === "unmounted") {
+				componentChanges.set(name, {
+					componentName: name,
+					changeType: mappedType,
+					changes: Array.isArray(d.changes) ? (d.changes as FrameworkDiffEntry["changes"]) : undefined,
+				});
+			} else if (mappedType === "updated" && existing.changeType !== "mounted") {
+				existing.changes = Array.isArray(d.changes) ? (d.changes as FrameworkDiffEntry["changes"]) : existing.changes;
+			}
+		}
+
+		const errorEvents = this.queryEngine.search(sessionId, {
+			filters: {
+				eventTypes: ["framework_error"],
+				timeRange: { start: before, end: after },
+			},
+			maxResults: 20,
+		});
+
+		const frameworkErrors: NonNullable<DiffResult["frameworkErrors"]> = [];
+		for (const e of errorEvents) {
+			const full = this.queryEngine.getFullEvent(sessionId, e.event_id);
+			if (!full) continue;
+			frameworkErrors.push({
+				pattern: (full.data.pattern as string) ?? "unknown",
+				componentName: (full.data.componentName as string) ?? "?",
+				severity: (full.data.severity as string) ?? "medium",
+				detail: (full.data.detail as string) ?? "",
+			});
+		}
+
+		return {
+			frameworkChanges: [...componentChanges.values()],
+			storeMutations: storeMutations.length > 0 ? storeMutations : undefined,
+			frameworkErrors: frameworkErrors.length > 0 ? frameworkErrors : undefined,
+		};
 	}
 
 	resolveTimestamp(sessionId: string, ref: string): number {
