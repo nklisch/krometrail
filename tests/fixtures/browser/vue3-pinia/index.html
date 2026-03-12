@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head><title>Vue 3 + Pinia</title></head>
+<body>
+  <div id="app"></div>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+  <script src="https://unpkg.com/pinia@2/dist/pinia.iife.js"></script>
+  <script>
+    const { createApp, computed } = Vue;
+    const { createPinia, defineStore } = Pinia;
+
+    const useCounterStore = defineStore('counter', {
+      state: () => ({ count: 0, name: 'Counter Store' }),
+      getters: {
+        doubleCount: (state) => state.count * 2,
+      },
+      actions: {
+        increment() { this.count++; },
+      },
+    });
+
+    const StoreDisplay = {
+      name: 'StoreDisplay',
+      setup() {
+        const store = useCounterStore();
+        return { store };
+      },
+      template: `
+        <div>
+          <p id="store-count">Store count: {{ store.count }}</p>
+          <p id="store-double">Double: {{ store.doubleCount }}</p>
+          <button id="store-increment" @click="store.increment()">Action +1</button>
+          <button id="store-direct" @click="store.count++">Direct +1</button>
+        </div>
+      `,
+    };
+
+    const app = createApp({
+      name: 'App',
+      components: { StoreDisplay },
+      template: '<div><h1>Pinia Store Test</h1><StoreDisplay /></div>',
+    });
+    app.use(createPinia());
+    app.mount('#app');
+  </script>
+</body>
+</html>

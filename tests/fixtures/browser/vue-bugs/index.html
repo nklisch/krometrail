@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html>
+<head><title>Vue 3 Bugs</title></head>
+<body>
+  <div id="app"></div>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+  <script>
+    const { createApp, ref, reactive, watch } = Vue;
+
+    // Bug 1: Infinite watcher loop
+    const InfiniteWatcher = {
+      name: 'InfiniteWatcher',
+      setup() {
+        const count = ref(0);
+        const trigger = ref(false);
+
+        watch(count, (val) => {
+          // Mutates its own dependency — infinite loop
+          if (val < 100) count.value = val + 1;
+        });
+
+        const start = () => { trigger.value = !trigger.value; count.value = 1; };
+        return { count, start };
+      },
+      template: '<div><p id="inf-count">{{ count }}</p><button id="inf-start" @click="start">Start Loop</button></div>'
+    };
+
+    // Bug 2: Lost reactivity (destructured reactive)
+    const LostReactivity = {
+      name: 'LostReactivity',
+      setup() {
+        const state = reactive({ x: 1, y: 2 });
+        // Bug: destructuring loses reactivity
+        const { x, y } = state;
+        const plainObj = { nested: { value: 42 } };  // plain object in setupState
+        return { x, y, plainObj, state };
+      },
+      template: '<div><p id="lr-x">x={{ x }}</p><p id="lr-y">y={{ y }}</p></div>'
+    };
+
+    const App = {
+      name: 'App',
+      components: { InfiniteWatcher, LostReactivity },
+      template: '<div><InfiniteWatcher /><LostReactivity /></div>'
+    };
+
+    createApp(App).mount('#app');
+  </script>
+</body>
+</html>

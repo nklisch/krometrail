@@ -60,9 +60,11 @@ describe("FrameworkTracker", () => {
 			expect(scripts[1]).toContain("onCommitFiberRoot");
 		});
 
-		it("returns 1 script when only vue is enabled (no observer yet)", () => {
+		it("returns 2 scripts when only vue is enabled (detection + vue observer)", () => {
 			const scripts = new FrameworkTracker(["vue"]).getInjectionScripts();
-			expect(scripts).toHaveLength(1);
+			expect(scripts).toHaveLength(2);
+			expect(scripts[0]).toContain("framework_detect");
+			expect(scripts[1]).toContain("__VUE_DEVTOOLS_GLOBAL_HOOK__");
 		});
 
 		it("returns 1 script when only solid is enabled (no observer yet)", () => {
@@ -70,11 +72,20 @@ describe("FrameworkTracker", () => {
 			expect(scripts).toHaveLength(1);
 		});
 
-		it("returns 2 scripts when true (all frameworks — react observer included)", () => {
-			const scripts = new FrameworkTracker(true).getInjectionScripts();
-			expect(scripts).toHaveLength(2);
+		it("includes both react and vue observer scripts when both in config", () => {
+			const scripts = new FrameworkTracker(["react", "vue"]).getInjectionScripts();
+			expect(scripts).toHaveLength(3);
 			expect(scripts[0]).toContain("framework_detect");
 			expect(scripts[1]).toContain("onCommitFiberRoot");
+			expect(scripts[2]).toContain("__VUE_DEVTOOLS_GLOBAL_HOOK__");
+		});
+
+		it("returns 3 scripts when true (all frameworks — react + vue observers)", () => {
+			const scripts = new FrameworkTracker(true).getInjectionScripts();
+			expect(scripts).toHaveLength(3);
+			expect(scripts[0]).toContain("framework_detect");
+			expect(scripts[1]).toContain("onCommitFiberRoot");
+			expect(scripts[2]).toContain("__VUE_DEVTOOLS_GLOBAL_HOOK__");
 		});
 
 		it("detection script is always at index 0", () => {
@@ -173,6 +184,60 @@ describe("FrameworkTracker", () => {
 			});
 			const event = tracker.processFrameworkEvent(json, tabId);
 			expect(event?.summary).toBe("[react:high] infinite_rerender in Counter");
+		});
+
+		it("parses vue framework_state event with storeId and mutationType", () => {
+			const json = JSON.stringify({
+				type: "framework_state",
+				ts: 5000,
+				data: { framework: "vue", componentName: "[Store] counter", changeType: "store_mutation", storeId: "counter", mutationType: "direct" },
+			});
+			const event = tracker.processFrameworkEvent(json, tabId);
+			expect(event).not.toBeNull();
+			expect(event?.type).toBe("framework_state");
+			expect(event?.data.storeId).toBe("counter");
+			expect(event?.data.mutationType).toBe("direct");
+		});
+
+		it("parses vue framework_state event with actionName", () => {
+			const json = JSON.stringify({
+				type: "framework_state",
+				ts: 6000,
+				data: { framework: "vue", componentName: "[Store] counter", changeType: "store_mutation", storeId: "counter", actionName: "increment" },
+			});
+			const event = tracker.processFrameworkEvent(json, tabId);
+			expect(event).not.toBeNull();
+			expect(event?.data.actionName).toBe("increment");
+		});
+
+		it("generates correct summary for vue state event", () => {
+			const json = JSON.stringify({
+				type: "framework_state",
+				ts: 7000,
+				data: { framework: "vue", componentName: "Counter", changeType: "mount", renderCount: 1 },
+			});
+			const event = tracker.processFrameworkEvent(json, tabId);
+			expect(event?.summary).toBe("[vue] Counter: mount (render #1)");
+		});
+
+		it("generates correct summary for vue store_mutation event", () => {
+			const json = JSON.stringify({
+				type: "framework_state",
+				ts: 8000,
+				data: { framework: "vue", componentName: "[Store] counter", changeType: "store_mutation" },
+			});
+			const event = tracker.processFrameworkEvent(json, tabId);
+			expect(event?.summary).toBe("[vue] [Store] counter: store_mutation");
+		});
+
+		it("generates correct summary for vue detect event", () => {
+			const json = JSON.stringify({
+				type: "framework_detect",
+				ts: 9000,
+				data: { framework: "vue", version: "3.4.0", rootCount: 1 },
+			});
+			const event = tracker.processFrameworkEvent(json, tabId);
+			expect(event?.summary).toBe("[vue] Vue 3.4.0 detected (1 root)");
 		});
 
 		it("uses crypto.randomUUID() for event id", () => {

@@ -1,6 +1,7 @@
 import type { EventType, RecordedEvent } from "../../types.js";
 import { getDetectionScript } from "./detector.js";
 import { ReactObserver } from "./react-observer.js";
+import { VueObserver } from "./vue-observer.js";
 
 /** Parsed __BL__ framework event from the injection script. */
 export interface FrameworkBLEvent {
@@ -18,6 +19,7 @@ export interface FrameworkTrackerConfig {
 export class FrameworkTracker {
 	private config: FrameworkTrackerConfig;
 	private reactObserver: ReactObserver | null = null;
+	private vueObserver: VueObserver | null = null;
 
 	constructor(frameworkState: boolean | string[] | undefined) {
 		if (!frameworkState) {
@@ -49,7 +51,11 @@ export class FrameworkTracker {
 			scripts.push(this.reactObserver.getInjectionScript());
 		}
 
-		// Phase 16+: Vue, Solid, Svelte observers will be added here
+		// Phase 16: Vue observer
+		if (this.config.frameworks.includes("vue")) {
+			this.vueObserver = new VueObserver();
+			scripts.push(this.vueObserver.getInjectionScript());
+		}
 
 		return scripts;
 	}
