@@ -62,6 +62,10 @@ describe("shouldUseDiffMode", () => {
 		expect(shouldUseDiffMode(DEFAULT_COMPRESSION_TIERS[3])).toBe(true);
 	});
 
+	it("returns false for tier 1 (moderate compression, no auto-diff)", () => {
+		expect(shouldUseDiffMode(DEFAULT_COMPRESSION_TIERS[1])).toBe(false);
+	});
+
 	it("returns true when session diff mode is explicitly enabled", () => {
 		expect(shouldUseDiffMode(DEFAULT_COMPRESSION_TIERS[0], true)).toBe(true);
 	});

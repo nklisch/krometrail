@@ -268,6 +268,135 @@ describe("computeViewportDiff", () => {
 	});
 });
 
+describe("renderViewport — locals truncation", () => {
+	it("shows '(N more...)' when locals exceed localsMaxItems", () => {
+		const locals = Array.from({ length: 25 }, (_, i) => ({ name: `var${i}`, value: `${i}` }));
+		const snapshot: ViewportSnapshot = {
+			file: "test.py",
+			line: 10,
+			function: "main",
+			reason: "step",
+			totalFrames: 1,
+			stack: [{ file: "test.py", shortFile: "test.py", line: 10, function: "main", arguments: "" }],
+			source: [{ line: 10, text: "  x = 1" }],
+			locals,
+		};
+		const config = { ...defaultConfig, localsMaxItems: 5 };
+		const output = renderViewport(snapshot, config);
+		expect(output).toContain("var0");
+		expect(output).toContain("var4");
+		expect(output).not.toContain("var5");
+		expect(output).toContain("(20 more...)");
+	});
+
+	it("shows no truncation message when locals fit within limit", () => {
+		const snapshot: ViewportSnapshot = {
+			file: "test.py",
+			line: 10,
+			function: "main",
+			reason: "step",
+			totalFrames: 1,
+			stack: [{ file: "test.py", shortFile: "test.py", line: 10, function: "main", arguments: "" }],
+			source: [{ line: 10, text: "  x = 1" }],
+			locals: [{ name: "x", value: "42" }],
+		};
+		const output = renderViewport(snapshot, defaultConfig);
+		expect(output).not.toContain("more...");
+	});
+});
+
+describe("renderViewport — stack depth display", () => {
+	it("shows 'N of M frames' when stack exceeds stackDepth", () => {
+		const stack = Array.from({ length: 3 }, (_, i) => ({
+			file: `file${i}.py`,
+			shortFile: `file${i}.py`,
+			line: 10 + i,
+			function: `func${i}`,
+			arguments: "",
+		}));
+		const snapshot: ViewportSnapshot = {
+			file: "file0.py",
+			line: 10,
+			function: "func0",
+			reason: "breakpoint",
+			totalFrames: 10,
+			stack,
+			source: [{ line: 10, text: "  x = 1" }],
+			locals: [],
+		};
+		const output = renderViewport(snapshot, defaultConfig);
+		expect(output).toContain("Call Stack (3 of 10 frames)");
+	});
+});
+
+describe("renderViewport — stop reasons", () => {
+	const reasons: Array<"breakpoint" | "step" | "exception" | "pause" | "entry"> = ["breakpoint", "step", "exception", "pause", "entry"];
+	for (const reason of reasons) {
+		it(`renders reason '${reason}'`, () => {
+			const snapshot: ViewportSnapshot = {
+				file: "test.py",
+				line: 1,
+				function: "main",
+				reason,
+				totalFrames: 1,
+				stack: [{ file: "test.py", shortFile: "test.py", line: 1, function: "main", arguments: "" }],
+				source: [{ line: 1, text: "  pass" }],
+				locals: [],
+			};
+			const output = renderViewport(snapshot, defaultConfig);
+			expect(output).toContain(`Reason: ${reason}`);
+		});
+	}
+});
+
+describe("renderViewport — exception with exceptionId", () => {
+	it("renders exception info including type and message", () => {
+		const snapshot: ViewportSnapshot = {
+			file: "app.py",
+			line: 42,
+			function: "process",
+			reason: "exception",
+			totalFrames: 1,
+			stack: [{ file: "app.py", shortFile: "app.py", line: 42, function: "process", arguments: "" }],
+			source: [{ line: 42, text: "  raise TypeError('expected int')" }],
+			locals: [],
+			exception: { type: "TypeError", message: "expected int", exceptionId: "exc-123" },
+		};
+		const output = renderViewport(snapshot, defaultConfig);
+		expect(output).toContain("Exception: TypeError: expected int");
+	});
+});
+
+describe("computeViewportDiff — removed variables", () => {
+	it("does not track removed variables (only current locals are diffed)", () => {
+		const prev: ViewportSnapshot = {
+			file: "test.py",
+			line: 10,
+			function: "main",
+			reason: "step",
+			totalFrames: 1,
+			stack: [{ file: "test.py", shortFile: "test.py", line: 10, function: "main", arguments: "" }],
+			source: [{ line: 10, text: "  x = 1" }],
+			locals: [{ name: "x", value: "1" }, { name: "temp", value: "99" }],
+		};
+		const curr: ViewportSnapshot = {
+			file: "test.py",
+			line: 11,
+			function: "main",
+			reason: "step",
+			totalFrames: 1,
+			stack: [{ file: "test.py", shortFile: "test.py", line: 11, function: "main", arguments: "" }],
+			source: [{ line: 11, text: "  y = 2" }],
+			locals: [{ name: "x", value: "1" }],
+		};
+		const diff = computeViewportDiff(curr, prev);
+		// "temp" was removed — it should not appear in changedVariables
+		expect(diff.changedVariables.map((v) => v.name)).not.toContain("temp");
+		// "x" is unchanged
+		expect(diff.unchangedCount).toBe(1);
+	});
+});
+
 describe("renderViewportDiff", () => {
 	it("shows (same frame) in header", () => {
 		const diff = {
