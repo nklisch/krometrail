@@ -80,6 +80,20 @@ export async function setupBrowserTest(options?: BrowserTestOptions): Promise<Br
 		}
 	}
 
+	// Auto-build Vite fixtures if dist/ doesn't exist
+	const distDir = join(fixtureDir, "dist");
+	const viteConfig = join(fixtureDir, "vite.config.ts");
+	if (existsSync(viteConfig) && !existsSync(distDir)) {
+		const buildResult = Bun.spawnSync(["bunx", "vite", "build"], {
+			cwd: fixtureDir,
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		if (buildResult.exitCode !== 0) {
+			throw new Error(`Vite build failed in ${fixtureDir}: ${buildResult.stderr}`);
+		}
+	}
+
 	// 1. Start fixture server
 	const { port: appPort, process: serverProc } = await startFixtureServer(fixtureDir);
 	const appUrl = `http://localhost:${appPort}`;
