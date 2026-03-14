@@ -18,7 +18,7 @@
 		<footer class="kt-footer">
 			<div class="footer-inner">
 				<div class="footer-links">
-					<a href="/guide/">Docs</a>
+					<a :href="withBase('/guide/')">Docs</a>
 					<a href="https://github.com/nklisch/krometrail" target="_blank" rel="noopener">GitHub</a>
 				</div>
 				<p class="footer-license">MIT License</p>
@@ -29,6 +29,7 @@
 </template>
 
 <script setup lang="ts">
+import { withBase } from "vitepress";
 import BrowserShowcase from "./components/BrowserShowcase.vue";
 import ComparisonTable from "./components/ComparisonTable.vue";
 import HeroSection from "./components/HeroSection.vue";

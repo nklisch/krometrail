@@ -17,7 +17,7 @@
 
 			<div class="pipeline">
 				<div v-for="(step, i) in pipeline" :key="step.label" class="pipeline-step">
-					<a :href="step.link" class="step-box">
+					<a :href="withBase(step.link)" class="step-box">
 						<span class="step-label">{{ step.label }}</span>
 					</a>
 					<span v-if="i < pipeline.length - 1" class="step-arrow" aria-hidden="true">→</span>
@@ -51,6 +51,8 @@ Framework React: OrderForm state { code: "SAVE15", applying: true }
 </template>
 
 <script setup lang="ts">
+import { withBase } from "vitepress";
+
 const capabilities = [
 	{
 		icon: "🌐",

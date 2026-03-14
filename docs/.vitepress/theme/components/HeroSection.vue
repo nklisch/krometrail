@@ -12,7 +12,7 @@
 					browser session at every step.
 				</p>
 				<div class="hero-ctas">
-					<a href="/guide/" class="kt-btn-primary">Get Started</a>
+					<a :href="withBase('/guide/')" class="kt-btn-primary">Get Started</a>
 					<a href="https://github.com/nklisch/krometrail" class="kt-btn-outline" target="_blank" rel="noopener">
 						View on GitHub
 					</a>
@@ -63,7 +63,7 @@ Locals
 </template>
 
 <script setup lang="ts">
-// Static hero — no reactive state needed
+import { withBase } from "vitepress";
 </script>
 
 <style scoped>

@@ -163,6 +163,22 @@ div[class*="language-"] {
 	background-color: var(--vp-c-bg) !important;
 }
 
+/* Landing page: remove default page layout padding so content is full-width */
+.VPPage .kt-landing {
+	max-width: none;
+	padding: 0;
+}
+
+.VPContent.has-sidebar {
+	padding-left: 0;
+}
+
+/* Hide VitePress footer on landing page (landing has its own footer) */
+.VPPage:has(.kt-landing) + .VPFooter,
+.VPDoc:has(.kt-landing) + .VPFooter {
+	display: none;
+}
+
 /* Scrollbar styling for dark theme */
 .dark ::-webkit-scrollbar {
 	width: 6px;
