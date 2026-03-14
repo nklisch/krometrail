@@ -21,17 +21,17 @@ Verify: `python -m debugpy --version`
 
 ```bash
 # Debug a script
-krometrail launch "python app.py" --break app.py:42
+krometrail debug launch "python app.py" --break app.py:42
 
 # Debug a pytest test
-krometrail launch "python -m pytest tests/test_order.py::test_gold_discount -x" \
+krometrail debug launch "python -m pytest tests/test_order.py::test_gold_discount -x" \
 	--break order.py:147
 
 # Debug Django
-krometrail launch "python manage.py runserver" --break views.py:83
+krometrail debug launch "python manage.py runserver" --break views.py:83
 
 # Debug Flask
-krometrail launch "flask run" --break routes.py:55
+krometrail debug launch "flask run" --break routes.py:55
 ```
 
 ## Framework Auto-detection
@@ -47,16 +47,16 @@ pytest, Django, and Flask are auto-detected from the launch command. The adapter
 Python expressions work directly in conditions:
 
 ```bash
-krometrail break "order.py:147 when discount < 0"
-krometrail break "loop.py:25 when i == 99"
-krometrail break "api.py:30 when request.method == 'POST'"
+krometrail debug break "order.py:147 when discount < 0"
+krometrail debug break "loop.py:25 when i == 99"
+krometrail debug break "api.py:30 when request.method == 'POST'"
 ```
 
 ## Exception Breakpoints
 
 ```bash
-krometrail break --exceptions uncaught    # only unhandled exceptions
-krometrail break --exceptions raised      # all raised exceptions
+krometrail debug break --exceptions uncaught    # only unhandled exceptions
+krometrail debug break --exceptions raised      # all raised exceptions
 ```
 
 For specific exception types, use a conditional breakpoint with `isinstance`.

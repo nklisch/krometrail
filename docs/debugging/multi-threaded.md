@@ -12,7 +12,7 @@ When debugging multi-threaded programs or Go goroutines, Krometrail exposes thre
 ::: code-group
 
 ```bash [CLI]
-krometrail threads
+krometrail debug threads
 ```
 
 ```json [MCP: debug_threads]
@@ -47,7 +47,7 @@ After listing threads, switch context to a specific thread:
 ::: code-group
 
 ```bash [CLI]
-krometrail threads --select 4
+krometrail debug threads --select 4
 ```
 
 ```json [MCP: debug_threads]
@@ -66,10 +66,10 @@ Once a thread is selected, all execution control commands apply to that thread:
 
 ```bash
 # Select a thread
-krometrail threads --select 4
+krometrail debug threads --select 4
 
 # Step within that thread
-krometrail step over
+krometrail debug step over
 
 # The other threads remain in their current state
 ```

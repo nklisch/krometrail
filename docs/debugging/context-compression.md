@@ -16,8 +16,8 @@ Retrieve it at any time:
 ::: code-group
 
 ```bash [CLI]
-krometrail log
-krometrail log --detailed
+krometrail debug log
+krometrail debug log --detailed
 ```
 
 ```json [MCP: debug_action_log]

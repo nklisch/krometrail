@@ -36,7 +36,7 @@ Ask Codex:
 
 Codex will:
 
-1. `debug_launch` (or `krometrail launch`) with `python3 -m pytest tests/ -k test_gold` and a breakpoint at `discount.py:42`
+1. `debug_launch` (or `krometrail debug launch`) with `python3 -m pytest tests/ -k test_gold` and a breakpoint at `discount.py:42`
 2. Continue to the breakpoint
 3. Evaluate `tier` and `tier_multipliers['gold']`
 4. Step into the function

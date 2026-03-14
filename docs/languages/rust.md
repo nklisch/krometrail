@@ -32,14 +32,14 @@ The adapter uses LLDB when available, falling back to GDB.
 ```bash
 # Build first, then debug
 cargo build
-krometrail launch "cargo run" --break src/order.rs:147
+krometrail debug launch "cargo run" --break src/order.rs:147
 
 # Debug tests
 cargo test --no-run  # build test binary
-krometrail launch "cargo test" --break src/order.rs:147
+krometrail debug launch "cargo test" --break src/order.rs:147
 
 # Debug a specific test
-krometrail launch "cargo test test_gold_discount -- --nocapture" \
+krometrail debug launch "cargo test test_gold_discount -- --nocapture" \
 	--break src/order.rs:147
 ```
 
@@ -48,8 +48,8 @@ krometrail launch "cargo test test_gold_discount -- --nocapture" \
 Rust expressions:
 
 ```bash
-krometrail break "src/order.rs:147 when discount < 0.0"
-krometrail break "src/loop.rs:25 when i == 99"
+krometrail debug break "src/order.rs:147 when discount < 0.0"
+krometrail debug break "src/loop.rs:25 when i == 99"
 ```
 
 ## Inspecting Rust Types

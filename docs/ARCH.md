@@ -45,8 +45,8 @@ A typical interaction follows this sequence:
 │                       krometrail                         │
 │  ┌────────────────────┐    ┌─────────────────────────┐  │
 │  │  MCP Server        │    │  CLI                     │  │
-│  │  (tool interface)  │    │  krometrail launch ...   │  │
-│  │                    │    │  krometrail step ...     │  │
+│  │  (tool interface)  │    │  krometrail debug launch ...   │  │
+│  │                    │    │  krometrail debug step ...     │  │
 │  └─────────┬──────────┘    └────────────┬────────────┘  │
 │            └──────────┬─────────────────┘               │
 │  ┌────────────────────┴──────────────────────────────┐  │

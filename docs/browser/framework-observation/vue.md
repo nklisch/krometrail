@@ -58,13 +58,13 @@ Krometrail extracts state from both APIs:
 
 ```bash
 # Find all Vue component errors
-krometrail session search <session-id> --event-types framework_error --framework vue
+krometrail browser search <session-id> --event-types framework_error --framework vue
 
 # Find all store mutations
-krometrail session search <session-id> --event-types framework_state "pinia"
+krometrail browser search <session-id> --event-types framework_state "pinia"
 
 # Find component updates with state changes
-krometrail session search <session-id> --framework vue --event-types framework_state
+krometrail browser search <session-id> --framework vue --event-types framework_state
 ```
 
 ## Vue Version Support

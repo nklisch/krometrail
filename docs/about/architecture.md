@@ -30,7 +30,7 @@ Four layers, each with a single responsibility:
 │                       krometrail                         │
 │  ┌────────────────────┐    ┌─────────────────────────┐  │
 │  │  MCP Server        │    │  CLI                     │  │
-│  │  (tool interface)  │    │  krometrail launch ...   │  │
+│  │  (tool interface)  │    │  krometrail debug launch ...   │  │
 │  └─────────┬──────────┘    └────────────┬────────────┘  │
 │            └──────────┬─────────────────┘               │
 │  ┌────────────────────┴──────────────────────────────┐  │

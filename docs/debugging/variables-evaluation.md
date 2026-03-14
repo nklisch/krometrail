@@ -13,22 +13,22 @@ The viewport shows a shallow snapshot of local variables at every stop. Use `deb
 
 ```bash [CLI]
 # Locals (default)
-krometrail vars
+krometrail debug vars
 
 # All scopes
-krometrail vars --scope all
+krometrail debug vars --scope all
 
 # Global scope
-krometrail vars --scope global
+krometrail debug vars --scope global
 
 # Closure variables
-krometrail vars --scope closure
+krometrail debug vars --scope closure
 
 # Filter by name prefix
-krometrail vars --filter "^user"
+krometrail debug vars --filter "^user"
 
 # Different stack frame
-krometrail vars --frame 2
+krometrail debug vars --frame 2
 ```
 
 ```json [MCP: debug_variables]
@@ -67,19 +67,19 @@ krometrail vars --frame 2
 
 ```bash [CLI]
 # Simple expression
-krometrail eval "discount"
+krometrail debug eval "discount"
 
 # Method call
-krometrail eval "cart.total()"
+krometrail debug eval "cart.total()"
 
 # Dict/object access
-krometrail eval "tier_multipliers['gold']"
+krometrail debug eval "tier_multipliers['gold']"
 
 # Deep object expansion
-krometrail eval "user.__dict__" --depth 3
+krometrail debug eval "user.__dict__" --depth 3
 
 # In a different frame
-krometrail eval "request.headers" --frame 2
+krometrail debug eval "request.headers" --frame 2
 ```
 
 ```json [MCP: debug_evaluate]
@@ -121,12 +121,12 @@ The most effective pattern is to form a hypothesis about a bad value, then use `
 
 ```bash
 # Hypothesis: tier_multipliers has wrong value for gold
-krometrail eval "tier_multipliers"
+krometrail debug eval "tier_multipliers"
 # → {"bronze": 0.05, "silver": 0.1, "gold": 1.0, "platinum": 0.2}
 # Confirmed: gold should be 0.1, not 1.0
 
 # Hypothesis: the calculation is done correctly but the result has wrong sign
-krometrail eval "calculate_discount(user, 100.0)"
+krometrail debug eval "calculate_discount(user, 100.0)"
 # → -100.0 (confirms the sign is inverted in the multiplier application)
 ```
 

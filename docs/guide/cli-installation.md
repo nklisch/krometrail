@@ -33,7 +33,27 @@ Install with a single command — no Node.js or Bun required:
 curl -fsSL https://krometrail.dev/install.sh | sh
 ```
 
-Or download a specific binary from [GitHub releases](https://github.com/nklisch/krometrail/releases):
+The installer detects your OS and architecture, downloads the correct binary from GitHub releases, verifies the SHA-256 checksum, and adds it to your PATH.
+
+**Install a specific version:**
+
+```bash
+curl -fsSL https://krometrail.dev/install.sh | sh -s -- --version v0.2.0
+```
+
+**Custom install directory:**
+
+```bash
+KROMETRAIL_INSTALL_DIR=/usr/local/bin curl -fsSL https://krometrail.dev/install.sh | sh
+```
+
+**Skip PATH modification:**
+
+```bash
+curl -fsSL https://krometrail.dev/install.sh | sh -s -- --no-modify-path
+```
+
+Or download a specific binary directly from [GitHub releases](https://github.com/nklisch/krometrail/releases):
 
 ```bash
 # Linux x64 (example)
@@ -78,16 +98,16 @@ Node.js and Rust (CodeLLDB) adapters download their debuggers automatically on f
 
 ## Session Daemon
 
-The CLI manages sessions via a background daemon that starts automatically on `krometrail launch` and shuts down after all sessions end. This means consecutive commands share a session:
+The CLI manages sessions via a background daemon that starts automatically on `krometrail debug launch` and shuts down after all sessions end. This means consecutive commands share a session:
 
 ```bash
-krometrail launch "python app.py" --break order.py:147
+krometrail debug launch "python app.py" --break order.py:147
 # daemon starts, session created
 
-krometrail continue
+krometrail debug continue
 # same session, no server lifecycle to manage
 
-krometrail stop
+krometrail debug stop
 # session ends, daemon idles then shuts down
 ```
 

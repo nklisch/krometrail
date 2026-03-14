@@ -23,7 +23,7 @@ pip3 install debugpy
 ```bash
 # Clear the cache and retry
 rm -rf ~/.krometrail/adapters/js-debug/
-krometrail launch "node app.js"  # triggers re-download
+krometrail debug launch "node app.js"  # triggers re-download
 ```
 
 If the download fails due to network restrictions, download manually from the [js-debug releases](https://github.com/microsoft/vscode-js-debug/releases) and extract to `~/.krometrail/adapters/js-debug/`.
@@ -44,7 +44,7 @@ go install github.com/go-delve/delve/cmd/dlv@latest
 **Fix**:
 ```bash
 rm -rf ~/.krometrail/adapters/codelldb/
-krometrail launch "cargo run"  # triggers re-download
+krometrail debug launch "cargo run"  # triggers re-download
 ```
 
 Also ensure `cargo` is installed: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
@@ -110,8 +110,8 @@ GDB must be version 14+ for DAP support. Check with: `gdb --version`
 **Symptom**: `DAPTimeoutError: DAP request timed out`
 
 **Fix**:
-- Increase timeout with `--timeout` flag (in ms): `krometrail continue --timeout 30000`
-- Check if the debugger process started: `krometrail status`
+- Increase timeout with `--timeout` flag (in ms): `krometrail debug continue --timeout 30000`
+- Check if the debugger process started: `krometrail debug status`
 - For slow machines or large programs, the debugger may need more time to initialize
 
 ### Debugger process crashed
@@ -132,7 +132,7 @@ GDB must be version 14+ for DAP support. Check with: `gdb --version`
 **Symptom**: Session continues without stopping, or breakpoint shows as unverified
 
 **Fix**:
-- Use absolute paths for breakpoints: `krometrail break /full/path/to/file.py:25`
+- Use absolute paths for breakpoints: `krometrail debug break /full/path/to/file.py:25`
 - Ensure the file path matches exactly — relative paths are resolved from the working directory
 - For pytest: the breakpoint file should be the test file, not the module being tested
 
@@ -178,10 +178,10 @@ GDB must be version 14+ for DAP support. Check with: `gdb --version`
 **Fix**:
 ```bash
 # List active sessions
-krometrail status
+krometrail debug status
 
 # Target a specific session
-krometrail eval "x" --session abc123
+krometrail debug eval "x" --session abc123
 ```
 
 ---
@@ -194,7 +194,7 @@ krometrail eval "x" --session abc123
 
 **Fix**: Override with `--framework`:
 ```bash
-krometrail launch "pytest tests/" --framework pytest
+krometrail debug launch "pytest tests/" --framework pytest
 ```
 
 ### Framework detection causes launch failure
@@ -203,7 +203,7 @@ krometrail launch "pytest tests/" --framework pytest
 
 **Fix**: Disable framework detection:
 ```bash
-krometrail launch "python app.py" --framework none
+krometrail debug launch "python app.py" --framework none
 ```
 
 Or for MCP: `debug_launch` with `framework: "none"`
@@ -239,12 +239,12 @@ No adapter is registered for this file extension. Check `krometrail doctor` for 
 
 ### "Session is in 'running' state, expected 'stopped'"
 
-Most debugging commands (eval, vars, step) require the program to be paused. Use `krometrail continue` first to run to a breakpoint.
+Most debugging commands (eval, vars, step) require the program to be paused. Use `krometrail debug continue` first to run to a breakpoint.
 
 ### "Failed to connect to debugger on port XXXX"
 
 The debugger process started but isn't listening yet. This usually means:
-1. The process crashed immediately — check `krometrail status` for stderr output
+1. The process crashed immediately — check `krometrail debug status` for stderr output
 2. The program requires input before the debugger port opens
 3. The port was blocked by a firewall
 

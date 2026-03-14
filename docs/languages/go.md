@@ -21,17 +21,17 @@ Verify: `dlv version`
 
 ```bash
 # Debug a Go program
-krometrail launch "go run main.go" --break main.go:42
+krometrail debug launch "go run main.go" --break main.go:42
 
 # Debug Go tests
-krometrail launch "go test ./..." --break service/order.go:147
+krometrail debug launch "go test ./..." --break service/order.go:147
 
 # Debug a specific test function
-krometrail launch "go test -run TestGoldDiscount ./service/..." \
+krometrail debug launch "go test -run TestGoldDiscount ./service/..." \
 	--break service/order.go:147
 
 # Debug with race detector
-krometrail launch "go test -race ./..." --break service/order.go:147
+krometrail debug launch "go test -race ./..." --break service/order.go:147
 ```
 
 ## Test Framework Auto-detection
@@ -44,13 +44,13 @@ Go programs often have many goroutines. Use `debug_threads` to list and select t
 
 ```bash
 # List all goroutines
-krometrail threads
+krometrail debug threads
 
 # Select a specific goroutine
-krometrail threads --select 6
+krometrail debug threads --select 6
 
 # Then step within that goroutine
-krometrail step over
+krometrail debug step over
 ```
 
 Goroutine names (set via `runtime.SetGoroutineLabels`) appear in the thread list.
@@ -60,9 +60,9 @@ Goroutine names (set via `runtime.SetGoroutineLabels`) appear in the thread list
 Go expressions:
 
 ```bash
-krometrail break "order.go:147 when discount < 0"
-krometrail break "loop.go:25 when i == 99"
-krometrail break "api.go:30 when req.Method == \"POST\""
+krometrail debug break "order.go:147 when discount < 0"
+krometrail debug break "loop.go:25 when i == 99"
+krometrail debug break "api.go:30 when req.Method == \"POST\""
 ```
 
 ## Tips
@@ -70,7 +70,7 @@ krometrail break "api.go:30 when req.Method == \"POST\""
 - The adapter uses `dlv dap --listen :PORT` — the DAP transport, not the legacy CLI transport
 - Interface values are shown with their concrete type: `<io.Reader: *os.File: "stdout">`
 - Pointer types show the dereferenced value: `*Order: {id: 482, total: 149.97}`
-- For debugging tests that compile slowly, run `go test -c -o test_binary ./...` first, then `krometrail launch "./test_binary -test.run TestName"`
+- For debugging tests that compile slowly, run `go test -c -o test_binary ./...` first, then `krometrail debug launch "./test_binary -test.run TestName"`
 - Set `CGO_ENABLED=0` if your code has CGo and breakpoints aren't hitting in C portions
 
 ## Troubleshooting

@@ -19,16 +19,16 @@ Verify: `netcoredbg --version`
 
 ```bash
 # Debug a .NET program
-krometrail launch "dotnet run" --break Program.cs:42
+krometrail debug launch "dotnet run" --break Program.cs:42
 
 # Debug with a specific project
-krometrail launch "dotnet run --project src/MyApp" --break src/MyApp/OrderService.cs:147
+krometrail debug launch "dotnet run --project src/MyApp" --break src/MyApp/OrderService.cs:147
 
 # Debug tests
-krometrail launch "dotnet test" --break src/MyApp/OrderService.cs:147
+krometrail debug launch "dotnet test" --break src/MyApp/OrderService.cs:147
 
 # Debug a specific test
-krometrail launch "dotnet test --filter OrderServiceTests.TestGoldDiscount" \
+krometrail debug launch "dotnet test --filter OrderServiceTests.TestGoldDiscount" \
 	--break src/MyApp/OrderService.cs:147
 ```
 
@@ -37,8 +37,8 @@ krometrail launch "dotnet test --filter OrderServiceTests.TestGoldDiscount" \
 C# expressions work directly in conditions:
 
 ```bash
-krometrail break "OrderService.cs:147 when discount < 0"
-krometrail break "OrderService.cs:147 when user.Tier == \"Gold\""
+krometrail debug break "OrderService.cs:147 when discount < 0"
+krometrail debug break "OrderService.cs:147 when user.Tier == \"Gold\""
 ```
 
 ## Inspecting .NET Objects

@@ -19,15 +19,15 @@ Verify: `java --version` (must be 11+)
 
 ```bash
 # Debug a plain Java program
-krometrail launch "java -cp target/classes com.example.Main" \
+krometrail debug launch "java -cp target/classes com.example.Main" \
 	--break src/main/java/com/example/OrderService.java:147
 
 # Debug with Maven
-krometrail launch "mvn exec:java -Dexec.mainClass=com.example.Main" \
+krometrail debug launch "mvn exec:java -Dexec.mainClass=com.example.Main" \
 	--break src/main/java/com/example/OrderService.java:147
 
 # Debug JUnit tests
-krometrail launch "mvn test -Dtest=OrderServiceTest" \
+krometrail debug launch "mvn test -Dtest=OrderServiceTest" \
 	--break src/main/java/com/example/OrderService.java:147
 ```
 
@@ -40,8 +40,8 @@ The adapter starts the JVM with JDWP agent flags (`-agentlib:jdwp=transport=dt_s
 Java expressions:
 
 ```bash
-krometrail break "OrderService.java:147 when discount < 0"
-krometrail break "OrderService.java:147 when user.getTier().equals(\"GOLD\")"
+krometrail debug break "OrderService.java:147 when discount < 0"
+krometrail debug break "OrderService.java:147 when user.getTier().equals(\"GOLD\")"
 ```
 
 ## Thread Debugging
@@ -49,7 +49,7 @@ krometrail break "OrderService.java:147 when user.getTier().equals(\"GOLD\")"
 Java programs typically have many threads (GC, finalizer, etc.). Use `debug_threads` to navigate:
 
 ```bash
-krometrail threads
+krometrail debug threads
 # Focus on application threads — filter out GC/finalizer by name
 ```
 
@@ -67,8 +67,8 @@ Locals:
 Use `debug_evaluate` for deeper inspection:
 
 ```bash
-krometrail eval "order.getDiscount().getClass().getName()"
-krometrail eval "items.stream().mapToDouble(Item::getPrice).sum()"
+krometrail debug eval "order.getDiscount().getClass().getName()"
+krometrail debug eval "items.stream().mapToDouble(Item::getPrice).sum()"
 ```
 
 ## Tips

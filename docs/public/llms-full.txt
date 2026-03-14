@@ -506,8 +506,8 @@ A typical interaction follows this sequence:
 │                       krometrail                         │
 │  ┌────────────────────┐    ┌─────────────────────────┐  │
 │  │  MCP Server        │    │  CLI                     │  │
-│  │  (tool interface)  │    │  krometrail launch ...   │  │
-│  │                    │    │  krometrail step ...     │  │
+│  │  (tool interface)  │    │  krometrail debug launch ...   │  │
+│  │                    │    │  krometrail debug step ...     │  │
 │  └─────────┬──────────┘    └────────────┬────────────┘  │
 │            └──────────┬─────────────────┘               │
 │  ┌────────────────────┴──────────────────────────────┐  │
@@ -1257,15 +1257,15 @@ inspect runtime state to diagnose a bug — especially when static code
 reading and test output aren't enough to identify the root cause.
 
 ## Quick start
-  krometrail launch "<command>" --break <file>:<line>
-  krometrail continue          # run to next breakpoint
-  krometrail step into|over|out
-  krometrail eval "<expr>"     # evaluate expression at current stop
-  krometrail vars              # show local variables
-  krometrail stop              # end session
+  krometrail debug launch "<command>" --break <file>:<line>
+  krometrail debug continue          # run to next breakpoint
+  krometrail debug step into|over|out
+  krometrail debug eval "<expr>"     # evaluate expression at current stop
+  krometrail debug vars              # show local variables
+  krometrail debug stop              # end session
 
 ## Conditional breakpoints
-  krometrail break "<file>:<line> when <condition>"
+  krometrail debug break "<file>:<line> when <condition>"
 
 ## Strategy
 1. Start by setting a breakpoint where you expect the bug to manifest.
@@ -1276,7 +1276,7 @@ reading and test output aren't enough to identify the root cause.
 5. Once you identify the root cause, stop the session and fix the code.
 
 ## Key rules
-- Always call `krometrail stop` when done to clean up.
+- Always call `krometrail debug stop` when done to clean up.
 - Prefer conditional breakpoints over stepping through loops.
 - Each command prints a viewport showing source, locals, and stack.
 - If a session times out (5 min default), re-launch.
@@ -1383,7 +1383,7 @@ Four layers, each with a single responsibility:
 │                       krometrail                         │
 │  ┌────────────────────┐    ┌─────────────────────────┐  │
 │  │  MCP Server        │    │  CLI                     │  │
-│  │  (tool interface)  │    │  krometrail launch ...   │  │
+│  │  (tool interface)  │    │  krometrail debug launch ...   │  │
 │  └─────────┬──────────┘    └────────────┬────────────┘  │
 │            └──────────┬─────────────────┘               │
 │  ┌────────────────────┴──────────────────────────────┐  │
@@ -1668,13 +1668,13 @@ After recording, find React events using `session_search`:
 
 ```bash
 # Find all high-severity React errors
-krometrail session search <session-id> --event-types framework_error --framework react
+krometrail browser search <session-id> --event-types framework_error --framework react
 
 # Find infinite re-render patterns
-krometrail session search <session-id> --framework react --pattern infinite_rerender
+krometrail browser search <session-id> --framework react --pattern infinite_rerender
 
 # Find all re-renders of a specific component
-krometrail session search <session-id> "UserProfile" --event-types framework_state
+krometrail browser search <session-id> "UserProfile" --event-types framework_state
 ```
 
 ## React Version Support
@@ -1742,13 +1742,13 @@ Krometrail extracts state from both APIs:
 
 ```bash
 # Find all Vue component errors
-krometrail session search <session-id> --event-types framework_error --framework vue
+krometrail browser search <session-id> --event-types framework_error --framework vue
 
 # Find all store mutations
-krometrail session search <session-id> --event-types framework_state "pinia"
+krometrail browser search <session-id> --event-types framework_state "pinia"
 
 # Find component updates with state changes
-krometrail session search <session-id> --framework vue --event-types framework_state
+krometrail browser search <session-id> --framework vue --event-types framework_state
 ```
 
 ## Vue Version Support
@@ -2189,23 +2189,23 @@ Annotations are safe to use in hot paths — they don't trigger screenshots or p
 
 ```bash [CLI]
 # Simple line breakpoint
-krometrail break order.py:147
+krometrail debug break order.py:147
 
 # Multiple lines in one file
-krometrail break order.py:147,150,155
+krometrail debug break order.py:147,150,155
 
 # Conditional breakpoint — only fires when expression is true
-krometrail break "order.py:147 when discount < 0"
+krometrail debug break "order.py:147 when discount < 0"
 
 # Hit count — fires after N hits
-krometrail break "order.py:147 hit >=100"
+krometrail debug break "order.py:147 hit >=100"
 
 # Logpoint — logs a message instead of stopping
-krometrail break "order.py:147 log 'discount={discount}, total={total}'"
+krometrail debug break "order.py:147 log 'discount={discount}, total={total}'"
 
 # Exception breakpoints
-krometrail break --exceptions uncaught
-krometrail break --exceptions raised    # Python: all raised exceptions
+krometrail debug break --exceptions uncaught
+krometrail debug break --exceptions raised    # Python: all raised exceptions
 ```
 
 ```json [MCP: debug_set_breakpoints]
@@ -2262,7 +2262,7 @@ Pass initial breakpoints with `debug_launch` to avoid a separate call:
 
 ```bash
 # CLI
-krometrail breakpoints
+krometrail debug breakpoints
 
 # MCP: debug_list_breakpoints
 { "session_id": "..." }
@@ -2274,10 +2274,10 @@ Returns all active breakpoints with current hit counts.
 
 ```bash
 # Remove all breakpoints in a file
-krometrail break --clear order.py
+krometrail debug break --clear order.py
 
 # To remove specific breakpoints, set the file with only the ones you want to keep
-krometrail break order.py:150,155
+krometrail debug break order.py:150,155
 # (line 147 is now removed)
 ```
 
@@ -2287,16 +2287,16 @@ krometrail break order.py:150,155
 
 ```bash [CLI]
 # Step over — execute current line, stay in current function
-krometrail step over
+krometrail debug step over
 
 # Step into — enter the function being called
-krometrail step into
+krometrail debug step into
 
 # Step out — run to end of current function, return to caller
-krometrail step out
+krometrail debug step out
 
 # Step multiple times
-krometrail step over --count 5
+krometrail debug step over --count 5
 ```
 
 ```json [MCP: debug_step]
@@ -2317,7 +2317,7 @@ Run to a specific line without setting a permanent breakpoint:
 ::: code-group
 
 ```bash [CLI]
-krometrail run-to order.py:155
+krometrail debug run-to order.py:155
 ```
 
 ```json [MCP: debug_run_to]
@@ -2333,8 +2333,8 @@ Resume execution until the next breakpoint or program exit:
 ::: code-group
 
 ```bash [CLI]
-krometrail continue
-krometrail continue --timeout 10000
+krometrail debug continue
+krometrail debug continue --timeout 10000
 ```
 
 ```json [MCP: debug_continue]
@@ -2349,9 +2349,9 @@ krometrail continue --timeout 10000
 ::: code-group
 
 ```bash [CLI]
-krometrail break --exceptions uncaught    # only uncaught exceptions
-krometrail break --exceptions raised      # all raised exceptions (Python)
-krometrail break --exceptions all         # all exceptions (JS)
+krometrail debug break --exceptions uncaught    # only uncaught exceptions
+krometrail debug break --exceptions raised      # all raised exceptions (Python)
+krometrail debug break --exceptions all         # all exceptions (JS)
 ```
 
 ```json [MCP: debug_set_exception_breakpoints]
@@ -2382,8 +2382,8 @@ Retrieve it at any time:
 ::: code-group
 
 ```bash [CLI]
-krometrail log
-krometrail log --detailed
+krometrail debug log
+krometrail debug log --detailed
 ```
 
 ```json [MCP: debug_action_log]
@@ -2509,7 +2509,7 @@ Krometrail detects which test framework or web framework is being used and adjus
 If detection produces incorrect behavior, override the language explicitly:
 
 ```bash
-krometrail launch "cargo test" --language rust
+krometrail debug launch "cargo test" --language rust
 ```
 
 ```json
@@ -2526,7 +2526,7 @@ For frameworks not auto-detected, or for custom launch configurations, the adapt
 For Python frameworks not in the list:
 ```bash
 # Launch with debugpy wait explicitly
-krometrail launch "python -m debugpy --wait-for-client my_framework_command"
+krometrail debug launch "python -m debugpy --wait-for-client my_framework_command"
 ```
 
 ## Checking Detection
@@ -2550,7 +2550,7 @@ When debugging multi-threaded programs or Go goroutines, Krometrail exposes thre
 ::: code-group
 
 ```bash [CLI]
-krometrail threads
+krometrail debug threads
 ```
 
 ```json [MCP: debug_threads]
@@ -2585,7 +2585,7 @@ After listing threads, switch context to a specific thread:
 ::: code-group
 
 ```bash [CLI]
-krometrail threads --select 4
+krometrail debug threads --select 4
 ```
 
 ```json [MCP: debug_threads]
@@ -2604,10 +2604,10 @@ Once a thread is selected, all execution control commands apply to that thread:
 
 ```bash
 # Select a thread
-krometrail threads --select 4
+krometrail debug threads --select 4
 
 # Step within that thread
-krometrail step over
+krometrail debug step over
 
 # The other threads remain in their current state
 ```
@@ -2724,22 +2724,22 @@ The viewport shows a shallow snapshot of local variables at every stop. Use `deb
 
 ```bash [CLI]
 # Locals (default)
-krometrail vars
+krometrail debug vars
 
 # All scopes
-krometrail vars --scope all
+krometrail debug vars --scope all
 
 # Global scope
-krometrail vars --scope global
+krometrail debug vars --scope global
 
 # Closure variables
-krometrail vars --scope closure
+krometrail debug vars --scope closure
 
 # Filter by name prefix
-krometrail vars --filter "^user"
+krometrail debug vars --filter "^user"
 
 # Different stack frame
-krometrail vars --frame 2
+krometrail debug vars --frame 2
 ```
 
 ```json [MCP: debug_variables]
@@ -2778,19 +2778,19 @@ krometrail vars --frame 2
 
 ```bash [CLI]
 # Simple expression
-krometrail eval "discount"
+krometrail debug eval "discount"
 
 # Method call
-krometrail eval "cart.total()"
+krometrail debug eval "cart.total()"
 
 # Dict/object access
-krometrail eval "tier_multipliers['gold']"
+krometrail debug eval "tier_multipliers['gold']"
 
 # Deep object expansion
-krometrail eval "user.__dict__" --depth 3
+krometrail debug eval "user.__dict__" --depth 3
 
 # In a different frame
-krometrail eval "request.headers" --frame 2
+krometrail debug eval "request.headers" --frame 2
 ```
 
 ```json [MCP: debug_evaluate]
@@ -2832,12 +2832,12 @@ The most effective pattern is to form a hypothesis about a bad value, then use `
 
 ```bash
 # Hypothesis: tier_multipliers has wrong value for gold
-krometrail eval "tier_multipliers"
+krometrail debug eval "tier_multipliers"
 # → {"bronze": 0.05, "silver": 0.1, "gold": 1.0, "platinum": 0.2}
 # Confirmed: gold should be 0.1, not 1.0
 
 # Hypothesis: the calculation is done correctly but the result has wrong sign
-krometrail eval "calculate_discount(user, 100.0)"
+krometrail debug eval "calculate_discount(user, 100.0)"
 # → -100.0 (confirms the sign is inverted in the multiplier application)
 ```
 
@@ -2855,13 +2855,13 @@ Watch expressions are evaluated automatically at every debug stop and displayed 
 
 ```bash [CLI]
 # Add one expression
-krometrail watch "len(cart.items)"
+krometrail debug watch "len(cart.items)"
 
 # Add multiple at once
-krometrail watch "len(cart.items)" "user.tier" "total > 0"
+krometrail debug watch "len(cart.items)" "user.tier" "total > 0"
 
 # Add a computed expression
-krometrail watch "discount / subtotal"
+krometrail debug watch "discount / subtotal"
 ```
 
 ```json [MCP: debug_watch]
@@ -2894,13 +2894,13 @@ Watch:
 
 ```bash
 # View current watches (they appear in every viewport)
-krometrail watch
+krometrail debug watch
 
 # Remove specific watches
-krometrail watch --remove "user.tier"
+krometrail debug watch --remove "user.tier"
 
 # Clear all watches
-krometrail watch --clear
+krometrail debug watch --clear
 ```
 
 ```json
@@ -2927,13 +2927,13 @@ They are cleared when the session ends (`debug_stop`).
 
 **Tracking a suspicious value across multiple steps:**
 ```bash
-krometrail watch "discount" "base_rate" "tier_multipliers.get(tier, 'missing')"
+krometrail debug watch "discount" "base_rate" "tier_multipliers.get(tier, 'missing')"
 # Now every step shows these three values without extra calls
 ```
 
 **Boolean sentinels:**
 ```bash
-krometrail watch "discount < 0" "len(results) == 0" "user.is_active"
+krometrail debug watch "discount < 0" "len(results) == 0" "user.is_active"
 # Quick sanity checks at each stop
 ```
 
@@ -9665,7 +9665,27 @@ Install with a single command — no Node.js or Bun required:
 curl -fsSL https://krometrail.dev/install.sh | sh
 ```
 
-Or download a specific binary from [GitHub releases](https://github.com/nklisch/krometrail/releases):
+The installer detects your OS and architecture, downloads the correct binary from GitHub releases, verifies the SHA-256 checksum, and adds it to your PATH.
+
+**Install a specific version:**
+
+```bash
+curl -fsSL https://krometrail.dev/install.sh | sh -s -- --version v0.2.0
+```
+
+**Custom install directory:**
+
+```bash
+KROMETRAIL_INSTALL_DIR=/usr/local/bin curl -fsSL https://krometrail.dev/install.sh | sh
+```
+
+**Skip PATH modification:**
+
+```bash
+curl -fsSL https://krometrail.dev/install.sh | sh -s -- --no-modify-path
+```
+
+Or download a specific binary directly from [GitHub releases](https://github.com/nklisch/krometrail/releases):
 
 ```bash
 # Linux x64 (example)
@@ -9710,16 +9730,16 @@ Node.js and Rust (CodeLLDB) adapters download their debuggers automatically on f
 
 ## Session Daemon
 
-The CLI manages sessions via a background daemon that starts automatically on `krometrail launch` and shuts down after all sessions end. This means consecutive commands share a session:
+The CLI manages sessions via a background daemon that starts automatically on `krometrail debug launch` and shuts down after all sessions end. This means consecutive commands share a session:
 
 ```bash
-krometrail launch "python app.py" --break order.py:147
+krometrail debug launch "python app.py" --break order.py:147
 # daemon starts, session created
 
-krometrail continue
+krometrail debug continue
 # same session, no server lifecycle to manage
 
-krometrail stop
+krometrail debug stop
 # session ends, daemon idles then shuts down
 ```
 
@@ -9740,7 +9760,7 @@ A Python order processing function calculates discounts incorrectly for gold-tie
 ::: code-group
 
 ```bash [CLI]
-krometrail launch "python -m pytest tests/test_order.py::test_gold_discount -x" \
+krometrail debug launch "python -m pytest tests/test_order.py::test_gold_discount -x" \
 	--break order.py:147
 ```
 
@@ -9792,10 +9812,10 @@ Re-launch with an earlier breakpoint to step into `calculate_discount`:
 ::: code-group
 
 ```bash [CLI]
-krometrail stop
-krometrail launch "python -m pytest tests/test_order.py::test_gold_discount -x" \
+krometrail debug stop
+krometrail debug launch "python -m pytest tests/test_order.py::test_gold_discount -x" \
 	--break order.py:143
-krometrail step into
+krometrail debug step into
 ```
 
 ```json [MCP]
@@ -9822,8 +9842,8 @@ Skip to the line that computes the discount, but only for gold-tier customers:
 ::: code-group
 
 ```bash [CLI]
-krometrail break "discount.py:23 when tier == 'gold'"
-krometrail continue
+krometrail debug break "discount.py:23 when tier == 'gold'"
+krometrail debug continue
 ```
 
 ```json [MCP]
@@ -9852,7 +9872,7 @@ Locals:
 ::: code-group
 
 ```bash [CLI]
-krometrail eval "tier_multipliers"
+krometrail debug eval "tier_multipliers"
 ```
 
 ```json [MCP]
@@ -9874,7 +9894,7 @@ krometrail eval "tier_multipliers"
 ## Step 6: Clean Up
 
 ```bash
-krometrail stop
+krometrail debug stop
 ```
 
 Total debug actions: 6–8. Total tokens for viewports: ~2,400. Time to root cause: seconds.
@@ -9883,8 +9903,8 @@ Total debug actions: 6–8. Total tokens for viewports: ~2,400. Time to root cau
 
 - **Set breakpoints before function calls** — catching bad state at the call site before stepping in is more efficient than trying to trace afterward
 - **Use conditional breakpoints for loops** — `when tier == 'gold'` skips irrelevant iterations
-- **Evaluate expressions to test hypotheses** — `krometrail eval "tier_multipliers"` confirms the bug without modifying code
-- **Watch expressions persist across steps** — add `krometrail watch "discount / subtotal"` to track a ratio automatically
+- **Evaluate expressions to test hypotheses** — `krometrail debug eval "tier_multipliers"` confirms the bug without modifying code
+- **Watch expressions persist across steps** — add `krometrail debug watch "discount / subtotal"` to track a ratio automatically
 
 See [Breakpoints & Stepping](../debugging/breakpoints-stepping) and [Variables & Evaluation](../debugging/variables-evaluation) for the full tool reference.
 
@@ -10165,7 +10185,7 @@ Claude Code will:
 - **MCP path is zero-config** — Claude discovers tools automatically from the server
 - **CLI path** exposes the same tools as bash commands — transparent, scriptable, and preferred by some agent setups
 - **Let Claude choose breakpoints** — it knows the code better after reading it
-- **Conditional breakpoints** are powerful for loops: `krometrail break app.py:25 when discount < 0`
+- **Conditional breakpoints** are powerful for loops: `krometrail debug break app.py:25 when discount < 0`
 - **The viewport is compact** (~400 tokens per stop) so Claude can take many debug steps without exhausting context
 - **Framework auto-detection** works for pytest, jest, go test, Django, Flask, etc.
 
@@ -10217,7 +10237,7 @@ Ask Codex:
 
 Codex will:
 
-1. `debug_launch` (or `krometrail launch`) with `python3 -m pytest tests/ -k test_gold` and a breakpoint at `discount.py:42`
+1. `debug_launch` (or `krometrail debug launch`) with `python3 -m pytest tests/ -k test_gold` and a breakpoint at `discount.py:42`
 2. Continue to the breakpoint
 3. Evaluate `tier` and `tier_multipliers['gold']`
 4. Step into the function
@@ -10362,7 +10382,7 @@ pip3 install debugpy
 ```bash
 # Clear the cache and retry
 rm -rf ~/.krometrail/adapters/js-debug/
-krometrail launch "node app.js"  # triggers re-download
+krometrail debug launch "node app.js"  # triggers re-download
 ```
 
 If the download fails due to network restrictions, download manually from the [js-debug releases](https://github.com/microsoft/vscode-js-debug/releases) and extract to `~/.krometrail/adapters/js-debug/`.
@@ -10383,7 +10403,7 @@ go install github.com/go-delve/delve/cmd/dlv@latest
 **Fix**:
 ```bash
 rm -rf ~/.krometrail/adapters/codelldb/
-krometrail launch "cargo run"  # triggers re-download
+krometrail debug launch "cargo run"  # triggers re-download
 ```
 
 Also ensure `cargo` is installed: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
@@ -10449,8 +10469,8 @@ GDB must be version 14+ for DAP support. Check with: `gdb --version`
 **Symptom**: `DAPTimeoutError: DAP request timed out`
 
 **Fix**:
-- Increase timeout with `--timeout` flag (in ms): `krometrail continue --timeout 30000`
-- Check if the debugger process started: `krometrail status`
+- Increase timeout with `--timeout` flag (in ms): `krometrail debug continue --timeout 30000`
+- Check if the debugger process started: `krometrail debug status`
 - For slow machines or large programs, the debugger may need more time to initialize
 
 ### Debugger process crashed
@@ -10471,7 +10491,7 @@ GDB must be version 14+ for DAP support. Check with: `gdb --version`
 **Symptom**: Session continues without stopping, or breakpoint shows as unverified
 
 **Fix**:
-- Use absolute paths for breakpoints: `krometrail break /full/path/to/file.py:25`
+- Use absolute paths for breakpoints: `krometrail debug break /full/path/to/file.py:25`
 - Ensure the file path matches exactly — relative paths are resolved from the working directory
 - For pytest: the breakpoint file should be the test file, not the module being tested
 
@@ -10517,10 +10537,10 @@ GDB must be version 14+ for DAP support. Check with: `gdb --version`
 **Fix**:
 ```bash
 # List active sessions
-krometrail status
+krometrail debug status
 
 # Target a specific session
-krometrail eval "x" --session abc123
+krometrail debug eval "x" --session abc123
 ```
 
 ---
@@ -10533,7 +10553,7 @@ krometrail eval "x" --session abc123
 
 **Fix**: Override with `--framework`:
 ```bash
-krometrail launch "pytest tests/" --framework pytest
+krometrail debug launch "pytest tests/" --framework pytest
 ```
 
 ### Framework detection causes launch failure
@@ -10542,7 +10562,7 @@ krometrail launch "pytest tests/" --framework pytest
 
 **Fix**: Disable framework detection:
 ```bash
-krometrail launch "python app.py" --framework none
+krometrail debug launch "python app.py" --framework none
 ```
 
 Or for MCP: `debug_launch` with `framework: "none"`
@@ -10578,12 +10598,12 @@ No adapter is registered for this file extension. Check `krometrail doctor` for 
 
 ### "Session is in 'running' state, expected 'stopped'"
 
-Most debugging commands (eval, vars, step) require the program to be paused. Use `krometrail continue` first to run to a breakpoint.
+Most debugging commands (eval, vars, step) require the program to be paused. Use `krometrail debug continue` first to run to a breakpoint.
 
 ### "Failed to connect to debugger on port XXXX"
 
 The debugger process started but isn't listening yet. This usually means:
-1. The process crashed immediately — check `krometrail status` for stderr output
+1. The process crashed immediately — check `krometrail debug status` for stderr output
 2. The program requires input before the debugger port opens
 3. The port was blocked by a firewall
 
@@ -10639,16 +10659,16 @@ The adapter compiles source files automatically with debug symbols if you provid
 
 ```bash
 # Compile and debug a C program
-krometrail launch "gcc -g -o app app.c && ./app" --break app.c:42
+krometrail debug launch "gcc -g -o app app.c && ./app" --break app.c:42
 
 # Or let the adapter compile:
-krometrail launch "app.c" --break app.c:42
+krometrail debug launch "app.c" --break app.c:42
 
 # C++ with g++
-krometrail launch "g++ -g -o app app.cpp && ./app" --break app.cpp:42
+krometrail debug launch "g++ -g -o app app.cpp && ./app" --break app.cpp:42
 
 # Debug an existing binary
-krometrail launch "./app" --break app.c:42 --language cpp
+krometrail debug launch "./app" --break app.c:42 --language cpp
 ```
 
 ## Conditional Breakpoints
@@ -10656,9 +10676,9 @@ krometrail launch "./app" --break app.c:42 --language cpp
 C/C++ expressions:
 
 ```bash
-krometrail break "order.c:147 when discount < 0"
-krometrail break "loop.c:25 when i == 99"
-krometrail break "api.c:30 when strcmp(method, \"POST\") == 0"
+krometrail debug break "order.c:147 when discount < 0"
+krometrail debug break "loop.c:25 when i == 99"
+krometrail debug break "api.c:30 when strcmp(method, \"POST\") == 0"
 ```
 
 ## Inspecting C/C++ Values
@@ -10675,9 +10695,9 @@ Locals:
 Pointers show the address and the dereferenced value. Use `debug_evaluate` with GDB expressions for deeper inspection:
 
 ```bash
-krometrail eval "order->tier"
-krometrail eval "*(double*)(&raw_value)"
-krometrail eval "((Order*)ptr)->id"
+krometrail debug eval "order->tier"
+krometrail debug eval "*(double*)(&raw_value)"
+krometrail debug eval "((Order*)ptr)->id"
 ```
 
 ## stdin/stdout Transport
@@ -10689,14 +10709,14 @@ Unlike other adapters, C/C++ uses stdin/stdout transport (GDB's DAP mode communi
 - Always compile with `-g` (debug info) and without `-O2`/`-O3` (optimization breaks debug info)
 - For CMake projects: `cmake -DCMAKE_BUILD_TYPE=Debug ..` then debug the built binary
 - Thread debugging works — `debug_threads` lists pthreads created by `pthread_create`
-- Valgrind and AddressSanitizer can be combined: `krometrail launch "valgrind --vgdb=yes ./app"` for memory debugging
+- Valgrind and AddressSanitizer can be combined: `krometrail debug launch "valgrind --vgdb=yes ./app"` for memory debugging
 
 ## GDB vs lldb-dap
 
 `krometrail doctor` checks for both. GDB is the default on Linux; lldb-dap is preferred on macOS. Override with `--language` if needed:
 
 ```bash
-krometrail launch "./app" --language cpp
+krometrail debug launch "./app" --language cpp
 ```
 
 ---
@@ -10717,16 +10737,16 @@ Verify: `netcoredbg --version`
 
 ```bash
 # Debug a .NET program
-krometrail launch "dotnet run" --break Program.cs:42
+krometrail debug launch "dotnet run" --break Program.cs:42
 
 # Debug with a specific project
-krometrail launch "dotnet run --project src/MyApp" --break src/MyApp/OrderService.cs:147
+krometrail debug launch "dotnet run --project src/MyApp" --break src/MyApp/OrderService.cs:147
 
 # Debug tests
-krometrail launch "dotnet test" --break src/MyApp/OrderService.cs:147
+krometrail debug launch "dotnet test" --break src/MyApp/OrderService.cs:147
 
 # Debug a specific test
-krometrail launch "dotnet test --filter OrderServiceTests.TestGoldDiscount" \
+krometrail debug launch "dotnet test --filter OrderServiceTests.TestGoldDiscount" \
 	--break src/MyApp/OrderService.cs:147
 ```
 
@@ -10735,8 +10755,8 @@ krometrail launch "dotnet test --filter OrderServiceTests.TestGoldDiscount" \
 C# expressions work directly in conditions:
 
 ```bash
-krometrail break "OrderService.cs:147 when discount < 0"
-krometrail break "OrderService.cs:147 when user.Tier == \"Gold\""
+krometrail debug break "OrderService.cs:147 when discount < 0"
+krometrail debug break "OrderService.cs:147 when user.Tier == \"Gold\""
 ```
 
 ## Inspecting .NET Objects
@@ -10778,17 +10798,17 @@ Verify: `dlv version`
 
 ```bash
 # Debug a Go program
-krometrail launch "go run main.go" --break main.go:42
+krometrail debug launch "go run main.go" --break main.go:42
 
 # Debug Go tests
-krometrail launch "go test ./..." --break service/order.go:147
+krometrail debug launch "go test ./..." --break service/order.go:147
 
 # Debug a specific test function
-krometrail launch "go test -run TestGoldDiscount ./service/..." \
+krometrail debug launch "go test -run TestGoldDiscount ./service/..." \
 	--break service/order.go:147
 
 # Debug with race detector
-krometrail launch "go test -race ./..." --break service/order.go:147
+krometrail debug launch "go test -race ./..." --break service/order.go:147
 ```
 
 ## Test Framework Auto-detection
@@ -10801,13 +10821,13 @@ Go programs often have many goroutines. Use `debug_threads` to list and select t
 
 ```bash
 # List all goroutines
-krometrail threads
+krometrail debug threads
 
 # Select a specific goroutine
-krometrail threads --select 6
+krometrail debug threads --select 6
 
 # Then step within that goroutine
-krometrail step over
+krometrail debug step over
 ```
 
 Goroutine names (set via `runtime.SetGoroutineLabels`) appear in the thread list.
@@ -10817,9 +10837,9 @@ Goroutine names (set via `runtime.SetGoroutineLabels`) appear in the thread list
 Go expressions:
 
 ```bash
-krometrail break "order.go:147 when discount < 0"
-krometrail break "loop.go:25 when i == 99"
-krometrail break "api.go:30 when req.Method == \"POST\""
+krometrail debug break "order.go:147 when discount < 0"
+krometrail debug break "loop.go:25 when i == 99"
+krometrail debug break "api.go:30 when req.Method == \"POST\""
 ```
 
 ## Tips
@@ -10827,7 +10847,7 @@ krometrail break "api.go:30 when req.Method == \"POST\""
 - The adapter uses `dlv dap --listen :PORT` — the DAP transport, not the legacy CLI transport
 - Interface values are shown with their concrete type: `<io.Reader: *os.File: "stdout">`
 - Pointer types show the dereferenced value: `*Order: {id: 482, total: 149.97}`
-- For debugging tests that compile slowly, run `go test -c -o test_binary ./...` first, then `krometrail launch "./test_binary -test.run TestName"`
+- For debugging tests that compile slowly, run `go test -c -o test_binary ./...` first, then `krometrail debug launch "./test_binary -test.run TestName"`
 - Set `CGO_ENABLED=0` if your code has CGo and breakpoints aren't hitting in C portions
 
 ## Troubleshooting
@@ -10857,15 +10877,15 @@ Verify: `java --version` (must be 11+)
 
 ```bash
 # Debug a plain Java program
-krometrail launch "java -cp target/classes com.example.Main" \
+krometrail debug launch "java -cp target/classes com.example.Main" \
 	--break src/main/java/com/example/OrderService.java:147
 
 # Debug with Maven
-krometrail launch "mvn exec:java -Dexec.mainClass=com.example.Main" \
+krometrail debug launch "mvn exec:java -Dexec.mainClass=com.example.Main" \
 	--break src/main/java/com/example/OrderService.java:147
 
 # Debug JUnit tests
-krometrail launch "mvn test -Dtest=OrderServiceTest" \
+krometrail debug launch "mvn test -Dtest=OrderServiceTest" \
 	--break src/main/java/com/example/OrderService.java:147
 ```
 
@@ -10878,8 +10898,8 @@ The adapter starts the JVM with JDWP agent flags (`-agentlib:jdwp=transport=dt_s
 Java expressions:
 
 ```bash
-krometrail break "OrderService.java:147 when discount < 0"
-krometrail break "OrderService.java:147 when user.getTier().equals(\"GOLD\")"
+krometrail debug break "OrderService.java:147 when discount < 0"
+krometrail debug break "OrderService.java:147 when user.getTier().equals(\"GOLD\")"
 ```
 
 ## Thread Debugging
@@ -10887,7 +10907,7 @@ krometrail break "OrderService.java:147 when user.getTier().equals(\"GOLD\")"
 Java programs typically have many threads (GC, finalizer, etc.). Use `debug_threads` to navigate:
 
 ```bash
-krometrail threads
+krometrail debug threads
 # Focus on application threads — filter out GC/finalizer by name
 ```
 
@@ -10905,8 +10925,8 @@ Locals:
 Use `debug_evaluate` for deeper inspection:
 
 ```bash
-krometrail eval "order.getDiscount().getClass().getName()"
-krometrail eval "items.stream().mapToDouble(Item::getPrice).sum()"
+krometrail debug eval "order.getDiscount().getClass().getName()"
+krometrail debug eval "items.stream().mapToDouble(Item::getPrice).sum()"
 ```
 
 ## Tips
@@ -10934,16 +10954,16 @@ Verify: `java --version` (must be 11+)
 
 ```bash
 # Debug a compiled Kotlin program
-krometrail launch "java -jar app.jar" --break src/main/kotlin/OrderService.kt:147
+krometrail debug launch "java -jar app.jar" --break src/main/kotlin/OrderService.kt:147
 
 # Debug with Gradle
-krometrail launch "./gradlew run" --break src/main/kotlin/OrderService.kt:147
+krometrail debug launch "./gradlew run" --break src/main/kotlin/OrderService.kt:147
 
 # Debug Kotlin tests
-krometrail launch "./gradlew test" --break src/main/kotlin/OrderService.kt:147
+krometrail debug launch "./gradlew test" --break src/main/kotlin/OrderService.kt:147
 
 # Debug a specific test
-krometrail launch "./gradlew test --tests OrderServiceTest.testGoldDiscount" \
+krometrail debug launch "./gradlew test --tests OrderServiceTest.testGoldDiscount" \
 	--break src/main/kotlin/OrderService.kt:147
 ```
 
@@ -10956,7 +10976,7 @@ The adapter starts the JVM with JDWP agent flags (`-agentlib:jdwp=transport=dt_s
 Java/JVM expressions work in conditions (Kotlin syntax is not fully supported in JDWP expressions):
 
 ```bash
-krometrail break "src/main/kotlin/OrderService.kt:147 when discount < 0"
+krometrail debug break "src/main/kotlin/OrderService.kt:147 when discount < 0"
 ```
 
 ## Inspecting Kotlin Objects
@@ -10996,17 +11016,17 @@ Verify: `node --version` (must be 18+)
 
 ```bash
 # Debug a Node.js script
-krometrail launch "node index.js" --break index.js:42
+krometrail debug launch "node index.js" --break index.js:42
 
 # Debug TypeScript (ts-node)
-krometrail launch "npx ts-node src/app.ts" --break src/app.ts:30
+krometrail debug launch "npx ts-node src/app.ts" --break src/app.ts:30
 
 # Debug jest tests
-krometrail launch "npx jest tests/order.test.js --no-coverage" \
+krometrail debug launch "npx jest tests/order.test.js --no-coverage" \
 	--break src/order.js:147
 
 # Debug mocha tests
-krometrail launch "npx mocha tests/**/*.test.js" --break src/api.js:83
+krometrail debug launch "npx mocha tests/**/*.test.js" --break src/api.js:83
 ```
 
 ## TypeScript
@@ -11014,7 +11034,7 @@ krometrail launch "npx mocha tests/**/*.test.js" --break src/api.js:83
 Source maps are enabled automatically. Set breakpoints against the TypeScript source files, not the compiled JavaScript:
 
 ```bash
-krometrail break "src/order.ts:147 when discount < 0"
+krometrail debug break "src/order.ts:147 when discount < 0"
 ```
 
 The adapter sets `outFiles` to map compiled output back to source locations. Ensure your `tsconfig.json` has `"sourceMap": true`.
@@ -11028,16 +11048,16 @@ jest and mocha are auto-detected from the launch command. The adapter configures
 JavaScript expressions work in conditions:
 
 ```bash
-krometrail break "order.js:147 when discount < 0"
-krometrail break "loop.js:25 when i === 99"
-krometrail break "api.js:30 when req.method === 'POST'"
+krometrail debug break "order.js:147 when discount < 0"
+krometrail debug break "loop.js:25 when i === 99"
+krometrail debug break "api.js:30 when req.method === 'POST'"
 ```
 
 ## Exception Breakpoints
 
 ```bash
-krometrail break --exceptions uncaught
-krometrail break --exceptions all       # including caught exceptions
+krometrail debug break --exceptions uncaught
+krometrail debug break --exceptions all       # including caught exceptions
 ```
 
 ## Evaluating Async Expressions
@@ -11045,7 +11065,7 @@ krometrail break --exceptions all       # including caught exceptions
 `debug_evaluate` supports `await` in the expression if you're stopped in an async context:
 
 ```bash
-krometrail eval "await user.fetchProfile()"
+krometrail debug eval "await user.fetchProfile()"
 ```
 
 ## Tips
@@ -11075,17 +11095,17 @@ Verify: `python -m debugpy --version`
 
 ```bash
 # Debug a script
-krometrail launch "python app.py" --break app.py:42
+krometrail debug launch "python app.py" --break app.py:42
 
 # Debug a pytest test
-krometrail launch "python -m pytest tests/test_order.py::test_gold_discount -x" \
+krometrail debug launch "python -m pytest tests/test_order.py::test_gold_discount -x" \
 	--break order.py:147
 
 # Debug Django
-krometrail launch "python manage.py runserver" --break views.py:83
+krometrail debug launch "python manage.py runserver" --break views.py:83
 
 # Debug Flask
-krometrail launch "flask run" --break routes.py:55
+krometrail debug launch "flask run" --break routes.py:55
 ```
 
 ## Framework Auto-detection
@@ -11101,16 +11121,16 @@ pytest, Django, and Flask are auto-detected from the launch command. The adapter
 Python expressions work directly in conditions:
 
 ```bash
-krometrail break "order.py:147 when discount < 0"
-krometrail break "loop.py:25 when i == 99"
-krometrail break "api.py:30 when request.method == 'POST'"
+krometrail debug break "order.py:147 when discount < 0"
+krometrail debug break "loop.py:25 when i == 99"
+krometrail debug break "api.py:30 when request.method == 'POST'"
 ```
 
 ## Exception Breakpoints
 
 ```bash
-krometrail break --exceptions uncaught    # only unhandled exceptions
-krometrail break --exceptions raised      # all raised exceptions
+krometrail debug break --exceptions uncaught    # only unhandled exceptions
+krometrail debug break --exceptions raised      # all raised exceptions
 ```
 
 For specific exception types, use a conditional breakpoint with `isinstance`.
@@ -11154,16 +11174,16 @@ Verify: `rdbg --version`
 
 ```bash
 # Debug a script
-krometrail launch "ruby app.rb" --break app.rb:42
+krometrail debug launch "ruby app.rb" --break app.rb:42
 
 # Debug with bundler
-krometrail launch "bundle exec ruby app.rb" --break lib/order.rb:147
+krometrail debug launch "bundle exec ruby app.rb" --break lib/order.rb:147
 
 # Debug RSpec tests
-krometrail launch "bundle exec rspec spec/order_spec.rb" --break lib/order.rb:147
+krometrail debug launch "bundle exec rspec spec/order_spec.rb" --break lib/order.rb:147
 
 # Debug Rails
-krometrail launch "bundle exec rails server" --break app/controllers/orders_controller.rb:55
+krometrail debug launch "bundle exec rails server" --break app/controllers/orders_controller.rb:55
 ```
 
 ## How It Works
@@ -11175,8 +11195,8 @@ The adapter launches `rdbg --open --port PORT` to start a DAP server, then conne
 Ruby expressions work directly in conditions:
 
 ```bash
-krometrail break "lib/order.rb:147 when discount < 0"
-krometrail break "lib/loop.rb:25 when i == 99"
+krometrail debug break "lib/order.rb:147 when discount < 0"
+krometrail debug break "lib/loop.rb:25 when i == 99"
 ```
 
 ## Inspecting Ruby Objects
@@ -11228,14 +11248,14 @@ The adapter uses LLDB when available, falling back to GDB.
 ```bash
 # Build first, then debug
 cargo build
-krometrail launch "cargo run" --break src/order.rs:147
+krometrail debug launch "cargo run" --break src/order.rs:147
 
 # Debug tests
 cargo test --no-run  # build test binary
-krometrail launch "cargo test" --break src/order.rs:147
+krometrail debug launch "cargo test" --break src/order.rs:147
 
 # Debug a specific test
-krometrail launch "cargo test test_gold_discount -- --nocapture" \
+krometrail debug launch "cargo test test_gold_discount -- --nocapture" \
 	--break src/order.rs:147
 ```
 
@@ -11244,8 +11264,8 @@ krometrail launch "cargo test test_gold_discount -- --nocapture" \
 Rust expressions:
 
 ```bash
-krometrail break "src/order.rs:147 when discount < 0.0"
-krometrail break "src/loop.rs:25 when i == 99"
+krometrail debug break "src/order.rs:147 when discount < 0.0"
+krometrail debug break "src/loop.rs:25 when i == 99"
 ```
 
 ## Inspecting Rust Types
@@ -11295,16 +11315,16 @@ Verify: `lldb-dap --version`
 
 ```bash
 # Debug a Swift package
-krometrail launch "swift run" --break Sources/App/main.swift:42
+krometrail debug launch "swift run" --break Sources/App/main.swift:42
 
 # Debug a specific target
-krometrail launch "swift run MyApp" --break Sources/MyApp/OrderService.swift:147
+krometrail debug launch "swift run MyApp" --break Sources/MyApp/OrderService.swift:147
 
 # Debug tests
-krometrail launch "swift test" --break Sources/App/OrderService.swift:147
+krometrail debug launch "swift test" --break Sources/App/OrderService.swift:147
 
 # Debug a specific test
-krometrail launch "swift test --filter OrderServiceTests/testGoldDiscount" \
+krometrail debug launch "swift test --filter OrderServiceTests/testGoldDiscount" \
 	--break Sources/App/OrderService.swift:147
 ```
 
@@ -11313,8 +11333,8 @@ krometrail launch "swift test --filter OrderServiceTests/testGoldDiscount" \
 Swift expressions work directly in conditions:
 
 ```bash
-krometrail break "Sources/App/OrderService.swift:147 when discount < 0.0"
-krometrail break "Sources/App/OrderService.swift:25 when i == 99"
+krometrail debug break "Sources/App/OrderService.swift:147 when discount < 0.0"
+krometrail debug break "Sources/App/OrderService.swift:25 when i == 99"
 ```
 
 ## Inspecting Swift Types
@@ -11562,15 +11582,26 @@ Start with the Python adapter as the simplest reference.
 
 # CLI Command Reference
 
-The CLI is an alternative interface to the same tooling that agents access via MCP. Every `debug_*` and `session_*` MCP tool has a corresponding CLI command. Many agent setups prefer CLI tools for their transparency, composability, and ease of scripting. The CLI is also useful for CI pipelines and convenience operations like `doctor` and `skill`.
+The CLI is an alternative interface to the same tooling that agents access via MCP. Every `debug_*` and `chrome_*` MCP tool has a corresponding CLI command. Many agent setups prefer CLI tools for their transparency, composability, and ease of scripting. The CLI is also useful for CI pipelines and convenience operations like `doctor`.
 
 All commands output the viewport to stdout as structured plain text. Exit codes: 0 for success, 1 for errors, 2 for timeouts.
+
+## Command Structure
+
+The CLI uses namespaced subcommands:
+
+```
+krometrail debug <command>     # Debug session commands
+krometrail browser <command>   # Browser recording commands
+krometrail doctor              # Check installed debuggers
+krometrail commands            # List all commands (machine-readable)
+```
 
 ## Global Flags
 
 | Flag | Description |
 |------|-------------|
-| `--session <id>` | Target a specific session (required when multiple sessions are active) |
+| `--session <id>` | Target a specific debug session (required when multiple sessions are active) |
 | `--json` | Output structured JSON instead of plain text |
 | `--quiet` | Suppress banners and hints; output viewport only |
 | `--version` | Show version |
@@ -11581,7 +11612,7 @@ All commands output the viewport to stdout as structured plain text. Exit codes:
 
 ```bash
 # Launch a debug session
-krometrail launch "<command>" [options]
+krometrail debug launch "<command>" [options]
   --break <file>:<line>              # Set a breakpoint
   --break "<file>:<line> when <cond>" # Conditional breakpoint
   --stop-on-entry                    # Pause on first line
@@ -11592,21 +11623,21 @@ krometrail launch "<command>" [options]
   --cwd <path>                       # Working directory
 
 # Examples:
-krometrail launch "python app.py" --break order.py:147
-krometrail launch "python -m pytest tests/ -x" --break "order.py:147 when discount < 0"
-krometrail launch "node index.js" --break src/api.js:30 --language javascript
-krometrail launch "go test ./..." --break service/order.go:147
+krometrail debug launch "python app.py" --break order.py:147
+krometrail debug launch "python -m pytest tests/ -x" --break "order.py:147 when discount < 0"
+krometrail debug launch "node index.js" --break src/api.js:30 --language javascript
+krometrail debug launch "go test ./..." --break service/order.go:147
 
 # Attach to a running process
-krometrail attach --port 5678 --language python
-krometrail attach --pid 12345 --language go
+krometrail debug attach --port 5678 --language python
+krometrail debug attach --pid 12345 --language go
 
 # Check session status
-krometrail status
+krometrail debug status
 
 # Stop the active (or specified) session
-krometrail stop
-krometrail stop --session abc123
+krometrail debug stop
+krometrail debug stop --session abc123
 ```
 
 ---
@@ -11615,17 +11646,17 @@ krometrail stop --session abc123
 
 ```bash
 # Continue to next breakpoint
-krometrail continue
-krometrail continue --timeout 10000
+krometrail debug continue
+krometrail debug continue --timeout 10000
 
 # Step
-krometrail step over
-krometrail step into
-krometrail step out
-krometrail step over --count 5
+krometrail debug step over
+krometrail debug step into
+krometrail debug step out
+krometrail debug step over --count 5
 
 # Run to a specific line (temporary breakpoint)
-krometrail run-to order.py:155
+krometrail debug run-to order.py:155
 ```
 
 ---
@@ -11634,28 +11665,28 @@ krometrail run-to order.py:155
 
 ```bash
 # Set breakpoints (replaces existing in that file)
-krometrail break order.py:147
-krometrail break order.py:147,150,155
+krometrail debug break order.py:147
+krometrail debug break order.py:147,150,155
 
 # Conditional
-krometrail break "order.py:147 when discount < 0"
+krometrail debug break "order.py:147 when discount < 0"
 
 # Hit count
-krometrail break "order.py:147 hit >=100"
+krometrail debug break "order.py:147 hit >=100"
 
 # Logpoint
-krometrail break "order.py:147 log 'discount={discount}'"
+krometrail debug break "order.py:147 log 'discount={discount}'"
 
 # Exception breakpoints
-krometrail break --exceptions uncaught
-krometrail break --exceptions raised
-krometrail break --exceptions all
+krometrail debug break --exceptions uncaught
+krometrail debug break --exceptions raised
+krometrail debug break --exceptions all
 
 # List all active breakpoints
-krometrail breakpoints
+krometrail debug breakpoints
 
 # Clear all breakpoints in a file
-krometrail break --clear order.py
+krometrail debug break --clear order.py
 ```
 
 ---
@@ -11664,26 +11695,26 @@ krometrail break --clear order.py
 
 ```bash
 # Evaluate an expression
-krometrail eval "<expression>"
-krometrail eval "cart.items[0].__dict__" --depth 3
-krometrail eval "request.headers" --frame 2
+krometrail debug eval "<expression>"
+krometrail debug eval "cart.items[0].__dict__" --depth 3
+krometrail debug eval "request.headers" --frame 2
 
 # Show variables
-krometrail vars
-krometrail vars --scope global
-krometrail vars --scope closure
-krometrail vars --scope all
-krometrail vars --filter "^user"
-krometrail vars --frame 2
+krometrail debug vars
+krometrail debug vars --scope global
+krometrail debug vars --scope closure
+krometrail debug vars --scope all
+krometrail debug vars --filter "^user"
+krometrail debug vars --frame 2
 
 # Full stack trace
-krometrail stack
-krometrail stack --frames 20
-krometrail stack --source
+krometrail debug stack
+krometrail debug stack --frames 20
+krometrail debug stack --source
 
 # View source
-krometrail source order.py
-krometrail source order.py:140-160
+krometrail debug source order.py
+krometrail debug source order.py:140-160
 ```
 
 ---
@@ -11692,33 +11723,36 @@ krometrail source order.py:140-160
 
 ```bash
 # Watch expressions (auto-evaluated on every stop)
-krometrail watch "len(cart.items)" "user.tier" "total > 0"
+krometrail debug watch "len(cart.items)" "user.tier" "total > 0"
 
 # Remove watch expressions
-krometrail unwatch "user.tier"
+krometrail debug unwatch "user.tier"
 
 # Session investigation log
-krometrail log
-krometrail log --detailed
+krometrail debug log
+krometrail debug log --detailed
 
 # Program output (stdout/stderr)
-krometrail output
-krometrail output --stderr
-krometrail output --since-action 5
+krometrail debug output
+krometrail debug output --stderr
+krometrail debug output --since-action 5
 
 # Thread listing
-krometrail threads
+krometrail debug threads
 ```
 
 ---
 
-## Browser Tools
+## Browser Recording
 
 ```bash
 # Start recording
-krometrail browser start http://localhost:3000
-krometrail browser start http://localhost:3000 --framework-state
-krometrail browser start http://localhost:3000 --framework-state react
+krometrail browser start --url http://localhost:3000
+krometrail browser start --url http://localhost:3000 --framework-state auto
+krometrail browser start --url http://localhost:3000 --framework-state react
+krometrail browser start --attach                    # Attach to already-running Chrome
+krometrail browser start --profile myproject          # Use isolated Chrome profile
+krometrail browser start --all-tabs                   # Record all tabs
 
 # Recording status
 krometrail browser status
@@ -11728,6 +11762,7 @@ krometrail browser mark "user submitted form"
 
 # Stop recording
 krometrail browser stop
+krometrail browser stop --close-browser
 
 # Export session data
 krometrail browser export <session-id> --format har --output file.har
@@ -11735,33 +11770,36 @@ krometrail browser export <session-id> --format har --output file.har
 
 ---
 
-## Session Investigation
+## Browser Session Investigation
 
 ```bash
 # List sessions
-krometrail session list
-krometrail session list --has-errors
-krometrail session list --url "localhost:3000"
+krometrail browser sessions
+krometrail browser sessions --has-errors
+krometrail browser sessions --url-contains "localhost:3000"
 
 # Session overview
-krometrail session overview <session-id>
+krometrail browser overview <session-id>
+krometrail browser overview <session-id> --around-marker <marker-id>
+krometrail browser overview <session-id> --include timeline,markers,errors
 
 # Search events
-krometrail session search <session-id> "payment failed"
-krometrail session search <session-id> --event-types network_response --status-codes 500
-krometrail session search <session-id> --framework react --pattern stale_closure
+krometrail browser search <session-id> --query "payment failed"
+krometrail browser search <session-id> --event-types network_response --status-codes 500
+krometrail browser search <session-id> --framework react --pattern stale_closure
 
 # Deep-dive into an event
-krometrail session inspect <session-id> --event-id <event-id>
+krometrail browser inspect <session-id> --event <event-id>
+krometrail browser inspect <session-id> --marker <marker-id>
+krometrail browser inspect <session-id> --timestamp "2025-01-15T10:30:00Z"
 
 # Diff two moments
-krometrail session diff <session-id> --from 5000 --to 15000
-krometrail session diff <session-id> --from-marker "loaded" --to-marker "error"
+krometrail browser diff <session-id> --from <timestamp-or-event-id> --to <timestamp-or-event-id>
 
 # Generate reproduction steps
-krometrail session replay-context <session-id>
-krometrail session replay-context <session-id> --format playwright
-krometrail session replay-context <session-id> --format cypress
+krometrail browser replay-context <session-id>
+krometrail browser replay-context <session-id> --format test_scaffold --framework playwright
+krometrail browser replay-context <session-id> --format test_scaffold --framework cypress
 ```
 
 ---
@@ -11771,6 +11809,11 @@ krometrail session replay-context <session-id> --format cypress
 ```bash
 # Check installed adapters/debuggers
 krometrail doctor
+
+# List all commands (machine-readable)
+krometrail commands
+krometrail commands --group debug
+krometrail commands --group browser
 
 # Version
 krometrail --version
@@ -11783,7 +11826,7 @@ krometrail --version
 Every command supports `--json` for structured output:
 
 ```bash
-krometrail continue --json
+krometrail debug continue --json
 ```
 
 ```json

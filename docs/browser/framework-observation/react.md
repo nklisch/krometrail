@@ -85,13 +85,13 @@ After recording, find React events using `session_search`:
 
 ```bash
 # Find all high-severity React errors
-krometrail session search <session-id> --event-types framework_error --framework react
+krometrail browser search <session-id> --event-types framework_error --framework react
 
 # Find infinite re-render patterns
-krometrail session search <session-id> --framework react --pattern infinite_rerender
+krometrail browser search <session-id> --framework react --pattern infinite_rerender
 
 # Find all re-renders of a specific component
-krometrail session search <session-id> "UserProfile" --event-types framework_state
+krometrail browser search <session-id> "UserProfile" --event-types framework_state
 ```
 
 ## React Version Support

@@ -27,16 +27,16 @@ Verify: `lldb-dap --version`
 
 ```bash
 # Debug a Swift package
-krometrail launch "swift run" --break Sources/App/main.swift:42
+krometrail debug launch "swift run" --break Sources/App/main.swift:42
 
 # Debug a specific target
-krometrail launch "swift run MyApp" --break Sources/MyApp/OrderService.swift:147
+krometrail debug launch "swift run MyApp" --break Sources/MyApp/OrderService.swift:147
 
 # Debug tests
-krometrail launch "swift test" --break Sources/App/OrderService.swift:147
+krometrail debug launch "swift test" --break Sources/App/OrderService.swift:147
 
 # Debug a specific test
-krometrail launch "swift test --filter OrderServiceTests/testGoldDiscount" \
+krometrail debug launch "swift test --filter OrderServiceTests/testGoldDiscount" \
 	--break Sources/App/OrderService.swift:147
 ```
 
@@ -45,8 +45,8 @@ krometrail launch "swift test --filter OrderServiceTests/testGoldDiscount" \
 Swift expressions work directly in conditions:
 
 ```bash
-krometrail break "Sources/App/OrderService.swift:147 when discount < 0.0"
-krometrail break "Sources/App/OrderService.swift:25 when i == 99"
+krometrail debug break "Sources/App/OrderService.swift:147 when discount < 0.0"
+krometrail debug break "Sources/App/OrderService.swift:25 when i == 99"
 ```
 
 ## Inspecting Swift Types

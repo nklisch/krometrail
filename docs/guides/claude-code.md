@@ -74,7 +74,7 @@ Claude Code will:
 - **MCP path is zero-config** — Claude discovers tools automatically from the server
 - **CLI path** exposes the same tools as bash commands — transparent, scriptable, and preferred by some agent setups
 - **Let Claude choose breakpoints** — it knows the code better after reading it
-- **Conditional breakpoints** are powerful for loops: `krometrail break app.py:25 when discount < 0`
+- **Conditional breakpoints** are powerful for loops: `krometrail debug break app.py:25 when discount < 0`
 - **The viewport is compact** (~400 tokens per stop) so Claude can take many debug steps without exhausting context
 - **Framework auto-detection** works for pytest, jest, go test, Django, Flask, etc.
 

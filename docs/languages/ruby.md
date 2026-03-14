@@ -23,16 +23,16 @@ Verify: `rdbg --version`
 
 ```bash
 # Debug a script
-krometrail launch "ruby app.rb" --break app.rb:42
+krometrail debug launch "ruby app.rb" --break app.rb:42
 
 # Debug with bundler
-krometrail launch "bundle exec ruby app.rb" --break lib/order.rb:147
+krometrail debug launch "bundle exec ruby app.rb" --break lib/order.rb:147
 
 # Debug RSpec tests
-krometrail launch "bundle exec rspec spec/order_spec.rb" --break lib/order.rb:147
+krometrail debug launch "bundle exec rspec spec/order_spec.rb" --break lib/order.rb:147
 
 # Debug Rails
-krometrail launch "bundle exec rails server" --break app/controllers/orders_controller.rb:55
+krometrail debug launch "bundle exec rails server" --break app/controllers/orders_controller.rb:55
 ```
 
 ## How It Works
@@ -44,8 +44,8 @@ The adapter launches `rdbg --open --port PORT` to start a DAP server, then conne
 Ruby expressions work directly in conditions:
 
 ```bash
-krometrail break "lib/order.rb:147 when discount < 0"
-krometrail break "lib/loop.rb:25 when i == 99"
+krometrail debug break "lib/order.rb:147 when discount < 0"
+krometrail debug break "lib/loop.rb:25 when i == 99"
 ```
 
 ## Inspecting Ruby Objects

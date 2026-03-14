@@ -11,23 +11,23 @@ description: Set breakpoints with conditions, hit counts, and logpoints. Step ov
 
 ```bash [CLI]
 # Simple line breakpoint
-krometrail break order.py:147
+krometrail debug break order.py:147
 
 # Multiple lines in one file
-krometrail break order.py:147,150,155
+krometrail debug break order.py:147,150,155
 
 # Conditional breakpoint — only fires when expression is true
-krometrail break "order.py:147 when discount < 0"
+krometrail debug break "order.py:147 when discount < 0"
 
 # Hit count — fires after N hits
-krometrail break "order.py:147 hit >=100"
+krometrail debug break "order.py:147 hit >=100"
 
 # Logpoint — logs a message instead of stopping
-krometrail break "order.py:147 log 'discount={discount}, total={total}'"
+krometrail debug break "order.py:147 log 'discount={discount}, total={total}'"
 
 # Exception breakpoints
-krometrail break --exceptions uncaught
-krometrail break --exceptions raised    # Python: all raised exceptions
+krometrail debug break --exceptions uncaught
+krometrail debug break --exceptions raised    # Python: all raised exceptions
 ```
 
 ```json [MCP: debug_set_breakpoints]
@@ -84,7 +84,7 @@ Pass initial breakpoints with `debug_launch` to avoid a separate call:
 
 ```bash
 # CLI
-krometrail breakpoints
+krometrail debug breakpoints
 
 # MCP: debug_list_breakpoints
 { "session_id": "..." }
@@ -96,10 +96,10 @@ Returns all active breakpoints with current hit counts.
 
 ```bash
 # Remove all breakpoints in a file
-krometrail break --clear order.py
+krometrail debug break --clear order.py
 
 # To remove specific breakpoints, set the file with only the ones you want to keep
-krometrail break order.py:150,155
+krometrail debug break order.py:150,155
 # (line 147 is now removed)
 ```
 
@@ -109,16 +109,16 @@ krometrail break order.py:150,155
 
 ```bash [CLI]
 # Step over — execute current line, stay in current function
-krometrail step over
+krometrail debug step over
 
 # Step into — enter the function being called
-krometrail step into
+krometrail debug step into
 
 # Step out — run to end of current function, return to caller
-krometrail step out
+krometrail debug step out
 
 # Step multiple times
-krometrail step over --count 5
+krometrail debug step over --count 5
 ```
 
 ```json [MCP: debug_step]
@@ -139,7 +139,7 @@ Run to a specific line without setting a permanent breakpoint:
 ::: code-group
 
 ```bash [CLI]
-krometrail run-to order.py:155
+krometrail debug run-to order.py:155
 ```
 
 ```json [MCP: debug_run_to]
@@ -155,8 +155,8 @@ Resume execution until the next breakpoint or program exit:
 ::: code-group
 
 ```bash [CLI]
-krometrail continue
-krometrail continue --timeout 10000
+krometrail debug continue
+krometrail debug continue --timeout 10000
 ```
 
 ```json [MCP: debug_continue]
@@ -171,9 +171,9 @@ krometrail continue --timeout 10000
 ::: code-group
 
 ```bash [CLI]
-krometrail break --exceptions uncaught    # only uncaught exceptions
-krometrail break --exceptions raised      # all raised exceptions (Python)
-krometrail break --exceptions all         # all exceptions (JS)
+krometrail debug break --exceptions uncaught    # only uncaught exceptions
+krometrail debug break --exceptions raised      # all raised exceptions (Python)
+krometrail debug break --exceptions all         # all exceptions (JS)
 ```
 
 ```json [MCP: debug_set_exception_breakpoints]

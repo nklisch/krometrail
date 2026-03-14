@@ -16,7 +16,7 @@ A Python order processing function calculates discounts incorrectly for gold-tie
 ::: code-group
 
 ```bash [CLI]
-krometrail launch "python -m pytest tests/test_order.py::test_gold_discount -x" \
+krometrail debug launch "python -m pytest tests/test_order.py::test_gold_discount -x" \
 	--break order.py:147
 ```
 
@@ -68,10 +68,10 @@ Re-launch with an earlier breakpoint to step into `calculate_discount`:
 ::: code-group
 
 ```bash [CLI]
-krometrail stop
-krometrail launch "python -m pytest tests/test_order.py::test_gold_discount -x" \
+krometrail debug stop
+krometrail debug launch "python -m pytest tests/test_order.py::test_gold_discount -x" \
 	--break order.py:143
-krometrail step into
+krometrail debug step into
 ```
 
 ```json [MCP]
@@ -98,8 +98,8 @@ Skip to the line that computes the discount, but only for gold-tier customers:
 ::: code-group
 
 ```bash [CLI]
-krometrail break "discount.py:23 when tier == 'gold'"
-krometrail continue
+krometrail debug break "discount.py:23 when tier == 'gold'"
+krometrail debug continue
 ```
 
 ```json [MCP]
@@ -128,7 +128,7 @@ Locals:
 ::: code-group
 
 ```bash [CLI]
-krometrail eval "tier_multipliers"
+krometrail debug eval "tier_multipliers"
 ```
 
 ```json [MCP]
@@ -150,7 +150,7 @@ krometrail eval "tier_multipliers"
 ## Step 6: Clean Up
 
 ```bash
-krometrail stop
+krometrail debug stop
 ```
 
 Total debug actions: 6–8. Total tokens for viewports: ~2,400. Time to root cause: seconds.
@@ -159,7 +159,7 @@ Total debug actions: 6–8. Total tokens for viewports: ~2,400. Time to root cau
 
 - **Set breakpoints before function calls** — catching bad state at the call site before stepping in is more efficient than trying to trace afterward
 - **Use conditional breakpoints for loops** — `when tier == 'gold'` skips irrelevant iterations
-- **Evaluate expressions to test hypotheses** — `krometrail eval "tier_multipliers"` confirms the bug without modifying code
-- **Watch expressions persist across steps** — add `krometrail watch "discount / subtotal"` to track a ratio automatically
+- **Evaluate expressions to test hypotheses** — `krometrail debug eval "tier_multipliers"` confirms the bug without modifying code
+- **Watch expressions persist across steps** — add `krometrail debug watch "discount / subtotal"` to track a ratio automatically
 
 See [Breakpoints & Stepping](../debugging/breakpoints-stepping) and [Variables & Evaluation](../debugging/variables-evaluation) for the full tool reference.

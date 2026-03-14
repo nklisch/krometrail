@@ -170,15 +170,15 @@ inspect runtime state to diagnose a bug — especially when static code
 reading and test output aren't enough to identify the root cause.
 
 ## Quick start
-  krometrail launch "<command>" --break <file>:<line>
-  krometrail continue          # run to next breakpoint
-  krometrail step into|over|out
-  krometrail eval "<expr>"     # evaluate expression at current stop
-  krometrail vars              # show local variables
-  krometrail stop              # end session
+  krometrail debug launch "<command>" --break <file>:<line>
+  krometrail debug continue          # run to next breakpoint
+  krometrail debug step into|over|out
+  krometrail debug eval "<expr>"     # evaluate expression at current stop
+  krometrail debug vars              # show local variables
+  krometrail debug stop              # end session
 
 ## Conditional breakpoints
-  krometrail break "<file>:<line> when <condition>"
+  krometrail debug break "<file>:<line> when <condition>"
 
 ## Strategy
 1. Start by setting a breakpoint where you expect the bug to manifest.
@@ -189,7 +189,7 @@ reading and test output aren't enough to identify the root cause.
 5. Once you identify the root cause, stop the session and fix the code.
 
 ## Key rules
-- Always call `krometrail stop` when done to clean up.
+- Always call `krometrail debug stop` when done to clean up.
 - Prefer conditional breakpoints over stepping through loops.
 - Each command prints a viewport showing source, locals, and stack.
 - If a session times out (5 min default), re-launch.

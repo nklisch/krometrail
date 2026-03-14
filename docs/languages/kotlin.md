@@ -19,16 +19,16 @@ Verify: `java --version` (must be 11+)
 
 ```bash
 # Debug a compiled Kotlin program
-krometrail launch "java -jar app.jar" --break src/main/kotlin/OrderService.kt:147
+krometrail debug launch "java -jar app.jar" --break src/main/kotlin/OrderService.kt:147
 
 # Debug with Gradle
-krometrail launch "./gradlew run" --break src/main/kotlin/OrderService.kt:147
+krometrail debug launch "./gradlew run" --break src/main/kotlin/OrderService.kt:147
 
 # Debug Kotlin tests
-krometrail launch "./gradlew test" --break src/main/kotlin/OrderService.kt:147
+krometrail debug launch "./gradlew test" --break src/main/kotlin/OrderService.kt:147
 
 # Debug a specific test
-krometrail launch "./gradlew test --tests OrderServiceTest.testGoldDiscount" \
+krometrail debug launch "./gradlew test --tests OrderServiceTest.testGoldDiscount" \
 	--break src/main/kotlin/OrderService.kt:147
 ```
 
@@ -41,7 +41,7 @@ The adapter starts the JVM with JDWP agent flags (`-agentlib:jdwp=transport=dt_s
 Java/JVM expressions work in conditions (Kotlin syntax is not fully supported in JDWP expressions):
 
 ```bash
-krometrail break "src/main/kotlin/OrderService.kt:147 when discount < 0"
+krometrail debug break "src/main/kotlin/OrderService.kt:147 when discount < 0"
 ```
 
 ## Inspecting Kotlin Objects

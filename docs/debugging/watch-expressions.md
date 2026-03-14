@@ -13,13 +13,13 @@ Watch expressions are evaluated automatically at every debug stop and displayed 
 
 ```bash [CLI]
 # Add one expression
-krometrail watch "len(cart.items)"
+krometrail debug watch "len(cart.items)"
 
 # Add multiple at once
-krometrail watch "len(cart.items)" "user.tier" "total > 0"
+krometrail debug watch "len(cart.items)" "user.tier" "total > 0"
 
 # Add a computed expression
-krometrail watch "discount / subtotal"
+krometrail debug watch "discount / subtotal"
 ```
 
 ```json [MCP: debug_watch]
@@ -52,13 +52,13 @@ Watch:
 
 ```bash
 # View current watches (they appear in every viewport)
-krometrail watch
+krometrail debug watch
 
 # Remove specific watches
-krometrail watch --remove "user.tier"
+krometrail debug watch --remove "user.tier"
 
 # Clear all watches
-krometrail watch --clear
+krometrail debug watch --clear
 ```
 
 ```json
@@ -85,13 +85,13 @@ They are cleared when the session ends (`debug_stop`).
 
 **Tracking a suspicious value across multiple steps:**
 ```bash
-krometrail watch "discount" "base_rate" "tier_multipliers.get(tier, 'missing')"
+krometrail debug watch "discount" "base_rate" "tier_multipliers.get(tier, 'missing')"
 # Now every step shows these three values without extra calls
 ```
 
 **Boolean sentinels:**
 ```bash
-krometrail watch "discount < 0" "len(results) == 0" "user.is_active"
+krometrail debug watch "discount < 0" "len(results) == 0" "user.is_active"
 # Quick sanity checks at each stop
 ```
 

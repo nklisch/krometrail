@@ -30,7 +30,7 @@ Krometrail detects which test framework or web framework is being used and adjus
 If detection produces incorrect behavior, override the language explicitly:
 
 ```bash
-krometrail launch "cargo test" --language rust
+krometrail debug launch "cargo test" --language rust
 ```
 
 ```json
@@ -47,7 +47,7 @@ For frameworks not auto-detected, or for custom launch configurations, the adapt
 For Python frameworks not in the list:
 ```bash
 # Launch with debugpy wait explicitly
-krometrail launch "python -m debugpy --wait-for-client my_framework_command"
+krometrail debug launch "python -m debugpy --wait-for-client my_framework_command"
 ```
 
 ## Checking Detection
