@@ -1,28 +1,9 @@
 #!/usr/bin/env bun
 import { defineCommand, runMain } from "citty";
 import { browserCommand } from "./commands/browser.js";
-import {
-	attachCommand,
-	breakCommand,
-	breakpointsCommand,
-	continueCommand,
-	doctorCommand,
-	evalCommand,
-	launchCommand,
-	logCommand,
-	outputCommand,
-	runToCommand,
-
-	sourceCommand,
-	stackCommand,
-	statusCommand,
-	stepCommand,
-	stopCommand,
-	threadsCommand,
-	unwatchCommand,
-	varsCommand,
-	watchCommand,
-} from "./commands/index.js";
+import { commandsCommand } from "./commands/commands.js";
+import { debugCommand } from "./commands/debug.js";
+import { doctorCommand } from "./commands/doctor.js";
 
 const main = defineCommand({
 	meta: {
@@ -51,26 +32,10 @@ const main = defineCommand({
 		// citty shows help by default when no subcommand given
 	},
 	subCommands: {
-		launch: launchCommand,
-		attach: attachCommand,
-		stop: stopCommand,
-		status: statusCommand,
-		continue: continueCommand,
-		step: stepCommand,
-		"run-to": runToCommand,
-		break: breakCommand,
-		breakpoints: breakpointsCommand,
-		eval: evalCommand,
-		vars: varsCommand,
-		stack: stackCommand,
-		source: sourceCommand,
-		watch: watchCommand,
-		unwatch: unwatchCommand,
-		log: logCommand,
-		output: outputCommand,
-		threads: threadsCommand,
-		doctor: doctorCommand,
+		debug: debugCommand,
 		browser: browserCommand,
+		doctor: doctorCommand,
+		commands: commandsCommand,
 		// Hidden: internal daemon entry point
 		_daemon: () =>
 			defineCommand({

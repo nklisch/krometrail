@@ -3,6 +3,7 @@ import { defineCommand } from "citty";
 import { listAdapters, registerAllAdapters } from "../../adapters/registry.js";
 import { listConfigurations, parseLaunchJson } from "../../core/launch-json.js";
 import { listDetectors, registerAllDetectors } from "../../frameworks/index.js";
+import { successEnvelope } from "../envelope.js";
 import type { OutputMode } from "../format.js";
 import { resolveOutputMode } from "../format.js";
 
@@ -16,6 +17,7 @@ export interface DoctorResult {
 		status: "available" | "missing";
 		version?: string;
 		installHint?: string;
+		fixCommand?: string;
 	}>;
 	frameworks: Array<{
 		id: string;
@@ -27,6 +29,27 @@ export interface DoctorResult {
 		type: string;
 		request: string;
 	}>;
+}
+
+/**
+ * Map known adapter IDs and install hints to a concrete fix command.
+ * Returns undefined if no known command exists.
+ */
+function deriveFixCommand(adapterId: string, installHint?: string): string | undefined {
+	// Map by adapter id first for well-known adapters
+	const knownFixCommands: Record<string, string> = {
+		python: "pip install debugpy",
+		go: "go install github.com/go-delve/delve/cmd/dlv@latest",
+		ruby: "gem install debug",
+		rust: "cargo install --locked codelldb",
+		kotlin: "brew install kotlin || sdk install kotlin",
+	};
+	if (knownFixCommands[adapterId]) return knownFixCommands[adapterId];
+	// Fall back to the install hint itself if it looks like a runnable command
+	if (installHint && !installHint.includes(" ") === false && /^[a-z]/.test(installHint)) {
+		return installHint;
+	}
+	return undefined;
 }
 
 /**
@@ -81,6 +104,7 @@ export async function runDoctorChecks(): Promise<DoctorResult> {
 				displayName: adapter.displayName,
 				status: "missing",
 				installHint: prereq.installHint,
+				fixCommand: deriveFixCommand(adapter.id, prereq.installHint),
 			});
 		}
 	}
@@ -364,7 +388,7 @@ async function getKotlincVersion(): Promise<string | undefined> {
  */
 export function formatDoctor(result: DoctorResult, mode: OutputMode): string {
 	if (mode === "json") {
-		return JSON.stringify(result, null, 2);
+		return successEnvelope(result);
 	}
 
 	const lines: string[] = [`Krometrail v0.1.0`, `Platform: ${result.platform}`, `Runtime: ${result.runtime} ${result.runtimeVersion}`, "", "Adapters:"];

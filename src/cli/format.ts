@@ -1,4 +1,7 @@
-import type { BreakpointsListPayload, BreakpointsResultPayload, LaunchResultPayload, StatusResultPayload, StopResultPayload } from "../daemon/protocol.js";
+import type { SessionSummary } from "../browser/investigation/query-engine.js";
+import type { BrowserSessionInfo } from "../browser/types.js";
+import type { BreakpointsListPayload, BreakpointsResultPayload, LaunchResultPayload, StatusResultPayload, StopResultPayload, ThreadInfoPayload } from "../daemon/protocol.js";
+import { errorEnvelope, successEnvelope } from "./envelope.js";
 
 /**
  * Output mode determined by CLI flags.
@@ -14,12 +17,111 @@ export function resolveOutputMode(flags: { json?: boolean; quiet?: boolean }): O
 	return "text";
 }
 
+// --- Data shape interfaces (documentation of what agents receive) ---
+
+export interface LaunchData {
+	sessionId: string;
+	status: string;
+	framework?: string;
+	frameworkWarnings?: string[];
+	viewport?: string;
+}
+
+export interface StopData {
+	sessionId: string;
+	durationMs: number;
+	durationSec: number;
+	actionCount: number;
+}
+
+export interface StatusData {
+	status: string;
+	viewport?: string;
+	tokenStats?: { viewportTokensConsumed: number; viewportCount: number };
+	actionCount?: number;
+	elapsedMs?: number;
+}
+
+export interface ViewportData {
+	viewport: string;
+}
+
+export interface EvalData {
+	expression: string;
+	result: string;
+}
+
+export interface VariablesData {
+	variables: string;
+}
+
+export interface StackTraceData {
+	stackTrace: string;
+}
+
+export interface BreakpointsSetData {
+	file: string;
+	breakpoints: BreakpointsResultPayload["breakpoints"];
+}
+
+export interface WatchData {
+	watchExpressions: string[];
+	count: number;
+}
+
+export interface ThreadsData {
+	threads: ThreadInfoPayload[];
+	count: number;
+}
+
+export interface SourceData {
+	file: string;
+	source: string;
+}
+
+export interface LogData {
+	log: string;
+}
+
+export interface OutputData {
+	output: string;
+	stream: string;
+}
+
+export interface BrowserSessionData {
+	startedAt: string;
+	eventCount: number;
+	markerCount: number;
+	bufferAgeMs: number;
+	tabs: Array<{ url: string; title: string }>;
+}
+
+export interface BrowserMarkData {
+	id: string;
+	timestamp: string;
+	label?: string;
+}
+
+export interface InvestigationData {
+	result: string;
+	command: string;
+}
+
+// --- Format functions ---
+
 /**
  * Format a launch result for CLI output.
  */
 export function formatLaunch(result: LaunchResultPayload, mode: OutputMode): string {
 	if (mode === "json") {
-		return JSON.stringify(result, null, 2);
+		const data: LaunchData = {
+			sessionId: result.sessionId,
+			status: result.status,
+			framework: result.framework,
+			frameworkWarnings: result.frameworkWarnings,
+			viewport: result.viewport,
+		};
+		return successEnvelope(data);
 	}
 	if (mode === "quiet") {
 		return result.viewport ?? "";
@@ -41,7 +143,8 @@ export function formatLaunch(result: LaunchResultPayload, mode: OutputMode): str
  */
 export function formatStop(result: StopResultPayload, sessionId: string, mode: OutputMode): string {
 	if (mode === "json") {
-		return JSON.stringify({ sessionId, ...result }, null, 2);
+		const durationSec = result.duration / 1000;
+		return successEnvelope<StopData>({ sessionId, durationMs: result.duration, durationSec, actionCount: result.actionCount });
 	}
 	if (mode === "quiet") {
 		return "";
@@ -55,7 +158,7 @@ export function formatStop(result: StopResultPayload, sessionId: string, mode: O
  */
 export function formatStatus(result: StatusResultPayload, mode: OutputMode): string {
 	if (mode === "json") {
-		return JSON.stringify(result, null, 2);
+		return successEnvelope<StatusData>(result as StatusData);
 	}
 	if (mode === "quiet") {
 		return result.viewport ?? result.status;
@@ -71,11 +174,11 @@ export function formatStatus(result: StatusResultPayload, mode: OutputMode): str
  * Format a viewport string for CLI output.
  * In text mode: print as-is.
  * In quiet mode: print as-is (viewport already is the minimal form).
- * In JSON mode: wrap in a JSON object with viewport field.
+ * In JSON mode: wrap in success envelope with viewport field.
  */
 export function formatViewport(viewport: string, mode: OutputMode): string {
 	if (mode === "json") {
-		return JSON.stringify({ viewport }, null, 2);
+		return successEnvelope<ViewportData>({ viewport });
 	}
 	return viewport;
 }
@@ -85,7 +188,7 @@ export function formatViewport(viewport: string, mode: OutputMode): string {
  */
 export function formatEvaluate(expression: string, result: string, mode: OutputMode): string {
 	if (mode === "json") {
-		return JSON.stringify({ expression, result }, null, 2);
+		return successEnvelope<EvalData>({ expression, result });
 	}
 	if (mode === "quiet") {
 		return result;
@@ -98,7 +201,7 @@ export function formatEvaluate(expression: string, result: string, mode: OutputM
  */
 export function formatVariables(result: string, mode: OutputMode): string {
 	if (mode === "json") {
-		return JSON.stringify({ variables: result }, null, 2);
+		return successEnvelope<VariablesData>({ variables: result });
 	}
 	return result;
 }
@@ -108,7 +211,7 @@ export function formatVariables(result: string, mode: OutputMode): string {
  */
 export function formatStackTrace(result: string, mode: OutputMode): string {
 	if (mode === "json") {
-		return JSON.stringify({ stackTrace: result }, null, 2);
+		return successEnvelope<StackTraceData>({ stackTrace: result });
 	}
 	return result;
 }
@@ -118,7 +221,7 @@ export function formatStackTrace(result: string, mode: OutputMode): string {
  */
 export function formatBreakpointsSet(file: string, result: BreakpointsResultPayload, mode: OutputMode): string {
 	if (mode === "json") {
-		return JSON.stringify({ file, ...result }, null, 2);
+		return successEnvelope<BreakpointsSetData>({ file, breakpoints: result.breakpoints });
 	}
 	if (mode === "quiet") {
 		return result.breakpoints.map((bp) => `${file}:${bp.requestedLine} ${bp.verified ? "✓" : "✗"}`).join("\n");
@@ -137,7 +240,7 @@ export function formatBreakpointsSet(file: string, result: BreakpointsResultPayl
  */
 export function formatBreakpointsList(result: BreakpointsListPayload, mode: OutputMode): string {
 	if (mode === "json") {
-		return JSON.stringify(result, null, 2);
+		return successEnvelope(result);
 	}
 	const files = Object.entries(result.files);
 	if (files.length === 0) {
@@ -162,7 +265,7 @@ export function formatBreakpointsList(result: BreakpointsListPayload, mode: Outp
  */
 export function formatWatchExpressions(expressions: string[], mode: OutputMode): string {
 	if (mode === "json") {
-		return JSON.stringify({ watchExpressions: expressions }, null, 2);
+		return successEnvelope<WatchData>({ watchExpressions: expressions, count: expressions.length });
 	}
 	const lines: string[] = [`Watch expressions (${expressions.length} total):`];
 	for (const expr of expressions) lines.push(`  ${expr}`);
@@ -170,19 +273,122 @@ export function formatWatchExpressions(expressions: string[], mode: OutputMode):
 }
 
 /**
- * Format an error for CLI output.
- * In text mode: "Error: <message>"
- * In JSON mode: { "error": "<message>", "code": "<code>" }
+ * Format a threads list for CLI output.
  */
-export function formatError(error: Error, mode: OutputMode): string {
-	const message = error.message ?? String(error);
-	const code = (error as { code?: string }).code;
-
+export function formatThreads(threads: ThreadInfoPayload[], mode: OutputMode): string {
 	if (mode === "json") {
-		const payload: Record<string, string> = { error: message };
-		if (code) payload.code = code;
-		return JSON.stringify(payload, null, 2);
+		return successEnvelope<ThreadsData>({ threads, count: threads.length });
 	}
+	const lines: string[] = [`Threads (${threads.length}):`];
+	for (const t of threads) {
+		lines.push(`  ${t.stopped ? "→" : " "} Thread ${t.id}: ${t.name}${t.stopped ? " (stopped)" : " (running)"}`);
+	}
+	return lines.join("\n");
+}
 
+/**
+ * Format a source code view for CLI output.
+ */
+export function formatSource(file: string, source: string, mode: OutputMode): string {
+	if (mode === "json") {
+		return successEnvelope<SourceData>({ file, source });
+	}
+	return source;
+}
+
+/**
+ * Format a session log for CLI output.
+ */
+export function formatLog(log: string, mode: OutputMode): string {
+	if (mode === "json") {
+		return successEnvelope<LogData>({ log });
+	}
+	return log;
+}
+
+/**
+ * Format program output for CLI output.
+ */
+export function formatOutput(output: string, stream: string, mode: OutputMode): string {
+	if (mode === "json") {
+		return successEnvelope<OutputData>({ output, stream });
+	}
+	return output || "No output captured.";
+}
+
+/**
+ * Format browser session info for CLI output.
+ * Used by browser start, status, and mark commands.
+ */
+export function formatBrowserSession(info: BrowserSessionInfo, mode: OutputMode): string {
+	if (mode === "json") {
+		const data: BrowserSessionData = {
+			startedAt: new Date(info.startedAt).toISOString(),
+			eventCount: info.eventCount,
+			markerCount: info.markerCount,
+			bufferAgeMs: info.bufferAgeMs,
+			tabs: info.tabs.map((t) => ({ url: t.url, title: t.title })),
+		};
+		return successEnvelope<BrowserSessionData>(data);
+	}
+	// text/quiet mode
+	const lines: string[] = [];
+	const startedAt = new Date(info.startedAt).toLocaleTimeString();
+	lines.push(`Browser recording active since ${startedAt}`);
+	lines.push(`Events: ${info.eventCount}  Markers: ${info.markerCount}  Buffer age: ${Math.round(info.bufferAgeMs / 1000)}s`);
+	if (info.tabs.length > 0) {
+		lines.push("Tabs:");
+		for (const tab of info.tabs) {
+			const title = tab.title ? `"${tab.title}" ` : "";
+			lines.push(`  ${title}(${tab.url})`);
+		}
+	}
+	return lines.join("\n");
+}
+
+/**
+ * Format a list of browser session summaries for CLI output.
+ */
+export function formatBrowserSessions(sessions: SessionSummary[], mode: OutputMode): string {
+	if (mode === "json") {
+		return successEnvelope({ sessions, count: sessions.length });
+	}
+	if (sessions.length === 0) {
+		return "No recorded sessions found.";
+	}
+	const lines: string[] = [`Sessions (${sessions.length}):`];
+	for (const s of sessions) {
+		const seconds = Math.floor(s.duration / 1000);
+		const duration = seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+		const markers = s.markerCount > 0 ? `, ${s.markerCount} markers` : "";
+		const errors = s.errorCount > 0 ? `, ${s.errorCount} errors` : "";
+		const startedAt = new Date(s.startedAt).toISOString().slice(11, 23);
+		lines.push(`  ${s.id}  ${startedAt}  ${duration}  ${s.url}  (${s.eventCount} events${markers}${errors})`);
+	}
+	return lines.join("\n");
+}
+
+/**
+ * Format a browser investigation result (overview, search, inspect, diff, replay-context).
+ * In json mode, wraps the result string in the envelope under `result`.
+ * In text/quiet mode, returns result as-is.
+ */
+export function formatInvestigation(result: string, command: string, mode: OutputMode): string {
+	if (mode === "json") {
+		return successEnvelope<InvestigationData>({ result, command });
+	}
+	return result;
+}
+
+/**
+ * Format an error for CLI output.
+ * In json mode: errorEnvelope wrapping { ok: false, error: { code, message, retryable } }
+ * In text/quiet mode: "Error: <message>"
+ */
+export function formatError(err: unknown, mode: OutputMode): string {
+	if (mode === "json") {
+		return errorEnvelope(err);
+	}
+	const message = err instanceof Error ? err.message : String(err);
 	return `Error: ${message}`;
 }
