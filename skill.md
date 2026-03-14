@@ -1,27 +1,46 @@
-# Krometrail Skill
+# Krometrail Skills
 
-The krometrail skill is defined in the [`skill/`](skill/) directory using the [Agent Skills specification](https://agentskills.io/specification).
+Two skills for AI agents, following the [Agent Skills specification](https://agentskills.io/specification).
 
 ## Install
 
 ```bash
-# skilltap
-skilltap install ./skill
+# Both skills
+npx skills add nklisch/krometrail --skill krometrail-debug krometrail-chrome
 
-# Manual: copy skill/ to your agent's skills directory
+# Just the debugger
+npx skills add nklisch/krometrail --skill krometrail-debug
+
+# Just browser observation
+npx skills add nklisch/krometrail --skill krometrail-chrome
 ```
 
-## Structure
+## Skills
+
+### krometrail-debug
+
+Runtime debugging — breakpoints, stepping, variable inspection across 10 languages.
 
 ```
-skill/
-  SKILL.md                    # Main skill file (frontmatter + instructions)
+skills/krometrail-debug/
+  SKILL.md
   references/
-    cli.md                    # Full CLI command reference
-    python.md                 # Python-specific setup and tips
-    javascript.md             # JavaScript/TypeScript debugging
-    go.md                     # Go (Delve) debugging
-    rust.md                   # Rust (CodeLLDB) debugging
-    cpp.md                    # C/C++ (GDB/LLDB) debugging
-    java.md                   # Java debugging
+    cli.md          # Debug CLI commands
+    python.md       # Python (debugpy)
+    javascript.md   # JavaScript/TypeScript (js-debug)
+    go.md           # Go (Delve)
+    rust.md         # Rust (CodeLLDB)
+    cpp.md          # C/C++ (GDB/LLDB)
+    java.md         # Java (JDWP)
+```
+
+### krometrail-chrome
+
+Browser observation — session recording, network/console/DOM/framework capture, investigation tools.
+
+```
+skills/krometrail-chrome/
+  SKILL.md
+  references/
+    chrome.md       # Browser recording and investigation commands
 ```

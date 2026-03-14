@@ -25,7 +25,7 @@ Codex discovers the `debug_*`, `chrome_*`, and `session_*` tools automatically.
 For CLI-based usage, install the krometrail skill:
 
 ```bash
-npx skills add nklisch/krometrail --skill krometrail
+npx skills add nklisch/krometrail --skill krometrail-debug krometrail-chrome
 ```
 
 ## Example Workflow

@@ -1,30 +1,24 @@
 ---
-name: krometrail
-description: Runtime debugging and browser observation for AI agents. Use when a test fails and reading the code isn't enough, when you need to inspect runtime values, or when the user has recorded a browser session with markers for you to investigate. Gives you a live debugger (breakpoints, stepping, variable inspection) across 10 languages, plus full browser session recording (network, console, DOM, framework state, screenshots) that you can search, inspect, and diff.
+name: krometrail-debug
+description: Runtime debugging for AI agents. Use when a test fails and reading the code isn't enough, when you need to inspect runtime values, or when a bug is in logic you can't trace statically (closures, async, pipelines, type coercions). Gives you a live debugger — set breakpoints, step through code, inspect variables, evaluate expressions — across 10 languages.
 license: MIT
-compatibility: Requires debugger binaries for the target language (e.g., debugpy for Python, dlv for Go). Chrome/Chromium for browser observation. Works with any MCP-compatible agent or via CLI.
+compatibility: Requires debugger binaries for the target language (e.g., debugpy for Python, dlv for Go). Works with any MCP-compatible agent or via CLI.
 metadata:
   author: krometrail
   version: "0.1"
 allowed-tools: Bash(krometrail:*)
 ---
 
-# Krometrail — Runtime Debugging & Browser Observation
+# Krometrail — Runtime Debugging
 
-Use krometrail when you need to inspect runtime state to diagnose a bug, or when the user has recorded a browser session for you to investigate.
+Use krometrail when you need to inspect runtime state to diagnose a bug — especially when static code reading and test output aren't enough to identify the root cause.
 
 ## When to use
 
-**Runtime debugging:**
 - A test fails but the code looks correct — inspect runtime values at the failure point
 - You suspect a wrong calculation or off-by-one — set a breakpoint and check locals
 - A function returns an unexpected value — step into it and trace the data flow
 - An exception occurs deep in a call chain — break on exceptions to see the exact state
-
-**Browser observation:**
-- The user reproduced a bug in the browser and dropped markers — investigate the session
-- A web app has network errors, console errors, or unexpected behavior — search and inspect the recording
-- You need to understand what happened in the browser at a specific moment — use inspect and diff
 
 ## MCP tools
 
@@ -65,47 +59,10 @@ debug_stop({ session_id: "..." })
 # Fix the bug with confidence
 ```
 
-## Browser observation tools (MCP)
-
-| Tool | Purpose |
-|------|---------|
-| `chrome_start` | Launch Chrome and start recording (network, console, DOM, framework state) |
-| `chrome_status` | Check recording state |
-| `chrome_mark` | Place a named marker at the current moment |
-| `chrome_stop` | Stop recording — session is saved for investigation |
-| `session_list` | List recorded sessions (filter by errors, URL, etc.) |
-| `session_overview` | Structured overview of a session — event counts, markers, errors |
-| `session_search` | Search events by text, status codes, event types, framework patterns |
-| `session_inspect` | Deep-dive into a specific event, marker, or timestamp |
-| `session_diff` | Compare two moments in a session (before/after a marker) |
-| `session_replay_context` | Generate reproduction steps or test scaffolds (Playwright, Cypress) |
-
-### Example: investigate a user-reported browser bug
-
-The user reproduced the bug and placed markers. You investigate:
-
-```
-session_list({ has_errors: true })
-# → Shows sessions with errors
-
-session_overview({ session_id: "abc123", around_marker: "checkout broke" })
-# → Network errors, console errors, framework state around the marker
-
-session_search({ session_id: "abc123", status_codes: [500], query: "payment" })
-# → POST /api/orders → 500, response body with error details
-
-session_inspect({ session_id: "abc123", event_id: "evt_42" })
-# → Full request/response headers, body, timing
-
-session_diff({ session_id: "abc123", from: "marker:form loaded", to: "marker:checkout broke" })
-# → What changed: new network errors, state mutations, console errors
-```
-
 ## CLI commands
 
 If using krometrail via CLI:
 
-**Debugging:**
 ```bash
 krometrail launch "python3 -m pytest test_discount.py -x" --break discount.py:12
 krometrail eval "rate"
@@ -115,19 +72,7 @@ krometrail continue
 krometrail stop
 ```
 
-**Browser:**
-```bash
-krometrail browser start --url http://localhost:3000 --profile krometrail
-krometrail browser mark "submitted form"
-krometrail browser stop
-krometrail browser sessions --has-errors
-krometrail browser overview <session-id>
-krometrail browser search <session-id> --status-codes 500
-krometrail browser inspect <session-id> --event <event-id>
-krometrail browser diff <session-id> --before <ts> --after <ts>
-```
-
-See [references/cli.md](references/cli.md) for the full command reference and [references/chrome.md](references/chrome.md) for browser-specific details.
+See [references/cli.md](references/cli.md) for the full command reference.
 
 ## Language support
 

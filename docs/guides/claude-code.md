@@ -45,7 +45,7 @@ The CLI provides the same debugging capabilities as the MCP tools, accessed thro
 Install the krometrail skill:
 
 ```bash
-npx skills add nklisch/krometrail --skill krometrail
+npx skills add nklisch/krometrail --skill krometrail-debug krometrail-chrome
 ```
 
 ## Verification

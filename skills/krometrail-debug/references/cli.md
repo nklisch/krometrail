@@ -1,4 +1,4 @@
-# CLI Command Reference
+# Debug CLI Command Reference
 
 All commands follow the pattern: `krometrail <command> [options]`
 
@@ -53,30 +53,6 @@ krometrail unwatch "<expr>"
 krometrail log [--detailed]
 krometrail output [--stderr|--stdout] [--since-action <n>]
 krometrail threads
-```
-
-## Browser recording
-
-```
-krometrail browser start --url <url> [--profile krometrail] [--framework-state]
-krometrail browser start --attach
-krometrail browser mark "<description>"
-krometrail browser status
-krometrail browser stop [--close-browser]
-```
-
-## Browser session investigation
-
-```
-krometrail browser sessions [--has-errors] [--limit <n>]
-krometrail browser overview <session-id> [--around-marker <marker-id>]
-krometrail browser search <session-id> --query "<text>" [--status-codes <codes>] [--event-types <types>]
-krometrail browser inspect <session-id> --event <event-id>
-krometrail browser inspect <session-id> --marker <marker-id>
-krometrail browser diff <session-id> --before <ts> --after <ts>
-krometrail browser diff <session-id> --from-marker "<name>" --to-marker "<name>"
-krometrail browser replay-context <session-id> [--format reproduction_steps|playwright|cypress]
-krometrail browser export <session-id> --format har --output <file>
 ```
 
 ## Diagnostics
