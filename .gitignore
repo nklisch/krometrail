@@ -37,6 +37,9 @@ tests/agent-harness/.traces/
 tests/agent-harness/scenarios/**/package-lock.json
 tests/agent-harness/scenarios/**/order-service
 
+# Generated docs
+docs/.generated/
+
 # Environment
 .env
 .env.local

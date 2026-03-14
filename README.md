@@ -39,13 +39,13 @@ Start recording a browser session:
 ```bash
 # MCP: chrome_start({ url: "http://localhost:3000", framework_state: true })
 # CLI:
-krometrail chrome start http://localhost:3000 --framework-state
+krometrail browser start http://localhost:3000 --framework-state
 
 # Place markers at significant moments
-krometrail chrome mark "submitted form"
+krometrail browser mark "submitted form"
 
 # Stop recording
-krometrail chrome stop
+krometrail browser stop
 ```
 
 Investigate what happened:

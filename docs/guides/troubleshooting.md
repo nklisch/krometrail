@@ -254,4 +254,4 @@ The debugger process started but isn't listening yet. This usually means:
 
 1. Run `krometrail doctor` and include the output
 2. Check daemon logs: `cat ~/.krometrail/daemon.log`
-3. File an issue: https://github.com/anthropics/krometrail/issues
+3. File an issue: https://github.com/nklisch/krometrail/issues
