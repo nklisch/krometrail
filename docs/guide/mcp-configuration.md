@@ -106,7 +106,7 @@ codex mcp add krometrail -- npx krometrail mcp
 Codex also supports the CLI path — install the krometrail skill:
 
 ```bash
-skilltap install krometrail
+npx skills add nklisch/krometrail --skill krometrail
 ```
 
 ## Tool Filtering with `--mcp`
