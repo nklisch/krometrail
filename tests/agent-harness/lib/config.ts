@@ -172,7 +172,7 @@ export interface RunResult {
 	agentExitCode: number | null;
 	/** Extracted metrics */
 	metrics: AgentMetrics;
-	/** Agent-lens version used */
+	/** Bugscope version used */
 	bugscopeVersion: string;
 	/** Visible test pass/fail before agent ran */
 	visibleTestBefore: boolean;
