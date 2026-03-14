@@ -1,63 +1,18 @@
 ---
-title: session_replay_context
-description: Generate reproduction steps and Playwright/Cypress test scaffolds from a recorded session.
+title: Replay Context
+description: Your agent can generate reproduction steps or test scaffolds from your recorded session.
 ---
 
-# session_replay_context
+# Replay Context
 
-Generate reproduction steps or test scaffolds from a recorded session. Use this to produce a minimal sequence of actions that reproduces an observed bug, or to create a failing test that captures the regression.
-
-## Usage
-
-::: code-group
-
-```bash [CLI]
-# Human-readable reproduction steps
-krometrail session replay-context <session-id>
-
-# Playwright test scaffold
-krometrail session replay-context <session-id> --format playwright
-
-# Cypress test scaffold
-krometrail session replay-context <session-id> --format cypress
-
-# Scope to a time window
-krometrail session replay-context <session-id> --format playwright \
-	--from-marker "page loaded" --to-marker "error appeared"
-```
-
-```json [MCP: session_replay_context]
-// Playwright scaffold
-{
-	"session_id": "abc123",
-	"format": "playwright"
-}
-
-// Scoped to markers
-{
-	"session_id": "abc123",
-	"format": "playwright",
-	"from_marker": "page loaded",
-	"to_marker": "error appeared"
-}
-```
-
-:::
-
-## Parameters
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `session_id` | string | The recording session |
-| `format` | string | Output format: `"steps"` (default), `"playwright"`, `"cypress"` |
-| `from_marker` | string | Start scope at this marker |
-| `to_marker` | string | End scope at this marker |
-| `from_ms` | number | Start scope at timestamp (ms from session start) |
-| `to_ms` | number | End scope at timestamp (ms from session start) |
+Your agent can generate reproduction steps or test scaffolds from your recorded session — a minimal sequence of actions that reproduces an observed bug, or a failing test that captures the regression.
 
 ## Output Formats
 
-**`steps`** — numbered list of human-readable actions:
+Your agent can produce three kinds of output from a session:
+
+**Steps** — a numbered list of human-readable actions that reproduce the bug:
+
 ```
 1. Navigate to http://localhost:3000/checkout
 2. Fill "email" field with "user@example.com"
@@ -66,7 +21,8 @@ krometrail session replay-context <session-id> --format playwright \
 5. [Console] Error: Failed to process payment: card_declined
 ```
 
-**`playwright`** — a TypeScript test scaffold:
+**Playwright scaffold** — a TypeScript test that automates the reproduction:
+
 ```typescript
 import { test, expect } from "@playwright/test";
 
@@ -80,17 +36,17 @@ test("reproduce: order submission fails with card_declined", async ({ page }) =>
 });
 ```
 
-**`cypress`** — a Cypress test scaffold in similar form.
+**Cypress scaffold** — the same reproduction in Cypress test syntax.
 
 ## Use Cases
 
-- **Bug reports** — convert a recorded session into a reproducible sequence for filing issues
+- **Bug reports** — convert a recorded session into a reproducible sequence for filing issues with your team
 - **Regression tests** — generate a failing test before fixing the bug, then make it pass
 - **Documentation** — create human-readable steps for design or QA review
-- **Agent debugging** — the agent uses `session_replay_context` to understand the exact sequence of events that led to an error before setting breakpoints
+- **Agent debugging** — your agent uses replay context to understand the exact sequence of events that led to an error before diving into source code
 
 ## Tips
 
-- Use markers to scope the replay to just the relevant portion of the session
-- Generated test scaffolds need manual adjustment for dynamic values (tokens, IDs, timestamps)
-- The `steps` format is often enough context for an agent to form a debugging hypothesis without reading raw events
+- **Use markers to scope the output** — if you marked "page loaded" and "error appeared", your agent can generate steps for just that portion of the session, not the entire recording
+- **Expect to adjust generated tests** — test scaffolds need manual tweaks for dynamic values like auth tokens, generated IDs, and timestamps
+- **The steps format is often enough** — your agent can form a debugging hypothesis from the human-readable steps without needing to read through raw events

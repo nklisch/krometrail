@@ -35,7 +35,7 @@
 		"check": "biome check . && bun run test",
 		"docs:dev": "vitepress dev docs",
 		"docs:generate": "bun scripts/generate-docs.ts",
-		"docs:build": "bun scripts/generate-docs.ts && vitepress build docs",
+		"docs:build": "bun scripts/generate-docs.ts && bun scripts/generate-llms-full.ts && vitepress build docs",
 		"docs:preview": "vitepress preview docs"
 	},
 	"dependencies": {

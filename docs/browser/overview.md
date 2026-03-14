@@ -5,7 +5,7 @@ description: What browser observation captures, why it matters for AI agents, an
 
 # Browser Observation
 
-Krometrail connects to Chrome via CDP and records everything happening in a browser session — without requiring any changes to the application code.
+Krometrail connects to Chrome via CDP and records everything happening in a browser session — without requiring any changes to your application code.
 
 ## Why It Matters
 
@@ -21,32 +21,40 @@ Browser observation bridges that gap. You browse your app normally, drop markers
 | **Console** | All console output with levels, arguments, and stack traces |
 | **DOM mutations** | Structural changes: forms, dialogs, sections — not every attribute tweak |
 | **User input** | Clicks, form submissions, field changes |
-| **Screenshots** | Periodic snapshots and navigation-triggered captures |
+| **Screenshots** | Periodic snapshots, navigation-triggered captures, and manual snaps |
 | **Storage** | localStorage/sessionStorage mutations and cross-tab events |
 | **Framework state** | React and Vue component lifecycles, state/prop diffs, store mutations |
 | **Framework errors** | Auto-detected anti-patterns (stale closures, infinite re-renders, missing cleanup) |
 
 ## How It Works
 
-1. Krometrail launches (or connects to) a Chrome instance via CDP
-2. A recording session captures events into a SQLite-backed store
-3. The agent investigates the recorded session using search, inspect, and diff tools
-4. Framework state (if enabled) is captured via injected DevTools hook scripts that fire before any page code runs
+The work is split between you and your agent:
+
+```
+You (in Chrome)                     Your Agent
+─────────────────                   ──────────
+Browse your app normally
+Click ◎ Mark at key moments
+Click 📷 Snap to capture the screen
+                                    Searches the session for errors
+                                    Inspects individual events
+                                    Diffs state between markers
+                                    Generates reproduction steps
+```
+
+While you use your app and annotate important moments with the in-browser control panel, your agent works through the recorded session to trace the bug to its source.
 
 ## Typical Workflow
 
-1. **You** start a recording session (via your agent or CLI)
-2. **You** use the app in Chrome — click around, fill forms, reproduce the bug
-3. **You** drop markers at key moments ("form submitted", "page broke")
+1. **Your agent** starts a recording session and opens Chrome to your app
+2. **You** use the app — click around, fill forms, reproduce the bug
+3. **You** click **◎ Mark** in the control panel at key moments ("form submitted", "page broke")
 4. **Your agent** searches the recorded session, inspects events, diffs state changes, and traces the bug to source code
-
-The agent accesses the session data through MCP tools (`chrome_start`, `session_search`, `session_inspect`, `session_diff`) or equivalent CLI commands.
 
 ## Next Steps
 
-- [Recording Sessions](./recording-sessions) — `chrome_start`, `chrome_stop`, markers, tab filtering
-- [Search](./investigation-tools/search) — Full-text and structured event search
-- [Inspect](./investigation-tools/inspect) — Deep-dive into individual events
-- [Diff](./investigation-tools/diff) — Compare two moments in a session
+- [Recording & Controls](./recording-sessions) — Starting a recording, the in-browser control panel, and keyboard shortcuts
+- [Markers & Screenshots](./markers-screenshots) — How to annotate your session and how screenshot capture works
+- [What Your Agent Sees](./investigation-tools/search) — Search, inspect, diff, and replay context
 - [React Observation](./framework-observation/react) — Component lifecycles and bug patterns
 - [Vue Observation](./framework-observation/vue) — Vue 2/3, Pinia, and Vuex

@@ -1,62 +1,22 @@
 ---
-title: session_search
-description: Full-text and structured search across recorded browser session events.
+title: Search
+description: Your agent searches recorded session events by text, type, status code, framework pattern, and more.
 ---
 
-# session_search
+# Search
 
-Search recorded events by text, type, status code, time range, or framework pattern. Use this to locate specific network failures, console errors, or framework bugs within a recording.
+Your agent can search everything recorded in your session — every network request, console message, framework event, storage change, and marker. Search is usually the first thing your agent does after you finish reproducing a bug.
 
-## Basic Usage
+## What Your Agent Can Search For
 
-::: code-group
+Your agent can search and filter the session in a variety of ways:
 
-```bash [CLI]
-# Full-text search
-krometrail session search <session-id> "payment failed"
-
-# Filter by event type
-krometrail session search <session-id> --event-types network_response
-
-# Filter by HTTP status code
-krometrail session search <session-id> --event-types network_response --status-codes 500,503
-
-# Framework pattern search
-krometrail session search <session-id> --framework react --pattern stale_closure
-
-# Combine filters
-krometrail session search <session-id> "checkout" --event-types network_request,network_response --status-codes 4xx
-```
-
-```json [MCP: session_search]
-// Full-text
-{ "session_id": "abc123", "query": "payment failed" }
-
-// Event type filter
-{ "session_id": "abc123", "event_types": ["network_response"], "status_codes": [500, 503] }
-
-// Framework pattern
-{ "session_id": "abc123", "framework": "react", "pattern": "stale_closure" }
-
-// Time range (milliseconds since session start)
-{ "session_id": "abc123", "from_ms": 5000, "to_ms": 15000 }
-```
-
-:::
-
-## Parameters
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `session_id` | string | The recording session to search |
-| `query` | string | Full-text search across event data |
-| `event_types` | string[] | Filter to specific event types (see below) |
-| `status_codes` | (number \| string)[] | HTTP status codes. Accepts exact numbers or patterns like `"4xx"`, `"5xx"` |
-| `framework` | string | Filter to framework events: `"react"`, `"vue"` |
-| `pattern` | string | Framework bug pattern: `"stale_closure"`, `"infinite_rerender"`, `"missing_cleanup"` |
-| `from_ms` | number | Start of time range (ms from session start) |
-| `to_ms` | number | End of time range (ms from session start) |
-| `limit` | number | Max results to return (default: 50) |
+- **Full-text search** — search across all event data for a keyword or phrase, like "payment failed" or "card_declined"
+- **By event type** — narrow to specific categories like network responses, console errors, or framework state changes
+- **By HTTP status code** — find all 4xx or 5xx responses, or a specific code like 500 or 401
+- **By framework pattern** — search for detected bug patterns like stale closures, infinite re-renders, or missing cleanup
+- **By time range** — search only events that occurred within a specific window of the session
+- **Around markers** — scope the search to events between two named markers you placed during recording
 
 ## Event Types
 
@@ -76,22 +36,12 @@ krometrail session search <session-id> "checkout" --event-types network_request,
 
 ## Example Workflows
 
-**Find all failed API calls:**
-```bash
-krometrail session search <session-id> --event-types network_response --status-codes 4xx,5xx
-```
+**Finding failed API calls:** Your agent searches for network responses with 4xx or 5xx status codes, returning every request that received an error response during the session.
 
-**Find React component errors:**
-```bash
-krometrail session search <session-id> --event-types framework_error --framework react
-```
+**Finding React component errors:** Your agent searches for `framework_error` events and filters to React patterns — stale closures, infinite re-renders, and similar detected problems.
 
-**Search for errors around a specific marker:**
-```bash
-# First get the marker timestamp from session overview
-krometrail session overview <session-id>
-# Then search a time window around it
-krometrail session search <session-id> --event-types console,page_error --from-ms 12000 --to-ms 18000
-```
+**Narrowing to a specific moment:** After you place markers at "form submitted" and "error appeared", your agent can search for console errors and network failures scoped to just that window — filtering out everything else that happened in the session.
 
-Use `session_inspect` to get full event details for any result returned by search.
+**Tracing a keyword through the session:** Your agent can search for a specific string like an error message or a user ID across all event types, finding every place it appeared in the network traffic, console output, and storage changes.
+
+Search results include event IDs that your agent uses to pull up full event details with [Inspect](./inspect).

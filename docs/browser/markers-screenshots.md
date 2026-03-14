@@ -7,67 +7,52 @@ description: How to place timeline markers and how screenshot capture works.
 
 ## Markers
 
-Markers annotate the recording timeline at significant moments. They are the primary tool for targeting `session_diff` comparisons and scoping `session_replay_context`.
+Markers annotate the recording timeline at significant moments. They are your primary way to guide your agent's investigation — every search, diff, and replay context can be scoped to a marker range.
 
-### Placing Markers
+### Placing a Marker
 
-::: code-group
+Click the **◎ Mark** button in the control panel, or press **Ctrl+Shift+M** from anywhere in Chrome. A text input appears so you can label the moment — "form submitted", "error appeared", "payment failed".
 
-```bash [CLI]
-krometrail browser mark "user submitted checkout form"
-krometrail browser mark "error modal appeared"
-krometrail browser mark "payment failed"
-```
+When the marker is saved, the button flashes green and shows **"Marked!"** for one second, confirming it was recorded.
 
-```json [MCP: chrome_mark]
-{ "label": "user submitted checkout form" }
-```
+### Why Markers Matter
 
-:::
+Markers anchor your agent's investigation to the moments that matter. When you mark "before submit" and "after error", your agent can:
 
-Markers are timestamped at the moment they are created. They appear in `session_overview` output and can be referenced by name in `session_diff` and `session_replay_context`.
+- **Diff** the application state between those two moments — what changed in network activity, storage, component state, and console output
+- **Scope a search** to just the events that happened between your markers
+- **Generate reproduction steps** starting from a marker, rather than replaying the entire session
 
-### Using Markers in Investigation
-
-```bash
-# Get all markers from a session
-krometrail session overview <session-id>
-
-# Diff between two marker points
-krometrail session diff <session-id> \
-	--from-marker "user submitted checkout form" \
-	--to-marker "error modal appeared"
-
-# Generate reproduction steps scoped to marker range
-krometrail session replay-context <session-id> \
-	--from-marker "page loaded" \
-	--to-marker "error modal appeared"
-```
+The more precisely you mark key moments, the more targeted your agent's analysis can be. You don't need to understand what went wrong — just mark the moment something looked unexpected.
 
 ## Screenshots
 
-Screenshots are captured automatically during recording at two triggers:
+Screenshots are captured automatically during recording and can also be taken manually at any time.
 
-**Periodic capture** — a screenshot is taken at a configurable interval (default: every 5 seconds) while recording is active.
+### Manual Snaps
+
+Click the **📷 Snap** button in the control panel, or press **Ctrl+Shift+S** from anywhere in Chrome, to immediately capture a screenshot.
+
+When the screenshot is saved, the button flashes blue and shows **"Saved!"** for one second.
+
+Manual snaps are useful for capturing moments that auto-capture might have missed — an unexpected loading state, a visual glitch, a dialog that appeared briefly.
+
+### Auto-Capture
+
+Screenshots are also captured automatically at two triggers:
+
+**Periodic capture** — a screenshot is taken at a regular interval while recording is active. The current interval is shown in the control panel footer as **"auto: 5s"** (or whatever the configured interval is). If auto-capture is disabled, the footer shows **"auto: off"**.
 
 **Navigation-triggered** — a screenshot is taken on every page navigation (URL change).
 
-### Screenshots in Investigation
+### Screenshots in Your Agent's Investigation
 
-Every `session_inspect` response includes the nearest screenshot to the event being inspected. This shows what the UI looked like at the moment the event occurred — useful for correlating a network error with a visible UI state.
-
-```bash
-krometrail session inspect <session-id> --event-id <event-id>
-# Response includes: event details + nearest screenshot
-```
-
-### Screenshot Format
-
-Screenshots are stored as PNG files in the session database and returned as base64-encoded data in API responses, or saved to disk when using the CLI with `--save-screenshots`.
+Every event your agent inspects includes the nearest screenshot — whichever screenshot was taken closest in time to the event. This lets your agent correlate a network error, a console message, or a component state change with what was actually visible on screen at that moment.
 
 ## Tips for Effective Marking
 
-- **Mark before and after actions** — "before form submit" and "after form submit" gives `session_diff` a precise window
-- **Mark when errors appear** — place a marker immediately when you see unexpected behavior in the browser
-- **Name markers descriptively** — marker labels appear in diffs and replay contexts, so descriptive names make the output easier to read
-- **Mark test scenario boundaries** — if testing multiple scenarios in one session, mark the start of each scenario to keep them separable
+- **Mark before and after actions** — "before form submit" and "after form submit" gives your agent a precise window to analyze
+- **Mark when errors appear** — place a marker as soon as you see unexpected behavior, even if you don't know what caused it
+- **Name markers descriptively** — marker labels appear in diffs and replay output, so clear names make the results easier to read
+- **Mark test scenario boundaries** — if you're testing multiple scenarios in one session, mark the start of each to keep them separable
+- **Use Ctrl+Shift+M** — the keyboard shortcut lets you mark a moment without breaking your interaction flow in the app

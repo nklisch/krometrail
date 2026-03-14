@@ -1,0 +1,58 @@
+# Krometrail
+
+> MCP server and CLI that gives AI coding agents runtime debugging via the Debug Adapter Protocol and browser observation via Chrome DevTools Protocol.
+
+Krometrail has two modes: **runtime debugging** (set breakpoints, step through code, inspect variables in 10 languages via DAP) and **browser observation** (record Chrome sessions capturing network, console, DOM, framework state, and screenshots via CDP). Agents interact through MCP tools or CLI commands.
+
+## Docs
+
+- [Getting Started](/guide/getting-started): Install Krometrail and configure it with your AI coding agent.
+- [MCP Configuration](/guide/mcp-configuration): Configure Krometrail as an MCP server for Claude Code, Cursor, or other agents.
+- [CLI Installation](/guide/cli-installation): Install the standalone CLI binary.
+
+## Browser Observation
+
+- [Browser Overview](/browser/overview): What browser observation captures and how the recording workflow operates.
+- [Recording & Controls](/browser/recording-sessions): Start recording sessions and use the in-browser control panel.
+- [Markers & Screenshots](/browser/markers-screenshots): Timeline markers and screenshot capture during recording.
+- [Search](/browser/investigation-tools/search): Full-text and structured event search across recorded sessions.
+- [Inspect](/browser/investigation-tools/inspect): Deep-dive into individual events with full context and screenshots.
+- [Diff](/browser/investigation-tools/diff): Compare two moments in a session to find what changed.
+- [Replay Context](/browser/investigation-tools/replay-context): Generate reproduction steps and Playwright/Cypress test scaffolds.
+- [React Observation](/browser/framework-observation/react): React component lifecycle tracking and bug pattern detection.
+- [Vue Observation](/browser/framework-observation/vue): Vue 2/3, Pinia, and Vuex state observation.
+
+## Runtime Debugging
+
+- [Debugging Overview](/debugging/overview): Runtime debugging concepts — breakpoints, stepping, variables.
+- [Breakpoints & Stepping](/debugging/breakpoints-stepping): Set breakpoints, step through code, conditional breaks.
+- [Variables & Evaluation](/debugging/variables-evaluation): Inspect variables and evaluate expressions at breakpoints.
+- [Watch Expressions](/debugging/watch-expressions): Track variable changes across debugging steps.
+- [Context Compression](/debugging/context-compression): How viewport output is compressed for agent context windows.
+- [Multi-threaded Debugging](/debugging/multi-threaded): Debug multi-threaded applications.
+- [Framework Detection](/debugging/framework-detection): Automatic test framework detection.
+
+## Language Support
+
+- [Python](/languages/python): debugpy adapter — setup and configuration.
+- [Node.js / TypeScript](/languages/nodejs): js-debug adapter — setup and configuration.
+- [Go](/languages/go): Delve adapter — setup and configuration.
+- [Rust](/languages/rust): CodeLLDB adapter — setup and configuration.
+- [Java](/languages/java): java-debug adapter — setup and configuration.
+- [C / C++](/languages/cpp): cppdbg (GDB/LLDB) adapter — setup and configuration.
+- [Ruby](/languages/ruby): rdbg adapter — setup and configuration.
+- [C#](/languages/csharp): netcoredbg adapter — setup and configuration.
+- [Swift](/languages/swift): lldb-dap adapter — setup and configuration.
+- [Kotlin](/languages/kotlin): kotlin-debug-adapter — setup and configuration.
+
+## Reference
+
+- [MCP Tools](/reference/mcp-tools): Complete MCP tool reference — all debug and browser tools with parameters.
+- [CLI Commands](/reference/cli-commands): Full CLI command reference.
+- [Configuration](/reference/configuration): All configuration options.
+
+## Optional
+
+- [Viewport Format](/reference/viewport-format): Internal viewport output format specification.
+- [Adapter SDK](/reference/adapter-sdk): Build custom language debug adapters.
+- [Your First Debug Session](/guide/first-debug-session): Guided walkthrough of a first debugging session.

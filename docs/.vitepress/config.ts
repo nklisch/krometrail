@@ -55,9 +55,10 @@ export default defineConfig({
 					text: "Browser Observation",
 					items: [
 						{ text: "Overview", link: "/browser/overview" },
-						{ text: "Recording Sessions", link: "/browser/recording-sessions" },
+						{ text: "Recording & Controls", link: "/browser/recording-sessions" },
+						{ text: "Markers & Screenshots", link: "/browser/markers-screenshots" },
 						{
-							text: "Investigation Tools",
+							text: "What Your Agent Sees",
 							items: [
 								{ text: "Search", link: "/browser/investigation-tools/search" },
 								{ text: "Inspect", link: "/browser/investigation-tools/inspect" },
@@ -72,7 +73,6 @@ export default defineConfig({
 								{ text: "Vue", link: "/browser/framework-observation/vue" },
 							],
 						},
-						{ text: "Markers & Screenshots", link: "/browser/markers-screenshots" },
 					],
 				},
 			],

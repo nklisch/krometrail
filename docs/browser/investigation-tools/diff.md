@@ -1,89 +1,36 @@
 ---
-title: session_diff
-description: Compare two moments in a session — URL, storage, network, console, and framework state changes.
+title: Diff
+description: Your agent can compare two moments in your session — what changed between working and broken.
 ---
 
-# session_diff
+# Diff
 
-Compare the state of the application between two points in a recorded session. Use this to understand what changed between "working" and "broken" states.
+Your agent can compare two moments in your session — what changed between "working" and "broken". This is often the fastest path to identifying what went wrong.
 
-## Usage
+## How Markers Enable This
 
-::: code-group
+When you place markers at key moments during recording, your agent can use them as reference points for comparison. If you mark "before form submit" and "after error appeared", your agent diffs everything that happened between those two moments — network activity, storage changes, console output, and component state.
 
-```bash [CLI]
-# Compare by timestamp (ms from session start)
-krometrail session diff <session-id> --from 5000 --to 15000
-
-# Compare relative to markers
-krometrail session diff <session-id> --from-marker "page loaded" --to-marker "error appeared"
-```
-
-```json [MCP: session_diff]
-// By timestamp
-{
-	"session_id": "abc123",
-	"from_ms": 5000,
-	"to_ms": 15000
-}
-
-// By marker names
-{
-	"session_id": "abc123",
-	"from_marker": "page loaded",
-	"to_marker": "error appeared"
-}
-```
-
-:::
+You don't need to understand the bug to place useful markers. Just mark the moment before you trigger the action and the moment after something looks wrong, and your agent does the rest.
 
 ## What Gets Compared
 
-**URL changes** — navigation events between the two timestamps. Shows the sequence of pages visited.
+**URL changes** — the navigation sequence between the two timestamps, showing which pages were visited.
 
-**Storage diffs** — localStorage and sessionStorage changes. Keys added, removed, or modified with old/new values.
+**Storage diffs** — localStorage and sessionStorage changes: keys added, removed, or modified with their old and new values.
 
-**Network summary** — requests made in the window, grouped by status code. Highlights new failures that appeared in the `to` window but not the `from` window.
+**Network summary** — requests made in the window, grouped by status code. Highlights new failures that appeared between the two points.
 
 **Console changes** — new console errors or warnings that appeared between the timestamps.
 
-**Framework state changes** — component mount/unmount events and state changes. Shows which React or Vue components changed state during the window.
+**Framework state changes** — component mount/unmount events and state changes, showing which React or Vue components changed during the window.
 
 **Screenshot comparison** — nearest screenshots at each timestamp for visual reference.
 
-## Parameters
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `session_id` | string | The recording session |
-| `from_ms` | number | Start timestamp (ms from session start) |
-| `to_ms` | number | End timestamp (ms from session start) |
-| `from_marker` | string | Use a named marker as the start point |
-| `to_marker` | string | Use a named marker as the end point |
-
-Use marker names or timestamps — not both. Get timestamps and marker names from `session_overview`.
-
 ## Example: Diagnosing a Form Submission Bug
 
-```bash
-# Record a session with markers
-krometrail browser start http://localhost:3000
-# ... fill out the form in Chrome ...
-krometrail browser mark "form submitted"
-# ... observe the error ...
-krometrail browser mark "error displayed"
-krometrail browser stop
+Suppose you're testing a checkout form and the payment silently fails. During recording, you click **◎ Mark** right before you click "Place Order", and again when you see the error appear. You label them "form submitted" and "error displayed".
 
-# Diff between the two markers
-krometrail session diff <session-id> \
-	--from-marker "form submitted" \
-	--to-marker "error displayed"
-```
+Your agent then diffs the state between those two markers. The diff output shows which network request failed and its response body, whether localStorage was modified unexpectedly, which React components re-rendered and with what state changes, and any console errors logged in that window.
 
-The diff output shows:
-- Which network request failed (and its response body)
-- Whether localStorage was modified unexpectedly
-- Which React components re-rendered and with what state changes
-- Console errors logged in that window
-
-This is often enough to identify the root cause without inspecting individual events.
+This is often enough to identify the root cause without inspecting individual events one by one.
