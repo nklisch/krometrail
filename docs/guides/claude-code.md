@@ -1,3 +1,8 @@
+---
+title: "Using Krometrail with Claude Code"
+description: "Configure Krometrail with Claude Code for AI-powered debugging."
+---
+
 # Using Krometrail with Claude Code
 
 Krometrail gives Claude Code runtime debugging — it can set breakpoints, inspect variables, and trace execution to find bugs.

@@ -1,3 +1,10 @@
+---
+head:
+  - - meta
+    - name: robots
+      content: noindex, nofollow
+---
+
 # Krometrail — Specification
 
 This document defines the formal contracts, types, and configuration parameters that implementors must conform to.

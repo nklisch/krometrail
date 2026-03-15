@@ -1,3 +1,10 @@
+---
+head:
+  - - meta
+    - name: robots
+      content: noindex, nofollow
+---
+
 # Krometrail — Agent UX
 
 This document describes the agent-facing experience: the viewport abstraction that makes debugging token-efficient, the interaction patterns agents should use, and the gap analysis motivating these design choices.

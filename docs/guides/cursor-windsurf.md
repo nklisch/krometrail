@@ -1,3 +1,8 @@
+---
+title: "Using Krometrail with Cursor and Windsurf"
+description: "Set up Krometrail with Cursor, Windsurf, and other MCP-compatible editors."
+---
+
 # Using Krometrail with Cursor and Windsurf
 
 Both Cursor and Windsurf support MCP servers. Krometrail integrates via MCP to give the AI runtime debugging.

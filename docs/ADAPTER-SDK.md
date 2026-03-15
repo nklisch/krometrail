@@ -1,3 +1,10 @@
+---
+head:
+  - - meta
+    - name: robots
+      content: noindex, nofollow
+---
+
 # Creating an Krometrail Adapter
 
 This guide walks through creating a new language adapter for Krometrail. By the end, you'll have a working adapter that integrates with the CLI, MCP server, and doctor command.

@@ -1,3 +1,10 @@
+---
+head:
+  - - meta
+    - name: robots
+      content: noindex, nofollow
+---
+
 # Agent Instructions — Documentation Navigation
 
 ## Foundation docs (current, authoritative)

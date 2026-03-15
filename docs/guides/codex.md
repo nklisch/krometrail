@@ -1,3 +1,8 @@
+---
+title: "Using Krometrail with OpenAI Codex"
+description: "Configure Krometrail with OpenAI Codex for runtime debugging."
+---
+
 # Using Krometrail with OpenAI Codex
 
 Krometrail gives Codex runtime debugging via MCP or the CLI — the same tools, two interfaces.

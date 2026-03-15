@@ -1,3 +1,8 @@
+---
+title: "Troubleshooting"
+description: "Common issues and solutions for Krometrail debugging and browser observation."
+---
+
 # Troubleshooting Krometrail
 
 Start with `krometrail doctor` to check your setup before diving into specific issues.

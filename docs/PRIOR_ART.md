@@ -1,3 +1,10 @@
+---
+head:
+  - - meta
+    - name: robots
+      content: noindex, nofollow
+---
+
 # Krometrail — Prior Art Reference
 
 Analysis of existing MCP-over-DAP projects, their approaches, and key insights for Krometrail.

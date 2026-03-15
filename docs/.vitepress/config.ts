@@ -7,36 +7,60 @@ export default defineConfig({
 
 	appearance: "dark",
 
-	ignoreDeadLinks: true,
+	lastUpdated: true,
+
+	cleanUrls: true,
+
+	ignoreDeadLinks: [/\.generated\//],
+
+	srcExclude: ["designs/**", "legacy/**", "framework-state/**"],
+
+	sitemap: {
+		hostname: "https://krometrail.dev",
+		transformItems: (items) =>
+			items.filter(
+				(item) =>
+					!item.url.startsWith("designs/") &&
+					!item.url.startsWith("legacy/") &&
+					!item.url.startsWith("framework-state/") &&
+					!["ARCH", "SPEC", "UX", "VISION", "PRIOR_ART", "ADAPTER-SDK", "agents"].some((p) => item.url.startsWith(p)),
+			),
+	},
 
 	head: [
-		["script", { async: "", src: "https://www.googletagmanager.com/gtag/js?id=G-8VK84SJ371" }],
 		[
 			"script",
 			{},
 			`window.dataLayer = window.dataLayer || [];
 function gtag(){dataLayer.push(arguments);}
 gtag('js', new Date());
-gtag('config', 'G-8VK84SJ371');`,
+gtag('config', 'G-8VK84SJ371');
+if (typeof requestIdleCallback === 'function') {
+  requestIdleCallback(function() {
+    var s = document.createElement('script');
+    s.src = 'https://www.googletagmanager.com/gtag/js?id=G-8VK84SJ371';
+    document.head.appendChild(s);
+  });
+} else {
+  setTimeout(function() {
+    var s = document.createElement('script');
+    s.src = 'https://www.googletagmanager.com/gtag/js?id=G-8VK84SJ371';
+    document.head.appendChild(s);
+  }, 3000);
+}`,
 		],
 		["link", { rel: "icon", type: "image/svg+xml", href: "/favicon.svg" }],
-		["link", { rel: "preconnect", href: "https://fonts.googleapis.com" }],
-		["link", { rel: "preconnect", href: "https://fonts.gstatic.com", crossorigin: "" }],
-		[
-			"link",
-			{
-				rel: "stylesheet",
-				href: "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;700&display=swap",
-			},
-		],
 		["meta", { property: "og:type", content: "website" }],
 		["meta", { property: "og:title", content: "Krometrail — AI Agent Debugging" }],
 		["meta", { property: "og:description", content: "Browser observation and runtime debugging for AI coding agents" }],
 		["meta", { property: "og:image", content: "https://krometrail.dev/og-image.png" }],
+		["meta", { property: "og:url", content: "https://krometrail.dev/" }],
 		["meta", { name: "twitter:card", content: "summary_large_image" }],
 		["meta", { name: "twitter:title", content: "Krometrail — AI agent debugging and browser observation" }],
 		["meta", { name: "twitter:description", content: "Give AI coding agents runtime debugging via the Debug Adapter Protocol and browser observation via Chrome DevTools Protocol" }],
 		["meta", { name: "keywords", content: "AI agent debugging, browser observation for AI, MCP debugging, runtime debugging AI, Debug Adapter Protocol" }],
+		["script", { type: "application/ld+json" }, JSON.stringify({ "@context": "https://schema.org", "@type": "WebSite", name: "Krometrail", url: "https://krometrail.dev/", description: "Browser observation and runtime debugging for AI coding agents", inLanguage: "en-US" })],
+		["script", { type: "application/ld+json" }, JSON.stringify({ "@context": "https://schema.org", "@type": "SoftwareApplication", name: "Krometrail", url: "https://krometrail.dev/", description: "MCP server and CLI that gives AI coding agents browser observation and runtime debugging via the Debug Adapter Protocol", applicationCategory: "DeveloperApplication", operatingSystem: "Linux, macOS, Windows", downloadUrl: "https://krometrail.dev/install.sh", installUrl: "https://www.npmjs.com/package/krometrail", license: "https://opensource.org/licenses/MIT", isAccessibleForFree: true, offers: { "@type": "Offer", price: "0", priceCurrency: "USD" }, codeRepository: "https://github.com/nklisch/krometrail", programmingLanguage: ["TypeScript", "JavaScript"], featureList: ["Browser session recording via Chrome DevTools Protocol", "Runtime debugging across 10 languages via Debug Adapter Protocol", "React and Vue framework state observation", "MCP server for AI coding agent integration", "Session investigation with search, inspect, diff, and replay"] })],
 	],
 
 	themeConfig: {
@@ -60,6 +84,7 @@ gtag('config', 'G-8VK84SJ371');`,
 						{ text: "MCP Configuration", link: "/guide/mcp-configuration" },
 						{ text: "CLI Installation", link: "/guide/cli-installation" },
 						{ text: "Your First Debug Session", link: "/guide/first-debug-session" },
+						{ text: "FAQ", link: "/guide/faq" },
 					],
 				},
 			],
@@ -141,8 +166,8 @@ gtag('config', 'G-8VK84SJ371');`,
 		socialLinks: [{ icon: "github", link: "https://github.com/nklisch/krometrail" }],
 
 		footer: {
-			message: "Released under the MIT License.",
-			copyright: "Built with Bun, TypeScript, and too many debugger protocols",
+			message: 'Released under the <a href="https://opensource.org/licenses/MIT">MIT License</a>. <a href="/legal/privacy">Privacy Policy</a>.',
+			copyright: 'Built with Bun, TypeScript, and too many debugger protocols. <a href="https://github.com/nklisch/krometrail/issues">Report an issue</a>.',
 		},
 	},
 });

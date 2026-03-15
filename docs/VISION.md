@@ -1,3 +1,10 @@
+---
+head:
+  - - meta
+    - name: robots
+      content: noindex, nofollow
+---
+
 # Krometrail — Vision
 
 **Runtime Debugging Viewport for AI Coding Agents**

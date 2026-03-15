@@ -11,7 +11,7 @@ const HEADER = `# Krometrail Documentation
 
 `;
 
-const EXCLUDED_DIRS = [".vitepress", ".generated", "designs", "legacy", "node_modules"];
+const EXCLUDED_DIRS = [".vitepress", ".generated", "designs", "legacy", "framework-state", "node_modules"];
 
 function stripFrontmatter(content: string): string {
 	// Strip YAML frontmatter: opening ---, content, closing ---
@@ -29,6 +29,10 @@ async function main(): Promise<void> {
 		// Exclude paths that start with any excluded directory
 		const parts = relPath.split("/");
 		if (parts.some((part) => EXCLUDED_DIRS.includes(part))) {
+			continue;
+		}
+		// Exclude root-level foundation docs
+		if (["ARCH.md", "SPEC.md", "UX.md", "VISION.md", "PRIOR_ART.md", "ADAPTER-SDK.md", "agents.md"].includes(relPath)) {
 			continue;
 		}
 		files.push(relPath);
