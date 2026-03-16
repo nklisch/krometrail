@@ -29,6 +29,7 @@ Use krometrail's browser tools when the user has recorded a browser session for 
 | `chrome_start` | Launch Chrome and start recording (network, console, DOM, framework state) |
 | `chrome_status` | Check recording state |
 | `chrome_mark` | Place a named marker at the current moment |
+| `chrome_run_steps` | Execute a batch of browser actions (navigate, click, fill, wait, etc.) in one call |
 | `chrome_stop` | Stop recording — session is saved for investigation |
 
 ### Session investigation
@@ -41,6 +42,41 @@ Use krometrail's browser tools when the user has recorded a browser session for 
 | `session_inspect` | Deep-dive into a specific event, marker, or timestamp |
 | `session_diff` | Compare two moments in a session (before/after a marker) |
 | `session_replay_context` | Generate reproduction steps or test scaffolds (Playwright, Cypress) |
+
+### Example: batch browser actions to reproduce a bug
+
+Instead of placing markers manually, drive the browser with a step sequence:
+
+```
+chrome_start(url: 'http://localhost:3000', profile: 'krometrail')
+
+chrome_run_steps({
+  steps: [
+    { action: "navigate", url: "/login" },
+    { action: "fill", selector: "#email", value: "test@example.com" },
+    { action: "fill", selector: "#password", value: "hunter2" },
+    { action: "submit", selector: "#login-form" },
+    { action: "wait_for", selector: ".dashboard", timeout: 5000 },
+    { action: "screenshot", label: "after-login" }
+  ]
+})
+# → Each step is auto-marked and auto-screenshotted for investigation
+
+chrome_stop()
+session_overview({ session_id: "latest" })
+# → Shows step markers (step:1:navigate:/login, step:2:fill:#email, etc.)
+```
+
+Save a scenario for replay after code changes:
+```
+chrome_run_steps({ name: "login-flow", steps: [...], save: true })
+# ... fix the bug ...
+chrome_run_steps({ name: "login-flow" })  # replay the same steps
+```
+
+**Available actions:** `navigate`, `reload`, `click`, `fill`, `select`, `submit`, `type`, `hover`, `scroll_to`, `scroll_by`, `wait`, `wait_for`, `wait_for_navigation`, `wait_for_network_idle`, `screenshot`, `mark`, `evaluate`
+
+**Capture config:** Control auto-screenshots with `capture: { screenshot: "all" | "none" | "on_error", markers: true | false }`. Per-step override: add `screenshot: false` to skip auto-screenshot on noisy steps.
 
 ### Example: investigate a user-reported browser bug
 

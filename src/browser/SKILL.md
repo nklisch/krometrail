@@ -28,8 +28,26 @@ When the user mentions a browser issue, bug, or unexpected behavior:
    Or generate a test:
    `krometrail browser replay-context <session_id> --around-marker M1 --format test_scaffold --framework playwright`
 
+### Alternative: drive the browser with batch steps, then investigate
+
+Instead of asking the user to reproduce a bug manually, drive the browser yourself:
+
+```
+chrome_start(url: 'http://localhost:3000', profile: 'krometrail')
+chrome_run_steps({ steps: [
+  { action: "navigate", url: "/checkout" },
+  { action: "fill", selector: "#card", value: "4111111111111111" },
+  { action: "submit", selector: "#payment-form" },
+  { action: "wait_for", selector: ".error", timeout: 5000 }
+]})
+chrome_stop()
+krometrail browser overview <session_id>
+```
+
+Each step is auto-marked (`step:1:navigate:/checkout`, etc.) so you can search and diff around any step.
+
 ### Tips
-- Markers placed by the user are labeled [user]. Auto-detected markers are [auto].
+- Markers placed by the user are labeled [user]. Auto-detected markers are [auto]. Step markers are labeled `step:N:action:detail`.
 - Use `--token-budget` to control response size (default: 3000 tokens for overview, 2000 for search).
 - Event IDs from search results can be used with `--event <id>` in inspect.
 - HAR export: `krometrail browser export <session_id> --format har --output debug.har`

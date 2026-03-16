@@ -34,12 +34,12 @@ Tools: `debug_launch`, `debug_attach`, `debug_stop`, `debug_status`, `debug_cont
 
 ---
 
-### `chrome_*` — Browser recording (CDP)
-Launches Chrome and passively records browser events: navigation, network, console, user input, errors, screenshots.
+### `chrome_*` — Browser recording & control (CDP)
+Launches Chrome, records browser events, and optionally drives the browser with batch actions.
 
-**Use when:** Observing a web app — reproducing a bug, recording a user flow, capturing network traffic.
+**Use when:** Observing a web app — reproducing a bug, recording a user flow, capturing network traffic. Also when you need to drive the browser (navigate, click, fill forms) as part of a debugging workflow.
 
-Tools: `chrome_start`, `chrome_status`, `chrome_mark`, `chrome_stop`
+Tools: `chrome_start`, `chrome_status`, `chrome_mark`, `chrome_run_steps`, `chrome_stop`
 
 > **Chrome setup:** See `references/chrome.md` for how to handle existing Chrome instances, CDP errors, and headless environments.
 
@@ -74,6 +74,14 @@ Tools: `session_list`, `session_overview`, `session_search`, `session_inspect`, 
 5. `session_list()` → `session_overview(session_id: 'latest')` → `session_search(...)` → `session_inspect(...)`
    - All `session_*` tools accept `session_id: "latest"` to target the most recent session
 
+### Drive the browser with batch actions, then investigate
+1. `chrome_start(url: '...', profile: 'krometrail')`
+2. `chrome_run_steps({ steps: [{ action: "navigate", url: "/login" }, { action: "fill", selector: "#email", value: "test@example.com" }, ...] })`
+   - Each step is auto-marked and auto-screenshotted — the recording captures everything
+   - Save with `name` + `save: true`, replay later with just `name`
+3. `chrome_stop()`
+4. Investigate with `session_overview`, `session_search`, etc.
+
 ---
 
 ## Key Parameters
@@ -95,3 +103,15 @@ Tools: `session_list`, `session_overview`, `session_search`, `session_inspect`, 
 | `attach` | `false` | Attach to Chrome already running with `--remote-debugging-port` |
 | `port` | `9222` | CDP port |
 | `all_tabs` | `false` | Record all tabs (default: active tab only) |
+
+### `chrome_run_steps`
+| Param | Default | Notes |
+|-------|---------|-------|
+| `steps` | required* | Array of step objects. Each has `action` + action-specific params |
+| `name` | — | Scenario name. With `save: true` stores it; alone replays it |
+| `save` | `false` | Save steps under `name` for later replay |
+| `capture` | `{ screenshot: "all", markers: true }` | Auto-capture config per step |
+
+*Required unless replaying a named scenario (pass `name` only).
+
+**Actions:** `navigate`, `reload`, `click`, `fill`, `select`, `submit`, `type`, `hover`, `scroll_to`, `scroll_by`, `wait`, `wait_for`, `wait_for_navigation`, `wait_for_network_idle`, `screenshot`, `mark`, `evaluate`

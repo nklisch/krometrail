@@ -26,6 +26,31 @@ krometrail browser mark "saw error message"
 krometrail browser status
 ```
 
+## Driving the browser with batch steps (MCP)
+
+Use `chrome_run_steps` to execute a sequence of browser actions in one call:
+
+```
+chrome_run_steps({
+  steps: [
+    { action: "navigate", url: "/login" },
+    { action: "fill", selector: "#email", value: "test@example.com" },
+    { action: "fill", selector: "#password", value: "secret" },
+    { action: "submit", selector: "#login-form" },
+    { action: "wait_for", selector: ".dashboard", timeout: 5000 },
+    { action: "screenshot", label: "after-login" }
+  ]
+})
+```
+
+Each step is auto-marked and auto-screenshotted. All events are captured in the recording.
+
+**Actions:** `navigate`, `reload`, `click`, `fill`, `select`, `submit`, `type`, `hover`, `scroll_to`, `scroll_by`, `wait`, `wait_for`, `wait_for_navigation`, `wait_for_network_idle`, `screenshot`, `mark`, `evaluate`
+
+**Capture config:** `capture: { screenshot: "all" | "none" | "on_error", markers: true | false }`
+
+**Named scenarios:** Save with `name` + `save: true`, replay later with just `name`. Session-scoped (in-memory).
+
 ## Stopping
 
 ```bash

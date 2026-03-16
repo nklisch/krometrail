@@ -52,6 +52,78 @@ Chrome needs a display. Options:
 - Start `Xvfb :99 &` then `DISPLAY=:99 chrome_start(...)`
 - Or: `chrome_start(attach: true)` and start Chrome manually with `--headless=new`
 
+## Driving the Browser with Steps
+
+Use `chrome_run_steps` to execute a batch of browser actions in one call. Requires an active recording session (`chrome_start`).
+
+```
+chrome_run_steps({
+  steps: [
+    { action: "navigate", url: "/login" },
+    { action: "fill", selector: "#email", value: "test@example.com" },
+    { action: "fill", selector: "#password", value: "secret" },
+    { action: "submit", selector: "#login-form" },
+    { action: "wait_for", selector: ".dashboard", timeout: 5000 },
+    { action: "evaluate", expression: "document.title" },
+    { action: "screenshot", label: "logged-in" }
+  ]
+})
+```
+
+Each step is auto-marked (e.g. `step:1:navigate:/login`) and auto-screenshotted. Use `session_search` with `around_marker` to investigate what happened at any step.
+
+### All actions
+
+| Action | Key Params | Notes |
+|--------|-----------|-------|
+| `navigate` | `url` | Absolute or relative (resolved against current origin) |
+| `reload` | — | Reloads current page |
+| `click` | `selector` | CSS selector — throws if not found |
+| `fill` | `selector`, `value` | Sets value with React/Vue-compatible native setter |
+| `select` | `selector`, `value` | Selects dropdown option by value |
+| `submit` | `selector` | Submits form via `requestSubmit()` |
+| `type` | `selector`, `text`, `delay_ms?` | Keystroke-by-keystroke (for autocomplete, etc.) |
+| `hover` | `selector` | Dispatches mouse move + mouseover events |
+| `scroll_to` | `selector` | Scrolls element into view |
+| `scroll_by` | `x?`, `y?` | Scrolls page by pixel delta |
+| `wait` | `ms` | Fixed delay |
+| `wait_for` | `selector`, `state?`, `timeout?` | Wait for element visible/hidden/attached (default: visible, 5s) |
+| `wait_for_navigation` | `url?`, `timeout?` | Wait for page navigation (default: 10s) |
+| `wait_for_network_idle` | `idle_ms?`, `timeout?` | Wait for no network requests (default: 500ms idle, 10s timeout) |
+| `screenshot` | `label?` | Explicit screenshot (beyond auto-capture) |
+| `mark` | `label` | Explicit marker (beyond auto-markers) |
+| `evaluate` | `expression` | Run JS in page, return value in `returnValue` |
+
+### Capture config
+
+```
+chrome_run_steps({
+  steps: [...],
+  capture: {
+    screenshot: "all",    // "all" (default) | "none" | "on_error"
+    markers: true          // true (default) | false
+  }
+})
+```
+
+Per-step override: add `screenshot: false` to any step to skip its auto-screenshot.
+
+### Named scenarios (save + replay)
+
+```
+// Save
+chrome_run_steps({ name: "login-flow", steps: [...], save: true })
+
+// Replay (no steps needed)
+chrome_run_steps({ name: "login-flow" })
+```
+
+Scenarios are session-scoped (in-memory on the daemon). They disappear when the daemon stops, but recording data persists on disk.
+
+### Error handling
+
+Steps execute sequentially. If a step fails (element not found, timeout), execution stops and the result shows which step failed and why. Use `capture: { screenshot: "on_error" }` to only screenshot failures.
+
 ## Markers
 Place markers at key moments so you can find them later:
 ```
