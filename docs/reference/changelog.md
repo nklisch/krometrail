@@ -5,6 +5,12 @@ description: Release history for Krometrail.
 
 # Changelog
 
+## v0.2.6
+
+### Features
+
+- **MCP auto-update** — the MCP server now checks for newer versions on every startup and self-updates automatically. Binary installs download from GitHub and atomically replace in place; npx/bunx configs updated to use `@latest` tag; global npm/bun installs run the package manager's update command. Disable with `KROMETRAIL_NO_UPDATE=1`.
+
 ## v0.2.5
 
 ### Fixes
