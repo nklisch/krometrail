@@ -232,7 +232,9 @@ export class BrowserRecorder {
 	 */
 	private async discoverTabsWithRetry(expectedUrl?: string, timeoutMs = 10_000): Promise<TabInfo[]> {
 		const deadline = Date.now() + timeoutMs;
-		const pollIntervalMs = 500;
+		// Start aggressive (50ms) and back off exponentially, cap at 1s
+		let pollMs = 50;
+		const maxPollMs = 1000;
 
 		// tabManager is guaranteed to be set — start() initializes it before calling this method
 		const tm = this.tabManager as TabManager;
@@ -250,7 +252,8 @@ export class BrowserRecorder {
 					if (hasContent || !this.chromeProcess) return tabs;
 				}
 			}
-			await new Promise<void>((r) => setTimeout(r, pollIntervalMs));
+			await new Promise<void>((r) => setTimeout(r, pollMs));
+			pollMs = Math.min(pollMs * 2, maxPollMs);
 		}
 
 		// Timeout — return whatever tabs exist rather than failing
