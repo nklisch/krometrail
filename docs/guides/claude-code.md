@@ -12,7 +12,7 @@ Krometrail gives Claude Code runtime debugging — it can set breakpoints, inspe
 Add via the CLI or edit the project `.mcp.json` directly:
 
 ```bash
-claude mcp add --transport stdio --scope project krometrail -- npx krometrail mcp
+claude mcp add --transport stdio --scope project krometrail -- npx krometrail --mcp
 ```
 
 Or add to `.mcp.json` in your project root (shared with your team):
@@ -22,7 +22,7 @@ Or add to `.mcp.json` in your project root (shared with your team):
   "mcpServers": {
     "krometrail": {
       "command": "npx",
-      "args": ["krometrail", "mcp"]
+      "args": ["krometrail", "--mcp"]
     }
   }
 }
@@ -35,13 +35,25 @@ Or with a compiled binary:
   "mcpServers": {
     "krometrail": {
       "command": "/path/to/krometrail",
-      "args": ["mcp"]
+      "args": ["--mcp"]
     }
   }
 }
 ```
 
 Claude discovers the `debug_*` tools automatically — no CLAUDE.md changes needed.
+
+### Focused tool sets
+
+If you only need debugging or only need browser observation, add a filtered server:
+
+```bash
+# Debug tools only
+claude mcp add --transport stdio --scope project krometrail-debug -- npx krometrail --mcp --tools debug
+
+# Browser tools only
+claude mcp add --transport stdio --scope project krometrail-browser -- npx krometrail --mcp --tools browser
+```
 
 ## Setup: CLI with Skill
 

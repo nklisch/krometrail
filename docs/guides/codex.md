@@ -14,16 +14,26 @@ Add to your Codex config at `~/.codex/config.toml` (global) or `.codex/config.to
 ```toml
 [mcp_servers.krometrail]
 command = "npx"
-args = ["krometrail", "mcp"]
+args = ["krometrail", "--mcp"]
 ```
 
 Or add via the CLI:
 
 ```bash
-codex mcp add krometrail -- npx krometrail mcp
+codex mcp add krometrail -- npx krometrail --mcp
 ```
 
 Codex discovers the `debug_*`, `chrome_*`, and `session_*` tools automatically.
+
+### Focused tool sets
+
+```bash
+# Debug tools only
+codex mcp add krometrail-debug -- npx krometrail --mcp --tools debug
+
+# Browser tools only
+codex mcp add krometrail-browser -- npx krometrail --mcp --tools browser
+```
 
 ## Setup: CLI with Skill
 

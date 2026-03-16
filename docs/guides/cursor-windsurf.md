@@ -16,7 +16,7 @@ Add to your Cursor MCP configuration at `~/.cursor/mcp.json` (global) or `.curso
   "mcpServers": {
     "krometrail": {
       "command": "npx",
-      "args": ["krometrail", "mcp"]
+      "args": ["krometrail", "--mcp"]
     }
   }
 }
@@ -29,7 +29,7 @@ Or with a compiled binary:
   "mcpServers": {
     "krometrail": {
       "command": "/usr/local/bin/krometrail",
-      "args": ["mcp"]
+      "args": ["--mcp"]
     }
   }
 }
@@ -46,7 +46,7 @@ Add to your Windsurf MCP configuration at `~/.codeium/windsurf/mcp_config.json` 
   "mcpServers": {
     "krometrail": {
       "command": "npx",
-      "args": ["krometrail", "mcp"],
+      "args": ["krometrail", "--mcp"],
       "env": {}
     }
   }
@@ -74,7 +74,7 @@ For team setups, add a `.mcp.json` file to your project root:
   "mcpServers": {
     "krometrail": {
       "command": "npx",
-      "args": ["krometrail", "mcp"]
+      "args": ["krometrail", "--mcp"]
     }
   }
 }

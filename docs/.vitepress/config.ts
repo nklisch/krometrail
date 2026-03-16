@@ -154,6 +154,7 @@ if (typeof requestIdleCallback === 'function') {
 						{ text: "Viewport Format", link: "/reference/viewport-format" },
 						{ text: "Configuration", link: "/reference/configuration" },
 						{ text: "Adapter SDK", link: "/reference/adapter-sdk" },
+						{ text: "Changelog", link: "/reference/changelog" },
 					],
 				},
 			],

@@ -9,15 +9,22 @@ Krometrail gives your coding agent runtime context it can't get from source code
 
 ## Prerequisites
 
-- **Bun** (recommended) or **Node.js 18+**
 - For debugging: language-specific debuggers (check with `krometrail doctor`)
+- **Bun** or **Node.js 18+** only needed if using `bunx`/`npx` instead of the standalone binary
 
 ## Install
+
+Install the standalone binary — no Node.js or Bun required:
+
+```bash
+curl -fsSL https://krometrail.dev/install.sh | sh
+```
+
+Or run without installing via a package runner:
 
 ::: code-group
 
 ```bash [bunx (no install)]
-# Run directly without installing
 bunx krometrail --version
 ```
 

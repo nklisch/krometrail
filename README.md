@@ -25,7 +25,7 @@ Record everything happening in a browser session and investigate it later — no
 
 ### Quick Start
 
-Add to your agent's MCP config (e.g. Claude Code `settings.json`):
+Add to your agent's MCP config (`.mcp.json` in your project root):
 
 ```json
 {
