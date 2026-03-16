@@ -5,6 +5,26 @@ description: Release history for Krometrail.
 
 # Changelog
 
+## v0.2.9
+
+### Features
+
+- **`doctor --fix`** — new flag prints a copy-paste shell script to install all missing debuggers
+- **`EXIT_PREREQUISITES` (exit code 6)** — adapter prerequisite failures now return a distinct exit code, separate from resource-not-found (3); agents can distinguish "debugger missing" from "session not found"
+- **`fixCommand` in error envelope** — JSON error output for prerequisite failures now includes a `fixCommand` field with the exact install command
+
+### Fixes
+
+- `AdapterNotFoundError` message no longer references the non-existent `debug_status` command — now says `krometrail doctor`
+- `doctor --json` now reports correct version for Go/Delve when `dlv` is in `~/go/bin` but not on `$PATH`
+- `LaunchError` now carries a `cause_type` field (`spawn_failed`, `connection_timeout`, `early_exit`) enabling targeted error messages
+- Error messages in text mode now include actionable guidance: install hints, PATH advice, timeout context
+
+### Internal
+
+- All 10 adapters now return `fixCommand` from `checkPrerequisites()` — single source of truth instead of hardcoded map in doctor
+- New e2e tests: `doctor-completeness`, `prerequisite-errors` (containerized), `install-flow`, `error-exit-codes`
+
 ## v0.2.8
 
 ### Fixes
