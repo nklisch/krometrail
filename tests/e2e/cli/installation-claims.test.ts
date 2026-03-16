@@ -1,8 +1,8 @@
+import { spawn } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { runCli } from "../../helpers/cli-runner.js";
-import { spawn } from "node:child_process";
-import { resolve } from "node:path";
-import { readFileSync, existsSync } from "node:fs";
 
 const CLI_ENTRY = resolve(import.meta.dirname, "../../../src/cli/index.ts");
 const PROJECT_ROOT = resolve(import.meta.dirname, "../../../");
@@ -11,10 +11,7 @@ const PROJECT_ROOT = resolve(import.meta.dirname, "../../../");
  * Spawn the CLI with given args, wait briefly, check it's still alive, then kill it.
  * Returns { alive: boolean, stdout: string, stderr: string }.
  */
-function spawnAndCheck(
-	args: string[],
-	waitMs = 500,
-): Promise<{ alive: boolean; stdout: string; stderr: string; exitCode: number | null }> {
+function spawnAndCheck(args: string[], waitMs = 500): Promise<{ alive: boolean; stdout: string; stderr: string; exitCode: number | null }> {
 	return new Promise((resolve) => {
 		const proc = spawn("bun", ["run", CLI_ENTRY, ...args], {
 			stdio: ["pipe", "pipe", "pipe"],
@@ -55,11 +52,7 @@ function spawnAndCheck(
 /**
  * Run an arbitrary command and capture output.
  */
-function runShell(
-	cmd: string,
-	args: string[],
-	opts?: { env?: Record<string, string> },
-): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+function runShell(cmd: string, args: string[], opts?: { env?: Record<string, string> }): Promise<{ exitCode: number; stdout: string; stderr: string }> {
 	return new Promise((resolve) => {
 		const proc = spawn(cmd, args, {
 			stdio: ["ignore", "pipe", "pipe"],
@@ -100,6 +93,16 @@ describe("E2E: installation claims", () => {
 			expect(output).toContain("debug");
 			expect(output).toContain("browser");
 			expect(output).toContain("doctor");
+		});
+
+		it("krometrail with no args shows help output", async () => {
+			const result = await runCli([]);
+			expect(result.exitCode).toBe(0);
+			const output = (result.stdout + result.stderr).toLowerCase();
+			expect(output).toContain("debug");
+			expect(output).toContain("browser");
+			expect(output).toContain("doctor");
+			expect(output).toContain("usage");
 		});
 	});
 
@@ -147,14 +150,9 @@ describe("E2E: installation claims", () => {
 	});
 
 	describe("documentation config validity", () => {
-		const docFiles = [
-			"docs/guide/mcp-configuration.md",
-			"docs/guide/getting-started.md",
-			"docs/guides/claude-code.md",
-			"docs/guides/cursor-windsurf.md",
-			"docs/guides/codex.md",
-			"README.md",
-		].map((f) => resolve(PROJECT_ROOT, f));
+		const docFiles = ["docs/guide/mcp-configuration.md", "docs/guide/getting-started.md", "docs/guides/claude-code.md", "docs/guides/cursor-windsurf.md", "docs/guides/codex.md", "README.md"].map(
+			(f) => resolve(PROJECT_ROOT, f),
+		);
 
 		/**
 		 * Extract fenced JSON blocks from markdown content.
@@ -206,10 +204,7 @@ describe("E2E: installation claims", () => {
 						// Non-parseable JSON blocks are OK if they're example snippets
 						// (e.g., multiple JSON objects on separate lines for illustration).
 						// But they must not look like config blocks (containing mcpServers).
-						expect(
-							block.includes("mcpServers"),
-							`Unparseable JSON block in ${filePath} appears to be an MCP config but is invalid JSON:\n${block.slice(0, 200)}`,
-						).toBe(false);
+						expect(block.includes("mcpServers"), `Unparseable JSON block in ${filePath} appears to be an MCP config but is invalid JSON:\n${block.slice(0, 200)}`).toBe(false);
 						continue;
 					}
 					if (parsed && typeof parsed === "object" && "mcpServers" in (parsed as Record<string, unknown>)) {
@@ -241,14 +236,8 @@ describe("E2E: installation claims", () => {
 								const hasBareMcp = args.some((a) => a === "mcp");
 								const hasDashMcp = args.some((a) => a === "--mcp");
 								if (serverName.toLowerCase().includes("krometrail") || hasBareMcp || hasDashMcp) {
-									expect(
-										hasDashMcp,
-										`Config for "${serverName}" in ${filePath} should use "--mcp" in args, got: ${JSON.stringify(args)}`,
-									).toBe(true);
-									expect(
-										hasBareMcp,
-										`Config for "${serverName}" in ${filePath} should NOT use bare "mcp" in args, got: ${JSON.stringify(args)}`,
-									).toBe(false);
+									expect(hasDashMcp, `Config for "${serverName}" in ${filePath} should use "--mcp" in args, got: ${JSON.stringify(args)}`).toBe(true);
+									expect(hasBareMcp, `Config for "${serverName}" in ${filePath} should NOT use bare "mcp" in args, got: ${JSON.stringify(args)}`).toBe(false);
 								}
 							}
 						}
@@ -274,14 +263,8 @@ describe("E2E: installation claims", () => {
 							const argStrings = [...line.matchAll(/"([^"]+)"/g)].map((m) => m[1]);
 							const hasBareMcp = argStrings.some((a) => a === "mcp");
 							const hasDashMcp = argStrings.some((a) => a === "--mcp");
-							expect(
-								hasDashMcp,
-								`TOML args in ${filePath} should include "--mcp": ${line.trim()}`,
-							).toBe(true);
-							expect(
-								hasBareMcp,
-								`TOML args in ${filePath} should NOT include bare "mcp": ${line.trim()}`,
-							).toBe(false);
+							expect(hasDashMcp, `TOML args in ${filePath} should include "--mcp": ${line.trim()}`).toBe(true);
+							expect(hasBareMcp, `TOML args in ${filePath} should NOT include bare "mcp": ${line.trim()}`).toBe(false);
 						}
 					}
 				}
@@ -296,19 +279,13 @@ describe("E2E: installation claims", () => {
 				const lines = content.split("\n");
 				for (const line of lines) {
 					if (line.includes("claude mcp add") && line.includes("krometrail")) {
-						expect(
-							line.includes("--mcp"),
-							`"claude mcp add" command in ${filePath} should use "--mcp": ${line.trim()}`,
-						).toBe(true);
+						expect(line.includes("--mcp"), `"claude mcp add" command in ${filePath} should use "--mcp": ${line.trim()}`).toBe(true);
 						// Ensure the args after "-- " don't have bare "mcp" as a standalone token
 						const afterDash = line.split("-- ")[1] || "";
 						if (afterDash) {
 							const argTokens = afterDash.trim().split(/\s+/);
 							const bareMcpArgs = argTokens.filter((t) => t === "mcp");
-							expect(
-								bareMcpArgs.length,
-								`"claude mcp add" in ${filePath} should not have bare "mcp" after "--": ${line.trim()}`,
-							).toBe(0);
+							expect(bareMcpArgs.length, `"claude mcp add" in ${filePath} should not have bare "mcp" after "--": ${line.trim()}`).toBe(0);
 						}
 					}
 				}
@@ -322,18 +299,12 @@ describe("E2E: installation claims", () => {
 				const lines = content.split("\n");
 				for (const line of lines) {
 					if (line.includes("codex mcp add") && line.includes("krometrail")) {
-						expect(
-							line.includes("--mcp"),
-							`"codex mcp add" command in ${filePath} should use "--mcp": ${line.trim()}`,
-						).toBe(true);
+						expect(line.includes("--mcp"), `"codex mcp add" command in ${filePath} should use "--mcp": ${line.trim()}`).toBe(true);
 						const afterDash = line.split("-- ")[1] || "";
 						if (afterDash) {
 							const argTokens = afterDash.trim().split(/\s+/);
 							const bareMcpArgs = argTokens.filter((t) => t === "mcp");
-							expect(
-								bareMcpArgs.length,
-								`"codex mcp add" in ${filePath} should not have bare "mcp" after "--": ${line.trim()}`,
-							).toBe(0);
+							expect(bareMcpArgs.length, `"codex mcp add" in ${filePath} should not have bare "mcp" after "--": ${line.trim()}`).toBe(0);
 						}
 					}
 				}

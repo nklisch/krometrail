@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { defineCommand, runMain } from "citty";
+import { defineCommand, runMain, showUsage } from "citty";
 import pkg from "../../package.json";
 import { sendPing } from "../telemetry.js";
 import { browserCommand } from "./commands/browser.js";
@@ -24,7 +24,7 @@ const main = defineCommand({
 			description: "Comma-separated tool groups to expose (debug, browser). Default: all. Only used with --mcp.",
 		},
 	},
-	async run({ args }) {
+	async run({ args, cmd, rawArgs }) {
 		if (args.mcp) {
 			sendPing("mcp_start"); // fire-and-forget
 			const { startMcpServer } = await import("../mcp/index.js");
@@ -32,14 +32,20 @@ const main = defineCommand({
 			await startMcpServer({ toolGroups: parseToolGroups(args.tools) });
 			return;
 		}
+		// Citty always calls the parent run() even when a subcommand is dispatched.
+		// Only show usage when no subcommand was provided.
+		const subCommandNames = ["debug", "browser", "doctor", "commands", "completions", "_daemon"];
+		const hasSubCommand = rawArgs.some((a) => subCommandNames.includes(a));
+		if (hasSubCommand) return;
 		sendPing("run"); // fire-and-forget
-		// citty shows help by default when no subcommand given
+		await showUsage(cmd);
 	},
 	subCommands: {
 		debug: debugCommand,
 		browser: browserCommand,
 		doctor: doctorCommand,
 		commands: commandsCommand,
+		completions: () => import("./commands/completions.js").then((m) => m.completionsCommand),
 		// Hidden: internal daemon entry point
 		_daemon: () =>
 			defineCommand({
