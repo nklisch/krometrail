@@ -159,8 +159,14 @@ async function getNodeVersion(): Promise<string | undefined> {
 async function getDlvVersion(): Promise<string | undefined> {
 	try {
 		const { spawn } = await import("node:child_process");
+		const { homedir } = await import("node:os");
+		const { join } = await import("node:path");
+		// Augment PATH with common Go bin locations, same as the Go adapter does
+		const goBin = process.env.GOPATH ? join(process.env.GOPATH, "bin") : join(homedir(), "go", "bin");
+		const currentPath = process.env.PATH ?? "";
+		const augmentedPath = currentPath.includes(goBin) ? currentPath : `${goBin}:${currentPath}`;
 		const result = await new Promise<string>((resolve, reject) => {
-			const proc = spawn("dlv", ["version"], { stdio: "pipe" });
+			const proc = spawn("dlv", ["version"], { stdio: "pipe", env: { ...process.env, PATH: augmentedPath } });
 			let stdout = "";
 			proc.stdout.on("data", (chunk: Buffer) => {
 				stdout += chunk.toString();
