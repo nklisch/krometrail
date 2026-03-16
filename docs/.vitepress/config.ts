@@ -205,7 +205,7 @@ if (typeof requestIdleCallback === 'function') {
 
 		footer: {
 			message: 'Released under the <a href="https://opensource.org/licenses/MIT">MIT License</a>. <a href="/legal/privacy">Privacy Policy</a>.',
-			copyright: 'Built with Bun, TypeScript, and too many debugger protocols. <a href="https://github.com/nklisch/krometrail/issues">Report an issue</a>.',
+			copyright: 'By <a href="https://nathanklisch.dev">Nathan Klisch</a> · Also: <a href="https://skilltap.dev">skilltap</a> · <a href="https://godot-theatre.dev">Theatre</a> · <a href="https://ffmpegkit.dev">ffmpeg-kit</a>',
 		},
 	},
 });

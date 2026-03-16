@@ -20,6 +20,12 @@
 				<div class="footer-links">
 					<a :href="withBase('/guide/getting-started')">Docs</a>
 					<a href="https://github.com/nklisch/krometrail" target="_blank" rel="noopener">GitHub</a>
+					<a href="https://nathanklisch.dev" target="_blank" rel="noopener">Nathan Klisch</a>
+				</div>
+				<div class="footer-links">
+					<a href="https://skilltap.dev" target="_blank" rel="noopener">skilltap</a>
+					<a href="https://godot-theatre.dev" target="_blank" rel="noopener">Theatre</a>
+					<a href="https://ffmpegkit.dev" target="_blank" rel="noopener">ffmpeg-kit</a>
 				</div>
 				<p class="footer-license">MIT License</p>
 				<p class="footer-tagline">Built with Bun, TypeScript, and too many debugger protocols</p>
