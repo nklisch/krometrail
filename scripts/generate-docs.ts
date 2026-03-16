@@ -17,7 +17,7 @@ import type { z } from "zod";
 import { listAdapters, registerAllAdapters } from "../src/adapters/registry.js";
 import { listDetectors, registerAllDetectors } from "../src/frameworks/index.js";
 import { registerBrowserTools } from "../src/mcp/tools/browser.js";
-import { registerTools } from "../src/mcp/tools/index.js";
+import { registerDebugTools } from "../src/mcp/tools/index.js";
 
 // ---------------------------------------------------------------------------
 // Captured tool type
@@ -324,13 +324,13 @@ async function main(): Promise<void> {
 	const outDir = new URL("../docs/.generated/", import.meta.url).pathname;
 	await mkdir(outDir, { recursive: true });
 
-	// 1. Populate registries (must be done before registerTools/registerBrowserTools)
+	// 1. Populate registries (must be done before registerDebugTools/registerBrowserTools)
 	registerAllAdapters();
 	registerAllDetectors();
 
 	// 2. Capture debug tool registrations
 	const debugMock = createCaptureMock();
-	registerTools(debugMock.server as never, null as never);
+	registerDebugTools(debugMock.server as never, null as never);
 
 	// 3. Capture browser tool registrations
 	const browserMock = createCaptureMock();
