@@ -4,7 +4,7 @@ import { getErrorMessage } from "../../core/errors.js";
  * Shared MCP tool response helpers.
  */
 
-type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: true };
+export type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: true };
 
 export function errorResponse(err: unknown): { content: Array<{ type: "text"; text: string }>; isError: true } {
 	return { content: [{ type: "text" as const, text: getErrorMessage(err) }], isError: true };

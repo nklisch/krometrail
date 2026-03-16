@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
-import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { z } from "zod";
+import { getKrometrailSubdir } from "../../core/paths.js";
 import type { CDPClient } from "../recorder/cdp-client.js";
 import type { RollingBuffer } from "../recorder/rolling-buffer.js";
 import type { BrowserSessionInfo, Marker, RecordedEvent } from "../types.js";
@@ -13,7 +13,7 @@ import type { ScreenshotCapture } from "./screenshot.js";
 
 export const PersistenceConfigSchema = z.object({
 	/** Root data directory. Default: ~/.krometrail/browser */
-	dataDir: z.string().default(resolve(homedir(), ".krometrail", "browser")),
+	dataDir: z.string().default(resolve(getKrometrailSubdir("browser"))),
 	/** Ms of context around each marker to persist. Should match buffer.markerPaddingMs. */
 	markerPaddingMs: z.number().default(120_000),
 });

@@ -1,7 +1,6 @@
 import { unlinkSync, writeFileSync } from "node:fs";
 import type { Server, Socket } from "node:net";
 import { createServer } from "node:net";
-import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { HARExporter } from "../browser/export/har.js";
 import { SessionDiffer } from "../browser/investigation/diff.js";
@@ -10,7 +9,8 @@ import { renderDiff, renderInspectResult, renderSearchResults, renderSessionOver
 import { ReplayContextGenerator } from "../browser/investigation/replay-context.js";
 import { BrowserRecorder } from "../browser/recorder/index.js";
 import { BrowserDatabase } from "../browser/storage/database.js";
-import { AdapterNotFoundError, AdapterPrerequisiteError, KrometrailError, LaunchError, SessionLimitError, SessionNotFoundError, SessionStateError } from "../core/errors.js";
+import { AdapterNotFoundError, AdapterPrerequisiteError, BrowserRecorderStateError, KrometrailError, LaunchError, SessionLimitError, SessionNotFoundError, SessionStateError } from "../core/errors.js";
+import { getKrometrailSubdir } from "../core/paths.js";
 import type { SessionManager } from "../core/session-manager.js";
 import type { JsonRpcRequest, JsonRpcResponse } from "./protocol.js";
 import {
@@ -402,7 +402,7 @@ export class DaemonServer {
 			case "browser.start": {
 				const p = BrowserStartParamsSchema.parse(params);
 				if (this.browserRecorder?.isRecording()) {
-					throw new Error("Browser recording is already active. Call browser.stop first.");
+					throw new BrowserRecorderStateError("Browser recording is already active. Call browser.stop first.");
 				}
 				this.browserRecorder = new BrowserRecorder({
 					port: p.port,
@@ -421,7 +421,7 @@ export class DaemonServer {
 			case "browser.mark": {
 				const p = BrowserMarkParamsSchema.parse(params);
 				if (!this.browserRecorder?.isRecording()) {
-					throw new Error("No active browser recording. Call browser.start first.");
+					throw new BrowserRecorderStateError("No active browser recording. Call browser.start first.");
 				}
 				return this.browserRecorder.placeMarker(p.label);
 			}
@@ -518,7 +518,7 @@ export class DaemonServer {
 
 	private getQueryEngine(): QueryEngine {
 		if (!this.browserQueryEngine) {
-			const dataDir = resolve(homedir(), ".krometrail", "browser");
+			const dataDir = getKrometrailSubdir("browser");
 			this.browserDb = new BrowserDatabase(resolve(dataDir, "index.db"));
 			this.browserQueryEngine = new QueryEngine(this.browserDb, dataDir);
 		}

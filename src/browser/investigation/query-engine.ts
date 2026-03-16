@@ -4,6 +4,8 @@ import type { InspectInclude, OverviewInclude } from "../../core/enums.js";
 import type { BrowserDatabase, EventRow, MarkerRow, NetworkBodyRow, SessionRow } from "../storage/database.js";
 import { EventWriter } from "../storage/event-writer.js";
 import type { RecordedEvent } from "../types.js";
+import { MARKER_LOOKAHEAD_MS, MARKER_LOOKBACK_MS } from "./format-helpers.js";
+import { isErrorEvent } from "./predicates.js";
 import { resolveTimestamp } from "./resolve-timestamp.js";
 
 export class QueryEngine {
@@ -75,7 +77,7 @@ export class QueryEngine {
 			const candidates = this.db.queryEvents(sessionId, {
 				types: ["network_response", "page_error", "console"],
 			});
-			result.errorSummary = candidates.filter((e) => this.isErrorEvent(e));
+			result.errorSummary = candidates.filter((e) => isErrorEvent(e));
 		}
 
 		// Framework summary
@@ -115,7 +117,7 @@ export class QueryEngine {
 				...params,
 				filters: {
 					...params.filters,
-					timeRange: { start: marker.timestamp - 120_000, end: marker.timestamp + 30_000 },
+					timeRange: { start: marker.timestamp - MARKER_LOOKBACK_MS, end: marker.timestamp + MARKER_LOOKAHEAD_MS },
 				},
 			};
 		}
@@ -360,16 +362,6 @@ export class QueryEngine {
 		}
 
 		return { total, succeeded, failed, notable };
-	}
-
-	private isErrorEvent(e: EventRow): boolean {
-		if (e.type === "page_error") return true;
-		if (e.type === "console" && e.summary.startsWith("[error]")) return true;
-		if (e.type === "network_response") {
-			const status = Number.parseInt(e.summary, 10);
-			return status >= 400;
-		}
-		return false;
 	}
 
 	private summarizeFramework(sessionId: string): FrameworkSummary | null {

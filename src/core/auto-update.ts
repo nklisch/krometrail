@@ -1,7 +1,7 @@
 import { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import pkg from "../../package.json";
+import { getKrometrailDir } from "./paths.js";
 
 // ---------------------------------------------------------------------------
 // Unit 1: Install Type Detection
@@ -129,7 +129,7 @@ export async function checkLatestVersion(): Promise<VersionCheckResult | null> {
 const THROTTLE_MS = 60 * 60 * 1000; // 1 hour
 
 function defaultThrottleFile(): string {
-	return join(homedir(), ".krometrail", "last-update-check");
+	return join(getKrometrailDir(), "last-update-check");
 }
 
 /**

@@ -47,7 +47,7 @@ function buildFrameworkDescription(): string {
  * 3. Returns viewport text as MCP TextContent
  * 4. Handles errors with descriptive messages
  */
-export function registerTools(server: McpServer, sessionManager: SessionManager): void {
+export function registerDebugTools(server: McpServer, sessionManager: SessionManager): void {
 	const frameworkIds = listDetectors().map((d) => d.id);
 
 	// Tool 1: debug_launch
@@ -105,7 +105,7 @@ export function registerTools(server: McpServer, sessionManager: SessionManager)
 					const configPath = launch_config.path ? resolvePath(launch_config.path) : resolvePath(process.cwd(), ".vscode/launch.json");
 					const launchJson = await parseLaunchJson(configPath);
 					if (!launchJson) {
-						return textResponse(`Error: launch.json not found at: ${configPath}`);
+						return errorResponse(new Error(`launch.json not found at: ${configPath}`));
 					}
 
 					let configEntry = launchJson.configurations[0];
@@ -113,15 +113,15 @@ export function registerTools(server: McpServer, sessionManager: SessionManager)
 						const found = launchJson.configurations.find((c) => c.name === launch_config.name);
 						if (!found) {
 							const available = launchJson.configurations.map((c) => `  "${c.name}"`).join("\n");
-							return textResponse(`Error: Configuration "${launch_config.name}" not found. Available:\n${available}`);
+							return errorResponse(new Error(`Configuration "${launch_config.name}" not found. Available:\n${available}`));
 						}
 						configEntry = found;
 					} else if (launchJson.configurations.length === 0) {
-						return textResponse("Error: No configurations found in launch.json");
+						return errorResponse(new Error("No configurations found in launch.json"));
 					}
 
 					if (!configEntry) {
-						return textResponse("Error: No configuration found in launch.json");
+						return errorResponse(new Error("No configuration found in launch.json"));
 					}
 
 					const converted = configToOptions(configEntry, process.cwd());
@@ -139,7 +139,7 @@ export function registerTools(server: McpServer, sessionManager: SessionManager)
 				}
 
 				if (!resolvedCommand) {
-					return textResponse("Error: Either 'command' or 'launch_config' must be provided");
+					return errorResponse(new Error("Either 'command' or 'launch_config' must be provided"));
 				}
 
 				const result = await sessionManager.launch({
@@ -182,14 +182,10 @@ export function registerTools(server: McpServer, sessionManager: SessionManager)
 		{
 			session_id: z.string().describe("The session to terminate"),
 		},
-		async ({ session_id }) => {
-			try {
-				const result = await sessionManager.stop(session_id);
-				return textResponse(`Session ${session_id} terminated.\nDuration: ${result.duration}ms\nActions: ${result.actionCount}`);
-			} catch (err) {
-				return errorResponse(err);
-			}
-		},
+		toolHandler(async ({ session_id }) => {
+			const result = await sessionManager.stop(session_id);
+			return `Session ${session_id} terminated.\nDuration: ${result.duration}ms\nActions: ${result.actionCount}`;
+		}),
 	);
 
 	// Tool 3: debug_status
@@ -329,16 +325,12 @@ export function registerTools(server: McpServer, sessionManager: SessionManager)
 						"Use debug_status to see available filters for the current adapter.",
 				),
 		},
-		async ({ session_id, filters }) => {
-			try {
-				await sessionManager.setExceptionBreakpoints(session_id, filters);
-				const available = sessionManager.getExceptionBreakpointFilters(session_id);
-				const filterList = available.map((f) => `  ${f.filter}: ${f.label}`).join("\n");
-				return textResponse(`Exception breakpoints set: ${filters.join(", ")}${filterList ? `\n\nAvailable filters:\n${filterList}` : ""}`);
-			} catch (err) {
-				return errorResponse(err);
-			}
-		},
+		toolHandler(async ({ session_id, filters }) => {
+			await sessionManager.setExceptionBreakpoints(session_id, filters);
+			const available = sessionManager.getExceptionBreakpointFilters(session_id);
+			const filterList = available.map((f) => `  ${f.filter}: ${f.label}`).join("\n");
+			return `Exception breakpoints set: ${filters.join(", ")}${filterList ? `\n\nAvailable filters:\n${filterList}` : ""}`;
+		}),
 	);
 
 	// Tool 9: debug_list_breakpoints
@@ -439,15 +431,11 @@ export function registerTools(server: McpServer, sessionManager: SessionManager)
 			action: z.enum(["add", "remove"]).optional().describe("Whether to add or remove expressions. Default: 'add'"),
 			expressions: z.array(z.string()).describe("Expressions to add or remove from the watch list. " + "E.g., ['len(cart.items)', 'user.tier', 'total > 0']"),
 		},
-		async ({ session_id, action, expressions }) => {
-			try {
-				const op = action ?? "add";
-				const confirmed = op === "remove" ? sessionManager.removeWatchExpressions(session_id, expressions) : sessionManager.addWatchExpressions(session_id, expressions);
-				return textResponse(`Watch expressions (${confirmed.length} total):\n${confirmed.map((e) => `  ${e}`).join("\n")}`);
-			} catch (err) {
-				return errorResponse(err);
-			}
-		},
+		toolHandler(({ session_id, action, expressions }) => {
+			const op = action ?? "add";
+			const confirmed = op === "remove" ? sessionManager.removeWatchExpressions(session_id, expressions) : sessionManager.addWatchExpressions(session_id, expressions);
+			return Promise.resolve(`Watch expressions (${confirmed.length} total):\n${confirmed.map((e) => `  ${e}`).join("\n")}`);
+		}),
 	);
 
 	// Tool 15: debug_action_log — enriched session log with observations and token stats
@@ -493,23 +481,18 @@ export function registerTools(server: McpServer, sessionManager: SessionManager)
 			breakpoints: z.array(FileBreakpointsSchema).optional().describe("Breakpoints to set after attaching"),
 			viewport_config: ViewportConfigSchema,
 		},
-		async ({ language, pid, port, host, cwd, breakpoints, viewport_config }) => {
-			try {
-				const result = await sessionManager.attach({
-					language,
-					pid,
-					port,
-					host,
-					cwd,
-					breakpoints,
-					viewportConfig: mapViewportConfig(viewport_config),
-				});
-
-				return textResponse(`Session: ${result.sessionId}\nStatus: ${result.status}\nAttached to ${language} process.`);
-			} catch (err) {
-				return errorResponse(err);
-			}
-		},
+		toolHandler(async ({ language, pid, port, host, cwd, breakpoints, viewport_config }) => {
+			const result = await sessionManager.attach({
+				language,
+				pid,
+				port,
+				host,
+				cwd,
+				breakpoints,
+				viewportConfig: mapViewportConfig(viewport_config),
+			});
+			return `Session: ${result.sessionId}\nStatus: ${result.status}\nAttached to ${language} process.`;
+		}),
 	);
 
 	// Tool 18: debug_threads

@@ -302,12 +302,12 @@ async function getNetcoredbgVersion(): Promise<string | undefined> {
 	try {
 		const { spawn } = await import("node:child_process");
 		const { existsSync } = await import("node:fs");
-		const { homedir, platform } = await import("node:os");
-		const { join } = await import("node:path");
+		const { platform } = await import("node:os");
+		const { getKrometrailSubdir: subdir } = await import("../../core/paths.js");
 
 		// Find netcoredbg binary: PATH first, then cache
 		const ext = platform() === "win32" ? ".exe" : "";
-		const cached = join(homedir(), ".krometrail", "adapters", "netcoredbg", `netcoredbg${ext}`);
+		const cached = `${subdir("adapters", "netcoredbg")}/netcoredbg${ext}`;
 		const cmd = existsSync(cached) ? cached : "netcoredbg";
 
 		const result = await new Promise<string>((resolve, reject) => {

@@ -1,6 +1,7 @@
 import { estimateTokens, fitToBudget, type RenderSection, truncateToTokens } from "../../core/token-budget.js";
 import type { EventRow } from "../storage/database.js";
 import type { DiffResult } from "./diff.js";
+import { formatTime } from "./format-helpers.js";
 import type { InspectResult, SessionOverview, SessionSummary } from "./query-engine.js";
 
 /**
@@ -369,10 +370,6 @@ export function renderDiff(diff: DiffResult, tokenBudget = 2000): string {
 }
 
 // --- Helpers ---
-
-function formatTime(ts: number): string {
-	return new Date(ts).toISOString().slice(11, 23); // HH:mm:ss.SSS
-}
 
 function formatDuration(ms: number): string {
 	const seconds = Math.floor(ms / 1000);

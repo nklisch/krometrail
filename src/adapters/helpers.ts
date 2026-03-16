@@ -4,10 +4,9 @@ import { createWriteStream, mkdirSync } from "node:fs";
 import { get as httpsGet } from "node:https";
 import type { Socket } from "node:net";
 import { createConnection, createServer } from "node:net";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { getErrorMessage, LaunchError } from "../core/errors.js";
+import { getKrometrailSubdir } from "../core/paths.js";
 import type { PrerequisiteResult } from "./base.js";
 
 /**
@@ -280,7 +279,7 @@ export async function connectOrKill(proc: ChildProcess, host: string, port: numb
  * Returns the cache directory for a named adapter under ~/.krometrail/adapters/<adapterName>.
  */
 export function getAdapterCacheDir(adapterName: string): string {
-	return join(homedir(), ".krometrail", "adapters", adapterName);
+	return getKrometrailSubdir("adapters", adapterName);
 }
 
 /**

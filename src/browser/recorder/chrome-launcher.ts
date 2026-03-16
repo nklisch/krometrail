@@ -1,8 +1,8 @@
 import type { ChildProcess } from "node:child_process";
 import { spawn } from "node:child_process";
-import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { CDPConnectionError, ChromeNotFoundError } from "../../core/errors.js";
+import { getKrometrailSubdir } from "../../core/paths.js";
 import { CDPClient, type CDPClientOptions, fetchBrowserWsUrl } from "./cdp-client.js";
 
 export interface ChromeLaunchOptions {
@@ -54,7 +54,7 @@ export class ChromeLauncher {
 		const args = [`--remote-debugging-port=${port}`, "--no-first-run", "--no-default-browser-check"];
 
 		if (profile) {
-			args.push(`--user-data-dir=${resolve(homedir(), ".krometrail", "chrome-profiles", profile)}`);
+			args.push(`--user-data-dir=${resolve(getKrometrailSubdir("chrome-profiles", profile))}`);
 		}
 
 		if (url) {

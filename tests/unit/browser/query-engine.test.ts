@@ -177,7 +177,7 @@ describe("QueryEngine.getOverview", () => {
 	});
 
 	it("throws for unknown session", () => {
-		expect(() => engine.getOverview("no-such-session")).toThrow("Session not found");
+		expect(() => engine.getOverview("no-such-session")).toThrow("no-such-session");
 	});
 });
 

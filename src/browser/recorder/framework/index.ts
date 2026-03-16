@@ -17,10 +17,17 @@ export interface FrameworkTrackerConfig {
 	frameworks: string[];
 }
 
+interface FrameworkObserverFactory {
+	create(): { getInjectionScript(): string };
+}
+
+const OBSERVER_REGISTRY = new Map<string, FrameworkObserverFactory>([
+	["react", { create: () => new ReactObserver() }],
+	["vue", { create: () => new VueObserver() }],
+]);
+
 export class FrameworkTracker {
 	private config: FrameworkTrackerConfig;
-	private reactObserver: ReactObserver | null = null;
-	private vueObserver: VueObserver | null = null;
 
 	constructor(frameworkState: boolean | string[] | undefined) {
 		if (!frameworkState) {
@@ -46,16 +53,11 @@ export class FrameworkTracker {
 
 		const scripts: string[] = [getDetectionScript(this.config.frameworks)];
 
-		// Phase 15: React observer
-		if (this.config.frameworks.includes("react")) {
-			this.reactObserver = new ReactObserver();
-			scripts.push(this.reactObserver.getInjectionScript());
-		}
-
-		// Phase 16: Vue observer
-		if (this.config.frameworks.includes("vue")) {
-			this.vueObserver = new VueObserver();
-			scripts.push(this.vueObserver.getInjectionScript());
+		for (const fw of this.config.frameworks) {
+			const factory = OBSERVER_REGISTRY.get(fw);
+			if (factory) {
+				scripts.push(factory.create().getInjectionScript());
+			}
 		}
 
 		return scripts;

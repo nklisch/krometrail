@@ -1,5 +1,4 @@
 import { mkdirSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import type { BrowserSessionInfo, Marker } from "../browser/types.js";
@@ -17,6 +16,7 @@ import {
 	VariableScopeSchema,
 	ViewportConfigPartialSchema,
 } from "../core/enums.js";
+import { getKrometrailDir } from "../core/paths.js";
 import { BreakpointSchema, FileBreakpointsSchema } from "../core/types.js";
 
 // --- JSON-RPC 2.0 Base Types ---
@@ -389,7 +389,7 @@ export function getDaemonSocketPath(): string {
 	if (xdgRuntime) {
 		return join(xdgRuntime, "krometrail.sock");
 	}
-	const dir = join(homedir(), ".krometrail");
+	const dir = getKrometrailDir();
 	mkdirSync(dir, { recursive: true });
 	return join(dir, "krometrail.sock");
 }

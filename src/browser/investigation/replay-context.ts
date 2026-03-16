@@ -1,5 +1,7 @@
 import type { ReplayFormat, TestFramework } from "../../core/enums.js";
 import type { EventRow } from "../storage/database.js";
+import { formatTime, MARKER_LOOKAHEAD_MS, MARKER_LOOKBACK_MS } from "./format-helpers.js";
+import { isErrorEvent } from "./predicates.js";
 import type { MarkerRow, QueryEngine } from "./query-engine.js";
 
 export type { ReplayFormat, TestFramework };
@@ -42,9 +44,7 @@ export class ReplayContextGenerator {
 		}
 
 		// Errors
-		const errors = events.filter(
-			(e) => e.type === "page_error" || (e.type === "console" && e.summary.startsWith("[error]")) || (e.type === "network_response" && Number.parseInt(e.summary, 10) >= 400),
-		);
+		const errors = events.filter(isErrorEvent);
 		if (errors.length > 0) {
 			lines.push("### Errors");
 			for (const e of errors) {
@@ -212,8 +212,8 @@ export class ReplayContextGenerator {
 			const marker = markers.find((m) => m.id === params.aroundMarker);
 			if (!marker) throw new Error(`Marker ${params.aroundMarker} not found`);
 			timeRange = {
-				start: marker.timestamp - 120_000, // 2 minutes before
-				end: marker.timestamp + 30_000, // 30 seconds after
+				start: marker.timestamp - MARKER_LOOKBACK_MS,
+				end: marker.timestamp + MARKER_LOOKAHEAD_MS,
 			};
 		} else if (params.timeRange) {
 			timeRange = params.timeRange;
@@ -233,8 +233,4 @@ export class ReplayContextGenerator {
 
 		return { events, markers };
 	}
-}
-
-function formatTime(ts: number): string {
-	return new Date(ts).toISOString().slice(11, 23); // HH:mm:ss.SSS
 }

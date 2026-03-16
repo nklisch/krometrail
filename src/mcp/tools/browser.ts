@@ -8,15 +8,25 @@ import type { BrowserSessionInfo, Marker } from "../../browser/types.js";
 import { DiffIncludeSchema, FrameworkSchema, InspectIncludeSchema, OverviewIncludeSchema, ReplayFormatSchema, SearchableEventTypeSchema, TestFrameworkSchema } from "../../core/enums.js";
 import { DaemonClient, ensureDaemon } from "../../daemon/client.js";
 import { getDaemonSocketPath } from "../../daemon/protocol.js";
-import { errorResponse, textResponse, toolHandler } from "./utils.js";
+import { errorResponse, type ToolResult, textResponse, toolHandler } from "./utils.js";
+
+const TimeRangeSchema = z
+	.object({
+		start: z.string().describe("ISO timestamp"),
+		end: z.string().describe("ISO timestamp"),
+	})
+	.optional()
+	.describe("Focus on a specific time window");
+
+function parseTimeRange(tr: { start: string; end: string } | undefined): { start: number; end: number } | undefined {
+	return tr ? { start: new Date(tr.start).getTime(), end: new Date(tr.end).getTime() } : undefined;
+}
 
 async function getDaemonClient(timeoutMs = 30_000): Promise<DaemonClient> {
 	const socketPath = getDaemonSocketPath();
 	await ensureDaemon(socketPath);
 	return new DaemonClient({ socketPath, requestTimeoutMs: timeoutMs });
 }
-
-type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: true };
 
 /**
  * Acquire a daemon client, call fn, format the result as text, and always dispose.
@@ -202,13 +212,7 @@ export function registerBrowserTools(server: McpServer, queryEngine: QueryEngine
 			session_id: z.string().describe('Session ID from session_list, or "latest" for the most recent session'),
 			include: z.array(OverviewIncludeSchema).optional().describe("What to include. Default: all"),
 			around_marker: z.string().optional().describe("Center overview on this marker ID"),
-			time_range: z
-				.object({
-					start: z.string().describe("ISO timestamp"),
-					end: z.string().describe("ISO timestamp"),
-				})
-				.optional()
-				.describe("Focus on a specific time window"),
+			time_range: TimeRangeSchema,
 			token_budget: z.number().optional().describe("Max tokens for the response. Default: 3000"),
 		},
 		async ({ session_id, include, around_marker, time_range, token_budget }) => {
@@ -216,7 +220,7 @@ export function registerBrowserTools(server: McpServer, queryEngine: QueryEngine
 				const overview = queryEngine.getOverview(session_id, {
 					include: include as OverviewOptions["include"],
 					aroundMarker: around_marker,
-					timeRange: time_range ? { start: new Date(time_range.start).getTime(), end: new Date(time_range.end).getTime() } : undefined,
+					timeRange: parseTimeRange(time_range),
 				});
 				return textResponse(renderSessionOverview(overview, token_budget ?? 3000));
 			} catch (err) {
@@ -236,13 +240,7 @@ export function registerBrowserTools(server: McpServer, queryEngine: QueryEngine
 			query: z.string().optional().describe("Natural language search query, e.g. 'validation error' or 'phone format'"),
 			event_types: z.array(SearchableEventTypeSchema).optional().describe("Filter by event type"),
 			status_codes: z.array(z.number()).optional().describe("Filter network responses by HTTP status code, e.g. [400, 422, 500]"),
-			time_range: z
-				.object({
-					start: z.string().describe("ISO timestamp"),
-					end: z.string().describe("ISO timestamp"),
-				})
-				.optional()
-				.describe("Filter by time window"),
+			time_range: TimeRangeSchema,
 			around_marker: z.string().optional().describe("Center search around this marker ID (±120s before, +30s after)"),
 			url_pattern: z.string().optional().describe("Glob pattern to filter by URL in summary, e.g. '**/api/patients**'"),
 			console_levels: z.array(z.string()).optional().describe("Filter console events by level, e.g. ['error', 'warn']"),
@@ -260,7 +258,7 @@ export function registerBrowserTools(server: McpServer, queryEngine: QueryEngine
 					filters: {
 						eventTypes: event_types,
 						statusCodes: status_codes,
-						timeRange: time_range ? { start: new Date(time_range.start).getTime(), end: new Date(time_range.end).getTime() } : undefined,
+						timeRange: parseTimeRange(time_range),
 						aroundMarker: around_marker,
 						urlPattern: url_pattern,
 						consoleLevels: console_levels,
@@ -335,13 +333,7 @@ export function registerBrowserTools(server: McpServer, queryEngine: QueryEngine
 		{
 			session_id: z.string().describe('Session ID, or "latest" for the most recent session'),
 			around_marker: z.string().optional().describe("Focus on events around this marker"),
-			time_range: z
-				.object({
-					start: z.string().describe("ISO timestamp"),
-					end: z.string().describe("ISO timestamp"),
-				})
-				.optional()
-				.describe("Focus on a specific time window"),
+			time_range: TimeRangeSchema,
 			format: ReplayFormatSchema.describe("Output format: 'summary' for overview, 'reproduction_steps' for step-by-step, 'test_scaffold' for automated test code"),
 			test_framework: TestFrameworkSchema.optional().describe("Test framework for scaffold generation. Default: playwright"),
 		},
@@ -350,7 +342,7 @@ export function registerBrowserTools(server: McpServer, queryEngine: QueryEngine
 			return generator.generate({
 				sessionId: session_id,
 				aroundMarker: around_marker,
-				timeRange: time_range ? { start: new Date(time_range.start).getTime(), end: new Date(time_range.end).getTime() } : undefined,
+				timeRange: parseTimeRange(time_range),
 				format,
 				testFramework: test_framework,
 			});
