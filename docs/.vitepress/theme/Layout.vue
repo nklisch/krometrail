@@ -45,7 +45,7 @@ const setupTabs = [
   "mcpServers": {
     "krometrail": {
       "command": "krometrail",
-      "args": ["mcp"]
+      "args": ["--mcp"]
     }
   }
 }`,
@@ -63,14 +63,14 @@ krometrail --version`,
 		label: "bunx (no install)",
 		language: "bash",
 		code: `# Run directly with bunx — no install needed
-bunx krometrail mcp
+bunx krometrail --mcp
 
 # Or add to MCP config:
 {
   "mcpServers": {
     "krometrail": {
       "command": "bunx",
-      "args": ["krometrail", "mcp"]
+      "args": ["krometrail", "--mcp"]
     }
   }
 }`,

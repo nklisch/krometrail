@@ -165,6 +165,7 @@ krometrail stop
 - **Watch expressions** — persistent expressions auto-evaluated on every stop
 - **Framework detection** — auto-detects pytest, Django, Flask, jest, mocha, go test
 - **Multi-threaded** — thread/goroutine listing and selection
+- **Shell completions** — tab-completion for bash, zsh, and fish via `krometrail completions`
 
 ### Skill File
 

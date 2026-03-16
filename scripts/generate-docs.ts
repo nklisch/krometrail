@@ -257,6 +257,71 @@ async function generateViewportConfigMd(): Promise<string> {
 }
 
 // ---------------------------------------------------------------------------
+// CLI command docs generation
+// ---------------------------------------------------------------------------
+
+interface CliArgInfo {
+	name: string;
+	type: "positional" | "string" | "boolean";
+	required: boolean;
+	alias?: string;
+	description: string;
+	default?: unknown;
+}
+
+interface CliCommandInfo {
+	name: string;
+	description: string;
+	group: string;
+	args: CliArgInfo[];
+}
+
+/**
+ * Global flags shared across debug commands (from shared.ts globalArgs).
+ * These are excluded from per-command tables to reduce noise.
+ */
+const GLOBAL_FLAGS = new Set(["json", "quiet", "session"]);
+
+function renderCliCommandTable(cmd: CliCommandInfo): string {
+	const args = cmd.args.filter((a) => !GLOBAL_FLAGS.has(a.name));
+	if (args.length === 0) return "";
+
+	const rows = args.map((a) => {
+		const flag = a.type === "positional" ? `\`<${a.name}>\`` : a.alias ? `\`--${a.name}\`, \`-${a.alias}\`` : `\`--${a.name}\``;
+		const type = a.type === "positional" ? "positional" : a.type;
+		const req = a.required ? "Yes" : "No";
+		const desc = escapeTable(a.description);
+		return `| ${flag} | ${type} | ${req} | ${desc} |`;
+	});
+
+	return [
+		"| Flag | Type | Required | Description |",
+		"|------|------|----------|-------------|",
+		...rows,
+		"",
+	].join("\n");
+}
+
+async function generateCliCommandDocs(outDir: string): Promise<number> {
+	const { buildCommandInventory } = await import("../src/cli/commands/commands.js");
+	const inventory = await buildCommandInventory();
+
+	let fileCount = 0;
+	for (const group of inventory.groups) {
+		for (const cmd of group.commands) {
+			const table = renderCliCommandTable(cmd as CliCommandInfo);
+			if (!table) continue;
+
+			const prefix = group.name === "top-level" ? "cli" : `cli-${group.name}`;
+			const filename = `${prefix}-${cmd.name}.md`;
+			await writeFile(`${outDir}${filename}`, table);
+			fileCount++;
+		}
+	}
+	return fileCount;
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -276,7 +341,7 @@ async function main(): Promise<void> {
 	const browserMock = createCaptureMock();
 	registerBrowserTools(browserMock.server as never, null as never);
 
-	// 4. Generate files
+	// 4. Generate MCP docs
 	const debugMd = generateDebugToolsMd(debugMock.tools);
 	const browserMd = generateBrowserToolsMd(browserMock.tools);
 	const languagesMd = generateLanguagesMd();
@@ -289,12 +354,16 @@ async function main(): Promise<void> {
 	await writeFile(`${outDir}frameworks.md`, frameworksMd);
 	await writeFile(`${outDir}viewport-config.md`, viewportMd);
 
+	// 5. Generate CLI command docs
+	const cliFileCount = await generateCliCommandDocs(outDir);
+
 	console.log("Generated docs in", outDir);
 	console.log(`  mcp-tools-debug.md    (${debugMock.tools.filter((t) => t.name.startsWith("debug_")).length} tools)`);
 	console.log(`  mcp-tools-browser.md  (${browserMock.tools.filter((t) => !t.name.startsWith("debug_")).length} tools)`);
 	console.log(`  languages.md          (${listAdapters().length} adapters)`);
 	console.log(`  frameworks.md         (${listDetectors().length} detectors)`);
 	console.log(`  viewport-config.md    (6 params)`);
+	console.log(`  cli-*.md              (${cliFileCount} CLI command tables)`);
 }
 
 // Only run main when executed directly (not imported for tests)

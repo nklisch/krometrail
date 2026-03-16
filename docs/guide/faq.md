@@ -15,7 +15,7 @@ Krometrail supports runtime debugging in 10 languages: Python (via debugpy), Nod
 
 ## How do I configure Krometrail with Claude Code?
 
-Add Krometrail to your Claude Code MCP configuration by adding a `krometrail` entry to your `.mcp.json` file. The entry should specify `"command": "npx"` with `"args": ["-y", "krometrail@latest", "mcp"]`. Once configured, Claude Code can use Krometrail's MCP tools to launch debug sessions, set breakpoints, step through code, and inspect variables. See the [MCP Configuration guide](/guide/mcp-configuration) for complete setup instructions.
+Add Krometrail to your Claude Code MCP configuration by adding a `krometrail` entry to your `.mcp.json` file. The entry should specify `"command": "npx"` with `"args": ["-y", "krometrail@latest", "--mcp"]`. Once configured, Claude Code can use Krometrail's MCP tools to launch debug sessions, set breakpoints, step through code, and inspect variables. See the [MCP Configuration guide](/guide/mcp-configuration) for complete setup instructions.
 
 ## How does Krometrail compare to other MCP debugging tools?
 

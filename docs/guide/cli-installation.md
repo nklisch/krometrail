@@ -96,6 +96,28 @@ krometrail doctor
 
 Node.js and Rust (CodeLLDB) adapters download their debuggers automatically on first use.
 
+## Shell Completions
+
+Enable tab-completion for commands, subcommands, and flags:
+
+::: code-group
+
+```bash [Bash]
+# Add to ~/.bashrc:
+source <(krometrail completions bash)
+```
+
+```bash [Zsh]
+# Add to ~/.zshrc:
+source <(krometrail completions zsh)
+```
+
+```bash [Fish]
+krometrail completions fish > ~/.config/fish/completions/krometrail.fish
+```
+
+:::
+
 ## Session Daemon
 
 The CLI manages sessions via a background daemon that starts automatically on `krometrail debug launch` and shuts down after all sessions end. This means consecutive commands share a session:
