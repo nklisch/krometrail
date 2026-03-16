@@ -1,17 +1,17 @@
 ---
 name: krometrail-debug
-description: Runtime debugging for AI agents. Use when a test fails and reading the code isn't enough, when you need to inspect runtime values, or when a bug is in logic you can't trace statically (closures, async, pipelines, type coercions). Gives you a live debugger — set breakpoints, step through code, inspect variables, evaluate expressions — across 10 languages.
+description: Runtime debugging via the krometrail CLI. Use when a test fails and reading the code isn't enough, when you need to inspect runtime values, or when a bug is in logic you can't trace statically. Set breakpoints, step through code, inspect variables, evaluate expressions — across 10 languages.
 license: MIT
-compatibility: Requires debugger binaries for the target language (e.g., debugpy for Python, dlv for Go). Works with any MCP-compatible agent or via CLI.
+compatibility: Requires debugger binaries for the target language (e.g., debugpy for Python, dlv for Go).
 metadata:
   author: krometrail
-  version: "0.1"
+  version: "0.2"
 allowed-tools: Bash(krometrail:*)
 ---
 
-# Krometrail — Runtime Debugging
+# Krometrail — Runtime Debugging (CLI)
 
-Use krometrail when you need to inspect runtime state to diagnose a bug — especially when static code reading and test output aren't enough to identify the root cause.
+Use `krometrail debug` commands when you need to inspect runtime state to diagnose a bug — especially when static code reading and test output aren't enough to identify the root cause.
 
 ## When to use
 
@@ -20,63 +20,95 @@ Use krometrail when you need to inspect runtime state to diagnose a bug — espe
 - A function returns an unexpected value — step into it and trace the data flow
 - An exception occurs deep in a call chain — break on exceptions to see the exact state
 
-## MCP tools
+## Quick start
 
-If krometrail is registered as an MCP server, use these tools directly:
+```bash
+krometrail debug launch "python3 -m pytest test_discount.py -x" --break discount.py:12
+# → Viewport shows source, locals, and stack at line 12
 
-| Tool | Purpose |
-|------|---------|
-| `debug_launch` | Start a debug session with initial breakpoints |
-| `debug_stop` | End a session — **always call when done** |
-| `debug_continue` | Resume to next breakpoint or program end |
-| `debug_step` | Step `over`, `into`, or `out` |
-| `debug_run_to` | Run to a specific file:line |
-| `debug_set_breakpoints` | Set/replace breakpoints in a file (supports conditions, logpoints) |
-| `debug_set_exception_breakpoints` | Break on exceptions |
-| `debug_evaluate` | Evaluate an expression in the stopped context |
-| `debug_variables` | Show variables (local, global, closure) |
-| `debug_stack_trace` | Show the call stack |
-| `debug_source` | Read source with line numbers |
-| `debug_watch` | Add watch expressions — shown in every viewport |
-| `debug_action_log` | Review investigation history |
-| `debug_output` | Get stdout/stderr from the target |
-| `debug_attach` | Attach to a running process |
-| `debug_threads` | List threads (goroutines, Python threads) |
-
-### Example: find a wrong discount value
-
-```
-debug_launch({
-  command: "python3 -m pytest test_discount.py -x",
-  breakpoints: [{ file: "discount.py", breakpoints: [{ line: 12 }] }]
-})
-# → viewport shows source, locals, and stack at line 12
-
-debug_evaluate({ session_id: "...", expression: "rate" })
+krometrail debug eval "rate"
 # → rate = 1.0  (should be 0.1!)
 
-debug_stop({ session_id: "..." })
+krometrail debug stop
 # Fix the bug with confidence
 ```
 
-## CLI commands
+## Commands
 
-If using krometrail via CLI:
+### Launch and lifecycle
 
 ```bash
-krometrail launch "python3 -m pytest test_discount.py -x" --break discount.py:12
-krometrail eval "rate"
-krometrail vars
-krometrail step over
-krometrail continue
-krometrail stop
+krometrail debug launch "python app.py"
+krometrail debug launch "pytest tests/test_order.py -s" --break order.py:147
+krometrail debug launch "node server.js" --stop-on-entry
+krometrail debug launch "go run ./cmd/server"
+krometrail debug launch --config-name "My Config"          # from .vscode/launch.json
+
+krometrail debug attach --language python --port 5678
+krometrail debug attach --language node --port 9229
+krometrail debug attach --language go --pid 12345
+
+krometrail debug status
+krometrail debug stop                                      # always call when done
 ```
 
-See [references/cli.md](references/cli.md) for the full command reference.
+### Execution control
+
+```bash
+krometrail debug continue [--timeout <ms>]
+krometrail debug step over
+krometrail debug step into
+krometrail debug step out
+krometrail debug step over --count 5
+krometrail debug run-to order.py:150
+```
+
+### Breakpoints
+
+```bash
+krometrail debug break order.py:147
+krometrail debug break order.py:147,152,160
+krometrail debug break "order.py:147 when discount < 0"
+krometrail debug break "order.py:147 hit >=5"
+krometrail debug break "order.py:147 log processed {count} items"
+krometrail debug break --exceptions uncaught
+krometrail debug break --clear order.py
+krometrail debug breakpoints                    # list all
+```
+
+**Breakpoint spec:** `file:line[,line,...] [when <expr>] [hit <n>] [log <msg>]`
+
+Exception filters: Python: `raised`, `uncaught`, `userUnhandled` · Node.js: `all`, `uncaught` · Go: `panic`
+
+### State inspection
+
+```bash
+krometrail debug vars                           # local scope
+krometrail debug vars --scope global
+krometrail debug vars --filter "^user" --frame 2
+krometrail debug stack
+krometrail debug stack --frames 5 --source
+krometrail debug source order.py
+krometrail debug source order.py:140-160
+krometrail debug eval "cart.total"
+krometrail debug eval "order.total" --frame 1 --depth 3
+```
+
+### Session intelligence
+
+```bash
+krometrail debug watch "order.total" "cart.item_count"
+krometrail debug unwatch "cart.item_count"
+krometrail debug log                            # review investigation history
+krometrail debug log --detailed
+krometrail debug output                         # stdout/stderr from the target
+krometrail debug output --stderr
+krometrail debug threads                        # goroutines, Python threads, etc.
+```
 
 ## Language support
 
-Each language has specific setup requirements and features. See the reference for your target language:
+Each language has specific setup requirements and features:
 
 - [Python](references/python.md) — debugpy, pytest/Flask/Django auto-detection
 - [JavaScript / TypeScript](references/javascript.md) — js-debug, Jest/Mocha, attach via `--inspect`
@@ -87,38 +119,33 @@ Each language has specific setup requirements and features. See the reference fo
 
 ## Debugging servers and services
 
-For HTTP servers (Flask, Express, Go net/http, etc.), `debug_launch` starts the server and returns immediately — it does NOT block waiting for a breakpoint. Use this workflow:
+For HTTP servers (Flask, Express, Go net/http, etc.), `launch` starts the server and returns immediately — it does NOT block waiting for a breakpoint. Use this workflow:
 
 1. **Launch the server under the debugger with breakpoints set**
 2. **Send HTTP requests via Bash** (curl, wget, etc.) to trigger the code path
-3. **Call `debug_continue`** — it will catch the breakpoint hit and return the viewport
+3. **Call `continue`** — it will catch the breakpoint hit and return the viewport
 
-### Example: debug a Flask pricing endpoint
-
-```
-debug_launch({
-  command: "python app.py",
-  breakpoints: [{ file: "pricing.py", breakpoints: [{ line: 45 }] }]
-})
+```bash
+krometrail debug launch "python app.py" --break pricing.py:45
 # → Session started, status: running (server is listening)
 
-# Send a request to trigger the breakpoint — use Bash tool:
-# curl -X POST http://localhost:5001/price -H 'Content-Type: application/json' -d '{"item": "ABC", "qty": 5}'
+# Send a request to trigger the breakpoint:
+curl -X POST http://localhost:5001/price -H 'Content-Type: application/json' -d '{"item": "ABC", "qty": 5}'
 
-debug_continue({ session_id: "..." })
+krometrail debug continue
 # → Viewport shows source, locals, and stack at line 45
 
-debug_variables({ session_id: "..." })
+krometrail debug vars
 # → Inspect the request data and computed values
 
-debug_stop({ session_id: "..." })
+krometrail debug stop
 ```
 
 ### Tips for multi-service architectures
 
 - Debug **one service at a time** — launch it under the debugger while running the others normally
-- Write a small script that calls the function directly, or that sends HTTP requests to the running service to trigger the code path you want to debug
-- Use `debug_evaluate` to test corrected expressions before editing code
+- Write a small script that calls the function directly, or sends HTTP requests to trigger the code path
+- Use `eval` to test corrected expressions before editing code
 
 ## Debugging strategy
 
@@ -131,9 +158,9 @@ debug_stop({ session_id: "..." })
 
 ### Tips
 
-- Prefer conditional breakpoints over stepping through loops: `{ line: 42, condition: "i == 99" }`
-- Use `debug_watch` to track key expressions across multiple stops
-- Use `debug_action_log` to review what you've already checked
+- Prefer conditional breakpoints over stepping through loops: `--break "order.py:42 when i == 99"`
+- Use `watch` to track key expressions across multiple stops
+- Use `log` to review what you've already checked
 - Each action returns a viewport — source context, locals, stack, and watches — in one view
 - Sessions auto-expire after 5 minutes of inactivity
-- **Always call `debug_stop` when finished** to clean up debugger processes
+- **Always call `stop` when finished** to clean up debugger processes
