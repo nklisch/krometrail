@@ -2,6 +2,10 @@ import { unlinkSync, writeFileSync } from "node:fs";
 import type { Server, Socket } from "node:net";
 import { createServer } from "node:net";
 import { resolve } from "node:path";
+import { CDPPortAdapter } from "../browser/executor/cdp-adapter.js";
+import { ScenarioStore } from "../browser/executor/scenario-store.js";
+import { StepExecutor } from "../browser/executor/step-executor.js";
+import type { Step } from "../browser/executor/types.js";
 import { HARExporter } from "../browser/export/har.js";
 import { SessionDiffer } from "../browser/investigation/diff.js";
 import { QueryEngine } from "../browser/investigation/query-engine.js";
@@ -38,6 +42,7 @@ import {
 	RPC_SESSION_LIMIT_ERROR,
 	RPC_SESSION_NOT_FOUND,
 	RPC_SESSION_STATE_ERROR,
+	RunStepsParamsSchema,
 	RunToParamsSchema,
 	SessionIdParamsSchema,
 	SessionLogParamsSchema,
@@ -80,6 +85,7 @@ export class DaemonServer {
 	private browserRecorder: BrowserRecorder | null = null;
 	private browserQueryEngine: QueryEngine | null = null;
 	private browserDb: BrowserDatabase | null = null;
+	private scenarioStore = new ScenarioStore();
 
 	constructor(sessionManager: SessionManager, options: DaemonOptions) {
 		this.sessionManager = sessionManager;
@@ -438,6 +444,40 @@ export class DaemonServer {
 				return null;
 			}
 
+			case "browser.run-steps": {
+				const p = RunStepsParamsSchema.parse(params);
+
+				// Resolve steps: from params or from saved scenario
+				let steps: Step[];
+				if (p.steps) {
+					steps = p.steps;
+				} else if (p.name) {
+					const scenario = this.scenarioStore.get(p.name);
+					if (!scenario) throw new BrowserRecorderStateError(`No saved scenario named "${p.name}"`);
+					steps = scenario.steps;
+				} else {
+					throw new BrowserRecorderStateError("Either steps or name is required");
+				}
+
+				// Save scenario if requested
+				if (p.save && p.name) {
+					this.scenarioStore.save(p.name, steps);
+				}
+
+				// Require active recording
+				if (!this.browserRecorder?.isRecording()) {
+					throw new BrowserRecorderStateError("No active browser recording. Call browser.start first, then run steps.");
+				}
+
+				// Build the CDP port adapter and execute
+				const adapter = this.buildStepExecutorAdapter();
+				const executor = new StepExecutor(adapter);
+				const result = await executor.execute(steps, p.capture);
+				result.sessionId = this.browserRecorder.getSessionInfo()?.id;
+
+				return result;
+			}
+
 			// --- Browser Investigation ---
 			case "browser.sessions": {
 				const p = BrowserSessionsParamsSchema.parse(params);
@@ -514,6 +554,23 @@ export class DaemonServer {
 				throw Object.assign(new Error(`Method not found: ${method}`), { rpcCode: RPC_METHOD_NOT_FOUND });
 			}
 		}
+	}
+
+	private buildStepExecutorAdapter(): CDPPortAdapter {
+		const recorder = this.browserRecorder;
+		if (!recorder) throw new BrowserRecorderStateError("No active browser recorder");
+		const cdpClient = recorder.getCDPClient();
+		if (!cdpClient) throw new BrowserRecorderStateError("CDP client not available");
+		const tabSessionId = recorder.getPrimaryTabSession();
+		if (!tabSessionId) throw new BrowserRecorderStateError("No active tab session");
+
+		return new CDPPortAdapter({
+			cdpClient,
+			tabSessionId,
+			recorder,
+			screenshotCapture: recorder.getScreenshotCapture(),
+			screenshotDir: recorder.getScreenshotDir(),
+		});
 	}
 
 	private getQueryEngine(): QueryEngine {

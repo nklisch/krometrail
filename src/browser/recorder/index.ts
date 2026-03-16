@@ -337,6 +337,28 @@ export class BrowserRecorder {
 		}
 	}
 
+	/** Get the CDP client (for step executor). Returns null if not recording. */
+	getCDPClient(): CDPClient | null {
+		return this.cdpClient;
+	}
+
+	/** Get the primary tab session ID (for step executor). */
+	getPrimaryTabSession(): string | null {
+		return this.getPrimaryTabSessionId();
+	}
+
+	/** Get the screenshot capture instance. */
+	getScreenshotCapture(): ScreenshotCapture | null {
+		return this.screenshotCapture;
+	}
+
+	/** Get the session screenshot directory. */
+	getScreenshotDir(): string | null {
+		if (!this.persistence) return null;
+		const sessDir = this.persistence.getSessionDir(this.sessionId);
+		return sessDir ? `${sessDir}/screenshots` : null;
+	}
+
 	private getPrimaryTabSessionId(): string | null {
 		const [first] = this.tabSessions.values();
 		return first ?? null;

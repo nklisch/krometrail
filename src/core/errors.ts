@@ -216,3 +216,19 @@ export class InvalidLaunchConfigError extends KrometrailError {
 		this.name = "InvalidLaunchConfigError";
 	}
 }
+
+/**
+ * A browser step execution action failed.
+ */
+export class StepExecutionError extends KrometrailError {
+	constructor(
+		public readonly stepIndex: number,
+		public readonly action: string,
+		public readonly selector?: string,
+		cause?: string,
+	) {
+		const loc = selector ? ` on "${selector}"` : "";
+		super(`Step ${stepIndex} (${action}${loc}) failed: ${cause ?? "unknown error"}`, "STEP_EXECUTION_FAILED");
+		this.name = "StepExecutionError";
+	}
+}

@@ -1,5 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { renderStepResults } from "../../browser/executor/renderer.js";
+import { CaptureConfigSchema, type RunStepsResult, StepSchema } from "../../browser/executor/types.js";
 import { SessionDiffer } from "../../browser/investigation/diff.js";
 import type { InspectParams, OverviewOptions, QueryEngine } from "../../browser/investigation/query-engine.js";
 import { renderDiff, renderInspectResult, renderSearchResults, renderSessionList, renderSessionOverview } from "../../browser/investigation/renderers.js";
@@ -175,6 +177,36 @@ export function registerBrowserTools(server: McpServer, queryEngine: QueryEngine
 				(client) => client.call("browser.stop", { closeBrowser: close_chrome ?? false }),
 				() => "Chrome recording stopped. Use session_list to find the recorded session.",
 			),
+	);
+
+	// Tool: chrome_run_steps
+	server.tool(
+		"chrome_run_steps",
+		"Execute a sequence of browser actions (navigate, click, fill, wait, etc.) in one call. " +
+			"Requires an active recording session (chrome_start). " +
+			"Each step is auto-marked and auto-screenshotted by default for investigation. " +
+			"Use name + save to store a scenario for replay. Pass just name to replay a saved scenario.",
+		{
+			steps: z
+				.array(StepSchema)
+				.optional()
+				.describe(
+					"Ordered actions to execute. Each step has an 'action' field: " +
+						"navigate, reload, click, fill, select, submit, type, hover, " +
+						"scroll_to, scroll_by, wait, wait_for, wait_for_navigation, " +
+						"wait_for_network_idle, screenshot, mark, evaluate",
+				),
+			name: z.string().optional().describe("Scenario name. Use with save=true to store, or alone to replay."),
+			save: z.boolean().optional().describe("Save the steps as a named scenario for later replay"),
+			capture: CaptureConfigSchema.optional().describe("Capture config. screenshot: 'all' (default), 'none', 'on_error'. markers: true (default) or false."),
+		},
+		async ({ steps, name, save, capture }) => {
+			return withDaemonClient(
+				(client) => client.call<RunStepsResult>("browser.run-steps", { steps, name, save, capture }),
+				(result) => renderStepResults(result),
+				120_000, // 2 minute timeout for step sequences
+			);
+		},
 	);
 
 	// Tool 1: session_list

@@ -105,6 +105,9 @@ export type RpcMethods = {
 	"browser.status": { params: Record<string, never>; result: BrowserSessionInfo | null };
 	"browser.stop": { params: BrowserStopParams; result: undefined };
 
+	// Browser step execution
+	"browser.run-steps": { params: BrowserRunStepsParams; result: BrowserRunStepsResult };
+
 	// Browser investigation
 	"browser.sessions": { params: BrowserSessionsParams; result: unknown[] };
 	"browser.overview": { params: BrowserOverviewParams; result: string };
@@ -330,6 +333,10 @@ export const BrowserExportParamsSchema = z.object({
 	includeResponseBodies: z.boolean().optional(),
 });
 export type BrowserExportParams = z.infer<typeof BrowserExportParamsSchema>;
+
+export type { RunStepsParams as BrowserRunStepsParams } from "../browser/executor/types.js";
+export { RunStepsParamsSchema } from "../browser/executor/types.js";
+export type BrowserRunStepsResult = import("../browser/executor/types.js").RunStepsResult;
 
 // Re-export browser types for protocol consumers
 export type { BrowserSessionInfo, Marker } from "../browser/types.js";
