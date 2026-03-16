@@ -190,7 +190,9 @@ export class BrowserRecorder {
 
 			// Discover tabs with retry — on macOS (especially fresh profiles), Chrome
 			// needs time after CDP is ready before page targets appear.
-			const tabs = await this.discoverTabsWithRetry();
+			// When we launched Chrome with a URL, wait for that specific tab.
+			const expectedUrl = this.chromeProcess ? this.config.url : undefined;
+			const tabs = await this.discoverTabsWithRetry(expectedUrl);
 
 			if (this.config.allTabs) {
 				// Skip internal Chrome pages (chrome://, about:blank) in all-tabs mode
@@ -199,11 +201,8 @@ export class BrowserRecorder {
 					await this.startRecordingTab(tab.targetId);
 				}
 			} else {
-				// Record first matching tab, preferring user content over chrome:// pages
-				const filter = this.config.tabFilter;
-				const contentTabs = tabs.filter((t) => !isInternalChromeUrl(t.url));
-				const pool = contentTabs.length > 0 ? contentTabs : tabs;
-				const target = filter ? (pool.find((t) => t.url.includes(filter)) ?? pool[0]) : pool[0];
+				// Pick the tab matching the URL we launched, tabFilter, or first content tab
+				const target = this.pickTab(tabs);
 				await this.startRecordingTab(target.targetId);
 			}
 
@@ -228,14 +227,12 @@ export class BrowserRecorder {
 	 * available before the first page target is created — especially on fresh
 	 * profiles where welcome/setup pages add latency.
 	 *
-	 * When we launched Chrome (not attach mode), wait for a non-internal tab
-	 * (not chrome://, about:blank) since Chrome may report internal pages first.
-	 * Falls back to any tab if the timeout expires with only internal tabs.
+	 * When expectedUrl is set (we launched Chrome with a URL), keep polling until
+	 * a tab matching that URL appears. Falls back to any content tab on timeout.
 	 */
-	private async discoverTabsWithRetry(timeoutMs = 10_000): Promise<TabInfo[]> {
+	private async discoverTabsWithRetry(expectedUrl?: string, timeoutMs = 10_000): Promise<TabInfo[]> {
 		const deadline = Date.now() + timeoutMs;
 		const pollIntervalMs = 500;
-		const weLaunched = this.chromeProcess !== null;
 
 		// tabManager is guaranteed to be set — start() initializes it before calling this method
 		const tm = this.tabManager as TabManager;
@@ -244,23 +241,44 @@ export class BrowserRecorder {
 			const tabs = tm.listTabs();
 
 			if (tabs.length > 0) {
-				// In attach mode, accept any tabs immediately
-				if (!weLaunched) return tabs;
-				// When we launched Chrome, prefer waiting for a content tab
-				const contentTabs = tabs.filter((t) => !isInternalChromeUrl(t.url));
-				if (contentTabs.length > 0) return tabs;
-				// Have tabs but they're all internal — keep waiting for the real one
+				if (expectedUrl) {
+					// Wait for the specific URL we told Chrome to open
+					if (tabs.some((t) => t.url.includes(expectedUrl))) return tabs;
+				} else {
+					// No expected URL — accept any non-internal tab, or any tab in attach mode
+					const hasContent = tabs.some((t) => !isInternalChromeUrl(t.url));
+					if (hasContent || !this.chromeProcess) return tabs;
+				}
 			}
 			await new Promise<void>((r) => setTimeout(r, pollIntervalMs));
 		}
 
-		// Timeout — return whatever tabs exist (even internal ones) rather than failing
+		// Timeout — return whatever tabs exist rather than failing
 		const finalTabs = tm.listTabs();
 		if (finalTabs.length > 0) return finalTabs;
 
 		throw new BrowserRecorderStateError(
 			"No browser tabs found after waiting 10s. Chrome launched but never created a page target. " + "Try closing Chrome and retrying, or use attach=true with a manually launched Chrome.",
 		);
+	}
+
+	/** Select which tab to record: match requested URL > tabFilter > first content tab > first tab. */
+	private pickTab(tabs: TabInfo[]): TabInfo {
+		const url = this.config.url;
+		const filter = this.config.tabFilter;
+
+		// Prefer the tab matching the URL we launched Chrome with
+		if (url) {
+			const match = tabs.find((t) => t.url.includes(url));
+			if (match) return match;
+		}
+		// Then try tabFilter
+		if (filter) {
+			const match = tabs.find((t) => t.url.includes(filter));
+			if (match) return match;
+		}
+		// Fall back to first non-internal tab, or first tab
+		return tabs.find((t) => !isInternalChromeUrl(t.url)) ?? tabs[0];
 	}
 
 	/** Place a marker at the current time. */

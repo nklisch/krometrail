@@ -5,6 +5,15 @@ description: Release history for Krometrail.
 
 # Changelog
 
+## v0.2.11
+
+### Fixes
+
+- **`chrome_start` race condition** — tab discovery now retries with 500ms backoff for up to 10s instead of failing immediately; on macOS, Chrome's CDP endpoint becomes available before page targets are created
+- **Orphaned Chrome processes** — if `chrome_start` fails after launching Chrome, the process is now killed instead of left running as an orphan
+- **Fresh profile extra tabs** — added `--disable-features=ChromeWhatsNewUI`, `--disable-default-apps`, and `--disable-session-crashed-bubble` flags; Chrome now always receives a URL (defaulting to `about:blank`) to prevent the default new-tab page opening alongside the requested URL
+- **`chrome://` tab filtering** — internal Chrome pages (`chrome://`, `chrome-extension://`, `about:blank`) are skipped when selecting which tab to record; tab discovery waits specifically for a content tab when krometrail launched Chrome
+
 ## v0.2.10
 
 ### Fixes
