@@ -16,7 +16,7 @@ import { FrameworkTracker } from "./framework/index.js";
 import { InputTracker } from "./input-tracker.js";
 import { setupControlPanel } from "./marker-overlay.js";
 import { type BufferConfig, BufferConfigSchema, RollingBuffer } from "./rolling-buffer.js";
-import { TabManager } from "./tab-manager.js";
+import { type TabInfo, TabManager } from "./tab-manager.js";
 
 export interface BrowserRecorderConfig {
 	/** CDP port Chrome is listening on. Default: 9222 */
@@ -41,6 +41,11 @@ export interface BrowserRecorderConfig {
 	screenshots?: Partial<ScreenshotConfig>;
 	/** Framework state observation config. false/undefined = disabled. */
 	frameworkState?: boolean | string[];
+}
+
+/** Returns true for chrome://, about:blank, and other internal URLs that can't be recorded. */
+function isInternalChromeUrl(url: string): boolean {
+	return url.startsWith("chrome://") || url.startsWith("chrome-extension://") || url === "about:blank";
 }
 
 const DOMAINS_TO_ENABLE = [
@@ -146,66 +151,116 @@ export class BrowserRecorder {
 		this.cdpClient = cdpClient;
 		this.chromeProcess = process ?? null;
 
-		// Re-subscribe to tab sessions on reconnect
-		this.cdpClient.on("reconnected", () => {
-			this.reattachToTabs().catch(() => {});
-		});
+		try {
+			// Re-subscribe to tab sessions on reconnect
+			this.cdpClient.on("reconnected", () => {
+				this.reattachToTabs().catch(() => {});
+			});
 
-		await this.cdpClient.connect();
+			await this.cdpClient.connect();
 
-		this.tabManager = new TabManager(this.cdpClient);
+			this.tabManager = new TabManager(this.cdpClient);
 
-		// Wire up the event pipeline
-		this.eventPipeline = new EventPipeline({
-			normalizer: this.normalizer,
-			buffer: this.buffer,
-			inputTracker: this.inputTracker,
-			autoDetector: this.autoDetector,
-			tabManager: this.tabManager,
-			cdpClient: this.cdpClient,
-			persistence: this.persistence ?? undefined,
-			screenshotCapture: this.screenshotCapture ?? undefined,
-			frameworkTracker: this.frameworkTracker.isEnabled() ? this.frameworkTracker : undefined,
-			annotationCoalescer: this.annotationCoalescer,
-			captureOnNavigation: this.config.screenshots?.onNavigation !== false,
-			getSessionInfo: () => this.buildSessionInfo(),
-			getPrimaryTabSessionId: () => this.getPrimaryTabSessionId(),
-			getSessionDir: () => this.persistence?.getSessionDir(this.sessionId) ?? null,
-			placeMarker: (label?) => this.placeMarker(label),
-			invalidateSessionCache: () => {
-				this.cachedSessionInfo = null;
-			},
-		});
+			// Wire up the event pipeline
+			this.eventPipeline = new EventPipeline({
+				normalizer: this.normalizer,
+				buffer: this.buffer,
+				inputTracker: this.inputTracker,
+				autoDetector: this.autoDetector,
+				tabManager: this.tabManager,
+				cdpClient: this.cdpClient,
+				persistence: this.persistence ?? undefined,
+				screenshotCapture: this.screenshotCapture ?? undefined,
+				frameworkTracker: this.frameworkTracker.isEnabled() ? this.frameworkTracker : undefined,
+				annotationCoalescer: this.annotationCoalescer,
+				captureOnNavigation: this.config.screenshots?.onNavigation !== false,
+				getSessionInfo: () => this.buildSessionInfo(),
+				getPrimaryTabSessionId: () => this.getPrimaryTabSessionId(),
+				getSessionDir: () => this.persistence?.getSessionDir(this.sessionId) ?? null,
+				placeMarker: (label?) => this.placeMarker(label),
+				invalidateSessionCache: () => {
+					this.cachedSessionInfo = null;
+				},
+			});
 
-		// Subscribe to all CDP events and route them through the pipeline
-		this.cdpClient.on("event", (sessionId: string, method: string, params: Record<string, unknown>) => {
-			this.eventPipeline?.process(sessionId, method, params);
-		});
+			// Subscribe to all CDP events and route them through the pipeline
+			this.cdpClient.on("event", (sessionId: string, method: string, params: Record<string, unknown>) => {
+				this.eventPipeline?.process(sessionId, method, params);
+			});
 
-		// Discover tabs (TabManager calls Target.setDiscoverTargets internally)
-		await this.tabManager.discoverTabs();
+			// Discover tabs with retry — on macOS (especially fresh profiles), Chrome
+			// needs time after CDP is ready before page targets appear.
+			const tabs = await this.discoverTabsWithRetry();
 
-		// Start recording tabs
-		const tabs = this.tabManager.listTabs();
-		if (tabs.length === 0) {
-			throw new BrowserRecorderStateError("No browser tabs found. Open a tab in Chrome and try again.");
-		}
-
-		if (this.config.allTabs) {
-			for (const tab of tabs) {
-				await this.startRecordingTab(tab.targetId);
+			if (this.config.allTabs) {
+				// Skip internal Chrome pages (chrome://, about:blank) in all-tabs mode
+				const recordable = tabs.filter((t) => !isInternalChromeUrl(t.url));
+				for (const tab of recordable.length > 0 ? recordable : tabs) {
+					await this.startRecordingTab(tab.targetId);
+				}
+			} else {
+				// Record first matching tab, preferring user content over chrome:// pages
+				const filter = this.config.tabFilter;
+				const contentTabs = tabs.filter((t) => !isInternalChromeUrl(t.url));
+				const pool = contentTabs.length > 0 ? contentTabs : tabs;
+				const target = filter ? (pool.find((t) => t.url.includes(filter)) ?? pool[0]) : pool[0];
+				await this.startRecordingTab(target.targetId);
 			}
-		} else {
-			// Record first matching tab or first tab
-			const filter = this.config.tabFilter;
-			const target = filter ? (tabs.find((t) => t.url.includes(filter)) ?? tabs[0]) : tabs[0];
-			await this.startRecordingTab(target.targetId);
+
+			this.recording = true;
+			this.startedAt = Date.now();
+
+			return this.buildSessionInfo();
+		} catch (err) {
+			// Clean up Chrome process on failure to avoid orphans
+			this.launcher.killProcess();
+			this.chromeProcess = null;
+			if (this.cdpClient) {
+				await this.cdpClient.disconnect().catch(() => {});
+				this.cdpClient = null;
+			}
+			throw err;
+		}
+	}
+
+	/**
+	 * Poll for page tabs with backoff. On macOS, Chrome's CDP endpoint becomes
+	 * available before the first page target is created — especially on fresh
+	 * profiles where welcome/setup pages add latency.
+	 *
+	 * When we launched Chrome (not attach mode), wait for a non-internal tab
+	 * (not chrome://, about:blank) since Chrome may report internal pages first.
+	 * Falls back to any tab if the timeout expires with only internal tabs.
+	 */
+	private async discoverTabsWithRetry(timeoutMs = 10_000): Promise<TabInfo[]> {
+		const deadline = Date.now() + timeoutMs;
+		const pollIntervalMs = 500;
+		const weLaunched = this.chromeProcess !== null;
+
+		// tabManager is guaranteed to be set — start() initializes it before calling this method
+		const tm = this.tabManager as TabManager;
+		while (Date.now() < deadline) {
+			await tm.discoverTabs();
+			const tabs = tm.listTabs();
+
+			if (tabs.length > 0) {
+				// In attach mode, accept any tabs immediately
+				if (!weLaunched) return tabs;
+				// When we launched Chrome, prefer waiting for a content tab
+				const contentTabs = tabs.filter((t) => !isInternalChromeUrl(t.url));
+				if (contentTabs.length > 0) return tabs;
+				// Have tabs but they're all internal — keep waiting for the real one
+			}
+			await new Promise<void>((r) => setTimeout(r, pollIntervalMs));
 		}
 
-		this.recording = true;
-		this.startedAt = Date.now();
+		// Timeout — return whatever tabs exist (even internal ones) rather than failing
+		const finalTabs = tm.listTabs();
+		if (finalTabs.length > 0) return finalTabs;
 
-		return this.buildSessionInfo();
+		throw new BrowserRecorderStateError(
+			"No browser tabs found after waiting 10s. Chrome launched but never created a page target. " + "Try closing Chrome and retrying, or use attach=true with a manually launched Chrome.",
+		);
 	}
 
 	/** Place a marker at the current time. */

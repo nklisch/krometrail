@@ -72,19 +72,41 @@ export class ChromeLauncher {
 		return { cdpClient, process: this.chromeProcess ?? undefined };
 	}
 
+	/** Kill the Chrome process if we launched it. Used for cleanup on start failure. */
+	killProcess(): void {
+		if (this.chromeProcess) {
+			try {
+				this.chromeProcess.kill();
+			} catch {
+				// Process may already be dead
+			}
+			this.chromeProcess = null;
+		}
+	}
+
 	private async launchChrome(port: number, profile?: string, url?: string): Promise<ChildProcess> {
 		const chromePath = await findChromeBinary();
 		if (!chromePath) throw new ChromeNotFoundError();
 
-		const args = [`--remote-debugging-port=${port}`, "--no-first-run", "--no-default-browser-check"];
+		const args = [
+			`--remote-debugging-port=${port}`,
+			"--no-first-run",
+			"--no-default-browser-check",
+			// Suppress Chrome welcome/what's-new pages that open extra tabs on fresh profiles
+			"--disable-features=ChromeWhatsNewUI",
+			// Prevent default apps (Gmail, YouTube shortcuts) from creating extra tabs
+			"--disable-default-apps",
+			// Prevent session restore from opening old tabs alongside the requested URL
+			"--disable-session-crashed-bubble",
+		];
 
 		if (profile) {
 			args.push(`--user-data-dir=${resolve(getKrometrailSubdir("chrome-profiles", profile))}`);
 		}
 
-		if (url) {
-			args.push(url);
-		}
+		// Always pass a URL — if none provided, use about:blank to prevent Chrome
+		// from opening its default new-tab page alongside nothing.
+		args.push(url ?? "about:blank");
 
 		return spawn(chromePath, args, { detached: true, stdio: "ignore" });
 	}

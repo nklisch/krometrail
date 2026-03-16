@@ -5,6 +5,14 @@ description: Release history for Krometrail.
 
 # Changelog
 
+## v0.2.10
+
+### Fixes
+
+- **Chrome launch on macOS** — `chrome_start` no longer times out when Chrome is already running or only available as a `.app` bundle; binary detection now validates each candidate with `--version` before spawning
+- **Chrome early exit detection** — if the spawned Chrome process exits immediately (e.g., delegated to an existing instance), a clear `ChromeEarlyExitError` is thrown instantly rather than waiting for the 10s CDP timeout
+- **Default isolated profile** — Chrome is now always launched with a `--user-data-dir` (defaulting to `default` profile) to prevent macOS from routing the launch to an existing Chrome window
+
 ## v0.2.9
 
 ### Features
