@@ -359,24 +359,15 @@ export class BrowserRecorder {
 			await this.cdpClient.sendToTarget(sessionId, `${domain}.enable`, params as Record<string, unknown>).catch(() => {});
 		}
 
-		// Inject annotation API script (window.__krometrail.mark)
-		await this.cdpClient
-			.sendToTarget(sessionId, "Page.addScriptToEvaluateOnNewDocument", {
-				source: getAnnotationInjectionScript(),
-			})
-			.catch(() => {});
-
-		// Inject framework detection scripts (before input tracker to ensure hooks install first)
-		for (const script of this.frameworkTracker.getInjectionScripts()) {
+		// Register scripts for future navigations AND evaluate on the current page.
+		// addScriptToEvaluateOnNewDocument handles SPA navigations / reloads.
+		// Runtime.evaluate catches the current page in case it's already loading —
+		// critical for framework detection hooks that must install before React/Vue mount.
+		const injectionScripts = [getAnnotationInjectionScript(), ...this.frameworkTracker.getInjectionScripts(), this.inputTracker.getInjectionScript()];
+		for (const script of injectionScripts) {
 			await this.cdpClient.sendToTarget(sessionId, "Page.addScriptToEvaluateOnNewDocument", { source: script }).catch(() => {});
+			await this.cdpClient.sendToTarget(sessionId, "Runtime.evaluate", { expression: script }).catch(() => {});
 		}
-
-		// Inject input tracker script
-		await this.cdpClient
-			.sendToTarget(sessionId, "Page.addScriptToEvaluateOnNewDocument", {
-				source: this.inputTracker.getInjectionScript(),
-			})
-			.catch(() => {});
 
 		// Inject control panel (mark + snap buttons, keyboard shortcuts)
 		const snapshotCallback =
