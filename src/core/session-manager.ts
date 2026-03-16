@@ -16,7 +16,7 @@ import { ResourceLimitsSchema, ViewportConfigSchema } from "./types.js";
 export type { SessionState };
 
 import { convertDAPVariables, renderDAPVariable } from "./value-renderer.js";
-import { computeViewportDiff, isDiffEligible, renderViewport, renderViewportDiff } from "./viewport.js";
+import { computeViewportDiff, isDiffEligible, renderAlignedVariables, renderViewport, renderViewportDiff } from "./viewport.js";
 
 // --- Helpers ---
 
@@ -246,13 +246,7 @@ export class SessionManager {
 		}
 
 		// Register `initialized` event listener before initialize() so we never miss it.
-		const initializedPromise = new Promise<void>((resolve) => {
-			const handler = () => {
-				dapClient.off("initialized", handler);
-				resolve();
-			};
-			dapClient.on("initialized", handler);
-		});
+		const initializedPromise = this.waitForInitialized(dapClient);
 
 		// 5. Initialize — gets capabilities, does NOT wait for `initialized` event.
 		await dapClient.initialize();
@@ -277,11 +271,7 @@ export class SessionManager {
 
 			// Set breakpoints now that the server is ready.
 			if (options.breakpoints) {
-				for (const { file, breakpoints } of options.breakpoints) {
-					const absFile = resolve(cwd, file);
-					await dapClient.setBreakpoints({ path: absFile, name: file }, toSourceBreakpoints(breakpoints));
-					breakpointMap.set(absFile, breakpoints);
-				}
+				await this.setInitialBreakpoints(dapClient, options.breakpoints, cwd, breakpointMap);
 			}
 
 			// Some adapters (e.g. kotlin-debug-adapter) never send a configurationDone response
@@ -297,11 +287,7 @@ export class SessionManager {
 			await initializedPromise;
 
 			if (options.breakpoints) {
-				for (const { file, breakpoints } of options.breakpoints) {
-					const absFile = resolve(cwd, file);
-					await dapClient.setBreakpoints({ path: absFile, name: file }, toSourceBreakpoints(breakpoints));
-					breakpointMap.set(absFile, breakpoints);
-				}
+				await this.setInitialBreakpoints(dapClient, options.breakpoints, cwd, breakpointMap);
 			}
 
 			// Send configurationDone and launch concurrently: some adapters (e.g. js-debug)
@@ -352,40 +338,10 @@ export class SessionManager {
 		};
 
 		// 9. Start session timeout
-		const timeoutTimer = setTimeout(async () => {
-			try {
-				session.state = "error";
-				await this.stop(sessionId);
-			} catch {
-				// Ignore errors during timeout cleanup
-			}
-		}, this.limits.sessionTimeoutMs);
-		session.timeoutTimer = timeoutTimer;
+		session.timeoutTimer = this.startSessionTimeout(session, sessionId);
 
 		// 10. Register output event handler
-		dapClient.on("output", (event) => {
-			const body = (event as DebugProtocol.OutputEvent).body;
-			const category = body.category ?? "console";
-			const text = body.output;
-			const entry = { text, actionNumber: session.actionCount };
-
-			if (category === "stdout") {
-				session.outputBuffer.stdout.push(entry);
-			} else if (category === "stderr") {
-				session.outputBuffer.stderr.push(entry);
-			}
-			// "console" category is debugger-internal output, skip
-
-			session.outputBuffer.totalBytes += Buffer.byteLength(text);
-
-			// Truncation: keep tail when over limit
-			while (session.outputBuffer.totalBytes > session.limits.maxOutputBytes) {
-				const target = session.outputBuffer.stdout.length >= session.outputBuffer.stderr.length ? session.outputBuffer.stdout : session.outputBuffer.stderr;
-				if (target.length === 0) break;
-				const removed = target.shift();
-				if (removed) session.outputBuffer.totalBytes -= Buffer.byteLength(removed.text);
-			}
-		});
+		this.registerOutputHandler(session, dapClient);
 
 		this.sessions.set(sessionId, session);
 
@@ -476,13 +432,7 @@ export class SessionManager {
 		const dapAttachArgs: Record<string, unknown> = { ...adapterAttachArgs };
 
 		// Register `initialized` listener before initialize
-		const initializedPromise = new Promise<void>((resolve) => {
-			const handler = () => {
-				dapClient.off("initialized", handler);
-				resolve();
-			};
-			dapClient.on("initialized", handler);
-		});
+		const initializedPromise = this.waitForInitialized(dapClient);
 
 		// 5. Initialize
 		await dapClient.initialize();
@@ -490,6 +440,7 @@ export class SessionManager {
 		const viewportConfig = ViewportConfigSchema.parse(options.viewportConfig ?? {});
 		const explicitViewportFields = new Set<string>(Object.keys(options.viewportConfig ?? {}));
 		const breakpointMap = new Map<string, Breakpoint[]>();
+		const attachCwd = options.cwd ?? process.cwd();
 
 		if (dapFlow === "launch-first") {
 			// Send attach first, wait for initialized
@@ -497,11 +448,7 @@ export class SessionManager {
 			await initializedPromise;
 
 			if (options.breakpoints) {
-				for (const { file, breakpoints } of options.breakpoints) {
-					const absFile = resolve(options.cwd ?? process.cwd(), file);
-					await dapClient.setBreakpoints({ path: absFile, name: file }, toSourceBreakpoints(breakpoints));
-					breakpointMap.set(absFile, breakpoints);
-				}
+				await this.setInitialBreakpoints(dapClient, options.breakpoints, attachCwd, breakpointMap);
 			}
 
 			await dapClient.configurationDone();
@@ -510,11 +457,7 @@ export class SessionManager {
 			await initializedPromise;
 
 			if (options.breakpoints) {
-				for (const { file, breakpoints } of options.breakpoints) {
-					const absFile = resolve(options.cwd ?? process.cwd(), file);
-					await dapClient.setBreakpoints({ path: absFile, name: file }, toSourceBreakpoints(breakpoints));
-					breakpointMap.set(absFile, breakpoints);
-				}
+				await this.setInitialBreakpoints(dapClient, options.breakpoints, attachCwd, breakpointMap);
 			}
 
 			// Send configurationDone and attach concurrently (same reasoning as launch path above).
@@ -558,31 +501,10 @@ export class SessionManager {
 		};
 
 		// Session timeout
-		session.timeoutTimer = setTimeout(async () => {
-			try {
-				session.state = "error";
-				await this.stop(sessionId);
-			} catch {
-				// ignore
-			}
-		}, this.limits.sessionTimeoutMs);
+		session.timeoutTimer = this.startSessionTimeout(session, sessionId);
 
 		// Register output event handler
-		dapClient.on("output", (event) => {
-			const body = (event as DebugProtocol.OutputEvent).body;
-			const category = body.category ?? "console";
-			const text = body.output;
-			const entry = { text, actionNumber: session.actionCount };
-			if (category === "stdout") session.outputBuffer.stdout.push(entry);
-			else if (category === "stderr") session.outputBuffer.stderr.push(entry);
-			session.outputBuffer.totalBytes += Buffer.byteLength(text);
-			while (session.outputBuffer.totalBytes > session.limits.maxOutputBytes) {
-				const target = session.outputBuffer.stdout.length >= session.outputBuffer.stderr.length ? session.outputBuffer.stdout : session.outputBuffer.stderr;
-				if (target.length === 0) break;
-				const removed = target.shift();
-				if (removed) session.outputBuffer.totalBytes -= Buffer.byteLength(removed.text);
-			}
-		});
+		this.registerOutputHandler(session, dapClient);
 
 		this.sessions.set(sessionId, session);
 		this.logAction(session, "debug_attach", `Attached to ${options.language} process`);
@@ -842,9 +764,8 @@ export class SessionManager {
 					lines.push(`[${s.name}]`);
 				}
 
-				const maxName = Math.max(...converted.map((v) => v.name.length), 4);
-				for (const v of converted) {
-					lines.push(`  ${v.name.padEnd(maxName)}  = ${v.value}`);
+				for (const line of renderAlignedVariables(converted, 4)) {
+					lines.push(line);
 				}
 			}
 
@@ -1003,17 +924,18 @@ export class SessionManager {
 
 	/**
 	 * Build a ViewportSnapshot from the current DAP state.
+	 * @param configOverride Optional viewport config to use instead of session.viewportConfig.
 	 */
-	private async buildViewport(session: DebugSession): Promise<ViewportSnapshot> {
+	private async buildViewport(session: DebugSession, configOverride?: ViewportConfig): Promise<ViewportSnapshot> {
 		const threadId = this.getThreadId(session);
-		const config = session.viewportConfig;
+		const config = configOverride ?? session.viewportConfig;
 
 		// Get stack trace
 		const stackResponse = await session.dapClient.stackTrace(threadId, 0, config.stackDepth);
 		const frames = stackResponse.body?.stackFrames ?? [];
 
 		if (frames.length === 0) {
-			throw new Error("No stack frames available");
+			throw new SessionStateError(session.id, "no-frames", ["stopped"]);
 		}
 
 		const topFrame = frames[0];
@@ -1266,7 +1188,7 @@ export class SessionManager {
 		const threadId = this.getThreadId(session);
 		const response = await session.dapClient.stackTrace(threadId, 0, frameIndex + 1);
 		const frames = response.body?.stackFrames ?? [];
-		if (!frames[frameIndex]) throw new Error(`No frame at index ${frameIndex}`);
+		if (!frames[frameIndex]) throw new SessionStateError(session.id, `no-frame-at-index-${frameIndex}`, ["stopped"]);
 		return frames[frameIndex].id;
 	}
 
@@ -1308,11 +1230,8 @@ export class SessionManager {
 			// 2. Compute effective viewport config (base + compression overrides)
 			const effectiveConfig = computeEffectiveConfig(session.viewportConfig, tier, session.explicitViewportFields);
 
-			// 3. Build viewport snapshot using effective config (temporarily swap for buildViewport)
-			const savedConfig = session.viewportConfig;
-			session.viewportConfig = effectiveConfig;
-			const snapshot = await this.buildViewport(session);
-			session.viewportConfig = savedConfig;
+			// 3. Build viewport snapshot using effective config (passed as override to avoid mutation)
+			const snapshot = await this.buildViewport(session, effectiveConfig);
 
 			// Update reason from the actual stop event
 			snapshot.reason = reason;
@@ -1356,6 +1275,76 @@ export class SessionManager {
 		this.logAction(session, "debug_stop", "Session terminated", {}, null, [{ kind: "terminated", description: "Session terminated" }]);
 		session.state = "terminated";
 		return "Session terminated.";
+	}
+
+	// --- Session Initialization Helpers ---
+
+	/**
+	 * Return a Promise that resolves when the DAP client emits the 'initialized' event.
+	 * Register this BEFORE calling dapClient.initialize() to avoid missing the event.
+	 */
+	private waitForInitialized(dapClient: DAPClient): Promise<void> {
+		return new Promise<void>((resolve) => {
+			const handler = () => {
+				dapClient.off("initialized", handler);
+				resolve();
+			};
+			dapClient.on("initialized", handler);
+		});
+	}
+
+	/**
+	 * Set breakpoints from the provided list and record them in breakpointMap.
+	 */
+	private async setInitialBreakpoints(dapClient: DAPClient, breakpoints: Array<{ file: string; breakpoints: Breakpoint[] }>, cwd: string, breakpointMap: Map<string, Breakpoint[]>): Promise<void> {
+		for (const { file, breakpoints: bps } of breakpoints) {
+			const absFile = resolve(cwd, file);
+			await dapClient.setBreakpoints({ path: absFile, name: file }, toSourceBreakpoints(bps));
+			breakpointMap.set(absFile, bps);
+		}
+	}
+
+	/**
+	 * Register the DAP output event handler that captures stdout/stderr into the session buffer.
+	 */
+	private registerOutputHandler(session: DebugSession, dapClient: DAPClient): void {
+		dapClient.on("output", (event) => {
+			const body = (event as DebugProtocol.OutputEvent).body;
+			const category = body.category ?? "console";
+			const text = body.output;
+			const entry = { text, actionNumber: session.actionCount };
+
+			if (category === "stdout") {
+				session.outputBuffer.stdout.push(entry);
+			} else if (category === "stderr") {
+				session.outputBuffer.stderr.push(entry);
+			}
+			// "console" category is debugger-internal output, skip
+
+			session.outputBuffer.totalBytes += Buffer.byteLength(text);
+
+			// Truncation: keep tail when over limit
+			while (session.outputBuffer.totalBytes > session.limits.maxOutputBytes) {
+				const target = session.outputBuffer.stdout.length >= session.outputBuffer.stderr.length ? session.outputBuffer.stdout : session.outputBuffer.stderr;
+				if (target.length === 0) break;
+				const removed = target.shift();
+				if (removed) session.outputBuffer.totalBytes -= Buffer.byteLength(removed.text);
+			}
+		});
+	}
+
+	/**
+	 * Start the session inactivity timeout. Returns the timer handle (stored on session.timeoutTimer).
+	 */
+	private startSessionTimeout(session: DebugSession, sessionId: string): ReturnType<typeof setTimeout> {
+		return setTimeout(async () => {
+			try {
+				session.state = "error";
+				await this.stop(sessionId);
+			} catch {
+				// Ignore errors during timeout cleanup
+			}
+		}, this.limits.sessionTimeoutMs);
 	}
 
 	/**

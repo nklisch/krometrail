@@ -120,12 +120,5 @@ export type ExportFormat = z.infer<typeof ExportFormatSchema>;
 
 export const VIEWPORT_CONFIG_FIELDS = ["sourceContextLines", "stackDepth", "localsMaxDepth", "localsMaxItems", "stringTruncateLength", "collectionPreviewItems"] as const;
 
-/** Zod schema for optional camelCase viewport config (used by daemon protocol). */
-export const ViewportConfigPartialSchema = z.object({
-	sourceContextLines: z.number().optional(),
-	stackDepth: z.number().optional(),
-	localsMaxDepth: z.number().optional(),
-	localsMaxItems: z.number().optional(),
-	stringTruncateLength: z.number().optional(),
-	collectionPreviewItems: z.number().optional(),
-});
+// Re-exported from types.ts — derived from ViewportConfigSchema.partial() (single source of truth).
+export { ViewportConfigPartialSchema } from "./types.js";

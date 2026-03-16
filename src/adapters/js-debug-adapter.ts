@@ -5,7 +5,7 @@ import type { Socket } from "node:net";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
-import { getErrorMessage } from "../core/errors.js";
+import { AdapterInstallError, getErrorMessage } from "../core/errors.js";
 import { downloadError, downloadToFile, ensureAdapterCacheDir, getAdapterCacheDir as getSharedAdapterCacheDir } from "./helpers.js";
 
 const execAsync = promisify(exec);
@@ -78,12 +78,12 @@ export async function downloadJsDebugAdapter(): Promise<void> {
 	try {
 		await execAsync(`tar -xzf "${tarPath}" -C "${cacheDir}"`);
 	} catch (err) {
-		throw new Error(`Failed to extract js-debug adapter.\nError: ${getErrorMessage(err)}\nEnsure 'tar' is installed on your system.`);
+		throw new AdapterInstallError("js-debug", `Failed to extract archive.\nError: ${getErrorMessage(err)}\nEnsure 'tar' is installed on your system.`);
 	}
 
 	// Verify the extracted file exists
 	if (!existsSync(getDapServerPath())) {
-		throw new Error(`js-debug adapter extracted but dapDebugServer.js not found at expected path: ${getDapServerPath()}\n` + `The archive structure may have changed. Expected: ${getDapServerPath()}`);
+		throw new AdapterInstallError("js-debug", `Extracted but dapDebugServer.js not found at expected path: ${getDapServerPath()}\nThe archive structure may have changed.`);
 	}
 
 	// Write version file

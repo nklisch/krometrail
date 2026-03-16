@@ -1,6 +1,7 @@
 import Database from "bun:sqlite";
 import { resolve } from "node:path";
 import { z } from "zod";
+import { EventNotFoundError, MarkerNotFoundError, SessionNotFoundError } from "../../core/errors.js";
 import { EventWriter } from "./event-writer.js";
 
 export interface SessionRow {
@@ -241,19 +242,19 @@ export class BrowserDatabase {
 
 	getSession(sessionId: string): SessionRow {
 		const row = this.db.prepare("SELECT * FROM sessions WHERE id = ?").get(sessionId) as SessionRow | undefined;
-		if (!row) throw new Error(`Session not found: ${sessionId}`);
+		if (!row) throw new SessionNotFoundError(sessionId);
 		return row;
 	}
 
 	getEventById(sessionId: string, eventId: string): EventRow {
 		const row = this.db.prepare("SELECT * FROM events WHERE session_id = ? AND event_id = ?").get(sessionId, eventId) as EventRow | undefined;
-		if (!row) throw new Error(`Event not found: ${eventId} in session ${sessionId}`);
+		if (!row) throw new EventNotFoundError(eventId);
 		return row;
 	}
 
 	getMarkerById(markerId: string): MarkerRow {
 		const row = this.db.prepare("SELECT * FROM markers WHERE id = ?").get(markerId) as MarkerRow | undefined;
-		if (!row) throw new Error(`Marker not found: ${markerId}`);
+		if (!row) throw new MarkerNotFoundError(markerId);
 		return row;
 	}
 
@@ -304,7 +305,7 @@ export class BrowserDatabase {
 	 */
 	getEventByOffset(sessionId: string, offset: number, length: number): string {
 		const session = this.db.prepare("SELECT recording_dir FROM sessions WHERE id = ?").get(sessionId) as { recording_dir: string } | undefined;
-		if (!session) throw new Error(`Session not found: ${sessionId}`);
+		if (!session) throw new SessionNotFoundError(sessionId);
 		const jsonlPath = resolve(session.recording_dir, "events.jsonl");
 		const event = EventWriter.readAt(jsonlPath, offset, length);
 		return JSON.stringify(event);

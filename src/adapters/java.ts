@@ -2,6 +2,7 @@ import type { ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import type { Socket } from "node:net";
 import { join } from "node:path";
+import { AdapterInstallError } from "../core/errors.js";
 import type { AttachConfig, DAPConnection, DebugAdapter, LaunchConfig, PrerequisiteResult } from "./base.js";
 import {
 	allocatePort,
@@ -53,7 +54,7 @@ export async function downloadAndCacheJavaDebugAdapter(): Promise<string> {
 	}
 
 	if (!existsSync(jarPath)) {
-		throw new Error(`java-debug-adapter download completed but JAR not found at: ${jarPath}`);
+		throw new AdapterInstallError("java", `Download completed but JAR not found at: ${jarPath}`);
 	}
 
 	return jarPath;

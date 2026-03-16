@@ -173,3 +173,46 @@ export class BrowserRecorderStateError extends KrometrailError {
 		this.name = "BrowserRecorderStateError";
 	}
 }
+
+/**
+ * Adapter installation failed (e.g., extraction error, missing binary after download).
+ */
+export class AdapterInstallError extends KrometrailError {
+	constructor(
+		public readonly adapterId: string,
+		public readonly detail: string,
+	) {
+		super(`Adapter '${adapterId}' installation failed: ${detail}`, "ADAPTER_INSTALL_FAILED");
+		this.name = "AdapterInstallError";
+	}
+}
+
+/**
+ * Event not found by eventId in a browser recording session.
+ */
+export class EventNotFoundError extends KrometrailError {
+	constructor(public readonly eventId: string) {
+		super(`Event not found: ${eventId}`, "EVENT_NOT_FOUND");
+		this.name = "EventNotFoundError";
+	}
+}
+
+/**
+ * Marker not found by markerId in a browser recording session.
+ */
+export class MarkerNotFoundError extends KrometrailError {
+	constructor(public readonly markerId: string) {
+		super(`Marker not found: ${markerId}`, "MARKER_NOT_FOUND");
+		this.name = "MarkerNotFoundError";
+	}
+}
+
+/**
+ * launch.json configuration is invalid or unsupported.
+ */
+export class InvalidLaunchConfigError extends KrometrailError {
+	constructor(message: string) {
+		super(message, "INVALID_LAUNCH_CONFIG");
+		this.name = "InvalidLaunchConfigError";
+	}
+}

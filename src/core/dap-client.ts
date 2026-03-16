@@ -53,7 +53,7 @@ export class DAPClient {
 
 	/** The DAP server's capabilities, available after initialize(). */
 	get capabilities(): DebugProtocol.Capabilities {
-		if (!this._capabilities) throw new Error("DAP client not initialized");
+		if (!this._capabilities) throw new DAPClientDisposedError();
 		return this._capabilities;
 	}
 
@@ -334,7 +334,7 @@ export class DAPClient {
 	}
 
 	private writeMessage(message: DebugProtocol.ProtocolMessage): void {
-		if (!this.writer) throw new Error("DAP client not connected");
+		if (!this.writer) throw new DAPConnectionError("127.0.0.1", 0);
 		const json = JSON.stringify(message);
 		const header = `Content-Length: ${Buffer.byteLength(json)}\r\n\r\n`;
 		this.writer.write(header + json);

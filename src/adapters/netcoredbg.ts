@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { platform } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { getErrorMessage } from "../core/errors.js";
+import { AdapterInstallError, getErrorMessage } from "../core/errors.js";
 import { downloadError, downloadToFile, ensureAdapterCacheDir, getAdapterCacheDir } from "./helpers.js";
 
 const execAsync = promisify(exec);
@@ -11,7 +11,7 @@ const execAsync = promisify(exec);
 /**
  * Pinned netcoredbg version.
  */
-export const NETCOREDBG_VERSION = "3.1.2-1050";
+export const NETCOREDBG_VERSION = "3.1.3-1062";
 
 /**
  * Returns the path to the netcoredbg cache directory.
@@ -82,12 +82,12 @@ export async function downloadAndCacheNetcoredbg(): Promise<string> {
 			await execAsync(`tar xzf "${archivePath}" --strip-components=1 -C "${cacheDir}"`);
 		}
 	} catch (err) {
-		throw new Error(`Failed to extract netcoredbg archive.\nError: ${getErrorMessage(err)}\nEnsure 'tar' or 'unzip' is installed.`);
+		throw new AdapterInstallError("csharp", `Failed to extract archive.\nError: ${getErrorMessage(err)}\nEnsure 'tar' or 'unzip' is installed.`);
 	}
 
 	const binaryPath = getNetcoredbgBinaryPath();
 	if (!existsSync(binaryPath)) {
-		throw new Error(`netcoredbg extracted but binary not found at: ${binaryPath}\nThe archive structure may have changed.`);
+		throw new AdapterInstallError("csharp", `Extracted but binary not found at: ${binaryPath}\nThe archive structure may have changed.`);
 	}
 
 	// Make binary executable on Unix

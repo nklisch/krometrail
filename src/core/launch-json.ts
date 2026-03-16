@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
-import { getErrorMessage } from "./errors.js";
+import { getErrorMessage, InvalidLaunchConfigError } from "./errors.js";
 import type { AttachOptions, LaunchOptions } from "./session-manager.js";
 
 /**
@@ -142,7 +142,7 @@ export async function parseLaunchJson(filePath: string): Promise<LaunchJsonFile 
 		if ((err as NodeJS.ErrnoException).code === "ENOENT") {
 			return null;
 		}
-		throw new Error(`Failed to read launch.json at ${filePath}: ${getErrorMessage(err)}`);
+		throw new InvalidLaunchConfigError(`Failed to read launch.json at ${filePath}: ${getErrorMessage(err)}`);
 	}
 
 	const stripped = stripJsonc(raw);
@@ -151,12 +151,12 @@ export async function parseLaunchJson(filePath: string): Promise<LaunchJsonFile 
 	try {
 		parsed = JSON.parse(stripped);
 	} catch (err) {
-		throw new Error(`Failed to parse launch.json at ${filePath}: ${getErrorMessage(err)}`);
+		throw new InvalidLaunchConfigError(`Failed to parse launch.json at ${filePath}: ${getErrorMessage(err)}`);
 	}
 
 	const result = LaunchJsonFileSchema.safeParse(parsed);
 	if (!result.success) {
-		throw new Error(`Invalid launch.json format at ${filePath}: ${result.error.message}`);
+		throw new InvalidLaunchConfigError(`Invalid launch.json format at ${filePath}: ${result.error.message}`);
 	}
 
 	return result.data;
@@ -211,7 +211,7 @@ function substituteWorkspaceFolder(value: string, cwd: string): string {
 export function configToOptions(config: LaunchJsonConfig, workspaceFolder?: string): { type: "launch"; options: LaunchOptions } | { type: "attach"; options: AttachOptions } {
 	const language = TYPE_TO_LANGUAGE[config.type.toLowerCase()];
 	if (!language) {
-		throw new Error(`Unsupported launch.json type: "${config.type}". Supported types: ${SUPPORTED_TYPES.join(", ")}`);
+		throw new InvalidLaunchConfigError(`Unsupported launch.json type: "${config.type}". Supported types: ${SUPPORTED_TYPES.join(", ")}`);
 	}
 
 	const cwd = config.cwd ? substituteWorkspaceFolder(config.cwd, workspaceFolder ?? process.cwd()) : (workspaceFolder ?? process.cwd());
@@ -241,7 +241,7 @@ export function configToOptions(config: LaunchJsonConfig, workspaceFolder?: stri
 			const args = config.args?.join(" ") ?? "";
 			command = `python3 ${program}${args ? ` ${args}` : ""}`;
 		} else {
-			throw new Error(`Python launch config "${config.name}" requires either "program" or "module"`);
+			throw new InvalidLaunchConfigError(`Python launch config "${config.name}" requires either "program" or "module"`);
 		}
 	} else if (language === "node") {
 		const runtime = config.runtimeExecutable ?? "node";
@@ -271,10 +271,10 @@ export function configToOptions(config: LaunchJsonConfig, workspaceFolder?: stri
 		const args = config.args?.join(" ") ?? "";
 		command = program ? `${program}${args ? ` ${args}` : ""}` : "";
 		if (!command) {
-			throw new Error(`C/C++ launch config "${config.name}" requires "program"`);
+			throw new InvalidLaunchConfigError(`C/C++ launch config "${config.name}" requires "program"`);
 		}
 	} else {
-		throw new Error(`Cannot build command for language: ${language}`);
+		throw new InvalidLaunchConfigError(`Cannot build command for language: ${language}`);
 	}
 
 	const options: LaunchOptions = {

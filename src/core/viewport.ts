@@ -1,6 +1,15 @@
 import type { SourceLine, ViewportConfig, ViewportDiff, ViewportSnapshot } from "./types.js";
 
 /**
+ * Render a list of name/value variables with aligned columns.
+ * Names are padded to the longest name width (minimum minWidth).
+ */
+export function renderAlignedVariables(items: Array<{ name: string; value: string }>, minWidth = 8, prefix = "  "): string[] {
+	const maxName = Math.max(...items.map((v) => v.name.length), minWidth);
+	return items.map((v) => `${prefix}${v.name.padEnd(maxName)}  = ${v.value}`);
+}
+
+/**
  * Renders a ViewportSnapshot into the compact text format returned to agents.
  * See docs/UX.md for the viewport format specification.
  */
@@ -44,10 +53,9 @@ export function renderViewport(snapshot: ViewportSnapshot, config: ViewportConfi
 
 	// Locals
 	if (snapshot.locals.length > 0) {
-		const maxName = Math.max(...snapshot.locals.map((v) => v.name.length), 8);
 		lines.push("Locals:");
-		for (const v of snapshot.locals.slice(0, config.localsMaxItems)) {
-			lines.push(`  ${v.name.padEnd(maxName)}  = ${v.value}`);
+		for (const line of renderAlignedVariables(snapshot.locals.slice(0, config.localsMaxItems))) {
+			lines.push(line);
 		}
 		const remaining = snapshot.locals.length - config.localsMaxItems;
 		if (remaining > 0) {
@@ -58,10 +66,9 @@ export function renderViewport(snapshot: ViewportSnapshot, config: ViewportConfi
 	// Watch expressions
 	if (snapshot.watches && snapshot.watches.length > 0) {
 		lines.push("");
-		const maxExpr = Math.max(...snapshot.watches.map((w) => w.name.length), 8);
 		lines.push("Watch:");
-		for (const w of snapshot.watches) {
-			lines.push(`  ${w.name.padEnd(maxExpr)}  = ${w.value}`);
+		for (const line of renderAlignedVariables(snapshot.watches)) {
+			lines.push(line);
 		}
 	}
 
@@ -159,9 +166,11 @@ export function renderViewportDiff(diff: ViewportDiff, _config: ViewportConfig):
 	if (diff.changedVariables.length === 0) {
 		lines.push("  (no changes)");
 	} else {
-		const maxName = Math.max(...diff.changedVariables.map((v) => v.name.length), 4);
-		for (const v of diff.changedVariables) {
-			lines.push(`  ${v.name.padEnd(maxName)}  = ${v.newValue}`);
+		for (const line of renderAlignedVariables(
+			diff.changedVariables.map((v) => ({ name: v.name, value: v.newValue })),
+			4,
+		)) {
+			lines.push(line);
 		}
 	}
 	if (diff.unchangedCount > 0) {
@@ -171,10 +180,9 @@ export function renderViewportDiff(diff: ViewportDiff, _config: ViewportConfig):
 	// Watch expressions — always included in full
 	if (diff.watches && diff.watches.length > 0) {
 		lines.push("");
-		const maxExpr = Math.max(...diff.watches.map((w) => w.name.length), 8);
 		lines.push("Watch:");
-		for (const w of diff.watches) {
-			lines.push(`  ${w.name.padEnd(maxExpr)}  = ${w.value}`);
+		for (const line of renderAlignedVariables(diff.watches)) {
+			lines.push(line);
 		}
 	}
 

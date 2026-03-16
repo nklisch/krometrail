@@ -1,10 +1,10 @@
 import type { ChildProcess } from "node:child_process";
-import { exec } from "node:child_process";
+import { exec, spawn } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, extname, join, resolve as resolvePath } from "node:path";
 import { promisify } from "node:util";
-import { getErrorMessage, LaunchError } from "../core/errors.js";
+import { AdapterInstallError, getErrorMessage, LaunchError } from "../core/errors.js";
 import type { AttachConfig, DAPConnection, DebugAdapter, LaunchConfig, PrerequisiteResult } from "./base.js";
 import { checkCommandVersioned, downloadError, downloadToFile, getAdapterCacheDir, gracefulDispose } from "./helpers.js";
 
@@ -63,7 +63,7 @@ async function downloadAndCacheKda(): Promise<void> {
 		await execAsync(`mv "${cacheDir}/extract/adapter/lib/"*.jar "${libDir}/"`, { timeout: 10_000 });
 		await execAsync(`rm -rf "${cacheDir}/extract"`, { timeout: 5_000 });
 	} catch (err) {
-		throw new Error(`Failed to extract kotlin-debug-adapter: ${getErrorMessage(err)}`);
+		throw new AdapterInstallError("kotlin", `Failed to extract archive: ${getErrorMessage(err)}`);
 	}
 }
 

@@ -16,6 +16,9 @@ export const ViewportConfigSchema = z.object({
 
 export type ViewportConfig = z.infer<typeof ViewportConfigSchema>;
 
+/** Partial viewport config schema — all fields optional. Used by daemon protocol and MCP tools. */
+export const ViewportConfigPartialSchema = ViewportConfigSchema.partial();
+
 /**
  * Map the MCP tool's snake_case viewport_config input to the camelCase
  * ViewportConfig expected by SessionManager. Returns undefined if not provided.
