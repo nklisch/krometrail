@@ -39,6 +39,9 @@ krometrail chrome mark "error appeared"
 # Check status
 krometrail chrome status
 
+# Reload page and clear buffer (clean slate without restarting)
+krometrail chrome refresh
+
 # Stop recording
 krometrail chrome stop
 krometrail chrome stop --close-browser
@@ -83,7 +86,12 @@ Each step is auto-marked (`step:1:navigate:/login`, `step:2:fill:#email`, etc.) 
 ]
 ```
 
-**Available actions:** `navigate`, `reload`, `click`, `fill`, `select`, `submit`, `type`, `hover`, `scroll_to`, `scroll_by`, `wait`, `wait_for`, `wait_for_navigation`, `wait_for_network_idle`, `screenshot`, `mark`, `evaluate`
+**Available actions:** `navigate`, `reload`, `click`, `fill`, `select`, `submit`, `type`, `press_key`, `hover`, `scroll_to`, `scroll_by`, `wait`, `wait_for`, `wait_for_navigation`, `wait_for_network_idle`, `screenshot`, `mark`, `evaluate`
+
+**Key tips:**
+- Use `reload` (not navigate to the same URL) for a full page refresh — navigate may hit SPA client-side routing cache
+- Use `press_key` with `key: "Enter"` to submit forms that lack a `<button type="submit">` — this is common in chat UIs, search bars, and custom form components
+- Start with a `screenshot` step before interacting to understand the current page state
 
 ## Investigating sessions
 
@@ -143,3 +151,5 @@ See [references/chrome.md](references/chrome.md) for the full reference.
 - Use `--around-marker` in overview to focus on a specific moment
 - Framework patterns (stale closures, infinite re-renders, missing cleanup) are auto-detected when `--framework-state` is enabled
 - Screenshots are captured automatically at markers, on errors, and during step execution
+- **200 response but empty/broken page?** The response body may contain streaming errors or unexpected content. Use `inspect --event <id> --include network_body` to see the actual response. Also check server logs (Docker, process output) — the error may be server-side
+- **Screenshot shows the same broken state after retry?** Use `reload` (not navigate) to force a full refresh. SPAs may restore cached client-side state on navigate

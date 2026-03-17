@@ -32,7 +32,7 @@ Steps through source code, inspects variables, evaluates expressions.
 
 Launches Chrome, records browser events, and drives the browser with batch actions.
 
-**Use when:** Observing a web app — reproducing a bug, recording a user flow, capturing network traffic, or driving the browser (navigate, click, fill forms).
+**Use when:** Observing a web app — reproducing a bug, recording a user flow, capturing network traffic, driving the browser (navigate, click, fill forms), or refreshing the page for a clean slate (`chrome_refresh`).
 
 **Load the skill:** Load `krometrail-chrome` for the full tool reference, Chrome setup, step actions, and investigation strategies.
 

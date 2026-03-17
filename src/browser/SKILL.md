@@ -41,6 +41,10 @@ chrome_run_steps({ steps: [
   { action: "wait_for", selector: ".error", timeout: 5000 }
 ]})
 chrome_stop()
+
+# Or reload and clear the buffer for a fresh start without restarting:
+chrome_refresh()
+
 krometrail chrome overview <session_id>
 ```
 
@@ -51,3 +55,6 @@ Each step is auto-marked (`step:1:navigate:/checkout`, etc.) so you can search a
 - Use `--token-budget` to control response size (default: 3000 tokens for overview, 2000 for search).
 - Event IDs from search results can be used with `--event <id>` in inspect.
 - HAR export: `krometrail chrome export <session_id> --format har --output debug.har`
+- **Screenshot shows empty/broken page but network returned 200?** Check the response body with `inspect --event <id> --include network_body` — it may contain streaming errors. Also check server logs.
+- **Use `reload` not `navigate` for a full page refresh** — navigating to the same URL may hit SPA client-side routing cache.
+- **Use `press_key` to submit forms without a submit button** — `{ action: "press_key", key: "Enter", selector: "#input" }`. Common for chat UIs and search bars.

@@ -45,11 +45,26 @@ chrome_run_steps({
 
 Each step is auto-marked and auto-screenshotted. All events are captured in the recording.
 
-**Actions:** `navigate`, `reload`, `click`, `fill`, `select`, `submit`, `type`, `hover`, `scroll_to`, `scroll_by`, `wait`, `wait_for`, `wait_for_navigation`, `wait_for_network_idle`, `screenshot`, `mark`, `evaluate`
+**Actions:** `navigate`, `reload`, `click`, `fill`, `select`, `submit`, `type`, `press_key`, `hover`, `scroll_to`, `scroll_by`, `wait`, `wait_for`, `wait_for_navigation`, `wait_for_network_idle`, `screenshot`, `mark`, `evaluate`
+
+**`reload` vs `navigate`:** Use `reload` for a full page refresh (clears all client-side state). Navigating to the same URL may hit SPA client-side routing cache and not actually re-fetch.
+
+**`press_key`:** Press Enter, Tab, Escape, arrow keys, etc. Use for submitting forms without a submit button (`{ action: "press_key", key: "Enter", selector: "#chat-input" }`), keyboard shortcuts, or navigation.
 
 **Capture config:** `capture: { screenshot: "all" | "none" | "on_error", markers: true | false }`
 
 **Named scenarios:** Save with `name` + `save: true`, replay later with just `name`. Session-scoped (in-memory).
+
+## Refreshing (clean slate)
+
+```bash
+# Reload the page and clear all events/markers — start fresh without restarting
+krometrail chrome refresh
+```
+
+MCP: `chrome_refresh()` — no parameters. Reloads the current page, clears the event buffer and markers, waits for page load, and returns updated session info. The recording session stays active.
+
+Use this after making code changes that require a page reload, or when you want to start a fresh investigation on the same page.
 
 ## Stopping
 
@@ -108,3 +123,5 @@ krometrail chrome export <session-id> --format har --output session.har
 4. `krometrail chrome search <id> --status-codes 500` — find failing requests
 5. `krometrail chrome inspect <id> --event <event-id>` — get full request/response details
 6. `krometrail chrome diff <id> --from-marker "loaded" --to-marker "error"` — what changed
+
+**Gotcha:** If a request returns 200 but the page is empty/broken, the response body may contain streaming errors or error JSON. Use `inspect --event <id> --include network_body` to see the actual content. Also check server logs — the error may be server-side and not visible in the browser recording.

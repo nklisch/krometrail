@@ -76,6 +76,16 @@ The footer shows the current periodic screenshot interval, e.g. **"auto: 5s"**. 
 
 Keyboard shortcuts work even when you're focused inside your app, so you don't have to click the panel while in the middle of an interaction.
 
+## Refreshing the Session
+
+If you need a clean slate — for example, after deploying a code fix and wanting to re-test — your agent can refresh the session instead of stopping and restarting:
+
+```bash
+krometrail chrome refresh
+```
+
+This reloads the current page and clears all recorded events and markers. The recording session stays active, so there's no need to re-launch Chrome or re-attach.
+
 ## Stopping a Recording
 
 Your agent handles stopping the recording when it's done. If you need to stop it yourself, you can close Chrome or ask your agent to stop the session. All buffered events are persisted to the database on stop, and the session remains queryable afterward.

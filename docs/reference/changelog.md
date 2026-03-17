@@ -5,6 +5,25 @@ description: Release history for Krometrail.
 
 # Changelog
 
+## v0.2.13
+
+### Features
+
+- **`chrome_refresh` / `chrome refresh`** — new tool and CLI command that reloads the current page and clears the event buffer in one call, giving the agent a clean slate without stop/start cycling
+
+### Fixes
+
+- **Double tab on startup** — Chrome was restoring a previous crashed session alongside the new URL, producing two tabs on every launch. Fixed by patching the profile's `Preferences` to clear crashed-session state before each launch
+- **Event listener leak in tab discovery** — `TabManager.discoverTabs()` registered a new CDP event listener on every poll iteration; now registers once
+
+## v0.2.12
+
+### Fixes
+
+- **Tab discovery polls for the requested URL** — when `chrome_start` is called with a `url`, tab discovery now waits specifically for that URL to appear rather than any non-internal tab
+- **Exponential backoff for tab discovery** — polling starts at 50ms and doubles each iteration (capped at 1s), attaching as early as possible to beat framework initialization
+- **Injection scripts evaluated on current page** — framework detection hooks, annotation API, and input tracker are now evaluated via `Runtime.evaluate` on the current page in addition to `addScriptToEvaluateOnNewDocument`, ensuring hooks install even when the page is already loading on attach
+
 ## v0.2.11
 
 ### Fixes

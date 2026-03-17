@@ -219,10 +219,10 @@ When enabled, Krometrail injects a DevTools hook script before page code runs an
 
 ```bash
 # CLI
-krometrail browser start http://localhost:3000 --framework-state react
+krometrail chrome start http://localhost:3000 --framework-state react
 
 # Or enable all frameworks
-krometrail browser start http://localhost:3000 --framework-state
+krometrail chrome start http://localhost:3000 --framework-state
 ```
 
 ```json
@@ -293,13 +293,13 @@ After recording, find React events using `session_search`:
 
 ```bash
 # Find all high-severity React errors
-krometrail browser search <session-id> --event-types framework_error --framework react
+krometrail chrome search <session-id> --event-types framework_error --framework react
 
 # Find infinite re-render patterns
-krometrail browser search <session-id> --framework react --pattern infinite_rerender
+krometrail chrome search <session-id> --framework react --pattern infinite_rerender
 
 # Find all re-renders of a specific component
-krometrail browser search <session-id> "UserProfile" --event-types framework_state
+krometrail chrome search <session-id> "UserProfile" --event-types framework_state
 ```
 
 ## React Version Support
@@ -320,10 +320,10 @@ Krometrail observes Vue applications by installing a `__VUE_DEVTOOLS_GLOBAL_HOOK
 
 ```bash
 # CLI
-krometrail browser start http://localhost:3000 --framework-state vue
+krometrail chrome start http://localhost:3000 --framework-state vue
 
 # Or enable all frameworks
-krometrail browser start http://localhost:3000 --framework-state
+krometrail chrome start http://localhost:3000 --framework-state
 ```
 
 ```json
@@ -367,13 +367,13 @@ Krometrail extracts state from both APIs:
 
 ```bash
 # Find all Vue component errors
-krometrail browser search <session-id> --event-types framework_error --framework vue
+krometrail chrome search <session-id> --event-types framework_error --framework vue
 
 # Find all store mutations
-krometrail browser search <session-id> --event-types framework_state "pinia"
+krometrail chrome search <session-id> --event-types framework_state "pinia"
 
 # Find component updates with state changes
-krometrail browser search <session-id> --framework vue --event-types framework_state
+krometrail chrome search <session-id> --framework vue --event-types framework_state
 ```
 
 ## Vue Version Support
@@ -718,17 +718,17 @@ A recording session captures everything happening in Chrome from start to stop. 
 Your agent typically starts a recording for you as part of its debugging workflow. If you want to start one yourself, the CLI command is:
 
 ```bash
-krometrail browser start http://localhost:3000
+krometrail chrome start http://localhost:3000
 ```
 
 If your app uses React or Vue and you want component-level state captured, you can enable framework observation:
 
 ```bash
 # Enable all supported frameworks
-krometrail browser start http://localhost:3000 --framework-state
+krometrail chrome start http://localhost:3000 --framework-state
 
 # Enable only React
-krometrail browser start http://localhost:3000 --framework-state react
+krometrail chrome start http://localhost:3000 --framework-state react
 ```
 
 > **Note:** Framework state must be enabled before the page loads. The injection scripts need to run before React or Vue module code executes. Starting the recording and then navigating to the URL ensures the timing is correct.
@@ -781,6 +781,16 @@ The footer shows the current periodic screenshot interval, e.g. **"auto: 5s"**. 
 | `Ctrl+Shift+S` | Capture a screenshot (same as clicking 📷 Snap) |
 
 Keyboard shortcuts work even when you're focused inside your app, so you don't have to click the panel while in the middle of an interaction.
+
+## Refreshing the Session
+
+If you need a clean slate — for example, after deploying a code fix and wanting to re-test — your agent can refresh the session instead of stopping and restarting:
+
+```bash
+krometrail chrome refresh
+```
+
+This reloads the current page and clears all recorded events and markers. The recording session stays active, so there's no need to re-launch Chrome or re-attach.
 
 ## Stopping a Recording
 
@@ -1665,6 +1675,28 @@ krometrail doctor
 
 Node.js and Rust (CodeLLDB) adapters download their debuggers automatically on first use.
 
+## Shell Completions
+
+Enable tab-completion for commands, subcommands, and flags:
+
+::: code-group
+
+```bash [Bash]
+# Add to ~/.bashrc:
+source <(krometrail completions bash)
+```
+
+```bash [Zsh]
+# Add to ~/.zshrc:
+source <(krometrail completions zsh)
+```
+
+```bash [Fish]
+krometrail completions fish > ~/.config/fish/completions/krometrail.fish
+```
+
+:::
+
 ## Session Daemon
 
 The CLI manages sessions via a background daemon that starts automatically on `krometrail debug launch` and shuts down after all sessions end. This means consecutive commands share a session:
@@ -1696,7 +1728,7 @@ Krometrail supports runtime debugging in 10 languages: Python (via debugpy), Nod
 
 ## How do I configure Krometrail with Claude Code?
 
-Add Krometrail to your Claude Code MCP configuration by adding a `krometrail` entry to your `.mcp.json` file. The entry should specify `"command": "npx"` with `"args": ["-y", "krometrail@latest", "mcp"]`. Once configured, Claude Code can use Krometrail's MCP tools to launch debug sessions, set breakpoints, step through code, and inspect variables. See the [MCP Configuration guide](/guide/mcp-configuration) for complete setup instructions.
+Add Krometrail to your Claude Code MCP configuration by adding a `krometrail` entry to your `.mcp.json` file. The entry should specify `"command": "npx"` with `"args": ["-y", "krometrail@latest", "--mcp"]`. Once configured, Claude Code can use Krometrail's MCP tools to launch debug sessions, set breakpoints, step through code, and inspect variables. See the [MCP Configuration guide](/guide/mcp-configuration) for complete setup instructions.
 
 ## How does Krometrail compare to other MCP debugging tools?
 
@@ -1885,15 +1917,22 @@ Krometrail gives your coding agent runtime context it can't get from source code
 
 ## Prerequisites
 
-- **Bun** (recommended) or **Node.js 18+**
 - For debugging: language-specific debuggers (check with `krometrail doctor`)
+- **Bun** or **Node.js 18+** only needed if using `bunx`/`npx` instead of the standalone binary
 
 ## Install
+
+Install the standalone binary — no Node.js or Bun required:
+
+```bash
+curl -fsSL https://krometrail.dev/install.sh | sh
+```
+
+Or run without installing via a package runner:
 
 ::: code-group
 
 ```bash [bunx (no install)]
-# Run directly without installing
 bunx krometrail --version
 ```
 
@@ -1912,16 +1951,42 @@ npx krometrail --version
 
 Add Krometrail to your agent's MCP config to expose all tools automatically:
 
-```json
+::: code-group
+
+```json [binary]
 {
 	"mcpServers": {
 		"krometrail": {
-			"command": "bunx",
-			"args": ["krometrail", "--mcp"]
+			"command": "krometrail",
+			"args": ["--mcp"]
 		}
 	}
 }
 ```
+
+```json [npx]
+{
+	"mcpServers": {
+		"krometrail": {
+			"command": "npx",
+			"args": ["krometrail@latest", "--mcp"]
+		}
+	}
+}
+```
+
+```json [bunx]
+{
+	"mcpServers": {
+		"krometrail": {
+			"command": "bunx",
+			"args": ["krometrail@latest", "--mcp"]
+		}
+	}
+}
+```
+
+:::
 
 The agent will discover `debug_*`, `chrome_*`, and `session_*` tools automatically — no further setup needed.
 
@@ -1949,20 +2014,22 @@ Krometrail exposes all its capabilities as MCP tools. Once configured, agents di
 
 ## Claude Code
 
-Add to `.mcp.json` in your project root (shared with your team), or use the CLI:
+If you installed via the one-liner (`curl -fsSL https://krometrail.dev/install.sh | sh`):
 
 ```bash
-claude mcp add --transport stdio --scope project krometrail -- npx krometrail mcp
+claude mcp add --transport stdio --scope project krometrail -- krometrail --mcp
 ```
+
+Or add to `.mcp.json` in your project root (shared with your team):
 
 ::: code-group
 
-```json [bunx]
+```json [binary]
 {
 	"mcpServers": {
 		"krometrail": {
-			"command": "bunx",
-			"args": ["krometrail", "--mcp"]
+			"command": "krometrail",
+			"args": ["--mcp"]
 		}
 	}
 }
@@ -1973,18 +2040,18 @@ claude mcp add --transport stdio --scope project krometrail -- npx krometrail mc
 	"mcpServers": {
 		"krometrail": {
 			"command": "npx",
-			"args": ["krometrail", "mcp"]
+			"args": ["krometrail@latest", "--mcp"]
 		}
 	}
 }
 ```
 
-```json [binary]
+```json [bunx]
 {
 	"mcpServers": {
 		"krometrail": {
-			"command": "/path/to/krometrail",
-			"args": ["mcp"]
+			"command": "bunx",
+			"args": ["krometrail@latest", "--mcp"]
 		}
 	}
 }
@@ -1998,16 +2065,42 @@ Claude discovers the `debug_*` tools automatically. No CLAUDE.md changes needed.
 
 Add to `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` in your project root:
 
-```json
+::: code-group
+
+```json [binary]
 {
 	"mcpServers": {
 		"krometrail": {
-			"command": "npx",
-			"args": ["krometrail", "mcp"]
+			"command": "krometrail",
+			"args": ["--mcp"]
 		}
 	}
 }
 ```
+
+```json [npx]
+{
+	"mcpServers": {
+		"krometrail": {
+			"command": "npx",
+			"args": ["krometrail@latest", "--mcp"]
+		}
+	}
+}
+```
+
+```json [bunx]
+{
+	"mcpServers": {
+		"krometrail": {
+			"command": "bunx",
+			"args": ["krometrail@latest", "--mcp"]
+		}
+	}
+}
+```
+
+:::
 
 Restart Cursor after saving. The `debug_*` tools will appear in the AI's tool list.
 
@@ -2015,17 +2108,45 @@ Restart Cursor after saving. The `debug_*` tools will appear in the AI's tool li
 
 Add to `~/.codeium/windsurf/mcp_config.json` or click the MCPs icon in Cascade and select "Configure":
 
-```json
+::: code-group
+
+```json [binary]
 {
 	"mcpServers": {
 		"krometrail": {
-			"command": "npx",
-			"args": ["krometrail", "mcp"],
+			"command": "krometrail",
+			"args": ["--mcp"],
 			"env": {}
 		}
 	}
 }
 ```
+
+```json [npx]
+{
+	"mcpServers": {
+		"krometrail": {
+			"command": "npx",
+			"args": ["krometrail@latest", "--mcp"],
+			"env": {}
+		}
+	}
+}
+```
+
+```json [bunx]
+{
+	"mcpServers": {
+		"krometrail": {
+			"command": "bunx",
+			"args": ["krometrail@latest", "--mcp"],
+			"env": {}
+		}
+	}
+}
+```
+
+:::
 
 ## OpenAI Codex
 
@@ -2033,14 +2154,14 @@ Add to `~/.codex/config.toml` (global) or `.codex/config.toml` in your project:
 
 ```toml
 [mcp_servers.krometrail]
-command = "npx"
-args = ["krometrail", "mcp"]
+command = "krometrail"
+args = ["--mcp"]
 ```
 
 Or add via the CLI:
 
 ```bash
-codex mcp add krometrail -- npx krometrail mcp
+codex mcp add krometrail -- krometrail --mcp
 ```
 
 Codex also supports the CLI path — install the krometrail skill:
@@ -2049,23 +2170,79 @@ Codex also supports the CLI path — install the krometrail skill:
 npx skills add nklisch/krometrail --skill krometrail-debug krometrail-chrome
 ```
 
-## Tool Filtering with `--mcp`
+## Tool Filtering
 
-Use the `--mcp` flag to expose only specific tool groups, reducing the agent's tool list:
+Expose only the tool groups you need, reducing the agent's tool list:
 
-```json
+### Claude Code
+
+```bash
+# Debug tools only
+claude mcp add --transport stdio --scope project krometrail-debug -- krometrail --mcp --tools=debug
+
+# Browser tools only
+claude mcp add --transport stdio --scope project krometrail-browser -- krometrail --mcp --tools=browser
+```
+
+### Cursor / Windsurf / manual `.mcp.json`
+
+::: code-group
+
+```json [binary]
+{
+	"mcpServers": {
+		"krometrail-debug": {
+			"command": "krometrail",
+			"args": ["--mcp", "--tools=debug"]
+		},
+		"krometrail-browser": {
+			"command": "krometrail",
+			"args": ["--mcp", "--tools=browser"]
+		}
+	}
+}
+```
+
+```json [npx]
+{
+	"mcpServers": {
+		"krometrail-debug": {
+			"command": "npx",
+			"args": ["krometrail@latest", "--mcp", "--tools=debug"]
+		},
+		"krometrail-browser": {
+			"command": "npx",
+			"args": ["krometrail@latest", "--mcp", "--tools=browser"]
+		}
+	}
+}
+```
+
+```json [bunx]
 {
 	"mcpServers": {
 		"krometrail-debug": {
 			"command": "bunx",
-			"args": ["krometrail", "--mcp", "--tools", "debug"]
+			"args": ["krometrail@latest", "--mcp", "--tools=debug"]
 		},
 		"krometrail-browser": {
 			"command": "bunx",
-			"args": ["krometrail", "--mcp", "--tools", "browser"]
+			"args": ["krometrail@latest", "--mcp", "--tools=browser"]
 		}
 	}
 }
+```
+
+:::
+
+### OpenAI Codex
+
+```bash
+# Debug tools only
+codex mcp add krometrail-debug -- krometrail --mcp --tools=debug
+
+# Browser tools only
+codex mcp add krometrail-browser -- krometrail --mcp --tools=browser
 ```
 
 Available tool groups: `debug`, `browser`, `session`, `all` (default).
@@ -2075,6 +2252,31 @@ Available tool groups: `debug`, `browser`, `session`, `all` (default).
 Ask your agent: "What debug tools do you have available?" It should list `debug_launch`, `debug_continue`, `debug_evaluate`, and other tools.
 
 Run `krometrail doctor` in a terminal to confirm which language adapters are installed.
+
+## Auto-Updates
+
+Krometrail checks for updates on every MCP server startup and updates itself
+automatically. Updates take effect the next time the server starts.
+
+- **Binary installs** download the latest release from GitHub
+- **npx/bunx** uses the `@latest` tag (no download needed)
+- **Global npm/bun** runs the package manager's update command
+
+To disable auto-updates, set the environment variable in your MCP config:
+
+```json
+{
+  "mcpServers": {
+    "krometrail": {
+      "command": "krometrail",
+      "args": ["--mcp"],
+      "env": {
+        "KROMETRAIL_NO_UPDATE": "1"
+      }
+    }
+  }
+}
+```
 
 ---
 
@@ -2087,36 +2289,61 @@ Krometrail gives Claude Code runtime debugging — it can set breakpoints, inspe
 Add via the CLI or edit the project `.mcp.json` directly:
 
 ```bash
-claude mcp add --transport stdio --scope project krometrail -- npx krometrail mcp
+claude mcp add --transport stdio --scope project krometrail -- krometrail --mcp
 ```
 
 Or add to `.mcp.json` in your project root (shared with your team):
 
-```json
+::: code-group
+
+```json [binary]
+{
+  "mcpServers": {
+    "krometrail": {
+      "command": "krometrail",
+      "args": ["--mcp"]
+    }
+  }
+}
+```
+
+```json [npx]
 {
   "mcpServers": {
     "krometrail": {
       "command": "npx",
-      "args": ["krometrail", "mcp"]
+      "args": ["krometrail@latest", "--mcp"]
     }
   }
 }
 ```
 
-Or with a compiled binary:
-
-```json
+```json [bunx]
 {
   "mcpServers": {
     "krometrail": {
-      "command": "/path/to/krometrail",
-      "args": ["mcp"]
+      "command": "bunx",
+      "args": ["krometrail@latest", "--mcp"]
     }
   }
 }
 ```
 
+:::
+
 Claude discovers the `debug_*` tools automatically — no CLAUDE.md changes needed.
+
+### Focused tool sets
+
+If you only need debugging or only need browser observation, add a filtered server:
+
+```bash
+# Debug tools only
+claude mcp add --transport stdio --scope project krometrail-debug -- krometrail --mcp --tools=debug
+
+# Browser tools only
+claude mcp add --transport stdio --scope project krometrail-browser -- krometrail --mcp --tools=browser
+```
 
 ## Setup: CLI with Skill
 
@@ -2178,17 +2405,27 @@ Add to your Codex config at `~/.codex/config.toml` (global) or `.codex/config.to
 
 ```toml
 [mcp_servers.krometrail]
-command = "npx"
-args = ["krometrail", "mcp"]
+command = "krometrail"
+args = ["--mcp"]
 ```
 
 Or add via the CLI:
 
 ```bash
-codex mcp add krometrail -- npx krometrail mcp
+codex mcp add krometrail -- krometrail --mcp
 ```
 
 Codex discovers the `debug_*`, `chrome_*`, and `session_*` tools automatically.
+
+### Focused tool sets
+
+```bash
+# Debug tools only
+codex mcp add krometrail-debug -- krometrail --mcp --tools=debug
+
+# Browser tools only
+codex mcp add krometrail-browser -- krometrail --mcp --tools=browser
+```
 
 ## Setup: CLI with Skill
 
@@ -2237,29 +2474,42 @@ Both Cursor and Windsurf support MCP servers. Krometrail integrates via MCP to g
 
 Add to your Cursor MCP configuration at `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` in your project root (per-project):
 
-```json
+::: code-group
+
+```json [binary]
+{
+  "mcpServers": {
+    "krometrail": {
+      "command": "krometrail",
+      "args": ["--mcp"]
+    }
+  }
+}
+```
+
+```json [npx]
 {
   "mcpServers": {
     "krometrail": {
       "command": "npx",
-      "args": ["krometrail", "mcp"]
+      "args": ["krometrail@latest", "--mcp"]
     }
   }
 }
 ```
 
-Or with a compiled binary:
-
-```json
+```json [bunx]
 {
   "mcpServers": {
     "krometrail": {
-      "command": "/usr/local/bin/krometrail",
-      "args": ["mcp"]
+      "command": "bunx",
+      "args": ["krometrail@latest", "--mcp"]
     }
   }
 }
 ```
+
+:::
 
 Restart Cursor after saving the config. The `debug_*` tools will appear in the AI's tool list.
 
@@ -2267,17 +2517,45 @@ Restart Cursor after saving the config. The `debug_*` tools will appear in the A
 
 Add to your Windsurf MCP configuration at `~/.codeium/windsurf/mcp_config.json` (or click the MCPs icon in the Cascade panel and select "Configure"):
 
-```json
+::: code-group
+
+```json [binary]
 {
   "mcpServers": {
     "krometrail": {
-      "command": "npx",
-      "args": ["krometrail", "mcp"],
+      "command": "krometrail",
+      "args": ["--mcp"],
       "env": {}
     }
   }
 }
 ```
+
+```json [npx]
+{
+  "mcpServers": {
+    "krometrail": {
+      "command": "npx",
+      "args": ["krometrail@latest", "--mcp"],
+      "env": {}
+    }
+  }
+}
+```
+
+```json [bunx]
+{
+  "mcpServers": {
+    "krometrail": {
+      "command": "bunx",
+      "args": ["krometrail@latest", "--mcp"],
+      "env": {}
+    }
+  }
+}
+```
+
+:::
 
 ## Verification
 
@@ -2299,8 +2577,8 @@ For team setups, add a `.mcp.json` file to your project root:
 {
   "mcpServers": {
     "krometrail": {
-      "command": "npx",
-      "args": ["krometrail", "mcp"]
+      "command": "krometrail",
+      "args": ["--mcp"]
     }
   }
 }
@@ -3331,9 +3609,9 @@ Enum cases show their associated values. Optionals render as `.none` or `.some(v
 
 # Privacy Policy
 
-*Last updated: 2026-03-14*
+*Last updated: 2026-03-16*
 
-## What We Collect
+## Website Analytics
 
 This website (krometrail.dev) uses Google Analytics to collect anonymous usage statistics:
 
@@ -3342,17 +3620,36 @@ This website (krometrail.dev) uses Google Analytics to collect anonymous usage s
 - Browser type and screen resolution
 - Country/region (no precise location)
 
-We do **not** collect personal information, email addresses, or any data from your use of the Krometrail CLI or MCP server. The Krometrail software runs entirely locally on your machine and sends no telemetry.
-
-## Cookies
+### Cookies
 
 Google Analytics sets cookies to distinguish unique visitors. You can opt out by:
 - Using a browser extension like [Google Analytics Opt-out](https://tools.google.com/dlpage/gaoptout)
 - Enabling "Do Not Track" in your browser
 
+## CLI & MCP Server Telemetry
+
+The Krometrail CLI and MCP server send a single anonymous ping on each invocation. This helps us understand how widely the tool is used. Each ping includes:
+
+- **Event type** — `run` (CLI) or `mcp_start` (MCP server)
+- **Software version** — e.g. `0.2.8`
+- **OS platform** — e.g. `linux`, `darwin`, `win32`
+
+Each ping uses a **random, non-persistent client ID** generated at invocation time. Nothing is stored on disk, and no personally identifiable information is collected.
+
+Pings are sent to Google Analytics (GA4 Measurement Protocol) and are **skipped entirely** when:
+- The build does not include the GA secret (most self-builds)
+- Any of these environment variables are set: `DO_NOT_TRACK=1`, `KROMETRAIL_NO_TELEMETRY=1`, or `TELEMETRY_DISABLED=1`
+- The `CI` environment variable is set (CI environments are excluded by default)
+
+### What We Do NOT Collect
+
+- No source code, file paths, variable values, or debugging session content
+- No personal information or email addresses
+- No persistent device identifiers or IP-based fingerprinting
+
 ## Third Parties
 
-We do not sell, share, or transfer any data to third parties beyond Google Analytics.
+We do not sell, share, or transfer any data to third parties beyond Google Analytics (website and CLI telemetry as described above).
 
 ## Contact
 
@@ -3584,6 +3881,219 @@ Start with the Python adapter as the simplest reference.
 
 ---
 
+# Changelog
+
+## v0.2.13
+
+### Features
+
+- **`chrome_refresh` / `chrome refresh`** — new tool and CLI command that reloads the current page and clears the event buffer in one call, giving the agent a clean slate without stop/start cycling
+
+### Fixes
+
+- **Double tab on startup** — Chrome was restoring a previous crashed session alongside the new URL, producing two tabs on every launch. Fixed by patching the profile's `Preferences` to clear crashed-session state before each launch
+- **Event listener leak in tab discovery** — `TabManager.discoverTabs()` registered a new CDP event listener on every poll iteration; now registers once
+
+## v0.2.12
+
+### Fixes
+
+- **Tab discovery polls for the requested URL** — when `chrome_start` is called with a `url`, tab discovery now waits specifically for that URL to appear rather than any non-internal tab
+- **Exponential backoff for tab discovery** — polling starts at 50ms and doubles each iteration (capped at 1s), attaching as early as possible to beat framework initialization
+- **Injection scripts evaluated on current page** — framework detection hooks, annotation API, and input tracker are now evaluated via `Runtime.evaluate` on the current page in addition to `addScriptToEvaluateOnNewDocument`, ensuring hooks install even when the page is already loading on attach
+
+## v0.2.11
+
+### Fixes
+
+- **`chrome_start` race condition** — tab discovery now retries with 500ms backoff for up to 10s instead of failing immediately; on macOS, Chrome's CDP endpoint becomes available before page targets are created
+- **Orphaned Chrome processes** — if `chrome_start` fails after launching Chrome, the process is now killed instead of left running as an orphan
+- **Fresh profile extra tabs** — added `--disable-features=ChromeWhatsNewUI`, `--disable-default-apps`, and `--disable-session-crashed-bubble` flags; Chrome now always receives a URL (defaulting to `about:blank`) to prevent the default new-tab page opening alongside the requested URL
+- **`chrome://` tab filtering** — internal Chrome pages (`chrome://`, `chrome-extension://`, `about:blank`) are skipped when selecting which tab to record; tab discovery waits specifically for a content tab when krometrail launched Chrome
+
+## v0.2.10
+
+### Fixes
+
+- **Chrome launch on macOS** — `chrome_start` no longer times out when Chrome is already running or only available as a `.app` bundle; binary detection now validates each candidate with `--version` before spawning
+- **Chrome early exit detection** — if the spawned Chrome process exits immediately (e.g., delegated to an existing instance), a clear `ChromeEarlyExitError` is thrown instantly rather than waiting for the 10s CDP timeout
+- **Default isolated profile** — Chrome is now always launched with a `--user-data-dir` (defaulting to `default` profile) to prevent macOS from routing the launch to an existing Chrome window
+
+## v0.2.9
+
+### Features
+
+- **`doctor --fix`** — new flag prints a copy-paste shell script to install all missing debuggers
+- **`EXIT_PREREQUISITES` (exit code 6)** — adapter prerequisite failures now return a distinct exit code, separate from resource-not-found (3); agents can distinguish "debugger missing" from "session not found"
+- **`fixCommand` in error envelope** — JSON error output for prerequisite failures now includes a `fixCommand` field with the exact install command
+
+### Fixes
+
+- `AdapterNotFoundError` message no longer references the non-existent `debug_status` command — now says `krometrail doctor`
+- `doctor --json` now reports correct version for Go/Delve when `dlv` is in `~/go/bin` but not on `$PATH`
+- `LaunchError` now carries a `cause_type` field (`spawn_failed`, `connection_timeout`, `early_exit`) enabling targeted error messages
+- Error messages in text mode now include actionable guidance: install hints, PATH advice, timeout context
+
+### Internal
+
+- All 10 adapters now return `fixCommand` from `checkPrerequisites()` — single source of truth instead of hardcoded map in doctor
+- New e2e tests: `doctor-completeness`, `prerequisite-errors` (containerized), `install-flow`, `error-exit-codes`
+
+## v0.2.8
+
+### Fixes
+
+- MCP install docs now default to binary (one-liner install) with npx/bunx as tabbed alternatives
+- Fixed `--tools browser` → `--tools=browser` syntax in all docs and one-liners (prevents citty misparse)
+- Fixed `--help` test to check for `chrome` subcommand after CLI rename
+
+### Internal
+
+- Added regression tests for `--tools=X` syntax and one-liner flag validation
+
+## v0.2.7
+
+### Features
+
+- **`chrome run-steps` / `chrome_run_steps`** — new batch browser action executor; run click, type, navigate, wait, screenshot, and scroll actions in a single call
+- **CLI `chrome` rename** — the `browser` CLI command group is now `chrome`, matching the MCP tool names
+- **Shell completions** — `krometrail completions [shell]` generates tab-completion scripts for bash, zsh, and fish
+
+### Fixes
+
+- C# breakpoints with netcoredbg 3.1.3 — fixed via PDB PathMap configuration
+- Kotlin and C# adapter bugs resolved
+- Fixed missing spawn imports in Swift and C++ adapters
+- Screenshot directory now eagerly created when step executor starts a session
+
+### Internal
+
+- Typed error hierarchy, injection deduplication, and session-manager cleanup
+- MCP tool handlers standardized with shared helpers and centralized path utilities
+- Consolidated duplicated logic across debug adapter layer
+- E2E and integration tests added for browser step executor
+
+## v0.2.6
+
+### Features
+
+- **MCP auto-update** — the MCP server now checks for newer versions on every startup and self-updates automatically. Binary installs download from GitHub and atomically replace in place; npx/bunx configs updated to use `@latest` tag; global npm/bun installs run the package manager's update command. Disable with `KROMETRAIL_NO_UPDATE=1`.
+
+## v0.2.5
+
+### Fixes
+
+- Fixed all MCP config examples — `krometrail mcp` (nonexistent subcommand) corrected to `krometrail --mcp` across all docs
+- Fixed `claude mcp add` and `codex mcp add` one-liner commands
+- Fixed README Quick Start referencing `settings.json` instead of `.mcp.json`
+
+### Features
+
+- Getting Started now leads with the `curl` one-liner installer
+- Added focused tool-set one-liners (`--tools debug`, `--tools browser`) to all agent integration guides
+
+### Internal
+
+- Added installation claims test suite (14 tests covering CLI, MCP startup, install script, and doc config regression)
+
+## v0.2.4
+
+### Internal
+
+- Switched npm publish to OIDC trusted publishing (no more stored tokens)
+- Added package metadata for npm listing
+- Read version from `package.json` at runtime instead of hardcoding
+
+## v0.2.3
+
+### Features
+
+- SEO improvements: robots.txt, XML sitemap, structured data (JSON-LD), privacy policy, FAQ page, accessibility enhancements
+- Added OG image and scaled up favicon K mark
+
+## v0.2.2
+
+_Release infrastructure fix — no user-facing changes._
+
+## v0.2.1
+
+### Features
+
+- **Browser annotation API** — lightweight code-placed markers with time-window coalescing
+- **CLI agent-friendly overhaul** — namespaced subcommands (`debug launch`, `browser start`), JSON envelope output, structured exit codes, full MCP parity
+- **MCP tool filtering** — `--tools debug|browser|session` flag to expose only specific tool groups
+- **Curl-based installer** — `curl -fsSL https://krometrail.dev/install.sh | sh` with checksum verification and PATH management
+- **"latest" session ID alias** — use `latest` instead of looking up session IDs
+- **In-browser marker overlay** — visual markers rendered in the browser during recording
+- **Screenshot control panel** — JPEG capture with configurable intervals
+- **Browser control MCP tools** — `chrome_start`, `chrome_stop`, `chrome_mark`, `chrome_status`
+- **GitHub Pages docs site** — auto-generated tool reference from Zod schemas, Chrome Inspector color palette
+- **Agent skills** — split into `krometrail-debug` and `krometrail-chrome` for skilltap
+
+### Fixes
+
+- Fixed `break --clear` CLI bug
+- Fixed browser inspect timestamp resolution
+- Fixed daemon spawn detection, status-code filtering, and marker IDs
+- Fixed react-observer E2E tests
+- Fixed CLI command prefixes in docs: added missing `debug` namespace, corrected `session` → `browser`
+- Fixed landing page nav bar and 404s
+- Removed misleading HH:MM:SS relative timestamp support
+
+### Internal
+
+- Renamed project: agent-lens → bugscope → krometrail
+- Type boundary consolidation with central enums module
+- CLI E2E journey tests for doctor, commands, debug, and browser workflows
+- Browser journey test suite for React and Vue SPAs (69 tests)
+- Consolidated adapter prereqs, MCP handlers, and observer base class
+- Pattern documentation: registry, zod, errors, adapter-helpers, mcp-handler, test patterns
+
+## v0.1.0 — Initial Development
+
+The initial development period before tagged releases, building the full feature set from scratch.
+
+### Core Debug Loop
+
+- DAP client for debugger communication over TCP and stdio
+- Session manager orchestrating launch, attach, breakpoints, stepping, and evaluation
+- Viewport renderer producing ~400-token summaries per debug stop
+- MCP server exposing all debug operations as tools
+
+### Multi-Language Support
+
+- **Python** (debugpy), **Node.js** (js-debug), **Go** (Delve), **Rust** (CodeLLDB), **Java** (java-debug-adapter), **C/C++** (GDB 14+ / lldb-dap)
+- Ruby, C#, Swift, and Kotlin adapters
+- Shared adapter helpers: `checkCommand`, `spawnAndWait`, `allocatePort`, `gracefulDispose`, `connectTCP`
+
+### Advanced Debugging
+
+- Conditional breakpoints (`when discount < 0`), hit counts, logpoints
+- Exception breakpoint filtering
+- Attach mode for running processes
+- Multi-threaded debugging with thread/goroutine selection
+- Watch expressions (persistent, auto-evaluated on every stop)
+- Framework auto-detection for pytest, jest, go test, Django, Flask, mocha
+
+### Browser Observation
+
+- Chrome CDP recorder capturing network, console, DOM mutations, user input, screenshots, storage changes
+- React DevTools integration: component lifecycle, state/prop diffs, render counts, bug pattern detection (stale closures, infinite re-renders, missing cleanup)
+- Vue Devtools integration: component tracking, Pinia/Vuex store mutations
+- Session persistence to SQLite with JSONL event storage
+- Investigation tools: `session_search`, `session_inspect`, `session_diff`, `session_replay_context`
+- WebSocket lifecycle event capture
+- CLS (Cumulative Layout Shift) observer
+- Playwright/Cypress test scaffold generation from recorded sessions
+
+### Agent Test Harness
+
+- 35 scenarios across Python, Node.js, and TypeScript at 5 difficulty levels
+- MCP, CLI, and baseline comparison modes
+- Token usage tracking and reporting
+
+---
+
 # CLI Command Reference
 
 The CLI is an alternative interface to the same tooling that agents access via MCP. Every `debug_*` and `chrome_*` MCP tool has a corresponding CLI command. Many agent setups prefer CLI tools for their transparency, composability, and ease of scripting. The CLI is also useful for CI pipelines and convenience operations like `doctor`.
@@ -3596,16 +4106,19 @@ The CLI uses namespaced subcommands:
 
 ```
 krometrail debug <command>     # Debug session commands
-krometrail browser <command>   # Browser recording commands
+krometrail chrome <command>   # Browser recording commands
 krometrail doctor              # Check installed debuggers
 krometrail commands            # List all commands (machine-readable)
+krometrail completions <shell> # Generate shell completions (bash, zsh, fish)
 ```
 
 ## Global Flags
 
+These flags are available on all debug and browser commands:
+
 | Flag | Description |
 |------|-------------|
-| `--session <id>` | Target a specific debug session (required when multiple sessions are active) |
+| `--session <id>`, `-s` | Target a specific debug session (required when multiple sessions are active) |
 | `--json` | Output structured JSON instead of plain text |
 | `--quiet` | Suppress banners and hints; output viewport only |
 | `--version` | Show version |
@@ -3614,32 +4127,35 @@ krometrail commands            # List all commands (machine-readable)
 
 ## Session Lifecycle
 
-```bash
-# Launch a debug session
-krometrail debug launch "<command>" [options]
-  --break <file>:<line>              # Set a breakpoint
-  --break "<file>:<line> when <cond>" # Conditional breakpoint
-  --stop-on-entry                    # Pause on first line
-  --language <lang>                  # Override language detection
-  --framework <name>                 # Override framework detection
-  --config <path>                    # Path to launch.json
-  --config-name / -C <name>          # Configuration name in launch.json
-  --cwd <path>                       # Working directory
+### `debug launch`
 
-# Examples:
+```bash
 krometrail debug launch "python app.py" --break order.py:147
 krometrail debug launch "python -m pytest tests/ -x" --break "order.py:147 when discount < 0"
 krometrail debug launch "node index.js" --break src/api.js:30 --language javascript
 krometrail debug launch "go test ./..." --break service/order.go:147
+```
 
-# Attach to a running process
+<!--@include: ../.generated/cli-debug-launch.md-->
+
+### `debug attach`
+
+```bash
 krometrail debug attach --port 5678 --language python
 krometrail debug attach --pid 12345 --language go
+```
 
-# Check session status
+<!--@include: ../.generated/cli-debug-attach.md-->
+
+### `debug status`
+
+```bash
 krometrail debug status
+```
 
-# Stop the active (or specified) session
+### `debug stop`
+
+```bash
 krometrail debug stop
 krometrail debug stop --session abc123
 ```
@@ -3648,24 +4164,39 @@ krometrail debug stop --session abc123
 
 ## Execution Control
 
+### `debug continue`
+
 ```bash
-# Continue to next breakpoint
 krometrail debug continue
 krometrail debug continue --timeout 10000
+```
 
-# Step
+<!--@include: ../.generated/cli-debug-continue.md-->
+
+### `debug step`
+
+```bash
 krometrail debug step over
 krometrail debug step into
 krometrail debug step out
 krometrail debug step over --count 5
+```
 
-# Run to a specific line (temporary breakpoint)
+<!--@include: ../.generated/cli-debug-step.md-->
+
+### `debug run-to`
+
+```bash
 krometrail debug run-to order.py:155
 ```
+
+<!--@include: ../.generated/cli-debug-run-to.md-->
 
 ---
 
 ## Breakpoints
+
+### `debug break`
 
 ```bash
 # Set breakpoints (replaces existing in that file)
@@ -3686,62 +4217,106 @@ krometrail debug break --exceptions uncaught
 krometrail debug break --exceptions raised
 krometrail debug break --exceptions all
 
-# List all active breakpoints
-krometrail debug breakpoints
-
 # Clear all breakpoints in a file
 krometrail debug break --clear order.py
+```
+
+<!--@include: ../.generated/cli-debug-break.md-->
+
+### `debug breakpoints`
+
+```bash
+krometrail debug breakpoints
 ```
 
 ---
 
 ## State Inspection
 
+### `debug eval`
+
 ```bash
-# Evaluate an expression
 krometrail debug eval "<expression>"
 krometrail debug eval "cart.items[0].__dict__" --depth 3
 krometrail debug eval "request.headers" --frame 2
+```
 
-# Show variables
+<!--@include: ../.generated/cli-debug-eval.md-->
+
+### `debug vars`
+
+```bash
 krometrail debug vars
 krometrail debug vars --scope global
 krometrail debug vars --scope closure
 krometrail debug vars --scope all
 krometrail debug vars --filter "^user"
 krometrail debug vars --frame 2
+```
 
-# Full stack trace
+<!--@include: ../.generated/cli-debug-vars.md-->
+
+### `debug stack`
+
+```bash
 krometrail debug stack
 krometrail debug stack --frames 20
 krometrail debug stack --source
+```
 
-# View source
+<!--@include: ../.generated/cli-debug-stack.md-->
+
+### `debug source`
+
+```bash
 krometrail debug source order.py
 krometrail debug source order.py:140-160
 ```
+
+<!--@include: ../.generated/cli-debug-source.md-->
 
 ---
 
 ## Session Intelligence
 
+### `debug watch`
+
 ```bash
-# Watch expressions (auto-evaluated on every stop)
 krometrail debug watch "len(cart.items)" "user.tier" "total > 0"
+```
 
-# Remove watch expressions
+<!--@include: ../.generated/cli-debug-watch.md-->
+
+### `debug unwatch`
+
+```bash
 krometrail debug unwatch "user.tier"
+```
 
-# Session investigation log
+<!--@include: ../.generated/cli-debug-unwatch.md-->
+
+### `debug log`
+
+```bash
 krometrail debug log
 krometrail debug log --detailed
+```
 
-# Program output (stdout/stderr)
+<!--@include: ../.generated/cli-debug-log.md-->
+
+### `debug output`
+
+```bash
 krometrail debug output
 krometrail debug output --stderr
 krometrail debug output --since-action 5
+```
 
-# Thread listing
+<!--@include: ../.generated/cli-debug-output.md-->
+
+### `debug threads`
+
+```bash
 krometrail debug threads
 ```
 
@@ -3749,78 +4324,162 @@ krometrail debug threads
 
 ## Browser Recording
 
+### `browser start`
+
 ```bash
-# Start recording
-krometrail browser start --url http://localhost:3000
-krometrail browser start --url http://localhost:3000 --framework-state auto
-krometrail browser start --url http://localhost:3000 --framework-state react
-krometrail browser start --attach                    # Attach to already-running Chrome
-krometrail browser start --profile myproject          # Use isolated Chrome profile
-krometrail browser start --all-tabs                   # Record all tabs
-
-# Recording status
-krometrail browser status
-
-# Place a marker
-krometrail browser mark "user submitted form"
-
-# Stop recording
-krometrail browser stop
-krometrail browser stop --close-browser
-
-# Export session data
-krometrail browser export <session-id> --format har --output file.har
+krometrail chrome start --url http://localhost:3000
+krometrail chrome start --url http://localhost:3000 --framework-state auto
+krometrail chrome start --url http://localhost:3000 --framework-state react
+krometrail chrome start --attach                    # Attach to already-running Chrome
+krometrail chrome start --profile myproject          # Use isolated Chrome profile
+krometrail chrome start --all-tabs                   # Record all tabs
 ```
+
+<!--@include: ../.generated/cli-browser-start.md-->
+
+### `browser status`
+
+```bash
+krometrail chrome status
+```
+
+### `browser mark`
+
+```bash
+krometrail chrome mark "user submitted form"
+```
+
+<!--@include: ../.generated/cli-browser-mark.md-->
+
+### `browser stop`
+
+```bash
+krometrail chrome stop
+krometrail chrome stop --close-browser
+```
+
+<!--@include: ../.generated/cli-browser-stop.md-->
+
+### `browser export`
+
+```bash
+krometrail chrome export <session-id> --format har --output file.har
+```
+
+<!--@include: ../.generated/cli-browser-export.md-->
 
 ---
 
 ## Browser Session Investigation
 
+### `browser sessions`
+
 ```bash
-# List sessions
-krometrail browser sessions
-krometrail browser sessions --has-errors
-krometrail browser sessions --url-contains "localhost:3000"
-
-# Session overview
-krometrail browser overview <session-id>
-krometrail browser overview <session-id> --around-marker <marker-id>
-krometrail browser overview <session-id> --include timeline,markers,errors
-
-# Search events
-krometrail browser search <session-id> --query "payment failed"
-krometrail browser search <session-id> --event-types network_response --status-codes 500
-krometrail browser search <session-id> --framework react --pattern stale_closure
-
-# Deep-dive into an event
-krometrail browser inspect <session-id> --event <event-id>
-krometrail browser inspect <session-id> --marker <marker-id>
-krometrail browser inspect <session-id> --timestamp "2025-01-15T10:30:00Z"
-
-# Diff two moments
-krometrail browser diff <session-id> --from <timestamp-or-event-id> --to <timestamp-or-event-id>
-
-# Generate reproduction steps
-krometrail browser replay-context <session-id>
-krometrail browser replay-context <session-id> --format test_scaffold --framework playwright
-krometrail browser replay-context <session-id> --format test_scaffold --framework cypress
+krometrail chrome sessions
+krometrail chrome sessions --has-errors
+krometrail chrome sessions --url-contains "localhost:3000"
 ```
+
+<!--@include: ../.generated/cli-browser-sessions.md-->
+
+### `browser overview`
+
+```bash
+krometrail chrome overview <session-id>
+krometrail chrome overview <session-id> --around-marker <marker-id>
+krometrail chrome overview <session-id> --include timeline,markers,errors
+```
+
+<!--@include: ../.generated/cli-browser-overview.md-->
+
+### `browser search`
+
+```bash
+krometrail chrome search <session-id> --query "payment failed"
+krometrail chrome search <session-id> --event-types network_response --status-codes 500
+krometrail chrome search <session-id> --framework react --pattern stale_closure
+```
+
+<!--@include: ../.generated/cli-browser-search.md-->
+
+### `browser inspect`
+
+```bash
+krometrail chrome inspect <session-id> --event <event-id>
+krometrail chrome inspect <session-id> --marker <marker-id>
+krometrail chrome inspect <session-id> --timestamp "2025-01-15T10:30:00Z"
+```
+
+<!--@include: ../.generated/cli-browser-inspect.md-->
+
+### `browser diff`
+
+```bash
+krometrail chrome diff <session-id> --from <timestamp-or-event-id> --to <timestamp-or-event-id>
+```
+
+<!--@include: ../.generated/cli-browser-diff.md-->
+
+### `browser replay-context`
+
+```bash
+krometrail chrome replay-context <session-id>
+krometrail chrome replay-context <session-id> --format test_scaffold --framework playwright
+krometrail chrome replay-context <session-id> --format test_scaffold --framework cypress
+```
+
+<!--@include: ../.generated/cli-browser-replay-context.md-->
 
 ---
 
 ## Utility
 
-```bash
-# Check installed adapters/debuggers
-krometrail doctor
+### `doctor`
 
-# List all commands (machine-readable)
+```bash
+krometrail doctor
+krometrail doctor --json
+```
+
+### `commands`
+
+```bash
 krometrail commands
 krometrail commands --group debug
 krometrail commands --group browser
+```
 
-# Version
-krometrail --version
+<!--@include: ../.generated/cli-commands.md-->
+
+### `completions`
+
+```bash
+krometrail completions bash
+krometrail completions zsh
+krometrail completions fish
+```
+
+See [Shell Completions](#shell-completions) below for installation instructions.
+
+---
+
+## Shell Completions
+
+Generate shell completion scripts for tab-completion of commands, subcommands, and flags:
+
+```bash
+# Bash
+krometrail completions bash > ~/.local/share/bash-completion/completions/krometrail
+# Or add to ~/.bashrc:
+source <(krometrail completions bash)
+
+# Zsh
+krometrail completions zsh > "${fpath[1]}/_krometrail"
+# Or add to ~/.zshrc:
+source <(krometrail completions zsh)
+
+# Fish
+krometrail completions fish > ~/.config/fish/completions/krometrail.fish
 ```
 
 ---
