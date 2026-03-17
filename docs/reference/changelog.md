@@ -5,6 +5,13 @@ description: Release history for Krometrail.
 
 # Changelog
 
+## v0.2.15
+
+### Features
+
+- **Auto-stop on Chrome disconnect** — when an attached Chrome window closes, the recording session now automatically stops after reconnection attempts are exhausted, instead of hanging as "recording" forever; the daemon cleans up its reference and resets the idle timer
+- **Configurable CDP reconnect settings** — `maxReconnectAttempts` and `reconnectDelayMs` options on `BrowserRecorderConfig` allow tuning reconnection behavior (defaults unchanged: 10 attempts, 1s delay)
+
 ## v0.2.14
 
 ### Fixes

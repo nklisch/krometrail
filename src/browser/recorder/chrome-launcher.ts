@@ -18,6 +18,10 @@ export interface ChromeLaunchOptions {
 	profile?: string;
 	/** URL to open when launching Chrome (ignored in attach mode). */
 	url?: string;
+	/** Max CDP reconnect attempts. Default: 10 */
+	maxReconnectAttempts?: number;
+	/** Delay between CDP reconnect attempts in ms. Default: 1000 */
+	reconnectDelayMs?: number;
 }
 
 /**
@@ -65,8 +69,8 @@ export class ChromeLauncher {
 		const cdpOptions: CDPClientOptions = {
 			browserWsUrl: wsUrl,
 			autoReconnect: true,
-			maxReconnectAttempts: 10,
-			reconnectDelayMs: 1000,
+			maxReconnectAttempts: options.maxReconnectAttempts ?? 10,
+			reconnectDelayMs: options.reconnectDelayMs ?? 1000,
 		};
 
 		const cdpClient = new CDPClient(cdpOptions);

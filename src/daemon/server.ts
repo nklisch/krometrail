@@ -428,6 +428,10 @@ export class DaemonServer {
 					...(p.screenshotIntervalMs !== undefined && { screenshots: { intervalMs: p.screenshotIntervalMs } }),
 					frameworkState: p.frameworkState,
 				});
+				this.browserRecorder.onAutoStop = () => {
+					this.browserRecorder = null;
+					this.resetIdleTimer();
+				};
 				return this.browserRecorder.start();
 			}
 

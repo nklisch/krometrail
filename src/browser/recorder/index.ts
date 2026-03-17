@@ -41,6 +41,10 @@ export interface BrowserRecorderConfig {
 	screenshots?: Partial<ScreenshotConfig>;
 	/** Framework state observation config. false/undefined = disabled. */
 	frameworkState?: boolean | string[];
+	/** Max CDP reconnect attempts before auto-stopping. Default: 10 */
+	maxReconnectAttempts?: number;
+	/** Delay between CDP reconnect attempts in ms. Default: 1000 */
+	reconnectDelayMs?: number;
 }
 
 /** Returns true for chrome://, about:blank, and other internal URLs that can't be recorded. */
@@ -82,6 +86,8 @@ export class BrowserRecorder {
 	private launcher: ChromeLauncher;
 	private eventPipeline: EventPipeline | null = null;
 	private cachedSessionInfo: BrowserSessionInfo | null = null;
+	/** Called when the recorder auto-stops due to Chrome disconnecting. */
+	onAutoStop: (() => void) | null = null;
 
 	constructor(config: BrowserRecorderConfig) {
 		this.config = config;
@@ -146,6 +152,8 @@ export class BrowserRecorder {
 			attach: this.config.attach,
 			profile: this.config.profile,
 			url: this.config.url,
+			maxReconnectAttempts: this.config.maxReconnectAttempts,
+			reconnectDelayMs: this.config.reconnectDelayMs,
 		});
 
 		this.cdpClient = cdpClient;
@@ -155,6 +163,14 @@ export class BrowserRecorder {
 			// Re-subscribe to tab sessions on reconnect
 			this.cdpClient.on("reconnected", () => {
 				this.reattachToTabs().catch(() => {});
+			});
+
+			// Auto-stop when Chrome disconnects and reconnection is exhausted
+			this.cdpClient.on("disconnected", () => {
+				if (this.recording) {
+					this.stop().catch(() => {});
+					this.onAutoStop?.();
+				}
 			});
 
 			await this.cdpClient.connect();
