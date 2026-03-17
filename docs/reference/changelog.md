@@ -5,6 +5,12 @@ description: Release history for Krometrail.
 
 # Changelog
 
+## v0.2.16
+
+### Fixes
+
+- **Double tab on startup (macOS)** — deleting Chrome session restore files (`Current Session`, `Current Tabs`, `Last Session`, `Last Tabs`) before launch now reliably prevents old tabs from reopening; patching `Preferences` alone was insufficient on macOS due to Secure Preferences HMAC validation silently ignoring the change
+
 ## v0.2.15
 
 ### Features
