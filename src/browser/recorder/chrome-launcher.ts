@@ -1,6 +1,7 @@
 import type { ChildProcess } from "node:child_process";
 import { spawn } from "node:child_process";
-import { resolve } from "node:path";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { CDPConnectionError, ChromeEarlyExitError, ChromeNotFoundError } from "../../core/errors.js";
 import { getKrometrailSubdir } from "../../core/paths.js";
 import { CDPClient, type CDPClientOptions, fetchBrowserWsUrl } from "./cdp-client.js";
@@ -100,8 +101,14 @@ export class ChromeLauncher {
 			"--disable-session-crashed-bubble",
 		];
 
-		if (profile) {
-			args.push(`--user-data-dir=${resolve(getKrometrailSubdir("chrome-profiles", profile))}`);
+		const profileDir = profile ? resolve(getKrometrailSubdir("chrome-profiles", profile)) : null;
+		if (profileDir) {
+			// Mark previous session as clean so Chrome doesn't restore old tabs.
+			// When we kill Chrome with SIGTERM, it writes exit_type:"Crashed" into
+			// the profile Preferences. On next launch Chrome restores that session,
+			// opening a duplicate tab alongside the URL we pass on the command line.
+			this.clearCrashedState(profileDir);
+			args.push(`--user-data-dir=${profileDir}`);
 		}
 
 		// Always pass a URL — if none provided, use about:blank to prevent Chrome
@@ -109,6 +116,35 @@ export class ChromeLauncher {
 		args.push(url ?? "about:blank");
 
 		return spawn(chromePath, args, { detached: true, stdio: "ignore" });
+	}
+
+	/**
+	 * Patch the Chrome profile Preferences to clear crashed-session state.
+	 * Without this, a SIGTERM-killed Chrome leaves exit_type:"Crashed" and the
+	 * next launch restores old tabs — producing the "two tabs on start" bug.
+	 */
+	private clearCrashedState(profileDir: string): void {
+		const defaultDir = join(profileDir, "Default");
+		const prefsPath = join(defaultDir, "Preferences");
+		try {
+			if (!existsSync(prefsPath)) return;
+			const raw = readFileSync(prefsPath, "utf-8");
+			const prefs = JSON.parse(raw);
+			let changed = false;
+			if (prefs.profile?.exit_type && prefs.profile.exit_type !== "Normal") {
+				prefs.profile.exit_type = "Normal";
+				changed = true;
+			}
+			if (prefs.profile?.exited_cleanly === false) {
+				prefs.profile.exited_cleanly = true;
+				changed = true;
+			}
+			if (changed) {
+				writeFileSync(prefsPath, JSON.stringify(prefs), "utf-8");
+			}
+		} catch {
+			// Non-fatal — profile may not exist yet on first run
+		}
 	}
 
 	private async waitForChrome(port: number, chromeProcess: ChildProcess, timeoutMs = 10_000): Promise<string> {

@@ -23,22 +23,26 @@ interface CDPTargetInfo {
 export class TabManager {
 	private tabs = new Map<string, TabInfo>();
 	private sessionToTarget = new Map<string, string>(); // sessionId → targetId
+	private subscribedToEvents = false;
 
 	constructor(private cdpClient: CDPClient) {}
 
 	/** Discover all page targets and subscribe to tab lifecycle events. */
 	async discoverTabs(): Promise<TabInfo[]> {
-		// Subscribe to target lifecycle
-		this.cdpClient.on("event", (sessionId: string, method: string, params: Record<string, unknown>) => {
-			if (sessionId !== "") return; // Only handle browser-level events
-			if (method === "Target.targetCreated") {
-				this.onTargetCreated(params.targetInfo as CDPTargetInfo);
-			} else if (method === "Target.targetDestroyed") {
-				this.onTargetDestroyed(params.targetId as string);
-			} else if (method === "Target.targetInfoChanged") {
-				this.onTargetInfoChanged(params.targetInfo as CDPTargetInfo);
-			}
-		});
+		// Subscribe to target lifecycle (only once — this method is called in a polling loop)
+		if (!this.subscribedToEvents) {
+			this.subscribedToEvents = true;
+			this.cdpClient.on("event", (sessionId: string, method: string, params: Record<string, unknown>) => {
+				if (sessionId !== "") return; // Only handle browser-level events
+				if (method === "Target.targetCreated") {
+					this.onTargetCreated(params.targetInfo as CDPTargetInfo);
+				} else if (method === "Target.targetDestroyed") {
+					this.onTargetDestroyed(params.targetId as string);
+				} else if (method === "Target.targetInfoChanged") {
+					this.onTargetInfoChanged(params.targetInfo as CDPTargetInfo);
+				}
+			});
+		}
 
 		// Enable target discovery
 		await this.cdpClient.send("Target.setDiscoverTargets", { discover: true });
