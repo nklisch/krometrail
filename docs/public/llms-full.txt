@@ -3888,11 +3888,19 @@ Start with the Python adapter as the simplest reference.
 ### Features
 
 - **`chrome_refresh` / `chrome refresh`** — new tool and CLI command that reloads the current page and clears the event buffer in one call, giving the agent a clean slate without stop/start cycling
+- **`press_key` step action** — new action for `chrome_run_steps` that dispatches keyboard events (Enter, Tab, Escape, arrow keys, etc.) with optional element focus and modifier keys; solves form submission when no `<button type="submit">` exists
 
 ### Fixes
 
-- **Double tab on startup** — Chrome was restoring a previous crashed session alongside the new URL, producing two tabs on every launch. Fixed by patching the profile's `Preferences` to clear crashed-session state before each launch
-- **Event listener leak in tab discovery** — `TabManager.discoverTabs()` registered a new CDP event listener on every poll iteration; now registers once
+- **Double tab on startup** — Chrome was restoring a previous crashed session alongside the new URL on every launch; fixed by patching the profile `Preferences` to clear crashed-session state before launch
+- **Event listener leak in tab discovery** — `TabManager.discoverTabs()` registered a new CDP listener on every poll iteration; now registers once
+
+### Internal
+
+- Fixed all lint errors: excluded generated/archive/fixture dirs from Biome, auto-fixed unused imports and template literals across 28 files
+- Improved `navigate`/`reload` action descriptions to clarify SPA cache behavior
+- Added screenshot-first tip and `press_key` guidance to `chrome_run_steps` tool description
+- Updated all agent skills with reload-vs-navigate guidance and "200 but empty page → check response body" investigation pattern
 
 ## v0.2.12
 

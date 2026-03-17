@@ -40,6 +40,10 @@ tests/agent-harness/scenarios/**/order-service
 # Generated docs
 docs/.generated/
 
+# VitePress cache
+docs/.vitepress/cache/
+docs/.vitepress/dist/
+
 # Environment
 .env
 .env.local
