@@ -37,7 +37,7 @@ export function renderSessionOverview(overview: SessionOverview, tokenBudget = 3
 		for (const m of overview.markers) {
 			const prefix = m.auto_detected ? "[auto]" : "[user]";
 			const sev = m.severity ? ` (${m.severity})` : "";
-			markerLines.push(`  ${prefix} ${formatTime(m.timestamp)} — ${m.label ?? "unmarked"}${sev}`);
+			markerLines.push(`  ${prefix} ${formatTime(m.timestamp)} — ${m.label ?? "unmarked"}${sev}  (id: ${m.id})`);
 		}
 		markerLines.push("");
 		sections.push({ key: "markers", content: markerLines.join("\n"), priority: 90 });

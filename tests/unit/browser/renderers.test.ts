@@ -124,6 +124,15 @@ describe("renderSessionOverview", () => {
 		expect(result).toContain("Form submitted");
 	});
 
+	it("includes marker ID in overview output", () => {
+		const overview = makeOverview({
+			markers: [makeMarkerRow("m-123", "form submitted", false)],
+		});
+		const result = renderSessionOverview(overview);
+		expect(result).toContain("(id: m-123)");
+		expect(result).toContain("form submitted");
+	});
+
 	it("renders errors section", () => {
 		const result = renderSessionOverview(makeOverview());
 		expect(result).toContain("Errors:");

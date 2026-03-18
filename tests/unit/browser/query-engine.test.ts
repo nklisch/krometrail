@@ -2,7 +2,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { QueryEngine } from "../../../src/browser/investigation/query-engine.js";
+import { isTextContentType, QueryEngine } from "../../../src/browser/investigation/query-engine.js";
 import { BrowserDatabase } from "../../../src/browser/storage/database.js";
 import { EventWriter } from "../../../src/browser/storage/event-writer.js";
 import type { RecordedEvent } from "../../../src/browser/types.js";
@@ -258,5 +258,111 @@ describe("QueryEngine.inspect", () => {
 
 	it("throws when no locator provided", () => {
 		expect(() => engine.inspect(SESSION_ID, {})).toThrow("Must provide eventId, markerId, or timestamp");
+	});
+});
+
+describe("isTextContentType", () => {
+	it.each([
+		["application/json", true],
+		["application/json; charset=utf-8", true],
+		["text/html", true],
+		["text/plain", true],
+		["application/x-www-form-urlencoded", true],
+		["application/ld+json", true],
+		["application/xml", true],
+		["application/graphql", true],
+		["application/javascript", true],
+		["image/png", false],
+		["image/jpeg", false],
+		["application/octet-stream", false],
+		["multipart/form-data", false],
+		["application/pdf", false],
+		[null, false],
+		[undefined, false],
+	])("isTextContentType(%s) === %s", (input, expected) => {
+		expect(isTextContentType(input)).toBe(expected);
+	});
+});
+
+describe("inspect — binary body handling", () => {
+	it("returns text content for JSON response body", () => {
+		const result = engine.inspect(SESSION_ID, { eventId: "evt-net-2", include: ["network_body"] });
+		expect(result.networkBody?.response).toContain("validation failed");
+	});
+
+	it("returns binary placeholder for image/png response body", () => {
+		const pngFile = "res_png_body.bin";
+		writeFileSync(resolve(recordingDir, "network", pngFile), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+		db.insertNetworkBody({ eventId: "evt-net-1", sessionId: SESSION_ID, responseBodyPath: pngFile, responseSize: 245678, contentType: "image/png" });
+
+		const result = engine.inspect(SESSION_ID, { eventId: "evt-net-1", include: ["network_body"] });
+		expect(result.networkBody?.response).toBe("<binary: image/png, 239.9KB>");
+	});
+
+	it("returns binary placeholder for null content type response body", () => {
+		const binFile = "res_unknown_body.bin";
+		writeFileSync(resolve(recordingDir, "network", binFile), Buffer.from([0x00, 0x01, 0x02]));
+		db.insertNetworkBody({ eventId: "evt-nav-1", sessionId: SESSION_ID, responseBodyPath: binFile, responseSize: 3, contentType: undefined });
+
+		const result = engine.inspect(SESSION_ID, { eventId: "evt-nav-1", include: ["network_body"] });
+		expect(result.networkBody?.response).toBe("<binary: unknown type, 3B>");
+	});
+
+	it("returns binary placeholder for multipart/form-data request body", () => {
+		const reqFile = "req_mp_body.bin";
+		writeFileSync(resolve(recordingDir, "network", reqFile), Buffer.from([0xde, 0xad, 0xbe, 0xef]));
+		db.insertNetworkBody({ eventId: "evt-console-1", sessionId: SESSION_ID, requestBodyPath: reqFile, requestContentType: "multipart/form-data" });
+
+		const result = engine.inspect(SESSION_ID, { eventId: "evt-console-1", include: ["network_body"] });
+		expect(result.networkBody?.request).toBe("<binary: multipart/form-data, unknown size>");
+	});
+
+	it("returns text for application/x-www-form-urlencoded request body", () => {
+		const reqFile = "req_form_body.bin";
+		writeFileSync(resolve(recordingDir, "network", reqFile), "name=test&value=123");
+		db.insertNetworkBody({ eventId: "evt-error-1", sessionId: SESSION_ID, requestBodyPath: reqFile, requestContentType: "application/x-www-form-urlencoded" });
+
+		const result = engine.inspect(SESSION_ID, { eventId: "evt-error-1", include: ["network_body"] });
+		expect(result.networkBody?.request).toBe("name=test&value=123");
+	});
+});
+
+describe("inspect — marker_id accepts label", () => {
+	it("resolves marker by label", () => {
+		const result = engine.inspect(SESSION_ID, { markerId: "Validation error" });
+		expect(result.event).toBeDefined();
+	});
+
+	it("resolves marker by ID", () => {
+		const result = engine.inspect(SESSION_ID, { markerId: "marker-1" });
+		expect(result.event).toBeDefined();
+	});
+
+	it("throws with helpful message when marker not found", () => {
+		expect(() => engine.inspect(SESSION_ID, { markerId: "nonexistent" })).toThrow('Marker not found: "nonexistent"');
+	});
+});
+
+describe("getOverview — aroundMarker accepts label", () => {
+	it("focuses overview around marker by label", () => {
+		const overview = engine.getOverview(SESSION_ID, { aroundMarker: "Validation error" });
+		for (const e of overview.timeline) {
+			expect(Math.abs(e.timestamp - (BASE_TS + 3500))).toBeLessThanOrEqual(60_000);
+		}
+	});
+
+	it("throws for unknown marker in aroundMarker", () => {
+		expect(() => engine.getOverview(SESSION_ID, { aroundMarker: "no-such-marker" })).toThrow("Marker not found");
+	});
+});
+
+describe("search — aroundMarker accepts label", () => {
+	it("searches around marker by label", () => {
+		const results = engine.search(SESSION_ID, { filters: { aroundMarker: "Validation error" } });
+		expect(Array.isArray(results)).toBe(true);
+	});
+
+	it("throws for unknown marker in aroundMarker", () => {
+		expect(() => engine.search(SESSION_ID, { filters: { aroundMarker: "no-such-marker" } })).toThrow("Marker not found");
 	});
 });

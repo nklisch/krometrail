@@ -283,7 +283,7 @@ export function registerBrowserTools(server: McpServer, queryEngine: QueryEngine
 		{
 			session_id: z.string().describe('Session ID from session_list, or "latest" for the most recent session'),
 			include: z.array(OverviewIncludeSchema).optional().describe("What to include. Default: all"),
-			around_marker: z.string().optional().describe("Center overview on this marker ID"),
+			around_marker: z.string().optional().describe("Center overview on a marker — accepts marker ID or label"),
 			time_range: TimeRangeSchema,
 			token_budget: z.number().optional().describe("Max tokens for the response. Default: 3000"),
 		},
@@ -313,7 +313,7 @@ export function registerBrowserTools(server: McpServer, queryEngine: QueryEngine
 			event_types: z.array(SearchableEventTypeSchema).optional().describe("Filter by event type"),
 			status_codes: z.array(z.number()).optional().describe("Filter network responses by HTTP status code, e.g. [400, 422, 500]"),
 			time_range: TimeRangeSchema,
-			around_marker: z.string().optional().describe("Center search around this marker ID (±120s before, +30s after)"),
+			around_marker: z.string().optional().describe("Center search around a marker — accepts marker ID or label (±120s before, +30s after)"),
 			url_pattern: z.string().optional().describe("Glob pattern to filter by URL in summary, e.g. '**/api/patients**'"),
 			console_levels: z.array(z.string()).optional().describe("Filter console events by level, e.g. ['error', 'warn']"),
 			contains_text: z.string().optional().describe("Case-insensitive substring match on event summary"),
@@ -358,8 +358,8 @@ export function registerBrowserTools(server: McpServer, queryEngine: QueryEngine
 		{
 			session_id: z.string().describe('Session ID, or "latest" for the most recent session'),
 			event_id: z.string().optional().describe("Specific event ID (from session_search results)"),
-			marker_id: z.string().optional().describe("Jump to a marker"),
-			timestamp: z.string().optional().describe("ISO timestamp — inspect the moment closest to this time"),
+			marker_id: z.string().optional().describe("Jump to a marker — accepts marker ID or label from session_overview"),
+			timestamp: z.string().optional().describe("Timestamp — ISO format, wall-clock (HH:mm:ss.SSS from overview), or epoch ms"),
 			include: z.array(InspectIncludeSchema).optional().describe("What to include alongside the event detail. Default: all"),
 			context_window: z.number().optional().describe("Seconds of surrounding events to include. Default: 5"),
 			token_budget: z.number().optional().describe("Max tokens for the response. Default: 3000"),
@@ -384,8 +384,8 @@ export function registerBrowserTools(server: McpServer, queryEngine: QueryEngine
 			"Useful for understanding what happened between page load and an error.",
 		{
 			session_id: z.string().describe('Session ID, or "latest" for the most recent session'),
-			from: z.string().describe("First moment — ISO timestamp or event ID"),
-			to: z.string().describe("Second moment — ISO timestamp or event ID"),
+			from: z.string().describe("First moment — ISO timestamp, wall-clock (HH:mm:ss.SSS), epoch ms, or event ID"),
+			to: z.string().describe("Second moment — ISO timestamp, wall-clock (HH:mm:ss.SSS), epoch ms, or event ID"),
 			include: z.array(DiffIncludeSchema).optional().describe("What to diff. Default: form_state, storage, url, console_new, network_new (framework_state must be explicitly requested)"),
 			token_budget: z.number().optional().describe("Max tokens. Default: 2000"),
 		},
@@ -404,7 +404,7 @@ export function registerBrowserTools(server: McpServer, queryEngine: QueryEngine
 			"Use this to create actionable artifacts from investigation findings.",
 		{
 			session_id: z.string().describe('Session ID, or "latest" for the most recent session'),
-			around_marker: z.string().optional().describe("Focus on events around this marker"),
+			around_marker: z.string().optional().describe("Focus on events around this marker — accepts marker ID or label"),
 			time_range: TimeRangeSchema,
 			format: ReplayFormatSchema.describe("Output format: 'summary' for overview, 'reproduction_steps' for step-by-step, 'test_scaffold' for automated test code"),
 			test_framework: TestFrameworkSchema.optional().describe("Test framework for scaffold generation. Default: playwright"),

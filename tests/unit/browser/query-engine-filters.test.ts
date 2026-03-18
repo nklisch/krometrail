@@ -152,7 +152,7 @@ describe("QueryEngine search filters — aroundMarker", () => {
 	});
 
 	it("throws when marker not found", () => {
-		expect(() => engine.search(SESSION_ID, { filters: { aroundMarker: "no-such-marker" } })).toThrow("Marker not found: no-such-marker");
+		expect(() => engine.search(SESSION_ID, { filters: { aroundMarker: "no-such-marker" } })).toThrow("Marker not found");
 	});
 
 	it("does not override an explicit timeRange", () => {

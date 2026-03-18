@@ -38,7 +38,7 @@ export class NetworkExtractor {
 						sessionId,
 						responseBodyPath: fileName,
 						responseSize: truncated.length,
-						contentType: event.data.contentType as string | undefined,
+						contentType: event.data.mimeType as string | undefined,
 					});
 				}
 
@@ -47,10 +47,14 @@ export class NetworkExtractor {
 					const filePath = resolve(networkDir, fileName);
 					writeFileSync(filePath, event.data.postData as string);
 
+					const headers = event.data.headers as Record<string, string> | undefined;
+					const requestContentType = headers?.["Content-Type"] ?? headers?.["content-type"];
+
 					db.insertNetworkBody({
 						eventId: event.id,
 						sessionId,
 						requestBodyPath: fileName,
+						requestContentType,
 					});
 				}
 			} catch {

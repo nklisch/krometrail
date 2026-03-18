@@ -2,6 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 import type { QueryEngine } from "../../../src/browser/investigation/query-engine.js";
 import { resolveTimestamp } from "../../../src/browser/investigation/resolve-timestamp.js";
 
+// Session starts at 2024-03-07T21:50:22.000Z
+const SESSION_START = new Date("2024-03-07T21:50:22.000Z").getTime();
+
 function makeQueryEngine(sessionStartedAt: number, fullEvent?: { timestamp: number } | null): QueryEngine {
 	return {
 		getSession: vi.fn().mockReturnValue({ started_at: sessionStartedAt }),
@@ -28,9 +31,32 @@ describe("resolveTimestamp", () => {
 		expect(resolveTimestamp(qe, "session-1", iso)).toBe(new Date(iso).getTime());
 	});
 
-	it("rejects HH:MM:SS relative timestamps", () => {
-		const qe = makeQueryEngine(0, null);
-		expect(() => resolveTimestamp(qe, "session-1", "00:05:30")).toThrow("Cannot resolve");
+	it("resolves wall-clock HH:mm:ss.SSS relative to session start date", () => {
+		// Session starts 2024-03-07T21:50:22.000Z → "21:50:39.742" = 2024-03-07T21:50:39.742Z
+		const qe = makeQueryEngine(SESSION_START);
+		const expected = new Date("2024-03-07T21:50:39.742Z").getTime();
+		expect(resolveTimestamp(qe, "session-1", "21:50:39.742")).toBe(expected);
+	});
+
+	it("resolves wall-clock HH:mm:ss without milliseconds", () => {
+		const qe = makeQueryEngine(SESSION_START);
+		const expected = new Date("2024-03-07T21:50:39.000Z").getTime();
+		expect(resolveTimestamp(qe, "session-1", "21:50:39")).toBe(expected);
+	});
+
+	it("resolves wall-clock with short ms component (.7 → 700ms)", () => {
+		const qe = makeQueryEngine(SESSION_START);
+		const expected = new Date("2024-03-07T21:50:39.700Z").getTime();
+		expect(resolveTimestamp(qe, "session-1", "21:50:39.7")).toBe(expected);
+	});
+
+	it("handles day rollover: session starts near midnight, wall-clock is next day", () => {
+		// Session starts at 23:50:00 UTC on 2024-03-07
+		const nearMidnight = new Date("2024-03-07T23:50:00.000Z").getTime();
+		const qe = makeQueryEngine(nearMidnight);
+		// "00:05:12" is before session start in same day → resolves to next day
+		const expected = new Date("2024-03-08T00:05:12.000Z").getTime();
+		expect(resolveTimestamp(qe, "session-1", "00:05:12")).toBe(expected);
 	});
 
 	it("resolves event_id via queryEngine lookup", () => {
@@ -45,5 +71,10 @@ describe("resolveTimestamp", () => {
 	it("throws on unresolvable reference", () => {
 		const qe = makeQueryEngine(0, null);
 		expect(() => resolveTimestamp(qe, "session-1", "not-a-known-event-id")).toThrow('Cannot resolve "not-a-known-event-id"');
+	});
+
+	it("error message mentions wall-clock format", () => {
+		const qe = makeQueryEngine(SESSION_START, null);
+		expect(() => resolveTimestamp(qe, "session-1", "garbage-xyz")).toThrow("wall-clock");
 	});
 });

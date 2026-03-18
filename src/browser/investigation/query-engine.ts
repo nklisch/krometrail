@@ -8,11 +8,61 @@ import { MARKER_LOOKAHEAD_MS, MARKER_LOOKBACK_MS } from "./format-helpers.js";
 import { isErrorEvent } from "./predicates.js";
 import { resolveTimestamp } from "./resolve-timestamp.js";
 
+// --- Binary-safe body reading ---
+
+const TEXT_CONTENT_TYPE_PATTERNS = [
+	/^text\//,
+	/^application\/json/,
+	/^application\/xml/,
+	/^application\/javascript/,
+	/^application\/x-www-form-urlencoded/,
+	/^application\/graphql/,
+	/^application\/ld\+json/,
+	/\+json$/,
+	/\+xml$/,
+];
+
+export function isTextContentType(contentType: string | undefined | null): boolean {
+	if (!contentType) return false;
+	const lower = contentType.toLowerCase().split(";")[0].trim();
+	return TEXT_CONTENT_TYPE_PATTERNS.some((p) => p.test(lower));
+}
+
+function readBodySafe(path: string, contentType: string | undefined | null, size: number | undefined | null): string {
+	if (isTextContentType(contentType)) {
+		return readFileSync(path, "utf-8");
+	}
+	const sizeLabel = size != null ? formatBytes(size) : "unknown size";
+	return `<binary: ${contentType ?? "unknown type"}, ${sizeLabel}>`;
+}
+
+function formatBytes(bytes: number): string {
+	if (bytes < 1024) return `${bytes}B`;
+	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+	return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+}
+
 export class QueryEngine {
 	constructor(
 		private db: BrowserDatabase,
 		_dataDir: string,
 	) {}
+
+	/**
+	 * Resolve a marker reference by ID or label.
+	 * Tries exact ID match first (fast path — uses primary key), then label match.
+	 */
+	private resolveMarker(sessionId: string, ref: string): MarkerRow {
+		try {
+			return this.db.getMarkerById(ref);
+		} catch {
+			// Not found by ID — try label match
+		}
+		const markers = this.db.queryMarkers(sessionId);
+		const byLabel = markers.find((m) => m.label === ref);
+		if (byLabel) return byLabel;
+		throw new Error(`Marker not found: "${ref}". Use a marker ID or label from session_overview.`);
+	}
 
 	/** Resolve "latest" to the most recent session ID, or return the ID as-is. */
 	private resolveSessionId(sessionId: string): string {
@@ -87,11 +137,9 @@ export class QueryEngine {
 
 		// Time range focus around marker
 		if (options?.aroundMarker) {
-			const marker = markers.find((m) => m.id === options.aroundMarker);
-			if (marker) {
-				const padding = 60_000; // ±60 seconds for overview
-				result.timeline = result.timeline.filter((e) => Math.abs(e.timestamp - marker.timestamp) <= padding);
-			}
+			const marker = this.resolveMarker(sessionId, options.aroundMarker);
+			const padding = 60_000; // ±60 seconds for overview
+			result.timeline = result.timeline.filter((e) => Math.abs(e.timestamp - marker.timestamp) <= padding);
 		}
 
 		// Time range focus
@@ -109,10 +157,8 @@ export class QueryEngine {
 		sessionId = this.resolveSessionId(sessionId);
 		// Resolve aroundMarker into a timeRange (only if no explicit timeRange provided)
 		if (params.filters?.aroundMarker && !params.filters.timeRange) {
-			const markers = this.db.queryMarkers(sessionId);
-			const ref = params.filters?.aroundMarker;
-			const marker = markers.find((m) => m.id === ref || m.label === ref);
-			if (!marker) throw new Error(`Marker not found: ${params.filters.aroundMarker}`);
+			const ref = params.filters.aroundMarker;
+			const marker = this.resolveMarker(sessionId, ref);
 			params = {
 				...params,
 				filters: {
@@ -216,7 +262,7 @@ export class QueryEngine {
 		if (params.eventId) {
 			targetEvent = this.db.getEventById(sessionId, params.eventId);
 		} else if (params.markerId) {
-			const marker = this.db.getMarkerById(params.markerId);
+			const marker = this.resolveMarker(sessionId, params.markerId);
 			const events = this.db.queryEvents(sessionId, {
 				timeRange: { start: marker.timestamp - 1000, end: marker.timestamp + 1000 },
 				limit: 1,
@@ -265,7 +311,7 @@ export class QueryEngine {
 					const bodyPath = resolve(recordingDir, "network", bodyRef.response_body_path);
 					if (existsSync(bodyPath)) {
 						result.networkBody = {
-							response: readFileSync(bodyPath, "utf-8"),
+							response: readBodySafe(bodyPath, bodyRef.content_type, bodyRef.response_size),
 							contentType: bodyRef.content_type ?? undefined,
 							size: bodyRef.response_size ?? undefined,
 						};
@@ -275,7 +321,7 @@ export class QueryEngine {
 					const bodyPath = resolve(recordingDir, "network", bodyRef.request_body_path);
 					if (existsSync(bodyPath)) {
 						result.networkBody = result.networkBody ?? {};
-						result.networkBody.request = readFileSync(bodyPath, "utf-8");
+						result.networkBody.request = readBodySafe(bodyPath, bodyRef.request_content_type, null);
 					}
 				}
 			}
@@ -333,12 +379,12 @@ export class QueryEngine {
 		return this.db.getNetworkBody(eventId);
 	}
 
-	readNetworkBody(sessionId: string, relPath: string): string | undefined {
+	readNetworkBody(sessionId: string, relPath: string, contentType?: string | null): string | undefined {
 		try {
 			const session = this.db.getSession(this.resolveSessionId(sessionId));
 			const fullPath = resolve(session.recording_dir, "network", relPath);
 			if (!existsSync(fullPath)) return undefined;
-			return readFileSync(fullPath, "utf-8");
+			return readBodySafe(fullPath, contentType, null);
 		} catch {
 			return undefined;
 		}

@@ -43,6 +43,7 @@ export interface NetworkBodyRow {
 	response_body_path: string | null;
 	response_size: number | null;
 	content_type: string | null;
+	request_content_type: string | null;
 }
 
 export const SessionFilterSchema = z.object({
@@ -77,6 +78,13 @@ export class BrowserDatabase {
 	}
 
 	private migrate(): void {
+		// Incremental migrations for existing databases
+		try {
+			this.db.exec("ALTER TABLE network_bodies ADD COLUMN request_content_type TEXT");
+		} catch {
+			// Column already exists — ignore
+		}
+
 		this.db.exec(`
 			CREATE TABLE IF NOT EXISTS sessions (
 				id TEXT PRIMARY KEY,
@@ -117,7 +125,8 @@ export class BrowserDatabase {
 				request_body_path TEXT,
 				response_body_path TEXT,
 				response_size INTEGER,
-				content_type TEXT
+				content_type TEXT,
+				request_content_type TEXT
 			);
 
 			CREATE INDEX IF NOT EXISTS idx_events_session_time
@@ -229,13 +238,13 @@ export class BrowserDatabase {
 
 	// --- Network body references ---
 
-	insertNetworkBody(ref: { eventId: string; sessionId: string; requestBodyPath?: string; responseBodyPath?: string; responseSize?: number; contentType?: string }): void {
+	insertNetworkBody(ref: { eventId: string; sessionId: string; requestBodyPath?: string; responseBodyPath?: string; responseSize?: number; contentType?: string; requestContentType?: string }): void {
 		this.db
 			.prepare(
-				`INSERT OR REPLACE INTO network_bodies (event_id, session_id, request_body_path, response_body_path, response_size, content_type)
-				VALUES (?, ?, ?, ?, ?, ?)`,
+				`INSERT OR REPLACE INTO network_bodies (event_id, session_id, request_body_path, response_body_path, response_size, content_type, request_content_type)
+				VALUES (?, ?, ?, ?, ?, ?, ?)`,
 			)
-			.run(ref.eventId, ref.sessionId, ref.requestBodyPath ?? null, ref.responseBodyPath ?? null, ref.responseSize ?? null, ref.contentType ?? null);
+			.run(ref.eventId, ref.sessionId, ref.requestBodyPath ?? null, ref.responseBodyPath ?? null, ref.responseSize ?? null, ref.contentType ?? null, ref.requestContentType ?? null);
 	}
 
 	// --- Point lookups ---

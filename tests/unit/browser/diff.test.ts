@@ -89,8 +89,10 @@ describe("SessionDiffer", () => {
 			expect(ts).toBe(new Date("2024-01-15T10:30:00Z").getTime());
 		});
 
-		it("rejects HH:MM:SS relative timestamps", () => {
-			expect(() => resolveTimestamp(queryEngine, SESSION_ID, "14:31:45")).toThrow("Cannot resolve");
+		it("resolves wall-clock HH:mm:ss relative to session start date", () => {
+			// Session starts 2024-01-15T10:00:00Z → "14:31:45" = 2024-01-15T14:31:45Z
+			const ts = resolveTimestamp(queryEngine, SESSION_ID, "14:31:45");
+			expect(ts).toBe(new Date("2024-01-15T14:31:45.000Z").getTime());
 		});
 
 		it("rejects HH:MM relative timestamps", () => {
