@@ -5,6 +5,12 @@ description: Release history for Krometrail.
 
 # Changelog
 
+## v0.2.17
+
+### Features
+
+- **Inline screenshots in `chrome_run_steps`** — screenshots are now embedded directly in the MCP tool response as base64 image content blocks, so agents can see them immediately without a separate file-read step
+
 ## v0.2.16
 
 ### Fixes
