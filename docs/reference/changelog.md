@@ -5,6 +5,17 @@ description: Release history for Krometrail.
 
 # Changelog
 
+## v0.2.18
+
+### Fixes
+
+- **Binary network bodies no longer corrupt MCP responses** — request/response bodies are now read with content-type awareness; binary types (`image/*`, `multipart/form-data`, `application/octet-stream`, etc.) return a `<binary: type, size>` placeholder instead of attempting UTF-8 decode and corrupting the JSON response
+- **Session overview now includes marker IDs** — each marker line in `session_overview` output now shows its ID (`(id: ...)`) so agents can directly reference it in `session_inspect` and `session_search`
+- **Wall-clock timestamps accepted as input** — `session_inspect`, `session_diff`, and related tools now accept `HH:mm:ss.SSS` format copied directly from overview output, resolved relative to the session's start date
+- **Marker lookup by label unified across tools** — `session_inspect(marker_id:)` and `session_overview(around_marker:)` now accept a marker label as well as an ID, matching the existing behavior of `session_search`
+- **Response content type was always null** — `network_response` events were storing `contentType` from a non-existent field; now correctly reads `mimeType` from the event data
+- **Request content type now stored** — `network_request` bodies now store the `Content-Type` header alongside the body file, enabling accurate binary detection for uploads
+
 ## v0.2.17
 
 ### Features
