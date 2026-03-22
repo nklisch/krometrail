@@ -54,6 +54,15 @@ export async function handleBrowserMethod(method: string, params: Record<string,
 			if (state.recorder?.isRecording()) {
 				throw new BrowserRecorderStateError("Browser recording is already active. Call browser.stop first.");
 			}
+			// Clean up stale recorder from a previous failed start
+			if (state.recorder) {
+				try {
+					await state.recorder.stop();
+				} catch {
+					// Ignore cleanup errors — the recorder is in a bad state
+				}
+				state.setRecorder(null);
+			}
 			const { BrowserRecorder } = await import("../browser/recorder/index.js");
 			const recorder = new BrowserRecorder({
 				port: p.port,
@@ -70,8 +79,11 @@ export async function handleBrowserMethod(method: string, params: Record<string,
 				state.setRecorder(null);
 				state.resetIdleTimer();
 			};
+			// Start FIRST, then register. If start() throws, the daemon
+			// never holds a reference to a broken recorder.
+			const result = await recorder.start();
 			state.setRecorder(recorder);
-			return recorder.start();
+			return result;
 		}
 
 		case "browser.mark": {

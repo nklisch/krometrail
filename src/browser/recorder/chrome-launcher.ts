@@ -7,7 +7,19 @@ import { getKrometrailSubdir } from "../../core/paths.js";
 import { CDPClient, type CDPClientOptions, fetchBrowserWsUrl } from "./cdp-client.js";
 
 /** Binary search order for Chrome/Chromium. */
-const CHROME_BINARIES = ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"];
+const CHROME_BINARIES = [
+	// Direct binaries first — these bypass wrapper scripts that may
+	// delegate to an existing Chrome instance and exit immediately.
+	"/opt/google/chrome/chrome",
+	"/opt/google/chrome/google-chrome",
+	// Standard PATH names (may be wrappers on some distros)
+	"google-chrome-stable",
+	"google-chrome",
+	"chromium-browser",
+	"chromium",
+	// macOS
+	"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+];
 
 export interface ChromeLaunchOptions {
 	/** CDP port Chrome is listening on. */

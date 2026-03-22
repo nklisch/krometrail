@@ -65,6 +65,7 @@ Queries recorded browser sessions from the local database.
 
 - **Don't pass URLs to `debug_launch`.** It runs shell commands. Use `chrome_start` for browser tasks.
 - **Chrome conflicts.** If Chrome is already running, `chrome_start` without `profile` may fail with a CDP error. Always use `profile: 'krometrail'` for an isolated instance.
+- **Chrome launch absorbed.** On Linux, Chrome wrapper scripts (e.g., `/usr/bin/google-chrome`) may delegate to an existing Chrome and exit immediately, causing `chrome_start` to fail. If this happens, ask the user to close their Chrome browser and retry. Do NOT suggest `pkill` — it can kill Electron apps (Discord, VS Code, etc.) that have `chrome` in their process names.
 - **Session IDs.** All `debug_*` tools require a `session_id` returned by `debug_launch`. All `session_*` tools accept `session_id: "latest"` for convenience.
 - **Always call `debug_stop`.** Debug sessions don't self-terminate. Call `debug_stop(session_id: '...')` when done or the debugger process will linger.
 - **Language-specific prerequisites.** Each language needs its debugger binary installed (debugpy for Python, dlv for Go, etc.). See the `krometrail-debug` skill for per-language setup.

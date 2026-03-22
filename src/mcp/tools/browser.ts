@@ -9,6 +9,7 @@ import { renderDiff, renderInspectResult, renderSearchResults, renderSessionList
 import { ReplayContextGenerator } from "../../browser/investigation/replay-context.js";
 import type { BrowserSessionInfo, Marker } from "../../browser/types.js";
 import { DiffIncludeSchema, FrameworkSchema, InspectIncludeSchema, OverviewIncludeSchema, ReplayFormatSchema, SearchableEventTypeSchema, TestFrameworkSchema } from "../../core/enums.js";
+import { CDPConnectionError, ChromeEarlyExitError, ChromeNotFoundError } from "../../core/errors.js";
 import { DaemonClient, ensureDaemon } from "../../daemon/client.js";
 import { getDaemonSocketPath } from "../../daemon/protocol.js";
 import { type ContentBlock, errorResponse, imageContent, type ToolResult, textResponse, toolHandler } from "./utils.js";
@@ -48,7 +49,7 @@ async function withDaemonClient<T>(fn: (client: DaemonClient) => Promise<T>, for
 
 function formatSessionInfo(info: BrowserSessionInfo): string {
 	const lines: string[] = [];
-	const startedAt = new Date(info.startedAt).toISOString();
+	const startedAt = info.startedAt > 0 ? new Date(info.startedAt).toISOString() : "just now";
 	lines.push(`Browser recording active since ${startedAt}`);
 	lines.push(`Events: ${info.eventCount}  Markers: ${info.markerCount}  Buffer age: ${Math.round(info.bufferAgeMs / 1000)}s`);
 	if (info.tabs.length > 0) {
@@ -114,22 +115,32 @@ export function registerBrowserTools(server: McpServer, queryEngine: QueryEngine
 				});
 				return textResponse(formatSessionInfo(info));
 			} catch (err) {
-				const errorMessage = err instanceof Error ? err.message : String(err);
-				const isCdpError = /cdp|chrome|connect|webkit|remote.debug/i.test(errorMessage);
-				if (isCdpError) {
+				if (err instanceof ChromeEarlyExitError) {
 					return textResponse(
-						`Error: ${errorMessage}\n\n` +
-							"Likely cause: Chrome is already running without remote debugging enabled.\n\n" +
-							"Fix option 1 — launch an isolated Chrome instance (recommended):\n" +
-							"  chrome_start(profile: 'krometrail', url: '<your-url>')\n" +
-							"  This creates a separate Chrome profile so existing Chrome is not affected.\n\n" +
-							"Fix option 2 — manually start Chrome with debugging enabled, then attach:\n" +
+						`Error: ${err.message}\n\n` +
+							"Chrome launched but exited immediately — likely an existing Chrome instance absorbed the launch.\n\n" +
+							"Fix: close your existing Chrome browser, then retry chrome_start.\n" +
+							"If you can't close Chrome, ask the user to launch it with remote debugging:\n" +
 							"  google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/krometrail-chrome\n" +
-							"  Then: chrome_start(attach: true)\n\n" +
-							"Fix option 3 — kill existing Chrome and retry:\n" +
-							"  pkill -f chrome  (or pkill -f chromium)\n" +
-							"  Then: chrome_start(url: '<your-url>')",
+							"  Then: chrome_start(attach: true)",
 					);
+				}
+				if (err instanceof CDPConnectionError) {
+					return textResponse(
+						`Error: ${err.message}\n\n` +
+							"Chrome was launched but its debug port never became available.\n\n" +
+							"This can happen if:\n" +
+							"- Another process is using port 9222\n" +
+							"- Chrome is taking unusually long to start\n\n" +
+							"Fix option 1 — try a different port:\n" +
+							"  chrome_start(port: 9223, profile: 'krometrail', url: '<your-url>')\n\n" +
+							"Fix option 2 — ask the user to launch Chrome manually:\n" +
+							"  google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/krometrail-chrome\n" +
+							"  Then: chrome_start(attach: true)",
+					);
+				}
+				if (err instanceof ChromeNotFoundError) {
+					return textResponse(`Error: ${err.message}`);
 				}
 				return errorResponse(err);
 			} finally {

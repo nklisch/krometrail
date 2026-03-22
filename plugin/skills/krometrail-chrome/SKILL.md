@@ -144,6 +144,15 @@ See [references/chrome.md](references/chrome.md) for the full reference.
 4. **Compare with diff.** What changed between two moments — new errors, state mutations, network failures.
 5. **Generate reproduction.** Test scaffolds or step-by-step reproduction instructions.
 
+### Chrome launch failures
+
+If `chrome_start` fails with "Chrome exited immediately":
+1. Ask the user to close their Chrome browser, then retry
+2. If they can't close Chrome, ask them to run:
+   `google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/krometrail-chrome <url>`
+   Then use: `krometrail chrome start --attach`
+3. Do NOT use `pkill -f chrome` — this kills Electron apps (Discord, VS Code, Unity Hub, etc.)
+
 ### Tips
 
 - Markers are your anchors — search and diff around them

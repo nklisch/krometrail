@@ -213,7 +213,7 @@ export class QueryEngine {
 		if (params.filters?.consoleLevels && params.filters.consoleLevels.length > 0) {
 			const levels = params.filters.consoleLevels;
 			results = results.filter((e) => {
-				if (e.type !== "console") return false;
+				if (e.type !== "console") return true;
 				const match = e.summary.match(/^\[(\w+)\]/);
 				return match ? levels.includes(match[1]) : false;
 			});

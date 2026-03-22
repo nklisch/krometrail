@@ -93,30 +93,43 @@ describe("QueryEngine search filters — urlPattern", () => {
 });
 
 describe("QueryEngine search filters — consoleLevels", () => {
-	it("filters console events by single level", () => {
-		const results = engine.search(SESSION_ID, { filters: { consoleLevels: ["error"] }, maxResults: 100 });
+	it("filters console events by single level, passes through non-console events", () => {
+		const results = engine.search(SESSION_ID, { filters: { eventTypes: ["console"], consoleLevels: ["error"] }, maxResults: 100 });
 		expect(results).toHaveLength(1);
 		expect(results[0].event_id).toBe("evt-console-err");
 	});
 
-	it("filters console events by multiple levels", () => {
-		const results = engine.search(SESSION_ID, { filters: { consoleLevels: ["error", "warn"] }, maxResults: 100 });
+	it("filters console events by multiple levels, passes through non-console events", () => {
+		const results = engine.search(SESSION_ID, { filters: { eventTypes: ["console"], consoleLevels: ["error", "warn"] }, maxResults: 100 });
 		expect(results).toHaveLength(2);
 		const ids = results.map((r) => r.event_id);
 		expect(ids).toContain("evt-console-err");
 		expect(ids).toContain("evt-console-warn");
 	});
 
-	it("excludes non-console events", () => {
+	it("passes through non-console events (consoleLevels only filters console events)", () => {
 		const results = engine.search(SESSION_ID, { filters: { consoleLevels: ["error"] }, maxResults: 100 });
-		for (const r of results) {
-			expect(r.type).toBe("console");
-		}
+		// Should include the console error AND all non-console events
+		const types = results.map((r) => r.type);
+		expect(types).toContain("console");
+		// Non-console events pass through — consoleLevels doesn't exclude them
+		expect(results.length).toBeGreaterThan(1);
 	});
 
-	it("returns empty when no console events at that level exist", () => {
-		const results = engine.search(SESSION_ID, { filters: { consoleLevels: ["debug"] }, maxResults: 100 });
+	it("returns only non-console events when no console events at that level exist", () => {
+		const results = engine.search(SESSION_ID, { filters: { eventTypes: ["console"], consoleLevels: ["debug"] }, maxResults: 100 });
 		expect(results).toHaveLength(0);
+	});
+
+	it("returns page_error events alongside console errors when both types requested", () => {
+		const results = engine.search(SESSION_ID, {
+			filters: { eventTypes: ["console", "page_error"], consoleLevels: ["error"] },
+			maxResults: 100,
+		});
+		const ids = results.map((r) => r.event_id);
+		expect(ids).toContain("evt-console-err");
+		expect(ids).toContain("evt-page-err");
+		expect(results).toHaveLength(2);
 	});
 });
 
