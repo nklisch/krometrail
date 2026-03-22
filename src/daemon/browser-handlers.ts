@@ -29,8 +29,8 @@ export interface BrowserHandlerState {
 	getQueryEngine: () => QueryEngine;
 	setRecorder: (r: BrowserRecorder | null) => void;
 	resetIdleTimer: () => void;
-	/** Guard against concurrent browser.start calls (MCP SDK may dispatch duplicates). */
-	browserStarting?: boolean;
+	/** In-flight start promise — duplicate callers await the same result. */
+	startPromise?: Promise<unknown>;
 }
 
 export function buildStepExecutorAdapter(recorder: BrowserRecorder): CDPPortAdapter {
@@ -53,8 +53,14 @@ export async function handleBrowserMethod(method: string, params: Record<string,
 		// --- Browser Recording ---
 		case "browser.start": {
 			const p = BrowserStartParamsSchema.parse(params);
-			if (state.recorder?.isRecording() || state.browserStarting) {
-				throw new BrowserRecorderStateError("Browser recording is already active. Call browser.stop first.");
+			// Idempotent: if already recording, return the existing session.
+			if (state.recorder?.isRecording()) {
+				return state.recorder.getSessionInfo();
+			}
+			// If a start is already in flight (duplicate MCP dispatch), await
+			// the same promise so both callers get the same result.
+			if (state.startPromise) {
+				return state.startPromise;
 			}
 			// Clean up stale recorder from a previous failed start
 			if (state.recorder) {
@@ -65,10 +71,8 @@ export async function handleBrowserMethod(method: string, params: Record<string,
 				}
 				state.setRecorder(null);
 			}
-			// Guard against concurrent starts — the MCP SDK may dispatch duplicate
-			// tool calls, and without this flag both would launch Chrome simultaneously.
-			state.browserStarting = true;
-			try {
+			// Store the start promise so concurrent calls coalesce onto it.
+			state.startPromise = (async () => {
 				const { BrowserRecorder } = await import("../browser/recorder/index.js");
 				const recorder = new BrowserRecorder({
 					port: p.port,
@@ -85,13 +89,14 @@ export async function handleBrowserMethod(method: string, params: Record<string,
 					state.setRecorder(null);
 					state.resetIdleTimer();
 				};
-				// Start FIRST, then register. If start() throws, the daemon
-				// never holds a reference to a broken recorder.
 				const result = await recorder.start();
 				state.setRecorder(recorder);
 				return result;
+			})();
+			try {
+				return await state.startPromise;
 			} finally {
-				state.browserStarting = false;
+				state.startPromise = undefined;
 			}
 		}
 

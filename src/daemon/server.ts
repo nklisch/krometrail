@@ -51,7 +51,7 @@ export class DaemonServer {
 	private startedAt: number = Date.now();
 	private activeConnections: Set<Socket> = new Set();
 	private browserRecorder: BrowserRecorder | null = null;
-	private browserStarting = false;
+	private browserStartPromise: Promise<unknown> | undefined;
 	private browserQueryEngine: QueryEngine | null = null;
 	private browserDb: BrowserDatabase | null = null;
 	private scenarioStore = new ScenarioStore();
@@ -261,9 +261,6 @@ export class DaemonServer {
 
 		// Try browser handlers
 		if (method.startsWith("browser.")) {
-			// Create a state view — browserStarting is passed by reference via
-			// getter/setter so concurrent calls to handleBrowserMethod see each
-			// other's mutations (guards against duplicate browser.start dispatches).
 			const self = this;
 			return handleBrowserMethod(method, params, {
 				recorder: this.browserRecorder,
@@ -273,11 +270,11 @@ export class DaemonServer {
 					this.browserRecorder = r;
 				},
 				resetIdleTimer: () => this.resetIdleTimer(),
-				get browserStarting() {
-					return self.browserStarting;
+				get startPromise() {
+					return self.browserStartPromise;
 				},
-				set browserStarting(v: boolean) {
-					self.browserStarting = v;
+				set startPromise(p: Promise<unknown> | undefined) {
+					self.browserStartPromise = p;
 				},
 			});
 		}

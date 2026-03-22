@@ -52,12 +52,14 @@ beforeEach(() => {
 });
 
 describe("browser.start recorder lifecycle", () => {
-	it("rejects when recorder is actively recording", async () => {
+	it("returns existing session info when recorder is already recording (idempotent)", async () => {
 		mockIsRecording.mockReturnValue(true);
-		const staleRecorder = { isRecording: mockIsRecording, stop: mockStop };
+		const mockSessionInfo = { id: "existing", startedAt: 1000, tabs: [], eventCount: 5, markerCount: 0, bufferAgeMs: 100 };
+		const staleRecorder = { isRecording: mockIsRecording, stop: mockStop, getSessionInfo: vi.fn().mockReturnValue(mockSessionInfo) };
 		const state = createMockState(staleRecorder);
 
-		await expect(handleBrowserMethod("browser.start", VALID_START_PARAMS, state)).rejects.toThrow(BrowserRecorderStateError);
+		const result = await handleBrowserMethod("browser.start", VALID_START_PARAMS, state);
+		expect(result).toBe(mockSessionInfo);
 		expect(state.setRecorder).not.toHaveBeenCalled();
 	});
 
