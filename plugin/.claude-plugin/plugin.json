@@ -1,0 +1,11 @@
+{
+	"name": "krometrail",
+	"description": "Runtime debugging for AI agents — debug 10 languages via DAP, record and control Chrome via CDP.",
+	"version": "0.2.19",
+	"author": {
+		"name": "nklisch"
+	},
+	"homepage": "https://krometrail.dev",
+	"repository": "https://github.com/nklisch/krometrail",
+	"license": "MIT"
+}
