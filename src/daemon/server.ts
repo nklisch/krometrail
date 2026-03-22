@@ -2,37 +2,16 @@ import { unlinkSync, writeFileSync } from "node:fs";
 import type { Server, Socket } from "node:net";
 import { createServer } from "node:net";
 import { resolve } from "node:path";
-import { CDPPortAdapter } from "../browser/executor/cdp-adapter.js";
 import { ScenarioStore } from "../browser/executor/scenario-store.js";
-import { StepExecutor } from "../browser/executor/step-executor.js";
-import type { Step } from "../browser/executor/types.js";
-import { HARExporter } from "../browser/export/har.js";
-import { SessionDiffer } from "../browser/investigation/diff.js";
 import { QueryEngine } from "../browser/investigation/query-engine.js";
-import { renderDiff, renderInspectResult, renderSearchResults, renderSessionOverview } from "../browser/investigation/renderers.js";
-import { ReplayContextGenerator } from "../browser/investigation/replay-context.js";
-import { BrowserRecorder } from "../browser/recorder/index.js";
+import type { BrowserRecorder } from "../browser/recorder/index.js";
 import { BrowserDatabase } from "../browser/storage/database.js";
-import { AdapterNotFoundError, AdapterPrerequisiteError, BrowserRecorderStateError, KrometrailError, LaunchError, SessionLimitError, SessionNotFoundError, SessionStateError } from "../core/errors.js";
+import { AdapterNotFoundError, AdapterPrerequisiteError, KrometrailError, LaunchError, SessionLimitError, SessionNotFoundError, SessionStateError } from "../core/errors.js";
 import { getKrometrailSubdir } from "../core/paths.js";
 import type { SessionManager } from "../core/session-manager.js";
+import { handleBrowserMethod } from "./browser-handlers.js";
 import type { JsonRpcRequest, JsonRpcResponse } from "./protocol.js";
 import {
-	AttachParamsSchema,
-	BrowserDiffParamsSchema,
-	BrowserExportParamsSchema,
-	BrowserInspectParamsSchema,
-	BrowserMarkParamsSchema,
-	BrowserOverviewParamsSchema,
-	BrowserReplayContextParamsSchema,
-	BrowserSearchParamsSchema,
-	BrowserSessionsParamsSchema,
-	BrowserStartParamsSchema,
-	BrowserStopParamsSchema,
-	ContinueParamsSchema,
-	EvaluateParamsSchema,
-	LaunchParamsSchema,
-	OutputParamsSchema,
 	RPC_ADAPTER_ERROR,
 	RPC_INTERNAL_ERROR,
 	RPC_INVALID_REQUEST,
@@ -42,19 +21,8 @@ import {
 	RPC_SESSION_LIMIT_ERROR,
 	RPC_SESSION_NOT_FOUND,
 	RPC_SESSION_STATE_ERROR,
-	RunStepsParamsSchema,
-	RunToParamsSchema,
-	SessionIdParamsSchema,
-	SessionLogParamsSchema,
-	SetBreakpointsParamsSchema,
-	SetExceptionBreakpointsParamsSchema,
-	SourceParamsSchema,
-	StackTraceParamsSchema,
-	StepParamsSchema,
-	UnwatchParamsSchema,
-	VariablesParamsSchema,
-	WatchParamsSchema,
 } from "./protocol.js";
+import { handleSessionMethod } from "./session-handlers.js";
 
 export interface DaemonOptions {
 	/** Path to the Unix domain socket. */
@@ -270,126 +238,41 @@ export class DaemonServer {
 	}
 
 	/**
-	 * Dispatch a validated RPC method call to SessionManager.
+	 * Lazy-initialize the browser query engine.
+	 */
+	private getQueryEngine(): QueryEngine {
+		if (!this.browserQueryEngine) {
+			const dataDir = getKrometrailSubdir("browser");
+			this.browserDb = new BrowserDatabase(resolve(dataDir, "index.db"));
+			this.browserQueryEngine = new QueryEngine(this.browserDb, dataDir);
+		}
+		return this.browserQueryEngine;
+	}
+
+	/**
+	 * Dispatch a validated RPC method call to the appropriate handler.
 	 */
 	private async dispatch(method: string, params: Record<string, unknown>): Promise<unknown> {
+		// Try session handlers
+		if (method.startsWith("session.")) {
+			return handleSessionMethod(method, params, this.sessionManager);
+		}
+
+		// Try browser handlers
+		if (method.startsWith("browser.")) {
+			return handleBrowserMethod(method, params, {
+				recorder: this.browserRecorder,
+				scenarioStore: this.scenarioStore,
+				getQueryEngine: () => this.getQueryEngine(),
+				setRecorder: (r) => {
+					this.browserRecorder = r;
+				},
+				resetIdleTimer: () => this.resetIdleTimer(),
+			});
+		}
+
+		// Daemon control
 		switch (method) {
-			// --- Session Lifecycle ---
-			case "session.launch": {
-				const p = LaunchParamsSchema.parse(params);
-				return this.sessionManager.launch(p);
-			}
-
-			case "session.attach": {
-				const p = AttachParamsSchema.parse(params);
-				return this.sessionManager.attach(p);
-			}
-
-			case "session.stop": {
-				const p = SessionIdParamsSchema.parse(params);
-				return this.sessionManager.stop(p.sessionId);
-			}
-
-			case "session.status": {
-				const p = SessionIdParamsSchema.parse(params);
-				return this.sessionManager.getStatus(p.sessionId);
-			}
-
-			// --- Execution Control ---
-			case "session.continue": {
-				const p = ContinueParamsSchema.parse(params);
-				const viewport = await this.sessionManager.continue(p.sessionId, p.timeoutMs, p.threadId);
-				return { viewport };
-			}
-
-			case "session.step": {
-				const p = StepParamsSchema.parse(params);
-				const viewport = await this.sessionManager.step(p.sessionId, p.direction, p.count, p.threadId);
-				return { viewport };
-			}
-
-			case "session.runTo": {
-				const p = RunToParamsSchema.parse(params);
-				const viewport = await this.sessionManager.runTo(p.sessionId, p.file, p.line, p.timeoutMs);
-				return { viewport };
-			}
-
-			// --- Breakpoints ---
-			case "session.setBreakpoints": {
-				const p = SetBreakpointsParamsSchema.parse(params);
-				const verifiedBps = await this.sessionManager.setBreakpoints(p.sessionId, p.file, p.breakpoints);
-				return { breakpoints: verifiedBps };
-			}
-
-			case "session.setExceptionBreakpoints": {
-				const p = SetExceptionBreakpointsParamsSchema.parse(params);
-				await this.sessionManager.setExceptionBreakpoints(p.sessionId, p.filters);
-				return null;
-			}
-
-			case "session.listBreakpoints": {
-				const p = SessionIdParamsSchema.parse(params);
-				const bpMap = this.sessionManager.listBreakpoints(p.sessionId);
-				const files: Record<string, Array<{ line: number; condition?: string; hitCondition?: string; logMessage?: string }>> = {};
-				for (const [file, bps] of bpMap) {
-					files[file] = bps.map((bp) => ({
-						line: bp.line,
-						...(bp.condition !== undefined && { condition: bp.condition }),
-						...(bp.hitCondition !== undefined && { hitCondition: bp.hitCondition }),
-						...(bp.logMessage !== undefined && { logMessage: bp.logMessage }),
-					}));
-				}
-				return { files };
-			}
-
-			// --- State Inspection ---
-			case "session.evaluate": {
-				const p = EvaluateParamsSchema.parse(params);
-				return this.sessionManager.evaluate(p.sessionId, p.expression, p.frameIndex, p.maxDepth);
-			}
-
-			case "session.variables": {
-				const p = VariablesParamsSchema.parse(params);
-				return this.sessionManager.getVariables(p.sessionId, p.scope, p.frameIndex, p.filter, p.maxDepth);
-			}
-
-			case "session.stackTrace": {
-				const p = StackTraceParamsSchema.parse(params);
-				return this.sessionManager.getStackTrace(p.sessionId, p.maxFrames, p.includeSource);
-			}
-
-			case "session.source": {
-				const p = SourceParamsSchema.parse(params);
-				return this.sessionManager.getSource(p.sessionId, p.file, p.startLine, p.endLine);
-			}
-
-			// --- Session Intelligence ---
-			case "session.watch": {
-				const p = WatchParamsSchema.parse(params);
-				return this.sessionManager.addWatchExpressions(p.sessionId, p.expressions);
-			}
-
-			case "session.unwatch": {
-				const p = UnwatchParamsSchema.parse(params);
-				return this.sessionManager.removeWatchExpressions(p.sessionId, p.expressions);
-			}
-
-			case "session.sessionLog": {
-				const p = SessionLogParamsSchema.parse(params);
-				return this.sessionManager.getSessionLog(p.sessionId, p.format);
-			}
-
-			case "session.output": {
-				const p = OutputParamsSchema.parse(params);
-				return this.sessionManager.getOutput(p.sessionId, p.stream, p.sinceAction);
-			}
-
-			case "session.threads": {
-				const p = SessionIdParamsSchema.parse(params);
-				return this.sessionManager.getThreads(p.sessionId);
-			}
-
-			// --- Daemon Control ---
 			case "daemon.ping": {
 				return {
 					uptime: Date.now() - this.startedAt,
@@ -411,193 +294,10 @@ export class DaemonServer {
 				return null;
 			}
 
-			// --- Browser Recording ---
-			case "browser.start": {
-				const p = BrowserStartParamsSchema.parse(params);
-				if (this.browserRecorder?.isRecording()) {
-					throw new BrowserRecorderStateError("Browser recording is already active. Call browser.stop first.");
-				}
-				this.browserRecorder = new BrowserRecorder({
-					port: p.port,
-					attach: p.attach,
-					profile: p.profile,
-					allTabs: p.allTabs,
-					tabFilter: p.tabFilter,
-					url: p.url,
-					persistence: {},
-					...(p.screenshotIntervalMs !== undefined && { screenshots: { intervalMs: p.screenshotIntervalMs } }),
-					frameworkState: p.frameworkState,
-				});
-				this.browserRecorder.onAutoStop = () => {
-					this.browserRecorder = null;
-					this.resetIdleTimer();
-				};
-				return this.browserRecorder.start();
-			}
-
-			case "browser.mark": {
-				const p = BrowserMarkParamsSchema.parse(params);
-				if (!this.browserRecorder?.isRecording()) {
-					throw new BrowserRecorderStateError("No active browser recording. Call browser.start first.");
-				}
-				return this.browserRecorder.placeMarker(p.label);
-			}
-
-			case "browser.status": {
-				return this.browserRecorder?.getSessionInfo() ?? null;
-			}
-
-			case "browser.stop": {
-				const p = BrowserStopParamsSchema.parse(params);
-				if (!this.browserRecorder) return null;
-				await this.browserRecorder.stop(p.closeBrowser);
-				this.browserRecorder = null;
-				return null;
-			}
-
-			case "browser.refresh": {
-				if (!this.browserRecorder?.isRecording()) {
-					throw new BrowserRecorderStateError("No active browser recording. Call browser.start first.");
-				}
-				return this.browserRecorder.refresh();
-			}
-
-			case "browser.run-steps": {
-				const p = RunStepsParamsSchema.parse(params);
-
-				// Resolve steps: from params or from saved scenario
-				let steps: Step[];
-				if (p.steps) {
-					steps = p.steps;
-				} else if (p.name) {
-					const scenario = this.scenarioStore.get(p.name);
-					if (!scenario) throw new BrowserRecorderStateError(`No saved scenario named "${p.name}"`);
-					steps = scenario.steps;
-				} else {
-					throw new BrowserRecorderStateError("Either steps or name is required");
-				}
-
-				// Save scenario if requested
-				if (p.save && p.name) {
-					this.scenarioStore.save(p.name, steps);
-				}
-
-				// Require active recording
-				if (!this.browserRecorder?.isRecording()) {
-					throw new BrowserRecorderStateError("No active browser recording. Call browser.start first, then run steps.");
-				}
-
-				// Build the CDP port adapter and execute
-				const adapter = this.buildStepExecutorAdapter();
-				const executor = new StepExecutor(adapter);
-				const result = await executor.execute(steps, p.capture);
-				result.sessionId = this.browserRecorder.getSessionInfo()?.id;
-
-				return result;
-			}
-
-			// --- Browser Investigation ---
-			case "browser.sessions": {
-				const p = BrowserSessionsParamsSchema.parse(params);
-				return this.getQueryEngine().listSessions(p);
-			}
-
-			case "browser.overview": {
-				const p = BrowserOverviewParamsSchema.parse(params);
-				const overview = this.getQueryEngine().getOverview(p.sessionId, {
-					include: p.include,
-					aroundMarker: p.aroundMarker,
-					timeRange: p.timeRange,
-				});
-				return renderSessionOverview(overview, p.tokenBudget ?? 3000);
-			}
-
-			case "browser.search": {
-				const p = BrowserSearchParamsSchema.parse(params);
-				const results = this.getQueryEngine().search(p.sessionId, {
-					query: p.query,
-					filters: {
-						eventTypes: p.eventTypes,
-						statusCodes: p.statusCodes,
-						timeRange: p.timeRange,
-					},
-					maxResults: p.maxResults,
-				});
-				return renderSearchResults(results, p.tokenBudget ?? 2000);
-			}
-
-			case "browser.inspect": {
-				const p = BrowserInspectParamsSchema.parse(params);
-				const result = this.getQueryEngine().inspect(p.sessionId, {
-					eventId: p.eventId,
-					markerId: p.markerId,
-					timestamp: p.timestamp !== undefined ? String(p.timestamp) : undefined,
-					include: p.include,
-					contextWindow: p.contextWindow,
-				});
-				return renderInspectResult(result, p.tokenBudget ?? 3000);
-			}
-
-			case "browser.diff": {
-				const p = BrowserDiffParamsSchema.parse(params);
-				const differ = new SessionDiffer(this.getQueryEngine());
-				const diff = differ.diff({ sessionId: p.sessionId, before: p.before, after: p.after, include: p.include });
-				return renderDiff(diff, p.tokenBudget ?? 2000);
-			}
-
-			case "browser.replay-context": {
-				const p = BrowserReplayContextParamsSchema.parse(params);
-				const generator = new ReplayContextGenerator(this.getQueryEngine());
-				return generator.generate({
-					sessionId: p.sessionId,
-					aroundMarker: p.aroundMarker,
-					timeRange: p.timeRange,
-					format: p.format,
-					testFramework: p.testFramework,
-				});
-			}
-
-			case "browser.export": {
-				const p = BrowserExportParamsSchema.parse(params);
-				const exporter = new HARExporter(this.getQueryEngine());
-				const harFile = exporter.export({
-					sessionId: p.sessionId,
-					timeRange: p.timeRange,
-					includeResponseBodies: p.includeResponseBodies,
-				});
-				return JSON.stringify(harFile, null, 2);
-			}
-
 			default: {
 				throw Object.assign(new Error(`Method not found: ${method}`), { rpcCode: RPC_METHOD_NOT_FOUND });
 			}
 		}
-	}
-
-	private buildStepExecutorAdapter(): CDPPortAdapter {
-		const recorder = this.browserRecorder;
-		if (!recorder) throw new BrowserRecorderStateError("No active browser recorder");
-		const cdpClient = recorder.getCDPClient();
-		if (!cdpClient) throw new BrowserRecorderStateError("CDP client not available");
-		const tabSessionId = recorder.getPrimaryTabSession();
-		if (!tabSessionId) throw new BrowserRecorderStateError("No active tab session");
-
-		return new CDPPortAdapter({
-			cdpClient,
-			tabSessionId,
-			recorder,
-			screenshotCapture: recorder.getScreenshotCapture(),
-			screenshotDir: recorder.getOrCreateScreenshotDir(),
-		});
-	}
-
-	private getQueryEngine(): QueryEngine {
-		if (!this.browserQueryEngine) {
-			const dataDir = getKrometrailSubdir("browser");
-			this.browserDb = new BrowserDatabase(resolve(dataDir, "index.db"));
-			this.browserQueryEngine = new QueryEngine(this.browserDb, dataDir);
-		}
-		return this.browserQueryEngine;
 	}
 
 	/**

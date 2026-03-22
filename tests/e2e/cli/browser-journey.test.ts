@@ -167,7 +167,7 @@ describe.skipIf(SKIP)("E2E CLI: browser start/mark/stop --json envelope", () => 
 	it("browser status --json returns envelope when no session active", async () => {
 		// This may return { ok: true, data: { active: false } } or an error
 		// depending on daemon state. Either is acceptable for format validation.
-		const result = await runCli(["browser", "status", "--json"]);
+		const result = await runCli(["chrome", "status", "--json"]);
 		// Parse whatever we get — it should be valid JSON envelope
 		const output = result.stdout.trim() || result.stderr.trim();
 		if (output) {

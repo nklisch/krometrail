@@ -179,8 +179,10 @@ function extractEventId(searchOutput: string): string {
 }
 
 function extractMarkerId(overviewOutput: string): string {
-	// Try to find a UUID that could be a marker ID
-	const markerMatch = overviewOutput.match(/([a-f0-9-]{36})/);
+	// Marker IDs are rendered as "(id: <marker-id>)" in the overview.
+	// User markers have label-based IDs (e.g., "form-validation-failed-a1b2c3d4"),
+	// not full UUIDs, so a generic UUID regex would match the session ID instead.
+	const markerMatch = overviewOutput.match(/\(id:\s*([^)]+)\)/);
 	if (!markerMatch) throw new Error(`Could not extract marker ID from:\n${overviewOutput}`);
-	return markerMatch[1];
+	return markerMatch[1].trim();
 }

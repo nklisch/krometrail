@@ -112,8 +112,8 @@ export function generateZshCompletions(inventory: CommandsData): string {
 			const flagSpecs = cmd.args
 				.filter((a) => a.type !== "positional")
 				.map((a) => {
-					const desc = a.description.replace(/'/g, "").replace(/\[/g, "").replace(/\]/g, "");
-					return `'--${a.name}[${desc}]'`;
+					const description = a.description.replace(/'/g, "").replace(/\[/g, "").replace(/\]/g, "");
+					return `'--${a.name}[${description}]'`;
 				});
 			const key = group.name === "top-level" ? cmd.name : `${group.name}_${cmd.name}`;
 			cmdFlagSpecs[key] = flagSpecs;
@@ -270,8 +270,8 @@ export function generateFishCompletions(inventory: CommandsData): string {
 			if (flags.length === 0) continue;
 			lines.push(`# ${group.name} ${cmd.name} flags`);
 			for (const flag of flags) {
-				const desc = flag.description.replace(/'/g, "");
-				lines.push(`complete -c krometrail -n '__fish_seen_subcommand_from ${cmd.name}' -l '${flag.name}' -d '${desc}'`);
+				const description = flag.description.replace(/'/g, "");
+				lines.push(`complete -c krometrail -n '__fish_seen_subcommand_from ${cmd.name}' -l '${flag.name}' -d '${description}'`);
 			}
 		}
 	}
@@ -285,8 +285,8 @@ export function generateFishCompletions(inventory: CommandsData): string {
 			lines.push("");
 			lines.push(`# ${cmd.name} flags`);
 			for (const flag of flags) {
-				const desc = flag.description.replace(/'/g, "");
-				lines.push(`complete -c krometrail -n '__fish_seen_subcommand_from ${cmd.name}' -l '${flag.name}' -d '${desc}'`);
+				const description = flag.description.replace(/'/g, "");
+				lines.push(`complete -c krometrail -n '__fish_seen_subcommand_from ${cmd.name}' -l '${flag.name}' -d '${description}'`);
 			}
 		}
 	}

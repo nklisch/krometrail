@@ -114,11 +114,11 @@ export function registerBrowserTools(server: McpServer, queryEngine: QueryEngine
 				});
 				return textResponse(formatSessionInfo(info));
 			} catch (err) {
-				const msg = err instanceof Error ? err.message : String(err);
-				const isCdpError = /cdp|chrome|connect|webkit|remote.debug/i.test(msg);
+				const errorMessage = err instanceof Error ? err.message : String(err);
+				const isCdpError = /cdp|chrome|connect|webkit|remote.debug/i.test(errorMessage);
 				if (isCdpError) {
 					return textResponse(
-						`Error: ${msg}\n\n` +
+						`Error: ${errorMessage}\n\n` +
 							"Likely cause: Chrome is already running without remote debugging enabled.\n\n" +
 							"Fix option 1 — launch an isolated Chrome instance (recommended):\n" +
 							"  chrome_start(profile: 'krometrail', url: '<your-url>')\n" +

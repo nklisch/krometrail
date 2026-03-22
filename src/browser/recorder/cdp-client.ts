@@ -22,11 +22,11 @@ interface PendingRequest {
  * Returns the webSocketDebuggerUrl from /json/version.
  */
 export async function fetchBrowserWsUrl(port: number): Promise<string> {
-	const resp = await fetch(`http://localhost:${port}/json/version`);
-	if (!resp.ok) {
-		throw new CDPConnectionError(`Chrome CDP HTTP endpoint returned ${resp.status}`);
+	const response = await fetch(`http://localhost:${port}/json/version`);
+	if (!response.ok) {
+		throw new CDPConnectionError(`Chrome CDP HTTP endpoint returned ${response.status}`);
 	}
-	const info = (await resp.json()) as { webSocketDebuggerUrl?: string };
+	const info = (await response.json()) as { webSocketDebuggerUrl?: string };
 	if (!info.webSocketDebuggerUrl) {
 		throw new CDPConnectionError("Chrome CDP endpoint did not return webSocketDebuggerUrl");
 	}
@@ -131,30 +131,30 @@ export class CDPClient extends EventEmitter {
 	}
 
 	private onMessage(data: string): void {
-		let msg: Record<string, unknown>;
+		let message: Record<string, unknown>;
 		try {
-			msg = JSON.parse(data) as Record<string, unknown>;
+			message = JSON.parse(data) as Record<string, unknown>;
 		} catch {
 			return;
 		}
 
-		const sessionId = (msg.sessionId as string | undefined) ?? "";
+		const sessionId = (message.sessionId as string | undefined) ?? "";
 
-		if (typeof msg.id === "number") {
+		if (typeof message.id === "number") {
 			// Command response (browser-level or session-level)
-			const pending = this.pending.get(msg.id);
+			const pending = this.pending.get(message.id);
 			if (pending) {
-				this.pending.delete(msg.id);
-				if (msg.error) {
-					const errInfo = msg.error as { message?: string };
+				this.pending.delete(message.id);
+				if (message.error) {
+					const errInfo = message.error as { message?: string };
 					pending.reject(new Error(errInfo.message ?? "CDP error"));
 				} else {
-					pending.resolve(msg.result);
+					pending.resolve(message.result);
 				}
 			}
-		} else if (typeof msg.method === "string") {
+		} else if (typeof message.method === "string") {
 			// Event (browser-level or session-level)
-			this.emit("event", sessionId, msg.method, (msg.params ?? {}) as Record<string, unknown>);
+			this.emit("event", sessionId, message.method, (message.params ?? {}) as Record<string, unknown>);
 		}
 	}
 

@@ -1582,6 +1582,121 @@ Watch expressions are evaluated server-side on each stop. They count against the
 
 ---
 
+# Using Krometrail with Claude Code
+
+Krometrail gives Claude Code runtime debugging — it can set breakpoints, inspect variables, and trace execution to find bugs.
+
+## Setup: MCP Server (Recommended)
+
+Add via the CLI or edit the project `.mcp.json` directly:
+
+```bash
+claude mcp add --transport stdio --scope project krometrail -- krometrail --mcp
+```
+
+Or add to `.mcp.json` in your project root (shared with your team):
+
+::: code-group
+
+```json [binary]
+{
+  "mcpServers": {
+    "krometrail": {
+      "command": "krometrail",
+      "args": ["--mcp"]
+    }
+  }
+}
+```
+
+```json [npx]
+{
+  "mcpServers": {
+    "krometrail": {
+      "command": "npx",
+      "args": ["krometrail@latest", "--mcp"]
+    }
+  }
+}
+```
+
+```json [bunx]
+{
+  "mcpServers": {
+    "krometrail": {
+      "command": "bunx",
+      "args": ["krometrail@latest", "--mcp"]
+    }
+  }
+}
+```
+
+:::
+
+Claude discovers the `debug_*` tools automatically — no CLAUDE.md changes needed.
+
+### Focused tool sets
+
+If you only need debugging or only need browser observation, add a filtered server:
+
+```bash
+# Debug tools only
+claude mcp add --transport stdio --scope project krometrail-debug -- krometrail --mcp --tools=debug
+
+# Browser tools only
+claude mcp add --transport stdio --scope project krometrail-browser -- krometrail --mcp --tools=browser
+```
+
+## Setup: CLI with Skill
+
+The CLI provides the same debugging capabilities as the MCP tools, accessed through bash commands. Some setups prefer CLI tools for their transparency and scriptability.
+
+Install the krometrail skill:
+
+```bash
+npx skills add nklisch/krometrail --skill krometrail-debug krometrail-chrome
+```
+
+## Verification
+
+1. Start Claude Code
+2. Ask: "What debug tools do you have available?"
+3. Claude should list the `debug_*` tools (MCP) or describe the CLI commands (skill)
+
+## Example Workflow
+
+Ask Claude Code:
+
+> The `test_gold_discount` test is failing with an assertion error. Use the debugger to find the root cause.
+
+Claude Code will:
+
+1. Identify the test file and set a breakpoint at the assertion
+2. Launch the test under the debugger: `debug_launch` with `pytest tests/test_discount.py::test_gold_discount`
+3. Continue to the breakpoint: `debug_continue`
+4. Inspect variables: `debug_evaluate` on `tier_multipliers`, `discount`, etc.
+5. Trace back to find the incorrect value
+6. Report the root cause with the specific line and variable that is wrong
+
+## Tips
+
+- **MCP path is zero-config** — Claude discovers tools automatically from the server
+- **CLI path** exposes the same tools as bash commands — transparent, scriptable, and preferred by some agent setups
+- **Let Claude choose breakpoints** — it knows the code better after reading it
+- **Conditional breakpoints** are powerful for loops: `krometrail debug break app.py:25 when discount < 0`
+- **The viewport is compact** (~400 tokens per stop) so Claude can take many debug steps without exhausting context
+- **Framework auto-detection** works for pytest, jest, go test, Django, Flask, etc.
+
+## Checking Installation
+
+```bash
+krometrail doctor
+```
+
+This shows which language adapters are installed and their versions.
+
+---
+
 # CLI Installation
 
 The Krometrail CLI exposes the same capabilities as the MCP tools, but as shell commands. Many agent harnesses prefer CLI tools for their transparency and composability — the CLI gives agents explicit, scriptable access to the full debugging toolset. It's also handy for convenience operations like `krometrail doctor`. Sessions persist across commands via a background daemon.
@@ -1713,6 +1828,215 @@ krometrail debug stop
 ```
 
 The daemon socket lives at `$XDG_RUNTIME_DIR/krometrail.sock` or `~/.krometrail/krometrail.sock`.
+
+---
+
+# Using Krometrail with OpenAI Codex
+
+Krometrail gives Codex runtime debugging via MCP or the CLI — the same tools, two interfaces.
+
+## Setup: MCP (Recommended)
+
+Add to your Codex config at `~/.codex/config.toml` (global) or `.codex/config.toml` (per-project):
+
+```toml
+[mcp_servers.krometrail]
+command = "krometrail"
+args = ["--mcp"]
+```
+
+Or add via the CLI:
+
+```bash
+codex mcp add krometrail -- krometrail --mcp
+```
+
+Codex discovers the `debug_*`, `chrome_*`, and `session_*` tools automatically.
+
+### Focused tool sets
+
+```bash
+# Debug tools only
+codex mcp add krometrail-debug -- krometrail --mcp --tools=debug
+
+# Browser tools only
+codex mcp add krometrail-browser -- krometrail --mcp --tools=browser
+```
+
+## Setup: CLI with Skill
+
+For CLI-based usage, install the krometrail skill:
+
+```bash
+npx skills add nklisch/krometrail --skill krometrail-debug krometrail-chrome
+```
+
+## Example Workflow
+
+Ask Codex:
+
+> The `calculate_discount` function returns wrong values for gold tier customers. Debug it.
+
+Codex will:
+
+1. `debug_launch` (or `krometrail debug launch`) with `python3 -m pytest tests/ -k test_gold` and a breakpoint at `discount.py:42`
+2. Continue to the breakpoint
+3. Evaluate `tier` and `tier_multipliers['gold']`
+4. Step into the function
+5. Identify the bug and explain it
+
+## Tips
+
+- **MCP is zero-config** — Codex discovers tools automatically from the server
+- **CLI path** is transparent and scriptable — Codex can run multiple commands in parallel via bash
+- **Session persistence** — sessions are managed by a background daemon across multiple turns
+- **Multiple sessions** — use `--session <id>` to target a specific session when multiple are active
+
+## Verifying Setup
+
+```bash
+krometrail doctor
+```
+
+This checks which language adapters are installed.
+
+---
+
+# Using Krometrail with Cursor and Windsurf
+
+Both Cursor and Windsurf support MCP servers. Krometrail integrates via MCP to give the AI runtime debugging.
+
+## Cursor Setup
+
+Add to your Cursor MCP configuration at `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` in your project root (per-project):
+
+::: code-group
+
+```json [binary]
+{
+  "mcpServers": {
+    "krometrail": {
+      "command": "krometrail",
+      "args": ["--mcp"]
+    }
+  }
+}
+```
+
+```json [npx]
+{
+  "mcpServers": {
+    "krometrail": {
+      "command": "npx",
+      "args": ["krometrail@latest", "--mcp"]
+    }
+  }
+}
+```
+
+```json [bunx]
+{
+  "mcpServers": {
+    "krometrail": {
+      "command": "bunx",
+      "args": ["krometrail@latest", "--mcp"]
+    }
+  }
+}
+```
+
+:::
+
+Restart Cursor after saving the config. The `debug_*` tools will appear in the AI's tool list.
+
+## Windsurf Setup
+
+Add to your Windsurf MCP configuration at `~/.codeium/windsurf/mcp_config.json` (or click the MCPs icon in the Cascade panel and select "Configure"):
+
+::: code-group
+
+```json [binary]
+{
+  "mcpServers": {
+    "krometrail": {
+      "command": "krometrail",
+      "args": ["--mcp"],
+      "env": {}
+    }
+  }
+}
+```
+
+```json [npx]
+{
+  "mcpServers": {
+    "krometrail": {
+      "command": "npx",
+      "args": ["krometrail@latest", "--mcp"],
+      "env": {}
+    }
+  }
+}
+```
+
+```json [bunx]
+{
+  "mcpServers": {
+    "krometrail": {
+      "command": "bunx",
+      "args": ["krometrail@latest", "--mcp"],
+      "env": {}
+    }
+  }
+}
+```
+
+:::
+
+## Verification
+
+Ask the AI assistant:
+
+> What debugging tools do you have access to?
+
+It should mention `debug_launch`, `debug_continue`, `debug_evaluate`, and other `debug_*` tools.
+
+Run a quick test:
+
+> Launch a debug session for this Python file and show me the variables at line 10.
+
+## Project-Level Configuration
+
+For team setups, add a `.mcp.json` file to your project root:
+
+```json
+{
+  "mcpServers": {
+    "krometrail": {
+      "command": "krometrail",
+      "args": ["--mcp"]
+    }
+  }
+}
+```
+
+This lets all team members use krometrail without individual configuration.
+
+## Known Limitations
+
+- **MCP transport**: Krometrail uses stdio transport, which is supported by both Cursor and Windsurf.
+- **Session persistence**: Debug sessions persist as long as the MCP server process runs. If Cursor/Windsurf restarts the MCP server, active sessions are lost.
+- **Port allocation**: Krometrail allocates local ports for debugger connections. Ensure ports 4000–5000 are not blocked by firewall rules.
+
+## Checking Adapter Status
+
+In a terminal:
+
+```bash
+krometrail doctor
+```
+
+This confirms which language debuggers are installed (Python, Node.js, Go, Rust, Java, C/C++).
 
 ---
 
@@ -2277,330 +2601,6 @@ To disable auto-updates, set the environment variable in your MCP config:
   }
 }
 ```
-
----
-
-# Using Krometrail with Claude Code
-
-Krometrail gives Claude Code runtime debugging — it can set breakpoints, inspect variables, and trace execution to find bugs.
-
-## Setup: MCP Server (Recommended)
-
-Add via the CLI or edit the project `.mcp.json` directly:
-
-```bash
-claude mcp add --transport stdio --scope project krometrail -- krometrail --mcp
-```
-
-Or add to `.mcp.json` in your project root (shared with your team):
-
-::: code-group
-
-```json [binary]
-{
-  "mcpServers": {
-    "krometrail": {
-      "command": "krometrail",
-      "args": ["--mcp"]
-    }
-  }
-}
-```
-
-```json [npx]
-{
-  "mcpServers": {
-    "krometrail": {
-      "command": "npx",
-      "args": ["krometrail@latest", "--mcp"]
-    }
-  }
-}
-```
-
-```json [bunx]
-{
-  "mcpServers": {
-    "krometrail": {
-      "command": "bunx",
-      "args": ["krometrail@latest", "--mcp"]
-    }
-  }
-}
-```
-
-:::
-
-Claude discovers the `debug_*` tools automatically — no CLAUDE.md changes needed.
-
-### Focused tool sets
-
-If you only need debugging or only need browser observation, add a filtered server:
-
-```bash
-# Debug tools only
-claude mcp add --transport stdio --scope project krometrail-debug -- krometrail --mcp --tools=debug
-
-# Browser tools only
-claude mcp add --transport stdio --scope project krometrail-browser -- krometrail --mcp --tools=browser
-```
-
-## Setup: CLI with Skill
-
-The CLI provides the same debugging capabilities as the MCP tools, accessed through bash commands. Some setups prefer CLI tools for their transparency and scriptability.
-
-Install the krometrail skill:
-
-```bash
-npx skills add nklisch/krometrail --skill krometrail-debug krometrail-chrome
-```
-
-## Verification
-
-1. Start Claude Code
-2. Ask: "What debug tools do you have available?"
-3. Claude should list the `debug_*` tools (MCP) or describe the CLI commands (skill)
-
-## Example Workflow
-
-Ask Claude Code:
-
-> The `test_gold_discount` test is failing with an assertion error. Use the debugger to find the root cause.
-
-Claude Code will:
-
-1. Identify the test file and set a breakpoint at the assertion
-2. Launch the test under the debugger: `debug_launch` with `pytest tests/test_discount.py::test_gold_discount`
-3. Continue to the breakpoint: `debug_continue`
-4. Inspect variables: `debug_evaluate` on `tier_multipliers`, `discount`, etc.
-5. Trace back to find the incorrect value
-6. Report the root cause with the specific line and variable that is wrong
-
-## Tips
-
-- **MCP path is zero-config** — Claude discovers tools automatically from the server
-- **CLI path** exposes the same tools as bash commands — transparent, scriptable, and preferred by some agent setups
-- **Let Claude choose breakpoints** — it knows the code better after reading it
-- **Conditional breakpoints** are powerful for loops: `krometrail debug break app.py:25 when discount < 0`
-- **The viewport is compact** (~400 tokens per stop) so Claude can take many debug steps without exhausting context
-- **Framework auto-detection** works for pytest, jest, go test, Django, Flask, etc.
-
-## Checking Installation
-
-```bash
-krometrail doctor
-```
-
-This shows which language adapters are installed and their versions.
-
----
-
-# Using Krometrail with OpenAI Codex
-
-Krometrail gives Codex runtime debugging via MCP or the CLI — the same tools, two interfaces.
-
-## Setup: MCP (Recommended)
-
-Add to your Codex config at `~/.codex/config.toml` (global) or `.codex/config.toml` (per-project):
-
-```toml
-[mcp_servers.krometrail]
-command = "krometrail"
-args = ["--mcp"]
-```
-
-Or add via the CLI:
-
-```bash
-codex mcp add krometrail -- krometrail --mcp
-```
-
-Codex discovers the `debug_*`, `chrome_*`, and `session_*` tools automatically.
-
-### Focused tool sets
-
-```bash
-# Debug tools only
-codex mcp add krometrail-debug -- krometrail --mcp --tools=debug
-
-# Browser tools only
-codex mcp add krometrail-browser -- krometrail --mcp --tools=browser
-```
-
-## Setup: CLI with Skill
-
-For CLI-based usage, install the krometrail skill:
-
-```bash
-npx skills add nklisch/krometrail --skill krometrail-debug krometrail-chrome
-```
-
-## Example Workflow
-
-Ask Codex:
-
-> The `calculate_discount` function returns wrong values for gold tier customers. Debug it.
-
-Codex will:
-
-1. `debug_launch` (or `krometrail debug launch`) with `python3 -m pytest tests/ -k test_gold` and a breakpoint at `discount.py:42`
-2. Continue to the breakpoint
-3. Evaluate `tier` and `tier_multipliers['gold']`
-4. Step into the function
-5. Identify the bug and explain it
-
-## Tips
-
-- **MCP is zero-config** — Codex discovers tools automatically from the server
-- **CLI path** is transparent and scriptable — Codex can run multiple commands in parallel via bash
-- **Session persistence** — sessions are managed by a background daemon across multiple turns
-- **Multiple sessions** — use `--session <id>` to target a specific session when multiple are active
-
-## Verifying Setup
-
-```bash
-krometrail doctor
-```
-
-This checks which language adapters are installed.
-
----
-
-# Using Krometrail with Cursor and Windsurf
-
-Both Cursor and Windsurf support MCP servers. Krometrail integrates via MCP to give the AI runtime debugging.
-
-## Cursor Setup
-
-Add to your Cursor MCP configuration at `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` in your project root (per-project):
-
-::: code-group
-
-```json [binary]
-{
-  "mcpServers": {
-    "krometrail": {
-      "command": "krometrail",
-      "args": ["--mcp"]
-    }
-  }
-}
-```
-
-```json [npx]
-{
-  "mcpServers": {
-    "krometrail": {
-      "command": "npx",
-      "args": ["krometrail@latest", "--mcp"]
-    }
-  }
-}
-```
-
-```json [bunx]
-{
-  "mcpServers": {
-    "krometrail": {
-      "command": "bunx",
-      "args": ["krometrail@latest", "--mcp"]
-    }
-  }
-}
-```
-
-:::
-
-Restart Cursor after saving the config. The `debug_*` tools will appear in the AI's tool list.
-
-## Windsurf Setup
-
-Add to your Windsurf MCP configuration at `~/.codeium/windsurf/mcp_config.json` (or click the MCPs icon in the Cascade panel and select "Configure"):
-
-::: code-group
-
-```json [binary]
-{
-  "mcpServers": {
-    "krometrail": {
-      "command": "krometrail",
-      "args": ["--mcp"],
-      "env": {}
-    }
-  }
-}
-```
-
-```json [npx]
-{
-  "mcpServers": {
-    "krometrail": {
-      "command": "npx",
-      "args": ["krometrail@latest", "--mcp"],
-      "env": {}
-    }
-  }
-}
-```
-
-```json [bunx]
-{
-  "mcpServers": {
-    "krometrail": {
-      "command": "bunx",
-      "args": ["krometrail@latest", "--mcp"],
-      "env": {}
-    }
-  }
-}
-```
-
-:::
-
-## Verification
-
-Ask the AI assistant:
-
-> What debugging tools do you have access to?
-
-It should mention `debug_launch`, `debug_continue`, `debug_evaluate`, and other `debug_*` tools.
-
-Run a quick test:
-
-> Launch a debug session for this Python file and show me the variables at line 10.
-
-## Project-Level Configuration
-
-For team setups, add a `.mcp.json` file to your project root:
-
-```json
-{
-  "mcpServers": {
-    "krometrail": {
-      "command": "krometrail",
-      "args": ["--mcp"]
-    }
-  }
-}
-```
-
-This lets all team members use krometrail without individual configuration.
-
-## Known Limitations
-
-- **MCP transport**: Krometrail uses stdio transport, which is supported by both Cursor and Windsurf.
-- **Session persistence**: Debug sessions persist as long as the MCP server process runs. If Cursor/Windsurf restarts the MCP server, active sessions are lost.
-- **Port allocation**: Krometrail allocates local ports for debugger connections. Ensure ports 4000–5000 are not blocked by firewall rules.
-
-## Checking Adapter Status
-
-In a terminal:
-
-```bash
-krometrail doctor
-```
-
-This confirms which language debuggers are installed (Python, Node.js, Go, Rust, Java, C/C++).
 
 ---
 
@@ -3883,6 +3883,43 @@ Start with the Python adapter as the simplest reference.
 
 # Changelog
 
+## v0.2.18
+
+### Fixes
+
+- **Binary network bodies no longer corrupt MCP responses** — request/response bodies are now read with content-type awareness; binary types (`image/*`, `multipart/form-data`, `application/octet-stream`, etc.) return a `<binary: type, size>` placeholder instead of attempting UTF-8 decode and corrupting the JSON response
+- **Session overview now includes marker IDs** — each marker line in `session_overview` output now shows its ID (`(id: ...)`) so agents can directly reference it in `session_inspect` and `session_search`
+- **Wall-clock timestamps accepted as input** — `session_inspect`, `session_diff`, and related tools now accept `HH:mm:ss.SSS` format copied directly from overview output, resolved relative to the session's start date
+- **Marker lookup by label unified across tools** — `session_inspect(marker_id:)` and `session_overview(around_marker:)` now accept a marker label as well as an ID, matching the existing behavior of `session_search`
+- **Response content type was always null** — `network_response` events were storing `contentType` from a non-existent field; now correctly reads `mimeType` from the event data
+- **Request content type now stored** — `network_request` bodies now store the `Content-Type` header alongside the body file, enabling accurate binary detection for uploads
+
+## v0.2.17
+
+### Features
+
+- **Inline screenshots in `chrome_run_steps`** — screenshots are now embedded directly in the MCP tool response as base64 image content blocks, so agents can see them immediately without a separate file-read step
+
+## v0.2.16
+
+### Fixes
+
+- **Double tab on startup (macOS)** — deleting Chrome session restore files (`Current Session`, `Current Tabs`, `Last Session`, `Last Tabs`) before launch now reliably prevents old tabs from reopening; patching `Preferences` alone was insufficient on macOS due to Secure Preferences HMAC validation silently ignoring the change
+
+## v0.2.15
+
+### Features
+
+- **Auto-stop on Chrome disconnect** — when an attached Chrome window closes, the recording session now automatically stops after reconnection attempts are exhausted, instead of hanging as "recording" forever; the daemon cleans up its reference and resets the idle timer
+- **Configurable CDP reconnect settings** — `maxReconnectAttempts` and `reconnectDelayMs` options on `BrowserRecorderConfig` allow tuning reconnection behavior (defaults unchanged: 10 attempts, 1s delay)
+
+## v0.2.14
+
+### Fixes
+
+- **GitHub Pages build fixed** — reverted Vue theme files that were broken by Biome's unsafe auto-fix (removed `<script setup>` imports used by templates); excluded `docs/.vitepress/theme` from Biome to prevent recurrence
+- **Removed vitepress cache from git** — build artifacts (`docs/.vitepress/cache/`, `docs/.vitepress/dist/`) are now gitignored
+
 ## v0.2.13
 
 ### Features
@@ -4763,3 +4800,541 @@ With `--json` (CLI) or when using MCP tools that support `format: "json"`, the s
 	"source": { "file": "order.py", "start_line": 140, "current_line": 147, "lines": ["..."] }
 }
 ```
+
+---
+
+# Structural Refactor Plan
+
+Generated 2026-03-21. Covers 7 codified structural rules across the codebase.
+
+**Rules with zero violations:** Curated Barrels, Import Direction, Kebab-Case Naming, Test Mirror Tree, Centralized Types.
+
+---
+
+## High Value
+
+Structural changes that significantly improve navigability with low risk.
+
+---
+
+#### 1. Split `src/core/session-manager.ts` (1,365 lines)
+
+**Files:** `src/core/session-manager.ts` → 4 extracted modules + slimmed coordinator
+**Rule:** File Size (~500 line soft limit)
+
+SessionManager is a monolithic facade handling 6 distinct concerns: session lifecycle,
+execution control, breakpoint management, state inspection, watch expressions, and output
+capture. Each concern has clear boundaries and could be its own module.
+
+**Current:**
+```
+src/core/
+  session-manager.ts   (1,365 lines — everything)
+```
+
+**Target:**
+```
+src/core/
+  session-manager.ts        (~400 lines — lifecycle, launch, attach, stop, coordination)
+  breakpoint-manager.ts     (~100 lines — set/list breakpoints, exception breakpoints)
+  execution-controller.ts   (~150 lines — continue, step, runTo, thread resolution)
+  state-inspector.ts        (~200 lines — evaluate, variables, stack trace, source, frame resolution)
+  session-output.ts         (~100 lines — output buffer, session log formatting)
+```
+
+**Implementation Notes:**
+- SessionManager retains the public API surface — extracted modules are internal helpers
+- Pass the DAPClient instance to extracted modules (dependency injection, not inheritance)
+- Watch expression management can stay in session-manager (tightly coupled to stop handling)
+- Viewport rendering stays in session-manager (orchestrates compression + state)
+- All imports from other modules still go through `session-manager.ts` exports
+
+**Acceptance Criteria:**
+- [ ] Each extracted module is under 300 lines
+- [ ] SessionManager is under 500 lines
+- [ ] All 15+ public methods still accessible from session-manager.ts
+- [ ] No circular imports between extracted modules
+- [ ] `bun run test:unit` passes
+- [ ] `bun run test:integration` passes
+- [ ] `bun run lint` passes
+
+---
+
+#### 2. Split `src/daemon/server.ts` (709 lines)
+
+**Files:** `src/daemon/server.ts` → handler modules + slimmed server
+**Rule:** File Size (~500 line soft limit)
+
+The daemon server mixes two concerns: daemon lifecycle management (socket, PID, idle timeout)
+and RPC method dispatch (20+ handler methods). The handlers should be extracted.
+
+**Current:**
+```
+src/daemon/
+  server.ts    (709 lines — lifecycle + all RPC handlers)
+  client.ts
+  protocol.ts
+```
+
+**Target:**
+```
+src/daemon/
+  server.ts                  (~200 lines — lifecycle, socket, PID, idle timeout, RPC routing)
+  session-handlers.ts        (~200 lines — session.launch, session.attach, session.continue, etc.)
+  browser-handlers.ts        (~250 lines — browser.start, browser.stop, browser.overview, etc.)
+  client.ts
+  protocol.ts
+```
+
+**Implementation Notes:**
+- server.ts keeps the RPC router that dispatches to handler functions
+- Handler modules export functions that take (params, sessionManager, browserState) args
+- Browser handlers need access to BrowserRecorder, QueryEngine, SessionDiffer instances —
+  pass via a context object rather than making them globals
+- Error code mapping stays in server.ts (cross-cutting concern)
+
+**Acceptance Criteria:**
+- [ ] server.ts under 250 lines
+- [ ] Each handler module under 300 lines
+- [ ] All 20+ RPC methods still work
+- [ ] `bun run test:unit` passes
+- [ ] `bun run test:e2e` passes
+- [ ] `bun run lint` passes
+
+---
+
+#### 3. Consolidate `docs/guide/` and `docs/guides/`
+
+**Files:** Two directories with the same purpose
+**Rule:** Docs Hierarchy (consistent structure)
+
+**Current:**
+```
+docs/
+  guide/           (5 files: cli-installation, faq, first-debug-session, getting-started, mcp-configuration)
+  guides/          (4 files: claude-code, codex, cursor-windsurf, troubleshooting)
+```
+
+**Target:**
+```
+docs/
+  guide/           (all 9 files consolidated)
+```
+
+**Implementation Notes:**
+- Check VitePress sidebar config in `docs/.vitepress/` for references to both paths
+- Update any cross-references between guide pages
+- Check if the docs site has published URLs that would break (redirect if needed)
+- Prefer singular `guide/` to match VitePress conventions
+
+**Acceptance Criteria:**
+- [ ] All guide content in one directory
+- [ ] VitePress config updated
+- [ ] No broken links in docs
+- [ ] Docs site builds successfully
+
+---
+
+## Worth Considering
+
+Valid reorganizations with moderate impact or moderate effort.
+
+---
+
+- **`src/browser/investigation/query-engine.ts` (556 lines)** — Already has extracted `SessionDiffer` and `ReplayContextGenerator` classes, but `QueryEngine` still implements overview generation, search, and body reading inline. Could delegate to these existing specialists and extract body-reading utilities to a `body-reader.ts`. Would drop to ~300 lines.
+
+- **`src/browser/recorder/index.ts` (502 lines)** — Just over the soft limit. Chrome launch/attach logic could move to `chrome-launcher.ts` (which already exists but handles less). Borderline — the file is a coherent orchestrator.
+
+- **`src/cli/commands/index.ts` (710 lines)** — The `getClient()`, `resolveSessionId()`, and `runCommand()` helpers (~50 lines) are shared CLI infrastructure mixed with command re-exports. Could extract to `cli/commands/shared.ts`. Minor improvement.
+
+---
+
+## Not Worth It
+
+Code that technically violates a rule but should NOT be reorganized.
+
+---
+
+- **`src/cli/commands/debug.ts` (741 lines)** — File Size. This is a command registry containing 15 `defineCommand()` definitions. Each follows the same template. Splitting by command would create 15 tiny files with no shared logic — pure file sprawl. The file is scannable because every command follows the same pattern.
+
+- **`src/cli/commands/browser.ts` (575 lines)** — File Size. Same rationale as debug.ts. 11 command definitions following the citty template.
+
+- **`src/mcp/tools/index.ts` (514 lines)** — File Size. 18 MCP tool registrations (`server.tool()` calls). Sequential registration in one file is the documented pattern (see `mcp-tool-handler.md` pattern skill). Splitting would scatter related tool definitions.
+
+- **`src/browser/types.ts` + `src/browser/executor/types.ts`** — Centralized Types. Two types files in the browser domain. However, the rule's exception explicitly allows splitting by sub-domain, and executor/ is a distinct sub-domain with its own types (StepRequest, StepResult, CaptureConfig). Consolidating would create one 290-line types file without improving discoverability.
+
+- **`src/browser/SKILL.md`** — Docs Hierarchy. This is a workflow guide for the `krometrail-chrome` agent skill, not a documentation file. It lives next to the code it describes and is referenced by the skill system. Moving it to docs/ would break skill discovery.
+
+- **`docs/stylistic-refactor-plan.md` at docs root** — Docs Hierarchy. This is a generated output from the stylistic-refactor skill, not a design doc. It belongs at the docs root as a working document, not in `designs/completed/` (which is for historical phase designs).
+
+---
+
+# Stylistic Refactor Plan
+
+Generated 2026-03-21. Covers 7 codified styles across all `src/` files.
+
+**Styles with zero violations:** Arrow vs Declaration, Explicit Return Types, Classes vs Functions, Composition over Inheritance.
+
+---
+
+## High Value
+
+Refactors that significantly improve readability with low risk.
+
+---
+
+#### 1. Rename abbreviated variables in `src/cli/commands/doctor.ts`
+
+**File:** `src/cli/commands/doctor.ts` (lines 112, 141, 169, 192, 215, 241, 264, 299, 323, 349)
+**Style:** Descriptive Naming
+
+`proc` appears 10 times across diagnostic check functions. Each is a short-lived
+`Bun.spawn` result.
+
+**Current:**
+```typescript
+const proc = Bun.spawn(["python3", "--version"], { stdout: "pipe", stderr: "pipe" });
+```
+
+**Target:**
+```typescript
+const process = Bun.spawn(["python3", "--version"], { stdout: "pipe", stderr: "pipe" });
+```
+
+> Note: If `process` conflicts with the global, use `spawnResult` or `child` instead.
+
+**Acceptance Criteria:**
+- [ ] All 10 `proc` instances renamed consistently
+- [ ] No shadowing of `globalThis.process`
+- [ ] Tests pass
+- [ ] No behavior change
+
+---
+
+#### 2. Rename abbreviated variables in `src/browser/executor/cdp-adapter.ts`
+
+**File:** `src/browser/executor/cdp-adapter.ts` (lines 42, 48, 337, 343, 350, 356)
+**Style:** Descriptive Naming
+
+`res` (6 instances) and `msg` (3 instances) used for CDP responses and error messages.
+
+**Current:**
+```typescript
+const res = await this.send("Runtime.evaluate", { expression, ... });
+if (!res.result) {
+	const msg = res.exceptionDetails?.exception?.description ?? "Unknown error";
+```
+
+**Target:**
+```typescript
+const response = await this.send("Runtime.evaluate", { expression, ... });
+if (!response.result) {
+	const errorMessage = response.exceptionDetails?.exception?.description ?? "Unknown error";
+```
+
+**Acceptance Criteria:**
+- [ ] All `res` → `response`, `msg` → `errorMessage`
+- [ ] Tests pass
+- [ ] No behavior change
+
+---
+
+#### 3. Rename abbreviated variables in `src/browser/recorder/cdp-client.ts`
+
+**File:** `src/browser/recorder/cdp-client.ts` (lines 25, 134)
+**Style:** Descriptive Naming
+
+**Current:**
+```typescript
+const resp = await fetch(`http://127.0.0.1:${port}/json/list`);
+// ...
+const msg = JSON.parse(data.toString());
+```
+
+**Target:**
+```typescript
+const response = await fetch(`http://127.0.0.1:${port}/json/list`);
+// ...
+const message = JSON.parse(data.toString());
+```
+
+**Acceptance Criteria:**
+- [ ] `resp` → `response`, `msg` → `message`
+- [ ] Tests pass
+- [ ] No behavior change
+
+---
+
+#### 4. Rename `desc` in `src/cli/commands/completions.ts` and `src/cli/format.ts`
+
+**File:** `src/cli/commands/completions.ts` (lines 115, 273, 288)
+**File:** `src/cli/format.ts` (line 254)
+**Style:** Descriptive Naming
+
+**Current:**
+```typescript
+const desc = command.description ?? "";
+```
+
+**Target:**
+```typescript
+const description = command.description ?? "";
+```
+
+**Acceptance Criteria:**
+- [ ] All `desc` → `description` in both files
+- [ ] Tests pass
+- [ ] No behavior change
+
+---
+
+#### 5. Rename `val` and `prev` in Vue injection/patterns
+
+**File:** `src/browser/recorder/framework/vue-injection.ts` (lines 297, 404)
+**File:** `src/browser/recorder/framework/patterns/vue-patterns.ts` (line 57)
+**Style:** Descriptive Naming
+
+**Current:**
+```typescript
+const val = component.data[key];
+const prev = oldValues.get(key);
+```
+
+**Target:**
+```typescript
+const value = component.data[key];
+const previous = oldValues.get(key);
+```
+
+**Acceptance Criteria:**
+- [ ] `val` → `value`, `prev` → `previous`
+- [ ] Tests pass
+- [ ] No behavior change
+
+---
+
+#### 6. Rename `res` and `buf` in `src/core/auto-update.ts`
+
+**File:** `src/core/auto-update.ts` (lines 107, 180, 183)
+**Style:** Descriptive Naming
+
+**Current:**
+```typescript
+const res = await fetch(url);
+const buf = await res.arrayBuffer();
+```
+
+**Target:**
+```typescript
+const response = await fetch(url);
+const buffer = await response.arrayBuffer();
+```
+
+**Acceptance Criteria:**
+- [ ] `res` → `response`, `buf` → `buffer`
+- [ ] Tests pass
+- [ ] No behavior change
+
+---
+
+#### 7. Rename `buf` in `src/adapters/js-debug-adapter.ts`
+
+**File:** `src/adapters/js-debug-adapter.ts` (line 137)
+**Style:** Descriptive Naming
+
+**Current:**
+```typescript
+const buf = await Bun.file(cachedVersionFile).text();
+```
+
+**Target:**
+```typescript
+const cachedVersion = await Bun.file(cachedVersionFile).text();
+```
+
+**Acceptance Criteria:**
+- [ ] `buf` → `cachedVersion` (more descriptive than just `buffer`)
+- [ ] Tests pass
+- [ ] No behavior change
+
+---
+
+#### 8. Rename `ctx` in `src/browser/recorder/framework/react-injection.ts`
+
+**File:** `src/browser/recorder/framework/react-injection.ts` (line 206)
+**Style:** Descriptive Naming
+
+**Current:**
+```typescript
+const ctx = fiber._debugContext;
+```
+
+**Target:**
+```typescript
+const context = fiber._debugContext;
+```
+
+**Acceptance Criteria:**
+- [ ] `ctx` → `context`
+- [ ] Tests pass
+- [ ] No behavior change
+
+---
+
+#### 9. Rename `msg` in `src/mcp/tools/browser.ts`
+
+**File:** `src/mcp/tools/browser.ts` (line 117)
+**Style:** Descriptive Naming
+
+**Current:**
+```typescript
+const msg = e instanceof Error ? e.message : String(e);
+```
+
+**Target:**
+```typescript
+const errorMessage = e instanceof Error ? e.message : String(e);
+```
+
+**Acceptance Criteria:**
+- [ ] `msg` → `errorMessage`
+- [ ] Tests pass
+- [ ] No behavior change
+
+---
+
+#### 10. Rename `val` in `src/telemetry.ts`
+
+**File:** `src/telemetry.ts` (line 17)
+**Style:** Descriptive Naming
+
+**Current:**
+```typescript
+const val = process.env.KROMETRAIL_TELEMETRY;
+```
+
+**Target:**
+```typescript
+const telemetryEnv = process.env.KROMETRAIL_TELEMETRY;
+```
+
+**Acceptance Criteria:**
+- [ ] `val` → `telemetryEnv`
+- [ ] Tests pass
+- [ ] No behavior change
+
+---
+
+#### 11. Early return refactor in `src/cli/commands/debug.ts`
+
+**File:** `src/cli/commands/debug.ts` (lines 158-228)
+**Style:** Early Returns
+
+The launch handler wraps the entire body in `if (args.config || args["config-name"]) { ... } else { ... }`.
+The else branch is the simpler case and should come first as a guard.
+
+**Current:**
+```typescript
+if (args.config || args["config-name"]) {
+	// 50+ lines of config-based launch
+} else {
+	if (!args.command) {
+		throw new Error('Usage: ...');
+	}
+	const result = await client.call("session.launch", { ... });
+	process.stdout.write(`${formatLaunch(result, mode)}\n`);
+}
+```
+
+**Target:**
+```typescript
+if (!args.config && !args["config-name"]) {
+	if (!args.command) {
+		throw new Error('Usage: ...');
+	}
+	const result = await client.call("session.launch", { ... });
+	process.stdout.write(`${formatLaunch(result, mode)}\n`);
+	return;
+}
+
+// Config-based launch (main flow, no else wrapper)
+const configPath = args.config ? resolvePath(args.config) : resolvePath(process.cwd(), ".vscode/launch.json");
+// ...
+```
+
+**Acceptance Criteria:**
+- [ ] Outer if/else eliminated via early return
+- [ ] Inner config-name lookup also uses guard clause
+- [ ] Tests pass
+- [ ] No behavior change
+
+---
+
+#### 12. Add `is` prefix to boolean in `src/core/compression.ts`
+
+**File:** `src/core/compression.ts` (line 9)
+**Style:** Descriptive Naming
+
+**Current:**
+```typescript
+active: boolean;
+```
+
+**Target:**
+```typescript
+isActive: boolean;
+```
+
+> Note: This is a field in the `CompressionTier` type — check all usage sites.
+
+**Acceptance Criteria:**
+- [ ] Field renamed in type definition
+- [ ] All references updated
+- [ ] Tests pass
+- [ ] No behavior change
+
+---
+
+## Worth Considering
+
+Valid refactors with moderate impact or moderate effort.
+
+---
+
+- **`src/adapters/helpers.ts:28,57`** — `proc` → `childProcess`. Used in `spawnAndWait` and `gracefulDispose`. Low risk but touches shared adapter code.
+
+- **`src/browser/recorder/chrome-launcher.ts:34`** — `proc` → `chromeProcess`. Single instance, simple rename.
+
+- **`src/daemon/client.ts:135-142`** — Invert `if (!Number.isNaN(pid))` to a guard clause `if (Number.isNaN(pid))` with early continuation. Minor readability improvement.
+
+- **`src/core/auto-update.ts:263-273`** — Refactor else-if chain to use early returns for each install type case. Moderate improvement.
+
+---
+
+## Not Worth It
+
+Code that technically violates a style but should NOT be refactored.
+
+---
+
+- **`src/mcp/tools/index.ts` (464 lines) and `src/mcp/tools/browser.ts` (359 lines)** — Function Size. These are tool registration functions that define schemas and handlers in sequence. Splitting into individual files per tool would add file sprawl without improving readability — the sequential registration is the natural structure.
+
+- **`src/browser/recorder/framework/*-injection.ts` (200-412 lines each)** — Function Size. These functions generate JavaScript strings for browser injection. They're essentially template literals, not complex logic. Splitting them would fragment the injection scripts and make them harder to reason about as a whole.
+
+- **`src/browser/recorder/framework/detector.ts` (300 lines)** — Function Size. Detection script generator — same justification as injection scripts.
+
+- **`src/browser/recorder/marker-overlay.ts` (118 lines)** — Function Size. UI overlay script generator. Splitting would obscure the HTML/CSS/JS structure.
+
+- **`src/cli/commands/completions.ts` (78-114 lines per function)** — Function Size. Shell completion script generators (bash, zsh, fish). These are string templates by nature.
+
+- **`src/browser/investigation/renderers.ts` (85-117 lines per function)** — Function Size. Render functions build multi-section text output. Splitting into sub-renderers would add indirection without improving clarity — the sections are tightly coupled.
+
+- **`src/core/viewport.ts:buildViewport` (66 lines)** — Function Size. Just over the soft limit, builds a single viewport string with source context, variables, and stack frames. Extracting sections would fragment the output contract.
+
+- **`src/core/value-renderer.ts:renderValue` (65 lines)** — Function Size. Recursive value renderer with a switch over value types. Each case is 3-5 lines — splitting adds function call overhead without readability gain.
+
+- **`src/core/launch-json.ts:configToOptions` (77 lines)** — Function Size. Mapping from VS Code launch.json format to internal options. The mapping is procedural by nature — each field is a 1-2 line conversion.
+
+- **`src/adapters/python.ts:87-95`** — Early Returns. The if/else-if/else chain for script type (`-m`, `-c`, default) has three equally weighted branches. Not a guard clause candidate — it's a legitimate triple branch. A switch would be an option but the current style is clear enough.
+
+- **`src/browser/recorder/index.ts:262-268`** — Early Returns. The nested if/else for expectedUrl handling has two meaningful branches that return differently. Flattening into a compound condition would reduce readability.

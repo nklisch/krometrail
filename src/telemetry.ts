@@ -14,8 +14,8 @@ const OPT_OUT_VARS = ["DO_NOT_TRACK", "KROMETRAIL_NO_TELEMETRY", "TELEMETRY_DISA
 
 function isOptedOut(): boolean {
 	for (const key of OPT_OUT_VARS) {
-		const val = process.env[key];
-		if (val && val !== "0" && val !== "false") return true;
+		const envValue = process.env[key];
+		if (envValue && envValue !== "0" && envValue !== "false") return true;
 	}
 	// Skip in CI by default — installs there are not real users
 	if (process.env.CI) return true;

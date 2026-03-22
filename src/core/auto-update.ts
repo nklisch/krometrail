@@ -104,12 +104,12 @@ export function isNewer(remote: string, local: string): boolean {
 export async function checkLatestVersion(): Promise<VersionCheckResult | null> {
 	const currentVersion = pkg.version;
 	try {
-		const res = await fetch("https://api.github.com/repos/nklisch/krometrail/releases/latest", {
+		const response = await fetch("https://api.github.com/repos/nklisch/krometrail/releases/latest", {
 			headers: { "User-Agent": `krometrail/${currentVersion}` },
 			signal: AbortSignal.timeout(5000),
 		});
-		if (!res.ok) return null;
-		const data = (await res.json()) as { tag_name?: string };
+		if (!response.ok) return null;
+		const data = (await response.json()) as { tag_name?: string };
 		const latestVersion = data.tag_name;
 		if (!latestVersion) return null;
 		return {
@@ -177,13 +177,13 @@ export async function updateBinary(binaryPath: string, version: string): Promise
 	const tempPath = `${binaryPath}.update.${Date.now()}`;
 
 	try {
-		const res = await fetch(url, { signal: AbortSignal.timeout(60000) });
-		if (!res.ok) return false;
+		const response = await fetch(url, { signal: AbortSignal.timeout(60000) });
+		if (!response.ok) return false;
 
-		const buf = await res.arrayBuffer();
-		if (buf.byteLength === 0) return false;
+		const buffer = await response.arrayBuffer();
+		if (buffer.byteLength === 0) return false;
 
-		writeFileSync(tempPath, Buffer.from(buf));
+		writeFileSync(tempPath, Buffer.from(buffer));
 		chmodSync(tempPath, 0o755);
 
 		renameSync(tempPath, binaryPath);

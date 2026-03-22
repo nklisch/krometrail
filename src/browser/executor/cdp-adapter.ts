@@ -39,17 +39,17 @@ export class CDPPortAdapter implements StepExecutorPort {
 	constructor(private config: CDPAdapterConfig) {}
 
 	async evaluate(expression: string): Promise<string> {
-		const res = (await this.config.cdpClient.sendToTarget(this.config.tabSessionId, "Runtime.evaluate", {
+		const response = (await this.config.cdpClient.sendToTarget(this.config.tabSessionId, "Runtime.evaluate", {
 			expression,
 			returnByValue: true,
 		})) as EvaluateResult;
 
-		if (res.exceptionDetails) {
-			const msg = res.exceptionDetails.exception?.description ?? res.exceptionDetails.text ?? "JS evaluation failed";
-			throw new StepExecutionError(0, "evaluate", undefined, msg);
+		if (response.exceptionDetails) {
+			const errorMessage = response.exceptionDetails.exception?.description ?? response.exceptionDetails.text ?? "JS evaluation failed";
+			throw new StepExecutionError(0, "evaluate", undefined, errorMessage);
 		}
 
-		return String(res.result?.value ?? "");
+		return String(response.result?.value ?? "");
 	}
 
 	async navigate(url: string): Promise<void> {
@@ -334,30 +334,30 @@ export class CDPPortAdapter implements StepExecutorPort {
 
 	/** Evaluate JS and throw StepExecutionError if the JS throws. */
 	private async evaluateThrow(expression: string, selector?: string): Promise<void> {
-		const res = (await this.config.cdpClient.sendToTarget(this.config.tabSessionId, "Runtime.evaluate", {
+		const response = (await this.config.cdpClient.sendToTarget(this.config.tabSessionId, "Runtime.evaluate", {
 			expression,
 			returnByValue: true,
 		})) as EvaluateResult;
 
-		if (res.exceptionDetails) {
-			const msg = res.exceptionDetails.exception?.description ?? res.exceptionDetails.text ?? "JS evaluation failed";
-			throw new StepExecutionError(0, "evaluate", selector, msg);
+		if (response.exceptionDetails) {
+			const errorMessage = response.exceptionDetails.exception?.description ?? response.exceptionDetails.text ?? "JS evaluation failed";
+			throw new StepExecutionError(0, "evaluate", selector, errorMessage);
 		}
 	}
 
 	/** Evaluate JS and return the raw string value. */
 	private async evaluateRaw(expression: string): Promise<string> {
-		const res = (await this.config.cdpClient.sendToTarget(this.config.tabSessionId, "Runtime.evaluate", {
+		const response = (await this.config.cdpClient.sendToTarget(this.config.tabSessionId, "Runtime.evaluate", {
 			expression,
 			returnByValue: true,
 		})) as EvaluateResult;
 
-		if (res.exceptionDetails) {
-			const msg = res.exceptionDetails.exception?.description ?? res.exceptionDetails.text ?? "JS evaluation failed";
-			throw new StepExecutionError(0, "evaluate", undefined, msg);
+		if (response.exceptionDetails) {
+			const errorMessage = response.exceptionDetails.exception?.description ?? response.exceptionDetails.text ?? "JS evaluation failed";
+			throw new StepExecutionError(0, "evaluate", undefined, errorMessage);
 		}
 
-		return String(res.result?.value ?? "");
+		return String(response.result?.value ?? "");
 	}
 
 	/** Poll until document.readyState === "complete" or timeout. */

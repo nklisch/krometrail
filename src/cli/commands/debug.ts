@@ -155,59 +155,7 @@ export const launchCommand = defineCommand({
 				const env = args.env ? parseEnvString(args.env) : undefined;
 				const viewportConfig = buildViewportConfig(args);
 
-				if (args.config || args["config-name"]) {
-					// Load from launch.json
-					const configPath = args.config ? resolvePath(args.config) : resolvePath(process.cwd(), ".vscode/launch.json");
-					const launchJson = await parseLaunchJson(configPath);
-					if (!launchJson) {
-						throw new Error(`launch.json not found at: ${configPath}`);
-					}
-
-					let configEntry: (typeof launchJson.configurations)[0];
-					if (args["config-name"]) {
-						const found = launchJson.configurations.find((c) => c.name === args["config-name"]);
-						if (!found) {
-							const available = listConfigurations(launchJson)
-								.map((c) => `  "${c.name}"`)
-								.join("\n");
-							throw new Error(`Configuration "${args["config-name"]}" not found. Available:\n${available}`);
-						}
-						configEntry = found;
-					} else {
-						if (launchJson.configurations.length === 1) {
-							configEntry = launchJson.configurations[0];
-						} else {
-							const available = listConfigurations(launchJson)
-								.map((c) => `  "${c.name}"`)
-								.join("\n");
-							throw new Error(`Multiple configurations found. Use --config-name to select one:\n${available}`);
-						}
-					}
-
-					const converted = configToOptions(configEntry, process.cwd());
-					if (converted.type === "attach") {
-						const result = await client.call<LaunchResultPayload>("session.attach", {
-							language: args.language ?? converted.options.language,
-							pid: converted.options.pid,
-							port: converted.options.port,
-							host: converted.options.host,
-							breakpoints: breakpoints?.map((fb) => ({ file: fb.file, breakpoints: fb.breakpoints })),
-						});
-						process.stdout.write(`${formatLaunch(result, mode)}\n`);
-					} else {
-						const result = await client.call<LaunchResultPayload>("session.launch", {
-							command: args.command ?? converted.options.command,
-							language: args.language ?? converted.options.language,
-							framework: args.framework,
-							breakpoints: breakpoints?.map((fb) => ({ file: fb.file, breakpoints: fb.breakpoints })),
-							stopOnEntry: args["stop-on-entry"],
-							cwd: args.cwd ?? converted.options.cwd,
-							env: env ?? converted.options.env,
-							viewportConfig,
-						});
-						process.stdout.write(`${formatLaunch(result, mode)}\n`);
-					}
-				} else {
+				if (!args.config && !args["config-name"]) {
 					if (!args.command) {
 						throw new Error('Usage: krometrail debug launch "<command>" or krometrail debug launch --config-name "<name>"');
 					}
@@ -222,6 +170,59 @@ export const launchCommand = defineCommand({
 						stopOnEntry: args["stop-on-entry"],
 						cwd: args.cwd,
 						env,
+						viewportConfig,
+					});
+					process.stdout.write(`${formatLaunch(result, mode)}\n`);
+					return;
+				}
+
+				// Load from launch.json
+				const configPath = args.config ? resolvePath(args.config) : resolvePath(process.cwd(), ".vscode/launch.json");
+				const launchJson = await parseLaunchJson(configPath);
+				if (!launchJson) {
+					throw new Error(`launch.json not found at: ${configPath}`);
+				}
+
+				let configEntry: (typeof launchJson.configurations)[0];
+				if (args["config-name"]) {
+					const found = launchJson.configurations.find((c) => c.name === args["config-name"]);
+					if (!found) {
+						const available = listConfigurations(launchJson)
+							.map((c) => `  "${c.name}"`)
+							.join("\n");
+						throw new Error(`Configuration "${args["config-name"]}" not found. Available:\n${available}`);
+					}
+					configEntry = found;
+				} else {
+					if (launchJson.configurations.length === 1) {
+						configEntry = launchJson.configurations[0];
+					} else {
+						const available = listConfigurations(launchJson)
+							.map((c) => `  "${c.name}"`)
+							.join("\n");
+						throw new Error(`Multiple configurations found. Use --config-name to select one:\n${available}`);
+					}
+				}
+
+				const converted = configToOptions(configEntry, process.cwd());
+				if (converted.type === "attach") {
+					const result = await client.call<LaunchResultPayload>("session.attach", {
+						language: args.language ?? converted.options.language,
+						pid: converted.options.pid,
+						port: converted.options.port,
+						host: converted.options.host,
+						breakpoints: breakpoints?.map((fb) => ({ file: fb.file, breakpoints: fb.breakpoints })),
+					});
+					process.stdout.write(`${formatLaunch(result, mode)}\n`);
+				} else {
+					const result = await client.call<LaunchResultPayload>("session.launch", {
+						command: args.command ?? converted.options.command,
+						language: args.language ?? converted.options.language,
+						framework: args.framework,
+						breakpoints: breakpoints?.map((fb) => ({ file: fb.file, breakpoints: fb.breakpoints })),
+						stopOnEntry: args["stop-on-entry"],
+						cwd: args.cwd ?? converted.options.cwd,
+						env: env ?? converted.options.env,
 						viewportConfig,
 					});
 					process.stdout.write(`${formatLaunch(result, mode)}\n`);

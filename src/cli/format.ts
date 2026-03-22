@@ -251,11 +251,11 @@ export function formatBreakpointsList(result: BreakpointsListPayload, mode: Outp
 	for (const [file, bps] of files) {
 		lines.push(`${file}:`);
 		for (const bp of bps) {
-			let desc = `  Line ${bp.line}`;
-			if (bp.condition) desc += ` when ${bp.condition}`;
-			if (bp.hitCondition) desc += ` hit ${bp.hitCondition}`;
-			if (bp.logMessage) desc += ` log '${bp.logMessage}'`;
-			lines.push(desc);
+			let description = `  Line ${bp.line}`;
+			if (bp.condition) description += ` when ${bp.condition}`;
+			if (bp.hitCondition) description += ` hit ${bp.hitCondition}`;
+			if (bp.logMessage) description += ` log '${bp.logMessage}'`;
+			lines.push(description);
 		}
 	}
 	return lines.join("\n");

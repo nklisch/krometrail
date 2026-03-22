@@ -109,23 +109,23 @@ async function getPythonDebugpyVersion(): Promise<string | undefined> {
 	try {
 		const { spawn } = await import("node:child_process");
 		const result = await new Promise<string>((resolve, reject) => {
-			const proc = spawn("python3", ["-m", "debugpy", "--version"], { stdio: "pipe" });
+			const child = spawn("python3", ["-m", "debugpy", "--version"], { stdio: "pipe" });
 			let stdout = "";
 			let stderr = "";
-			proc.stdout.on("data", (chunk: Buffer) => {
+			child.stdout.on("data", (chunk: Buffer) => {
 				stdout += chunk.toString();
 			});
-			proc.stderr.on("data", (chunk: Buffer) => {
+			child.stderr.on("data", (chunk: Buffer) => {
 				stderr += chunk.toString();
 			});
-			proc.on("close", (code) => {
+			child.on("close", (code) => {
 				if (code === 0) {
 					resolve((stdout + stderr).trim());
 				} else {
 					reject(new Error("Non-zero exit"));
 				}
 			});
-			proc.on("error", reject);
+			child.on("error", reject);
 		});
 		// debugpy outputs version like "1.8.0"
 		return result.trim() || undefined;
@@ -138,16 +138,16 @@ async function getNodeVersion(): Promise<string | undefined> {
 	try {
 		const { spawn } = await import("node:child_process");
 		const result = await new Promise<string>((resolve, reject) => {
-			const proc = spawn("node", ["--version"], { stdio: "pipe" });
+			const child = spawn("node", ["--version"], { stdio: "pipe" });
 			let stdout = "";
-			proc.stdout.on("data", (chunk: Buffer) => {
+			child.stdout.on("data", (chunk: Buffer) => {
 				stdout += chunk.toString();
 			});
-			proc.on("close", (code) => {
+			child.on("close", (code) => {
 				if (code === 0) resolve(stdout.trim());
 				else reject(new Error("Non-zero exit"));
 			});
-			proc.on("error", reject);
+			child.on("error", reject);
 		});
 		// Strip leading "v": "v20.11.0" => "20.11.0"
 		return result.replace(/^v/, "") || undefined;
@@ -166,16 +166,16 @@ async function getDlvVersion(): Promise<string | undefined> {
 		const currentPath = process.env.PATH ?? "";
 		const augmentedPath = currentPath.includes(goBin) ? currentPath : `${goBin}:${currentPath}`;
 		const result = await new Promise<string>((resolve, reject) => {
-			const proc = spawn("dlv", ["version"], { stdio: "pipe", env: { ...process.env, PATH: augmentedPath } });
+			const child = spawn("dlv", ["version"], { stdio: "pipe", env: { ...process.env, PATH: augmentedPath } });
 			let stdout = "";
-			proc.stdout.on("data", (chunk: Buffer) => {
+			child.stdout.on("data", (chunk: Buffer) => {
 				stdout += chunk.toString();
 			});
-			proc.on("close", (code) => {
+			child.on("close", (code) => {
 				if (code === 0) resolve(stdout.trim());
 				else reject(new Error("Non-zero exit"));
 			});
-			proc.on("error", reject);
+			child.on("error", reject);
 		});
 		// Parse "Version: 1.23.0" from dlv version output
 		const match = result.match(/Version:\s+(\S+)/);
@@ -189,16 +189,16 @@ async function getCargoVersion(): Promise<string | undefined> {
 	try {
 		const { spawn } = await import("node:child_process");
 		const result = await new Promise<string>((resolve, reject) => {
-			const proc = spawn("cargo", ["--version"], { stdio: "pipe" });
+			const child = spawn("cargo", ["--version"], { stdio: "pipe" });
 			let stdout = "";
-			proc.stdout.on("data", (chunk: Buffer) => {
+			child.stdout.on("data", (chunk: Buffer) => {
 				stdout += chunk.toString();
 			});
-			proc.on("close", (code) => {
+			child.on("close", (code) => {
 				if (code === 0) resolve(stdout.trim());
 				else reject(new Error("Non-zero exit"));
 			});
-			proc.on("error", reject);
+			child.on("error", reject);
 		});
 		// Parse "cargo 1.75.0 (..." => "1.75.0"
 		const match = result.match(/cargo\s+(\S+)/);
@@ -212,19 +212,19 @@ async function getJavacVersion(): Promise<string | undefined> {
 	try {
 		const { spawn } = await import("node:child_process");
 		const result = await new Promise<string>((resolve, reject) => {
-			const proc = spawn("javac", ["-version"], { stdio: "pipe" });
+			const child = spawn("javac", ["-version"], { stdio: "pipe" });
 			let output = "";
-			proc.stdout.on("data", (chunk: Buffer) => {
+			child.stdout.on("data", (chunk: Buffer) => {
 				output += chunk.toString();
 			});
-			proc.stderr.on("data", (chunk: Buffer) => {
+			child.stderr.on("data", (chunk: Buffer) => {
 				output += chunk.toString();
 			});
-			proc.on("close", (code) => {
+			child.on("close", (code) => {
 				if (code === 0) resolve(output.trim());
 				else reject(new Error("Non-zero exit"));
 			});
-			proc.on("error", reject);
+			child.on("error", reject);
 		});
 		// Parse "javac 17.0.8" => "17.0.8"
 		const match = result.match(/javac\s+(\S+)/);
@@ -238,16 +238,16 @@ async function getGdbVersion(): Promise<string | undefined> {
 	try {
 		const { spawn } = await import("node:child_process");
 		const result = await new Promise<string>((resolve, reject) => {
-			const proc = spawn("gdb", ["--version"], { stdio: "pipe" });
+			const child = spawn("gdb", ["--version"], { stdio: "pipe" });
 			let stdout = "";
-			proc.stdout.on("data", (chunk: Buffer) => {
+			child.stdout.on("data", (chunk: Buffer) => {
 				stdout += chunk.toString();
 			});
-			proc.on("close", (code) => {
+			child.on("close", (code) => {
 				if (code === 0) resolve(stdout.trim());
 				else reject(new Error("Non-zero exit"));
 			});
-			proc.on("error", reject);
+			child.on("error", reject);
 		});
 		// Parse "GNU gdb ... 14.1" => "14.1"
 		const match = result.match(/GNU gdb[^\d]*(\d+\.\d+)/);
@@ -261,19 +261,19 @@ async function getRdbgVersion(): Promise<string | undefined> {
 	try {
 		const { spawn } = await import("node:child_process");
 		const result = await new Promise<string>((resolve, reject) => {
-			const proc = spawn("rdbg", ["--version"], { stdio: "pipe" });
+			const child = spawn("rdbg", ["--version"], { stdio: "pipe" });
 			let output = "";
-			proc.stdout.on("data", (chunk: Buffer) => {
+			child.stdout.on("data", (chunk: Buffer) => {
 				output += chunk.toString();
 			});
-			proc.stderr?.on("data", (chunk: Buffer) => {
+			child.stderr?.on("data", (chunk: Buffer) => {
 				output += chunk.toString();
 			});
-			proc.on("close", (code) => {
+			child.on("close", (code) => {
 				if (code === 0) resolve(output.trim());
 				else reject(new Error("Non-zero exit"));
 			});
-			proc.on("error", reject);
+			child.on("error", reject);
 		});
 		// Parse "rdbg 1.9.0" => "1.9.0"
 		const match = result.match(/rdbg\s+(\S+)/i);
@@ -296,19 +296,19 @@ async function getNetcoredbgVersion(): Promise<string | undefined> {
 		const cmd = existsSync(cached) ? cached : "netcoredbg";
 
 		const result = await new Promise<string>((resolve, reject) => {
-			const proc = spawn(cmd, ["--version"], { stdio: "pipe" });
+			const child = spawn(cmd, ["--version"], { stdio: "pipe" });
 			let output = "";
-			proc.stdout.on("data", (chunk: Buffer) => {
+			child.stdout.on("data", (chunk: Buffer) => {
 				output += chunk.toString();
 			});
-			proc.stderr?.on("data", (chunk: Buffer) => {
+			child.stderr?.on("data", (chunk: Buffer) => {
 				output += chunk.toString();
 			});
-			proc.on("close", (code) => {
+			child.on("close", (code) => {
 				if (code === 0) resolve(output.trim());
 				else reject(new Error("Non-zero exit"));
 			});
-			proc.on("error", reject);
+			child.on("error", reject);
 		});
 		return result.split("\n")[0]?.trim() || undefined;
 	} catch {
@@ -320,19 +320,19 @@ async function getSwiftcVersion(): Promise<string | undefined> {
 	try {
 		const { spawn } = await import("node:child_process");
 		const result = await new Promise<string>((resolve, reject) => {
-			const proc = spawn("swiftc", ["--version"], { stdio: "pipe" });
+			const child = spawn("swiftc", ["--version"], { stdio: "pipe" });
 			let output = "";
-			proc.stdout.on("data", (chunk: Buffer) => {
+			child.stdout.on("data", (chunk: Buffer) => {
 				output += chunk.toString();
 			});
-			proc.stderr?.on("data", (chunk: Buffer) => {
+			child.stderr?.on("data", (chunk: Buffer) => {
 				output += chunk.toString();
 			});
-			proc.on("close", (code) => {
+			child.on("close", (code) => {
 				if (code === 0) resolve(output.trim());
 				else reject(new Error("Non-zero exit"));
 			});
-			proc.on("error", reject);
+			child.on("error", reject);
 		});
 		// Parse "Swift version 5.10 ..." => "5.10"
 		const match = result.match(/Swift version\s+(\S+)/i);
@@ -346,19 +346,19 @@ async function getKotlincVersion(): Promise<string | undefined> {
 	try {
 		const { spawn } = await import("node:child_process");
 		const result = await new Promise<string>((resolve, reject) => {
-			const proc = spawn("kotlinc", ["-version"], { stdio: "pipe" });
+			const child = spawn("kotlinc", ["-version"], { stdio: "pipe" });
 			let output = "";
-			proc.stdout.on("data", (chunk: Buffer) => {
+			child.stdout.on("data", (chunk: Buffer) => {
 				output += chunk.toString();
 			});
-			proc.stderr.on("data", (chunk: Buffer) => {
+			child.stderr.on("data", (chunk: Buffer) => {
 				output += chunk.toString();
 			});
-			proc.on("close", (code) => {
+			child.on("close", (code) => {
 				if (code === 0) resolve(output.trim());
 				else reject(new Error("Non-zero exit"));
 			});
-			proc.on("error", reject);
+			child.on("error", reject);
 		});
 		// Parse "info: kotlinc-jvm 2.0.0 (JRE ...)" => "2.0.0"
 		const match = result.match(/kotlinc-jvm\s+(\S+)/i);

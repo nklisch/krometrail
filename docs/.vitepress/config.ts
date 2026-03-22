@@ -124,6 +124,15 @@ if (typeof requestIdleCallback === 'function') {
 						{ text: "FAQ", link: "/guide/faq" },
 					],
 				},
+				{
+					text: "Tool Guides",
+					items: [
+						{ text: "Claude Code", link: "/guide/claude-code" },
+						{ text: "Cursor & Windsurf", link: "/guide/cursor-windsurf" },
+						{ text: "Codex", link: "/guide/codex" },
+						{ text: "Troubleshooting", link: "/guide/troubleshooting" },
+					],
+				},
 			],
 			"/browser/": [
 				{

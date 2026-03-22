@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { DebugProtocol } from "@vscode/debugprotocol";
 import type { DAPConnection, DebugAdapter } from "../adapters/base.js";
@@ -9,25 +8,31 @@ import type { StopResult } from "./dap-client.js";
 import { DAPClient } from "./dap-client.js";
 import type { SessionState, StepDirection } from "./enums.js";
 import { AdapterNotFoundError, AdapterPrerequisiteError, SessionLimitError, SessionNotFoundError, SessionStateError } from "./errors.js";
-import { extractObservations, formatSessionLogDetailed, formatSessionLogSummary } from "./session-logger.js";
+import { extractObservations } from "./session-logger.js";
 import type { Breakpoint, EnrichedActionLogEntry, ExceptionInfo, ResourceLimits, SessionStatus, StopReason, ThreadInfo, TokenStats, Variable, ViewportConfig, ViewportSnapshot } from "./types.js";
 import { ResourceLimitsSchema, ViewportConfigSchema } from "./types.js";
 
 export type { SessionState };
 
-import { convertDAPVariables, renderDAPVariable } from "./value-renderer.js";
-import { computeViewportDiff, isDiffEligible, renderAlignedVariables, renderViewport, renderViewportDiff } from "./viewport.js";
+import { convertDAPVariables } from "./value-renderer.js";
+import { computeViewportDiff, isDiffEligible, renderViewport, renderViewportDiff } from "./viewport.js";
 
-// --- Helpers ---
+// Re-export types that live in extracted modules
+export type { SessionCapabilities, VerifiedBreakpoint } from "./breakpoint-manager.js";
 
-function toSourceBreakpoints(bps: Breakpoint[]): DebugProtocol.SourceBreakpoint[] {
-	return bps.map((bp) => ({
-		line: bp.line,
-		condition: bp.condition,
-		hitCondition: bp.hitCondition,
-		logMessage: bp.logMessage,
-	}));
-}
+// Import from extracted modules
+import {
+	getSessionCapabilities,
+	getSessionExceptionBreakpointFilters,
+	type SessionCapabilities,
+	setSessionBreakpoints,
+	setSessionExceptionBreakpoints,
+	toSourceBreakpoints,
+	type VerifiedBreakpoint,
+} from "./breakpoint-manager.js";
+import { executeContinue, executeRunTo, executeStep, getThreadId } from "./execution-controller.js";
+import { addSessionWatchExpressions, getSessionLog, getSessionOutput, registerOutputHandler, removeSessionWatchExpressions } from "./session-output.js";
+import { evaluateExpression, getSessionSource, getSessionStackTrace, getSessionVariables, readSourceFile } from "./state-inspector.js";
 
 // --- Launch Options ---
 
@@ -62,40 +67,6 @@ export interface AttachOptions {
 	breakpoints?: Array<{ file: string; breakpoints: Breakpoint[] }>;
 	/** Viewport configuration */
 	viewportConfig?: Partial<ViewportConfig>;
-}
-
-// --- Verified Breakpoint ---
-
-export interface VerifiedBreakpoint {
-	/** Requested line */
-	requestedLine: number;
-	/** Actual line the debugger set the breakpoint on (may differ) */
-	verifiedLine: number | null;
-	/** Whether the debugger accepted the breakpoint */
-	verified: boolean;
-	/** Debugger message (e.g., "adjusted to nearest executable line") */
-	message?: string;
-	/** Whether the condition was accepted (null if no condition) */
-	conditionAccepted?: boolean;
-}
-
-// --- Session Capabilities ---
-
-export interface SessionCapabilities {
-	/** Whether conditional breakpoints are supported */
-	supportsConditionalBreakpoints: boolean;
-	/** Whether hit count breakpoints are supported */
-	supportsHitConditionalBreakpoints: boolean;
-	/** Whether logpoints are supported */
-	supportsLogPoints: boolean;
-	/** Whether exception info can be queried */
-	supportsExceptionInfo: boolean;
-	/** Available exception breakpoint filters */
-	exceptionFilters: Array<{ filter: string; label: string }>;
-	/** Whether the debugger supports restart */
-	supportsRestart: boolean;
-	/** Whether set-variable is supported */
-	supportsSetVariable: boolean;
 }
 
 // --- Session State Machine ---
@@ -341,7 +312,7 @@ export class SessionManager {
 		session.timeoutTimer = this.startSessionTimeout(session, sessionId);
 
 		// 10. Register output event handler
-		this.registerOutputHandler(session, dapClient);
+		registerOutputHandler(session, dapClient);
 
 		this.sessions.set(sessionId, session);
 
@@ -504,7 +475,7 @@ export class SessionManager {
 		session.timeoutTimer = this.startSessionTimeout(session, sessionId);
 
 		// Register output event handler
-		this.registerOutputHandler(session, dapClient);
+		registerOutputHandler(session, dapClient);
 
 		this.sessions.set(sessionId, session);
 		this.logAction(session, "debug_attach", `Attached to ${options.language} process`);
@@ -527,22 +498,7 @@ export class SessionManager {
 		const session = this.getSession(sessionId);
 		this.assertState(session, "stopped", "running");
 		this.checkAndIncrementAction(session, "debug_continue");
-
-		let stopResultPromise: Promise<StopResult>;
-
-		if (session.state === "stopped") {
-			const tid = threadId ?? this.getThreadId(session);
-			await session.dapClient.continue(tid);
-			session.state = "running";
-			stopResultPromise = session.dapClient.waitForStop(timeoutMs ?? this.limits.stepTimeoutMs);
-		} else {
-			// Use pendingStopPromise if registered during launch to avoid race conditions,
-			// otherwise fall back to a fresh waitForStop.
-			stopResultPromise = session.pendingStopPromise ?? session.dapClient.waitForStop(timeoutMs ?? this.limits.stepTimeoutMs);
-			session.pendingStopPromise = null;
-		}
-
-		const stopResult = await stopResultPromise;
+		const stopResult = await executeContinue(session, timeoutMs ?? this.limits.stepTimeoutMs, threadId);
 		return this.handleStopResult(session, stopResult);
 	}
 
@@ -552,28 +508,7 @@ export class SessionManager {
 	async step(sessionId: string, direction: StepDirection, count = 1, threadId?: number): Promise<string> {
 		const session = this.getSession(sessionId);
 		this.assertState(session, "stopped");
-
-		let viewport = "";
-		for (let i = 0; i < count; i++) {
-			this.checkAndIncrementAction(session, "debug_step");
-			const tid = threadId ?? this.getThreadId(session);
-
-			if (direction === "over") {
-				await session.dapClient.next(tid);
-			} else if (direction === "into") {
-				await session.dapClient.stepIn(tid);
-			} else {
-				await session.dapClient.stepOut(tid);
-			}
-
-			session.state = "running";
-			const stopResult = await session.dapClient.waitForStop(this.limits.stepTimeoutMs);
-			viewport = await this.handleStopResult(session, stopResult);
-
-			if ((session.state as string) === "terminated") break;
-		}
-
-		return viewport;
+		return executeStep(session, direction, count, this.limits.stepTimeoutMs, threadId, this.handleStopResult.bind(this), this.checkAndIncrementAction.bind(this));
 	}
 
 	/**
@@ -582,25 +517,7 @@ export class SessionManager {
 	 */
 	async runTo(sessionId: string, file: string, line: number, timeoutMs?: number): Promise<string> {
 		return this.withStoppedSession(sessionId, "debug_run_to", async (session) => {
-			const absFile = resolve(session.connection.process?.pid ? process.cwd() : process.cwd(), file);
-			const existing = session.breakpointMap.get(absFile) ?? [];
-
-			// Add temp breakpoint
-			const allBps = [...existing, { line } as Breakpoint];
-			await session.dapClient.setBreakpoints({ path: absFile, name: file }, toSourceBreakpoints(allBps));
-
-			// Continue
-			const threadId = this.getThreadId(session);
-			await session.dapClient.continue(threadId);
-			session.state = "running";
-
-			const stopResult = await session.dapClient.waitForStop(timeoutMs ?? this.limits.stepTimeoutMs);
-			const viewport = await this.handleStopResult(session, stopResult);
-
-			// Restore original breakpoints (remove temp)
-			await session.dapClient.setBreakpoints({ path: absFile, name: file }, toSourceBreakpoints(existing));
-
-			return viewport;
+			return executeRunTo(session, file, line, timeoutMs ?? this.limits.stepTimeoutMs, this.handleStopResult.bind(this));
 		});
 	}
 
@@ -610,24 +527,7 @@ export class SessionManager {
 	 */
 	async setBreakpoints(sessionId: string, file: string, breakpoints: Breakpoint[]): Promise<VerifiedBreakpoint[]> {
 		const session = this.getSession(sessionId);
-		const absFile = resolve(process.cwd(), file);
-
-		const response = await session.dapClient.setBreakpoints({ path: absFile, name: file }, toSourceBreakpoints(breakpoints));
-
-		session.breakpointMap.set(absFile, breakpoints);
-		this.logAction(session, "debug_set_breakpoints", `Set ${breakpoints.length} breakpoints in ${file}`);
-
-		const verified = response.body?.breakpoints ?? [];
-		return breakpoints.map((bp, i) => {
-			const v = verified[i];
-			return {
-				requestedLine: bp.line,
-				verifiedLine: v?.line ?? null,
-				verified: v?.verified ?? false,
-				message: v?.message,
-				conditionAccepted: bp.condition ? (v?.verified ?? false) : undefined,
-			};
-		});
+		return setSessionBreakpoints(session, file, breakpoints, this.logAction.bind(this));
 	}
 
 	/**
@@ -635,8 +535,7 @@ export class SessionManager {
 	 */
 	async setExceptionBreakpoints(sessionId: string, filters: string[]): Promise<void> {
 		const session = this.getSession(sessionId);
-		await session.dapClient.setExceptionBreakpoints(filters);
-		this.logAction(session, "debug_set_exception_breakpoints", `Set exception filters: ${filters.join(", ")}`);
+		return setSessionExceptionBreakpoints(session, filters, this.logAction.bind(this));
 	}
 
 	/**
@@ -645,12 +544,7 @@ export class SessionManager {
 	 */
 	getExceptionBreakpointFilters(sessionId: string): Array<{ filter: string; label: string; default?: boolean }> {
 		const session = this.getSession(sessionId);
-		const filters = session.dapClient.capabilities.exceptionBreakpointFilters ?? [];
-		return filters.map((f) => ({
-			filter: f.filter,
-			label: f.label,
-			default: f.default,
-		}));
+		return getSessionExceptionBreakpointFilters(session);
 	}
 
 	/**
@@ -658,19 +552,7 @@ export class SessionManager {
 	 */
 	getCapabilities(sessionId: string): SessionCapabilities {
 		const session = this.getSession(sessionId);
-		const caps = session.dapClient.capabilities;
-		return {
-			supportsConditionalBreakpoints: caps.supportsConditionalBreakpoints ?? false,
-			supportsHitConditionalBreakpoints: caps.supportsHitConditionalBreakpoints ?? false,
-			supportsLogPoints: caps.supportsLogPoints ?? false,
-			supportsExceptionInfo: caps.supportsExceptionInfoRequest ?? false,
-			exceptionFilters: (caps.exceptionBreakpointFilters ?? []).map((f) => ({
-				filter: f.filter,
-				label: f.label,
-			})),
-			supportsRestart: caps.supportsRestartRequest ?? false,
-			supportsSetVariable: caps.supportsSetVariable ?? false,
-		};
+		return getSessionCapabilities(session);
 	}
 
 	/**
@@ -703,31 +585,7 @@ export class SessionManager {
 	 */
 	async evaluate(sessionId: string, expression: string, frameIndex = 0, maxDepth = 2): Promise<string> {
 		return this.withStoppedSession(sessionId, "debug_evaluate", async (session) => {
-			const frameId = await this.getFrameId(session, frameIndex);
-			const response = await session.dapClient.evaluate(expression, frameId, "repl");
-
-			const rendered = renderDAPVariable(
-				{
-					name: expression,
-					value: response.body.result,
-					type: response.body.type,
-					variablesReference: response.body.variablesReference,
-					evaluateName: expression,
-					presentationHint: undefined,
-					namedVariables: undefined,
-					indexedVariables: undefined,
-					memoryReference: undefined,
-				},
-				{
-					depth: 0,
-					maxDepth,
-					stringTruncateLength: session.viewportConfig.stringTruncateLength,
-					collectionPreviewItems: session.viewportConfig.collectionPreviewItems,
-				},
-			);
-
-			this.logAction(session, "debug_evaluate", `Evaluated: ${expression} = ${rendered}`);
-			return rendered;
+			return evaluateExpression(session, expression, frameIndex, maxDepth, getThreadId, this.logAction.bind(this));
 		});
 	}
 
@@ -736,41 +594,7 @@ export class SessionManager {
 	 */
 	async getVariables(sessionId: string, scope: "local" | "global" | "closure" | "all" = "local", frameIndex = 0, filter?: string, maxDepth = 1): Promise<string> {
 		return this.withStoppedSession(sessionId, "debug_variables", async (session) => {
-			const frameId = await this.getFrameId(session, frameIndex);
-			const scopesResponse = await session.dapClient.scopes(frameId);
-			const scopes = scopesResponse.body?.scopes ?? [];
-
-			const targetScopes =
-				scope === "all"
-					? scopes
-					: scopes.filter((s) => {
-							const name = s.name.toLowerCase();
-							// Prefix matching handles adapters that append context (e.g. js-debug: "Local: main", "Block: main").
-							if (scope === "local") return name.startsWith("local") || name.startsWith("block");
-							if (scope === "global") return name.startsWith("global");
-							if (scope === "closure") return name.startsWith("closure") || name === "free variables";
-							return false;
-						});
-
-			const lines: string[] = [];
-			const filterRegex = filter ? new RegExp(filter) : null;
-
-			for (const s of targetScopes) {
-				const varsResponse = await session.dapClient.variables(s.variablesReference);
-				const vars = varsResponse.body?.variables ?? [];
-				const converted = convertDAPVariables(vars, session.viewportConfig).filter((v) => !filterRegex || filterRegex.test(v.name));
-
-				if (scope === "all" && converted.length > 0) {
-					lines.push(`[${s.name}]`);
-				}
-
-				for (const line of renderAlignedVariables(converted, 4)) {
-					lines.push(line);
-				}
-			}
-
-			void maxDepth;
-			return lines.join("\n");
+			return getSessionVariables(session, scope, frameIndex, filter, maxDepth, getThreadId);
 		});
 	}
 
@@ -779,34 +603,7 @@ export class SessionManager {
 	 */
 	async getStackTrace(sessionId: string, maxFrames = 20, includeSource = false): Promise<string> {
 		return this.withStoppedSession(sessionId, "debug_stack_trace", async (session) => {
-			const threadId = this.getThreadId(session);
-			const response = await session.dapClient.stackTrace(threadId, 0, maxFrames);
-			const frames = response.body?.stackFrames ?? [];
-
-			const lines: string[] = [];
-			for (let i = 0; i < frames.length; i++) {
-				const f = frames[i];
-				const marker = i === 0 ? "→" : " ";
-				const file = f.source?.path ?? f.source?.name ?? "<unknown>";
-				const shortFile = file.split("/").pop() ?? file;
-				lines.push(`${marker} #${i} ${shortFile}:${f.line}  ${f.name}()`);
-
-				if (includeSource && f.source?.path) {
-					try {
-						const sourceLines = await this.readSourceFile(session, f.source.path);
-						const start = Math.max(0, f.line - 2);
-						const end = Math.min(sourceLines.length - 1, f.line + 1);
-						for (let l = start; l <= end; l++) {
-							const arrow = l + 1 === f.line ? "→" : " ";
-							lines.push(`    ${arrow}${String(l + 1).padStart(4)}│ ${sourceLines[l]}`);
-						}
-					} catch {
-						// Skip source if unavailable
-					}
-				}
-			}
-
-			return lines.join("\n");
+			return getSessionStackTrace(session, maxFrames, includeSource, getThreadId);
 		});
 	}
 
@@ -816,12 +613,7 @@ export class SessionManager {
 	async getSource(sessionId: string, file: string, startLine = 1, endLine?: number): Promise<string> {
 		const session = this.getSession(sessionId);
 		this.checkAndIncrementAction(session, "debug_source");
-
-		const lines = await this.readSourceFile(session, file);
-		const end = endLine ?? startLine + 40;
-		const slice = lines.slice(startLine - 1, end);
-
-		return slice.map((text, i) => `${String(startLine + i).padStart(4)}│ ${text}`).join("\n");
+		return getSessionSource(session, file, startLine, endLine);
 	}
 
 	/**
@@ -862,13 +654,7 @@ export class SessionManager {
 	 */
 	addWatchExpressions(sessionId: string, expressions: string[]): string[] {
 		const session = this.getSession(sessionId);
-		for (const expr of expressions) {
-			if (!session.watchExpressions.includes(expr)) {
-				session.watchExpressions.push(expr);
-			}
-		}
-		this.logAction(session, "debug_watch", `Added ${expressions.length} watch expressions`);
-		return [...session.watchExpressions];
+		return addSessionWatchExpressions(session, expressions, this.logAction.bind(this));
 	}
 
 	/**
@@ -877,9 +663,7 @@ export class SessionManager {
 	 */
 	removeWatchExpressions(sessionId: string, expressions: string[]): string[] {
 		const session = this.getSession(sessionId);
-		session.watchExpressions = session.watchExpressions.filter((e) => !expressions.includes(e));
-		this.logAction(session, "debug_unwatch", `Removed ${expressions.length} watch expression(s)`);
-		return [...session.watchExpressions];
+		return removeSessionWatchExpressions(session, expressions, this.logAction.bind(this));
 	}
 
 	/**
@@ -887,13 +671,7 @@ export class SessionManager {
 	 */
 	getSessionLog(sessionId: string, format: "summary" | "detailed" = "summary"): string {
 		const session = this.getSession(sessionId);
-		const elapsedMs = Date.now() - session.startedAt;
-
-		if (format === "detailed") {
-			return formatSessionLogDetailed(session.actionLog, elapsedMs, session.tokenStats);
-		}
-
-		return formatSessionLogSummary(session.actionLog, 10, elapsedMs, session.tokenStats);
+		return getSessionLog(session, format);
 	}
 
 	/**
@@ -901,25 +679,7 @@ export class SessionManager {
 	 */
 	getOutput(sessionId: string, stream: "stdout" | "stderr" | "both" = "both", sinceAction = 0): string {
 		const session = this.getSession(sessionId);
-		const lines: string[] = [];
-
-		if (stream === "stdout" || stream === "both") {
-			for (const entry of session.outputBuffer.stdout) {
-				if (entry.actionNumber >= sinceAction) {
-					lines.push(stream === "both" ? `[stdout] ${entry.text}` : entry.text);
-				}
-			}
-		}
-
-		if (stream === "stderr" || stream === "both") {
-			for (const entry of session.outputBuffer.stderr) {
-				if (entry.actionNumber >= sinceAction) {
-					lines.push(stream === "both" ? `[stderr] ${entry.text}` : entry.text);
-				}
-			}
-		}
-
-		return lines.join("");
+		return getSessionOutput(session, stream, sinceAction);
 	}
 
 	/**
@@ -927,7 +687,7 @@ export class SessionManager {
 	 * @param configOverride Optional viewport config to use instead of session.viewportConfig.
 	 */
 	private async buildViewport(session: DebugSession, configOverride?: ViewportConfig): Promise<ViewportSnapshot> {
-		const threadId = this.getThreadId(session);
+		const threadId = getThreadId(session);
 		const config = configOverride ?? session.viewportConfig;
 
 		// Get stack trace
@@ -958,7 +718,7 @@ export class SessionManager {
 		let sourceLines: string[] = [];
 		if (sourceFile) {
 			try {
-				sourceLines = await this.readSourceFile(session, sourceFile);
+				sourceLines = await readSourceFile(session, sourceFile);
 			} catch {
 				// Source unavailable
 			}
@@ -1039,19 +799,6 @@ export class SessionManager {
 	}
 
 	/**
-	 * Read source file from disk, using per-session cache.
-	 */
-	private async readSourceFile(session: DebugSession, filePath: string): Promise<string[]> {
-		const cached = session.sourceCache.get(filePath);
-		if (cached) return cached;
-
-		const text = readFileSync(filePath, "utf-8");
-		const lines = text.split("\n");
-		session.sourceCache.set(filePath, lines);
-		return lines;
-	}
-
-	/**
 	 * Map a DAP StoppedEvent reason string to our StopReason type.
 	 */
 	private mapStopReason(dapReason: string): StopReason {
@@ -1124,14 +871,6 @@ export class SessionManager {
 	}
 
 	/**
-	 * Get the thread ID for the session.
-	 * Falls back to 1 (DAP convention for single-threaded programs with no explicit thread).
-	 */
-	private getThreadId(session: DebugSession): number {
-		return session.lastStoppedThreadId ?? 1;
-	}
-
-	/**
 	 * Retrieve session, assert it is stopped, increment action count, then call fn.
 	 * Use this for all actions that require a stopped session.
 	 */
@@ -1179,20 +918,6 @@ export class SessionManager {
 	}
 
 	/**
-	 * Get frameId for a given frame index.
-	 */
-	private async getFrameId(session: DebugSession, frameIndex: number): Promise<number> {
-		if (frameIndex === 0 && session.lastStoppedFrameId !== null) {
-			return session.lastStoppedFrameId;
-		}
-		const threadId = this.getThreadId(session);
-		const response = await session.dapClient.stackTrace(threadId, 0, frameIndex + 1);
-		const frames = response.body?.stackFrames ?? [];
-		if (!frames[frameIndex]) throw new SessionStateError(session.id, `no-frame-at-index-${frameIndex}`, ["stopped"]);
-		return frames[frameIndex].id;
-	}
-
-	/**
 	 * Handle a stop result and return the rendered viewport.
 	 * Applies compression tier, diff mode, observation extraction, and token tracking.
 	 */
@@ -1207,7 +932,7 @@ export class SessionManager {
 				try {
 					const caps = session.dapClient.capabilities;
 					if (caps.supportsExceptionInfoRequest) {
-						const threadId = this.getThreadId(session);
+						const threadId = getThreadId(session);
 						const exInfo = await session.dapClient.exceptionInfo(threadId);
 						session.lastExceptionInfo = {
 							type: exInfo.body.exceptionId ?? "Unknown",
@@ -1302,35 +1027,6 @@ export class SessionManager {
 			await dapClient.setBreakpoints({ path: absFile, name: file }, toSourceBreakpoints(bps));
 			breakpointMap.set(absFile, bps);
 		}
-	}
-
-	/**
-	 * Register the DAP output event handler that captures stdout/stderr into the session buffer.
-	 */
-	private registerOutputHandler(session: DebugSession, dapClient: DAPClient): void {
-		dapClient.on("output", (event) => {
-			const body = (event as DebugProtocol.OutputEvent).body;
-			const category = body.category ?? "console";
-			const text = body.output;
-			const entry = { text, actionNumber: session.actionCount };
-
-			if (category === "stdout") {
-				session.outputBuffer.stdout.push(entry);
-			} else if (category === "stderr") {
-				session.outputBuffer.stderr.push(entry);
-			}
-			// "console" category is debugger-internal output, skip
-
-			session.outputBuffer.totalBytes += Buffer.byteLength(text);
-
-			// Truncation: keep tail when over limit
-			while (session.outputBuffer.totalBytes > session.limits.maxOutputBytes) {
-				const target = session.outputBuffer.stdout.length >= session.outputBuffer.stderr.length ? session.outputBuffer.stdout : session.outputBuffer.stderr;
-				if (target.length === 0) break;
-				const removed = target.shift();
-				if (removed) session.outputBuffer.totalBytes -= Buffer.byteLength(removed.text);
-			}
-		});
 	}
 
 	/**
