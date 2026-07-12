@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-rust-runtime-contracts-core-ports
 kind: story
-stage: implementing
+stage: review
 tags: [browser, infra]
 parent: epic-rust-cdp-capture-foundation-rust-runtime-contracts
 depends_on: [epic-rust-cdp-capture-foundation-rust-runtime-contracts-core-domain]
@@ -28,10 +28,19 @@ The browser-facing request/response shape is provisional and may be revised by t
 - Keep recording payload writes and timeline indexing as separate ports.
 - Provide deterministic test-only fake adapters and reusable port contract tests.
 
+## Implementation notes
+
+- Files changed: `crates/krometrail-core/src/error.rs`, `crates/krometrail-core/src/ports/mod.rs`, `crates/krometrail-core/src/ports/clock.rs`, `crates/krometrail-core/src/ports/ids.rs`, `crates/krometrail-core/src/ports/browser.rs`, `crates/krometrail-core/src/ports/recording.rs`, `crates/krometrail-core/src/ports/timeline.rs`, `crates/krometrail-core/src/capabilities/mod.rs`, and `crates/krometrail-core/src/lib.rs`.
+- Tests added: structured error serde/context/recovery tests plus deterministic object-safe fake clock, wall-clock, ID, browser, recording, and timeline port contract tests (including success and structured failure paths), a std-only future executor, and source/manifest leak assertions.
+- Discrepancies from design: `NonEmptyText` stores a boxed string rather than an exposed `String` to keep the richer `KrometrailError` below clippy's large-error threshold; serde shape is unchanged. Its manual deserializer additionally rejects empty serialized text, which is required by the fail-fast boundary contract. New error fields have serde defaults so Unit 2's `{code,message}` error payloads remain readable.
+- Dispatch: direct local reads only, per caller instruction; no subagents used.
+- Adjacent issues parked: none.
+- Verification: dependency `epic-rust-cdp-capture-foundation-rust-runtime-contracts-core-domain` confirmed `stage: done` via `.work/bin/work-view --stage done --paths`. `cargo fmt --all --check`, `cargo check --workspace --all-targets`, `cargo test --workspace --all-targets`, and `cargo clippy --workspace --all-targets -- -D warnings` all pass. A repository scan finds no Tokio, async-trait, WebSocket, SQLite, or CDP marker in `krometrail-core`; Cargo metadata reports only serde, thiserror, uuid, and dev-only serde_json dependencies.
+
 ## Acceptance criteria
 
-- [ ] Every parent Unit 3 signature is implemented or a strictly equivalent safer deviation is recorded.
-- [ ] `Arc<dyn Port>` fake adapters compile and exercise success/failure paths without Tokio in core.
-- [ ] Structured errors round-trip with stable snake-case codes and safe context.
-- [ ] Empty user-facing messages/recovery text fail fast.
-- [ ] Metadata/source scans prove no infrastructure-specific type leaks through core.
+- [x] Every parent Unit 3 signature is implemented or a strictly equivalent safer deviation is recorded.
+- [x] `Arc<dyn Port>` fake adapters compile and exercise success/failure paths without Tokio in core.
+- [x] Structured errors round-trip with stable snake-case codes and safe context.
+- [x] Empty user-facing messages/recovery text fail fast.
+- [x] Metadata/source scans prove no infrastructure-specific type leaks through core.

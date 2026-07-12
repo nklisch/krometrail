@@ -1,59 +1,214 @@
-//! Small, domain-owned error foundation shared by validated core contracts.
+//! Stable, source-safe failures shared by domain contracts and infrastructure ports.
 //!
-//! The structured error contract is extended by the ports story. Keeping the
-//! result alias and error type here now means domain constructors do not grow a
-//! second, incompatible error vocabulary later.
+//! Adapters map their private error chains into this vocabulary at the boundary. The
+//! public value deliberately carries no source error, debug representation, path, or
+//! credential-bearing detail.
 
 use std::fmt;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::Error as _};
 
-/// The stable categories needed by the core domain before infrastructure
-/// errors and retry advice are introduced.
+use crate::{
+    ids::{InteractionId, SessionId, TargetId},
+    time::SessionRange,
+};
+
+/// The stable categories exposed at the core boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
     InvalidInput,
     InvalidLifecycleTransition,
     InvalidTime,
+    NotFound,
     Unsupported,
+    BrowserDisconnected,
+    CaptureRejected,
+    PersistenceFailed,
+    BudgetExhausted,
+    Internal,
 }
 
-/// A domain validation failure. Infrastructure-specific context is added by
-/// the ports layer without changing the domain constructors' result type.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RetryAdvice {
+    #[default]
+    Never,
+    Safe,
+    AfterRecovery,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ErrorContext {
+    pub session_id: Option<SessionId>,
+    pub target_id: Option<TargetId>,
+    pub interaction_id: Option<InteractionId>,
+    pub range: Option<SessionRange>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("text must not be empty or whitespace-only")]
+pub struct EmptyTextError;
+
+/// A validated user-facing string. It prevents an error boundary from emitting
+/// an empty explanation or recovery action while preserving exact serde shape.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct NonEmptyText(Box<str>);
+
+impl NonEmptyText {
+    pub fn new(value: impl Into<String>) -> std::result::Result<Self, EmptyTextError> {
+        let value = value.into();
+        if value.trim().is_empty() {
+            return Err(EmptyTextError);
+        }
+        Ok(Self(value.into_boxed_str()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for NonEmptyText {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::new(value).map_err(|_| D::Error::custom("text must not be empty or whitespace-only"))
+    }
+}
+
+impl fmt::Display for NonEmptyText {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+/// A stable, serializable boundary failure.
+///
+/// `KrometrailError` intentionally has no source-error field. Infrastructure
+/// adapters can retain their private cause in local logs, but cannot accidentally
+/// serialize arbitrary implementation details to callers.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error, Serialize, Deserialize)]
+#[error("{code:?}: {message}")]
 pub struct KrometrailError {
     pub code: ErrorCode,
-    pub message: String,
+    pub message: NonEmptyText,
+    #[serde(default)]
+    pub context: ErrorContext,
+    #[serde(default)]
+    pub retry: RetryAdvice,
+    #[serde(default)]
+    pub recovery: Option<NonEmptyText>,
 }
 
 impl KrometrailError {
-    pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
+    pub fn new(code: ErrorCode, message: NonEmptyText) -> Self {
         Self {
             code,
-            message: message.into(),
+            message,
+            context: ErrorContext::default(),
+            retry: RetryAdvice::Never,
+            recovery: None,
         }
     }
-}
 
-impl fmt::Display for KrometrailError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{:?}: {}", self.code, self.message)
+    pub fn with_context(mut self, context: ErrorContext) -> Self {
+        self.context = context;
+        self
+    }
+
+    pub fn with_retry(mut self, retry: RetryAdvice) -> Self {
+        self.retry = retry;
+        self
+    }
+
+    pub fn with_recovery(mut self, recovery: NonEmptyText) -> Self {
+        self.recovery = Some(recovery);
+        self
     }
 }
-
-impl std::error::Error for KrometrailError {}
 
 pub type Result<T, E = KrometrailError> = std::result::Result<T, E>;
 
 pub(crate) fn invalid(message: impl Into<String>) -> KrometrailError {
-    KrometrailError::new(ErrorCode::InvalidInput, message)
+    KrometrailError::new(ErrorCode::InvalidInput, safe_text(message))
 }
 
 pub(crate) fn invalid_time(message: impl Into<String>) -> KrometrailError {
-    KrometrailError::new(ErrorCode::InvalidTime, message)
+    KrometrailError::new(ErrorCode::InvalidTime, safe_text(message))
 }
 
 pub(crate) fn invalid_transition(message: impl Into<String>) -> KrometrailError {
-    KrometrailError::new(ErrorCode::InvalidLifecycleTransition, message)
+    KrometrailError::new(ErrorCode::InvalidLifecycleTransition, safe_text(message))
+}
+
+fn safe_text(message: impl Into<String>) -> NonEmptyText {
+    // These helpers are only used with programmer-authored validation messages.
+    // Keep the invariant centralized rather than allowing an unchecked String
+    // into the public error type.
+    NonEmptyText::new(message).expect("core validation errors must have a message")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        ids::SessionId,
+        time::{SessionRange, SessionTime},
+    };
+
+    const UUID: &str = "123e4567-e89b-12d3-a456-426614174000";
+
+    #[test]
+    fn structured_errors_round_trip_without_source_details() {
+        let session_id = SessionId::from_uuid(UUID.parse().unwrap());
+        let range = SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(10)).unwrap();
+        let error = KrometrailError::new(
+            ErrorCode::PersistenceFailed,
+            NonEmptyText::new("recording could not be saved").unwrap(),
+        )
+        .with_context(ErrorContext {
+            session_id: Some(session_id),
+            target_id: None,
+            interaction_id: None,
+            range: Some(range),
+        })
+        .with_retry(RetryAdvice::AfterRecovery)
+        .with_recovery(NonEmptyText::new("check the recording budget and retry").unwrap());
+
+        let json = serde_json::to_string(&error).unwrap();
+        assert!(json.contains("persistence_failed"));
+        assert!(!json.contains("source"));
+        assert!(!json.contains("debug"));
+        assert_eq!(
+            serde_json::from_str::<KrometrailError>(&json).unwrap(),
+            error
+        );
+
+        let legacy = r#"{"code":"invalid_input","message":"legacy validation"}"#;
+        let decoded = serde_json::from_str::<KrometrailError>(legacy).unwrap();
+        assert_eq!(decoded.message.as_str(), "legacy validation");
+        assert_eq!(decoded.retry, RetryAdvice::Never);
+    }
+
+    #[test]
+    fn stable_codes_are_snake_case() {
+        let error = KrometrailError::new(
+            ErrorCode::BrowserDisconnected,
+            NonEmptyText::new("browser connection ended").unwrap(),
+        );
+        let json = serde_json::to_string(&error).unwrap();
+        assert!(json.contains("browser_disconnected"));
+    }
+
+    #[test]
+    fn empty_boundary_text_is_rejected() {
+        assert!(NonEmptyText::new("").is_err());
+        assert!(NonEmptyText::new(" \n\t ").is_err());
+        assert!(NonEmptyText::new("recover").is_ok());
+        assert!(serde_json::from_str::<NonEmptyText>("\"\"").is_err());
+    }
 }

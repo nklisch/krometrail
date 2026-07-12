@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     ErrorCode,
-    error::{KrometrailError, Result, invalid},
+    error::{KrometrailError, NonEmptyText, Result, invalid},
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -107,7 +107,8 @@ pub fn validate_capability_selection(enabled: &[CapabilityId]) -> Result<()> {
         if definition.default == CapabilityDefault::Unavailable {
             return Err(KrometrailError::new(
                 ErrorCode::Unsupported,
-                format!("capability {id:?} is unavailable"),
+                NonEmptyText::new(format!("capability {id:?} is unavailable"))
+                    .expect("capability error message is non-empty"),
             ));
         }
         for dependency in definition.dependencies {
