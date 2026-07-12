@@ -28,6 +28,11 @@ This epic does not deliver durable history, complete browser automation, tempora
 - `docs/ARCHITECTURE.md` — Rust Workspace, Browser Connection, Target Lifecycle, Frame Ingestion, and Capture Tasks
 - `docs/EVALUATION.md` — Capture-Fidelity Evaluation and Timing Integrity
 
+## Design decisions
+
+- **Rust CDP client selection:** Start with a gated `cdpkit` spike covering every required domain, flat target sessions, raw command/event access, and sustained screencast acknowledgement. Adopt it only if the real-browser compatibility and capture gates pass; otherwise choose between `chromey` and a minimal owned transport from the spike evidence.
+- **Legacy runtime removal:** Remove the TypeScript/DAP implementation while establishing the Rust workspace rather than keeping two buildable runtimes. Git tag `v0.2.20` remains the implementation reference if the spike requires recovering prior browser lifecycle or framework-state behavior.
+
 ## Anticipated child features
 
 - Rust workspace and core capture contracts
