@@ -14,9 +14,12 @@ pub mod scenarios;
 pub mod scripted_peer;
 
 pub use contract::{
-    CandidateContractEvidence, CandidateContractResults, CandidateRuntimeAssertions,
-    CandidateWireResults, EventStream, NamedEventParams, SpikeFuture, SpikeTransport,
-    SpikeTransportFactory, TransportScope,
+    CandidateContractEvidence, CandidateContractResults, CandidateContractTrace,
+    CandidateRuntimeAssertions, CandidateWireResults, CanonicalProtocolFixture,
+    CanonicalWireObservation, CanonicalWireObservationKind, EventStream, NamedEventParams,
+    SpikeFuture, SpikeTransport, SpikeTransportFactory, TransportScope, canonical_fixture_digest,
+    canonical_trace_digest, recompute_candidate_contract_results,
+    validate_candidate_contract_trace,
 };
 pub use error::{QualificationStage, SpikeError, SpikeErrorCode, StageTracker};
 pub use evidence::{

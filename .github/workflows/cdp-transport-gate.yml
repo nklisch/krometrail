@@ -335,11 +335,19 @@ jobs:
           assert 0.0 < rebuild["elapsed_seconds"] < 5.0
 
           contract = evidence["candidate_contract"]
-          assert set(contract) == {"fixture_sha256", "trace_sha256", "trace_observations", "results"}
+          assert set(contract) == {"fixture_sha256", "trace_sha256", "trace_observations", "results", "trace"}
           assert re.fullmatch(r"sha256:[0-9a-f]{64}", contract["fixture_sha256"])
           trace_sha = contract["trace_sha256"]
           assert re.fullmatch(r"sha256:[0-9a-f]{64}", trace_sha)
           assert contract["trace_observations"] > 0
+          trace = contract["trace"]
+          assert set(trace) == {"fixtures", "observations", "runtime_assertions"}
+          assert len(trace["fixtures"]) == 3
+          assert len(trace["observations"]) == contract["trace_observations"]
+          assert len(trace["observations"]) <= 4096
+          assert trace["runtime_assertions"] == {"pending_calls_closed": True, "subscriptions_closed": True}
+          assert all(set(fixture) == {"name", "method", "params"} for fixture in trace["fixtures"])
+          assert all(set(observation) == {"sequence", "connection", "kind", "request_id", "method", "session_id", "params"} for observation in trace["observations"])
           results = contract["results"]
           assert set(results) == {"wire", "runtime"}
           wire = results["wire"]

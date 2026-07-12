@@ -15,6 +15,7 @@ use tokio_tungstenite::{WebSocketStream, accept_async, tungstenite::Message};
 /// A committed protocol-drift fixture loaded byte-for-byte by the scripted server.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProtocolDriftFixture {
+    pub name: String,
     pub method: String,
     pub params: Value,
 }
@@ -60,6 +61,7 @@ pub fn committed_protocol_fixtures() -> Result<Vec<ProtocolDriftFixture>, SpikeE
                 )
             })?;
             Ok(ProtocolDriftFixture {
+                name: name.to_owned(),
                 method: method.to_owned(),
                 params,
             })

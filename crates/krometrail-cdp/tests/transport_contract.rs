@@ -5,12 +5,13 @@ use std::collections::BTreeMap;
 use futures_util::{SinkExt, StreamExt};
 
 use krometrail_cdp::spike::{
-    CandidateContractEvidence, CandidateContractResults, CandidateIdentity,
-    CandidateRuntimeAssertions, CandidateWireResults, FixtureEvidence, GateConfiguration,
-    GateProvenance, GateResult, GateStatus, SanitizedEnvironment, ScriptedCdpPeer, SourceIdentity,
-    TransportEvidenceV1, TransportEvidenceV2, TransportGateId, committed_protocol_fixtures,
-    configuration_digest, decide_from_files, is_git_revision, ordered_protocol_fixture_digest,
-    sanitize_evidence, validate_evidence, write_json_schema,
+    CandidateContractEvidence, CandidateContractTrace, CandidateIdentity,
+    CandidateRuntimeAssertions, CanonicalProtocolFixture, CanonicalWireObservation,
+    CanonicalWireObservationKind, FixtureEvidence, GateConfiguration, GateProvenance, GateResult,
+    GateStatus, SanitizedEnvironment, ScriptedCdpPeer, SourceIdentity, TransportEvidenceV1,
+    TransportEvidenceV2, TransportGateId, committed_protocol_fixtures, configuration_digest,
+    decide_from_files, is_git_revision, ordered_protocol_fixture_digest, sanitize_evidence,
+    validate_evidence, write_json_schema,
 };
 use krometrail_cdp::spike::{
     FakeTransport, FakeTransportFactory, SpikeError, SpikeErrorCode, SpikeTransport,
@@ -29,6 +30,132 @@ fn valid_measurement(key: &&str) -> f64 {
         "elapsed_seconds" => 2.0,
         _ => 1.0,
     }
+}
+
+fn candidate_contract() -> CandidateContractEvidence {
+    let fixtures = committed_protocol_fixtures()
+        .unwrap()
+        .into_iter()
+        .map(|fixture| CanonicalProtocolFixture {
+            name: fixture.name,
+            method: fixture.method,
+            params: fixture.params,
+        })
+        .collect::<Vec<_>>();
+    let mut observations = Vec::new();
+    let mut sequence = 0_u64;
+    let mut push = |connection, kind, request_id, method, session_id, params| {
+        sequence += 1;
+        observations.push(CanonicalWireObservation {
+            sequence,
+            connection,
+            kind,
+            request_id,
+            method,
+            session_id,
+            params,
+        });
+    };
+    for fixture in &fixtures {
+        push(
+            1,
+            CanonicalWireObservationKind::Event,
+            None,
+            Some(fixture.method.clone()),
+            Some("session-a".into()),
+            fixture.params.clone(),
+        );
+    }
+    for token in 0..200_u64 {
+        let session = if token % 2 == 0 {
+            "session-a"
+        } else {
+            "session-b"
+        };
+        push(
+            1,
+            CanonicalWireObservationKind::Command,
+            Some(1000 + token),
+            Some("Runtime.evaluate".into()),
+            Some(session.into()),
+            serde_json::json!({"token": token}),
+        );
+        push(
+            1,
+            CanonicalWireObservationKind::Event,
+            None,
+            Some("Runtime.consoleAPICalled".into()),
+            Some(session.into()),
+            serde_json::json!({"token": format!("{session}-{token}")}),
+        );
+    }
+    push(
+        1,
+        CanonicalWireObservationKind::Command,
+        Some(2001),
+        Some("Runtime.evaluate".into()),
+        Some("session-a".into()),
+        serde_json::json!({"phase":"event-before-response"}),
+    );
+    push(
+        1,
+        CanonicalWireObservationKind::Event,
+        None,
+        Some("Runtime.consoleAPICalled".into()),
+        Some("session-a".into()),
+        serde_json::json!({"token":"session-a-999"}),
+    );
+    push(
+        1,
+        CanonicalWireObservationKind::Response,
+        Some(2001),
+        None,
+        None,
+        serde_json::json!({}),
+    );
+    push(
+        1,
+        CanonicalWireObservationKind::Command,
+        Some(3001),
+        Some("Runtime.evaluate".into()),
+        Some("session-b".into()),
+        serde_json::json!({"phase":"detach-during-pending"}),
+    );
+    push(
+        1,
+        CanonicalWireObservationKind::Event,
+        None,
+        Some("Target.detachedFromTarget".into()),
+        Some("session-b".into()),
+        serde_json::json!({"targetId":"target-b"}),
+    );
+    push(
+        1,
+        CanonicalWireObservationKind::ConnectionClosed,
+        None,
+        None,
+        None,
+        serde_json::json!({}),
+    );
+    for target in ["target-a", "target-b"] {
+        push(
+            2,
+            CanonicalWireObservationKind::Command,
+            Some(4000),
+            Some("Target.attachToTarget".into()),
+            None,
+            serde_json::json!({"targetId":target}),
+        );
+    }
+    CandidateContractEvidence::from_trace(CandidateContractTrace {
+        fixtures,
+        observations,
+        runtime_assertions: CandidateRuntimeAssertions {
+            pending_calls_closed: true,
+            subscriptions_closed: true,
+        },
+    })
+    .unwrap()
 }
 
 fn evidence(gates: Vec<GateResult>) -> TransportEvidenceV2 {
@@ -214,37 +341,103 @@ fn candidate_wire_contract_is_separate_and_trace_bound() {
         })
         .collect();
     let mut value = evidence(gates);
-    value.candidate_contract = Some(CandidateContractEvidence {
-        fixture_sha256: krometrail_cdp::spike::ordered_protocol_fixture_digest(),
-        trace_sha256: format!("sha256:{}", "a".repeat(64)),
-        trace_observations: 10,
-        results: CandidateContractResults {
-            wire: CandidateWireResults {
-                drift_fixtures: 3,
-                drift_methods: vec![
-                    "Protocol.unknownEvent".into(),
-                    "Runtime.additiveField".into(),
-                    "Runtime.unknownEnum".into(),
-                ],
-                connection_survived: true,
-                routing_commands: 200,
-                routing_events: 200,
-                routing_cross_delivery: 0,
-                event_before_response: true,
-                detach_during_pending: true,
-                socket_closed: true,
-                reconnect_connections: 2,
-                sessions_rebuilt: 2,
-            },
-            runtime: CandidateRuntimeAssertions {
-                pending_calls_closed: true,
-                subscriptions_closed: true,
-            },
-        },
-    });
+    value.candidate_contract = Some(candidate_contract());
     validate_evidence(&value).unwrap();
     value.candidate_contract.as_mut().unwrap().trace_sha256 = "not-a-digest".into();
     assert!(validate_evidence(&value).is_err());
+}
+
+#[test]
+fn candidate_contract_rejects_fabricated_digest_and_routing_summary() {
+    let gates: Vec<_> = TransportGateId::ALL
+        .into_iter()
+        .map(|id| GateResult {
+            id,
+            status: GateStatus::Pass,
+            summary: "fixture passed".into(),
+            measurements: id
+                .measurement_keys()
+                .iter()
+                .map(|key| ((*key).into(), valid_measurement(key)))
+                .collect(),
+            failure: None,
+        })
+        .collect();
+    let mut zero_digest = evidence(gates.clone());
+    zero_digest.candidate_contract = Some(candidate_contract());
+    zero_digest
+        .candidate_contract
+        .as_mut()
+        .unwrap()
+        .trace_sha256 = format!("sha256:{}", "0".repeat(64));
+    assert!(
+        validate_evidence(&zero_digest).is_err(),
+        "an all-zero digest must not stand in for recomputation"
+    );
+
+    let mut fabricated_count = evidence(gates);
+    fabricated_count.candidate_contract = Some(candidate_contract());
+    fabricated_count
+        .candidate_contract
+        .as_mut()
+        .unwrap()
+        .results
+        .wire
+        .routing_commands = 201;
+    assert!(
+        validate_evidence(&fabricated_count).is_err(),
+        "a duplicated routing count must not override the original trace"
+    );
+}
+
+#[test]
+fn candidate_contract_rejects_fixture_and_lifecycle_mutations() {
+    let gates = TransportGateId::ALL
+        .into_iter()
+        .map(|id| GateResult {
+            id,
+            status: GateStatus::Pass,
+            summary: "fixture passed".into(),
+            measurements: id
+                .measurement_keys()
+                .iter()
+                .map(|key| ((*key).into(), valid_measurement(key)))
+                .collect(),
+            failure: None,
+        })
+        .collect::<Vec<_>>();
+    let mut fixture_params = evidence(gates.clone());
+    fixture_params.candidate_contract = Some(candidate_contract());
+    fixture_params
+        .candidate_contract
+        .as_mut()
+        .unwrap()
+        .trace
+        .fixtures[0]
+        .params["kind"] = serde_json::json!("mutated");
+    assert!(validate_evidence(&fixture_params).is_err());
+
+    let mut fixture_order = evidence(gates.clone());
+    fixture_order.candidate_contract = Some(candidate_contract());
+    fixture_order
+        .candidate_contract
+        .as_mut()
+        .unwrap()
+        .trace
+        .fixtures
+        .swap(0, 1);
+    assert!(validate_evidence(&fixture_order).is_err());
+
+    let mut lifecycle = evidence(gates);
+    lifecycle.candidate_contract = Some(candidate_contract());
+    let trace = &mut lifecycle.candidate_contract.as_mut().unwrap().trace;
+    trace
+        .observations
+        .iter_mut()
+        .find(|observation| observation.kind == CanonicalWireObservationKind::ConnectionClosed)
+        .unwrap()
+        .kind = CanonicalWireObservationKind::Event;
+    assert!(validate_evidence(&lifecycle).is_err());
 }
 
 #[test]
@@ -608,6 +801,8 @@ fn checked_schema_is_generated_by_the_rust_evidence_types() {
     write_json_schema(&temporary).unwrap();
     let generated = std::fs::read_to_string(&temporary).unwrap();
     assert!(generated.contains("TransportEvidenceV2"));
+    assert!(generated.contains("CandidateContractTrace"));
+    assert!(generated.contains("CanonicalWireObservation"));
     let committed = krometrail_cdp::spike::resolve_repository_root(None)
         .expect("runtime repository root")
         .join("docs/evidence/cdp-transport/v2/schema.json");

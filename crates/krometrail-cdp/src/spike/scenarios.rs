@@ -9,6 +9,13 @@ use super::{
     scripted_peer::{ScriptedCdpPeer, committed_protocol_fixtures},
 };
 
+#[cfg(feature = "cdp-spike-cdpkit")]
+use super::contract::{
+    CandidateContractTrace, CanonicalProtocolFixture, CanonicalWireObservation,
+    CanonicalWireObservationKind, canonical_fixture_digest, canonical_trace_digest,
+    recompute_candidate_contract_results,
+};
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ScenarioEvidence {
     pub gates: Vec<GateResult>,
@@ -461,8 +468,6 @@ pub(crate) async fn run_candidate_wire_contract_with_stage(
     stage: StageTracker,
 ) -> Result<super::contract::CandidateContractEvidence, SpikeError> {
     use super::fixture_server::ScriptedCdpServer;
-    use sha2::{Digest, Sha256};
-
     stage.set(QualificationStage::CandidateContract);
     let server = bounded(
         &stage,
@@ -502,28 +507,66 @@ pub(crate) async fn run_candidate_wire_contract_with_stage(
             "candidate contract lacks classified runtime assertions",
         )
     })?;
-    let trace = serde_json::to_vec(&observations)
-        .map_err(|error| SpikeError::new(SpikeErrorCode::Evidence, error.to_string()))?;
+    let trace = CandidateContractTrace {
+        fixtures: fixtures
+            .iter()
+            .map(|fixture| CanonicalProtocolFixture {
+                name: fixture.name.clone(),
+                method: fixture.method.clone(),
+                params: fixture.params.clone(),
+            })
+            .collect(),
+        observations: observations
+            .iter()
+            .map(|observation| CanonicalWireObservation {
+                sequence: observation.sequence,
+                connection: observation.connection,
+                kind: match observation.kind {
+                    super::scripted_peer::WireObservationKind::Command => {
+                        CanonicalWireObservationKind::Command
+                    }
+                    super::scripted_peer::WireObservationKind::Response => {
+                        CanonicalWireObservationKind::Response
+                    }
+                    super::scripted_peer::WireObservationKind::Event => {
+                        CanonicalWireObservationKind::Event
+                    }
+                    super::scripted_peer::WireObservationKind::ConnectionClosed => {
+                        CanonicalWireObservationKind::ConnectionClosed
+                    }
+                },
+                request_id: observation.request_id,
+                method: observation.method.clone(),
+                session_id: observation.session_id.clone(),
+                params: observation.params.clone(),
+            })
+            .collect(),
+        runtime_assertions,
+    };
+    let results = recompute_candidate_contract_results(&trace)?;
+    if results.wire.drift_fixtures != drift_fixtures
+        || results.wire.drift_methods != drift_methods
+        || results.wire.connection_survived != peer.observed_connection_survived(&fixtures)
+        || results.wire.routing_commands != routing.commands
+        || results.wire.routing_events != routing.events
+        || results.wire.routing_cross_delivery != routing.cross_delivery
+        || results.wire.event_before_response != peer.event_before_response("Runtime.evaluate")
+        || results.wire.detach_during_pending != peer.observed_detach_during_pending()
+        || results.wire.socket_closed != socket_closed
+        || results.wire.reconnect_connections != peer.connection_count()
+        || results.wire.sessions_rebuilt != peer.observed_rebuilt_sessions()
+    {
+        return Err(SpikeError::new(
+            SpikeErrorCode::Evidence,
+            "candidate trace projection disagrees with the wire controller",
+        ));
+    }
     let evidence = super::contract::CandidateContractEvidence {
-        fixture_sha256: super::scripted_peer::ordered_protocol_fixture_digest(),
-        trace_sha256: format!("sha256:{:x}", Sha256::digest(trace)),
-        trace_observations: observations.len() as u64,
-        results: super::contract::CandidateContractResults {
-            wire: super::contract::CandidateWireResults {
-                drift_fixtures,
-                drift_methods,
-                connection_survived: peer.observed_connection_survived(&fixtures),
-                routing_commands: routing.commands,
-                routing_events: routing.events,
-                routing_cross_delivery: routing.cross_delivery,
-                event_before_response: peer.event_before_response("Runtime.evaluate"),
-                detach_during_pending: peer.observed_detach_during_pending(),
-                socket_closed,
-                reconnect_connections: peer.connection_count(),
-                sessions_rebuilt: peer.observed_rebuilt_sessions(),
-            },
-            runtime: runtime_assertions,
-        },
+        fixture_sha256: canonical_fixture_digest(&trace.fixtures)?,
+        trace_sha256: canonical_trace_digest(&trace)?,
+        trace_observations: trace.observations.len() as u64,
+        results,
+        trace,
     };
     // Close the listener and every accepted connection before the helper returns. This makes a
     // repeated in-process invocation independent of detached server tasks from its predecessor.

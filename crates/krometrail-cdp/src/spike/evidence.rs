@@ -9,9 +9,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::{
-    contract::CandidateContractEvidence,
+    contract::{
+        CandidateContractEvidence, canonical_fixture_digest, canonical_trace_digest,
+        recompute_candidate_contract_results, validate_candidate_contract_trace,
+    },
     error::{SpikeError, SpikeErrorCode},
-    scripted_peer::{committed_protocol_fixtures, ordered_protocol_fixture_digest},
+    scripted_peer::committed_protocol_fixtures,
 };
 
 pub const EVIDENCE_SCHEMA_VERSION: u16 = 2;
@@ -803,27 +806,42 @@ fn validate_observed_deadlines(value: &TransportEvidenceV1) -> Result<(), SpikeE
 
 fn validate_candidate_contract(contract: &CandidateContractEvidence) -> Result<(), SpikeError> {
     let fixtures = committed_protocol_fixtures()?;
-    let expected_methods = fixtures
+    let expected_fixtures = fixtures
         .iter()
-        .map(|fixture| fixture.method.clone())
+        .map(|fixture| super::contract::CanonicalProtocolFixture {
+            name: fixture.name.clone(),
+            method: fixture.method.clone(),
+            params: fixture.params.clone(),
+        })
         .collect::<Vec<_>>();
-    let results = &contract.results;
-    if contract.fixture_sha256 != ordered_protocol_fixture_digest()
-        || contract.trace_observations == 0
+    validate_candidate_contract_trace(&contract.trace)?;
+    if contract.trace.fixtures != expected_fixtures {
+        return Err(SpikeError::new(
+            SpikeErrorCode::Evidence,
+            "candidate trace fixture methods, params, or order differ from committed fixtures",
+        ));
+    }
+    let expected_fixture_sha256 = canonical_fixture_digest(&contract.trace.fixtures)?;
+    let expected_trace_sha256 = canonical_trace_digest(&contract.trace)?;
+    let expected_results = recompute_candidate_contract_results(&contract.trace)?;
+    if contract.fixture_sha256 != expected_fixture_sha256
+        || contract.trace_sha256 != expected_trace_sha256
+        || contract.trace_observations != contract.trace.observations.len() as u64
+        || contract.results != expected_results
+        || !is_sha256_digest(&contract.fixture_sha256)
         || !is_sha256_digest(&contract.trace_sha256)
-        || results.wire.drift_fixtures != fixtures.len() as u64
-        || results.wire.drift_methods != expected_methods
-        || !results.wire.connection_survived
-        || results.wire.routing_commands < 200
-        || results.wire.routing_events < 200
-        || results.wire.routing_cross_delivery != 0
-        || !results.wire.event_before_response
-        || !results.wire.detach_during_pending
-        || !results.wire.socket_closed
-        || results.wire.reconnect_connections < 2
-        || results.wire.sessions_rebuilt < 2
-        || !results.runtime.pending_calls_closed
-        || !results.runtime.subscriptions_closed
+        || contract.results.wire.drift_fixtures != fixtures.len() as u64
+        || !contract.results.wire.connection_survived
+        || contract.results.wire.routing_commands < 200
+        || contract.results.wire.routing_events < 200
+        || contract.results.wire.routing_cross_delivery != 0
+        || !contract.results.wire.event_before_response
+        || !contract.results.wire.detach_during_pending
+        || !contract.results.wire.socket_closed
+        || contract.results.wire.reconnect_connections < 2
+        || contract.results.wire.sessions_rebuilt < 2
+        || !contract.results.runtime.pending_calls_closed
+        || !contract.results.runtime.subscriptions_closed
     {
         return Err(SpikeError::new(
             SpikeErrorCode::Evidence,
@@ -927,7 +945,15 @@ fn validate_sanitized_strings(value: &TransportEvidenceV1) -> Result<(), SpikeEr
         match value {
             serde_json::Value::String(text) => contains_machine_detail(text),
             serde_json::Value::Array(values) => values.iter().any(walk),
-            serde_json::Value::Object(values) => values.values().any(walk),
+            serde_json::Value::Object(values) => values.iter().any(|(key, value)| {
+                // Canonical CDP routing uses numeric command tokens and the deterministic
+                // session-a/session-b event token. Those are evidence fields, not credentials.
+                // Other secret-shaped keys remain denied recursively.
+                if is_sensitive_key(key) && !is_safe_canonical_value(key, value) {
+                    return true;
+                }
+                walk(value)
+            }),
             serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {
                 false
             }
@@ -940,6 +966,46 @@ fn validate_sanitized_strings(value: &TransportEvidenceV1) -> Result<(), SpikeEr
         ));
     }
     Ok(())
+}
+
+fn is_sensitive_key(key: &str) -> bool {
+    matches!(
+        key.to_ascii_lowercase().as_str(),
+        "password"
+            | "passwd"
+            | "passphrase"
+            | "token"
+            | "secret"
+            | "api_key"
+            | "apikey"
+            | "authorization"
+            | "credential"
+            | "credentials"
+            | "username"
+            | "user"
+            | "login"
+            | "email"
+            | "cookie"
+            | "session"
+            | "bearer"
+    )
+}
+
+fn is_safe_canonical_value(key: &str, value: &serde_json::Value) -> bool {
+    match key.to_ascii_lowercase().as_str() {
+        "token" => {
+            value.is_number()
+                || value.as_str().is_some_and(|token| {
+                    let Some((session, sequence)) = token.rsplit_once('-') else {
+                        return false;
+                    };
+                    matches!(session, "session-a" | "session-b")
+                        && !sequence.is_empty()
+                        && sequence.bytes().all(|byte| byte.is_ascii_digit())
+                })
+        }
+        _ => false,
+    }
 }
 
 fn contains_machine_detail(text: &str) -> bool {
@@ -1376,6 +1442,18 @@ fn decide_with_digests(
             "decision requires exactly two reports and two report digests",
         ));
     }
+    // `decide` validates the full report, but this helper is also used by file and unit paths.
+    // Recompute both candidate contracts here so no caller can bypass the canonical-material
+    // check by supplying a precomputed report digest.
+    for report in reports {
+        let contract = report.candidate_contract.as_ref().ok_or_else(|| {
+            SpikeError::new(
+                SpikeErrorCode::Evidence,
+                "decision report lacks canonical candidate-contract material",
+            )
+        })?;
+        validate_candidate_contract(contract)?;
+    }
     if reports[0].candidate != reports[1].candidate {
         return Err(SpikeError::new(
             SpikeErrorCode::Evidence,
@@ -1401,7 +1479,9 @@ fn decide_with_digests(
         .expect("validated candidate contract");
     if linux_contract.fixture_sha256 != macos_contract.fixture_sha256
         || linux_contract.trace_sha256 != macos_contract.trace_sha256
+        || linux_contract.trace_observations != macos_contract.trace_observations
         || linux_contract.results != macos_contract.results
+        || linux_contract.trace != macos_contract.trace
     {
         return Err(SpikeError::new(
             SpikeErrorCode::Evidence,
@@ -1501,7 +1581,145 @@ pub fn write_json_schema(path: &Path) -> Result<(), SpikeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::spike::contract::{CandidateContractEvidence, CandidateContractResults};
+    use crate::spike::contract::{
+        CandidateContractEvidence, CandidateContractTrace, CandidateRuntimeAssertions,
+        CanonicalProtocolFixture, CanonicalWireObservation, CanonicalWireObservationKind,
+    };
+
+    fn candidate_contract() -> CandidateContractEvidence {
+        let fixtures = committed_protocol_fixtures()
+            .unwrap()
+            .into_iter()
+            .map(|fixture| CanonicalProtocolFixture {
+                name: fixture.name,
+                method: fixture.method,
+                params: fixture.params,
+            })
+            .collect::<Vec<_>>();
+        let mut observations = Vec::new();
+        let mut sequence = 0_u64;
+        let mut push = |connection, kind, request_id, method, session_id, params| {
+            sequence += 1;
+            observations.push(CanonicalWireObservation {
+                sequence,
+                connection,
+                kind,
+                request_id,
+                method,
+                session_id,
+                params,
+            });
+        };
+        for fixture in &fixtures {
+            push(
+                1,
+                CanonicalWireObservationKind::Event,
+                None,
+                Some(fixture.method.clone()),
+                Some("session-a".into()),
+                fixture.params.clone(),
+            );
+        }
+        for token in 0..200_u64 {
+            push(
+                1,
+                CanonicalWireObservationKind::Command,
+                Some(1000 + token),
+                Some("Runtime.evaluate".into()),
+                Some(
+                    if token % 2 == 0 {
+                        "session-a"
+                    } else {
+                        "session-b"
+                    }
+                    .into(),
+                ),
+                serde_json::json!({"token": token}),
+            );
+            push(
+                1,
+                CanonicalWireObservationKind::Event,
+                None,
+                Some("Runtime.consoleAPICalled".into()),
+                Some(
+                    if token % 2 == 0 {
+                        "session-a"
+                    } else {
+                        "session-b"
+                    }
+                    .into(),
+                ),
+                serde_json::json!({"token": format!("{}-{token}", if token % 2 == 0 { "session-a" } else { "session-b" })}),
+            );
+        }
+        push(
+            1,
+            CanonicalWireObservationKind::Command,
+            Some(2001),
+            Some("Runtime.evaluate".into()),
+            Some("session-a".into()),
+            serde_json::json!({"phase":"event-before-response"}),
+        );
+        push(
+            1,
+            CanonicalWireObservationKind::Event,
+            None,
+            Some("Runtime.consoleAPICalled".into()),
+            Some("session-a".into()),
+            serde_json::json!({"token":"session-a-999"}),
+        );
+        push(
+            1,
+            CanonicalWireObservationKind::Response,
+            Some(2001),
+            None,
+            None,
+            serde_json::json!({}),
+        );
+        push(
+            1,
+            CanonicalWireObservationKind::Command,
+            Some(3001),
+            Some("Runtime.evaluate".into()),
+            Some("session-b".into()),
+            serde_json::json!({"phase":"detach-during-pending"}),
+        );
+        push(
+            1,
+            CanonicalWireObservationKind::Event,
+            None,
+            Some("Target.detachedFromTarget".into()),
+            Some("session-b".into()),
+            serde_json::json!({"targetId":"target-b"}),
+        );
+        push(
+            1,
+            CanonicalWireObservationKind::ConnectionClosed,
+            None,
+            None,
+            None,
+            serde_json::json!({}),
+        );
+        for target in ["target-a", "target-b"] {
+            push(
+                2,
+                CanonicalWireObservationKind::Command,
+                Some(4000),
+                Some("Target.attachToTarget".into()),
+                None,
+                serde_json::json!({"targetId":target}),
+            );
+        }
+        CandidateContractEvidence::from_trace(CandidateContractTrace {
+            fixtures,
+            observations,
+            runtime_assertions: CandidateRuntimeAssertions {
+                pending_calls_closed: true,
+                subscriptions_closed: true,
+            },
+        })
+        .unwrap()
+    }
 
     fn report(platform: &str, revision: &str) -> TransportEvidenceV2 {
         let configuration = GateConfiguration {
@@ -1544,35 +1762,7 @@ mod tests {
             configuration,
             gates: Vec::new(),
             limitations: Vec::new(),
-            candidate_contract: Some(CandidateContractEvidence {
-                fixture_sha256: ordered_protocol_fixture_digest(),
-                trace_sha256:
-                    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
-                trace_observations: 1,
-                results: CandidateContractResults {
-                    wire: crate::spike::contract::CandidateWireResults {
-                        drift_fixtures: 3,
-                        drift_methods: vec![
-                            "Protocol.unknownEvent".into(),
-                            "Runtime.additiveField".into(),
-                            "Runtime.unknownEnum".into(),
-                        ],
-                        connection_survived: true,
-                        routing_commands: 200,
-                        routing_events: 200,
-                        routing_cross_delivery: 0,
-                        event_before_response: true,
-                        detach_during_pending: true,
-                        socket_closed: true,
-                        reconnect_connections: 2,
-                        sessions_rebuilt: 2,
-                    },
-                    runtime: crate::spike::contract::CandidateRuntimeAssertions {
-                        pending_calls_closed: true,
-                        subscriptions_closed: true,
-                    },
-                },
-            }),
+            candidate_contract: Some(candidate_contract()),
         }
     }
 
@@ -1607,14 +1797,39 @@ mod tests {
         assert_eq!(decision.evidence[1].platform, "macos");
         assert_eq!(decision.evidence[0].gates.len(), 0);
         assert_eq!(decision.evidence[1].gates.len(), 0);
+        assert!(decision.evidence[0].candidate_contract.trace_observations > 0);
         assert_eq!(
-            decision.evidence[0].candidate_contract.trace_observations,
-            1
+            decision.evidence[0].candidate_contract.trace,
+            decision.evidence[1].candidate_contract.trace
         );
-        assert_eq!(
-            decision.evidence[1].candidate_contract.trace_observations,
-            1
-        );
+    }
+
+    #[test]
+    fn decision_revalidates_canonical_material_before_platform_comparison() {
+        let mut macos = report("macos", "revision-a");
+        macos
+            .candidate_contract
+            .as_mut()
+            .unwrap()
+            .results
+            .wire
+            .routing_commands = 201;
+        let error = decide_with_digests(
+            &[report("linux", "revision-a"), macos],
+            &["sha256:a".into(), "sha256:b".into()],
+        )
+        .expect_err("decision must recompute duplicated routing summaries");
+        assert!(error.message.contains("candidate"));
+
+        let mut macos = report("macos", "revision-a");
+        macos.candidate_contract.as_mut().unwrap().trace.fixtures[0].params["kind"] =
+            serde_json::json!("mutated");
+        let error = decide_with_digests(
+            &[report("linux", "revision-a"), macos],
+            &["sha256:a".into(), "sha256:b".into()],
+        )
+        .expect_err("decision must reject mutated canonical fixture material");
+        assert!(error.message.contains("fixture methods, params, or order"));
     }
 
     #[test]
@@ -1633,7 +1848,7 @@ mod tests {
             let error =
                 decide_with_digests(&[linux, macos], &["sha256:a".into(), "sha256:b".into()])
                     .expect_err("cross-platform candidate contract drift must reject the decision");
-            assert!(error.message.contains("deterministic candidate-contract"));
+            assert!(error.message.contains("candidate"));
         }
     }
 }

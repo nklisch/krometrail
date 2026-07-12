@@ -1,8 +1,8 @@
 #![cfg(feature = "cdp-spike-cdpkit")]
 
 use krometrail_cdp::spike::{
-    cdpkit_adapter::CdpkitTransportFactory, committed_protocol_fixtures,
-    ordered_protocol_fixture_digest, run_candidate_wire_contract,
+    canonical_fixture_digest, cdpkit_adapter::CdpkitTransportFactory, committed_protocol_fixtures,
+    run_candidate_wire_contract,
 };
 
 async fn decisive_candidate_contract() -> krometrail_cdp::spike::CandidateContractEvidence {
@@ -12,7 +12,10 @@ async fn decisive_candidate_contract() -> krometrail_cdp::spike::CandidateContra
     .await
     .expect("decisive candidate contract");
 
-    assert_eq!(evidence.fixture_sha256, ordered_protocol_fixture_digest());
+    assert_eq!(
+        evidence.fixture_sha256,
+        canonical_fixture_digest(&evidence.trace.fixtures).unwrap()
+    );
     assert!(evidence.trace_sha256.starts_with("sha256:"));
     assert!(evidence.trace_observations > 0);
     let expected_methods = committed_protocol_fixtures()

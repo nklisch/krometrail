@@ -89,7 +89,7 @@
       ]
     },
     "CandidateContractEvidence": {
-      "description": "Results and the exact observed wire trace are inseparable: a report that uses scripted\ncandidate evidence must carry both the digest and the measurements derived from that trace.",
+      "description": "Results and the exact observed wire projection are inseparable: a report that uses scripted\ncandidate evidence must carry the material needed to independently recompute every summary.",
       "type": "object",
       "properties": {
         "fixture_sha256": {
@@ -97,6 +97,9 @@
         },
         "results": {
           "$ref": "#/$defs/CandidateContractResults"
+        },
+        "trace": {
+          "$ref": "#/$defs/CandidateContractTrace"
         },
         "trace_observations": {
           "type": "integer",
@@ -112,7 +115,8 @@
         "fixture_sha256",
         "trace_sha256",
         "trace_observations",
-        "results"
+        "results",
+        "trace"
       ]
     },
     "CandidateContractResults": {
@@ -129,6 +133,33 @@
       "required": [
         "wire",
         "runtime"
+      ]
+    },
+    "CandidateContractTrace": {
+      "description": "Canonical material from which every candidate-contract summary is derived.",
+      "type": "object",
+      "properties": {
+        "fixtures": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalProtocolFixture"
+          }
+        },
+        "observations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalWireObservation"
+          }
+        },
+        "runtime_assertions": {
+          "$ref": "#/$defs/CandidateRuntimeAssertions"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "fixtures",
+        "observations",
+        "runtime_assertions"
       ]
     },
     "CandidateIdentity": {
@@ -234,6 +265,81 @@
         "socket_closed",
         "reconnect_connections",
         "sessions_rebuilt"
+      ]
+    },
+    "CanonicalProtocolFixture": {
+      "description": "The small, stable fixture projection retained with decisive evidence.\n\nThe projection intentionally stores parsed method and params rather than filesystem paths or\nraw runner output. Its ordered serialization is the fixture digest input, so validation can\nrecompute both the claims and the digest from the report itself.",
+      "type": "object",
+      "properties": {
+        "method": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "params": true
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "method",
+        "params"
+      ]
+    },
+    "CanonicalWireObservation": {
+      "description": "A sanitized wire projection, not an unbounded raw log. Sequence and connection numbers are\nretained because ordering and reconnect assertions cannot be reconstructed from summaries.",
+      "type": "object",
+      "properties": {
+        "connection": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "kind": {
+          "$ref": "#/$defs/CanonicalWireObservationKind"
+        },
+        "method": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "params": true,
+        "request_id": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "sequence": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "session_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "sequence",
+        "connection",
+        "kind",
+        "params"
+      ]
+    },
+    "CanonicalWireObservationKind": {
+      "type": "string",
+      "enum": [
+        "command",
+        "response",
+        "event",
+        "connection_closed"
       ]
     },
     "FixtureEvidence": {
