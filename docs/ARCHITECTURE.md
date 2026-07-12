@@ -107,7 +107,9 @@ No infrastructure crate is imported by `krometrail-core`.
 
 ## Domain Model
 
-Identifiers are opaque typed values:
+### Identifier contracts
+
+The foundation's implemented domain identifiers are opaque UUID-backed typed values:
 
 ```text
 SessionId
@@ -117,9 +119,25 @@ InteractionId
 MarkerId
 SegmentId
 ArtifactId
-SnapshotGeneration
-NodeReference
+GapId
+NavigationId
 ```
+
+These IDs are declared together in `krometrail-core` so display, parsing, Serde,
+ordering, and exhaustive round-trip coverage share one source of truth. The root
+process adapter supplies collision-resistant UUID v4 values through the core
+`IdSource` port; randomness remains outside the infrastructure-free domain.
+
+The following identifiers are intentionally deferred to browser-control work and
+are not implemented foundation types:
+
+```text
+SnapshotGeneration  # owned by the target/snapshot control boundary
+NodeReference       # owned by the structured snapshot/action boundary
+```
+
+The future browser-control contract will define their lifecycle and ownership
+before they are added to the core registry.
 
 The core timeline contains ordered observations:
 
@@ -198,7 +216,7 @@ For each target it owns:
 - CDP session attachment;
 - enabled domains;
 - screencast state;
-- snapshot generation;
+- future snapshot generation (deferred to browser-control work);
 - current navigation identity;
 - current viewport metadata;
 - visibility;
@@ -252,7 +270,10 @@ CPU-intensive image work runs outside asynchronous I/O tasks on a bounded worker
 
 ## Structured Snapshots and References
 
-A page snapshot receives a generation identifier. Every actionable node reference includes that generation:
+Structured snapshots and actionable node references are deferred browser-control
+work. That future boundary will define a snapshot generation owned by the
+target/snapshot control lifecycle and a `NodeReference` owned by the structured
+snapshot/action boundary:
 
 ```text
 NodeReference
@@ -260,18 +281,19 @@ NodeReference
   local_node_key
 ```
 
-A node reference resolves through snapshot-local metadata to CDP accessibility and DOM information.
+A node reference will resolve through snapshot-local metadata to CDP accessibility
+and DOM information once that control contract is implemented.
 
-Before an action, the control adapter:
+Before an action, the future control adapter will:
 
-1. rejects references from an expired generation;
-2. resolves the current backing node;
-3. obtains current action geometry;
-4. verifies visibility and actionability;
-5. dispatches input;
-6. records the interaction result.
+1. reject references from an expired generation;
+2. resolve the current backing node;
+3. obtain current action geometry;
+4. verify visibility and actionability;
+5. dispatch input;
+6. record the interaction result.
 
-Navigation invalidates the active snapshot generation. Material page changes can also invalidate references. Krometrail prefers an explicit stale-reference failure over guessing at a replacement node.
+Navigation will invalidate the active snapshot generation. Material page changes can also invalidate references. Krometrail prefers an explicit stale-reference failure over guessing at a replacement node.
 
 Coordinate actions bypass structured references and declare their coordinate space explicitly.
 

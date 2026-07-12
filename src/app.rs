@@ -1,8 +1,5 @@
 use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::Arc,
     time::{Instant, SystemTime},
 };
 
@@ -71,7 +68,7 @@ pub(crate) fn build_runtime() -> Runtime {
             origin: Instant::now(),
         }),
         wall_clock: Arc::new(SystemWallClock),
-        ids: Arc::new(ProcessIdSource::default()),
+        ids: Arc::new(ProcessIdSource),
         // Do not select a fake-success adapter. This explicit unavailable
         // implementation makes the pre-CDP state observable at the boundary.
         browser: Arc::new(UnavailableBrowserConnector),
@@ -100,15 +97,13 @@ impl WallClock for SystemWallClock {
     }
 }
 
-#[derive(Default)]
-struct ProcessIdSource {
-    next: AtomicU64,
-}
+struct ProcessIdSource;
 
 impl IdSource for ProcessIdSource {
     fn next(&self) -> IdValue {
-        let sequence = self.next.fetch_add(1, Ordering::Relaxed);
-        IdValue::from_uuid(Uuid::from_u128(u128::from(sequence) + 1))
+        // UUID v4 randomness keeps persisted identities distinct across
+        // independently started processes; core only sees the IdSource port.
+        IdValue::from_uuid(Uuid::new_v4())
     }
 }
 
@@ -177,4 +172,35 @@ fn unavailable(message: &'static str) -> KrometrailError {
         NonEmptyText::new("wait for the corresponding Rust infrastructure adapter")
             .expect("static recovery message is non-empty"),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn independently_constructed_sources_do_not_repeat_sequences() {
+        let first = ProcessIdSource;
+        let second = ProcessIdSource;
+        let first_ids: Vec<_> = (0..32).map(|_| first.next()).collect();
+        let second_ids: Vec<_> = (0..32).map(|_| second.next()).collect();
+
+        assert_eq!(
+            HashSet::<IdValue>::from_iter(first_ids.iter().copied()).len(),
+            32
+        );
+        assert_eq!(
+            HashSet::<IdValue>::from_iter(second_ids.iter().copied()).len(),
+            32
+        );
+        assert!(first_ids.iter().all(|id| !second_ids.contains(id)));
+    }
+
+    #[test]
+    fn process_ids_are_uuid_v4_values() {
+        let id = ProcessIdSource.next();
+        assert_eq!(id.as_uuid().get_version_num(), 4);
+        assert_eq!(id.as_uuid().get_variant(), uuid::Variant::RFC4122);
+    }
 }

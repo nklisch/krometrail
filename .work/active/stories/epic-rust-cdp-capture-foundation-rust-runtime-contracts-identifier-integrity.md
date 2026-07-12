@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-rust-runtime-contracts-identifier-integrity
 kind: story
-stage: implementing
+stage: review
 tags: [bug, infra, tests]
 parent: epic-rust-cdp-capture-foundation-rust-runtime-contracts
 depends_on: []
@@ -26,11 +26,23 @@ Resolve identifier drift and collision risks found by the second adversarial rev
 
 ## Acceptance criteria
 
-- [ ] Foundation docs and implemented identifier vocabulary agree.
-- [ ] New processes do not restart an identical ID sequence.
-- [ ] Adding a typed ID automatically brings it under exhaustive contract coverage.
-- [ ] The complete Rust quality gate passes.
+- [x] Foundation docs and implemented identifier vocabulary agree.
+- [x] New processes do not restart an identical ID sequence.
+- [x] Adding a typed ID automatically brings it under exhaustive contract coverage.
+- [x] The complete Rust quality gate passes.
 
 ## Review origin
 
 Filed from the second GPT-5.6 Sol adversarial feature review.
+
+## Implementation notes
+
+- Files changed: `crates/krometrail-core/src/ids.rs`, `src/app.rs`, `Cargo.toml`, `Cargo.lock`, `docs/ARCHITECTURE.md`, and this story record.
+- Tests added: macro-generated exhaustive typed-ID display/parse/Serde round trips; process ID tests for independent-source uniqueness and UUID v4 version/variant.
+- Identifier allocation: replaced the restart-repeating atomic sequence with root-owned UUID v4 generation. Core remains randomness-free behind `IdSource`.
+- Architecture: implemented IDs now list `GapId` and `NavigationId`; `SnapshotGeneration` and `NodeReference` are explicitly deferred to browser-control boundaries with ownership noted.
+- Manifest/lock: enabled the required `uuid` v4 feature; Cargo.lock gained its required `getrandom` dependency.
+- Verification: `cargo fmt --all -- --check`, `cargo check --workspace --all-targets --locked`, `cargo test --workspace --all-targets --locked` (40 passed), `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `bun run docs:build` all passed. The configured Rust 1.85 toolchain was unavailable locally, so the separate MSRV command could not run.
+- Dispatch: direct local reads and implementation only; no questions or subagents used. Distribution workflow/scripts and `.pi/` were not touched.
+- Discrepancies from design: none.
+- Adjacent issues parked: none.
