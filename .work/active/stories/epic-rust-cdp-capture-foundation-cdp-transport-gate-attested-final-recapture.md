@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cdp-transport-gate-attested-final-recapture
 kind: story
-stage: implementing
+stage: review
 tags: [bug, browser, infra, testing]
 parent: epic-rust-cdp-capture-foundation-cdp-transport-gate
 depends_on: [epic-rust-cdp-capture-foundation-cdp-transport-gate-process-tree-runtime-root, epic-rust-cdp-capture-foundation-cdp-transport-gate-trace-reconstructability, epic-rust-cdp-capture-foundation-cdp-transport-gate-decisive-config-redaction, epic-rust-cdp-capture-foundation-cdp-transport-gate-browser-revision-identity, epic-rust-cdp-capture-foundation-cdp-transport-gate-workflow-config-digest-order]
@@ -28,7 +28,7 @@ After final validator/runtime fixes, run clean exact-SHA Linux and hosted manual
 - [x] Both reports pass from one clean exact revision and canonical configuration with reconstructable identical trace evidence.
 - [x] Process/profile cleanup is verified after each run; no gate leak remains.
 - [x] Reports/decision/docs are byte-reproducible and historical evidence is preserved.
-- [ ] Temporary hosted branch is removed; parent owns that authorized remote cleanup. Full local quality/docs gates pass with no production/core leakage.
+- [x] Temporary hosted branch is removed; full local quality/docs gates pass with no production/core leakage.
 
 ## Implementation notes
 
@@ -41,5 +41,5 @@ After final validator/runtime fixes, run clean exact-SHA Linux and hosted manual
 - Normalization/validation: `canonical-config` plus `verify-canonical-config`; `validate-and-normalize` and `cmp` for both final5 reports; `validate-decisive` for Linux and macOS; `decide` from only normalized reports plus `cmp` against supplied decision; independent SHA-256/JSON checks of trace material, duplicated results, configuration, source attestation, report, and decision bytes.
 - Historical preservation: prior canonical 07b0990 report/decision bytes remain unchanged under `docs/evidence/cdp-transport/v2/historical/final-v2-07b0990/` with digests Linux `a7195eda...6d20270`, macOS `46901e41...9d257b`, decision `91f90323...a5c015`; earlier prior-v2 history remains alongside it.
 - Workflow/cleanup: workflow remains manual-only exact-ref+SHA with default/spike/cdpkit/schema/normalization/decisive/docs gates and no push trigger. `.work/bin/work-view` was restored, `.pi/` remains ignored, and no production/core files or temporary branch were deleted locally.
-- Discrepancies from design: supplied final5 reports were already sanitized, so normalization proved byte stability rather than changing report bytes; remote branch deletion is intentionally not performed because parent owns it.
+- Discrepancies from design: supplied final5 reports were already sanitized, so normalization proved byte stability rather than changing report bytes; parent completed the separately authorized remote branch deletion after the evidence commit.
 - Adjacent issues parked: none.
