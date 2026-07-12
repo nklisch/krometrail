@@ -353,6 +353,26 @@ async fn run_real_chrome_gate_inner(
         .collect();
     let correlated_commands = correlated_pairs.len() as f64;
     let correlated_events = correlated_pairs.len() as f64;
+    let commands_per_session = observed_commands
+        .iter()
+        .filter(|(session, _)| session == session_a_id || session == session_b_id)
+        .fold(
+            BTreeMap::<String, u64>::new(),
+            |mut counts, (session, _)| {
+                *counts.entry(session.clone()).or_default() += 1;
+                counts
+            },
+        );
+    let events_per_session = observed_events
+        .iter()
+        .filter(|(session, _)| session == session_a_id || session == session_b_id)
+        .fold(
+            BTreeMap::<String, u64>::new(),
+            |mut counts, (session, _)| {
+                *counts.entry(session.clone()).or_default() += 1;
+                counts
+            },
+        );
     gates.push(pass(
         TransportGateId::DeterministicRouting,
         [
@@ -364,7 +384,18 @@ async fn run_real_chrome_gate_inner(
     if cross_delivery == 0 {
         gates.push(pass(
             TransportGateId::FlatSessionIsolation,
-            [("sessions", 2.0), ("cross_delivery", cross_delivery as f64)],
+            [
+                ("sessions", 2.0),
+                (
+                    "commands_per_session",
+                    commands_per_session.values().copied().min().unwrap_or(0) as f64,
+                ),
+                (
+                    "events_per_session",
+                    events_per_session.values().copied().min().unwrap_or(0) as f64,
+                ),
+                ("cross_delivery", cross_delivery as f64),
+            ],
         ));
     } else {
         gates.push(fail(

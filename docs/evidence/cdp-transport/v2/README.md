@@ -22,15 +22,42 @@ CDP_SPIKE_WRITE_SCHEMA=1 cargo test -p krometrail-cdp --features cdp-spike --tes
 
 ## Requalification workflow
 
-Run the repaired candidate gate on Linux and macOS from the same committed immutable revision. Preserve runner output and exact report-byte digests. Validate only reports emitted by that run, then decide:
+Run the repaired candidate gate on Linux and macOS from the same committed immutable revision. The hosted workflow keeps the temporary `ci/cdp-macos-evidence` push trigger until the final cleanup story; dispatches require both a ref and its exact full SHA. Linux must use the same binary, feature, thresholds, and explicit expected revision as macOS:
 
 ```bash
-cargo run -p krometrail-cdp --features cdp-spike --bin cdp-transport-gate -- \
-  validate-and-normalize --input target/cdp-transport-gate/cdpkit-linux.json \
-  --output target/cdp-transport-gate/cdpkit-linux.v2.json
-cargo run -p krometrail-cdp --features cdp-spike --bin cdp-transport-gate -- \
-  decide --linux-report target/cdp-transport-gate/cdpkit-linux.v2.json \
-  --macos-report target/cdp-transport-gate/cdpkit-macos.v2.json \
+export GATE_SHA="$(git rev-parse HEAD)"
+export CHROME_BIN="/path/to/chrome"
+mkdir -p target/cdp-transport-gate
+cargo run --locked -p krometrail-cdp \
+  --features cdp-spike-cdpkit \
+  --bin cdp-transport-gate -- gate \
+  --chrome-binary "$CHROME_BIN" \
+  --expected-git-revision "$GATE_SHA" \
+  --minimum-seconds 60 \
+  --minimum-frames 1000 \
+  --saturation-seconds 10 \
+  --saturation-attempts 100 \
+  --hard-stop-seconds 120 \
+  --output target/cdp-transport-gate/cdpkit-linux.raw.json
+cargo run --locked -p krometrail-cdp \
+  --features cdp-spike-cdpkit \
+  --bin cdp-transport-gate -- validate-and-normalize \
+  --input target/cdp-transport-gate/cdpkit-linux.raw.json \
+  --output target/cdp-transport-gate/cdpkit-linux.sanitized.json
+cargo run --locked -p krometrail-cdp \
+  --features cdp-spike-cdpkit \
+  --bin cdp-transport-gate -- validate-decisive \
+  --input target/cdp-transport-gate/cdpkit-linux.sanitized.json \
+  --platform linux \
+  --expected-git-revision "$GATE_SHA"
+```
+
+The hosted macOS workflow runs this same gate with the resolved checkout SHA, compares the generated schema to this `v2/schema.json`, and performs the strict schema-v2 field/lifecycle/trace assertions before artifact upload. Preserve runner output and exact report-byte digests. Validate only reports emitted by that run, then decide:
+
+```bash
+cargo run --locked -p krometrail-cdp --features cdp-spike-cdpkit --bin cdp-transport-gate -- \
+  decide --linux-report target/cdp-transport-gate/cdpkit-linux.sanitized.json \
+  --macos-report target/cdp-transport-gate/cdpkit-macos.sanitized.json \
   --output target/cdp-transport-gate/decision.v2.json
 ```
 

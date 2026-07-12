@@ -1,9 +1,8 @@
 name: CDP transport macOS gate
 
 on:
-  # The temporary branch trigger bootstraps this workflow before it exists on
-  # the default branch. Remove it after the first evidence run; workflow_dispatch
-  # remains the reproducible long-term entry point.
+  # Keep this temporary branch trigger until the final cleanup story removes it.
+  # The parent pushes the exact gate SHA here before the hosted macOS run.
   push:
     branches:
       - ci/cdp-macos-evidence
@@ -42,6 +41,7 @@ jobs:
           fetch-depth: 1
 
       - name: Verify dispatched ref and immutable checkout
+        id: resolve-sha
         shell: bash
         env:
           DISPATCH_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref }}
@@ -49,24 +49,27 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$DISPATCH_SHA" =~ ^[0-9a-fA-F]{40}$ ]]
-          test "$(git rev-parse HEAD)" = "$DISPATCH_SHA"
+          resolved_sha="$(git rev-parse --verify HEAD)"
+          test "$resolved_sha" = "$DISPATCH_SHA"
 
           if [[ "$DISPATCH_REF" =~ ^[0-9a-fA-F]{40}$ ]]; then
             test "$DISPATCH_REF" = "$DISPATCH_SHA"
-            exit 0
+          else
+            case "$DISPATCH_REF" in
+              refs/heads/*|refs/tags/*)
+                remote_refs=("$DISPATCH_REF" "${DISPATCH_REF}^{}")
+                ;;
+              *)
+                remote_refs=("refs/heads/$DISPATCH_REF" "refs/tags/$DISPATCH_REF" "refs/tags/$DISPATCH_REF^{}")
+                ;;
+            esac
+            remote_sha="$(git ls-remote origin "${remote_refs[@]}" | awk -v expected="$DISPATCH_SHA" '$1 == expected { print $1; exit }')"
+            test "$remote_sha" = "$DISPATCH_SHA"
           fi
 
-          case "$DISPATCH_REF" in
-            refs/heads/*|refs/tags/*)
-              remote_refs=("$DISPATCH_REF" "${DISPATCH_REF}^{}")
-              ;;
-            *)
-              remote_refs=("refs/heads/$DISPATCH_REF" "refs/tags/$DISPATCH_REF" "refs/tags/$DISPATCH_REF^{}")
-              ;;
-          esac
-          remote_sha="$(git ls-remote origin "${remote_refs[@]}" | awk -v expected="$DISPATCH_SHA" '$1 == expected { print $1; exit }')"
-          test "$remote_sha" = "$DISPATCH_SHA"
-          echo "Verified $DISPATCH_REF resolves to $DISPATCH_SHA"
+          echo "RESOLVED_SHA=$resolved_sha" >> "$GITHUB_ENV"
+          echo "resolved_sha=$resolved_sha" >> "$GITHUB_OUTPUT"
+          echo "Verified $DISPATCH_REF resolves to $resolved_sha"
 
       - name: Install current stable Chrome
         shell: bash
@@ -88,7 +91,7 @@ jobs:
           echo "RUSTUP_TOOLCHAIN=stable" >> "$GITHUB_ENV"
           rustup run stable rustc --version
 
-      - name: Verify generated evidence schema contract
+      - name: Verify generated evidence schema-v2 contract
         shell: bash
         run: |
           set -euo pipefail
@@ -97,15 +100,16 @@ jobs:
             --features cdp-spike-cdpkit \
             --bin cdp-transport-gate -- schema \
             --output target/cdp-transport-gate/schema.generated.json
-          cmp -- docs/evidence/cdp-transport/v1/schema.json \
+          cmp -- docs/evidence/cdp-transport/v2/schema.json \
             target/cdp-transport-gate/schema.generated.json
 
-      - name: Run unchanged cdpkit candidate tests
+      - name: Run unchanged candidate and deterministic transport tests
         shell: bash
         run: |
           set -euo pipefail
           cargo test --locked -p krometrail-cdp \
             --features cdp-spike-cdpkit \
+            --test transport_contract \
             --test cdpkit_transport_contract
 
       - name: Run full 60-second transport gate
@@ -118,8 +122,11 @@ jobs:
             --features cdp-spike-cdpkit \
             --bin cdp-transport-gate -- gate \
             --chrome-binary "$CHROME_BIN" \
+            --expected-git-revision "$RESOLVED_SHA" \
             --minimum-seconds "$MINIMUM_SECONDS" \
             --minimum-frames "$MINIMUM_FRAMES" \
+            --saturation-seconds "$SATURATION_SECONDS" \
+            --saturation-attempts "$SATURATION_ATTEMPTS" \
             --hard-stop-seconds "$HARD_STOP_SECONDS" \
             --output target/cdp-transport-gate/cdpkit-macos.raw.json
           gate_exit=$?
@@ -127,7 +134,7 @@ jobs:
           test -s target/cdp-transport-gate/cdpkit-macos.raw.json
           exit 0
 
-      - name: Validate and normalize sanitized evidence
+      - name: Validate and normalize sanitized schema-v2 evidence
         shell: bash
         run: |
           set -euo pipefail
@@ -137,17 +144,72 @@ jobs:
             --input target/cdp-transport-gate/cdpkit-macos.raw.json \
             --output target/cdp-transport-gate/cdpkit-macos.sanitized.json
           test -s target/cdp-transport-gate/cdpkit-macos.sanitized.json
+          cargo run --locked -p krometrail-cdp \
+            --features cdp-spike-cdpkit \
+            --bin cdp-transport-gate -- validate-decisive \
+            --input target/cdp-transport-gate/cdpkit-macos.sanitized.json \
+            --platform macos \
+            --expected-git-revision "$RESOLVED_SHA"
 
-      - name: Check exact macOS gate contract
+      - name: Check exact schema-v2 gate contract
         shell: bash
         run: |
           set -euo pipefail
-          python3 - target/cdp-transport-gate/cdpkit-macos.sanitized.json <<'PY'
+          python3 - target/cdp-transport-gate/cdpkit-macos.sanitized.json "$RESOLVED_SHA" <<'PY'
+          import hashlib
           import json
+          import re
           import sys
 
           with open(sys.argv[1], encoding="utf-8") as evidence_file:
               evidence = json.load(evidence_file)
+          resolved_sha = sys.argv[2]
+
+          assert set(evidence) == {
+              "schema_version",
+              "candidate",
+              "source",
+              "environment",
+              "browser",
+              "fixture",
+              "configuration",
+              "gate_provenance",
+              "gates",
+              "limitations",
+              "candidate_contract",
+          }
+          assert re.fullmatch(r"[0-9a-f]{40}", resolved_sha)
+          assert evidence["schema_version"] == 2
+          assert evidence["candidate"] == {
+              "name": "cdpkit",
+              "version": "0.4.0",
+              "checksum": "c3fdb566d913b31e0014391a94c0db4ed871dbb76577dd1b2f2c5f6df158bfaa",
+          }
+          assert set(evidence["source"]) == {"git_revision", "protocol_revision", "rust_version"}
+          assert evidence["source"]["git_revision"] == resolved_sha
+          assert evidence["gate_provenance"]["implementation_revision"] == resolved_sha
+          assert evidence["environment"]["platform"] == "macos"
+          assert evidence["fixture"] == {
+              "name": "cdp-transport-gate",
+              "sha256": "sha256sum-of-ordered-fixture-files:9b42ae730d12a95772a946bf55e4838a5443b6cb4c536424570219041b6e2a68:84ba666539a996012a781637c1a894d8c7a4789cfca84661bd7cf8b79efa2e13",
+          }
+
+          expected_configuration = {
+              "minimum_seconds": 60.0,
+              "minimum_frames": 1000,
+              "saturation_seconds": 10.0,
+              "saturation_attempts": 100,
+              "hard_stop_seconds": 120,
+          }
+          assert evidence["configuration"] == expected_configuration
+          encoded_configuration = json.dumps(
+              expected_configuration, separators=(",", ":"), ensure_ascii=False
+          ).encode()
+          expected_configuration_digest = "sha256:" + hashlib.sha256(encoded_configuration).hexdigest()
+          assert evidence["gate_provenance"] == {
+              "implementation_revision": resolved_sha,
+              "configuration_sha256": expected_configuration_digest,
+          }
 
           expected_ids = {
               "deterministic-routing",
@@ -164,50 +226,117 @@ jobs:
               "disconnect-cleanup",
               "explicit-reconnect-rebuild",
           }
-          assert evidence["schema_version"] == 1
-          assert evidence["candidate"] == {
-              "name": "cdpkit",
-              "version": "0.4.0",
-              "checksum": "c3fdb566d913b31e0014391a94c0db4ed871dbb76577dd1b2f2c5f6df158bfaa",
-          }
-          assert evidence["environment"]["platform"] == "macos"
-          assert evidence["configuration"] == {
-              "minimum_seconds": 60.0,
-              "minimum_frames": 1000,
-              "saturation_seconds": 10.0,
-              "saturation_attempts": 100,
-          }
           gates = evidence["gates"]
           assert len(gates) == 13
           assert {gate["id"] for gate in gates} == expected_ids
-          assert all(gate["status"] == "pass" for gate in gates)
+          assert all(set(gate) == {"id", "status", "summary", "measurements", "failure"} for gate in gates)
+          assert all(gate["status"] == "pass" and gate["failure"] is None for gate in gates)
 
-          required_rss = {
-              "rss_samples",
-              "rss_peak_bytes",
-              "rss_first_window_median_bytes",
-              "rss_last_window_median_bytes",
-              "rss_theil_sen_bytes_per_minute",
-              "rss_sampling_interval_seconds",
-              "rss_warmup_seconds",
+          required_measurements = {
+              "deterministic-routing": {"commands", "events", "cross_delivery"},
+              "typed-domains": {"typed_operations"},
+              "flat-session-isolation": {
+                  "sessions", "commands_per_session", "events_per_session", "cross_delivery"
+              },
+              "raw-browser-command": {"commands"},
+              "raw-session-command": {"commands"},
+              "named-raw-event-params": {"named_events"},
+              "protocol-drift-survival": {
+                  "fixtures", "connection_survived", "wildcard_envelope_available"
+              },
+              "sustained-screencast": {
+                  "elapsed_seconds", "frames_received", "frames_acknowledged",
+                  "rss_samples", "rss_sampling_interval_seconds", "rss_warmup_seconds",
+                  "rss_peak_bytes", "rss_first_window_median_bytes",
+                  "rss_last_window_median_bytes", "rss_theil_sen_bytes_per_minute",
+                  "handoff_accepted", "handoff_dropped", "saturation_seconds",
+                  "saturation_attempts", "ack_latency_ms_p50", "ack_latency_ms_p95",
+                  "ack_latency_ms_p99", "ack_latency_ms_max", "upstream_queue_depth_available",
+              },
+              "prompt-acknowledgement": {
+                  "ack_before_handoff", "ack_latency_ms_p50", "ack_latency_ms_p95",
+                  "ack_latency_ms_p99", "ack_latency_ms_max",
+              },
+              "bounded-handoff-saturation": {
+                  "handoff_attempts", "handoff_accepted", "handoff_dropped", "saturation_seconds"
+              },
+              "bounded-memory-proxy": {
+                  "rss_samples", "rss_sampling_interval_seconds", "rss_warmup_seconds",
+                  "rss_growth_bytes", "rss_peak_bytes", "rss_first_window_median_bytes",
+                  "rss_last_window_median_bytes", "rss_theil_sen_bytes_per_minute",
+                  "upstream_queue_depth_available",
+              },
+              "disconnect-cleanup": {
+                  "pending_command_started", "pending_calls_closed", "subscriptions_closed",
+                  "pending_command_elapsed_seconds", "subscription_elapsed_seconds", "close_reason_observed",
+              },
+              "explicit-reconnect-rebuild": {"connections", "sessions_rebuilt", "elapsed_seconds"},
           }
+          by_id = {gate["id"]: gate for gate in gates}
+          for gate_id, keys in required_measurements.items():
+              measurements = by_id[gate_id]["measurements"]
+              assert keys <= set(measurements)
           for gate_id in ("sustained-screencast", "bounded-memory-proxy"):
-              gate = next(gate for gate in gates if gate["id"] == gate_id)
-              measurements = gate["measurements"]
-              assert required_rss <= measurements.keys()
+              measurements = by_id[gate_id]["measurements"]
+              assert "rss_sample_count" not in measurements
               assert measurements["rss_samples"] >= 50
               assert measurements["rss_peak_bytes"] > 0
               assert measurements["rss_first_window_median_bytes"] > 0
               assert measurements["rss_last_window_median_bytes"] > 0
-              assert 0.75 <= measurements["rss_sampling_interval_seconds"] <= 1.25
+              assert measurements["rss_sampling_interval_seconds"] == 1.0
               assert measurements["rss_warmup_seconds"] == 10.0
+
+          disconnect = by_id["disconnect-cleanup"]["measurements"]
+          assert "deadline_seconds" not in disconnect
+          assert disconnect["pending_command_started"] == 1.0
+          assert disconnect["pending_calls_closed"] == 1.0
+          assert disconnect["subscriptions_closed"] == 1.0
+          assert disconnect["close_reason_observed"] == 1.0
+          assert 0.0 <= disconnect["pending_command_elapsed_seconds"] < 1.0
+          assert 0.0 <= disconnect["subscription_elapsed_seconds"] < 1.0
+
+          rebuild = by_id["explicit-reconnect-rebuild"]["measurements"]
+          assert rebuild["connections"] >= 2.0
+          assert rebuild["sessions_rebuilt"] >= 2.0
+          assert 0.0 < rebuild["elapsed_seconds"] < 5.0
+
+          contract = evidence["candidate_contract"]
+          assert set(contract) == {"trace_sha256", "trace_observations", "results"}
+          trace_sha = contract["trace_sha256"]
+          assert re.fullmatch(r"sha256:[0-9a-f]{64}", trace_sha)
+          assert contract["trace_observations"] > 0
+          results = contract["results"]
+          assert set(results) == {
+              "drift_fixtures", "connection_survived", "routing_commands", "routing_events",
+              "routing_cross_delivery", "event_before_response", "detach_during_pending",
+              "pending_calls_closed", "subscriptions_closed", "socket_closed",
+              "reconnect_connections", "sessions_rebuilt",
+          }
+          assert results["drift_fixtures"] >= 3
+          assert results["connection_survived"] is True
+          assert results["routing_commands"] >= 200
+          assert results["routing_events"] >= 200
+          assert results["routing_cross_delivery"] == 0
+          assert results["event_before_response"] is True
+          assert results["detach_during_pending"] is True
+          assert results["pending_calls_closed"] is True
+          assert results["subscriptions_closed"] is True
+          assert results["socket_closed"] is True
+          assert results["reconnect_connections"] >= 2
+          assert results["sessions_rebuilt"] >= 2
+          drift = by_id["protocol-drift-survival"]["measurements"]
+          assert drift["fixtures"] == results["drift_fixtures"]
+          assert drift["connection_survived"] == 1.0
+          assert drift["wildcard_envelope_available"] == 0.0
+          assert any(trace_sha in limitation for limitation in evidence["limitations"])
+          assert "unbounded subscriber" in " ".join(evidence["limitations"])
           PY
 
       - name: Upload raw and sanitized evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: cdp-transport-macos-evidence-${{ inputs.sha }}
+          name: cdp-transport-macos-evidence-${{ steps.resolve-sha.outputs.resolved_sha }}
           path: |
             target/cdp-transport-gate/cdpkit-macos.raw.json
             target/cdp-transport-gate/cdpkit-macos.sanitized.json

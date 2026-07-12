@@ -828,7 +828,11 @@ fn validate_gate_contract(report: &TransportEvidenceV1) -> Result<(), SpikeError
     Ok(())
 }
 
-fn validate_decisive_report(
+/// Validate one platform report against the complete decisive schema-v2 contract.
+///
+/// This is intentionally shared by local Linux runs and the hosted macOS workflow so
+/// platform qualification cannot silently diverge at the final validation boundary.
+pub fn validate_decisive_report(
     report: &TransportEvidenceV1,
     expected_platform: &str,
 ) -> Result<(), SpikeError> {

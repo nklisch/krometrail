@@ -24,7 +24,7 @@ pub use evidence::{
     SanitizedEnvironment, SourceIdentity, TransportDecision, TransportDecisionV1,
     TransportDecisionV2, TransportEvidenceV1, TransportEvidenceV2, TransportGateId,
     configuration_digest, decide, decide_from_files, rss_measurements_are_valid, sanitize_evidence,
-    validate_evidence, write_json_schema,
+    validate_decisive_report, validate_evidence, write_json_schema,
 };
 pub use fake::{FakeTransport, FakeTransportFactory};
 pub use scenarios::{ScenarioEvidence, run_transport_scenarios};
