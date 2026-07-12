@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cdp-transport-gate-cross-platform-requalification
 kind: story
-stage: review
+stage: done
 tags: [bug, browser, infra, testing]
 parent: epic-rust-cdp-capture-foundation-cdp-transport-gate
 depends_on: [epic-rust-cdp-capture-foundation-cdp-transport-gate-evidence-v2-contract, epic-rust-cdp-capture-foundation-cdp-transport-gate-candidate-contract-endpoint-binding, epic-rust-cdp-capture-foundation-cdp-transport-gate-runtime-determinism]
@@ -128,3 +128,13 @@ The reports retain these limitations verbatim:
 - Added only the two runner-emitted sanitized v2 reports and their evidence/documentation updates; no report JSON was hand-edited.
 - Restored `.work/bin/work-view` to the committed binary and left `.pi/` ignored.
 - Did not regenerate or commit a decision file. The next story owns the final decision, architecture, and temporary workflow cleanup.
+
+## Review (2026-07-12)
+
+**Verdict:** Approve
+
+**Blockers:** none
+**Important:** none
+**Nits:** none
+
+**Notes:** Fast-lane evidence review independently reproduced strict decision validation, exact report digests, platform/source/implementation identity, all 13 passing observed gates, canonical RSS/deadline fields, and identical trace-bound candidate results. The decision function reaches `adopt_cdpkit`; final decision emission remains correctly deferred. Verdict: Approve - story verified by implement; fast-lane advance.
