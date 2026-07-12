@@ -1,7 +1,7 @@
 ---
 id: refactor-centralize-cargo-toml-section-parsing
 kind: story
-stage: review
+stage: done
 tags: [refactor, infra]
 parent: null
 depends_on: []
@@ -50,3 +50,13 @@ Extract one local helper that resolves an exact TOML section header and returns 
 - Discrepancies from design: none.
 - Adjacent issues parked: none.
 - Verification: `bash tests/distribution-static.sh`; `bun scripts/bump-version.ts patch --dry-run`; Rust gates (`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --locked`, `cargo test --workspace --all-targets --locked`, `cargo clippy --workspace --all-targets --locked -- -D warnings`).
+
+## Review (2026-07-12)
+
+**Verdict**: Approve
+
+**Blockers**: none
+**Important**: none
+**Nits**: none
+
+**Notes**: Fast-lane story review. The orchestrator independently reran distribution contracts, a side-effect-free bump dry-run, and all locked workspace tests successfully. Verdict: Approve - story verified by implement; fast-lane advance.
