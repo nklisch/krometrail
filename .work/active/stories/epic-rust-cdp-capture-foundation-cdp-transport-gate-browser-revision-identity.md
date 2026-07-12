@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cdp-transport-gate-browser-revision-identity
 kind: story
-stage: review
+stage: done
 tags: [bug, browser, infra, security, testing]
 parent: epic-rust-cdp-capture-foundation-cdp-transport-gate
 depends_on: [epic-rust-cdp-capture-foundation-cdp-transport-gate-decisive-config-redaction]
@@ -37,3 +37,13 @@ Validate `browser.revision` with an exact field-specific grammar matching observ
 - Regression coverage: `crates/krometrail-cdp/tests/transport_contract.rs` accepts the exact Linux (`@07b52360cc15066f987c910ab34dfbcd4a8778d2`) and macOS (`@6a7b3dbec3b2ca25877c2553b5473b2f277ef644`) report revisions plus `unavailable`, and rejects email, endpoint, short/long hashes, uppercase, suffix, and percent-encoded mutations.
 - Verification: focused revision test passed; full candidate suite passed (`42` tests), including the bounded short real-Chrome gate twice with zero process/profile cleanup leaks; `cargo clippy -p krometrail-cdp --features cdp-spike-cdpkit --all-targets -- -D warnings` passed.
 - No evidence was edited, and no production/core runtime change was made.
+
+## Review (2026-07-13)
+
+**Verdict:** Approve
+
+**Blockers:** none
+**Important:** none
+**Nits:** none
+
+**Notes:** Fast-lane validator review verified exact Chrome revision grammar, accepted Linux/macOS identities, rejected encoded/endpoint/email/malformed near misses, 42 candidate-feature tests including real Chrome, zero cleanup leaks, and denied-warning clippy. Verdict: Approve - story verified by implement; fast-lane advance.
