@@ -1,1 +1,0 @@
-We support version 0 as a legacy configuration mode, but the service initialization code doesn't handle it correctly. When you pass `version: 0`, it reports back `configVersion: "unknown"` instead of `"v0"`, and the feature flags are wrong. Version 0 should be treated as a valid, explicit setting — not as "no version specified."

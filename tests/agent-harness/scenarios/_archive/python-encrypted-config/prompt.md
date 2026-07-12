@@ -1,1 +1,0 @@
-Our production service is using the wrong rate limit. The config file sets it to 50 requests per minute (≈0.833 req/s), which is what should be authoritative, but the service is running at 10 req/s instead — which matches a leftover environment variable from a load test. The config file is supposed to win over environment variables, but it isn't.

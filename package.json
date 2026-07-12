@@ -1,57 +1,14 @@
 {
 	"name": "krometrail",
-	"version": "0.2.20",
-	"description": "Runtime debugging viewport for AI coding agents",
+	"private": true,
 	"type": "module",
-	"bin": {
-		"krometrail": "./src/cli/index.ts"
-	},
-	"main": "./src/index.ts",
-	"types": "./src/index.ts",
-	"files": [
-		"src/",
-		"skill.md"
-	],
 	"scripts": {
-		"dev": "bun run src/cli/index.ts",
-		"build": "bun build --compile src/cli/index.ts --outfile dist/krometrail",
-		"build:linux-x64": "bun build --compile --target=bun-linux-x64 src/cli/index.ts --outfile dist/krometrail-linux-x64",
-		"build:linux-arm64": "bun build --compile --target=bun-linux-arm64 src/cli/index.ts --outfile dist/krometrail-linux-arm64",
-		"build:darwin-x64": "bun build --compile --target=bun-darwin-x64 src/cli/index.ts --outfile dist/krometrail-darwin-x64",
-		"build:darwin-arm64": "bun build --compile --target=bun-darwin-arm64 src/cli/index.ts --outfile dist/krometrail-darwin-arm64",
-		"build:windows-x64": "bun build --compile --target=bun-windows-x64 src/cli/index.ts --outfile dist/krometrail-windows-x64.exe",
-		"build:all": "bun run build:linux-x64 && bun run build:linux-arm64 && bun run build:darwin-x64 && bun run build:darwin-arm64 && bun run build:windows-x64",
-		"mcp": "bun run src/mcp/index.ts",
-		"test": "vitest run",
-		"test:unit": "vitest run tests/unit",
-		"test:integration": "vitest run tests/integration",
-		"test:e2e": "vitest run tests/e2e",
-		"test:watch": "vitest watch tests/unit",
-		"test:agent": "vitest run --config tests/agent-harness/vitest.config.ts",
-		"test:agent:report": "bun run tests/agent-harness/report.ts",
-		"lint": "biome check .",
-		"lint:fix": "biome check --write .",
-		"format": "biome format --write .",
-		"check": "biome check . && bun run test",
 		"docs:dev": "vitepress dev docs",
-		"docs:generate": "bun scripts/generate-docs.ts",
-		"docs:build": "bun scripts/generate-docs.ts && bun scripts/generate-llms-full.ts && vitepress build docs",
+		"docs:build": "bun scripts/generate-llms-full.ts && vitepress build docs",
 		"docs:preview": "vitepress preview docs"
 	},
-	"dependencies": {
-		"@modelcontextprotocol/sdk": "^1",
-		"@vscode/debugprotocol": "^1",
-		"citty": "^0",
-		"consola": "^3",
-		"zod": "^4"
-	},
 	"devDependencies": {
-		"@biomejs/biome": "^2",
-		"@types/better-sqlite3": "^7.6.13",
-		"@types/bun": "latest",
-		"better-sqlite3": "^12.6.2",
 		"vitepress": "^1.6.4",
-		"vitest": "^4",
 		"vue": "^3.5.30"
 	},
 	"homepage": "https://krometrail.dev",
@@ -63,24 +20,5 @@
 		"url": "https://github.com/nklisch/krometrail/issues"
 	},
 	"author": "Nathan Klisch",
-	"license": "MIT",
-	"keywords": [
-		"debugger",
-		"debugging",
-		"ai",
-		"mcp",
-		"dap",
-		"debug-adapter-protocol",
-		"model-context-protocol",
-		"runtime",
-		"breakpoints",
-		"ai-agents",
-		"coding-agents",
-		"cli",
-		"viewport"
-	],
-	"trustedDependencies": [
-		"@biomejs/biome",
-		"better-sqlite3"
-	]
+	"license": "MIT"
 }

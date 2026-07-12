@@ -1,1 +1,0 @@
-The analytics dashboard is showing $0.00 for the avg_revenue_per_unit metric on East region priority-1 customers. It should be showing $9.35 EUR. When we dug into it, some values that do come through look like raw USD amounts instead of EUR — so the currency conversion might not be happening. The expected result is 4 matching events averaging out to $9.35 EUR.

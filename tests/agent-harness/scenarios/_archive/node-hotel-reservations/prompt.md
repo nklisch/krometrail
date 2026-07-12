@@ -1,1 +1,0 @@
-Reservation totals are completely wrong. A single deluxe room for 3 nights should cost around $982, but we're getting a number in the tens of thousands. A group booking for 3 deluxe rooms over 5 nights with a gold loyalty member and the SAVE10 promo should come to around $3,382 — that's also wrong. Multiple things seem to be off in the pricing pipeline.

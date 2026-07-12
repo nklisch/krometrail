@@ -1,1 +1,0 @@
-Customers are complaining that their bill splits don't add up. When someone splits a $47.50 bill three ways with an 18% tip, the shares and the reported total are inconsistent by a cent. Same issue with a $100 bill split seven ways. The total with tip and the sum of the individual shares should always match exactly.

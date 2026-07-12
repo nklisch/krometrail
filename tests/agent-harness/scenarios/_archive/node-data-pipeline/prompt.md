@@ -1,1 +1,0 @@
-Our monthly revenue report is wrong. We have 10 transactions totaling $12,000.00, with March being the biggest month at $6,550.00. The pipeline is returning a much lower grand total, March barely shows any revenue, and it looks like some transactions aren't being counted at all — we're getting fewer than 10 records processed.

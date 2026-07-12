@@ -1,1 +1,0 @@
-Customers are complaining that their bill splits don't add up. When someone splits a $47 bill three ways with an 18% tip, the function gives everyone $18.49 but then reports the total as $55.46 — which is $0.01 less than the $55.47 the shares actually sum to. Same problem with a $53 bill split six ways. The shares and the reported total are inconsistent.

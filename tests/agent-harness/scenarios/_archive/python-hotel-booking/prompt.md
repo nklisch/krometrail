@@ -1,1 +1,0 @@
-A guest is being overcharged. Alice Chen is a returning guest (loyalty discount applies) booking a Deluxe room for 3 nights, January 15–18. Her total should be around $428.40, but the system is showing $766.08. That's nearly double. Something is very wrong with how her rate is being calculated.

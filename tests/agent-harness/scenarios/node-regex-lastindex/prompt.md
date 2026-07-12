@@ -1,3 +1,0 @@
-Our email validation is giving inconsistent results depending on how many users we process at once. "alice@example.com" is a perfectly valid email. When we validate just Alice, she comes back valid. When we validate Alice, Bob, and Carol together — all with valid emails — Bob comes back invalid even though his email is fine. Run it again and the pattern shifts. The same email shouldn't flip between valid and invalid based on what else is in the list.
-
-If a debugger is available, use it — set a breakpoint at the relevant code and inspect the runtime values directly. It will be faster than reasoning from source alone.

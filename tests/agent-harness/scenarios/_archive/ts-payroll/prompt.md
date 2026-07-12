@@ -1,1 +1,0 @@
-Sarah Parker's paycheck is wrong. She's hourly at $50/hr, worked 48 hours this period (8 of those are overtime), has a $300 pre-tax 401(k) deduction and $100 post-tax parking. Her net pay should be $1,814.00 but the system is printing $1,862.00. The gross pay looks right at $2,600 — it's something in the tax calculation or deductions that's off.
