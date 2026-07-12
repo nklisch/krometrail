@@ -1118,7 +1118,6 @@ fn validate_sanitized_fields(value: &TransportEvidenceV1) -> Result<(), SpikeErr
         ),
         ("browser.product", value.browser.product.as_str()),
         ("browser.protocol", value.browser.protocol.as_str()),
-        ("browser.revision", value.browser.revision.as_str()),
         ("fixture.name", value.fixture.name.as_str()),
         (
             "gate_provenance.implementation_revision",
@@ -1132,6 +1131,17 @@ fn validate_sanitized_fields(value: &TransportEvidenceV1) -> Result<(), SpikeErr
                 format!("{field} contains a non-canonical identity character"),
             ));
         }
+    }
+    // Chrome's Browser.getVersion revision is an @-prefixed Chromium commit. Keep this
+    // field-specific rather than widening the shared identity alphabet: browser revision is
+    // security-sensitive evidence, and accepting arbitrary punctuation would admit endpoint,
+    // email, or encoded near-misses. The unavailable sentinel is emitted only by failure reports
+    // that stop before Chrome starts, so it is part of the serialized evidence contract as well.
+    if !is_canonical_browser_revision(&value.browser.revision) {
+        return Err(SpikeError::new(
+            SpikeErrorCode::Evidence,
+            "browser.revision is not a canonical Chrome revision identity",
+        ));
     }
     if !value.candidate.checksum.is_ascii()
         || !value
@@ -1171,6 +1181,10 @@ fn validate_sanitized_fields(value: &TransportEvidenceV1) -> Result<(), SpikeErr
         }
     }
     Ok(())
+}
+
+fn is_canonical_browser_revision(value: &str) -> bool {
+    value == "unavailable" || value.strip_prefix('@').is_some_and(is_git_revision)
 }
 
 fn is_safe_identity_byte(byte: u8) -> bool {

@@ -183,7 +183,7 @@ fn evidence(gates: Vec<GateResult>) -> TransportEvidenceV2 {
         browser: krometrail_cdp::spike::BrowserEvidence {
             product: "Chrome/1".into(),
             protocol: "1.3".into(),
-            revision: "123".into(),
+            revision: "@07b52360cc15066f987c910ab34dfbcd4a8778d2".into(),
         },
         fixture: FixtureEvidence {
             name: "protocol-fixtures".into(),
@@ -874,6 +874,52 @@ fn redaction_rejects_recursive_endpoint_identity_and_encoding_bypasses() {
 }
 
 #[test]
+fn browser_revision_requires_the_observed_chrome_grammar() {
+    let gates = TransportGateId::ALL
+        .into_iter()
+        .map(|id| GateResult {
+            id,
+            status: GateStatus::Pass,
+            summary: "fixture passed".into(),
+            measurements: id
+                .measurement_keys()
+                .iter()
+                .map(|key| ((*key).into(), valid_measurement(key)))
+                .collect::<BTreeMap<_, _>>(),
+            failure: None,
+        })
+        .collect::<Vec<_>>();
+
+    for revision in [
+        "@07b52360cc15066f987c910ab34dfbcd4a8778d2", // Linux report
+        "@6a7b3dbec3b2ca25877c2553b5473b2f277ef644", // macOS report
+        "unavailable",                               // pre-Chrome failure evidence
+    ] {
+        let mut report = evidence(gates.clone());
+        report.browser.revision = revision.into();
+        sanitize_evidence(report).expect("documented browser revision must be accepted");
+    }
+
+    for revision in [
+        "operator@example.test",
+        "http://127.0.0.1:9222",
+        "@07b52360cc15066f987c910ab34dfbcd4a8778d", // 39 hex digits
+        "@07b52360cc15066f987c910ab34dfbcd4a8778d20", // 41 hex digits
+        "@07B52360cc15066f987c910ab34dfbcd4a8778d2", // uppercase
+        "@07b52360cc15066f987c910ab34dfbcd4a8778d2-suffix",
+        "%4007b52360cc15066f987c910ab34dfbcd4a8778d2", // encoded @
+        "@07b52360cc15066f987c910ab34dfbcd4a8778d%32", // encoded suffix
+    ] {
+        let mut report = evidence(gates.clone());
+        report.browser.revision = revision.into();
+        assert!(
+            sanitize_evidence(report).is_err(),
+            "browser revision near-miss accepted: {revision}"
+        );
+    }
+}
+
+#[test]
 fn redaction_allows_canonical_browser_rust_candidate_fixture_and_summary_evidence() {
     let gates = TransportGateId::ALL
         .into_iter()
@@ -894,7 +940,7 @@ fn redaction_allows_canonical_browser_rust_candidate_fixture_and_summary_evidenc
         "c3fdb566d913b31e0014391a94c0db4ed871dbb76577dd1b2f2c5f6df158bfaa".into();
     report.source.rust_version = "rustc 1.85.1 (4d91de4e4 2025-02-17)".into();
     report.browser.product = "Chrome/149.0.7827.155".into();
-    report.browser.revision = "a1b2c3d4".into();
+    report.browser.revision = "@07b52360cc15066f987c910ab34dfbcd4a8778d2".into();
     report.fixture.sha256 = "sha256sum-of-ordered-fixture-files:abc:def".into();
     report.gates[0].summary = "session-a-999; phase:1; 100% complete".into();
     sanitize_evidence(report).expect("canonical evidence identities must remain valid");
