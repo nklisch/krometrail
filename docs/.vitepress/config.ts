@@ -62,6 +62,7 @@ if (typeof requestIdleCallback === 'function') {
 				],
 			},
 			{ text: "Reference", link: "/reference/runtime" },
+			{ text: "Research", link: "/research/rust-cdp-transport-2026-07" },
 		],
 
 		sidebar: {
@@ -81,6 +82,12 @@ if (typeof requestIdleCallback === 'function') {
 						{ text: "Runtime", link: "/reference/runtime" },
 						{ text: "Configuration", link: "/reference/configuration" },
 					],
+				},
+			],
+			"/research/": [
+				{
+					text: "Technology research",
+					items: [{ text: "Rust CDP transport — 2026-07", link: "/research/rust-cdp-transport-2026-07" }],
 				},
 			],
 		},

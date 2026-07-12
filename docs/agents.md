@@ -21,4 +21,8 @@ The foundation documents intentionally describe capabilities that are being buil
 - [Configuration](reference/configuration.md) — current configuration status and the authoritative future contracts.
 - [Browser fixtures](https://github.com/nklisch/krometrail/blob/main/tests/fixtures/browser/README.md) — retained target applications and their current uses.
 
+## Versioned technology research
+
+- [Rust CDP transport — 2026-07](research/rust-cdp-transport-2026-07.md) — source-grounded comparison of `cdpkit`, `chromey`, and an owned transport, plus the real-browser selection gate.
+
 Documentation is part of the current repository contract. Remove or update a page when the executable or workspace no longer supports its claims; do not preserve old runtime instructions as compatibility guidance.
