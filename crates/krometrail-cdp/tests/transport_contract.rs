@@ -589,8 +589,9 @@ fn evidence_rejects_zero_rss_samples_and_window_values() {
 
 #[test]
 fn historical_reports_are_rejected_until_requalified_with_observed_deadlines() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/evidence/cdp-transport/v1");
+    let root = krometrail_cdp::spike::resolve_repository_root(None)
+        .expect("runtime repository root")
+        .join("docs/evidence/cdp-transport/v1");
     let result = decide_from_files(
         &root.join("cdpkit-linux.json"),
         &root.join("cdpkit-macos.json"),
@@ -607,8 +608,9 @@ fn checked_schema_is_generated_by_the_rust_evidence_types() {
     write_json_schema(&temporary).unwrap();
     let generated = std::fs::read_to_string(&temporary).unwrap();
     assert!(generated.contains("TransportEvidenceV2"));
-    let committed = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/evidence/cdp-transport/v2/schema.json");
+    let committed = krometrail_cdp::spike::resolve_repository_root(None)
+        .expect("runtime repository root")
+        .join("docs/evidence/cdp-transport/v2/schema.json");
     if std::env::var_os("CDP_SPIKE_WRITE_SCHEMA").is_some() {
         write_json_schema(&committed).unwrap();
     }

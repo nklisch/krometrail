@@ -7,8 +7,12 @@ use std::{
     future::Future,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
+    sync::atomic::{AtomicU64, Ordering as AtomicOrdering},
     time::{Duration, Instant},
 };
+
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 
 use futures_util::StreamExt;
 use serde_json::Value;
@@ -84,7 +88,7 @@ use super::{
         BrowserEvidence, EVIDENCE_SCHEMA_VERSION, FixtureEvidence, GateConfiguration,
         GateProvenance, GateResult, GateStatus, RSS_SAMPLE_INTERVAL_SECONDS, RSS_WARMUP_SECONDS,
         SanitizedEnvironment, SourceIdentity, TransportEvidenceV1, TransportGateId,
-        attest_relevant_source, configuration_digest, rss_measurements_are_valid,
+        attest_relevant_source_at, configuration_digest, rss_measurements_are_valid,
     },
     fixture_server::StaticFixtureServer,
     scenarios::run_candidate_wire_contract_with_stage,
@@ -113,69 +117,103 @@ pub struct ScreencastMeasurements {
 }
 
 struct ChromeHarness {
-    child: Child,
-    profile: PathBuf,
+    process: ChromeProcess,
     _fixture: StaticFixtureServer,
     fixture_url: String,
     ws_url: String,
 }
 
-/// Owns the spawned browser and profile while startup is waiting on an external endpoint.
+/// Owns the spawned browser and profile while startup is waiting for Chrome's endpoint.
 ///
-/// This guard must be constructed immediately after `spawn`, before the first await. A startup
-/// future can be cancelled by the global hard stop at any await; keeping ownership in a local
-/// `Child` until the endpoint is ready would leak both Chrome and its temporary profile.
+/// This guard is constructed immediately after `spawn`, before the first await. A startup future
+/// can be cancelled by the global hard stop at any await; the process group and profile therefore
+/// travel together in one synchronous drop guard.
 struct ChromeProcessGuard {
+    process: Option<ChromeProcess>,
+}
+
+struct ChromeProcess {
     child: Option<Child>,
+    profile: PathBuf,
+}
+
+struct ProfileCleanupGuard {
     profile: Option<PathBuf>,
 }
 
-impl ChromeProcessGuard {
+static PROFILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+const GATE_PROFILE_PREFIX: &str = "krometrail-cdp-gate-";
+
+impl ChromeProcess {
     fn new(child: Child, profile: PathBuf) -> Self {
         Self {
             child: Some(child),
-            profile: Some(profile),
+            profile,
         }
     }
 
-    fn into_parts(mut self) -> (Child, PathBuf) {
-        let child = self
-            .child
+    fn terminate(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            terminate_child_process_tree(&mut child, &self.profile);
+        }
+        cleanup_profile_path(&self.profile);
+    }
+}
+
+impl ChromeProcessGuard {
+    fn new(process: ChromeProcess) -> Self {
+        Self {
+            process: Some(process),
+        }
+    }
+
+    fn into_process(mut self) -> ChromeProcess {
+        self.process
             .take()
-            .expect("Chrome process guard still owns child");
-        let profile = self
-            .profile
-            .take()
-            .expect("Chrome process guard still owns profile");
-        // The returned ChromeHarness now owns both resources; the empty guard drops harmlessly.
-        (child, profile)
+            .expect("Chrome process guard still owns process")
     }
 }
 
 impl Drop for ChromeProcessGuard {
     fn drop(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
+        if let Some(mut process) = self.process.take() {
+            process.terminate();
         }
+    }
+}
+
+impl ProfileCleanupGuard {
+    fn new(profile: PathBuf) -> Self {
+        Self {
+            profile: Some(profile),
+        }
+    }
+
+    fn disarm(mut self) {
+        self.profile.take();
+    }
+}
+
+impl Drop for ProfileCleanupGuard {
+    fn drop(&mut self) {
         if let Some(profile) = self.profile.take() {
-            let _ = std::fs::remove_dir_all(profile);
+            cleanup_profile_path(&profile);
         }
     }
 }
 
 impl ChromeHarness {
-    async fn start(chrome_binary: &Path) -> Result<Self, SpikeError> {
-        let fixture_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/browser/cdp-transport-gate");
+    async fn start(chrome_binary: &Path, repository_root: &Path) -> Result<Self, SpikeError> {
+        let fixture_root = repository_root.join("tests/fixtures/browser/cdp-transport-gate");
         let fixture = StaticFixtureServer::start(&fixture_root)?;
         let fixture_url = format!("{}/index.html", fixture.base_url);
-        let profile =
-            std::env::temp_dir().join(format!("krometrail-cdp-gate-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&profile);
+        let _removed_profiles = cleanup_stale_gate_profiles()?;
+        let profile = new_gate_profile_path();
+        let profile_cleanup = ProfileCleanupGuard::new(profile.clone());
         std::fs::create_dir_all(&profile).map_err(io_error)?;
         let port = free_port()?;
-        let child = Command::new(chrome_binary)
+        let mut command = Command::new(chrome_binary);
+        command
             .args([
                 "--headless=new",
                 "--no-sandbox",
@@ -189,16 +227,16 @@ impl ChromeHarness {
             .arg(format!("--user-data-dir={}", profile.display()))
             .arg(&fixture_url)
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(io_error)?;
+            .stderr(Stdio::null());
+        configure_isolated_process_group(&mut command);
+        let child = command.spawn().map_err(io_error)?;
+        profile_cleanup.disarm();
         // Establish cancellation-safe ownership before waiting for Chrome's endpoint.
-        let process = ChromeProcessGuard::new(child, profile);
+        let process = ChromeProcessGuard::new(ChromeProcess::new(child, profile));
         let ws_url = wait_for_ws_url(port, Duration::from_secs(15)).await?;
-        let (child, profile) = process.into_parts();
+        let process = process.into_process();
         Ok(Self {
-            child,
-            profile,
+            process,
             _fixture: fixture,
             fixture_url,
             ws_url,
@@ -206,15 +244,13 @@ impl ChromeHarness {
     }
 
     fn kill_browser(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        self.process.terminate();
     }
 }
 
 impl Drop for ChromeHarness {
     fn drop(&mut self) {
         self.kill_browser();
-        let _ = std::fs::remove_dir_all(&self.profile);
     }
 }
 
@@ -223,6 +259,7 @@ pub async fn run_real_chrome_gate(
     configuration: GateConfiguration,
     chrome_binary: &Path,
     expected_revision: &str,
+    repository_root: &Path,
 ) -> Result<TransportEvidenceV1, SpikeError> {
     let hard_stop_seconds = configuration.hard_stop_seconds;
     let stage = StageTracker::new(QualificationStage::Initializing);
@@ -234,6 +271,7 @@ pub async fn run_real_chrome_gate(
             configuration,
             chrome_binary,
             expected_revision,
+            repository_root,
             stage,
         ),
     )
@@ -245,9 +283,11 @@ async fn run_real_chrome_gate_inner(
     configuration: GateConfiguration,
     chrome_binary: &Path,
     expected_revision: &str,
+    repository_root: &Path,
     stage: StageTracker,
 ) -> Result<TransportEvidenceV1, SpikeError> {
-    let source_attestation = attest_relevant_source(expected_revision)?;
+    let _removed_profiles = cleanup_stale_gate_profiles()?;
+    let source_attestation = attest_relevant_source_at(repository_root, expected_revision)?;
     // Unknown future events cannot be made to occur in real Chrome. Run the exact candidate
     // contract against the wire-connected scripted controller and bind its trace digest to this
     // report instead of presenting those fixtures as a Chrome measurement.
@@ -258,7 +298,7 @@ async fn run_real_chrome_gate_inner(
     )
     .await?;
     stage.set(QualificationStage::ChromeStartup);
-    let mut browser = ChromeHarness::start(chrome_binary).await?;
+    let mut browser = ChromeHarness::start(chrome_binary, repository_root).await?;
     stage.set(QualificationStage::BrowserConnect);
     let transport = bounded(
         &stage,
@@ -757,7 +797,13 @@ async fn run_real_chrome_gate_inner(
     match run_with_hard_stop_stage(
         REBUILD_DEADLINE_SECONDS as u64,
         stage.clone(),
-        rebuild_sessions(factory, &browser.fixture_url, chrome_binary, stage.clone()),
+        rebuild_sessions(
+            factory,
+            &browser.fixture_url,
+            chrome_binary,
+            repository_root,
+            stage.clone(),
+        ),
     )
     .await
     {
@@ -792,13 +838,12 @@ async fn run_real_chrome_gate_inner(
             .unwrap_or("unknown")
             .to_owned(),
     );
-    let fixture_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures/browser/cdp-transport-gate");
+    let fixture_path = repository_root.join("tests/fixtures/browser/cdp-transport-gate");
     let fixture_sha = sha256_directory(&fixture_path)?;
     let implementation_revision = expected_revision.to_owned();
     let rust_version =
         command_output("rustc", &["--version"]).unwrap_or_else(|_| "unavailable".into());
-    let after_attestation = attest_relevant_source(expected_revision)?;
+    let after_attestation = attest_relevant_source_at(repository_root, expected_revision)?;
     if source_attestation != after_attestation {
         return Err(SpikeError::new(
             SpikeErrorCode::Evidence,
@@ -844,6 +889,7 @@ pub fn failure_evidence(
     factory: &dyn SpikeTransportFactory,
     configuration: GateConfiguration,
     expected_revision: &str,
+    repository_root: &Path,
     error: &SpikeError,
 ) -> TransportEvidenceV1 {
     let gates = TransportGateId::ALL
@@ -883,7 +929,7 @@ pub fn failure_evidence(
         gate_provenance: GateProvenance {
             implementation_revision: expected_revision.to_owned(),
             configuration_sha256: configuration_digest(&configuration),
-            source_attestation: attest_relevant_source(expected_revision).ok(),
+            source_attestation: attest_relevant_source_at(repository_root, expected_revision).ok(),
         },
         configuration,
         gates,
@@ -1176,11 +1222,12 @@ async fn rebuild_sessions(
     factory: &dyn SpikeTransportFactory,
     fixture_url: &str,
     chrome_binary: &Path,
+    repository_root: &Path,
     stage: StageTracker,
 ) -> Result<RebuildMeasurements, SpikeError> {
     let started = Instant::now();
     stage.set(QualificationStage::Rebuild);
-    let browser = ChromeHarness::start(chrome_binary).await?;
+    let browser = ChromeHarness::start(chrome_binary, repository_root).await?;
     let transport = bounded(
         &stage,
         QualificationStage::Rebuild,
@@ -1263,6 +1310,230 @@ fn io_error(error: std::io::Error) -> SpikeError {
 fn free_port() -> Result<u16, SpikeError> {
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).map_err(io_error)?;
     Ok(listener.local_addr().map_err(io_error)?.port())
+}
+
+#[cfg(unix)]
+fn configure_isolated_process_group(command: &mut Command) {
+    // `process_group(0)` is the safe std API for making the child its own process-group leader.
+    // Every Chrome helper inherits that group, while the parent and unrelated Chrome instances
+    // remain outside the negative-PGID signal target.
+    command.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn configure_isolated_process_group(_command: &mut Command) {}
+
+fn new_gate_profile_path() -> PathBuf {
+    let sequence = PROFILE_SEQUENCE.fetch_add(1, AtomicOrdering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "{GATE_PROFILE_PREFIX}{}-{sequence}",
+        std::process::id()
+    ))
+}
+
+fn cleanup_stale_gate_profiles() -> Result<usize, SpikeError> {
+    let temporary = std::env::temp_dir();
+    let entries = match std::fs::read_dir(&temporary) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(io_error(error)),
+    };
+    let mut removed = 0;
+    let mut retained = 0;
+    for entry in entries {
+        let entry = entry.map_err(io_error)?;
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(io_error(error)),
+        };
+        let path = entry.path();
+        let name = entry.file_name();
+        if !file_type.is_dir()
+            || !name
+                .to_str()
+                .is_some_and(|name| name.starts_with(GATE_PROFILE_PREFIX))
+        {
+            continue;
+        }
+        let references = live_processes_referencing_profile(&path)?;
+        if references.is_empty() {
+            match std::fs::remove_dir_all(&path) {
+                Ok(()) => removed += 1,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(io_error(error)),
+            }
+        } else {
+            retained += 1;
+            eprintln!(
+                "cdp gate profile cleanup: retaining {} because {} live process command line(s) reference it",
+                path.display(),
+                references.len()
+            );
+        }
+    }
+    eprintln!(
+        "cdp gate profile cleanup: removed {removed} stale profile(s); retained {retained} active profile(s)"
+    );
+    Ok(removed)
+}
+
+fn cleanup_profile_path(profile: &Path) {
+    for _ in 0..100 {
+        match live_processes_referencing_profile(profile) {
+            Ok(references) if references.is_empty() => match std::fs::remove_dir_all(profile) {
+                Ok(()) => return,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+                Err(error) => {
+                    eprintln!(
+                        "cdp gate profile cleanup: could not remove {}: {error}",
+                        profile.display()
+                    );
+                    return;
+                }
+            },
+            Ok(_) => std::thread::sleep(Duration::from_millis(10)),
+            Err(error) => {
+                // Never remove a profile when ownership cannot be checked. This makes cleanup
+                // conservative rather than risking data loss in an unrelated Chrome process.
+                eprintln!(
+                    "cdp gate profile cleanup: ownership check failed for {}: {error}",
+                    profile.display()
+                );
+                return;
+            }
+        }
+    }
+    eprintln!(
+        "cdp gate profile cleanup: retained {} because a live process still references it",
+        profile.display()
+    );
+}
+
+fn live_processes_referencing_profile(profile: &Path) -> Result<Vec<String>, SpikeError> {
+    let needle = profile.to_string_lossy();
+    #[cfg(target_os = "linux")]
+    {
+        let entries = std::fs::read_dir("/proc").map_err(io_error)?;
+        let mut matches = Vec::new();
+        for entry in entries {
+            let Ok(entry) = entry else { continue };
+            let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+                continue;
+            };
+            let command_line = match std::fs::read(format!("/proc/{pid}/cmdline")) {
+                Ok(bytes) if !bytes.is_empty() => String::from_utf8_lossy(&bytes)
+                    .replace('\0', " ")
+                    .trim()
+                    .to_owned(),
+                Ok(_) => continue,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(io_error(error)),
+            };
+            if command_line.contains(needle.as_ref()) {
+                matches.push(format!("pid {pid}: {command_line}"));
+            }
+        }
+        Ok(matches)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let output = Command::new("ps")
+            .args(["-axo", "pid=,command="])
+            .output()
+            .map_err(io_error)?;
+        if !output.status.success() {
+            return Err(SpikeError::new(
+                SpikeErrorCode::Io,
+                "ps could not enumerate live process command lines",
+            ));
+        }
+        let needle = needle.as_ref();
+        return Ok(String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter(|line| line.contains(needle))
+            .map(str::to_owned)
+            .collect());
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = needle;
+        Ok(Vec::new())
+    }
+}
+
+#[cfg(unix)]
+fn process_group_is_owned(child_pid: u32, profile: &Path) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(child_pid) else {
+        return false;
+    };
+    // While the direct child is alive, getpgid is the strongest ownership check. Once it has
+    // exited, the unique profile reference identifies the remaining inherited helper processes.
+    let group = unsafe { libc::getpgid(pid) };
+    if group == pid && group > 0 {
+        // Do not trust a recycled process-group number by itself. The profile must still be
+        // present in a live command line before this group becomes a signal target.
+        return live_processes_referencing_profile(profile)
+            .map(|processes| !processes.is_empty())
+            .unwrap_or(false);
+    }
+    live_processes_referencing_profile(profile)
+        .map(|processes| !processes.is_empty())
+        .unwrap_or(false)
+}
+
+#[cfg(unix)]
+fn signal_process_group(pgid: u32, signal: libc::c_int) {
+    let Ok(pgid) = libc::pid_t::try_from(pgid) else {
+        return;
+    };
+    if pgid <= 0 {
+        return;
+    }
+    // A negative PID addresses exactly this process group; it cannot target the parent process.
+    let _ = unsafe { libc::kill(-pgid, signal) };
+}
+
+#[cfg(unix)]
+fn terminate_child_process_tree(child: &mut Child, profile: &Path) {
+    let child_pid = child.id();
+    let group_owned = process_group_is_owned(child_pid, profile);
+    if group_owned {
+        signal_process_group(child_pid, libc::SIGTERM);
+    } else {
+        // This is only a defensive fallback if the platform rejected process-group setup. It
+        // still reaps the direct child and never sends a broad signal to a shared Chrome group.
+        let _ = child.kill();
+    }
+    for _ in 0..20 {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+            Err(_) => break,
+        }
+    }
+    if child.try_wait().ok().flatten().is_none() {
+        if group_owned {
+            signal_process_group(child_pid, libc::SIGKILL);
+        } else {
+            let _ = child.kill();
+        }
+    }
+    let _ = child.wait();
+    // Chrome can outlive its browser process briefly. Force the same owned group once more before
+    // profile cleanup, but only while a command line still proves this profile is ours.
+    if live_processes_referencing_profile(profile)
+        .map(|processes| !processes.is_empty())
+        .unwrap_or(false)
+    {
+        signal_process_group(child_pid, libc::SIGKILL);
+    }
+}
+
+#[cfg(not(unix))]
+fn terminate_child_process_tree(child: &mut Child, _profile: &Path) {
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 async fn wait_for_ws_url(port: u16, timeout: Duration) -> Result<String, SpikeError> {
@@ -1435,11 +1706,13 @@ fn command_output(command: &str, args: &[&str]) -> Result<String, SpikeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::spike::evidence::resolve_repository_root;
 
     #[test]
     fn fixture_hashing_is_deterministic_and_does_not_require_external_hashing() {
-        let fixture_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/browser/cdp-transport-gate");
+        let fixture_path = resolve_repository_root(None)
+            .expect("runtime repository root")
+            .join("tests/fixtures/browser/cdp-transport-gate");
         let first = sha256_directory(&fixture_path).expect("fixture digest");
         let second = sha256_directory(&fixture_path).expect("fixture digest");
         let expected = "sha256sum-of-ordered-fixture-files:9b42ae730d12a95772a946bf55e4838a5443b6cb4c536424570219041b6e2a68:84ba666539a996012a781637c1a894d8c7a4789cfca84661bd7cf8b79efa2e13";
@@ -1450,6 +1723,8 @@ mod tests {
         // PATH manipulation is process-global and unsafe to simulate in parallel tests;
         // the source check is the safe cross-platform reproduction of the old failure.
         let source = include_str!("chrome_harness.rs");
+        let compile_time_path = ["CARGO_MANIFEST", "_DIR"].concat();
+        assert!(!source.contains(&compile_time_path));
         assert!(!source.contains("Command::new(\"sha256sum\")"));
     }
 
@@ -1508,14 +1783,14 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&profile);
         std::fs::create_dir_all(&profile).expect("test profile");
-        let child = Command::new("sleep")
-            .arg("60")
-            .spawn()
-            .expect("long-lived test child");
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 60", "gate-profile", profile.to_str().unwrap()]);
+        configure_isolated_process_group(&mut command);
+        let child = command.spawn().expect("long-lived test child");
         let pid = child.id().to_string();
         let stage = StageTracker::new(QualificationStage::ChromeStartup);
         let task = tokio::spawn(run_with_hard_stop_stage(5, stage, async move {
-            let _process = ChromeProcessGuard::new(child, profile);
+            let _process = ChromeProcessGuard::new(ChromeProcess::new(child, profile));
             std::future::pending::<Result<(), SpikeError>>().await
         }));
 
@@ -1562,12 +1837,138 @@ mod tests {
         assert!(receive < ack_timer && ack_timer < handoff);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn stale_profile_cleanup_retains_live_references_and_reports_removed_count() {
+        let profile = new_gate_profile_path();
+        std::fs::create_dir_all(&profile).expect("stale profile");
+        let mut command = Command::new("sh");
+        command.args([
+            "-c",
+            "sleep 60; exit",
+            "gate-profile",
+            profile.to_str().unwrap(),
+        ]);
+        let mut child = command.spawn().expect("profile-reference process");
+        for _ in 0..100 {
+            if !live_processes_referencing_profile(&profile)
+                .expect("profile-reference scan")
+                .is_empty()
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            !live_processes_referencing_profile(&profile)
+                .expect("profile-reference scan")
+                .is_empty()
+        );
+        let _retained_count = cleanup_stale_gate_profiles().expect("stale profile scan");
+        assert!(
+            profile.exists(),
+            "live profile reference must prevent deletion"
+        );
+        let _ = child.kill();
+        let _ = child.wait();
+        let _removed_count = cleanup_stale_gate_profiles().expect("stale profile cleanup");
+        assert!(!profile.exists());
+    }
+
+    fn test_chrome_binary() -> Option<PathBuf> {
+        if let Some(value) = std::env::var_os("CHROME_BIN") {
+            let path = PathBuf::from(value);
+            assert!(
+                path.is_file(),
+                "CHROME_BIN is configured but is not a Chrome executable: {}",
+                path.display()
+            );
+            return Some(path);
+        }
+        for candidate in [
+            "/usr/bin/google-chrome",
+            "/usr/bin/google-chrome-stable",
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        ] {
+            let path = Path::new(candidate);
+            if path.is_file() {
+                return Some(path.to_owned());
+            }
+        }
+        eprintln!("SKIP: real-Chrome qualification tests skipped because Chrome is unavailable");
+        None
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelled_real_chrome_startup_reaps_descendants_and_removes_unique_profile() {
+        let Some(chrome) = test_chrome_binary() else {
+            return;
+        };
+        let profile = new_gate_profile_path();
+        let profile_cleanup = ProfileCleanupGuard::new(profile.clone());
+        std::fs::create_dir_all(&profile).expect("real-Chrome cancellation profile");
+        let port = free_port().expect("real-Chrome cancellation port");
+        let mut command = Command::new(chrome);
+        command
+            .args([
+                "--headless=new",
+                "--no-sandbox",
+                "--disable-gpu",
+                "--disable-dev-shm-usage",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--remote-debugging-address=127.0.0.1",
+            ])
+            .arg(format!("--remote-debugging-port={port}"))
+            .arg(format!("--user-data-dir={}", profile.display()))
+            .arg("about:blank")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        configure_isolated_process_group(&mut command);
+        let child = command.spawn().expect("real Chrome must start");
+        profile_cleanup.disarm();
+        let child_pid = child.id();
+        let process = ChromeProcessGuard::new(ChromeProcess::new(child, profile.clone()));
+        wait_for_ws_url(port, Duration::from_secs(15))
+            .await
+            .expect("real Chrome debugging endpoint must become ready");
+        let references = live_processes_referencing_profile(&profile)
+            .expect("profile ownership scan before cancellation");
+        assert!(
+            references
+                .iter()
+                .any(|reference| reference.contains(&format!("pid {child_pid}:"))),
+            "Chrome command line must contain its unique profile before cancellation"
+        );
+
+        let task = tokio::spawn(async move {
+            let _process = process;
+            std::future::pending::<()>().await;
+        });
+        tokio::task::yield_now().await;
+        task.abort();
+        task.await
+            .expect_err("cancellation must abort startup task");
+
+        assert!(
+            live_processes_referencing_profile(&profile)
+                .expect("profile ownership scan after cancellation")
+                .is_empty(),
+            "no live descendant command line may reference the cancelled Chrome profile"
+        );
+        assert!(
+            !profile.exists(),
+            "cancelled real-Chrome profile must be removed after process-tree cleanup"
+        );
+    }
+
     #[tokio::test]
     async fn short_real_chrome_gate_is_bounded_when_chrome_is_available() {
-        let chrome = Path::new("/usr/bin/google-chrome");
-        if !chrome.exists() {
+        let Some(chrome) = test_chrome_binary() else {
             return;
-        }
+        };
+        let repository_root = resolve_repository_root(None).expect("runtime repository root");
         let configuration = GateConfiguration {
             minimum_seconds: 2.0,
             minimum_frames: 20,
@@ -1578,17 +1979,16 @@ mod tests {
         for _ in 0..2 {
             let expected_revision =
                 command_output("git", &["rev-parse", "HEAD"]).expect("test checkout revision");
-            // The production gate must reject dirty relevant inputs. A developer checkout with
-            // this test change is therefore not a valid short-gate fixture; the test becomes
-            // live again from a clean commit instead of weakening the production precondition.
-            if attest_relevant_source(&expected_revision).is_err() {
-                return;
-            }
+            // Attestation is a setup precondition, not an optional enhancement. A dirty relevant
+            // checkout must fail this regression rather than silently turning it into a pass.
+            attest_relevant_source_at(&repository_root, &expected_revision)
+                .expect("real-Chrome test attestation setup");
             let evidence = run_real_chrome_gate(
                 &CdpkitTransportFactory::new(),
                 configuration.clone(),
-                chrome,
+                &chrome,
                 &expected_revision,
+                &repository_root,
             )
             .await
             .expect("short real-Chrome gate should complete");

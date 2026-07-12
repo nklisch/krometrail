@@ -325,6 +325,7 @@ const RELEVANT_SOURCE_PATHS: &[&str] = &[
     "Cargo.lock",
     "crates/krometrail-cdp/Cargo.toml",
     "crates/krometrail-cdp/src/bin/cdp-transport-gate.rs",
+    "scripts/cdp-transport-gate-cross-worktree.sh",
     ".github/workflows/cdp-transport-gate.yml",
 ];
 const RELEVANT_SOURCE_PREFIXES: &[&str] = &[
@@ -340,16 +341,78 @@ pub fn is_git_revision(value: &str) -> bool {
             .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }
 
-/// Enumerate and hash the source that can affect qualification. The expected commit is used as
-/// the byte source so a report cannot bind a digest to a merely similar working tree.
+/// Resolve the repository from an explicit CLI root or the caller's current directory.
+///
+/// The build directory is deliberately not consulted: a binary may have been compiled in a
+/// disposable worktree and then reused from a shared `CARGO_TARGET_DIR` after that worktree was
+/// deleted. Git validates the root and the marker files prevent accidentally attesting an
+/// unrelated repository with a coincidentally matching commit.
+pub fn resolve_repository_root(explicit: Option<&Path>) -> Result<std::path::PathBuf, SpikeError> {
+    let start = match explicit {
+        Some(path) => path.to_owned(),
+        None => std::env::current_dir().map_err(|error| {
+            SpikeError::new(
+                SpikeErrorCode::Evidence,
+                format!("cannot determine the current directory: {error}"),
+            )
+        })?,
+    };
+    let start = std::fs::canonicalize(&start).map_err(|error| {
+        SpikeError::new(
+            SpikeErrorCode::Evidence,
+            format!(
+                "repository root does not exist: {} ({error})",
+                start.display()
+            ),
+        )
+    })?;
+    if !start.is_dir() {
+        return Err(SpikeError::new(
+            SpikeErrorCode::Evidence,
+            format!("repository root is not a directory: {}", start.display()),
+        ));
+    }
+    let git_root = git_output(&start, &["rev-parse", "--show-toplevel"])?;
+    let root = std::fs::canonicalize(Path::new(&git_root)).map_err(|error| {
+        SpikeError::new(
+            SpikeErrorCode::Evidence,
+            format!("git repository root cannot be resolved: {error}"),
+        )
+    })?;
+    for marker in [
+        "Cargo.toml",
+        "crates/krometrail-cdp/Cargo.toml",
+        "tests/fixtures/browser/cdp-transport-gate/index.html",
+    ] {
+        if !root.join(marker).is_file() {
+            return Err(SpikeError::new(
+                SpikeErrorCode::Evidence,
+                format!("repository root is missing required marker {marker}"),
+            ));
+        }
+    }
+    Ok(root)
+}
+
+/// Enumerate and hash the source that can affect qualification using an explicit runtime root.
+/// The expected commit is used as the byte source so a report cannot bind a digest to a merely
+/// similar working tree.
 pub fn attest_relevant_source(expected_revision: &str) -> Result<SourceAttestation, SpikeError> {
+    let root = resolve_repository_root(None)?;
+    attest_relevant_source_at(&root, expected_revision)
+}
+
+pub fn attest_relevant_source_at(
+    repository_root: &Path,
+    expected_revision: &str,
+) -> Result<SourceAttestation, SpikeError> {
     if !is_git_revision(expected_revision) {
         return Err(SpikeError::new(
             SpikeErrorCode::Evidence,
             "expected source revision must be exactly 40 lowercase hexadecimal characters",
         ));
     }
-    let root = repository_root();
+    let root = resolve_repository_root(Some(repository_root))?;
     let resolved = git_output(&root, &["rev-parse", "--verify", "HEAD"])?;
     if resolved != expected_revision {
         return Err(SpikeError::new(
@@ -454,10 +517,6 @@ fn source_attestation_digest(
     let encoded = serde_json::to_vec(&(revision, files))
         .map_err(|error| SpikeError::new(SpikeErrorCode::Evidence, error.to_string()))?;
     Ok(sha256_digest(&encoded))
-}
-
-fn repository_root() -> std::path::PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
 fn relevant_pathspecs() -> Vec<String> {
@@ -1189,6 +1248,15 @@ pub fn validate_decisive_report(
     report: &TransportEvidenceV1,
     expected_platform: &str,
 ) -> Result<(), SpikeError> {
+    let root = resolve_repository_root(None)?;
+    validate_decisive_report_at(report, expected_platform, &root)
+}
+
+pub fn validate_decisive_report_at(
+    report: &TransportEvidenceV1,
+    expected_platform: &str,
+    repository_root: &Path,
+) -> Result<(), SpikeError> {
     validate_evidence(report)?;
     if report.environment.platform != expected_platform {
         return Err(SpikeError::new(
@@ -1240,7 +1308,8 @@ pub fn validate_decisive_report(
                 "decisive evidence lacks relevant-source attestation",
             )
         })?;
-    let current_attestation = attest_relevant_source(&report.source.git_revision)?;
+    let current_attestation =
+        attest_relevant_source_at(repository_root, &report.source.git_revision)?;
     if attestation != &current_attestation {
         return Err(SpikeError::new(
             SpikeErrorCode::Evidence,
@@ -1385,6 +1454,15 @@ pub fn decide_from_files(
     linux_path: &Path,
     macos_path: &Path,
 ) -> Result<TransportDecisionV1, SpikeError> {
+    let root = resolve_repository_root(None)?;
+    decide_from_files_at(linux_path, macos_path, &root)
+}
+
+pub fn decide_from_files_at(
+    linux_path: &Path,
+    macos_path: &Path,
+    repository_root: &Path,
+) -> Result<TransportDecisionV1, SpikeError> {
     let paths = [("linux", linux_path), ("macos", macos_path)];
     let mut reports = Vec::with_capacity(paths.len());
     let mut digests = Vec::with_capacity(paths.len());
@@ -1401,7 +1479,7 @@ pub fn decide_from_files(
                 format!("cannot decode {platform} evidence: {error}"),
             )
         })?;
-        validate_decisive_report(&report, platform)?;
+        validate_decisive_report_at(&report, platform, repository_root)?;
         reports.push(report);
         digests.push(sha256_digest(&bytes));
     }

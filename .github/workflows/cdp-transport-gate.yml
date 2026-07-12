@@ -86,6 +86,12 @@ jobs:
           echo "RUSTUP_TOOLCHAIN=stable" >> "$GITHUB_ENV"
           rustup run stable rustc --version
 
+      - name: Verify shared-target cached binary after build worktree removal
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts/cdp-transport-gate-cross-worktree.sh
+
       - name: Verify generated evidence schema-v2 contract
         shell: bash
         run: |
@@ -116,6 +122,7 @@ jobs:
           cargo run --locked -p krometrail-cdp \
             --features cdp-spike-cdpkit \
             --bin cdp-transport-gate -- gate \
+            --repo-root "$GITHUB_WORKSPACE" \
             --chrome-binary "$CHROME_BIN" \
             --expected-git-revision "$RESOLVED_SHA" \
             --minimum-seconds "$MINIMUM_SECONDS" \
@@ -142,6 +149,7 @@ jobs:
           cargo run --locked -p krometrail-cdp \
             --features cdp-spike-cdpkit \
             --bin cdp-transport-gate -- validate-decisive \
+            --repo-root "$GITHUB_WORKSPACE" \
             --input target/cdp-transport-gate/cdpkit-macos.sanitized.json \
             --platform macos \
             --expected-git-revision "$RESOLVED_SHA"

@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cdp-transport-gate-process-tree-runtime-root
 kind: story
-stage: implementing
+stage: review
 tags: [bug, browser, infra, testing]
 parent: epic-rust-cdp-capture-foundation-cdp-transport-gate
 depends_on: []
@@ -23,7 +23,14 @@ Launch gate Chrome in an isolated process group/session and terminate/reap the e
 
 ## Acceptance criteria
 
-- [ ] Chrome process group and profile are removed on every lifecycle path, including cancelled startup.
-- [ ] Shared-target binaries run correctly after build worktree removal using explicit runtime roots.
-- [ ] Real-Chrome tests cannot false-green on setup/attestation errors.
-- [ ] Default/spike/candidate tests and denied-warning clippy pass; no production/core change or evidence edit lands.
+- [x] Chrome process group and profile are removed on every lifecycle path, including cancelled startup.
+- [x] Shared-target binaries run correctly after build worktree removal using explicit runtime roots.
+- [x] Real-Chrome tests cannot false-green on setup/attestation errors.
+- [x] Default/spike/candidate tests and denied-warning clippy pass; no production/core change or evidence edit lands.
+
+## Implementation notes
+
+- Unix Chrome launches use the safe standard-library `process_group(0)` API. Drop, timeout, cancellation, startup failure, and normal teardown signal only the owned negative-PGID group, reap the direct child, force-kill lingering helpers, and remove a profile only after a live command-line ownership scan proves no process references it.
+- Gate profiles are unique per launch. Startup removes only stale `/tmp/krometrail-cdp-gate-*` directories after the same ownership check and logs the removed/retained count. Added real-Chrome cancellation and active-reference cleanup regressions; missing Chrome emits an explicit `SKIP`, while invalid Chrome paths and attestation failures fail.
+- Qualification paths now use a validated runtime/CLI `--repo-root`; attestation, fixtures, decisive validation, and decision loading all use that root. Added an `attest` command and a shared-target cross-worktree script/workflow check that deletes the build worktree before invoking the cached binary.
+- Verification: `cargo fmt --all -- --check`; default, `cdp-spike`, and `cdp-spike-cdpkit` tests plus denied-warning clippy; the full candidate suite passed 32 tests including real Chrome; and `scripts/cdp-transport-gate-cross-worktree.sh` passed after deleting its build worktree. Before final verification, three pre-existing gate profiles were retained only while 24 matching Chrome command lines were verified, then terminated and removed; subsequent cleanup found none. No evidence artifacts, production adapter, or core files changed.

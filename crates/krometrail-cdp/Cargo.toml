@@ -18,7 +18,7 @@ cdp-spike = [
 	"tokio/time",
 	"tokio/test-util",
 ]
-cdp-spike-cdpkit = ["cdp-spike", "dep:cdpkit"]
+cdp-spike-cdpkit = ["cdp-spike", "dep:cdpkit", "dep:libc"]
 
 [dependencies]
 krometrail-core.workspace = true
@@ -31,4 +31,5 @@ futures-util = { workspace = true, optional = true }
 schemars = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
+libc = { workspace = true, optional = true }
 tokio-tungstenite = { workspace = true, optional = true }

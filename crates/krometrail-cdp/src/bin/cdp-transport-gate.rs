@@ -10,8 +10,11 @@ use krometrail_cdp::spike::{
 
 #[cfg(feature = "cdp-spike")]
 use krometrail_cdp::spike::{
-    decide_from_files,
-    evidence::{is_git_revision, sanitize_evidence, validate_decisive_report},
+    decide_from_files_at,
+    evidence::{
+        attest_relevant_source_at, is_git_revision, resolve_repository_root, sanitize_evidence,
+        validate_decisive_report_at,
+    },
     write_json_schema,
 };
 
@@ -23,6 +26,7 @@ use krometrail_cdp::spike::evidence::{GateConfiguration, validate_evidence};
 struct GateCli {
     chrome_binary: PathBuf,
     output: PathBuf,
+    repo_root: Option<PathBuf>,
     expected_git_revision: String,
     minimum_seconds: f64,
     minimum_frames: u64,
@@ -57,12 +61,12 @@ async fn run() -> Result<(), String> {
     };
     match command.as_str() {
         "schema" => {
-            let mut args = remaining.into_iter();
+            let mut args = remaining.iter().cloned();
             let output = required_path(&mut args, "--output")?;
             write_json_schema(&output).map_err(|error| error.to_string())?;
         }
         "validate-and-normalize" => {
-            let mut args = remaining.into_iter();
+            let mut args = remaining.iter().cloned();
             let input = required_path(&mut args, "--input")?;
             let output = required_path(&mut args, "--output")?;
             let bytes = std::fs::read(&input).map_err(|error| error.to_string())?;
@@ -71,18 +75,25 @@ async fn run() -> Result<(), String> {
             write_json(&output, &evidence)?;
         }
         "decide" => {
-            let mut args = remaining.into_iter();
+            let mut args = remaining.iter().cloned();
             let linux = required_path(&mut args, "--linux-report")?;
             let macos = required_path(&mut args, "--macos-report")?;
             let output = required_path(&mut args, "--output")?;
-            let decision = decide_from_files(&linux, &macos).map_err(|error| error.to_string())?;
+            let repo_root = optional_path(&remaining, "--repo-root")?;
+            let repo_root =
+                resolve_repository_root(repo_root.as_deref()).map_err(|error| error.to_string())?;
+            let decision = decide_from_files_at(&linux, &macos, &repo_root)
+                .map_err(|error| error.to_string())?;
             write_json(&output, &decision)?;
         }
         "validate-decisive" => {
-            let mut args = remaining.into_iter();
+            let mut args = remaining.iter().cloned();
             let input = required_path(&mut args, "--input")?;
             let platform = required_value(&mut args, "--platform")?;
             let expected_revision = required_value(&mut args, "--expected-git-revision")?;
+            let repo_root = optional_path(&remaining, "--repo-root")?;
+            let repo_root =
+                resolve_repository_root(repo_root.as_deref()).map_err(|error| error.to_string())?;
             let bytes = std::fs::read(&input).map_err(|error| error.to_string())?;
             let evidence = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
             if !is_git_revision(&expected_revision) {
@@ -91,7 +102,8 @@ async fn run() -> Result<(), String> {
                         .into(),
                 );
             }
-            validate_decisive_report(&evidence, &platform).map_err(|error| error.to_string())?;
+            validate_decisive_report_at(&evidence, &platform, &repo_root)
+                .map_err(|error| error.to_string())?;
             if evidence.source.git_revision != expected_revision {
                 return Err(format!(
                     "report uses {}, expected {}",
@@ -99,10 +111,29 @@ async fn run() -> Result<(), String> {
                 ));
             }
         }
+        "attest" => {
+            let mut args = remaining.iter().cloned();
+            let expected_revision = required_value(&mut args, "--expected-git-revision")?;
+            if !is_git_revision(&expected_revision) {
+                return Err(
+                    "--expected-git-revision must be exactly 40 lowercase hexadecimal characters"
+                        .into(),
+                );
+            }
+            let repo_root = optional_path(&remaining, "--repo-root")?;
+            let repo_root =
+                resolve_repository_root(repo_root.as_deref()).map_err(|error| error.to_string())?;
+            let output = required_path(&mut args, "--output")?;
+            let attestation = attest_relevant_source_at(&repo_root, &expected_revision)
+                .map_err(|error| error.to_string())?;
+            write_json(&output, &attestation)?;
+        }
         "gate" => {
             #[cfg(feature = "cdp-spike-cdpkit")]
             {
                 let cli = parse_gate(remaining)?;
+                let repo_root = resolve_repository_root(cli.repo_root.as_deref())
+                    .map_err(|error| error.to_string())?;
                 let configuration = GateConfiguration {
                     minimum_seconds: cli.minimum_seconds,
                     minimum_frames: cli.minimum_frames,
@@ -116,6 +147,7 @@ async fn run() -> Result<(), String> {
                     configuration.clone(),
                     &cli.chrome_binary,
                     &cli.expected_git_revision,
+                    &repo_root,
                 )
                 .await;
                 match result {
@@ -136,6 +168,7 @@ async fn run() -> Result<(), String> {
                             &factory,
                             configuration,
                             &cli.expected_git_revision,
+                            &repo_root,
                             &error,
                         );
                         validate_evidence(&evidence)
@@ -159,6 +192,7 @@ async fn run() -> Result<(), String> {
 fn parse_gate(args: Vec<String>) -> Result<GateCli, String> {
     let mut chrome_binary = None;
     let mut output = None;
+    let mut repo_root = None;
     let mut expected_git_revision = None;
     let mut minimum_seconds = 60.0;
     let mut minimum_frames = 1000;
@@ -174,6 +208,7 @@ fn parse_gate(args: Vec<String>) -> Result<GateCli, String> {
         match flag.as_str() {
             "--chrome-binary" => chrome_binary = Some(PathBuf::from(value)),
             "--output" => output = Some(PathBuf::from(value)),
+            "--repo-root" => repo_root = Some(PathBuf::from(value)),
             "--expected-git-revision" => expected_git_revision = Some(value.to_owned()),
             "--minimum-seconds" => {
                 minimum_seconds = value
@@ -217,6 +252,7 @@ fn parse_gate(args: Vec<String>) -> Result<GateCli, String> {
     Ok(GateCli {
         chrome_binary: chrome_binary.ok_or("--chrome-binary is required")?,
         output: output.ok_or("--output is required")?,
+        repo_root,
         expected_git_revision,
         minimum_seconds,
         minimum_frames,
@@ -293,6 +329,17 @@ fn required_value(args: &mut impl Iterator<Item = String>, flag: &str) -> Result
 #[cfg(feature = "cdp-spike")]
 fn required_path(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<PathBuf, String> {
     required_value(args, flag).map(PathBuf::from)
+}
+
+#[cfg(feature = "cdp-spike")]
+fn optional_path(args: &[String], flag: &str) -> Result<Option<PathBuf>, String> {
+    let Some(index) = args.iter().position(|value| value == flag) else {
+        return Ok(None);
+    };
+    let value = args
+        .get(index + 1)
+        .ok_or_else(|| format!("missing value for {flag}"))?;
+    Ok(Some(PathBuf::from(value)))
 }
 
 #[cfg(feature = "cdp-spike")]

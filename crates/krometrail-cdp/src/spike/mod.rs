@@ -24,9 +24,11 @@ pub use evidence::{
     GateResult, GateStatus, PlatformEvidence, RSS_SAMPLE_INTERVAL_SECONDS, RSS_WARMUP_SECONDS,
     SanitizedEnvironment, SourceAttestation, SourceFileAttestation, SourceIdentity,
     TransportDecision, TransportDecisionV1, TransportDecisionV2, TransportEvidenceV1,
-    TransportEvidenceV2, TransportGateId, attest_relevant_source, configuration_digest, decide,
-    decide_from_files, is_git_revision, rss_measurements_are_valid, sanitize_evidence,
-    validate_decisive_report, validate_evidence, validate_source_attestation, write_json_schema,
+    TransportEvidenceV2, TransportGateId, attest_relevant_source, attest_relevant_source_at,
+    configuration_digest, decide, decide_from_files, decide_from_files_at, is_git_revision,
+    resolve_repository_root, rss_measurements_are_valid, sanitize_evidence,
+    validate_decisive_report, validate_decisive_report_at, validate_evidence,
+    validate_source_attestation, write_json_schema,
 };
 pub use fake::{FakeTransport, FakeTransportFactory};
 #[cfg(feature = "cdp-spike-cdpkit")]
