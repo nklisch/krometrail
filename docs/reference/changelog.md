@@ -20,7 +20,7 @@ description: Release history for Krometrail.
 ### Internal
 
 - Added 10 unit tests covering Chrome launch resilience behavioral contracts
-- Design doc: `docs/designs/chrome-launch-resilience.md`
+- Design reference: preserved in the `v0.2.20` Git history.
 
 ## v0.2.19
 

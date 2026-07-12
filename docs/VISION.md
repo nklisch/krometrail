@@ -1,76 +1,126 @@
----
-head:
-  - - meta
-    - name: robots
-      content: noindex, nofollow
----
+# Krometrail
 
-# Krometrail — Vision
+**Browser memory for coding agents**
 
-**Runtime Debugging Viewport for AI Coding Agents**
+## Purpose
 
----
+Krometrail gives local coding agents a visual memory of what a browser did over time.
 
-## Executive Summary
+Coding agents can operate browsers, inspect pages, and take screenshots, but their observations are usually isolated moments. This works when a defect persists in the final page state. It fails when the visible problem occurs only during a transition and disappears before the next screenshot.
 
-AI coding agents such as Claude Code and Codex currently debug software through static code analysis and trial-and-error test execution. They lack the ability to inspect runtime state, set breakpoints, or step through executing code. This makes entire categories of bugs—incorrect runtime values, unexpected mutations, race conditions, off-by-one errors deep in call chains—significantly harder to diagnose.
+Krometrail continuously records a controlled Chrome session and lets an agent inspect selected intervals as compact visual evidence. It exposes movement, jitter, flicker, transient layout changes, and incorrect intermediate states without requiring the model to consume video.
 
-Krometrail is a Model Context Protocol (MCP) server that exposes a language-agnostic debugging interface to AI agents. The server translates MCP tool calls into Debug Adapter Protocol (DAP) messages, enabling any DAP-compatible debugger to be used by any MCP-compatible agent without either side needing awareness of the other.
+## Problem
 
-The design prioritizes three qualities: a **compact default viewport** that minimizes token consumption per debug step, a **drill-down-on-demand** pattern that lets the agent selectively expand its view, and a **pluggable adapter layer** that makes adding new languages a bounded, well-defined task.
+Many browser defects are temporal:
 
-### Prior Art & Differentiation
+- an element reverses direction during an animation;
+- content flickers before settling;
+- hydration briefly produces the wrong layout;
+- a loading state appears and disappears too quickly;
+- scrolling or focus jumps unexpectedly;
+- two updates compete before the interface stabilizes;
+- a canvas or game surface renders an incorrect intermediate frame.
 
-Several projects have emerged in this space, all converging on the same MCP-over-DAP architecture:
+A final screenshot can look correct even when the experience is visibly broken. Taking more screenshots manually is unreliable because the agent must anticipate the important moment and request each observation at the right time.
 
-- **AIDB** (ai-debugger-inc) — Python, JS/TS, Java. Supports `launch.json` configs, framework auto-detection (pytest, jest, django), conditional breakpoints. Most polished positioning as a "debugging standard for AI."
-- **mcp-debugger** (debugmcp) — TypeScript. Clean adapter pattern, Python/JS/Rust/Go support, 1000+ tests. Expression evaluation and conditional breakpoints still in progress.
-- **mcp-dap-server** (go-delve) — Go. From the Delve team. Generic DAP bridge with demos of autonomous agentic debugging.
-- **debugger-mcp** (Govinda-Fichtner) — Rust/Tokio. Python, Ruby, Node.js, Go, Rust. Integration tests using real Claude Code and Codex agents.
-- **dap-mcp** (Kashun Cheng) — Python. Config-driven, one of the earlier entries.
+The missing capability is persistent visual history.
 
-All of these solve the **plumbing** problem: bridging MCP to DAP. None of them address the **agent ergonomics** problem, which is the primary focus of Krometrail. See [UX.md](UX.md) for the detailed gap analysis and how the viewport abstraction addresses each gap. See [PRIOR_ART.md](PRIOR_ART.md) for a deep technical analysis of each project's architecture, tool interfaces, and key lessons.
+## Product Thesis
 
----
+A coding agent becomes more capable when browser activity is represented as a queryable visual timeline rather than a sequence of manually requested snapshots.
 
-## Problem Statement
+Krometrail separates live operation from historical investigation:
 
-Today's coding agents operate in a fundamentally limited debugging loop:
+1. Browser actions return the current visual and structured page state needed for ordinary agent operation.
+2. Chrome is continuously recorded while the agent works.
+3. Agent actions and browser activity mark the timeline.
+4. The agent selects a relevant interval after observing a symptom.
+5. Krometrail turns that interval into still visual artifacts.
+6. The agent reasons over the artifacts and requests source frames when more detail is needed.
 
-1. Read static source code and error output.
-2. Form a hypothesis about the bug.
-3. Edit the code based on that hypothesis.
-4. Run the test suite and observe pass/fail.
-5. Repeat until tests pass or the agent gives up.
+The system preserves the evidence. The agent performs the diagnosis.
 
-This loop works for many surface-level bugs but fails for problems where the root cause is only visible at runtime. A negative discount value, an unexpectedly null reference three frames deep, a loop that executes one too many times—these require observing actual program state during execution. Human developers reach for debuggers in exactly these situations. Agents currently cannot.
+## Core Experience
 
-The gap is not in reasoning capability but in tooling. Agents already know how to form hypotheses, test them, and iterate. They simply lack the instruments to observe runtime behavior directly.
+Krometrail provides browser controls comparable to contemporary coding-agent browser tools. Significant actions return a post-action screenshot and structured page observation so an agent can see the current result without making a separate temporal query. Recording begins with the controlled browser session and continues without requiring the agent to predict when a defect will occur.
 
----
+The live observation loop supports normal browser use. The temporal layer is an additional queryable history, not a replacement for current-state vision.
 
-## What's Implemented
+When an interaction looks suspicious, the agent can inspect the interval around its last action. A temporal query returns a compact package such as:
 
-All planned phases are complete. The system ships with:
+- a labeled storyboard of representative frames;
+- a temporal difference map;
+- selected source frames;
+- capture timing and gap information;
+- related action, navigation, console, and network markers.
 
-- **Runtime debugging** — 10 language adapters (Python, Node.js, Go, Rust, Java, C/C++, Ruby, C#, Swift, Kotlin), viewport abstraction with token-budgeted rendering, context compression, watch expressions, session logging, multi-threaded debugging, attach mode, framework auto-detection
-- **Browser observation** — CDP-based passive recording (network, console, DOM, storage, screenshots, user input), SQLite persistence, investigation tools (search, inspect, diff, replay context), HAR export, marker/screenshot system, lightweight annotation API (`window.__krometrail.mark()`)
-- **Framework state observation** — React and Vue state observers with component tree walking, state diffing, store integration (Pinia/Vuex), and bug pattern detection (infinite re-renders, stale closures, context floods, lost reactivity)
-- **Dual interface** — MCP server and CLI with full parity, namespaced under `debug` and `browser` subcommands, JSON envelope output, semantic exit codes
-- **Testing** — Unit, integration, e2e, and agent harness test suites with real debuggers and real browser fixtures
+The agent can expand a region or retrieve additional source frames without loading the entire recording into its context.
 
-See `docs/designs/completed/` for historical design documents covering each phase.
+## Visual Evidence
 
----
+Krometrail is designed for models that reason over still images better than video.
 
-## Resolved Design Questions
+Its visual artifacts reorganize recorded frames into forms that make temporal behavior visible:
 
-These questions from the original design have all been decided:
+- storyboards show the sequence of meaningful states;
+- difference maps show where and when pixels changed;
+- region filmstrips expose short-lived local changes;
+- motion-history views compress movement into a single image;
+- source frames remain available behind every derived artifact.
 
-1. **Event delivery model** — Synchronous blocking. Every execution control tool returns the viewport on stop. No MCP notifications needed.
-2. **Multi-threaded debugging** — Active thread shown in viewport by default. `debug_threads` tool lists all threads. Thread selection via `thread_id` parameter.
-3. **Attach vs. launch** — Both supported. Attach by PID or port via `debug_attach` / `krometrail debug attach`.
-4. **Security boundaries** — No restrictions on `debug_evaluate`. Agents already have code execution capability.
-5. **Token budget awareness** — Progressive compression based on action count. No MCP extension needed.
-6. **Integration** — Built as a standalone project with its own viewport/compression layer.
-7. **Viewport format** — Plain text by default, JSON via `--json` flag or MCP structured output. Both produce the same information.
+Generated artifacts are lossy views of authoritative source frames. They carry their time range, source references, and transformation parameters. Inferred analysis is labeled separately from direct frame-derived transformations.
+
+## Local-First Operation
+
+Krometrail runs locally and controls Chrome through the Chrome DevTools Protocol. Captured frames and browser evidence remain on the user’s machine.
+
+Recording is bounded by a user-configured disk budget rather than a short fixed history window. Krometrail evicts the oldest unpinned recording segments when the budget is reached. Important intervals can be pinned for continued investigation.
+
+The primary environments are Linux and macOS.
+
+## Reusable Temporal Vision
+
+Temporal visual analysis is independent of browser capture.
+
+A browser-agnostic Rust crate accepts timestamped image frames, markers, and optional regions of interest. It produces temporal visual artifacts and machine-readable provenance without depending on Chrome, CDP, DOM state, MCP, or Krometrail-specific types.
+
+The crate lives inside the project while its interface develops, but its boundary supports later use in editor capture, game-engine tooling, computer-use systems, and other visual agent environments.
+
+## Product Boundaries
+
+Krometrail is:
+
+- a browser flight recorder for local coding agents;
+- a practical browser-control environment;
+- a time-indexed visual evidence store;
+- a still-image interface to browser motion and transient state;
+- an extensible foundation for optional browser-state evidence.
+
+Krometrail is not:
+
+- an automatic UI bug solver;
+- a deterministic browser replay system;
+- a production user-session observability service;
+- a complete replacement for Chrome DevTools;
+- a framework debugger as a prerequisite for useful capture;
+- a model-training platform;
+- a promise to diagnose every visual anomaly automatically.
+
+DOM, accessibility, console, network, and framework evidence can enrich the visual timeline. None replaces visual recording as the product’s center.
+
+## Success
+
+Krometrail succeeds when a coding agent can:
+
+1. launch and operate a browser with little setup;
+2. receive current visual feedback during ordinary browser actions;
+3. reproduce a defect whose final page state appears correct;
+4. inspect the relevant visual interval after the interaction;
+5. identify the transient behavior from a compact set of still artifacts;
+6. retrieve the underlying evidence needed to reason about the defect;
+7. modify the application and verify that the visible temporal defect no longer occurs.
+
+The decisive comparison is not against human video inspection. It is against an agent limited to current-state screenshots.
+
+> Existing browser tools show an agent what the page is. Krometrail shows the agent what the page did.

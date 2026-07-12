@@ -1,45 +1,19 @@
----
-head:
-  - - meta
-    - name: robots
-      content: noindex, nofollow
----
+# Documentation Navigation
 
-# Agent Instructions — Documentation Navigation
+## Authoritative foundation
 
-## Foundation docs (current, authoritative)
+These documents define Krometrail’s current direction and intended system:
 
-These docs in `docs/` describe the current system and should be trusted:
+- **[VISION.md](VISION.md)** — purpose, product thesis, audience, and boundaries.
+- **[SPEC.md](SPEC.md)** — externally observable behavior and system contracts.
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** — Rust workspace, component boundaries, data flow, storage, and failure isolation.
+- **[VISUAL-EVIDENCE.md](VISUAL-EVIDENCE.md)** — temporal artifact vocabulary, provenance, and interpretation rules.
+- **[EVALUATION.md](EVALUATION.md)** — capture, artifact, browser-control, and agent-effectiveness validation.
 
-- **VISION.md** — Project motivation, problem statement, and what's implemented
-- **ARCH.md** — System architecture (layers, data flow, compression, viewport rendering)
-- **SPEC.md** — Adapter interface contract, breakpoint types, resource limits
-- **UX.md** — Viewport abstraction, interaction patterns, agent skill file
-- **ADAPTER-SDK.md** — How to create a new language adapter (step-by-step guide)
-- **PRIOR_ART.md** — Historical analysis of other MCP-DAP projects (reference only)
+Read these five documents before using other project documentation to understand the system.
 
-## Generated docs (auto-generated, do not edit)
+## Other documentation
 
-Files in `docs/.generated/` are produced by `scripts/generate-docs.ts` from Zod schemas and the adapter/framework registries. Regenerate with `bun run generate-docs` after changing tool schemas, adapters, or frameworks.
+Documentation outside the authoritative foundation does not define the current system unless one of the five foundation documents links to it explicitly. Git tag `v0.2.20` preserves the reference implementation and documentation for the DAP debugger, browser-event recorder, DOM observation, and framework-state integrations.
 
-## Legacy docs (outdated, do not use for current state)
-
-Files in `docs/legacy/` contain early-phase planning that no longer reflects the codebase:
-
-- **ROADMAP.md** — Original phase-by-phase roadmap. All phases are complete. The "What Exists Today" section describes the project as barely scaffolded.
-- **INTERFACE.md** — Original CLI/MCP interface design. The CLI was overhauled to use namespaced subcommands (`krometrail debug launch` instead of `krometrail launch`). Missing browser commands, attach, threads, and other features added later.
-- **TESTING.md** — Original test strategy. Fixture paths and test file structure are speculative and don't match the actual layout.
-
-These files are kept for historical reference. Do not rely on them for understanding current behavior.
-
-## Active design docs (planned or in-progress work)
-
-Files directly in `docs/designs/` (not in the `completed/` subdirectory) are designs for planned or in-progress features. Read these to understand upcoming work, but do not assume the features are implemented — check the code first.
-
-## Completed design docs (historical, do not use for current state)
-
-Files in `docs/designs/completed/` are detailed phase design documents that guided implementation. All 35 designs are fully implemented. These are valuable for understanding *why* something was built a certain way, but should not be used to understand *what* currently exists — the code and foundation docs are the source of truth.
-
-## Framework state docs
-
-Files in `docs/framework-state/` describe the framework observation subsystem. The per-framework `SPEC.md`, `INTERFACE.md`, and `ARCH.md` files for React and Vue are current. The Solid and Svelte specs describe planned-but-unimplemented observers (only detection is implemented for those frameworks).
+Generated documentation under `docs/.generated/` and material under `docs/legacy/` are not sources of current behavior. Historical design documents remain available at Git tag `v0.2.20`.

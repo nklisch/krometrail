@@ -4965,7 +4965,7 @@ Code that technically violates a rule but should NOT be reorganized.
 
 - **`src/browser/SKILL.md`** — Docs Hierarchy. This is a workflow guide for the `krometrail-chrome` agent skill, not a documentation file. It lives next to the code it describes and is referenced by the skill system. Moving it to docs/ would break skill discovery.
 
-- **`docs/stylistic-refactor-plan.md` at docs root** — Docs Hierarchy. This is a generated output from the stylistic-refactor skill, not a design doc. It belongs at the docs root as a working document, not in `designs/completed/` (which is for historical phase designs).
+- **`docs/stylistic-refactor-plan.md` at docs root** — Docs Hierarchy. This generated output belongs to the v0.2.20 reference implementation; historical phase designs are recoverable from Git tag `v0.2.20`.
 
 ---
 

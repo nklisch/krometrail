@@ -1,5 +1,7 @@
 # Krometrail
 
+> **Direction reset:** The authoritative foundation is `docs/VISION.md`, `docs/SPEC.md`, `docs/ARCHITECTURE.md`, `docs/VISUAL-EVIDENCE.md`, and `docs/EVALUATION.md`. The TypeScript/DAP instructions below describe the `v0.2.20` reference implementation while the Rust temporal browser recorder replaces it; they do not define the intended architecture.
+
 MCP server + CLI that gives AI agents runtime debugging via the Debug Adapter Protocol.
 
 ## Project Structure
@@ -21,18 +23,18 @@ tests/
   fixtures/       Real programs used as debug targets
   agent-harness/  Scenario-based test suite for evaluating agent debugging ability
     scenarios/    Buggy programs at 5 difficulty levels, per-language suites
-docs/             Foundation docs (VISION, ARCH, UX, SPEC, ADAPTER-SDK, PRIOR_ART)
-  agents.md       Navigation guide — which docs to trust, which are legacy
-  legacy/         Outdated docs (ROADMAP, INTERFACE, TESTING) — do not use for current state
-  designs/completed/  Historical phase design docs — all implemented
-  .generated/     Auto-generated from Zod schemas (do not edit directly)
+docs/             Current foundation plus legacy v0.2.20 documentation
+  agents.md       Navigation guide — which docs are authoritative
+  legacy/         Outdated v0.2.20 docs — do not use for current direction
+  .generated/     Auto-generated v0.2.20 reference docs (do not edit directly)
 ```
 
 ## Documentation Rules
 
-- **Do not read `docs/designs/completed/`** for understanding current behavior. Those are historical design docs that guided implementation. The code and foundation docs (`docs/ARCH.md`, `docs/SPEC.md`, `docs/UX.md`, `docs/VISION.md`) are the source of truth.
-- **Do not read `docs/legacy/`** for current state. Those docs (ROADMAP, INTERFACE, TESTING) are outdated and misleading.
-- **Do not edit `docs/.generated/`** files directly. Regenerate with `bun run generate-docs`.
+- Treat `docs/VISION.md`, `docs/SPEC.md`, `docs/ARCHITECTURE.md`, `docs/VISUAL-EVIDENCE.md`, and `docs/EVALUATION.md` as authoritative.
+- Historical design documents are preserved at Git tag `v0.2.20`; they do not define current work.
+- **Do not read `docs/legacy/`** for current direction. Those docs describe the replaced product.
+- **Do not edit `docs/.generated/`** files directly. They belong to the `v0.2.20` reference implementation.
 - See `docs/agents.md` for full navigation guidance.
 
 ## Commands
@@ -89,3 +91,25 @@ The user-facing installer lives at `scripts/install.sh` and is served via the do
 ## Bun adapter (unsupported)
 
 `src/adapters/bun.ts` exists but is **not registered** in `registerAllAdapters()`. Bun 1.3.x uses WebKit JSC inspector protocol (not V8 CDP) — `Debugger.paused` events never fire regardless of how breakpoints are set. js-debug is V8/CDP-only and cannot bridge to WebKit protocol. The adapter code is kept for reference. Re-enable when Bun's CDP supports programmatic pause (`Debugger.paused`), or rewrite using `@rttnd/bun-inspector-protocol` (WebKit protocol wrapper). Relevant Bun issues: #4842, #9290, #13994.
+
+<!-- agile-workflow:start -->
+## Agile-Workflow Substrate
+
+Work tracked in `.work/` as markdown items with YAML frontmatter (`kind, stage, tags, parent, depends_on, release_binding, research_refs, research_origin`; `[research]` items also carry the commissioning `research_dials` block). Layout: `.work/active/{epics,features,stories}/`, `.work/backlog/`, `.work/releases/<version>/`, `.work/archive/`. The `.work/` ↔ `.research/` handoff follows the agentic-research plugin contract.
+
+**Primary query tool:** `.work/bin/work-view` filters by stage, tag, kind, parent, and dependency. Common patterns:
+- `work-view --ready` — items ready to work (deps satisfied)
+- `work-view --stage review` — items awaiting an agent review pass (`/agile-workflow:review`)
+- `work-view --parent <id>` / `--blocking <id>` — hierarchy / sequencing
+- `work-view --scope all` — include terminal tiers: `releases/` (one summary doc per version) and `archive/` (bodyless ref stubs). Full bodies live in git history. By default work-view shows only active + backlog; `--release` / `--gate` auto-widen to all tiers.
+- `work-view --help` for the full flag set
+
+Foundation docs in `docs/` describe the system's current state or intended future state, never the past; git history is the audit trail. Item files are the durable state: update the body with implementation discoveries, review findings, blockers, and decisions instead of relying on chat history.
+
+Reusable code patterns live in `.agents/skills/patterns/` (load the `patterns` skill for detail). Project agent rules live in `.agents/rules/*.md` (plugin-managed rules in `.agents/rules/agile-workflow.md`); do not maintain `.claude/rules/*.md` as a source of truth.
+
+**Before designing, implementing, or reviewing, read `.agents/rules/*.md`** — the project's force-loaded agent rules (tag semantics, test integrity, review policy). The agile-workflow hook auto-loads these at session start and after compaction; read them directly when working without the hook. Do not rely on UserPromptSubmit for rules or queue snapshots; query `work-view` when queue state is needed.
+
+Project-specific refactor style conventions belong in this file under `## Refactor Style Conventions`. Detailed refactor convention references belong in `.agents/skills/refactor-conventions/` and extend `refactor-design`'s defaults; they do not replace the built-in scan and they do not create standalone plan docs.
+
+<!-- agile-workflow:end -->

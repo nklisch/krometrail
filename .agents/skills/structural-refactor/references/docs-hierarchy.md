@@ -1,6 +1,6 @@
 # Rule: Docs Hierarchy
 
-> Foundation docs are authoritative source of truth. designs/completed/ is historical context. legacy/ is deprecated. .generated/ is auto-generated (never edit).
+> Foundation docs are the authoritative source of truth. Historical implementation material lives in Git at `v0.2.20`; `legacy/` is deprecated and `.generated/` is never edited directly.
 
 ## Motivation
 
@@ -16,19 +16,16 @@ indicating its reliability.
 **Good — explicitly tiered:**
 ```
 docs/
-├── ARCH.md                    [AUTHORITATIVE] System architecture
-├── SPEC.md                    [AUTHORITATIVE] Adapter contract, limits
-├── UX.md                      [AUTHORITATIVE] Viewport interaction design
-├── VISION.md                  [AUTHORITATIVE] Problem statement, scope
-├── ADAPTER-SDK.md             [AUTHORITATIVE] How to write adapters
-├── PRIOR_ART.md               [AUTHORITATIVE] Competitive analysis
+├── VISION.md                  [AUTHORITATIVE] Product purpose and boundaries
+├── SPEC.md                    [AUTHORITATIVE] Behavioral contracts
+├── ARCHITECTURE.md            [AUTHORITATIVE] System structure
+├── VISUAL-EVIDENCE.md         [AUTHORITATIVE] Temporal visual language
+├── EVALUATION.md              [AUTHORITATIVE] Validation gates
 ├── agents.md                  [NAVIGATION] Which docs to trust
-├── .generated/                [AUTO-GENERATED] From Zod schemas — never edit
-├── designs/completed/         [HISTORICAL] Phase design docs — all implemented
-├── legacy/                    [DEPRECATED] ROADMAP, INTERFACE, TESTING
-├── browser/                   [DOMAIN REFERENCE] Browser subsystem
-├── framework-state/           [DOMAIN REFERENCE] Per-framework specs
-└── languages/                 [DOMAIN REFERENCE] Per-language adapter docs
+├── .generated/                [LEGACY GENERATED] v0.2.20 reference only
+└── legacy/                    [DEPRECATED] Replaced product documentation
+
+Git tag v0.2.20                [HISTORICAL] Prior designs and implementation
 ```
 
 ### Synthetic example: undifferentiated docs
@@ -48,17 +45,17 @@ docs/
   architecture.md           [AUTHORITATIVE — kept current]
   legacy/
     old-api-design.md       [DEPRECATED — clearly labeled]
-  designs/completed/
-    api-design.md           [HISTORICAL — implemented, context only]
   .generated/
     schema.md               [AUTO-GENERATED — never edit]
+
+git history
+  api-design.md             [HISTORICAL — recover by revision]
 ```
 
 ## Exceptions
 
-- **New design docs** being actively developed may live in `docs/designs/` (not `completed/`)
-  temporarily. Move to `completed/` once implemented.
-- **agents.md** is a meta-document that describes the hierarchy itself — it's authoritative.
+- Active designs live in their `.work/` item bodies rather than standalone design documents.
+- **agents.md** is a meta-document that describes the hierarchy itself — it is authoritative.
 
 ## Scope
 
