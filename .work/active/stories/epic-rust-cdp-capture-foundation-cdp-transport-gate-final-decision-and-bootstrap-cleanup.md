@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cdp-transport-gate-final-decision-and-bootstrap-cleanup
 kind: story
-stage: review
+stage: done
 tags: [bug, browser, infra, testing]
 parent: epic-rust-cdp-capture-foundation-cdp-transport-gate
 depends_on: [epic-rust-cdp-capture-foundation-cdp-transport-gate-cross-platform-requalification]
@@ -40,3 +40,13 @@ Regenerate the schema-v2 decision solely from repaired same-revision reports, pr
 ### External cleanup completed
 
 - Deleted authorized temporary remote branch `origin/ci/cdp-macos-evidence` after accepted reports and the final decision were committed. `git ls-remote` confirms the ref is absent.
+
+## Review (2026-07-12)
+
+**Verdict:** Approve
+
+**Blockers:** none
+**Important:** none
+**Nits:** none
+
+**Notes:** Fast-lane final-rollup review reproduced decision bytes and digest, verified two platform-labelled report sets and trace results, confirmed exact cdpkit selection and limitations across architecture/research/skill/items, and confirmed both workflow push trigger and remote bootstrap ref are absent. Verdict: Approve - story verified by implement; fast-lane advance.
