@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-rust-runtime-contracts
 kind: feature
-stage: review
+stage: implementing
 tags: [browser, infra]
 parent: epic-rust-cdp-capture-foundation
 depends_on: []
@@ -806,3 +806,33 @@ All seven child stories reached `stage: done`:
 - `epic-rust-cdp-capture-foundation-rust-runtime-contracts-docs-skills-alignment`
 
 The implementation followed the designed dependency chain and then completed distribution and documentation alignment as separate serialized deliveries to avoid shared-index conflicts. The remote `v0.2.20` tag was verified before classified legacy deletion. The integrated Rust formatting, check, 29-test workspace suite, clippy, distribution contract suite, installer shell checks, and documentation build/link checks passed. Cargo is now the sole product runtime and version source; Bun remains docs/browser-fixture development tooling only.
+
+## Other agent review
+
+- Invoked because: completed feature review requires fresh, multi-model deep evaluation under autopilot.
+- Scope: two classes in fixed order; each reviewer performed a three-round internal convergence pass.
+- Reviewer (Phase 1 — completeness): GLM 5.2 xhigh.
+  - Verified every original story criterion, the full Rust/distribution gates, cutover recovery, dependency direction, and foundation alignment.
+  - Converged with no blocker or important findings; identified stale deleted-harness ignore rules and unlocked bump-script gates as nits.
+- Reviewer (Phase 2 — adversarial): GPT-5.6 Sol high.
+  - Confirmed the Phase 1 nits, then found that public fields and derived deserialization bypass validated core constructors.
+  - Found stale developer-install reuse, missing release-tag/version validation, unlocked retained Bun docs tooling, untested MSRV, and incomplete exhaustive enum/transition coverage.
+- Accepted:
+  - Seal and validate all invariant-bearing construction and Serde boundaries.
+  - Complete exhaustive lifecycle/gap/error contract coverage from authoritative variant sets.
+  - Harden developer install, release tag/version matching, Bun lock reproducibility, MSRV CI, locked version-bump gates, and stale ignore rules.
+- Rejected:
+  - None of the surviving above-nit findings; each was verified against current code or an isolated reproduction.
+
+## Review findings
+
+**Verdict**: Request changes
+
+- Blocker: invalid core aggregate state can bypass constructors through public fields and derived deserialization.
+  - Follow-up: `epic-rust-cdp-capture-foundation-rust-runtime-contracts-core-invariant-boundaries`
+- Important: exhaustive lifecycle, gap-reason, and error-code coverage promised by the design is incomplete.
+  - Follow-up: `epic-rust-cdp-capture-foundation-rust-runtime-contracts-exhaustive-contract-coverage`
+- Important: distribution/toolchain paths permit stale installs, tag/version mismatch, unlocked docs dependencies, unproved MSRV compatibility, and unlocked release-helper gates.
+  - Follow-up: `epic-rust-cdp-capture-foundation-rust-runtime-contracts-distribution-integrity`
+
+The feature returns to `stage: implementing` until these review-created stories are verified.
