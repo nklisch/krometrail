@@ -841,6 +841,15 @@ fn median_sample_interval(samples: &[(u64, u64)]) -> f64 {
     percentile(intervals, 0.5)
 }
 
+/// Parse the decimal KiB output emitted by macOS `ps` and normalize it to bytes.
+///
+/// This stays outside the platform-specific sampler so Linux tests compile and exercise
+/// the exact fallible parsing path used by macOS without needing a macOS toolchain.
+#[cfg(any(test, target_os = "macos"))]
+fn parse_rss_kibibytes_to_bytes(value: &str) -> Option<u64> {
+    value.trim().parse::<u64>().ok()?.checked_mul(1024)
+}
+
 #[cfg(target_os = "linux")]
 fn process_rss() -> Option<u64> {
     let text = std::fs::read_to_string("/proc/self/statm").ok()?;
@@ -859,12 +868,8 @@ fn process_rss() -> Option<u64> {
     if !output.status.success() {
         return None;
     }
-    let kibibytes = String::from_utf8(output.stdout)
-        .ok()?
-        .trim()
-        .parse::<u64>()?;
-    // macOS ps reports RSS in KiB; evidence is normalized to bytes.
-    kibibytes.checked_mul(1024)
+    let output = String::from_utf8(output.stdout).ok()?;
+    parse_rss_kibibytes_to_bytes(&output)
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -927,5 +932,29 @@ mod tests {
         // the source check is the safe cross-platform reproduction of the old failure.
         let source = include_str!("chrome_harness.rs");
         assert!(!source.contains("Command::new(\"sha256sum\")"));
+    }
+
+    #[test]
+    fn parses_macos_rss_kibibytes_as_bytes_without_external_process_state() {
+        assert_eq!(parse_rss_kibibytes_to_bytes(" 42\n"), Some(42 * 1024));
+        assert_eq!(parse_rss_kibibytes_to_bytes("not-a-number"), None);
+        assert_eq!(parse_rss_kibibytes_to_bytes("18446744073709551615"), None);
+    }
+
+    #[test]
+    fn macos_sampler_uses_target_neutral_option_parser() {
+        let source = include_str!("chrome_harness.rs");
+        let macos_sampler = source
+            .split("#[cfg(target_os = \"macos\")]\nfn process_rss")
+            .nth(1)
+            .and_then(|source| {
+                source
+                    .split("\n\n#[cfg(not(any(target_os = \"linux\", target_os = \"macos\")))]")
+                    .next()
+            })
+            .expect("macOS process sampler");
+
+        assert!(macos_sampler.contains("parse_rss_kibibytes_to_bytes"));
+        assert!(!macos_sampler.contains(".parse::<u64>()?"));
     }
 }
