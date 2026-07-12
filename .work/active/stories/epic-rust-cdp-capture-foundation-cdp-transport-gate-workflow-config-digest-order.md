@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cdp-transport-gate-workflow-config-digest-order
 kind: story
-stage: review
+stage: done
 tags: [bug, browser, infra, testing]
 parent: epic-rust-cdp-capture-foundation-cdp-transport-gate
 depends_on: [epic-rust-cdp-capture-foundation-cdp-transport-gate-decisive-config-redaction]
@@ -37,3 +37,13 @@ Make the workflow assertion reproduce the Rust canonical digest using one explic
 - Tests: added key-reordering and configuration-mutation regression tests, plus a valid synthetic strict-report workflow contract test. Ran the candidate tests and clippy with `-D warnings`.
 - Files changed: `.github/workflows/cdp-transport-gate.yml`, `crates/krometrail-cdp/src/bin/cdp-transport-gate.rs`, `crates/krometrail-cdp/tests/transport_contract.rs`.
 - Adjacent issues parked: none.
+
+## Review (2026-07-13)
+
+**Verdict:** Approve
+
+**Blockers:** none
+**Important:** none
+**Nits:** none
+
+**Notes:** Fast-lane workflow review verified Rust-owned canonical-config verification, absence of Python digest reserialization, reordered-key/mutation regressions, exact workflow assertion coverage, 45 candidate-feature tests, and denied-warning clippy. Verdict: Approve - story verified by implement; fast-lane advance.
