@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cdp-transport-gate
 kind: feature
-stage: implementing
+stage: review
 tags: [browser, infra]
 parent: epic-rust-cdp-capture-foundation
 depends_on: [epic-rust-cdp-capture-foundation-rust-runtime-contracts]
@@ -570,4 +570,6 @@ The generated v1 decision remains historical evidence only. The v2 decision pres
 
 GLM completeness review reproduced all committed reports and decisions and identified an unenforced reconnect deadline plus narrative drift. GPT-5.6 Sol adversarial review confirmed those findings and found selection-critical evidence-integrity defects: the scripted candidate lifecycle path used a disconnected expected-message deque; several real-Chrome gates recorded static rather than observed values; disconnect and global hard-stop claims were not fully enforced; Linux provenance had been edited after capture; Linux and macOS used materially different evidence implementations; and the decision exposed Linux-only gate measurements.
 
-No threshold or requirement is waived. The prior reports and decision remain historical implementation outputs but are not sufficient for final approval. Five remediation stories now repair wire authenticity, enforce observed deadlines, establish one platform-faithful evidence contract, requalify both platforms from one immutable revision, and regenerate the decision while removing temporary workflow bootstrap paths. The feature requires a fresh two-model review after all five reach `stage: done`.
+No threshold or requirement was waived. The v1 reports and decision remain historical implementation outputs. Nine evidence-integrity and portability follow-ups were ultimately required after the first review, including exact endpoint binding and runtime nondeterminism discovered during fresh qualification. All 14 child stories are now `stage: done`.
+
+The accepted v2 reports were emitted from exact revision `3d7c96ccf20862c47ab70ffbd7f724dceedfb4d2` on Linux and hosted macOS run `29202919716`; both pass all 13 unchanged gates with identical candidate trace results and canonical observed measurements. The generated platform-faithful decision selects exact cdpkit 0.4.0. The temporary workflow push trigger and remote evidence branch are removed. The feature now returns to `stage: review` for a fresh two-model pass.
