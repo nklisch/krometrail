@@ -857,3 +857,7 @@ The post-remediation gate passes with 38 total workspace tests (35 core plus 3 e
 ## Stuck at review
 
 This feature has now completed two implementing → review → unresolved-review cycles. The second review's blockers and important findings are captured in the three follow-up stories above. Per the autopilot review circuit breaker, the feature remains at `stage: review` and is escalated rather than being automatically bounced or approved again. Autopilot may implement and fast-review the concrete child stories, but final feature approval requires explicit operator resolution of this escalation.
+
+## Escalated remediation status
+
+All three second-review follow-ups reached `stage: done`. Release artifacts now bind to one exact tag SHA, distribution fixtures are hermetic, lockfile checks preserve package multiplicity, runtime identifiers use UUID v4 with single-sourced typed-ID coverage, architecture identifiers are aligned, and Linux assets use pinned musl cross-builds with architecture-matched pre-upload smoke gates. The integrated Rust and distribution checks pass with 40 tests. These fixes clear the recorded technical findings, but the circuit-breaker escalation intentionally remains unresolved until the operator authorizes another feature-level review or disposition.
