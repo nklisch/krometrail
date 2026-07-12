@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cdp-transport-gate-final-v3-rollup
 kind: story
-stage: review
+stage: done
 tags: [bug, browser, infra, testing]
 parent: epic-rust-cdp-capture-foundation-cdp-transport-gate
 depends_on: [epic-rust-cdp-capture-foundation-cdp-transport-gate-final-requalification]
@@ -32,3 +32,13 @@ Generate and install the final platform-faithful decision solely from accepted p
 - The exact acknowledgement contract is receive → ack completion → bounded handoff. Linux: 3,601 frames / 60.012037205 s, ack p99/max `0.3979589999999999/2.785427` ms, handoff drops `3,600`. macOS: 3,566 frames / 60.011273167 s, ack p99/max `1.062666/7.058083` ms, handoff drops `3,565`. Ack metrics begin after the frame is returned and exclude receive wait and later handoff.
 - Limitations remain explicit: named event params rather than wildcard/full-envelope receive; unbounded cdpkit subscriber with no queue-depth introspection; RSS process-level proxy; candidate-contract trace is scripted evidence rather than a real-Chrome drift measurement. Selection is exact `cdpkit` 0.4.0; chromey and owned transport remain fallback reasoning only after demonstrated failure.
 - Verification: default/spike/cdpkit full gates, formatting, and docs build passed. `.work/bin/work-view` was restored; `.pi/` was ignored. The authorized temporary remote branch was deleted after the local decision commit.
+
+## Review (2026-07-12)
+
+**Verdict:** Approve
+
+**Blockers:** none
+**Important:** none
+**Nits:** none
+
+**Notes:** Fast-lane final-rollup review reproduced decision bytes/digest from only the canonical reports, verified exact attestation/report/fixture/trace identity and platform measurements across authoritative docs, and confirmed manual-only workflow plus absent temporary remote branch. Verdict: Approve - story verified by implement; fast-lane advance.
