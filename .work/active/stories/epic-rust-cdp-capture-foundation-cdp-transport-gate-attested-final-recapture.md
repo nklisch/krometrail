@@ -4,7 +4,7 @@ kind: story
 stage: implementing
 tags: [bug, browser, infra, testing]
 parent: epic-rust-cdp-capture-foundation-cdp-transport-gate
-depends_on: [epic-rust-cdp-capture-foundation-cdp-transport-gate-process-tree-runtime-root, epic-rust-cdp-capture-foundation-cdp-transport-gate-trace-reconstructability, epic-rust-cdp-capture-foundation-cdp-transport-gate-decisive-config-redaction]
+depends_on: [epic-rust-cdp-capture-foundation-cdp-transport-gate-process-tree-runtime-root, epic-rust-cdp-capture-foundation-cdp-transport-gate-trace-reconstructability, epic-rust-cdp-capture-foundation-cdp-transport-gate-decisive-config-redaction, epic-rust-cdp-capture-foundation-cdp-transport-gate-browser-revision-identity]
 release_binding: null
 gate_origin: null
 created: 2026-07-12
@@ -12,6 +12,10 @@ updated: 2026-07-12
 ---
 
 # Recapture reconstructable attested evidence
+
+## Failed attempt
+
+Clean Linux qualification at exact revision `a0593c041f541fdc43e5e4f732eeb2a5a0dea777` failed after capture because the new allowlist rejected Chrome's canonical `@` + 40-hex browser revision. No report was accepted. The fix is tracked by `epic-rust-cdp-capture-foundation-cdp-transport-gate-browser-revision-identity`; both platforms must rerun from its later SHA.
 
 ## Scope
 
