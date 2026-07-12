@@ -4,7 +4,7 @@ kind: story
 stage: implementing
 tags: [bug, browser, infra, testing]
 parent: epic-rust-cdp-capture-foundation-cdp-transport-gate
-depends_on: [epic-rust-cdp-capture-foundation-cdp-transport-gate-process-tree-runtime-root, epic-rust-cdp-capture-foundation-cdp-transport-gate-trace-reconstructability, epic-rust-cdp-capture-foundation-cdp-transport-gate-decisive-config-redaction, epic-rust-cdp-capture-foundation-cdp-transport-gate-browser-revision-identity]
+depends_on: [epic-rust-cdp-capture-foundation-cdp-transport-gate-process-tree-runtime-root, epic-rust-cdp-capture-foundation-cdp-transport-gate-trace-reconstructability, epic-rust-cdp-capture-foundation-cdp-transport-gate-decisive-config-redaction, epic-rust-cdp-capture-foundation-cdp-transport-gate-browser-revision-identity, epic-rust-cdp-capture-foundation-cdp-transport-gate-workflow-config-digest-order]
 release_binding: null
 gate_origin: null
 created: 2026-07-12
@@ -15,7 +15,9 @@ updated: 2026-07-12
 
 ## Failed attempt
 
-Clean Linux qualification and hosted macOS run `29211340202` at exact revision `a0593c041f541fdc43e5e4f732eeb2a5a0dea777` both failed after capture because the new allowlist rejected Chrome's canonical `@` + 40-hex browser revision. No report was accepted. The fix is tracked by `epic-rust-cdp-capture-foundation-cdp-transport-gate-browser-revision-identity`; both platforms must rerun from its later SHA.
+Clean Linux qualification and hosted macOS run `29211340202` at exact revision `a0593c041f541fdc43e5e4f732eeb2a5a0dea777` both failed after capture because the new allowlist rejected Chrome's canonical `@` + 40-hex browser revision. No report was accepted. The fix is tracked by `epic-rust-cdp-capture-foundation-cdp-transport-gate-browser-revision-identity`.
+
+At exact revision `365d02eaec088b954cabe65cab6b8a34a27d424d`, Linux passed. Hosted macOS run `29211668813` also completed the gate plus Rust normalization/decisive validation, but a redundant Python workflow assertion reserialized alphabetically ordered `canonical-config.json` rather than canonical struct-field order and falsely rejected the valid digest. No macOS report is accepted. `epic-rust-cdp-capture-foundation-cdp-transport-gate-workflow-config-digest-order` tracks the check; both platforms must rerun from its later SHA for one-revision evidence.
 
 ## Scope
 
