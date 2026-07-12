@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cdp-transport-gate-macos-decisive-evidence
 kind: story
-stage: implementing
+stage: review
 tags: [browser, infra, testing]
 parent: epic-rust-cdp-capture-foundation-cdp-transport-gate
 depends_on: [epic-rust-cdp-capture-foundation-cdp-transport-gate-cdpkit-linux-qualification, epic-rust-cdp-capture-foundation-cdp-transport-gate-fixture-hashing-cross-platform, epic-rust-cdp-capture-foundation-cdp-transport-gate-rss-evidence-validity, epic-rust-cdp-capture-foundation-cdp-transport-gate-macos-rss-compile-fix]
@@ -32,15 +32,29 @@ Run the unchanged shared harness and the currently qualifying candidate on curre
 
 ## Acceptance criteria
 
-- [ ] The macOS report validates against `docs/evidence/cdp-transport/v1/schema.json` and identifies exactly the tested revisions/configuration.
-- [ ] The report demonstrates all decisive gates under unchanged thresholds and honestly records named-event-only/raw-envelope limitations.
-- [ ] A clean checkout can reproduce the report from the documented command; committed output contains no machine-specific secrets or paths.
-- [ ] No production adapter, core contract, capture pipeline, or platform-specific transport branch is introduced.
+- [x] The macOS report validates against `docs/evidence/cdp-transport/v1/schema.json` and identifies exactly the tested revisions/configuration.
+- [x] The report demonstrates all decisive gates under unchanged thresholds and honestly records named-event-only/raw-envelope limitations.
+- [x] A clean checkout can reproduce the report from the documented command; committed output contains no machine-specific secrets or paths.
+- [x] No production adapter, core contract, capture pipeline, or platform-specific transport branch is introduced.
 
-## Blocker
+## Resolved blockers
 
 GitHub run [29197934563](https://github.com/nklisch/krometrail/actions/runs/29197934563) completed the 60-second cdpkit candidate gate on macOS but failed during fixture evidence setup with `Io: No such file or directory (os error 2)`. The raw evidence marked every gate failed because `crates/krometrail-cdp/src/spike/chrome_harness.rs::sha256_directory` invoked Linux-only `sha256sum`, which is absent on macOS. The cross-platform in-process hashing fix is tracked by `epic-rust-cdp-capture-foundation-cdp-transport-gate-fixture-hashing-cross-platform`; after it reaches review, an operator must push a ref containing the fix and manually rerun the unchanged cdpkit tests and full gate on a hosted macOS runner. No macOS evidence has been fabricated, committed, dispatched, or downloaded here. This story remains `stage: implementing` until that rerun produces validated evidence.
 
-A later successful run, [29198272740](https://github.com/nathan/krometrail/actions/runs/29198272740), exposed a second blocker: sanitized macOS evidence had `rss_sample_count=0`, zero RSS medians and peak, and still marked `bounded-memory-proxy` as pass because the Linux-only `/proc/self/statm` sampler failed open. That evidence is invalid and was not committed. The RSS validity fix is tracked by `epic-rust-cdp-capture-foundation-cdp-transport-gate-rss-evidence-validity`; no waiver or platform-specific exception is permitted.
+A later successful run, [29198272740](https://github.com/nklisch/krometrail/actions/runs/29198272740), exposed a second blocker: sanitized macOS evidence had `rss_sample_count=0`, zero RSS medians and peak, and still marked `bounded-memory-proxy` as pass because the Linux-only `/proc/self/statm` sampler failed open. That evidence was rejected and not committed. `epic-rust-cdp-capture-foundation-cdp-transport-gate-rss-evidence-validity` added fail-closed sampling requirements.
+
+Run [29198801356](https://github.com/nklisch/krometrail/actions/runs/29198801356) then caught a macOS-only compile error in the new sampler. `epic-rust-cdp-capture-foundation-cdp-transport-gate-macos-rss-compile-fix` corrected it with target-neutral parsing coverage.
+
+The final exact-SHA run [29199026540](https://github.com/nklisch/krometrail/actions/runs/29199026540) passed every unchanged gate and uploaded sanitized evidence. All earlier evidence was rejected; only the final report is committed.
+
+## Implementation notes
+
+- Evidence file: `docs/evidence/cdp-transport/v1/cdpkit-macos.json` from exact commit `a9610e9e80b1dfefb2cb463a399aa9fd261e5e8d`.
+- Environment: macOS arm64, Chrome 149.0.7827.201, Rust 1.97.0, cdpkit 0.4.0.
+- Sustained gate: more than 60 seconds, 3,553 frames received and acknowledged, 3,552 explicit capacity-1 handoff drops, acknowledgement p99 21.08 ms and max below 1,000 ms.
+- RSS gate: 51 nonzero samples, nonzero first/last medians and peak, sampling interval within the unchanged contract, bounded growth/slope pass.
+- All 13 gate IDs passed. Named-event-only/raw-envelope and unbounded subscriber-depth limitations remain explicit.
+- Local validation and normalization reproduced the uploaded sanitized file byte-for-byte against the checked-in schema.
+- No production adapter, core contract, capture pipeline, threshold waiver, or platform-specific candidate path was added.
 
 A subsequent compile run, [29198801356](https://github.com/nathan/krometrail/actions/runs/29198801356), failed before the gate because the macOS-only `process_rss` path used `.parse::<u64>()?` in an `Option<u64>` function. Rust therefore emitted E0277: the `Result` residual cannot be propagated as `Option`. The focused fix is tracked by `epic-rust-cdp-capture-foundation-cdp-transport-gate-macos-rss-compile-fix`; it moves parsing and checked KiB-to-byte normalization into a target-neutral helper covered by Linux tests and a static sampler contract assertion. After that story is committed, an operator must manually rerun the unchanged workflow with the exact commit SHA (`workflow_dispatch` `ref` and `sha`); only a successful, schema-valid rerun may produce macOS evidence. No toolchain installation, dispatch, evidence fabrication, or evidence commit is performed here.
