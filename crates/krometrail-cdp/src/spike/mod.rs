@@ -1,9 +1,15 @@
 //! Disposable CDP qualification laboratory. Nothing in this module is a production adapter.
 
+#[cfg(feature = "cdp-spike-cdpkit")]
+pub mod cdpkit_adapter;
+#[cfg(feature = "cdp-spike-cdpkit")]
+pub mod chrome_harness;
 pub mod contract;
 pub mod error;
 pub mod evidence;
 pub mod fake;
+#[cfg(feature = "cdp-spike-cdpkit")]
+pub mod fixture_server;
 pub mod scenarios;
 pub mod scripted_peer;
 

@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cdp-transport-gate-cdpkit-linux-qualification
 kind: story
-stage: implementing
+stage: review
 tags: [browser, infra, testing]
 parent: epic-rust-cdp-capture-foundation-cdp-transport-gate
 depends_on: [epic-rust-cdp-capture-foundation-cdp-transport-gate-spike-contract-harness]
@@ -43,9 +43,19 @@ Implement only the disposable `cdpkit` spike adapter and run the shared fake-Web
 
 ## Acceptance criteria
 
-- [ ] The exact lockfile checksum/version, git revision, Rust version, Linux OS/arch, Chrome product/revision/protocol, fixture digest, protocol provenance status, config, per-gate measurements, limitations, and failures are present in schema-valid evidence.
-- [ ] All typed/raw/flat-session/drift/disconnect and 60-second/1,000-frame gates are represented individually as pass or fail; no failed requirement is weakened or omitted.
-- [ ] Every screencast frame is acknowledged before bounded handoff; deliberate saturation yields explicit handoff drops while acknowledgements continue.
-- [ ] Memory claims are limited to the declared RSS trend proxy and do not claim unavailable subscriber queue-depth introspection.
-- [ ] Default-feature workspace gates remain green and the spike command/test pass under `cdp-spike-cdpkit`.
-- [ ] If cdpkit fails, the evidence names the demonstrated failure. A fallback story is created only then, under this feature, for `chromey` when its mature handler plausibly addresses that failure or for the owned raw-envelope transport when the selection rules require it; no fallback code is added in this story.
+- [x] The exact lockfile checksum/version, git revision, Rust version, Linux OS/arch, Chrome product/revision/protocol, fixture digest, protocol provenance status, config, per-gate measurements, limitations, and failures are present in schema-valid evidence.
+- [x] All typed/raw/flat-session/drift/disconnect and 60-second/1,000-frame gates are represented individually as pass or fail; no failed requirement is weakened or omitted.
+- [x] Every screencast frame is acknowledged before bounded handoff; deliberate saturation yields explicit handoff drops while acknowledgements continue.
+- [x] Memory claims are limited to the declared RSS trend proxy and do not claim unavailable subscriber queue-depth introspection.
+- [x] Default-feature workspace gates remain green and the spike command/test pass under `cdp-spike-cdpkit`.
+- [x] cdpkit passed the Linux candidate gates, so no fallback story was created; no fallback code was added in this story.
+
+## Implementation notes
+
+- Execution capability: highest-tier direct implementation; the caller prohibited questions and subagents.
+- Exact candidate: cdpkit 0.4.0, Cargo.lock checksum `c3fdb566d913b31e0014391a94c0db4ed871dbb76577dd1b2f2c5f6df158bfaa`.
+- Shared scripted-peer candidate test passed with the exact cdpkit adapter and shared scenario registry.
+- Real Chrome completed on Linux x86_64 with Chrome 149.0.7827.155: 60.0078 seconds, 3,601 frames received and acknowledged, 3,600 capacity-1 handoff drops, ack proxy p50/p95/p99/max 16.6655/17.0629/17.3118/19.8198 ms, RSS samples 61, first/last medians 8,704,000/8,761,344 bytes, Theil-Sen slope 85,263.7 bytes/minute.
+- Evidence: `docs/evidence/cdp-transport/v1/cdpkit-linux.json`; schema generation and validate-and-normalize passed. Protocol source revision is explicitly unavailable because cdpkit reports generated CDP version `1.3` rather than its source commit. Queue depth remains unavailable.
+- Verification: workspace fmt/check/test/clippy, cdp-spike check/test/clippy, cdp-spike-cdpkit check/test/clippy, shared candidate contract test, full real-Chrome gate, schema generation, and schema validation passed.
+- No production transport, core lifecycle, core-port, fork, or fallback implementation was added. The work-view binary was restored after verification; `.pi/` was left untouched.
