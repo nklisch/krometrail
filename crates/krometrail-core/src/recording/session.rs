@@ -231,8 +231,16 @@ impl RecordingSession {
         self.browser.validate()?;
         validate_capability_selection(&self.capabilities)?;
         self.statistics.validate()?;
-        match (self.lifecycle, self.ended_at) {
-            (SessionLifecycle::Ended, Some(end)) if end >= self.started_at => Ok(()),
+        Self::validate_lifecycle_end_state(self.lifecycle, self.started_at, self.ended_at)
+    }
+
+    fn validate_lifecycle_end_state(
+        lifecycle: SessionLifecycle,
+        started_at: SystemTime,
+        ended_at: Option<SystemTime>,
+    ) -> Result<()> {
+        match (lifecycle, ended_at) {
+            (SessionLifecycle::Ended, Some(end)) if end >= started_at => Ok(()),
             (SessionLifecycle::Ended, Some(_)) => {
                 Err(invalid("session end time must not precede its start time"))
             }
@@ -293,20 +301,9 @@ impl RecordingSession {
         ended_at: Option<SystemTime>,
     ) -> Result<()> {
         self.lifecycle.transition(next)?;
-        match (next, ended_at) {
-            (SessionLifecycle::Ended, Some(end)) => {
-                if end < self.started_at {
-                    return Err(invalid("session end time must not precede its start time"));
-                }
-                self.ended_at = Some(end);
-            }
-            (SessionLifecycle::Ended, None) => {
-                return Err(invalid("ended sessions require an end time"));
-            }
-            (_, Some(_)) => return Err(invalid("only an ended session may set an end time")),
-            (_, None) => self.ended_at = None,
-        }
+        Self::validate_lifecycle_end_state(next, self.started_at, ended_at)?;
         self.lifecycle = next;
+        self.ended_at = ended_at;
         Ok(())
     }
 

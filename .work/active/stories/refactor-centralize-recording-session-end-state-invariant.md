@@ -1,7 +1,7 @@
 ---
 id: refactor-centralize-recording-session-end-state-invariant
 kind: story
-stage: implementing
+stage: review
 tags: [refactor]
 parent: null
 depends_on: []
@@ -27,12 +27,19 @@ Extract one private invariant validator for the candidate lifecycle/end-time pai
 
 ## Acceptance criteria
 
-- [ ] One private helper owns all lifecycle/start/end-time consistency checks in `recording/session.rs`.
-- [ ] `RecordingSession::validate` and `RecordingSession::transition` both use that helper; the transition validates before mutating `lifecycle` or `ended_at`.
-- [ ] Existing error messages and validation ordering remain unchanged.
-- [ ] `cargo fmt --all -- --check` passes.
-- [ ] `cargo test --workspace --all-targets --locked` passes, including malformed deserialization and lifecycle transition coverage.
-- [ ] `cargo clippy --workspace --all-targets --locked -- -D warnings` passes.
+- [x] One private helper owns all lifecycle/start/end-time consistency checks in `recording/session.rs`.
+- [x] `RecordingSession::validate` and `RecordingSession::transition` both use that helper; the transition validates before mutating `lifecycle` or `ended_at`.
+- [x] Existing error messages and validation ordering remain unchanged.
+- [x] `cargo fmt --all -- --check` passes.
+- [x] `cargo test --workspace --all-targets --locked` passes, including malformed deserialization and lifecycle transition coverage.
+- [x] `cargo clippy --workspace --all-targets --locked -- -D warnings` passes.
+
+## Implementation notes
+- Files changed: `crates/krometrail-core/src/recording/session.rs`; this story file.
+- Tests added: none; existing malformed-session and lifecycle-transition coverage passed unchanged.
+- Discrepancies from design: none.
+- Adjacent issues parked: none.
+- `validate_lifecycle_end_state` now owns the shared candidate-state checks. Transition ordering remains lifecycle-transition validation first, invariant validation second, and both aggregate fields are assigned only after the invariant succeeds.
 
 ## Risk and rollback
 
