@@ -1,5 +1,7 @@
 #!/bin/sh
 # Krometrail installer
+# Linux release assets are statically linked musl binaries; asset names are a
+# public compatibility contract and must stay aligned with the release matrix.
 # Usage: curl -fsSL https://krometrail.dev/install.sh | sh
 #        curl -fsSL https://krometrail.dev/install.sh | sh -s -- --version v0.2.0
 #        KROMETRAIL_INSTALL_DIR=/usr/local/bin curl -fsSL https://krometrail.dev/install.sh | sh

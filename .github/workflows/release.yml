@@ -49,14 +49,22 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
+          # Linux uses cross-rs' versioned musl toolchains instead of the
+          # rolling runner's glibc. Both rows deliberately run on the stable
+          # x86_64 Ubuntu image; the arm64 artifact is smoke-tested through
+          # explicit QEMU emulation below.
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
             asset: krometrail-linux-x64
             extension: ""
-          - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
+            smoke_platform: linux/amd64
+            smoke_image: docker.io/library/alpine:3.22@sha256:7c8cb692ae09657cbc4a3f3cbd0e8d5a2690ba38386aaaf252dbb060bf5eb2e6
+          - runner: ubuntu-24.04
+            target: aarch64-unknown-linux-musl
             asset: krometrail-linux-arm64
             extension: ""
+            smoke_platform: linux/arm64/v8
+            smoke_image: docker.io/library/alpine:3.22@sha256:2c9d26f410d032d5b1525aa8a873e238b05b90c4ae8618743d4311f0cc827e37
           - runner: macos-15-intel
             target: x86_64-apple-darwin
             asset: krometrail-darwin-x64
@@ -83,17 +91,31 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
 
-      - name: Install Rust toolchain
+      - name: Install Rust toolchain for native target
+        if: contains(matrix.target, 'linux-musl') == false
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
-      - name: Cache Rust artifacts
+      - name: Cache Rust artifacts for native target
+        if: contains(matrix.target, 'linux-musl') == false
         uses: Swatinem/rust-cache@v2
         with:
           key: release-${{ matrix.target }}
 
-      - name: Build release binary
+      # v1.0.8 action syntax and cross 0.2.5 target images were verified
+      # against their authoritative upstream sources before pinning.
+      - name: Build Linux musl release binary
+        if: contains(matrix.target, 'linux-musl')
+        uses: houseabsolute/actions-rust-cross@21b0f18dc621b25bfae556ff2791fca4173121e8
+        with:
+          command: build
+          target: ${{ matrix.target }}
+          args: "--locked --release"
+          cross-version: 0.2.5
+
+      - name: Build native release binary
+        if: contains(matrix.target, 'linux-musl') == false
         run: cargo build --locked --release --target ${{ matrix.target }}
 
       - name: Stage release asset
@@ -103,6 +125,28 @@ jobs:
           mkdir -p dist
           cp "target/${{ matrix.target }}/release/krometrail${{ matrix.extension }}" "dist/${{ matrix.asset }}"
           test -f "dist/${{ matrix.asset }}"
+
+      - name: Set up ARM64 emulation for artifact smoke test
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130
+        with:
+          platforms: arm64
+
+      - name: Smoke-test release asset in matching architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ matrix.target }}" in
+            x86_64-unknown-linux-musl|aarch64-unknown-linux-musl)
+              docker run --rm --platform "${{ matrix.smoke_platform }}" \
+                -v "$PWD/dist:/dist:ro" \
+                "${{ matrix.smoke_image }}" \
+                "/dist/${{ matrix.asset }}" --version
+              ;;
+            *)
+              "./dist/${{ matrix.asset }}" --version
+              ;;
+          esac
 
       - name: Attest release asset
         uses: actions/attest-build-provenance@v2

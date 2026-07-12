@@ -14,6 +14,7 @@ VERIFY_TAG="$ROOT/scripts/verify-release-tag-identity.sh"
 BUMP="$ROOT/scripts/bump-version.ts"
 PACKAGE="$ROOT/package.json"
 CARGO="$ROOT/Cargo.toml"
+CROSS_CONFIG="$ROOT/Cross.toml"
 
 fail() {
 	echo "distribution contract failure: $*" >&2
@@ -38,6 +39,40 @@ for asset in "${assets[@]}"; do
 	require_text "$RELEASE" "asset: $asset"
 	require_text "$RELEASE" "dist/$asset"
 done
+
+# Linux release rows must be target-triple explicit musl builds. A GNU target
+# would make the binary's glibc minimum depend on the runner image, so reject
+# both the old rows and any future reintroduction of rolling-runner output.
+require_text "$RELEASE" 'target: x86_64-unknown-linux-musl'
+require_text "$RELEASE" 'target: aarch64-unknown-linux-musl'
+require_text "$RELEASE" 'runner: ubuntu-24.04'
+if grep -Fq -- 'target: x86_64-unknown-linux-gnu' "$RELEASE" || \
+	grep -Fq -- 'target: aarch64-unknown-linux-gnu' "$RELEASE"; then
+	fail "Linux release assets must not use GNU rolling-runner targets"
+fi
+
+# The cross-build and smoke-test contracts are release gates, not advisory
+# comments: every matrix artifact must execute --version before attestation and
+# upload, with explicit arm64 emulation when native capacity is unavailable.
+require_text "$RELEASE" 'houseabsolute/actions-rust-cross@21b0f18dc621b25bfae556ff2791fca4173121e8'
+require_text "$RELEASE" 'cross-version: 0.2.5'
+require_text "$CROSS_CONFIG" '[target.x86_64-unknown-linux-musl]'
+require_text "$CROSS_CONFIG" '[target.aarch64-unknown-linux-musl]'
+require_text "$CROSS_CONFIG" 'ghcr.io/cross-rs/x86_64-unknown-linux-musl@sha256:'
+require_text "$CROSS_CONFIG" 'ghcr.io/cross-rs/aarch64-unknown-linux-musl@sha256:'
+require_text "$RELEASE" 'docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130'
+require_text "$RELEASE" 'Smoke-test release asset in matching architecture'
+require_text "$RELEASE" 'linux/amd64'
+require_text "$RELEASE" 'linux/arm64/v8'
+require_text "$RELEASE" 'docker run --rm --platform'
+require_text "$RELEASE" '/dist/${{ matrix.asset }}" --version'
+require_text "$RELEASE" '"./dist/${{ matrix.asset }}" --version'
+smoke_line="$(grep -nF 'Smoke-test release asset in matching architecture' "$RELEASE" | cut -d: -f1)"
+attest_line="$(grep -nF 'name: Attest release asset' "$RELEASE" | cut -d: -f1)"
+upload_line="$(grep -nF 'name: Upload release asset' "$RELEASE" | cut -d: -f1)"
+test -n "$smoke_line" && test -n "$attest_line" && test -n "$upload_line" || fail "release smoke/attestation/upload steps are incomplete"
+test "$smoke_line" -lt "$attest_line" || fail "release asset smoke test must precede attestation"
+test "$attest_line" -lt "$upload_line" || fail "release asset attestation must precede upload"
 
 require_text "$RELEASE" "sha256sum"
 require_text "$RELEASE" "dist/checksums.txt"

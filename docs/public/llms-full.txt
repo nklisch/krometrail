@@ -10,6 +10,8 @@ Install Rust 1.85 or newer. The supported product development environments are L
 
 The future browser runtime targets locally installed Chrome or a compatible Chromium browser. The current executable does not connect to a browser yet. Explicitly debug-enabled Electron renderer endpoints are part of the intended browser boundary; Electron's Node main process is not.
 
+Linux release artifacts target `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`, so they are statically linked against musl and do not inherit a glibc minimum from the GitHub runner. Local development builds remain native Cargo builds for the host environment.
+
 Bun is optional repository tooling. It is used for VitePress documentation and selected browser fixture applications, never for the Krometrail product runtime.
 
 ## Rust quality gate
@@ -59,7 +61,9 @@ bun scripts/bump-version.ts patch
 # minor, major, or an explicit x.y.z version are also accepted
 ```
 
-GitHub Actions builds and checksums these stable asset names:
+GitHub Actions builds and checksums these stable asset names. The Linux rows use the pinned `houseabsolute/actions-rust-cross` action with cross 0.2.5, digest-pinned toolchain images in `Cross.toml`, and fixed musl targets; each matrix artifact must run `--version` in its matching architecture before attestation and upload. The arm64 smoke gate uses explicit QEMU emulation on the x86_64 Linux runner.
+
+The release matrix builds and checksums these stable asset names:
 
 - `krometrail-linux-x64`
 - `krometrail-linux-arm64`
@@ -67,7 +71,47 @@ GitHub Actions builds and checksums these stable asset names:
 - `krometrail-darwin-arm64`
 - `krometrail-windows-x64.exe`
 
-The public installer downloads the matching asset and installs `krometrail`. Use `scripts/dev-install.sh` to install a local release build into `~/.local/bin`.
+The public installer downloads the matching asset and installs `krometrail`. See the [installation guide](installation.md) for the checksum-verified installer. Use `scripts/dev-install.sh` to install a local host release build into `~/.local/bin`.
+
+---
+
+# Installation
+
+## Public installer
+
+The installer selects the release asset for the current host, verifies it against `checksums.txt`, installs it as `krometrail`, and verifies that the executable starts:
+
+```bash
+curl -fsSL https://krometrail.dev/install.sh | sh
+```
+
+Choose a version explicitly when needed:
+
+```bash
+curl -fsSL https://krometrail.dev/install.sh | sh -s -- --version v0.2.20
+```
+
+Use a different destination without modifying shell startup files:
+
+```bash
+curl -fsSL https://krometrail.dev/install.sh | sh -s -- \
+  --install-dir "$HOME/.local/bin" \
+  --no-modify-path
+```
+
+The installer supports Linux x64 and arm64 plus macOS x64 and arm64. The Linux release assets are `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` binaries: they are statically linked against musl and do not require a runner-specific glibc baseline. Public asset names remain `krometrail-linux-x64` and `krometrail-linux-arm64`.
+
+Windows is a best-effort direct-download artifact, not an installer-supported or supported development environment. Download `krometrail-windows-x64.exe` and `checksums.txt` from the matching GitHub release when needed.
+
+## Local development install
+
+To build the current Rust release binary for the local host and copy it to `~/.local/bin`:
+
+```bash
+bash scripts/dev-install.sh
+```
+
+Set `KROMETRAIL_INSTALL_DIR` to choose another destination. This development helper uses the host's native Cargo target; it is separate from the release workflow's reproducible musl Linux matrix.
 
 ---
 
@@ -97,6 +141,7 @@ The first two commands work. `doctor` reports that browser transport is not yet 
 
 ## Start here
 
+- [Installation guide](guide/installation) — checksum-verified release and local development installs.
 - [Development guide](guide/development) — build, test, lint, run, release, and docs tooling.
 - [Documentation navigation](agents) — source-of-truth order and current contributor pages.
 - [Runtime reference](reference/runtime) — the current command contract.

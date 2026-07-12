@@ -20,6 +20,7 @@ The first two commands work. `doctor` reports that browser transport is not yet 
 
 ## Start here
 
+- [Installation guide](guide/installation) — checksum-verified release and local development installs.
 - [Development guide](guide/development) — build, test, lint, run, release, and docs tooling.
 - [Documentation navigation](agents) — source-of-truth order and current contributor pages.
 - [Runtime reference](reference/runtime) — the current command contract.

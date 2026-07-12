@@ -31,6 +31,18 @@ tests/fixtures/browser/    # standalone browser target applications
 
 The Rust workspace is the product runtime. The browser fixtures are test applications, not product libraries; their current uses are documented in [`tests/fixtures/browser/README.md`](tests/fixtures/browser/README.md). The intended CDP boundary treats Chrome-compatible pages and explicitly debug-enabled Electron renderer processes alike; Electron's Node main process is outside that boundary.
 
+## Installation
+
+Install the latest checksum-verified release with the public POSIX installer:
+
+```bash
+curl -fsSL https://krometrail.dev/install.sh | sh
+```
+
+Linux x64 and arm64 releases are statically linked musl binaries, so the public assets do not inherit a glibc minimum from the release runner. The installer keeps the existing `krometrail-linux-x64`, `krometrail-linux-arm64`, `krometrail-darwin-x64`, and `krometrail-darwin-arm64` mappings. Windows remains a direct-download best-effort artifact and is not supported by the installer.
+
+See the [full installation guide](https://krometrail.dev/guide/installation) for version selection and install-directory options.
+
 ## Development
 
 Install Rust 1.85 or newer, then run the complete local gate:
@@ -66,7 +78,7 @@ bun scripts/bump-version.ts patch
 # or: minor, major, or an explicit x.y.z version
 ```
 
-GitHub Actions builds the five stable asset names, generates `checksums.txt`, and publishes the GitHub release. The installer keeps the `krometrail` command and platform asset mappings stable. Windows remains a best-effort release artifact and is not a supported development environment.
+GitHub Actions builds the five stable asset names, generates `checksums.txt`, and publishes the GitHub release. Linux is built with pinned musl targets and digest-pinned cross toolchain images through the reproducible cross-build path; every artifact runs `--version` in a matching architecture before upload. The installer keeps the `krometrail` command and platform asset mappings stable. Windows remains a best-effort release artifact and is not a supported development environment.
 
 ## Documentation
 

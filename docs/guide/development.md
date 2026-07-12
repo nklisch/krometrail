@@ -11,6 +11,8 @@ Install Rust 1.85 or newer. The supported product development environments are L
 
 The future browser runtime targets locally installed Chrome or a compatible Chromium browser. The current executable does not connect to a browser yet. Explicitly debug-enabled Electron renderer endpoints are part of the intended browser boundary; Electron's Node main process is not.
 
+Linux release artifacts target `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`, so they are statically linked against musl and do not inherit a glibc minimum from the GitHub runner. Local development builds remain native Cargo builds for the host environment.
+
 Bun is optional repository tooling. It is used for VitePress documentation and selected browser fixture applications, never for the Krometrail product runtime.
 
 ## Rust quality gate
@@ -60,7 +62,9 @@ bun scripts/bump-version.ts patch
 # minor, major, or an explicit x.y.z version are also accepted
 ```
 
-GitHub Actions builds and checksums these stable asset names:
+GitHub Actions builds and checksums these stable asset names. The Linux rows use the pinned `houseabsolute/actions-rust-cross` action with cross 0.2.5, digest-pinned toolchain images in `Cross.toml`, and fixed musl targets; each matrix artifact must run `--version` in its matching architecture before attestation and upload. The arm64 smoke gate uses explicit QEMU emulation on the x86_64 Linux runner.
+
+The release matrix builds and checksums these stable asset names:
 
 - `krometrail-linux-x64`
 - `krometrail-linux-arm64`
@@ -68,4 +72,4 @@ GitHub Actions builds and checksums these stable asset names:
 - `krometrail-darwin-arm64`
 - `krometrail-windows-x64.exe`
 
-The public installer downloads the matching asset and installs `krometrail`. Use `scripts/dev-install.sh` to install a local release build into `~/.local/bin`.
+The public installer downloads the matching asset and installs `krometrail`. See the [installation guide](installation.md) for the checksum-verified installer. Use `scripts/dev-install.sh` to install a local host release build into `~/.local/bin`.
