@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cdp-transport-gate-spike-contract-harness
 kind: story
-stage: review
+stage: done
 tags: [browser, infra, testing]
 parent: epic-rust-cdp-capture-foundation-cdp-transport-gate
 depends_on: []
@@ -60,3 +60,13 @@ Add the non-default `krometrail-cdp` spike surface, one candidate-neutral `Spike
 - Discrepancies from design: the scripted peer uses a real Tokio WebSocket framing pair over an in-memory duplex stream rather than binding a machine port, preserving deterministic no-port behavior; no candidate adapter was added because this story owns only the harness.
 - Adjacent issues parked: none.
 - Verification: default workspace fmt/check/test/clippy; `cdp-spike` fmt/check/test/clippy; `cdp-spike-cdpkit` check/test/clippy; dependency-tree isolation confirms cdpkit is absent from the default graph and present only with its feature.
+
+## Review (2026-07-12)
+
+**Verdict**: Approve
+
+**Blockers**: none
+**Important**: none
+**Nits**: none
+
+**Notes**: Fast-lane story review. The orchestrator independently reran the default 41-test gate, seven deterministic spike-contract tests, candidate-feature clippy, and dependency isolation. The disposable boundary and generated evidence contract are green. Verdict: Approve - story verified by implement; fast-lane advance.
