@@ -15,7 +15,7 @@ updated: 2026-07-12
 
 ## Symptom
 
-GitHub run [29198272740](https://github.com/nathan/krometrail/actions/runs/29198272740) succeeded, but its sanitized macOS evidence reported `rss_sample_count=0`, zero RSS medians and peak, and still marked `bounded-memory-proxy` as pass. The invalid downloaded evidence was not committed.
+GitHub run [29198272740](https://github.com/nklisch/krometrail/actions/runs/29198272740) succeeded, but its sanitized macOS evidence reported `rss_sample_count=0`, zero RSS medians and peak, and still marked `bounded-memory-proxy` as pass. The invalid downloaded evidence was not committed.
 
 ## Root cause
 
@@ -31,7 +31,7 @@ Preserve `/proc/self/statm` on Linux and add a narrowly wrapped macOS `ps` sampl
 
 ## Blocker update
 
-The macOS evidence story is blocked by run [29198272740](https://github.com/nathan/krometrail/actions/runs/29198272740): the run succeeded while producing the zero-sample RSS flaw described above. No evidence is fabricated, committed, downloaded, pushed, or dispatched by this fix.
+The macOS evidence story was blocked by run [29198272740](https://github.com/nklisch/krometrail/actions/runs/29198272740): the run succeeded while producing the zero-sample RSS flaw described above. No evidence was fabricated, committed, downloaded, pushed, or dispatched by this fix.
 
 ## Implementation notes
 

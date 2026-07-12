@@ -2,13 +2,13 @@
 
 > Current contributor and runtime-reference documentation for Krometrail's Rust browser-capture foundation.
 
-# CDP transport qualification evidence
+# CDP transport qualification evidence (historical)
 
-This directory contains the version-1 machine-readable evidence for the Rust CDP transport decision. The committed Linux and final macOS reports are the only decisive inputs; raw runner logs and browser profiles remain outside Git under `target/`.
+This directory contains retained version-1 machine-readable evidence. It is obsolete and is not accepted by the strict version-2 contract under `../v2/`; reports and the decision remain byte-for-byte historical records. Raw runner logs and browser profiles remain outside Git under `target/`.
 
 ## Selected transport
 
-The Rust decision function independently selects exact published `cdpkit` **0.4.0** (`Cargo.lock` checksum `c3fdb566d913b31e0014391a94c0db4ed871dbb76577dd1b2f2c5f6df158bfaa`) because both reports pass all 13 unchanged gates. The result is recorded in `decision.json`; it is not a hand-copied gate list.
+The historical Rust decision selected exact published `cdpkit` **0.4.0** (`Cargo.lock` checksum `c3fdb566d913b31e0014391a94c0db4ed871dbb76577dd1b2f2c5f6df158bfaa`) because both reports passed the then-current 13 gates. That is not a current qualification claim. Phase 2 wire-authenticity remediation changed the qualification harness after these reports were captured; the reports and `decision.json` are retained unchanged and must not be treated as refreshed decisive evidence until both platforms are requalified.
 
 - Linux report: `cdpkit-linux.json`
   - SHA-256: `081259729e2495e999745bcd7caa509ec7effc844f50b2a4d786d6cc744c7feb`
@@ -17,7 +17,7 @@ The Rust decision function independently selects exact published `cdpkit` **0.4.
   - SHA-256: `3ffe94f405038fd8d9efd9fa7f8acbf15e8cb02c1f9e19bf24397f180981d401`
   - Platform: macOS aarch64; Chrome 149.0.7827.201
 
-Both reports use schema version 1, the same exact candidate, fixture digest, and unchanged configuration: at least 60 seconds, 1,000 frames, 10 seconds of capacity-1 saturation, and 100 saturation attempts. Every gate is present and `pass`; no platform exception or threshold waiver exists.
+Both reports use schema version 1, the same exact candidate, fixture digest, and unchanged configuration: at least 60 seconds, 1,000 frames, 10 seconds of capacity-1 saturation, and 100 saturation attempts. Every gate is present and `pass`; no platform exception or threshold waiver exists. They are now explicitly historical/obsolete inputs: the strict contract additionally requires a positive `hard_stop_seconds` and observed disconnect/rebuild elapsed fields, which these unchanged reports do not contain. They must not be edited or used for a new decision; both platforms require fresh qualification.
 
 ## Validation and decision reproduction
 
@@ -41,7 +41,7 @@ sha256sum docs/evidence/cdp-transport/v1/cdpkit-linux.json \
 cmp /tmp/decision.json docs/evidence/cdp-transport/v1/decision.json
 ```
 
-The decision command verifies schema decoding, strict fields, complete gate registry, measured thresholds, candidate/version/checksum consistency, Linux/macOS platform identity, fixture/configuration consistency, and redaction before hashing the exact report bytes. The schema is generated from the Rust evidence types; `schema.json` is not a separate source of truth.
+The decision command verifies schema decoding, strict fields, complete gate registry, observed deadline measurements, measured thresholds, candidate/version/checksum consistency, Linux/macOS platform identity, fixture/configuration consistency, and redaction before hashing the exact report bytes. Against the retained historical reports it now fails during strict decoding/validation by design; re-run it only after fresh Linux and macOS reports are captured. The schema is generated from the Rust evidence types; `schema.json` is not a separate source of truth.
 
 ## Gate interpretation and limitations
 
@@ -49,14 +49,202 @@ The 13 gates cover deterministic routing, typed domains, flat-session isolation,
 
 The decision preserves these limitations exactly:
 
-- cdpkit exposes **named event parameters**, not wildcard or full-envelope receive.
-- cdpkit's event subscriber is unbounded and its queue depth is not inspectable; RSS and handoff counters are process-level proxies only.
+- cdpkit exposes **named event parameters**, not wildcard or full-envelope receive. The remediated runner binds unknown-event/additive-field/unknown-enum fixtures to a candidate-only observed-wire trace; it does not call those fixtures real-Chrome measurements.
+- cdpkit's event subscriber is unbounded and its queue depth is not inspectable; the continuously drained RSS and handoff counters are process-level proxies only and do not prove the hidden queue is bounded.
 - acknowledgement latency is a receive-to-ack-completion proxy, not a wire-enqueue timestamp.
 - Krometrail owns reconnect/session restoration, bounded handoff, backpressure, capture gaps, cancellation, and flush behavior.
 
 `chromey` was not tested because no cdpkit lifecycle, ordering, or sustained-capture failure was demonstrated. An owned Tokio/tokio-tungstenite transport remains the fallback if a later cdpkit integration needs a fork, loses raw protocol evolution before a preserved boundary, misroutes sessions, or obscures acknowledgement/backpressure. Neither fallback is wired or selected by this evidence.
 
 The spike remains non-default and is not root-wired. This rollup selects the mechanism for the later production adapter; it does not implement production lifecycle, capture, reconnect, or core-port changes.
+
+---
+
+# CDP transport qualification evidence v2
+
+Version 2 is the strict, platform-faithful evidence contract after wire-authenticity and deadline remediation. The accepted reports are emitted and sanitized by the gate; they are not hand-edited:
+
+- [`cdpkit-linux.json`](./cdpkit-linux.json) — local Linux strict run
+- [`cdpkit-macos.json`](./cdpkit-macos.json) — hosted macOS run `29202919716`
+- [`decision.json`](./decision.json) — generated v2 decision from the two accepted reports
+
+The generated decision selects exact `cdpkit` 0.4.0 (`adopt_cdpkit`). It preserves all 13 platform-labelled gate results and the complete trace-bound candidate-contract results for Linux and macOS; it does not collapse platform measurements into a Linux-only rollup.
+
+## Decision provenance
+
+The decision was generated solely from the accepted sanitized reports by `decide_from_files`:
+
+```bash
+cargo run --locked -p krometrail-cdp --features cdp-spike --bin cdp-transport-gate -- decide \
+  --linux-report docs/evidence/cdp-transport/v2/cdpkit-linux.json \
+  --macos-report docs/evidence/cdp-transport/v2/cdpkit-macos.json \
+  --output docs/evidence/cdp-transport/v2/decision.json
+```
+
+The report digests bound into `decision.json` are `sha256:0d11c4c8168d8ef2e988b2f71400696dc8a9521add23ba645b9ea65a03e0b148` (Linux) and `sha256:c206b1a04651421b8b88f42d75920800a75ee85ed83756f8792191a5e9b3b998` (macOS). The generated decision digest is `0288aa9a379b467042409ac27056107b443ea0d91bd21fc4fc8c2beae44c075b`.
+
+## Immutable qualification identity
+
+Both reports use the exact immutable gate revision `3d7c96ccf20862c47ab70ffbd7f724dceedfb4d2` (`HEAD` at qualification time), configuration digest `sha256:06388b5f8ad042093d22408dedb8d02d5a04a9e59d485158edc533334bab956e`, and fixture identity:
+
+```text
+name: cdp-transport-gate
+sha256: sha256sum-of-ordered-fixture-files:9b42ae730d12a95772a946bf55e4838a5443b6cb4c536424570219041b6e2a68:84ba666539a996012a781637c1a894d8c7a4789cfca84661bd7cf8b79efa2e13
+```
+
+The exact candidate in both reports is `cdpkit` `0.4.0`, Cargo checksum `c3fdb566d913b31e0014391a94c0db4ed871dbb76577dd1b2f2c5f6df158bfaa`. The checksum is independently confirmed by the `cdpkit 0.4.0` entry in the locked dependency graph (`Cargo.lock` / `cargo tree --locked`).
+
+The unchanged thresholds are:
+
+```text
+minimum_seconds=60
+minimum_frames=1000
+saturation_seconds=10
+saturation_attempts=100
+hard_stop_seconds=120
+```
+
+## Run provenance and exact report bytes
+
+### Linux
+
+The local strict run used the committed gate at the exact revision above, the cdpkit feature, the same five threshold arguments, an explicit expected revision, and emitted a raw report before validation. Its accepted sanitized report is 6,951 bytes with the exact SHA-256 digest:
+
+```text
+0d11c4c8168d8ef2e988b2f71400696dc8a9521add23ba645b9ea65a03e0b148  cdpkit-linux.json
+```
+
+Equivalent command sequence:
+
+```bash
+export GATE_SHA=3d7c96ccf20862c47ab70ffbd7f724dceedfb4d2
+cargo run --locked -p krometrail-cdp --features cdp-spike-cdpkit --bin cdp-transport-gate -- gate \
+  --chrome-binary "$CHROME_BIN" --expected-git-revision "$GATE_SHA" \
+  --minimum-seconds 60 --minimum-frames 1000 --saturation-seconds 10 \
+  --saturation-attempts 100 --hard-stop-seconds 120 \
+  --output target/cdp-transport-gate/cdpkit-linux.raw.json
+cargo run --locked -p krometrail-cdp --features cdp-spike-cdpkit --bin cdp-transport-gate -- validate-and-normalize \
+  --input target/cdp-transport-gate/cdpkit-linux.raw.json \
+  --output target/cdp-transport-gate/cdpkit-linux.sanitized.json
+cargo run --locked -p krometrail-cdp --features cdp-spike-cdpkit --bin cdp-transport-gate -- validate-decisive \
+  --input target/cdp-transport-gate/cdpkit-linux.sanitized.json --platform linux \
+  --expected-git-revision "$GATE_SHA"
+```
+
+### macOS
+
+Hosted GitHub Actions run `29202919716` checked out and verified the same full SHA, ran the same gate, schema comparison, strict contract assertions, and validation. The workflow emitted `cdpkit-macos.raw.json` and `cdpkit-macos.sanitized.json`; only the sanitized report is retained here. It is 6,944 bytes with the exact SHA-256 digest:
+
+```text
+c206b1a04651421b8b88f42d75920800a75ee85ed83756f8792191a5e9b3b998  cdpkit-macos.json
+```
+
+The hosted run's effective gate command is identical to the Linux command, with `--platform macos` during decisive validation and the macOS Chrome binary supplied by the runner. The hosted workflow also compared its generated schema byte-for-byte with [`schema.json`](./schema.json).
+
+## Exact configuration and schema checks
+
+The generated schema is the Rust evidence types' source of truth. Regenerate/check it from the repository root:
+
+```bash
+CDP_SPIKE_WRITE_SCHEMA=1 cargo test --locked -p krometrail-cdp --features cdp-spike --test transport_contract checked_schema_is_generated_by_the_rust_evidence_types
+```
+
+For each accepted report, the validation pass was run into a temporary output and compared byte-for-byte with the committed report. This verifies both strict normalization and byte stability without changing the source report:
+
+```bash
+for platform in linux macos; do
+  cargo run --locked -p krometrail-cdp --features cdp-spike-cdpkit --bin cdp-transport-gate -- validate-and-normalize \
+    --input docs/evidence/cdp-transport/v2/cdpkit-${platform}.json \
+    --output target/cdp-transport-gate/cdpkit-${platform}.normalized.json
+  cmp -- docs/evidence/cdp-transport/v2/cdpkit-${platform}.json \
+    target/cdp-transport-gate/cdpkit-${platform}.normalized.json
+  cargo run --locked -p krometrail-cdp --features cdp-spike-cdpkit --bin cdp-transport-gate -- validate-decisive \
+    --input docs/evidence/cdp-transport/v2/cdpkit-${platform}.json \
+    --platform "$platform" --expected-git-revision "$GATE_SHA"
+done
+```
+
+Both reports are schema v2, contain exactly 13 unique passing gates, have no `rss_sample_count` alias or nominal `deadline_seconds`, preserve the runner revisions, and contain no rejected path/endpoint/secret-bearing strings.
+
+## Candidate-contract trace
+
+Both reports bind the same complete scripted candidate-contract trace:
+
+```text
+trace_sha256: sha256:6c6be028c511d4d8c28cbecec368a7d4f09e0d87612741d02ac19a8663964d54
+trace_observations: 942
+drift_fixtures: 3
+connection_survived: true
+routing_commands: 200
+routing_events: 200
+routing_cross_delivery: 0
+event_before_response: true
+detach_during_pending: true
+pending_calls_closed: true
+subscriptions_closed: true
+socket_closed: true
+reconnect_connections: 2
+sessions_rebuilt: 2
+```
+
+The candidate trace is separate from real-Chrome measurements: Chrome cannot be instructed to emit unknown future protocol fields. The protocol-drift gate therefore reports the three trace fixtures and survival result, while the trace hash and derived results remain attached to each platform report.
+
+## Exact observed gate measurements
+
+Every value below is the runner-emitted JSON measurement. Values are intentionally platform-labelled; there is no Linux-only rollup.
+
+### Linux (`cdpkit-linux.json`)
+
+| Gate | Measurements |
+| --- | --- |
+| deterministic-routing | `commands=200.0`, `events=200.0`, `cross_delivery=0.0` |
+| typed-domains | `typed_operations=5.0` |
+| flat-session-isolation | `sessions=2.0`, `commands_per_session=100.0`, `events_per_session=100.0`, `cross_delivery=0.0` |
+| raw-browser-command | `commands=1.0` |
+| raw-session-command | `commands=1.0` |
+| named-raw-event-params | `named_events=1.0` |
+| protocol-drift-survival | `fixtures=3.0`, `connection_survived=1.0`, `wildcard_envelope_available=0.0` |
+| sustained-screencast | `elapsed_seconds=60.013945058`, `frames_received=3601.0`, `frames_acknowledged=3601.0`, `ack_latency_ms_p50=16.655679`, `ack_latency_ms_p95=17.205039`, `ack_latency_ms_p99=17.795669`, `ack_latency_ms_max=19.721226`, `handoff_accepted=1.0`, `handoff_dropped=3600.0`, `saturation_attempts=3601.0`, `saturation_seconds=60.013945058`, `rss_samples=51.0`, `rss_sampling_interval_seconds=1.0`, `rss_warmup_seconds=10.0`, `rss_first_window_median_bytes=12976128.0`, `rss_last_window_median_bytes=12976128.0`, `rss_peak_bytes=12976128.0`, `rss_theil_sen_bytes_per_minute=0.0`, `upstream_queue_depth_available=0.0` |
+| prompt-acknowledgement | `ack_before_handoff=1.0`, `ack_latency_ms_p50=16.655679`, `ack_latency_ms_p95=17.205039`, `ack_latency_ms_p99=17.795669`, `ack_latency_ms_max=19.721226` |
+| bounded-handoff-saturation | `handoff_attempts=3601.0`, `handoff_accepted=1.0`, `handoff_dropped=3600.0`, `saturation_seconds=60.013945058` |
+| bounded-memory-proxy | `rss_samples=51.0`, `rss_sampling_interval_seconds=1.0`, `rss_warmup_seconds=10.0`, `rss_growth_bytes=0.0`, `rss_first_window_median_bytes=12976128.0`, `rss_last_window_median_bytes=12976128.0`, `rss_peak_bytes=12976128.0`, `rss_theil_sen_bytes_per_minute=0.0`, `upstream_queue_depth_available=0.0` |
+| disconnect-cleanup | `pending_command_started=1.0`, `pending_calls_closed=1.0`, `subscriptions_closed=1.0`, `close_reason_observed=1.0`, `pending_command_elapsed_seconds=0.009479799`, `subscription_elapsed_seconds=0.009483069` |
+| explicit-reconnect-rebuild | `connections=2.0`, `sessions_rebuilt=2.0`, `elapsed_seconds=0.22490539` |
+
+### macOS (`cdpkit-macos.json`)
+
+| Gate | Measurements |
+| --- | --- |
+| deterministic-routing | `commands=200.0`, `events=200.0`, `cross_delivery=0.0` |
+| typed-domains | `typed_operations=5.0` |
+| flat-session-isolation | `sessions=2.0`, `commands_per_session=100.0`, `events_per_session=100.0`, `cross_delivery=0.0` |
+| raw-browser-command | `commands=1.0` |
+| raw-session-command | `commands=1.0` |
+| named-raw-event-params | `named_events=1.0` |
+| protocol-drift-survival | `fixtures=3.0`, `connection_survived=1.0`, `wildcard_envelope_available=0.0` |
+| sustained-screencast | `elapsed_seconds=60.019783292`, `frames_received=3571.0`, `frames_acknowledged=3571.0`, `ack_latency_ms_p50=16.535749999999997`, `ack_latency_ms_p95=20.596917`, `ack_latency_ms_p99=22.518792`, `ack_latency_ms_max=556.233375`, `handoff_accepted=1.0`, `handoff_dropped=3570.0`, `saturation_attempts=3571.0`, `saturation_seconds=60.019783292`, `rss_samples=51.0`, `rss_sampling_interval_seconds=1.0`, `rss_warmup_seconds=10.0`, `rss_first_window_median_bytes=10780672.0`, `rss_last_window_median_bytes=10780672.0`, `rss_peak_bytes=10780672.0`, `rss_theil_sen_bytes_per_minute=0.0`, `upstream_queue_depth_available=0.0` |
+| prompt-acknowledgement | `ack_before_handoff=1.0`, `ack_latency_ms_p50=16.535749999999997`, `ack_latency_ms_p95=20.596917`, `ack_latency_ms_p99=22.518792`, `ack_latency_ms_max=556.233375` |
+| bounded-handoff-saturation | `handoff_attempts=3571.0`, `handoff_accepted=1.0`, `handoff_dropped=3570.0`, `saturation_seconds=60.019783292` |
+| bounded-memory-proxy | `rss_samples=51.0`, `rss_sampling_interval_seconds=1.0`, `rss_warmup_seconds=10.0`, `rss_growth_bytes=0.0`, `rss_first_window_median_bytes=10780672.0`, `rss_last_window_median_bytes=10780672.0`, `rss_peak_bytes=10780672.0`, `rss_theil_sen_bytes_per_minute=0.0`, `upstream_queue_depth_available=0.0` |
+| disconnect-cleanup | `pending_command_started=1.0`, `pending_calls_closed=1.0`, `subscriptions_closed=1.0`, `close_reason_observed=1.0`, `pending_command_elapsed_seconds=0.0211495`, `subscription_elapsed_seconds=0.021154` |
+| explicit-reconnect-rebuild | `connections=2.0`, `sessions_rebuilt=2.0`, `elapsed_seconds=2.97012425` |
+
+## Limitations
+
+These are retained verbatim in both reports:
+
+- cdpkit exposes named event params through an unbounded subscriber; wildcard/full-envelope receive and queue-depth introspection are unavailable.
+- Ack latency values are receive-to-ack-completion proxies, not wire-enqueue timestamps.
+- RSS is a process-level proxy from a continuously drained reader; it does not prove the hidden cdpkit subscriber queue is bounded.
+- The candidate-contract trace digest is attached to the limitations as well as the structured `candidate_contract` object.
+
+## Rejected attempts
+
+- At exact commit `1688178f3938876ec4f3aec2a41711b38deace87`, Linux failed before Chrome capture because the candidate-contract helper started a scripted server without binding the supplied cdpkit factory. No report was produced.
+- At exact commit `8d01d50956650befe603bd4178afbbb2ff473105`, hosted macOS run `29202075722` passed the exact-path candidate test and then failed the gate with an immediate connection close. The simultaneous Linux run exhausted the 120-second hard stop without stage context. Neither report was accepted.
+- Preparation commit `39149eac1f955b1533bce52dd3ae61f74f2ec723` only installed the strict runner/workflow/docs; it intentionally produced no hosted dispatch or evidence.
+
+The runtime-determinism and endpoint-binding repairs were completed before the accepted run at `3d7c96ccf20862c47ab70ffbd7f724dceedfb4d2`. Thresholds were not weakened, and no production adapter/core-port change was made.
 
 ---
 
@@ -291,7 +479,7 @@ Use [`SPEC.md`](../SPEC.md) for intended external behavior and [`ARCHITECTURE.md
 
 This research grounds `epic-rust-cdp-capture-foundation-cdp-transport-gate`. Krometrail needs a browser-level Chrome DevTools Protocol (CDP) connection with flat target sessions, typed control operations, raw protocol escape hatches, and a screencast event path that Krometrail—not the library—can supervise and bound.
 
-Evidence was frozen on 2026-07-12 from crates.io metadata, published/repository source at `cdpkit` 0.4.0 (`15dd5e6d`) and `chromey` 2.52.0 (`6eeca5e8`), their CI/tests, and their public GitHub issues. The unchanged real-Chrome gate selected exact published `cdpkit` 0.4.0 after all 13 gates passed on Linux and macOS. The selection is a replaceable adapter decision, not production lifecycle or capture implementation.
+Evidence was frozen on 2026-07-12 from crates.io metadata, published/repository source at `cdpkit` 0.4.0 (`15dd5e6d`) and `chromey` 2.52.0 (`6eeca5e8`), their CI/tests, and their public GitHub issues. Strict schema-v2 real-Chrome qualification selected exact published `cdpkit` 0.4.0 after all 13 unchanged gates passed on Linux and macOS from gate revision `3d7c96ccf20862c47ab70ffbd7f724dceedfb4d2`. That selection remains a replaceable adapter decision, not production lifecycle or capture implementation.
 
 Caller-aware research ran direct-read only: the caller prohibited subagents and questions, and the bounded candidate/source surfaces did not warrant delegation. Reversible uncertainties are therefore converted into explicit spike gates below.
 
@@ -356,16 +544,17 @@ The important limitation is equally concrete: `event_stream::<Value>("Domain.eve
 
 ### Qualification evidence
 
-The committed reports are the only decisive inputs:
+The retained version-1 reports and decision are historical inputs only. The accepted version-2 reports use the exact same gate revision/configuration/fixture and include canonical RSS fields, observed lifecycle fields, and bound candidate-contract results:
 
-- `docs/evidence/cdp-transport/v1/cdpkit-linux.json` — SHA-256 `081259729e2495e999745bcd7caa509ec7effc844f50b2a4d786d6cc744c7feb`; Linux x86_64, Chrome 149.0.7827.155.
-- `docs/evidence/cdp-transport/v1/cdpkit-macos.json` — SHA-256 `3ffe94f405038fd8d9efd9fa7f8acbf15e8cb02c1f9e19bf24397f180981d401`; macOS aarch64, Chrome 149.0.7827.201.
+- `docs/evidence/cdp-transport/v2/cdpkit-linux.json` — SHA-256 `0d11c4c8168d8ef2e988b2f71400696dc8a9521add23ba645b9ea65a03e0b148`; Linux x86_64, Chrome 149.0.7827.155.
+- `docs/evidence/cdp-transport/v2/cdpkit-macos.json` — SHA-256 `c206b1a04651421b8b88f42d75920800a75ee85ed83756f8792191a5e9b3b998`; macOS aarch64, Chrome 149.0.7827.201, hosted run `29202919716`.
+- `docs/evidence/cdp-transport/v2/decision.json` — generated by `decide_from_files`; SHA-256 `0288aa9a379b467042409ac27056107b443ea0d91bd21fc4fc8c2beae44c075b`.
 
-The Rust decision function validates schema version, the complete 13-gate registry, unchanged thresholds, exact candidate/version/checksum, Linux/macOS identity, fixture consistency, redaction, and every measured gate contract before producing `docs/evidence/cdp-transport/v1/decision.json`. It reaches `adopt_cdpkit` only because both reports pass all 13 gates; no gate is waived or hand-copied into the decision.
+The version-2 Rust decision function validates the complete 13-gate registry, exact canonical RSS fields, immutable gate implementation/configuration/fixture identity, exact candidate/version/checksum, Linux/macOS identity, redaction, observed lifecycle fields, and every measured gate contract. Its platform-labelled output binds each report's candidate-contract trace/hash/results and selects `adopt_cdpkit` without waivers.
 
 ### 1. Exact cdpkit 0.4.0
 
-Its source API maps cleanly to Krometrail's replaceable transport adapter and leaves reconnect ownership in the right layer. The unchanged fake and real-Chrome gates now provide the required qualification evidence: typed domains, flat routing, named raw params, protocol-drift survival, sustained screencast acknowledgement, bounded-handoff saturation, RSS trend, disconnect cleanup, and explicit session rebuild all pass on both decisive platforms.
+The generated v2 decision selects exact `cdpkit` 0.4.0: its source API maps cleanly to Krometrail's replaceable transport adapter and leaves reconnect ownership in the right layer. The remediation harness derives candidate routing, ordering, detach, close, and rebuild assertions from one observed wire controller. Real-Chrome routing counts are derived from unique correlated command/event tokens. The sustained runs remain continuously drained RSS/counter proxies; they do not prove that cdpkit's hidden unbounded subscriber queue is bounded.
 
 The selection does not broaden cdpkit's API. `event_stream::<Value>(name)` preserves parameters for one named event only; it is not wildcard or full-envelope receive. The subscriber remains unbounded and queue depth remains uninspectable. Krometrail must acknowledge before its bounded handoff, own backpressure and capture-gap policy, and own reconnect/session restoration.
 

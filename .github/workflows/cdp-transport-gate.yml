@@ -1,11 +1,6 @@
 name: CDP transport macOS gate
 
 on:
-  # Keep this temporary branch trigger until the final cleanup story removes it.
-  # The parent pushes the exact gate SHA here before the hosted macOS run.
-  push:
-    branches:
-      - ci/cdp-macos-evidence
   workflow_dispatch:
     inputs:
       ref:

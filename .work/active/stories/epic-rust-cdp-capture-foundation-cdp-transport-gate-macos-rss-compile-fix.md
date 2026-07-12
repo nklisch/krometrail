@@ -15,7 +15,7 @@ updated: 2026-07-12
 
 ## Symptom
 
-GitHub run [29198801356](https://github.com/nathan/krometrail/actions/runs/29198801356) cannot compile the macOS cdpkit gate. `crates/krometrail-cdp/src/spike/chrome_harness.rs::process_rss` reports E0277 because `.parse::<u64>()?` attempts to use a `Result` residual in a function returning `Option<u64>`.
+GitHub run [29198801356](https://github.com/nklisch/krometrail/actions/runs/29198801356) cannot compile the macOS cdpkit gate. `crates/krometrail-cdp/src/spike/chrome_harness.rs::process_rss` reports E0277 because `.parse::<u64>()?` attempts to use a `Result` residual in a function returning `Option<u64>`.
 
 ## Root cause
 

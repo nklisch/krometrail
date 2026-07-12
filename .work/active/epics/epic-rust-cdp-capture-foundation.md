@@ -30,7 +30,7 @@ This epic does not deliver durable history, complete browser automation, tempora
 
 ## Design decisions
 
-- **Rust CDP client selection:** Historical v1 evidence selected exact `cdpkit` 0.4.0, but the selection is suspended after remediation review. The strict v2 contract requires Linux and macOS reports from one immutable gate revision/configuration/fixture, canonical RSS fields, observed lifecycle measurements, and bound candidate-contract trace/results before selection can be restored. Any selected client remains behind a replaceable `krometrail-cdp` adapter boundary; Krometrail owns reconnect, bounded handoff, backpressure, and capture gaps. `chromey` and an owned transport remain late-bound fallbacks only after demonstrated failure.
+- **Rust CDP client selection:** Strict schema-v2 evidence selects exact `cdpkit` 0.4.0. Accepted Linux and macOS reports use gate revision `3d7c96ccf20862c47ab70ffbd7f724dceedfb4d2`, the same configuration/fixture, canonical RSS fields, observed lifecycle measurements, and bound candidate-contract trace/results. The reports are `docs/evidence/cdp-transport/v2/cdpkit-linux.json` (`0d11c4c8168d8ef2e988b2f71400696dc8a9521add23ba645b9ea65a03e0b148`) and `cdpkit-macos.json` (`c206b1a04651421b8b88f42d75920800a75ee85ed83756f8792191a5e9b3b998`, hosted run `29202919716`). The selected client remains behind a replaceable `krometrail-cdp` adapter boundary; Krometrail owns reconnect, bounded handoff, backpressure, and capture gaps. `chromey` and an owned transport remain late-bound fallbacks only after demonstrated failure.
 - **Legacy runtime removal:** Remove the TypeScript/DAP implementation while establishing the Rust workspace rather than keeping two buildable runtimes. Git tag `v0.2.20` remains the implementation reference if the spike requires recovering prior browser lifecycle or framework-state behavior.
 
 ## Other agent review
@@ -53,7 +53,7 @@ The epic is split into five end-to-end capabilities along the evidence path: est
 
 ### Decomposition risks
 
-- The transport gate may select cdpkit only after valid schema-v2 evidence; the retained v1 selection is historical. Keep the production adapter boundary minimal and replaceable while enforcing that `krometrail-core` never imports infrastructure.
+- The transport gate selected cdpkit only after valid schema-v2 evidence; the retained v1 selection remains historical. Keep the production adapter boundary minimal and replaceable while enforcing that `krometrail-core` never imports infrastructure.
 - Spike scaffolding could leak into production and hide unsupported behavior. Keep it disposable, require a recorded pass/fail decision for every transport gate, and make fallback selection explicit rather than silently weakening requirements.
 - The runtime cutover removes the convenient local legacy reference. The remote `v0.2.20` tag was verified at commit `3fa4ffa16659648c6f4e229c2f7ae14d2fbc6558`; the cutover must preserve that reference and avoid compatibility shims or dual runtimes.
 - Screencast acknowledgement can appear healthy while clocks, queue loss, or visibility pauses misrepresent continuity. The ingestion capability must preserve source, observed, and normalized session times separately and classify every known gap.

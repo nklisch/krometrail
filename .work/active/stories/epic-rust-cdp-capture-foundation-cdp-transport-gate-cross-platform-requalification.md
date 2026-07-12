@@ -27,7 +27,7 @@ The endpoint-binding and runtime-determinism repairs were complete at accepted g
 
 ## Scope
 
-Consume the strict schema-v2 contract from `...-evidence-v2-contract`, run the unchanged qualification on Linux and hosted macOS from one exact immutable SHA/configuration/fixture, and commit only runner-emitted reports that pass every required observed gate. Validate and normalize without editing report bytes. Do not regenerate or commit the final decision; the next story owns decision regeneration and architecture/bootstrap cleanup. No production adapter or core-port change is permitted.
+Consume the strict schema-v2 contract from `...-evidence-v2-contract`, run the unchanged qualification on Linux and hosted macOS from one exact immutable SHA/configuration/fixture, and commit only runner-emitted reports that pass every required observed gate. Validate and normalize without editing report bytes. The follow-up decision/cleanup story owns generated decision rollup and architecture/bootstrap updates. No production adapter or core-port change is permitted.
 
 ## Accepted evidence
 
@@ -127,7 +127,7 @@ The reports retain these limitations verbatim:
 
 - Added only the two runner-emitted sanitized v2 reports and their evidence/documentation updates; no report JSON was hand-edited.
 - Restored `.work/bin/work-view` to the committed binary and left `.pi/` ignored.
-- Did not regenerate or commit a decision file. The next story owns the final decision, architecture, and temporary workflow cleanup.
+- Supplied the accepted runner-emitted reports to the follow-up decision/cleanup story; the generated v2 decision and documentation/bootstrap updates are recorded there.
 
 ## Review (2026-07-12)
 
@@ -137,4 +137,4 @@ The reports retain these limitations verbatim:
 **Important:** none
 **Nits:** none
 
-**Notes:** Fast-lane evidence review independently reproduced strict decision validation, exact report digests, platform/source/implementation identity, all 13 passing observed gates, canonical RSS/deadline fields, and identical trace-bound candidate results. The decision function reaches `adopt_cdpkit`; final decision emission remains correctly deferred. Verdict: Approve - story verified by implement; fast-lane advance.
+**Notes:** Fast-lane evidence review independently reproduced strict decision validation, exact report digests, platform/source/implementation identity, all 13 passing observed gates, canonical RSS/deadline fields, and identical trace-bound candidate results. The decision function reaches `adopt_cdpkit`; final decision emission and bootstrap cleanup are owned by the follow-up story. Verdict: Approve - story verified by implement; fast-lane advance.

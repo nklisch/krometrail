@@ -19,8 +19,8 @@ Validate the Linux and macOS evidence set, compute the transport decision withou
 
 ## Exact files
 
-- `docs/evidence/cdp-transport/v1/decision.json`
-- `docs/evidence/cdp-transport/v1/README.md`
+- `docs/evidence/cdp-transport/v2/decision.json`
+- `docs/evidence/cdp-transport/v2/README.md`
 - `docs/research/rust-cdp-transport-2026-07.md`
 - `.agents/skills/rust-cdp-transport/SKILL.md`
 - `.work/active/features/epic-rust-cdp-capture-foundation-cdp-transport-gate.md`
@@ -49,9 +49,9 @@ Validate the Linux and macOS evidence set, compute the transport decision withou
 
 - Execution capability: highest-tier direct implementation; the caller prohibited questions and subagents, and the decision/evidence/docs surface required one owner to preserve a single source of truth.
 - Review weight: maximum requested by the active autopilot caller; this handoff stops at `stage: review` as requested.
-- Files changed: `crates/krometrail-cdp/src/spike/evidence.rs`, `crates/krometrail-cdp/src/spike/mod.rs`, `crates/krometrail-cdp/src/bin/cdp-transport-gate.rs`, `crates/krometrail-cdp/tests/transport_contract.rs`, `docs/evidence/cdp-transport/v1/decision.json`, `docs/evidence/cdp-transport/v1/README.md`, `docs/research/rust-cdp-transport-2026-07.md`, `.agents/skills/rust-cdp-transport/SKILL.md`, `.work/active/features/epic-rust-cdp-capture-foundation-cdp-transport-gate.md`, `.work/active/epics/epic-rust-cdp-capture-foundation.md`, and `docs/ARCHITECTURE.md`.
+- Files changed: `docs/evidence/cdp-transport/v2/decision.json`, `docs/evidence/cdp-transport/v2/README.md`, `docs/research/rust-cdp-transport-2026-07.md`, `.agents/skills/rust-cdp-transport/SKILL.md`, `.work/active/features/epic-rust-cdp-capture-foundation-cdp-transport-gate.md`, `.work/active/epics/epic-rust-cdp-capture-foundation.md`, and `docs/ARCHITECTURE.md`; the follow-up cleanup also removed the temporary workflow push trigger.
 - Tests added: committed-report decision/digest/threshold regression coverage; the existing strict evidence, schema, fake, and candidate contract suites remain green.
-- Discrepancies from design: the committed reports use `rss_sample_count` in the sustained gate while the generated contract historically used `rss_samples`; validation now accepts that report-specific alias without weakening the bounded-memory gate, whose canonical field remains `rss_samples`.
+- Discrepancies from design: none. The accepted v2 reports use canonical `rss_samples`, observed lifecycle fields, and trace-bound candidate-contract evidence on both platforms.
 - Adjacent issues parked: none.
 - Dispatch rationale: direct-read only; no subagent or question dispatch was used per caller instruction.
 - Production boundary: no adapter/root wiring/core-port revision landed. The spike remains non-default. Reconnect, bounded handoff/backpressure, capture gaps, cancellation, and flush remain Krometrail-owned.

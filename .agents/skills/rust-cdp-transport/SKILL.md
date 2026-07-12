@@ -10,7 +10,7 @@ user-invocable: false
 
 # Rust CDP Transport Reference
 
-Evidence date: **2026-07-12**. The historical pre-remediation compatibility spike selected exact published `cdpkit` **0.4.0**, but its reports are obsolete under the strict schema-v2 contract. Do not claim a current selection until Linux and macOS are requalified from one immutable gate revision/configuration/fixture. Any eventual selection remains behind the replaceable adapter boundary; production lifecycle and capture implementation remain later work.
+Evidence date: **2026-07-12**. Strict schema-v2 qualification selected exact published `cdpkit` **0.4.0** from accepted Linux and macOS reports emitted at gate revision `3d7c96ccf20862c47ab70ffbd7f724dceedfb4d2`, with configuration digest `sha256:06388b5f8ad042093d22408dedb8d02d5a04a9e59d485158edc533334bab956e` and the shared fixture digest recorded in the reports. The selection remains behind the replaceable adapter boundary; production lifecycle and capture implementation remain later work.
 
 Full evidence and pinned sources: [`docs/research/rust-cdp-transport-2026-07.md`](../../../docs/research/rust-cdp-transport-2026-07.md).
 
@@ -103,7 +103,7 @@ Facts and pitfalls:
 
 ## Qualified real-browser result
 
-The committed `v1` reports and decision are historical and obsolete. Current decisive evidence must live under the version-2 contract and include canonical RSS sample/cadence/warmup measurements, observed lifecycle fields, immutable gate provenance, and a bound candidate-contract trace/hash/results object on each platform report. The decision must retain platform-labelled gate results and candidate-contract results for both Linux and macOS; until fresh reports pass, no current `adopt_cdpkit` selection exists.
+The accepted `v2` reports and generated decision live under `docs/evidence/cdp-transport/v2/`. Both platform reports use exact `cdpkit` 0.4.0, the same immutable gate revision/configuration/fixture, canonical RSS sample/cadence/warmup measurements, observed lifecycle fields, and the same bound candidate-contract trace/hash/results object. Linux is digest `0d11c4c8168d8ef2e988b2f71400696dc8a9521add23ba645b9ea65a03e0b148`; macOS is digest `c206b1a04651421b8b88f42d75920800a75ee85ed83756f8792191a5e9b3b998` from hosted run `29202919716`. The measured screencast results are 3,601 frames in 60.013945058 seconds on Linux and 3,571 frames in 60.019783292 seconds on macOS, with 51 RSS samples on each. The generated decision retains platform-labelled gate and candidate-contract results for both Linux and macOS and selects `adopt_cdpkit`. The retained v1 reports and decision are historical only.
 
 A candidate passes only when all hold:
 
@@ -118,7 +118,7 @@ A candidate passes only when all hold:
 
 ## Selection rules
 
-- The historical candidate was exact `cdpkit` 0.4.0 because its source API best matched the adapter boundary. Requalification is required before any current selection.
+- The selected candidate is exact `cdpkit` 0.4.0 because its source API best matched the adapter boundary and every unchanged v2 gate passed on both platforms.
 - Keep it unchanged; needing a routing, decoder, lifecycle patch, or fork is failure.
 - Try `chromey` only when its mature handler could address a demonstrated `cdpkit` lifecycle, ordering, or sustained-capture failure. Keep crawling/network policy out of core contracts.
 - Choose the owned transport when either library loses unknown events before a raw boundary, obscures ack/backpressure, cannot route sessions reliably, or requires a fork.

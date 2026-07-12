@@ -19,7 +19,7 @@ Run the unchanged shared harness and the currently qualifying candidate on curre
 
 ## Exact files
 
-- `docs/evidence/cdp-transport/v1/cdpkit-macos.json` when cdpkit remains the candidate, or the equivalently named selected-candidate macOS report after a late-bound fallback story
+- `docs/evidence/cdp-transport/v2/cdpkit-macos.json`
 - `.github/workflows/cdp-transport-gate.yml` only if a manual, artifact-uploading macOS rerun workflow is needed for reproducibility; it must not become a default release/PR gate
 
 ## Requirements
@@ -32,7 +32,7 @@ Run the unchanged shared harness and the currently qualifying candidate on curre
 
 ## Acceptance criteria
 
-- [x] The macOS report validates against `docs/evidence/cdp-transport/v1/schema.json` and identifies exactly the tested revisions/configuration.
+- [x] The macOS report validates against `docs/evidence/cdp-transport/v2/schema.json` and identifies exactly the tested revisions/configuration.
 - [x] The report demonstrates all decisive gates under unchanged thresholds and honestly records named-event-only/raw-envelope limitations.
 - [x] A clean checkout can reproduce the report from the documented command; committed output contains no machine-specific secrets or paths.
 - [x] No production adapter, core contract, capture pipeline, or platform-specific transport branch is introduced.
@@ -45,13 +45,13 @@ A later successful run, [29198272740](https://github.com/nklisch/krometrail/acti
 
 Run [29198801356](https://github.com/nklisch/krometrail/actions/runs/29198801356) then caught a macOS-only compile error in the new sampler. `epic-rust-cdp-capture-foundation-cdp-transport-gate-macos-rss-compile-fix` corrected it with target-neutral parsing coverage.
 
-The final exact-SHA run [29199026540](https://github.com/nklisch/krometrail/actions/runs/29199026540) passed every unchanged gate and uploaded sanitized evidence. All earlier evidence was rejected; only the final report is committed.
+The accepted exact-SHA run [29202919716](https://github.com/nklisch/krometrail/actions/runs/29202919716) passed every unchanged gate and uploaded sanitized evidence. Earlier evidence was rejected; only the v2 report from the shared revision `3d7c96ccf20862c47ab70ffbd7f724dceedfb4d2` is accepted for the final decision.
 
 ## Implementation notes
 
-- Evidence file: `docs/evidence/cdp-transport/v1/cdpkit-macos.json` from exact commit `a9610e9e80b1dfefb2cb463a399aa9fd261e5e8d`.
+- Evidence file: `docs/evidence/cdp-transport/v2/cdpkit-macos.json` from exact gate commit `3d7c96ccf20862c47ab70ffbd7f724dceedfb4d2`.
 - Environment: macOS arm64, Chrome 149.0.7827.201, Rust 1.97.0, cdpkit 0.4.0.
-- Sustained gate: more than 60 seconds, 3,553 frames received and acknowledged, 3,552 explicit capacity-1 handoff drops, acknowledgement p99 21.08 ms and max below 1,000 ms.
+- Sustained gate: 60.019783292 seconds, 3,571 frames received and acknowledged, 3,570 explicit capacity-1 handoff drops, acknowledgement p99 22.518792 ms and observed max 556.233375 ms.
 - RSS gate: 51 nonzero samples, nonzero first/last medians and peak, sampling interval within the unchanged contract, bounded growth/slope pass.
 - All 13 gate IDs passed. Named-event-only/raw-envelope and unbounded subscriber-depth limitations remain explicit.
 - Local validation and normalization reproduced the uploaded sanitized file byte-for-byte against the checked-in schema.
@@ -65,6 +65,6 @@ The final exact-SHA run [29199026540](https://github.com/nklisch/krometrail/acti
 **Important**: none
 **Nits**: none
 
-**Notes**: Fast-lane evidence review. The orchestrator verified hosted run 29199026540 at the exact pushed SHA, downloaded only the final sanitized artifact, confirmed 13 passing gates including 51 valid RSS samples, and reproduced schema validation/normalization byte-for-byte locally. Earlier invalid artifacts remain uncommitted. Verdict: Approve - story verified by implement; fast-lane advance.
+**Notes**: Fast-lane evidence review. The orchestrator verified hosted run 29202919716 at the exact dispatched SHA, downloaded only the accepted sanitized artifact, confirmed 13 passing gates including 51 valid RSS samples, and reproduced schema validation/normalization byte-for-byte locally. Earlier invalid artifacts remain uncommitted. Verdict: Approve - story verified by implement; fast-lane advance.
 
-A subsequent compile run, [29198801356](https://github.com/nathan/krometrail/actions/runs/29198801356), failed before the gate because the macOS-only `process_rss` path used `.parse::<u64>()?` in an `Option<u64>` function. Rust therefore emitted E0277: the `Result` residual cannot be propagated as `Option`. The focused fix is tracked by `epic-rust-cdp-capture-foundation-cdp-transport-gate-macos-rss-compile-fix`; it moves parsing and checked KiB-to-byte normalization into a target-neutral helper covered by Linux tests and a static sampler contract assertion. After that story is committed, an operator must manually rerun the unchanged workflow with the exact commit SHA (`workflow_dispatch` `ref` and `sha`); only a successful, schema-valid rerun may produce macOS evidence. No toolchain installation, dispatch, evidence fabrication, or evidence commit is performed here.
+A subsequent compile run, [29198801356](https://github.com/nklisch/krometrail/actions/runs/29198801356), failed before the gate because the macOS-only `process_rss` path used `.parse::<u64>()?` in an `Option<u64>` function. Rust therefore emitted E0277: the `Result` residual cannot be propagated as `Option`. The focused fix is tracked by `epic-rust-cdp-capture-foundation-cdp-transport-gate-macos-rss-compile-fix`; it moves parsing and checked KiB-to-byte normalization into a target-neutral helper covered by Linux tests and a static sampler contract assertion. After that story is committed, an operator must manually rerun the unchanged workflow with the exact commit SHA (`workflow_dispatch` `ref` and `sha`); only a successful, schema-valid rerun may produce macOS evidence. No toolchain installation, dispatch, evidence fabrication, or evidence commit is performed here.

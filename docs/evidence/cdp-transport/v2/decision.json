@@ -1,0 +1,398 @@
+{
+  "schema_version": 2,
+  "decision": "adopt_cdpkit",
+  "candidate": {
+    "name": "cdpkit",
+    "version": "0.4.0",
+    "checksum": "c3fdb566d913b31e0014391a94c0db4ed871dbb76577dd1b2f2c5f6df158bfaa"
+  },
+  "evidence": [
+    {
+      "platform": "linux",
+      "sha256": "sha256:0d11c4c8168d8ef2e988b2f71400696dc8a9521add23ba645b9ea65a03e0b148",
+      "gates": [
+        {
+          "id": "deterministic-routing",
+          "status": "pass",
+          "summary": "real-Chrome gate passed",
+          "measurements": {
+            "commands": 200.0,
+            "cross_delivery": 0.0,
+            "events": 200.0
+          },
+          "failure": null
+        },
+        {
+          "id": "typed-domains",
+          "status": "pass",
+          "summary": "real-Chrome gate passed",
+          "measurements": {
+            "typed_operations": 5.0
+          },
+          "failure": null
+        },
+        {
+          "id": "flat-session-isolation",
+          "status": "pass",
+          "summary": "real-Chrome gate passed",
+          "measurements": {
+            "commands_per_session": 100.0,
+            "cross_delivery": 0.0,
+            "events_per_session": 100.0,
+            "sessions": 2.0
+          },
+          "failure": null
+        },
+        {
+          "id": "raw-browser-command",
+          "status": "pass",
+          "summary": "real-Chrome gate passed",
+          "measurements": {
+            "commands": 1.0
+          },
+          "failure": null
+        },
+        {
+          "id": "raw-session-command",
+          "status": "pass",
+          "summary": "real-Chrome gate passed",
+          "measurements": {
+            "commands": 1.0
+          },
+          "failure": null
+        },
+        {
+          "id": "named-raw-event-params",
+          "status": "pass",
+          "summary": "real-Chrome gate passed",
+          "measurements": {
+            "named_events": 1.0
+          },
+          "failure": null
+        },
+        {
+          "id": "protocol-drift-survival",
+          "status": "pass",
+          "summary": "candidate wire-contract drift trace attached; not a real-Chrome fixture measurement",
+          "measurements": {
+            "connection_survived": 1.0,
+            "fixtures": 3.0,
+            "wildcard_envelope_available": 0.0
+          },
+          "failure": null
+        },
+        {
+          "id": "sustained-screencast",
+          "status": "pass",
+          "summary": "real-Chrome gate passed",
+          "measurements": {
+            "ack_latency_ms_max": 19.721226,
+            "ack_latency_ms_p50": 16.655679,
+            "ack_latency_ms_p95": 17.205039,
+            "ack_latency_ms_p99": 17.795669,
+            "elapsed_seconds": 60.013945058,
+            "frames_acknowledged": 3601.0,
+            "frames_received": 3601.0,
+            "handoff_accepted": 1.0,
+            "handoff_dropped": 3600.0,
+            "rss_first_window_median_bytes": 12976128.0,
+            "rss_last_window_median_bytes": 12976128.0,
+            "rss_peak_bytes": 12976128.0,
+            "rss_samples": 51.0,
+            "rss_sampling_interval_seconds": 1.0,
+            "rss_theil_sen_bytes_per_minute": 0.0,
+            "rss_warmup_seconds": 10.0,
+            "saturation_attempts": 3601.0,
+            "saturation_seconds": 60.013945058,
+            "upstream_queue_depth_available": 0.0
+          },
+          "failure": null
+        },
+        {
+          "id": "prompt-acknowledgement",
+          "status": "pass",
+          "summary": "real-Chrome gate passed",
+          "measurements": {
+            "ack_before_handoff": 1.0,
+            "ack_latency_ms_max": 19.721226,
+            "ack_latency_ms_p50": 16.655679,
+            "ack_latency_ms_p95": 17.205039,
+            "ack_latency_ms_p99": 17.795669
+          },
+          "failure": null
+        },
+        {
+          "id": "bounded-handoff-saturation",
+          "status": "pass",
+          "summary": "real-Chrome gate passed",
+          "measurements": {
+            "handoff_accepted": 1.0,
+            "handoff_attempts": 3601.0,
+            "handoff_dropped": 3600.0,
+            "saturation_seconds": 60.013945058
+          },
+          "failure": null
+        },
+        {
+          "id": "bounded-memory-proxy",
+          "status": "pass",
+          "summary": "real-Chrome gate passed",
+          "measurements": {
+            "rss_first_window_median_bytes": 12976128.0,
+            "rss_growth_bytes": 0.0,
+            "rss_last_window_median_bytes": 12976128.0,
+            "rss_peak_bytes": 12976128.0,
+            "rss_samples": 51.0,
+            "rss_sampling_interval_seconds": 1.0,
+            "rss_theil_sen_bytes_per_minute": 0.0,
+            "rss_warmup_seconds": 10.0,
+            "upstream_queue_depth_available": 0.0
+          },
+          "failure": null
+        },
+        {
+          "id": "disconnect-cleanup",
+          "status": "pass",
+          "summary": "real-Chrome gate passed",
+          "measurements": {
+            "close_reason_observed": 1.0,
+            "pending_calls_closed": 1.0,
+            "pending_command_elapsed_seconds": 0.009479799,
+            "pending_command_started": 1.0,
+            "subscription_elapsed_seconds": 0.009483069,
+            "subscriptions_closed": 1.0
+          },
+          "failure": null
+        },
+        {
+          "id": "explicit-reconnect-rebuild",
+          "status": "pass",
+          "summary": "real-Chrome gate passed",
+          "measurements": {
+            "connections": 2.0,
+            "elapsed_seconds": 0.22490539,
+            "sessions_rebuilt": 2.0
+          },
+          "failure": null
+        }
+      ],
+      "candidate_contract": {
+        "trace_sha256": "sha256:6c6be028c511d4d8c28cbecec368a7d4f09e0d87612741d02ac19a8663964d54",
+        "trace_observations": 942,
+        "results": {
+          "drift_fixtures": 3,
+          "connection_survived": true,
+          "routing_commands": 200,
+          "routing_events": 200,
+          "routing_cross_delivery": 0,
+          "event_before_response": true,
+          "detach_during_pending": true,
+          "pending_calls_closed": true,
+          "subscriptions_closed": true,
+          "socket_closed": true,
+          "reconnect_connections": 2,
+          "sessions_rebuilt": 2
+        }
+      }
+    },
+    {
+      "platform": "macos",
+      "sha256": "sha256:c206b1a04651421b8b88f42d75920800a75ee85ed83756f8792191a5e9b3b998",
+      "gates": [
+        {
+          "id": "deterministic-routing",
+          "status": "pass",
+          "summary": "real-Chrome gate passed",
+          "measurements": {
+            "commands": 200.0,
+            "cross_delivery": 0.0,
+            "events": 200.0
+          },
+          "failure": null
+        },
+        {
+          "id": "typed-domains",
+          "status": "pass",
+          "summary": "real-Chrome gate passed",
+          "measurements": {
+            "typed_operations": 5.0
+          },
+          "failure": null
+        },
+        {
+          "id": "flat-session-isolation",
+          "status": "pass",
+          "summary": "real-Chrome gate passed",
+          "measurements": {
+            "commands_per_session": 100.0,
+            "cross_delivery": 0.0,
+            "events_per_session": 100.0,
+            "sessions": 2.0
+          },
+          "failure": null
+        },
+        {
+          "id": "raw-browser-command",
+          "status": "pass",
+          "summary": "real-Chrome gate passed",
+          "measurements": {
+            "commands": 1.0
+          },
+          "failure": null
+        },
+        {
+          "id": "raw-session-command",
+          "status": "pass",
+          "summary": "real-Chrome gate passed",
+          "measurements": {
+            "commands": 1.0
+          },
+          "failure": null
+        },
+        {
+          "id": "named-raw-event-params",
+          "status": "pass",
+          "summary": "real-Chrome gate passed",
+          "measurements": {
+            "named_events": 1.0
+          },
+          "failure": null
+        },
+        {
+          "id": "protocol-drift-survival",
+          "status": "pass",
+          "summary": "candidate wire-contract drift trace attached; not a real-Chrome fixture measurement",
+          "measurements": {
+            "connection_survived": 1.0,
+            "fixtures": 3.0,
+            "wildcard_envelope_available": 0.0
+          },
+          "failure": null
+        },
+        {
+          "id": "sustained-screencast",
+          "status": "pass",
+          "summary": "real-Chrome gate passed",
+          "measurements": {
+            "ack_latency_ms_max": 556.233375,
+            "ack_latency_ms_p50": 16.535749999999997,
+            "ack_latency_ms_p95": 20.596917,
+            "ack_latency_ms_p99": 22.518792,
+            "elapsed_seconds": 60.019783292,
+            "frames_acknowledged": 3571.0,
+            "frames_received": 3571.0,
+            "handoff_accepted": 1.0,
+            "handoff_dropped": 3570.0,
+            "rss_first_window_median_bytes": 10780672.0,
+            "rss_last_window_median_bytes": 10780672.0,
+            "rss_peak_bytes": 10780672.0,
+            "rss_samples": 51.0,
+            "rss_sampling_interval_seconds": 1.0,
+            "rss_theil_sen_bytes_per_minute": 0.0,
+            "rss_warmup_seconds": 10.0,
+            "saturation_attempts": 3571.0,
+            "saturation_seconds": 60.019783292,
+            "upstream_queue_depth_available": 0.0
+          },
+          "failure": null
+        },
+        {
+          "id": "prompt-acknowledgement",
+          "status": "pass",
+          "summary": "real-Chrome gate passed",
+          "measurements": {
+            "ack_before_handoff": 1.0,
+            "ack_latency_ms_max": 556.233375,
+            "ack_latency_ms_p50": 16.535749999999997,
+            "ack_latency_ms_p95": 20.596917,
+            "ack_latency_ms_p99": 22.518792
+          },
+          "failure": null
+        },
+        {
+          "id": "bounded-handoff-saturation",
+          "status": "pass",
+          "summary": "real-Chrome gate passed",
+          "measurements": {
+            "handoff_accepted": 1.0,
+            "handoff_attempts": 3571.0,
+            "handoff_dropped": 3570.0,
+            "saturation_seconds": 60.019783292
+          },
+          "failure": null
+        },
+        {
+          "id": "bounded-memory-proxy",
+          "status": "pass",
+          "summary": "real-Chrome gate passed",
+          "measurements": {
+            "rss_first_window_median_bytes": 10780672.0,
+            "rss_growth_bytes": 0.0,
+            "rss_last_window_median_bytes": 10780672.0,
+            "rss_peak_bytes": 10780672.0,
+            "rss_samples": 51.0,
+            "rss_sampling_interval_seconds": 1.0,
+            "rss_theil_sen_bytes_per_minute": 0.0,
+            "rss_warmup_seconds": 10.0,
+            "upstream_queue_depth_available": 0.0
+          },
+          "failure": null
+        },
+        {
+          "id": "disconnect-cleanup",
+          "status": "pass",
+          "summary": "real-Chrome gate passed",
+          "measurements": {
+            "close_reason_observed": 1.0,
+            "pending_calls_closed": 1.0,
+            "pending_command_elapsed_seconds": 0.0211495,
+            "pending_command_started": 1.0,
+            "subscription_elapsed_seconds": 0.021154,
+            "subscriptions_closed": 1.0
+          },
+          "failure": null
+        },
+        {
+          "id": "explicit-reconnect-rebuild",
+          "status": "pass",
+          "summary": "real-Chrome gate passed",
+          "measurements": {
+            "connections": 2.0,
+            "elapsed_seconds": 2.97012425,
+            "sessions_rebuilt": 2.0
+          },
+          "failure": null
+        }
+      ],
+      "candidate_contract": {
+        "trace_sha256": "sha256:6c6be028c511d4d8c28cbecec368a7d4f09e0d87612741d02ac19a8663964d54",
+        "trace_observations": 942,
+        "results": {
+          "drift_fixtures": 3,
+          "connection_survived": true,
+          "routing_commands": 200,
+          "routing_events": 200,
+          "routing_cross_delivery": 0,
+          "event_before_response": true,
+          "detach_during_pending": true,
+          "pending_calls_closed": true,
+          "subscriptions_closed": true,
+          "socket_closed": true,
+          "reconnect_connections": 2,
+          "sessions_rebuilt": 2
+        }
+      }
+    }
+  ],
+  "limitations": [
+    "RSS is a process-level proxy from a continuously drained reader; it does not prove the hidden cdpkit subscriber queue is bounded",
+    "ack latency values are receive-to-ack-completion proxies, not wire-enqueue timestamps",
+    "candidate-contract trace digest: sha256:6c6be028c511d4d8c28cbecec368a7d4f09e0d87612741d02ac19a8663964d54",
+    "cdpkit exposes named event params through an unbounded subscriber; wildcard/full-envelope receive and queue-depth introspection are unavailable"
+  ],
+  "rejected_alternatives": [
+    "chromey 2.52.0 was not tested because cdpkit passed every unchanged gate; revisit it only after a demonstrated cdpkit lifecycle, ordering, or sustained-capture failure",
+    "an owned Tokio/tokio-tungstenite transport was not selected because cdpkit preserved the required raw command and named-event boundary without a fork"
+  ],
+  "rationale": "Exact cdpkit 0.4.0 passed all 13 unchanged gates on both Linux and macOS; the named-event-params limitation and unbounded subscriber-depth limitation remain explicit, so the production adapter must preserve Krometrail-owned reconnect, bounded handoff, and backpressure policy behind a replaceable boundary."
+}
