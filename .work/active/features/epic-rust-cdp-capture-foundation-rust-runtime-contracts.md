@@ -872,3 +872,7 @@ The operator explicitly authorized continued review and remediation beyond the t
 - Reviewer (Phase 2 — adversarial): GPT-5.6 Sol high, three-round convergence; found that the public installer resolves the preserved `v0.2.20` TypeScript release and ignores post-copy executable-check failure.
 - Accepted follow-up: `epic-rust-cdp-capture-foundation-rust-runtime-contracts-rust-installer-gate`.
 - Capability wire-name anchoring remains a non-blocking nit because current names are correct and the MCP schema is not yet shipped.
+
+## Third-review remediation status
+
+`epic-rust-cdp-capture-foundation-rust-runtime-contracts-rust-installer-gate` reached `stage: done`. The installer now rejects the immutable legacy release boundary before download, validates a temporary binary before replacement, preserves existing installations on failure, and has hermetic success/failure fixtures. Current docs truthfully direct Rust users to source builds until a post-`v0.2.20` Rust release exists.
