@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cdp-transport-gate
 kind: feature
-stage: review
+stage: implementing
 tags: [browser, infra]
 parent: epic-rust-cdp-capture-foundation
 depends_on: [epic-rust-cdp-capture-foundation-rust-runtime-contracts]
@@ -561,3 +561,11 @@ Default and spike-feature gates both pass. The default dependency graph proves s
 All seven realized child stories reached `stage: done`: the four designed stories plus three evidence-driven macOS portability fixes. Exact cdpkit 0.4.0 passed the shared deterministic harness and every unchanged real-Chrome gate on Linux and macOS. Linux recorded 3,601 frames over 60 seconds with acknowledgement p99 17.72 ms; macOS recorded 3,553 frames with acknowledgement p99 21.08 ms and 51 valid RSS samples. Both saturated capacity-1 handoffs produced explicit drops while all frames were acknowledged.
 
 The generated decision validates and hashes both sanitized reports and selects cdpkit without a fallback story. Named-event-params-only access, unbounded subscriber depth, unavailable wildcard envelopes, and proxy measurement limits remain explicit. Spike features remain non-default; no production adapter, root wiring, capture pipeline, or core-port revision landed. Default and candidate-feature Rust gates and documentation builds pass.
+
+## Feature review (2026-07-12)
+
+**Verdict:** Needs fixes; returned to `stage: implementing`.
+
+GLM completeness review reproduced all committed reports and decisions and identified an unenforced reconnect deadline plus narrative drift. GPT-5.6 Sol adversarial review confirmed those findings and found selection-critical evidence-integrity defects: the scripted candidate lifecycle path used a disconnected expected-message deque; several real-Chrome gates recorded static rather than observed values; disconnect and global hard-stop claims were not fully enforced; Linux provenance had been edited after capture; Linux and macOS used materially different evidence implementations; and the decision exposed Linux-only gate measurements.
+
+No threshold or requirement is waived. The prior reports and decision remain historical implementation outputs but are not sufficient for final approval. Five remediation stories now repair wire authenticity, enforce observed deadlines, establish one platform-faithful evidence contract, requalify both platforms from one immutable revision, and regenerate the decision while removing temporary workflow bootstrap paths. The feature requires a fresh two-model review after all five reach `stage: done`.
