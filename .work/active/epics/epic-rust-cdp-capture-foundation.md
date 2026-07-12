@@ -30,7 +30,7 @@ This epic does not deliver durable history, complete browser automation, tempora
 
 ## Design decisions
 
-- **Rust CDP client selection:** Start with a gated `cdpkit` spike covering every required domain, flat target sessions, raw command/event access, and sustained screencast acknowledgement. Adopt it only if the real-browser compatibility and capture gates pass; otherwise choose between `chromey` and a minimal owned transport from the spike evidence.
+- **Rust CDP client selection:** The unchanged exact `cdpkit` 0.4.0 spike passed all 13 required gates on Linux and macOS. Select it behind a replaceable `krometrail-cdp` adapter boundary while preserving named-event-params-only and unbounded-subscriber-depth limitations; Krometrail owns reconnect, bounded handoff, backpressure, and capture gaps. `chromey` and an owned transport remain late-bound fallbacks only after demonstrated failure.
 - **Legacy runtime removal:** Remove the TypeScript/DAP implementation while establishing the Rust workspace rather than keeping two buildable runtimes. Git tag `v0.2.20` remains the implementation reference if the spike requires recovering prior browser lifecycle or framework-state behavior.
 
 ## Other agent review
@@ -53,7 +53,7 @@ The epic is split into five end-to-end capabilities along the evidence path: est
 
 ### Decomposition risks
 
-- The first feature could freeze transport-shaped ports before the spike reports evidence. Keep contracts minimal and revisable through the transport gate while enforcing that `krometrail-core` never imports infrastructure.
+- The transport gate selected cdpkit only after evidence; keep the production adapter boundary minimal and replaceable while enforcing that `krometrail-core` never imports infrastructure.
 - Spike scaffolding could leak into production and hide unsupported behavior. Keep it disposable, require a recorded pass/fail decision for every transport gate, and make fallback selection explicit rather than silently weakening requirements.
 - The runtime cutover removes the convenient local legacy reference. The remote `v0.2.20` tag was verified at commit `3fa4ffa16659648c6f4e229c2f7ae14d2fbc6558`; the cutover must preserve that reference and avoid compatibility shims or dual runtimes.
 - Screencast acknowledgement can appear healthy while clocks, queue loss, or visibility pauses misrepresent continuity. The ingestion capability must preserve source, observed, and normalized session times separately and classify every known gap.

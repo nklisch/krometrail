@@ -203,9 +203,9 @@ The CDP adapter owns:
 
 The adapter exposes typed domain operations through ports defined by `krometrail-core`.
 
-The CDP library is replaceable behind the transport boundary. Krometrail requires both typed commands for supported operations and a raw command/event escape hatch for protocol evolution.
+The selected CDP client is exact published `cdpkit` 0.4.0 behind the replaceable `krometrail-cdp::transport` boundary. The decision is backed by the committed Linux and macOS reports in `docs/evidence/cdp-transport/v1/decision.json`, where all 13 unchanged gates pass. The adapter must preserve cdpkit's named-event-params-only escape hatch: it is not wildcard or full-envelope receive, and its subscriber queue depth is not inspectable. Krometrail therefore owns prompt acknowledgement before bounded handoff, backpressure and capture-gap policy, reconnect/session restoration, cancellation, and flush behavior. A cdpkit routing, decoder, lifecycle patch, or fork would invalidate this selection and trigger the documented fallback rules.
 
-A compatibility probe runs when connecting. It reports browser and protocol versions, identifies Electron renderer endpoints when detectable, and verifies the required domains before recording begins. Renderer support is decided from the observed protocol capabilities rather than the host application's brand.
+A compatibility probe runs when connecting. It reports browser and protocol versions, identifies Electron renderer endpoints when detectable, and verifies the required domains before recording begins. Renderer support is decided from the observed protocol capabilities rather than the host application's brand. The production adapter implementation remains downstream of this qualification; spike features are non-default and are not root-wired.
 
 ## Target Lifecycle
 
@@ -619,6 +619,6 @@ The composition root provides an adapter around `temporal-vision` for the artifa
 - SQLite provides the searchable metadata index.
 - Append-only files store compressed frame payloads.
 - The `image` ecosystem provides initial decoding and rendering.
-- CDP transport remains behind a replaceable adapter and must pass the required-domain compatibility probe.
+- Exact cdpkit 0.4.0 is the qualified CDP transport behind a replaceable adapter; its named-event-params and unbounded-subscriber limitations remain explicit, and it must pass the required-domain compatibility probe at runtime.
 
 OpenCV, FFmpeg, a browser extension, and framework-specific instrumentation are not architectural prerequisites.

@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cdp-transport-gate-transport-decision-rollup
 kind: story
-stage: implementing
+stage: review
 tags: [browser, infra, testing]
 parent: epic-rust-cdp-capture-foundation-cdp-transport-gate
 depends_on: [epic-rust-cdp-capture-foundation-cdp-transport-gate-macos-decisive-evidence]
@@ -39,8 +39,19 @@ Validate the Linux and macOS evidence set, compute the transport decision withou
 
 ## Acceptance criteria
 
-- [ ] Machine-readable decision and both platform reports validate, hash-match, contain no secret/path leakage, and reproduce from documented commands.
-- [ ] The selected transport follows the published decision rules with no waived or missing gate.
-- [ ] Evidence, research, skill, feature, epic, and architecture agree on the selected mechanism, exact version/provenance, limitations, and fallback reasoning.
-- [ ] The existing core port remains unchanged unless an evidence-cited incompatibility makes revision unavoidable; no production lifecycle/capture implementation lands.
-- [ ] Default and spike-feature Rust quality gates pass, and all child work—including any late-bound fallback story—is at review or done before this story advances.
+- [x] Machine-readable decision and both platform reports validate, hash-match, contain no secret/path leakage, and reproduce from documented commands.
+- [x] The selected transport follows the published decision rules with no waived or missing gate.
+- [x] Evidence, research, skill, feature, epic, and architecture agree on the selected mechanism, exact version/provenance, limitations, and fallback reasoning.
+- [x] The existing core port remains unchanged unless an evidence-cited incompatibility makes revision unavoidable; no production lifecycle/capture implementation lands.
+- [x] Default and spike-feature Rust quality gates pass, and all child work—including any late-bound fallback story—is at review or done before this story advances.
+
+## Implementation notes
+
+- Execution capability: highest-tier direct implementation; the caller prohibited questions and subagents, and the decision/evidence/docs surface required one owner to preserve a single source of truth.
+- Review weight: maximum requested by the active autopilot caller; this handoff stops at `stage: review` as requested.
+- Files changed: `crates/krometrail-cdp/src/spike/evidence.rs`, `crates/krometrail-cdp/src/spike/mod.rs`, `crates/krometrail-cdp/src/bin/cdp-transport-gate.rs`, `crates/krometrail-cdp/tests/transport_contract.rs`, `docs/evidence/cdp-transport/v1/decision.json`, `docs/evidence/cdp-transport/v1/README.md`, `docs/research/rust-cdp-transport-2026-07.md`, `.agents/skills/rust-cdp-transport/SKILL.md`, `.work/active/features/epic-rust-cdp-capture-foundation-cdp-transport-gate.md`, `.work/active/epics/epic-rust-cdp-capture-foundation.md`, and `docs/ARCHITECTURE.md`.
+- Tests added: committed-report decision/digest/threshold regression coverage; the existing strict evidence, schema, fake, and candidate contract suites remain green.
+- Discrepancies from design: the committed reports use `rss_sample_count` in the sustained gate while the generated contract historically used `rss_samples`; validation now accepts that report-specific alias without weakening the bounded-memory gate, whose canonical field remains `rss_samples`.
+- Adjacent issues parked: none.
+- Dispatch rationale: direct-read only; no subagent or question dispatch was used per caller instruction.
+- Production boundary: no adapter/root wiring/core-port revision landed. The spike remains non-default. Reconnect, bounded handoff/backpressure, capture gaps, cancellation, and flush remain Krometrail-owned.

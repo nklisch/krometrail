@@ -7,7 +7,7 @@ use futures_util::{SinkExt, StreamExt};
 use krometrail_cdp::spike::{
     CandidateIdentity, FixtureEvidence, GateConfiguration, GateResult, GateStatus,
     SanitizedEnvironment, ScriptedCdpPeer, SourceIdentity, TransportEvidenceV1, TransportGateId,
-    validate_evidence, write_json_schema,
+    decide_from_files, validate_evidence, write_json_schema,
 };
 use krometrail_cdp::spike::{
     FakeTransport, FakeTransportFactory, SpikeTransport, TransportScope, run_transport_scenarios,
@@ -239,6 +239,48 @@ fn evidence_rejects_zero_rss_samples_and_window_values() {
     memory.measurements.insert("rss_peak_bytes".into(), 0.0);
 
     assert!(validate_evidence(&value).is_err());
+}
+
+#[test]
+fn committed_linux_and_macos_reports_select_exact_cdpkit_with_report_digests() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/evidence/cdp-transport/v1");
+    let decision = decide_from_files(
+        &root.join("cdpkit-linux.json"),
+        &root.join("cdpkit-macos.json"),
+    )
+    .expect("committed decisive reports must independently qualify");
+    assert_eq!(
+        decision.decision,
+        krometrail_cdp::spike::TransportDecision::AdoptCdpkit
+    );
+    assert_eq!(decision.candidate.name, "cdpkit");
+    assert_eq!(decision.candidate.version, "0.4.0");
+    assert_eq!(decision.evidence.len(), 2);
+    assert_eq!(decision.evidence[0].platform, "linux");
+    assert_eq!(
+        decision.evidence[0].sha256,
+        "sha256:081259729e2495e999745bcd7caa509ec7effc844f50b2a4d786d6cc744c7feb"
+    );
+    assert_eq!(decision.evidence[1].platform, "macos");
+    assert_eq!(
+        decision.evidence[1].sha256,
+        "sha256:3ffe94f405038fd8d9efd9fa7f8acbf15e8cb02c1f9e19bf24397f180981d401"
+    );
+    assert_eq!(decision.gates.len(), TransportGateId::ALL.len());
+    assert!(
+        decision
+            .gates
+            .iter()
+            .all(|gate| gate.status == GateStatus::Pass)
+    );
+    assert!(decision.rationale.contains("all 13 unchanged gates"));
+    assert!(
+        decision
+            .limitations
+            .iter()
+            .any(|limitation| limitation.contains("wildcard/full-envelope"))
+    );
 }
 
 #[test]

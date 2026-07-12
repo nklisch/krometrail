@@ -4,7 +4,7 @@
 
 This research grounds `epic-rust-cdp-capture-foundation-cdp-transport-gate`. Krometrail needs a browser-level Chrome DevTools Protocol (CDP) connection with flat target sessions, typed control operations, raw protocol escape hatches, and a screencast event path that Krometrail—not the library—can supervise and bound.
 
-Evidence was frozen on 2026-07-12 from crates.io metadata, published/repository source at `cdpkit` 0.4.0 (`15dd5e6d`) and `chromey` 2.52.0 (`6eeca5e8`), their CI/tests, and their public GitHub issues. No transport is selected by this document. The next step remains a disposable real-Chrome spike.
+Evidence was frozen on 2026-07-12 from crates.io metadata, published/repository source at `cdpkit` 0.4.0 (`15dd5e6d`) and `chromey` 2.52.0 (`6eeca5e8`), their CI/tests, and their public GitHub issues. The unchanged real-Chrome gate selected exact published `cdpkit` 0.4.0 after all 13 gates passed on Linux and macOS. The selection is a replaceable adapter decision, not production lifecycle or capture implementation.
 
 Caller-aware research ran direct-read only: the caller prohibited subagents and questions, and the bounded candidate/source surfaces did not warrant delegation. Reversible uncertainties are therefore converted into explicit spike gates below.
 
@@ -65,37 +65,37 @@ let raw = session
 
 The important limitation is equally concrete: `event_stream::<Value>("Domain.event")` gives raw event parameters for one named event, not every incoming raw envelope. The spike must not accidentally claim broader escape-hatch semantics.
 
-## Recommendation: spike order, not transport selection
+## Selection outcome: exact cdpkit 0.4.0
 
-### 1. Spike `cdpkit` 0.4.0 first
+### Qualification evidence
 
-Its source API maps cleanly to Krometrail's replaceable transport adapter and leaves reconnect ownership in the right layer. Its youth, weak protocol provenance, and unbounded subscriber channels prevent adoption on source inspection alone.
+The committed reports are the only decisive inputs:
 
-The real-browser spike must use the exact published 0.4.0 crate and record the Chrome product version, `Browser.getVersion` protocol version, operating system, crate checksum/lock entry, and observed CDP capabilities. Run it against current stable Chrome on Linux; repeat the decisive screencast/session tests on macOS before production adoption.
+- `docs/evidence/cdp-transport/v1/cdpkit-linux.json` — SHA-256 `081259729e2495e999745bcd7caa509ec7effc844f50b2a4d786d6cc744c7feb`; Linux x86_64, Chrome 149.0.7827.155.
+- `docs/evidence/cdp-transport/v1/cdpkit-macos.json` — SHA-256 `3ffe94f405038fd8d9efd9fa7f8acbf15e8cb02c1f9e19bf24397f180981d401`; macOS aarch64, Chrome 149.0.7827.201.
 
-Mandatory tests:
+The Rust decision function validates schema version, the complete 13-gate registry, unchanged thresholds, exact candidate/version/checksum, Linux/macOS identity, fixture consistency, redaction, and every measured gate contract before producing `docs/evidence/cdp-transport/v1/decision.json`. It reaches `adopt_cdpkit` only because both reports pass all 13 gates; no gate is waived or hand-copied into the decision.
 
-1. **Browser and typed domains:** at browser scope call typed `Browser.getVersion`; on a page session call typed `Page.enable`, `Runtime.evaluate`, `Accessibility.enable` + `getFullAXTree`, and one harmless Input command.
-2. **Flat multi-target routing:** enable discovery/auto-attach with `flatten=true`; create two pages; prove commands and same-named events never cross their `sessionId`; cover event-before-response and detach-during-command ordering.
-3. **Raw escape hatches:** send an unmodeled command by method string at browser and session scope; subscribe to a named event as `Value` before triggering it; prove an unknown/additive-field fixture does not close the connection. Record that full-envelope wildcard receive is unsupported.
-4. **Screencast:** on a continuously animating fixture, capture at least 60 seconds and 1,000 frames, acknowledge every frame before bounded handoff, deliberately saturate that handoff, and prove CDP continues while Krometrail records drops. Track process memory so the library's unbounded subscription cannot hide backlog.
-5. **Protocol drift:** replay fixtures with an unknown event method, an additive field, and an unknown enum value in a known event. A malformed typed subscription may drop that event, but must not kill the raw path or connection. Compare the generated API with the official protocol commit current at spike time.
-6. **Disconnect:** terminate the WebSocket/browser with pending calls and active subscriptions. All waiters must finish promptly, close reason must be observable, and no library reconnect may race Krometrail's supervisor. Then create a new connection and rebuild target sessions explicitly.
-7. **Test seam:** reproduce all routing/disconnect cases against a local fake WebSocket without Chrome and without sleep-based timing.
+### 1. Exact cdpkit 0.4.0
 
-### 2. Decision rules
+Its source API maps cleanly to Krometrail's replaceable transport adapter and leaves reconnect ownership in the right layer. The unchanged fake and real-Chrome gates now provide the required qualification evidence: typed domains, flat routing, named raw params, protocol-drift survival, sustained screencast acknowledgement, bounded-handoff saturation, RSS trend, disconnect cleanup, and explicit session rebuild all pass on both decisive platforms.
+
+The selection does not broaden cdpkit's API. `event_stream::<Value>(name)` preserves parameters for one named event only; it is not wildcard or full-envelope receive. The subscriber remains unbounded and queue depth remains uninspectable. Krometrail must acknowledge before its bounded handoff, own backpressure and capture-gap policy, and own reconnect/session restoration.
+
+### 2. Selection rules carried forward
 
 - **Adopt `cdpkit` behind `krometrail-cdp::transport` only if every mandatory gate passes unchanged.** A small adapter for domain errors and bounded handoff is expected; patching/forking its routing, event decoder, or lifecycle is a failure.
 - **Spike `chromey` with the same harness only if `cdpkit` fails on demonstrated real-browser lifecycle, target ordering, or sustained-capture behavior that chromey's mature handler may solve.** Adopt it only if typed commands, a local generic raw-command wrapper, named raw event subscription, and explicit reconnect ownership all pass without importing its crawling/network-policy behavior into core contracts.
 - **Go directly to a minimal owned transport if either candidate loses unknown events before a raw boundary, cannot expose reliable session routing, requires a fork, or obscures prompt ack/backpressure.** The owned fallback should use Tokio plus `tokio-tungstenite`, keep raw envelopes as the source of truth, and generate the supported typed command/event subset from a pinned official protocol revision.
 - **Do not weaken a gate to select a library.** If both libraries fail, the evidence justifies the owned cost.
 
-## Risks to carry into feature design
+## Implementation constraints
 
-- `cdpkit` is unusually young and single-maintainer; pin exactly and keep the adapter narrow.
-- Both candidates use unbounded event subscriber channels. Krometrail's bounded ingestion does not bound memory if ack/event handling falls behind upstream of that queue.
-- Generated protocol version `1.3` is not meaningful provenance by itself. The spike report must record the source protocol revision or the lack of one.
+- `cdpkit` is unusually young and single-maintainer; pin exactly `=0.4.0` and keep the production adapter narrow and replaceable.
+- Its event subscriber is unbounded. Krometrail's bounded ingestion does not bound memory upstream of that queue; the committed RSS result is a process-level trend proxy, not queue-depth proof.
+- Generated protocol version `1.3` is not meaningful provenance by itself. The selected adapter carries forward the explicit lack of a cdpkit source revision.
 - Reconnect is a browser-session state transition, not a WebSocket retry. Krometrail must recreate discovery, attachments, domain enablement, screencast state, and gap evidence.
+- The spike remains non-default and is not root-wired. Production lifecycle, capture, reconnect, and backpressure implementation belong to later features.
 
 ## References
 

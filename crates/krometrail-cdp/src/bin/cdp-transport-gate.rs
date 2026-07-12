@@ -1,4 +1,4 @@
-#[cfg(feature = "cdp-spike-cdpkit")]
+#[cfg(feature = "cdp-spike")]
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -6,9 +6,13 @@ use std::process::ExitCode;
 use krometrail_cdp::spike::{
     cdpkit_adapter::CdpkitTransportFactory,
     chrome_harness::{failure_evidence, run_real_chrome_gate},
-    evidence::{GateConfiguration, sanitize_evidence, validate_evidence},
-    write_json_schema,
 };
+
+#[cfg(feature = "cdp-spike")]
+use krometrail_cdp::spike::{decide_from_files, evidence::sanitize_evidence, write_json_schema};
+
+#[cfg(feature = "cdp-spike-cdpkit")]
+use krometrail_cdp::spike::evidence::{GateConfiguration, validate_evidence};
 
 #[cfg(feature = "cdp-spike-cdpkit")]
 #[derive(Debug)]
@@ -20,7 +24,7 @@ struct GateCli {
     hard_stop_seconds: u64,
 }
 
-#[cfg(feature = "cdp-spike-cdpkit")]
+#[cfg(feature = "cdp-spike")]
 #[tokio::main]
 async fn main() -> ExitCode {
     match run().await {
@@ -32,7 +36,7 @@ async fn main() -> ExitCode {
     }
 }
 
-#[cfg(feature = "cdp-spike-cdpkit")]
+#[cfg(feature = "cdp-spike")]
 async fn run() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
     let first = args.next();
@@ -59,32 +63,48 @@ async fn run() -> Result<(), String> {
             let evidence = sanitize_evidence(evidence).map_err(|error| error.to_string())?;
             write_json(&output, &evidence)?;
         }
+        "decide" => {
+            let mut args = remaining.into_iter();
+            let linux = required_path(&mut args, "--linux-report")?;
+            let macos = required_path(&mut args, "--macos-report")?;
+            let output = required_path(&mut args, "--output")?;
+            let decision = decide_from_files(&linux, &macos).map_err(|error| error.to_string())?;
+            write_json(&output, &decision)?;
+        }
         "gate" => {
-            let cli = parse_gate(remaining)?;
-            let configuration = GateConfiguration {
-                minimum_seconds: cli.minimum_seconds,
-                minimum_frames: cli.minimum_frames,
-                saturation_seconds: 10.0,
-                saturation_attempts: 100,
-            };
-            let factory = CdpkitTransportFactory::new();
-            let result =
-                run_real_chrome_gate(&factory, configuration.clone(), &cli.chrome_binary).await;
-            match result {
-                Ok(evidence) => {
-                    validate_evidence(&evidence).map_err(|error| error.to_string())?;
-                    write_json(&cli.output, &evidence)?;
+            #[cfg(feature = "cdp-spike-cdpkit")]
+            {
+                let cli = parse_gate(remaining)?;
+                let configuration = GateConfiguration {
+                    minimum_seconds: cli.minimum_seconds,
+                    minimum_frames: cli.minimum_frames,
+                    saturation_seconds: 10.0,
+                    saturation_attempts: 100,
+                };
+                let factory = CdpkitTransportFactory::new();
+                let result =
+                    run_real_chrome_gate(&factory, configuration.clone(), &cli.chrome_binary).await;
+                match result {
+                    Ok(evidence) => {
+                        validate_evidence(&evidence).map_err(|error| error.to_string())?;
+                        write_json(&cli.output, &evidence)?;
+                    }
+                    Err(error) => {
+                        // A failed candidate still emits a complete, schema-valid report. The exact
+                        // error is retained in every represented gate; no threshold is waived.
+                        let evidence = failure_evidence(&factory, configuration, &error);
+                        validate_evidence(&evidence)
+                            .map_err(|validation| validation.to_string())?;
+                        write_json(&cli.output, &evidence)?;
+                        return Err(error.to_string());
+                    }
                 }
-                Err(error) => {
-                    // A failed candidate still emits a complete, schema-valid report. The exact
-                    // error is retained in every represented gate; no threshold is waived.
-                    let evidence = failure_evidence(&factory, configuration, &error);
-                    validate_evidence(&evidence).map_err(|validation| validation.to_string())?;
-                    write_json(&cli.output, &evidence)?;
-                    return Err(error.to_string());
-                }
+                let _ = cli.hard_stop_seconds;
             }
-            let _ = cli.hard_stop_seconds;
+            #[cfg(not(feature = "cdp-spike-cdpkit"))]
+            {
+                return Err("gate requires the cdp-spike-cdpkit feature".into());
+            }
         }
         other => return Err(format!("unknown command {other}")),
     }
@@ -135,7 +155,7 @@ fn parse_gate(args: Vec<String>) -> Result<GateCli, String> {
     })
 }
 
-#[cfg(feature = "cdp-spike-cdpkit")]
+#[cfg(feature = "cdp-spike")]
 fn required_path(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<PathBuf, String> {
     while let Some(value) = args.next() {
         if value == flag {
@@ -148,7 +168,7 @@ fn required_path(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<
     Err(format!("{flag} is required"))
 }
 
-#[cfg(feature = "cdp-spike-cdpkit")]
+#[cfg(feature = "cdp-spike")]
 fn write_json(path: &std::path::Path, value: &impl serde::Serialize) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
@@ -157,8 +177,8 @@ fn write_json(path: &std::path::Path, value: &impl serde::Serialize) -> Result<(
     std::fs::write(path, bytes).map_err(|error| error.to_string())
 }
 
-#[cfg(not(feature = "cdp-spike-cdpkit"))]
+#[cfg(not(feature = "cdp-spike"))]
 fn main() -> ExitCode {
-    eprintln!("cdp-transport-gate requires the cdp-spike-cdpkit feature");
+    eprintln!("cdp-transport-gate requires the cdp-spike feature");
     ExitCode::FAILURE
 }

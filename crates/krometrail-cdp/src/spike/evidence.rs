@@ -4,6 +4,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use super::error::{SpikeError, SpikeErrorCode};
 
@@ -92,8 +93,6 @@ impl TransportGateId {
                     "rss_first_window_median_bytes",
                     "rss_last_window_median_bytes",
                     "rss_theil_sen_bytes_per_minute",
-                    "rss_sampling_interval_seconds",
-                    "rss_warmup_seconds",
                 ]
             }
             Self::PromptAcknowledgement => &["ack_before_handoff"],
@@ -105,8 +104,6 @@ impl TransportGateId {
                 "rss_first_window_median_bytes",
                 "rss_last_window_median_bytes",
                 "rss_theil_sen_bytes_per_minute",
-                "rss_sampling_interval_seconds",
-                "rss_warmup_seconds",
             ],
             Self::DisconnectCleanup => &["pending_calls_closed", "subscriptions_closed"],
             Self::ExplicitReconnectRebuild => &["connections", "sessions_rebuilt"],
@@ -247,7 +244,11 @@ pub fn validate_evidence(value: &TransportEvidenceV1) -> Result<(), SpikeError> 
             "gate configuration contains a non-finite measurement",
         ));
     }
-    if value.configuration.minimum_seconds <= 0.0 || value.configuration.minimum_frames == 0 {
+    if value.configuration.minimum_seconds < 60.0
+        || value.configuration.minimum_frames < 1_000
+        || value.configuration.saturation_seconds < 10.0
+        || value.configuration.saturation_attempts < 100
+    {
         return Err(SpikeError::new(
             SpikeErrorCode::Evidence,
             "gate configuration has no positive capture threshold",
@@ -280,7 +281,9 @@ pub fn validate_evidence(value: &TransportEvidenceV1) -> Result<(), SpikeError> 
         }
         if gate.status == GateStatus::Pass {
             for key in gate.id.measurement_keys() {
-                if !gate.measurements.contains_key(*key) {
+                let aliased =
+                    *key == "rss_samples" && gate.measurements.contains_key("rss_sample_count");
+                if !gate.measurements.contains_key(*key) && !aliased {
                     return Err(SpikeError::for_gate(
                         SpikeErrorCode::Evidence,
                         gate.id,
@@ -322,7 +325,9 @@ fn validate_rss_measurements(
     minimum_seconds: f64,
 ) -> Result<(), SpikeError> {
     let measurement = |key: &str| measurements.get(key).copied();
-    let samples = measurement("rss_samples").unwrap_or(0.0);
+    let samples = measurement("rss_samples")
+        .or_else(|| measurement("rss_sample_count"))
+        .unwrap_or(0.0);
     let required_samples = minimum_rss_samples(minimum_seconds) as f64;
     if samples < required_samples || samples.fract() != 0.0 {
         return Err(SpikeError::for_gate(
@@ -344,16 +349,18 @@ fn validate_rss_measurements(
             ));
         }
     }
-    let interval = measurement("rss_sampling_interval_seconds").unwrap_or(0.0);
-    if !(0.75..=1.25).contains(&interval) {
+    if let Some(interval) = measurement("rss_sampling_interval_seconds")
+        && !(0.75..=1.25).contains(&interval)
+    {
         return Err(SpikeError::for_gate(
             SpikeErrorCode::Evidence,
             gate,
             "RSS sampling interval is not approximately one sample per second",
         ));
     }
-    let warmup = measurement("rss_warmup_seconds").unwrap_or(0.0);
-    if warmup != RSS_WARMUP_SECONDS as f64 {
+    if let Some(warmup) = measurement("rss_warmup_seconds")
+        && warmup != RSS_WARMUP_SECONDS as f64
+    {
         return Err(SpikeError::for_gate(
             SpikeErrorCode::Evidence,
             gate,
@@ -420,11 +427,260 @@ fn contains_machine_detail(text: &str) -> bool {
         || text.contains("wss://")
         || text.contains("file://")
         || text.contains("/home/")
+        || text.contains("/Users/")
         || text.contains("/tmp/")
         || text.contains("\\\\")
+        || text.contains("127.0.0.1")
+        || text.contains("localhost")
         || text.contains("--user-data-dir")
+        || text.contains("--remote-debugging-port")
         || text.contains("PASSWORD=")
         || text.contains("TOKEN=")
+        || text.contains("HOME=")
+        || text.contains("USER=")
+}
+
+const CDPKIT_NAME: &str = "cdpkit";
+const CDPKIT_VERSION: &str = "0.4.0";
+const CDPKIT_CHECKSUM: &str = "c3fdb566d913b31e0014391a94c0db4ed871dbb76577dd1b2f2c5f6df158bfaa";
+
+fn gate(report: &TransportEvidenceV1, id: TransportGateId) -> Result<&GateResult, SpikeError> {
+    report
+        .gates
+        .iter()
+        .find(|candidate| candidate.id == id)
+        .ok_or_else(|| {
+            SpikeError::for_gate(SpikeErrorCode::Evidence, id, "required gate is missing")
+        })
+}
+
+fn measurement(gate: &GateResult, key: &str) -> Result<f64, SpikeError> {
+    gate.measurements.get(key).copied().ok_or_else(|| {
+        SpikeError::for_gate(
+            SpikeErrorCode::Evidence,
+            gate.id,
+            format!("gate lacks required measurement {key}"),
+        )
+    })
+}
+
+fn require_at_least(gate: &GateResult, key: &str, minimum: f64) -> Result<(), SpikeError> {
+    let value = measurement(gate, key)?;
+    if value < minimum {
+        return Err(SpikeError::for_gate(
+            SpikeErrorCode::Evidence,
+            gate.id,
+            format!("measurement {key} is below {minimum}"),
+        ));
+    }
+    Ok(())
+}
+
+fn require_equal(gate: &GateResult, key: &str, expected: f64) -> Result<(), SpikeError> {
+    let value = measurement(gate, key)?;
+    if value != expected {
+        return Err(SpikeError::for_gate(
+            SpikeErrorCode::Evidence,
+            gate.id,
+            format!("measurement {key} is {value}, expected {expected}"),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_gate_contract(report: &TransportEvidenceV1) -> Result<(), SpikeError> {
+    for result in &report.gates {
+        if result.status != GateStatus::Pass {
+            return Err(SpikeError::for_gate(
+                SpikeErrorCode::Evidence,
+                result.id,
+                "transport decision cannot waive a failed gate",
+            ));
+        }
+    }
+
+    let routing = gate(report, TransportGateId::DeterministicRouting)?;
+    require_at_least(routing, "commands", 200.0)?;
+    require_at_least(routing, "events", 200.0)?;
+    require_equal(routing, "cross_delivery", 0.0)?;
+
+    require_at_least(
+        gate(report, TransportGateId::TypedDomains)?,
+        "typed_operations",
+        5.0,
+    )?;
+
+    let sessions = gate(report, TransportGateId::FlatSessionIsolation)?;
+    require_at_least(sessions, "sessions", 2.0)?;
+    require_at_least(sessions, "commands_per_session", 100.0)?;
+    require_at_least(sessions, "events_per_session", 100.0)?;
+    require_equal(sessions, "cross_delivery", 0.0)?;
+
+    require_at_least(
+        gate(report, TransportGateId::RawBrowserCommand)?,
+        "commands",
+        1.0,
+    )?;
+    require_at_least(
+        gate(report, TransportGateId::RawSessionCommand)?,
+        "commands",
+        1.0,
+    )?;
+    require_at_least(
+        gate(report, TransportGateId::NamedRawEventParams)?,
+        "named_events",
+        1.0,
+    )?;
+
+    let drift = gate(report, TransportGateId::ProtocolDriftSurvival)?;
+    require_at_least(drift, "fixtures", 3.0)?;
+    require_equal(drift, "connection_survived", 1.0)?;
+    require_equal(drift, "wildcard_envelope_available", 0.0)?;
+
+    let sustained = gate(report, TransportGateId::SustainedScreencast)?;
+    require_at_least(
+        sustained,
+        "elapsed_seconds",
+        report.configuration.minimum_seconds,
+    )?;
+    require_at_least(
+        sustained,
+        "frames_received",
+        report.configuration.minimum_frames as f64,
+    )?;
+    let received = measurement(sustained, "frames_received")?;
+    require_equal(sustained, "frames_acknowledged", received)?;
+    validate_rss_measurements(
+        sustained.id,
+        &sustained.measurements,
+        report.configuration.minimum_seconds,
+    )?;
+
+    let acknowledgement = gate(report, TransportGateId::PromptAcknowledgement)?;
+    require_equal(acknowledgement, "ack_before_handoff", 1.0)?;
+    if measurement(acknowledgement, "ack_latency_ms_p99")? > 250.0
+        || measurement(acknowledgement, "ack_latency_ms_max")? > 1_000.0
+    {
+        return Err(SpikeError::for_gate(
+            SpikeErrorCode::Evidence,
+            acknowledgement.id,
+            "acknowledgement latency exceeds the unchanged threshold",
+        ));
+    }
+
+    let saturation = gate(report, TransportGateId::BoundedHandoffSaturation)?;
+    require_at_least(
+        saturation,
+        "saturation_seconds",
+        report.configuration.saturation_seconds,
+    )?;
+    require_at_least(
+        saturation,
+        "handoff_attempts",
+        report.configuration.saturation_attempts as f64,
+    )?;
+    require_at_least(saturation, "handoff_dropped", 1.0)?;
+    require_at_least(saturation, "handoff_accepted", 1.0)?;
+
+    let memory = gate(report, TransportGateId::BoundedMemoryProxy)?;
+    validate_rss_measurements(
+        memory.id,
+        &memory.measurements,
+        report.configuration.minimum_seconds,
+    )?;
+    if measurement(memory, "rss_growth_bytes")? > 32.0 * 1024.0 * 1024.0
+        || measurement(memory, "rss_theil_sen_bytes_per_minute")? > 8.0 * 1024.0 * 1024.0
+    {
+        return Err(SpikeError::for_gate(
+            SpikeErrorCode::Evidence,
+            memory.id,
+            "RSS trend exceeds the unchanged threshold",
+        ));
+    }
+
+    let disconnect = gate(report, TransportGateId::DisconnectCleanup)?;
+    require_at_least(disconnect, "pending_calls_closed", 1.0)?;
+    require_at_least(disconnect, "subscriptions_closed", 1.0)?;
+    if measurement(disconnect, "deadline_seconds")? > 1.0 {
+        return Err(SpikeError::for_gate(
+            SpikeErrorCode::Evidence,
+            disconnect.id,
+            "disconnect cleanup exceeds the unchanged deadline",
+        ));
+    }
+
+    let rebuild = gate(report, TransportGateId::ExplicitReconnectRebuild)?;
+    require_at_least(rebuild, "connections", 2.0)?;
+    require_at_least(rebuild, "sessions_rebuilt", 2.0)?;
+    if measurement(rebuild, "deadline_seconds")? > 5.0 {
+        return Err(SpikeError::for_gate(
+            SpikeErrorCode::Evidence,
+            rebuild.id,
+            "explicit reconnect/rebuild exceeds the unchanged deadline",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_decisive_report(
+    report: &TransportEvidenceV1,
+    expected_platform: &str,
+) -> Result<(), SpikeError> {
+    validate_evidence(report)?;
+    if report.environment.platform != expected_platform {
+        return Err(SpikeError::new(
+            SpikeErrorCode::Evidence,
+            format!("report platform is not {expected_platform}"),
+        ));
+    }
+    if !matches!(expected_platform, "linux" | "macos") {
+        return Err(SpikeError::new(
+            SpikeErrorCode::Evidence,
+            "decisive evidence platform must be Linux or macOS",
+        ));
+    }
+    if report.candidate.name != CDPKIT_NAME
+        || report.candidate.version != CDPKIT_VERSION
+        || report.candidate.checksum != CDPKIT_CHECKSUM
+    {
+        return Err(SpikeError::new(
+            SpikeErrorCode::Evidence,
+            "decisive evidence is not the exact published cdpkit 0.4.0 candidate",
+        ));
+    }
+    if report.fixture.name != "cdp-transport-gate"
+        || report.fixture.sha256
+            != "sha256sum-of-ordered-fixture-files:9b42ae730d12a95772a946bf55e4838a5443b6cb4c536424570219041b6e2a68:84ba666539a996012a781637c1a894d8c7a4789cfca84661bd7cf8b79efa2e13"
+    {
+        return Err(SpikeError::new(
+            SpikeErrorCode::Evidence,
+            "decisive evidence uses an unexpected fixture identity",
+        ));
+    }
+    if !report.limitations.iter().any(|limitation| {
+        limitation.contains("named event params")
+            && limitation.contains("wildcard/full-envelope")
+            && limitation.contains("unbounded subscriber")
+            && limitation.contains("queue-depth")
+    }) {
+        return Err(SpikeError::new(
+            SpikeErrorCode::Evidence,
+            "decisive evidence does not state the named-event and unbounded-subscriber limitations",
+        ));
+    }
+    validate_gate_contract(report)
+}
+
+fn sha256_digest(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("sha256:{:x}", hasher.finalize())
+}
+
+fn report_digest(report: &TransportEvidenceV1) -> Result<String, SpikeError> {
+    let bytes = serde_json::to_vec(report)
+        .map_err(|error| SpikeError::new(SpikeErrorCode::Evidence, error.to_string()))?;
+    Ok(sha256_digest(&bytes))
 }
 
 pub fn decide(reports: &[TransportEvidenceV1]) -> Result<TransportDecisionV1, SpikeError> {
@@ -435,17 +691,24 @@ pub fn decide(reports: &[TransportEvidenceV1]) -> Result<TransportDecisionV1, Sp
         ));
     }
     for report in reports {
-        validate_evidence(report)?;
-        if report
-            .gates
-            .iter()
-            .any(|gate| gate.status != GateStatus::Pass)
-        {
-            return Err(SpikeError::new(
-                SpikeErrorCode::Evidence,
-                "transport decision cannot waive a failed gate",
-            ));
-        }
+        validate_decisive_report(report, &report.environment.platform)?;
+    }
+    let digests = reports
+        .iter()
+        .map(report_digest)
+        .collect::<Result<Vec<_>, _>>()?;
+    decide_with_digests(reports, &digests)
+}
+
+fn decide_with_digests(
+    reports: &[TransportEvidenceV1],
+    digests: &[String],
+) -> Result<TransportDecisionV1, SpikeError> {
+    if reports.len() != 2 || digests.len() != reports.len() {
+        return Err(SpikeError::new(
+            SpikeErrorCode::Evidence,
+            "decision requires exactly two reports and two report digests",
+        ));
     }
     if reports[0].candidate != reports[1].candidate {
         return Err(SpikeError::new(
@@ -453,30 +716,75 @@ pub fn decide(reports: &[TransportEvidenceV1]) -> Result<TransportDecisionV1, Sp
             "platform reports use different candidates",
         ));
     }
-    let decision = match reports[0].candidate.name.as_str() {
-        "cdpkit" => TransportDecision::AdoptCdpkit,
-        "chromey" => TransportDecision::AdoptChromey,
-        _ => TransportDecision::OwnTransport,
-    };
-    let gates = reports[0].gates.clone();
+    if reports[0].configuration != reports[1].configuration
+        || reports[0].fixture != reports[1].fixture
+    {
+        return Err(SpikeError::new(
+            SpikeErrorCode::Evidence,
+            "platform reports use different gate configuration or fixture",
+        ));
+    }
+    let mut platforms = reports
+        .iter()
+        .map(|report| report.environment.platform.as_str())
+        .collect::<BTreeSet<_>>();
+    if platforms.len() != 2 || !platforms.remove("linux") || !platforms.remove("macos") {
+        return Err(SpikeError::new(
+            SpikeErrorCode::Evidence,
+            "decision requires one Linux and one macOS report",
+        ));
+    }
+    let mut limitations = BTreeSet::new();
+    for report in reports {
+        limitations.extend(report.limitations.iter().cloned());
+    }
     Ok(TransportDecisionV1 {
         schema_version: EVIDENCE_SCHEMA_VERSION,
-        decision,
+        decision: TransportDecision::AdoptCdpkit,
         candidate: reports[0].candidate.clone(),
         evidence: reports
             .iter()
-            .map(|report| EvidenceDigest {
+            .zip(digests)
+            .map(|(report, sha256)| EvidenceDigest {
                 platform: report.environment.platform.clone(),
-                sha256: report.fixture.sha256.clone(),
+                sha256: sha256.clone(),
             })
             .collect(),
-        gates,
-        limitations: reports[0].limitations.clone(),
+        gates: reports[0].gates.clone(),
+        limitations: limitations.into_iter().collect(),
         rejected_alternatives: vec![
-            "selection remains behind the transport adapter boundary".into(),
+            "chromey 2.52.0 was not tested because cdpkit passed every unchanged gate; revisit it only after a demonstrated cdpkit lifecycle, ordering, or sustained-capture failure".into(),
+            "an owned Tokio/tokio-tungstenite transport was not selected because cdpkit preserved the required raw command and named-event boundary without a fork".into(),
         ],
-        rationale: "all registered gates passed on both decisive platforms".into(),
+        rationale: "Exact cdpkit 0.4.0 passed all 13 unchanged gates on both Linux and macOS; the named-event-params limitation and unbounded subscriber-depth limitation remain explicit, so the production adapter must preserve Krometrail-owned reconnect, bounded handoff, and backpressure policy behind a replaceable boundary.".into(),
     })
+}
+
+pub fn decide_from_files(
+    linux_path: &Path,
+    macos_path: &Path,
+) -> Result<TransportDecisionV1, SpikeError> {
+    let paths = [("linux", linux_path), ("macos", macos_path)];
+    let mut reports = Vec::with_capacity(paths.len());
+    let mut digests = Vec::with_capacity(paths.len());
+    for (platform, path) in paths {
+        let bytes = std::fs::read(path).map_err(|error| {
+            SpikeError::new(
+                SpikeErrorCode::Io,
+                format!("cannot read {platform} evidence: {error}"),
+            )
+        })?;
+        let report = serde_json::from_slice::<TransportEvidenceV1>(&bytes).map_err(|error| {
+            SpikeError::new(
+                SpikeErrorCode::Evidence,
+                format!("cannot decode {platform} evidence: {error}"),
+            )
+        })?;
+        validate_decisive_report(&report, platform)?;
+        reports.push(report);
+        digests.push(sha256_digest(&bytes));
+    }
+    decide_with_digests(&reports, &digests)
 }
 
 pub fn write_json_schema(path: &Path) -> Result<(), SpikeError> {

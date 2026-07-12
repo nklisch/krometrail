@@ -10,7 +10,7 @@ user-invocable: false
 
 # Rust CDP Transport Reference
 
-Evidence date: **2026-07-12**. This reference does not record a selected transport. The disposable real-Chrome compatibility spike owns that decision.
+Evidence date: **2026-07-12**. The unchanged real-Chrome compatibility spike selected exact published `cdpkit` **0.4.0** on Linux and macOS. The selection is behind the replaceable adapter boundary; production lifecycle and capture implementation remain later work.
 
 Full evidence and pinned sources: [`docs/research/rust-cdp-transport-2026-07.md`](../../../docs/research/rust-cdp-transport-2026-07.md).
 
@@ -101,9 +101,14 @@ Facts and pitfalls:
 - Initial connection retries do not replace Krometrail-owned runtime reconnection.
 - Event listener channels are unbounded.
 
-## Real-browser decision gate
+## Qualified real-browser result
 
-Test the exact published candidate, not a branch or fork. Record crate checksum, Chrome product/protocol versions, OS, and official CDP source revision.
+The committed decisive reports are:
+
+- Linux: `docs/evidence/cdp-transport/v1/cdpkit-linux.json`, SHA-256 `081259729e2495e999745bcd7caa509ec7effc844f50b2a4d786d6cc744c7feb`.
+- macOS: `docs/evidence/cdp-transport/v1/cdpkit-macos.json`, SHA-256 `3ffe94f405038fd8d9efd9fa7f8acbf15e8cb02c1f9e19bf24397f180981d401`.
+
+The Rust decision function independently validates the exact candidate/version/checksum, schema and complete 13-gate registry, unchanged configuration, platform identity, fixture consistency, redaction, and measured gate thresholds. It produces `docs/evidence/cdp-transport/v1/decision.json` with `adopt_cdpkit` only when both reports pass. Re-run the decision command from the evidence README when checking the committed inputs.
 
 A candidate passes only when all hold:
 
@@ -118,11 +123,11 @@ A candidate passes only when all hold:
 
 ## Selection rules
 
-- Try `cdpkit` 0.4.0 first because its source API best matches the adapter boundary.
-- Adopt it only unchanged; needing a routing, decoder, lifecycle patch, or fork is failure.
+- The selected candidate is exact `cdpkit` 0.4.0 because its source API best matches the adapter boundary and both platform reports pass unchanged.
+- Keep it unchanged; needing a routing, decoder, lifecycle patch, or fork is failure.
 - Try `chromey` only when its mature handler could address a demonstrated `cdpkit` lifecycle, ordering, or sustained-capture failure. Keep crawling/network policy out of core contracts.
 - Choose the owned transport when either library loses unknown events before a raw boundary, obscures ack/backpressure, cannot route sessions reliably, or requires a fork.
-- Never weaken a compatibility gate to select a dependency.
+- Never weaken a compatibility gate to select a dependency. Re-run the fallback decision only after a demonstrated cdpkit failure; do not pre-create or wire fallback production code.
 
 ## Owned fallback shape
 
