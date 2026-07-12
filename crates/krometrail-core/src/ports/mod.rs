@@ -239,9 +239,9 @@ mod tests {
                     .unwrap()
                     .iter()
                     .filter(|observation| {
-                        observation.session_id == session_id
-                            && observation.target_id == target_id
-                            && range.contains(observation.session_time)
+                        observation.session_id() == session_id
+                            && observation.target_id() == target_id
+                            && range.contains(observation.session_time())
                     })
                     .cloned()
                     .collect())
@@ -274,20 +274,21 @@ mod tests {
     }
 
     fn metadata() -> CapturedFrame {
-        CapturedFrame {
-            id: crate::FrameId::from_uuid(UUID.parse().unwrap()),
-            session_id: SessionId::from_uuid(UUID.parse().unwrap()),
-            target_id: TargetId::from_uuid(UUID.parse().unwrap()),
-            source_sequence: 1,
-            source_time: Some(SourceTime::from_nanos(2)),
-            observed_time: ObservedTime::from_nanos(3),
-            session_time: SessionTime::from_nanos(1),
-            format: ImageFormat::Jpeg,
-            image: PixelDimensions::new(2, 2).unwrap(),
-            viewport: PixelDimensions::new(2, 2).unwrap(),
-            device_scale_factor: DeviceScaleFactor::new(1.0).unwrap(),
-            warnings: vec![],
-        }
+        CapturedFrame::new(
+            crate::FrameId::from_uuid(UUID.parse().unwrap()),
+            SessionId::from_uuid(UUID.parse().unwrap()),
+            TargetId::from_uuid(UUID.parse().unwrap()),
+            1,
+            Some(SourceTime::from_nanos(2)),
+            ObservedTime::from_nanos(3),
+            SessionTime::from_nanos(1),
+            ImageFormat::Jpeg,
+            PixelDimensions::new(2, 2).unwrap(),
+            PixelDimensions::new(2, 2).unwrap(),
+            DeviceScaleFactor::new(1.0).unwrap(),
+            vec![],
+        )
+        .unwrap()
     }
 
     fn observation() -> TimelineObservation {
@@ -329,7 +330,7 @@ mod tests {
             })),
         )
         .unwrap();
-        assert_eq!(session.compatibility().version.product, "Chrome");
+        assert_eq!(session.compatibility().version.product(), "Chrome");
         assert_eq!(block_on(session.page_targets()).unwrap().len(), 1);
         assert!(block_on(session.close()).is_ok());
 
@@ -350,8 +351,8 @@ mod tests {
     fn recording_port_separates_frames_gaps_and_flush() {
         let sink: Arc<dyn RecordingSink> = Arc::new(FakeRecording::default());
         let frame = EncodedFrame::new(metadata(), vec![1, 2, 3]).unwrap();
-        let session_id = metadata().session_id;
-        let target_id = metadata().target_id;
+        let session_id = metadata().session_id();
+        let target_id = metadata().target_id();
         let gap = CaptureGap::new(
             crate::GapId::from_uuid(UUID.parse().unwrap()),
             session_id,
@@ -380,8 +381,8 @@ mod tests {
     fn timeline_port_indexes_and_filters_ranges() {
         let store: Arc<dyn TimelineStore> = Arc::new(FakeTimeline::default());
         let item = observation();
-        let session_id = item.session_id;
-        let target_id = item.target_id;
+        let session_id = item.session_id();
+        let target_id = item.target_id();
         assert!(block_on(store.append(item)).is_ok());
         let result = block_on(store.range(
             session_id,

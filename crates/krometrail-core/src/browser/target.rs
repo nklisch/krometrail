@@ -1,12 +1,23 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{error::Result, error::invalid, ids::TargetId};
+use crate::{
+    error::{Result, invalid},
+    ids::TargetId,
+    validation::deserialize_validated,
+};
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct BrowserVersion {
-    pub product: String,
-    pub revision: String,
-    pub protocol: String,
+    product: String,
+    revision: String,
+    protocol: String,
+}
+
+#[derive(Deserialize)]
+struct BrowserVersionWire {
+    product: String,
+    revision: String,
+    protocol: String,
 }
 
 impl BrowserVersion {
@@ -24,6 +35,18 @@ impl BrowserVersion {
         Ok(version)
     }
 
+    pub fn product(&self) -> &str {
+        &self.product
+    }
+
+    pub fn revision(&self) -> &str {
+        &self.revision
+    }
+
+    pub fn protocol(&self) -> &str {
+        &self.protocol
+    }
+
     pub(crate) fn validate(&self) -> Result<()> {
         for (field, value) in [
             ("product", &self.product),
@@ -38,7 +61,18 @@ impl BrowserVersion {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+impl<'de> Deserialize<'de> for BrowserVersion {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserialize_validated(deserializer, |wire: BrowserVersionWire| {
+            Self::new(wire.product, wire.revision, wire.protocol)
+        })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(transparent)]
 pub struct ProfileIdentity(String);
 
@@ -56,12 +90,29 @@ impl ProfileIdentity {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+impl<'de> Deserialize<'de> for ProfileIdentity {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserialize_validated(deserializer, |value: String| Self::new(value))
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct PageTarget {
-    pub id: TargetId,
-    pub browser_target_key: String,
-    pub url: String,
-    pub title: String,
+    id: TargetId,
+    browser_target_key: String,
+    url: String,
+    title: String,
+}
+
+#[derive(Deserialize)]
+struct PageTargetWire {
+    id: TargetId,
+    browser_target_key: String,
+    url: String,
+    title: String,
 }
 
 impl PageTarget {
@@ -77,13 +128,45 @@ impl PageTarget {
             url: url.into(),
             title: title.into(),
         };
-        if target.browser_target_key.trim().is_empty() {
+        target.validate()?;
+        Ok(target)
+    }
+
+    pub fn id(&self) -> TargetId {
+        self.id
+    }
+
+    pub fn browser_target_key(&self) -> &str {
+        &self.browser_target_key
+    }
+
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    fn validate(&self) -> Result<()> {
+        if self.browser_target_key.trim().is_empty() {
             return Err(invalid("browser target key must not be empty"));
         }
-        if target.url.trim().is_empty() {
+        if self.url.trim().is_empty() {
             return Err(invalid("target URL must not be empty"));
         }
-        Ok(target)
+        Ok(())
+    }
+}
+
+impl<'de> Deserialize<'de> for PageTarget {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserialize_validated(deserializer, |wire: PageTargetWire| {
+            Self::new(wire.id, wire.browser_target_key, wire.url, wire.title)
+        })
     }
 }
 
@@ -109,5 +192,17 @@ mod tests {
         assert!(
             PageTarget::new(TargetId::from_uuid(UUID.parse().unwrap()), "target", "", "").is_err()
         );
+    }
+
+    #[test]
+    fn rejects_malformed_serialized_validated_browser_values() {
+        assert!(
+            serde_json::from_str::<BrowserVersion>(
+                r#"{"product":"","revision":"r","protocol":"p"}"#
+            )
+            .is_err()
+        );
+        assert!(serde_json::from_str::<ProfileIdentity>(r#""  "#).is_err());
+        assert!(serde_json::from_str::<PageTarget>(&format!(r#"{{"id":"{UUID}","browser_target_key":"","url":"https://example.test","title":""}}"#)).is_err());
     }
 }

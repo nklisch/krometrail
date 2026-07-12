@@ -6,6 +6,7 @@ use crate::{
     error::{Result, invalid},
     ids::{GapId, SessionId, TargetId},
     time::SessionRange,
+    validation::deserialize_validated,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -20,15 +21,26 @@ pub enum CaptureGapReason {
     CaptureStopped,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct CaptureGap {
-    pub id: GapId,
-    pub session_id: SessionId,
-    pub target_id: TargetId,
-    pub range: SessionRange,
-    pub reason: CaptureGapReason,
-    pub estimated_missing_frames: Option<NonZeroU64>,
-    pub detail: Option<String>,
+    id: GapId,
+    session_id: SessionId,
+    target_id: TargetId,
+    range: SessionRange,
+    reason: CaptureGapReason,
+    estimated_missing_frames: Option<NonZeroU64>,
+    detail: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct CaptureGapWire {
+    id: GapId,
+    session_id: SessionId,
+    target_id: TargetId,
+    range: SessionRange,
+    reason: CaptureGapReason,
+    estimated_missing_frames: Option<NonZeroU64>,
+    detail: Option<String>,
 }
 
 impl CaptureGap {
@@ -42,15 +54,7 @@ impl CaptureGap {
         estimated_missing_frames: Option<NonZeroU64>,
         detail: Option<String>,
     ) -> Result<Self> {
-        if detail
-            .as_deref()
-            .is_some_and(|value| value.trim().is_empty())
-        {
-            return Err(invalid(
-                "capture gap detail must not be empty or whitespace-only",
-            ));
-        }
-        Ok(Self {
+        let gap = Self {
             id,
             session_id,
             target_id,
@@ -58,6 +62,62 @@ impl CaptureGap {
             reason,
             estimated_missing_frames,
             detail,
+        };
+        gap.validate()?;
+        Ok(gap)
+    }
+
+    pub const fn id(&self) -> GapId {
+        self.id
+    }
+    pub const fn session_id(&self) -> SessionId {
+        self.session_id
+    }
+    pub const fn target_id(&self) -> TargetId {
+        self.target_id
+    }
+    pub const fn range(&self) -> SessionRange {
+        self.range
+    }
+    pub const fn reason(&self) -> &CaptureGapReason {
+        &self.reason
+    }
+    pub const fn estimated_missing_frames(&self) -> Option<NonZeroU64> {
+        self.estimated_missing_frames
+    }
+    pub fn detail(&self) -> Option<&str> {
+        self.detail.as_deref()
+    }
+
+    fn validate(&self) -> Result<()> {
+        if self
+            .detail
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty())
+        {
+            return Err(invalid(
+                "capture gap detail must not be empty or whitespace-only",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl<'de> Deserialize<'de> for CaptureGap {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserialize_validated(deserializer, |wire: CaptureGapWire| {
+            Self::new(
+                wire.id,
+                wire.session_id,
+                wire.target_id,
+                wire.range,
+                wire.reason,
+                wire.estimated_missing_frames,
+                wire.detail,
+            )
         })
     }
 }
@@ -102,5 +162,33 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn rejects_malformed_serialized_gap_details_and_ranges() {
+        let value = serde_json::json!({
+            "id": UUID, "session_id": UUID, "target_id": UUID,
+            "range": {"start": 2, "end": 1}, "reason": "capture_stopped",
+            "estimated_missing_frames": null, "detail": null
+        });
+        assert!(serde_json::from_value::<CaptureGap>(value).is_err());
+        let value = serde_json::json!({
+            "id": UUID, "session_id": UUID, "target_id": UUID,
+            "range": {"start": 1, "end": 2}, "reason": "capture_stopped",
+            "estimated_missing_frames": null, "detail": " "
+        });
+        assert!(serde_json::from_value::<CaptureGap>(value).is_err());
+        let valid = CaptureGap::new(
+            GapId::from_uuid(UUID.parse().unwrap()),
+            SessionId::from_uuid(UUID.parse().unwrap()),
+            TargetId::from_uuid(UUID.parse().unwrap()),
+            SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(1)).unwrap(),
+            CaptureGapReason::CaptureStopped,
+            NonZeroU64::new(2),
+            Some("browser stopped capture".into()),
+        )
+        .unwrap();
+        let encoded = serde_json::to_string(&valid).unwrap();
+        assert_eq!(serde_json::from_str::<CaptureGap>(&encoded).unwrap(), valid);
     }
 }

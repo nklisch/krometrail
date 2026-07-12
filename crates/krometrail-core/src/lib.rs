@@ -10,6 +10,8 @@ pub mod recording;
 pub mod time;
 pub mod timeline;
 
+mod validation;
+
 pub use browser::{BrowserVersion, PageTarget, ProfileIdentity};
 pub use capabilities::{
     CAPABILITY_REGISTRY, CapabilityDefault, CapabilityDefinition, CapabilityId, RecordingSubsystem,

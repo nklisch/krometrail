@@ -9,6 +9,7 @@ use crate::{
     error::{Result, invalid},
     ids::{FrameId, SessionId, TargetId},
     time::{ObservedTime, SessionTime, SourceTime},
+    validation::deserialize_validated,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -18,10 +19,16 @@ pub enum ImageFormat {
     Png,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct PixelDimensions {
     width: NonZeroU32,
     height: NonZeroU32,
+}
+
+#[derive(Deserialize)]
+struct PixelDimensionsWire {
+    width: u32,
+    height: u32,
 }
 
 impl PixelDimensions {
@@ -43,7 +50,19 @@ impl PixelDimensions {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+impl<'de> Deserialize<'de> for PixelDimensions {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserialize_validated(deserializer, |wire: PixelDimensionsWire| {
+            Self::new(wire.width, wire.height)
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(transparent)]
 pub struct DeviceScaleFactor(f64);
 
 impl DeviceScaleFactor {
@@ -60,6 +79,15 @@ impl DeviceScaleFactor {
     }
 }
 
+impl<'de> Deserialize<'de> for DeviceScaleFactor {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserialize_validated(deserializer, |value: f64| Self::new(value))
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CaptureWarning {
@@ -69,32 +97,147 @@ pub enum CaptureWarning {
     ViewportMetadataIncomplete,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct CapturedFrame {
-    pub id: FrameId,
-    pub session_id: SessionId,
-    pub target_id: TargetId,
-    pub source_sequence: u64,
-    pub source_time: Option<SourceTime>,
-    pub observed_time: ObservedTime,
-    pub session_time: SessionTime,
-    pub format: ImageFormat,
-    pub image: PixelDimensions,
-    pub viewport: PixelDimensions,
-    pub device_scale_factor: DeviceScaleFactor,
-    pub warnings: Vec<CaptureWarning>,
+    id: FrameId,
+    session_id: SessionId,
+    target_id: TargetId,
+    source_sequence: u64,
+    source_time: Option<SourceTime>,
+    observed_time: ObservedTime,
+    session_time: SessionTime,
+    format: ImageFormat,
+    image: PixelDimensions,
+    viewport: PixelDimensions,
+    device_scale_factor: DeviceScaleFactor,
+    warnings: Vec<CaptureWarning>,
+}
+
+#[derive(Deserialize)]
+struct CapturedFrameWire {
+    id: FrameId,
+    session_id: SessionId,
+    target_id: TargetId,
+    source_sequence: u64,
+    source_time: Option<SourceTime>,
+    observed_time: ObservedTime,
+    session_time: SessionTime,
+    format: ImageFormat,
+    image: PixelDimensions,
+    viewport: PixelDimensions,
+    device_scale_factor: DeviceScaleFactor,
+    warnings: Vec<CaptureWarning>,
 }
 
 impl CapturedFrame {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        id: FrameId,
+        session_id: SessionId,
+        target_id: TargetId,
+        source_sequence: u64,
+        source_time: Option<SourceTime>,
+        observed_time: ObservedTime,
+        session_time: SessionTime,
+        format: ImageFormat,
+        image: PixelDimensions,
+        viewport: PixelDimensions,
+        device_scale_factor: DeviceScaleFactor,
+        warnings: Vec<CaptureWarning>,
+    ) -> Result<Self> {
+        let frame = Self {
+            id,
+            session_id,
+            target_id,
+            source_sequence,
+            source_time,
+            observed_time,
+            session_time,
+            format,
+            image,
+            viewport,
+            device_scale_factor,
+            warnings,
+        };
+        frame.validate()?;
+        Ok(frame)
+    }
+
+    pub const fn id(&self) -> FrameId {
+        self.id
+    }
+    pub const fn session_id(&self) -> SessionId {
+        self.session_id
+    }
+    pub const fn target_id(&self) -> TargetId {
+        self.target_id
+    }
+    pub const fn source_sequence(&self) -> u64 {
+        self.source_sequence
+    }
+    pub const fn source_time(&self) -> Option<SourceTime> {
+        self.source_time
+    }
+    pub const fn observed_time(&self) -> ObservedTime {
+        self.observed_time
+    }
+    pub const fn session_time(&self) -> SessionTime {
+        self.session_time
+    }
+    pub const fn format(&self) -> ImageFormat {
+        self.format
+    }
+    pub const fn image(&self) -> PixelDimensions {
+        self.image
+    }
+    pub const fn viewport(&self) -> PixelDimensions {
+        self.viewport
+    }
+    pub const fn device_scale_factor(&self) -> DeviceScaleFactor {
+        self.device_scale_factor
+    }
+    pub fn warnings(&self) -> &[CaptureWarning] {
+        &self.warnings
+    }
+
+    /// A normalized frame timestamp cannot be later than the observed timestamp.
+    /// The source clock remains independent and is intentionally not compared here.
     pub fn validate(&self) -> Result<()> {
+        if self.session_time.as_nanos() > self.observed_time.as_nanos() {
+            return Err(invalid("frame session time must not exceed observed time"));
+        }
         Ok(())
+    }
+}
+
+impl<'de> Deserialize<'de> for CapturedFrame {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserialize_validated(deserializer, |wire: CapturedFrameWire| {
+            Self::new(
+                wire.id,
+                wire.session_id,
+                wire.target_id,
+                wire.source_sequence,
+                wire.source_time,
+                wire.observed_time,
+                wire.session_time,
+                wire.format,
+                wire.image,
+                wire.viewport,
+                wire.device_scale_factor,
+                wire.warnings,
+            )
+        })
     }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct EncodedFrame {
-    pub metadata: CapturedFrame,
-    pub bytes: Arc<[u8]>,
+    metadata: CapturedFrame,
+    bytes: Arc<[u8]>,
 }
 
 impl EncodedFrame {
@@ -105,6 +248,13 @@ impl EncodedFrame {
             return Err(invalid("encoded frame payload must not be empty"));
         }
         Ok(Self { metadata, bytes })
+    }
+
+    pub fn metadata(&self) -> &CapturedFrame {
+        &self.metadata
+    }
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
     }
 
     pub fn byte_len(&self) -> NonZeroU64 {
@@ -119,20 +269,21 @@ mod tests {
     const UUID: &str = "123e4567-e89b-12d3-a456-426614174000";
 
     fn metadata() -> CapturedFrame {
-        CapturedFrame {
-            id: FrameId::from_uuid(UUID.parse().unwrap()),
-            session_id: SessionId::from_uuid(UUID.parse().unwrap()),
-            target_id: TargetId::from_uuid(UUID.parse().unwrap()),
-            source_sequence: 1,
-            source_time: Some(SourceTime::from_nanos(20)),
-            observed_time: ObservedTime::from_nanos(30),
-            session_time: SessionTime::from_nanos(10),
-            format: ImageFormat::Jpeg,
-            image: PixelDimensions::new(100, 80).unwrap(),
-            viewport: PixelDimensions::new(100, 80).unwrap(),
-            device_scale_factor: DeviceScaleFactor::new(1.0).unwrap(),
-            warnings: vec![],
-        }
+        CapturedFrame::new(
+            FrameId::from_uuid(UUID.parse().unwrap()),
+            SessionId::from_uuid(UUID.parse().unwrap()),
+            TargetId::from_uuid(UUID.parse().unwrap()),
+            1,
+            Some(SourceTime::from_nanos(20)),
+            ObservedTime::from_nanos(30),
+            SessionTime::from_nanos(10),
+            ImageFormat::Jpeg,
+            PixelDimensions::new(100, 80).unwrap(),
+            PixelDimensions::new(100, 80).unwrap(),
+            DeviceScaleFactor::new(1.0).unwrap(),
+            vec![],
+        )
+        .unwrap()
     }
 
     #[test]
@@ -152,10 +303,47 @@ mod tests {
     }
 
     #[test]
+    fn rejects_incoherent_frame_times() {
+        assert!(
+            CapturedFrame::new(
+                FrameId::from_uuid(UUID.parse().unwrap()),
+                SessionId::from_uuid(UUID.parse().unwrap()),
+                TargetId::from_uuid(UUID.parse().unwrap()),
+                1,
+                None,
+                ObservedTime::from_nanos(2),
+                SessionTime::from_nanos(3),
+                ImageFormat::Jpeg,
+                PixelDimensions::new(1, 1).unwrap(),
+                PixelDimensions::new(1, 1).unwrap(),
+                DeviceScaleFactor::new(1.0).unwrap(),
+                vec![]
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn preserves_three_time_values_independently() {
         let frame = metadata();
-        assert_eq!(frame.source_time.unwrap().as_nanos(), 20);
-        assert_eq!(frame.observed_time.as_nanos(), 30);
-        assert_eq!(frame.session_time.as_nanos(), 10);
+        assert_eq!(frame.source_time().unwrap().as_nanos(), 20);
+        assert_eq!(frame.observed_time().as_nanos(), 30);
+        assert_eq!(frame.session_time().as_nanos(), 10);
+    }
+
+    #[test]
+    fn rejects_malformed_serialized_dimensions_scale_and_frames() {
+        assert!(serde_json::from_str::<PixelDimensions>(r#"{"width":0,"height":80}"#).is_err());
+        assert!(serde_json::from_str::<DeviceScaleFactor>("0.0").is_err());
+        let malformed = serde_json::to_value(metadata()).unwrap();
+        let mut object = malformed.as_object().unwrap().clone();
+        object.insert("session_time".into(), serde_json::json!(31));
+        assert!(serde_json::from_value::<CapturedFrame>(object.into()).is_err());
+        let valid = metadata();
+        let encoded = serde_json::to_string(&valid).unwrap();
+        assert_eq!(
+            serde_json::from_str::<CapturedFrame>(&encoded).unwrap(),
+            valid
+        );
     }
 }

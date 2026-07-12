@@ -2,7 +2,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{Result, invalid_time};
+use crate::{
+    error::{Result, invalid_time},
+    validation::deserialize_validated,
+};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -71,10 +74,16 @@ impl SessionOrigin {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct SessionRange {
-    pub start: SessionTime,
-    pub end: SessionTime,
+    start: SessionTime,
+    end: SessionTime,
+}
+
+#[derive(Deserialize)]
+struct SessionRangeWire {
+    start: SessionTime,
+    end: SessionTime,
 }
 
 impl SessionRange {
@@ -85,8 +94,27 @@ impl SessionRange {
         Ok(Self { start, end })
     }
 
+    pub const fn start(self) -> SessionTime {
+        self.start
+    }
+
+    pub const fn end(self) -> SessionTime {
+        self.end
+    }
+
     pub const fn contains(self, value: SessionTime) -> bool {
         value.as_nanos() >= self.start.as_nanos() && value.as_nanos() <= self.end.as_nanos()
+    }
+}
+
+impl<'de> Deserialize<'de> for SessionRange {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserialize_validated(deserializer, |wire: SessionRangeWire| {
+            Self::new(wire.start, wire.end)
+        })
     }
 }
 
@@ -122,9 +150,24 @@ mod tests {
         let start = SessionTime::from_nanos(5);
         let end = SessionTime::from_nanos(10);
         let range = SessionRange::new(start, end).unwrap();
+        assert_eq!(range.start(), start);
+        assert_eq!(range.end(), end);
         assert!(range.contains(start));
         assert!(range.contains(end));
         assert!(!range.contains(SessionTime::from_nanos(11)));
         assert!(SessionRange::new(end, start).is_err());
+    }
+
+    #[test]
+    fn rejects_malformed_serialized_ranges() {
+        let malformed = r#"{"start":10,"end":5}"#;
+        assert!(serde_json::from_str::<SessionRange>(malformed).is_err());
+        let valid =
+            SessionRange::new(SessionTime::from_nanos(5), SessionTime::from_nanos(10)).unwrap();
+        let encoded = serde_json::to_string(&valid).unwrap();
+        assert_eq!(
+            serde_json::from_str::<SessionRange>(&encoded).unwrap(),
+            valid
+        );
     }
 }

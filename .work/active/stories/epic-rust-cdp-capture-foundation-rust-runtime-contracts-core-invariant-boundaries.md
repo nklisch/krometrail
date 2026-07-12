@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-rust-runtime-contracts-core-invariant-boundaries
 kind: story
-stage: implementing
+stage: review
 tags: [bug, tests, infra]
 parent: epic-rust-cdp-capture-foundation-rust-runtime-contracts
 depends_on: []
@@ -28,10 +28,20 @@ Close the deep-review blocker that allows invariant-bearing domain aggregates to
 
 ## Acceptance criteria
 
-- [ ] Invalid ranges, statistics, ended sessions, gap details, frames, and observation payload-kind pairs cannot enter the domain through direct construction or deserialization.
-- [ ] Existing valid serialization round trips remain compatible.
-- [ ] The complete Rust quality gate passes.
+- [x] Invalid ranges, statistics, ended sessions, gap details, frames, and observation payload-kind pairs cannot enter the domain through direct construction or deserialization.
+- [x] Existing valid serialization round trips remain compatible.
+- [x] The complete Rust quality gate passes.
 
 ## Review origin
 
 Filed from the GPT-5.6 Sol Phase 2 adversarial feature review after GLM 5.2 completeness review found the feature otherwise complete.
+
+## Implementation notes
+
+- Files changed: `crates/krometrail-core/src/validation.rs`, `time.rs`, `browser/target.rs`, `recording/session.rs`, `recording/frame.rs`, `recording/gap.rs`, `timeline/observation.rs`, `ports/mod.rs`, and `lib.rs`.
+- Tests added: malformed-wire rejection and valid serde round trips for ranges, statistics, sessions, dimensions/scale factors/frames, gaps, and timeline observations; atomic statistics mutation and meaningful frame/observation timestamp validation.
+- Invariant boundaries: invariant-bearing aggregate fields are private; public constructors/getters and validated mutation (`CaptureStatistics::update`, `RecordingSession::set_statistics`/`transition`) are the only construction/update paths. A shared `deserialize_validated` adapter routes each public wire representation through its domain constructor/validator while preserving existing serialized field names.
+- Discrepancies from design: frame validation now rejects normalized session timestamps later than observed timestamps; this is the minimum meaningful clock-order invariant consistent with the three-clock model. Supporting validated value objects (`BrowserVersion`, `ProfileIdentity`, `PageTarget`, `DiskBudgetBytes`, `PixelDimensions`, and `DeviceScaleFactor`) also received serde validation because protected aggregates contain them.
+- Compatibility: valid serialized shapes and field names remain unchanged; `CapturedFrame` construction now uses its validated constructor and read access uses getters.
+- Adjacent issues parked: none.
+- Verification: `cargo fmt --all --check`, `cargo check --workspace --all-targets`, `cargo test --workspace --all-targets` (37 passed), and `cargo clippy --workspace --all-targets -- -D warnings` all pass. Direct invalid aggregate field construction is unavailable because the invariant-bearing fields are private; malformed serde tests provide runtime boundary evidence.
