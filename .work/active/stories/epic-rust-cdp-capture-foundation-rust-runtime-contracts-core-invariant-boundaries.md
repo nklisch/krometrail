@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-rust-runtime-contracts-core-invariant-boundaries
 kind: story
-stage: review
+stage: done
 tags: [bug, tests, infra]
 parent: epic-rust-cdp-capture-foundation-rust-runtime-contracts
 depends_on: []
@@ -45,3 +45,13 @@ Filed from the GPT-5.6 Sol Phase 2 adversarial feature review after GLM 5.2 comp
 - Compatibility: valid serialized shapes and field names remain unchanged; `CapturedFrame` construction now uses its validated constructor and read access uses getters.
 - Adjacent issues parked: none.
 - Verification: `cargo fmt --all --check`, `cargo check --workspace --all-targets`, `cargo test --workspace --all-targets` (37 passed), and `cargo clippy --workspace --all-targets -- -D warnings` all pass. Direct invalid aggregate field construction is unavailable because the invariant-bearing fields are private; malformed serde tests provide runtime boundary evidence.
+
+## Review (2026-07-12)
+
+**Verdict**: Approve
+
+**Blockers**: none
+**Important**: none
+**Nits**: none
+
+**Notes**: Fast-lane review follow-up. The implementation records 37 workspace tests; the orchestrator independently reran formatting, all 34 core tests, and locked workspace clippy successfully. The feature-review blocker is addressed at direct-construction and Serde boundaries. Verdict: Approve - story verified by implement; fast-lane advance.
