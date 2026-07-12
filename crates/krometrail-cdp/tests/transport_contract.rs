@@ -5,9 +5,9 @@ use std::collections::BTreeMap;
 use futures_util::{SinkExt, StreamExt};
 
 use krometrail_cdp::spike::{
-    CandidateIdentity, FixtureEvidence, GateConfiguration, GateResult, GateStatus,
-    SanitizedEnvironment, ScriptedCdpPeer, SourceIdentity, TransportEvidenceV1, TransportGateId,
-    decide_from_files, validate_evidence, write_json_schema,
+    CandidateContractEvidence, CandidateIdentity, FixtureEvidence, GateConfiguration, GateResult,
+    GateStatus, SanitizedEnvironment, ScriptedCdpPeer, SourceIdentity, TransportEvidenceV1,
+    TransportGateId, decide_from_files, validate_evidence, write_json_schema,
 };
 use krometrail_cdp::spike::{
     FakeTransport, FakeTransportFactory, SpikeTransport, TransportScope, run_transport_scenarios,
@@ -56,6 +56,7 @@ fn evidence(gates: Vec<GateResult>) -> TransportEvidenceV1 {
         },
         gates,
         limitations: vec!["named event parameters are not wildcard envelopes".into()],
+        candidate_contract: None,
     }
 }
 
@@ -153,6 +154,33 @@ fn evidence_round_trips_and_requires_every_registered_gate() {
         serde_json::from_str::<TransportEvidenceV1>(&encoded).unwrap(),
         value
     );
+}
+
+#[test]
+fn candidate_wire_contract_is_separate_and_trace_bound() {
+    let gates = TransportGateId::ALL
+        .into_iter()
+        .map(|id| GateResult {
+            id,
+            status: GateStatus::Pass,
+            summary: "fixture passed".into(),
+            measurements: id
+                .measurement_keys()
+                .iter()
+                .map(|key| ((*key).into(), valid_measurement(key)))
+                .collect(),
+            failure: None,
+        })
+        .collect();
+    let mut value = evidence(gates);
+    value.candidate_contract = Some(CandidateContractEvidence {
+        fixtures: 3,
+        connection_survived: true,
+        trace_sha256: format!("sha256:{}", "a".repeat(64)),
+    });
+    validate_evidence(&value).unwrap();
+    value.candidate_contract.as_mut().unwrap().trace_sha256 = "not-a-digest".into();
+    assert!(validate_evidence(&value).is_err());
 }
 
 #[test]

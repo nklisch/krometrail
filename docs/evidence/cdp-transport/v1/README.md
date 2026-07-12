@@ -4,7 +4,7 @@ This directory contains the version-1 machine-readable evidence for the Rust CDP
 
 ## Selected transport
 
-The Rust decision function independently selects exact published `cdpkit` **0.4.0** (`Cargo.lock` checksum `c3fdb566d913b31e0014391a94c0db4ed871dbb76577dd1b2f2c5f6df158bfaa`) because both reports pass all 13 unchanged gates. The result is recorded in `decision.json`; it is not a hand-copied gate list.
+The historical Rust decision selected exact published `cdpkit` **0.4.0** (`Cargo.lock` checksum `c3fdb566d913b31e0014391a94c0db4ed871dbb76577dd1b2f2c5f6df158bfaa`) because both reports passed all 13 gates. Phase 2 wire-authenticity remediation changed the qualification harness after these reports were captured; the reports and `decision.json` are retained unchanged and must not be treated as refreshed decisive evidence until both platforms are requalified.
 
 - Linux report: `cdpkit-linux.json`
   - SHA-256: `081259729e2495e999745bcd7caa509ec7effc844f50b2a4d786d6cc744c7feb`
@@ -45,8 +45,8 @@ The 13 gates cover deterministic routing, typed domains, flat-session isolation,
 
 The decision preserves these limitations exactly:
 
-- cdpkit exposes **named event parameters**, not wildcard or full-envelope receive.
-- cdpkit's event subscriber is unbounded and its queue depth is not inspectable; RSS and handoff counters are process-level proxies only.
+- cdpkit exposes **named event parameters**, not wildcard or full-envelope receive. The remediated runner binds unknown-event/additive-field/unknown-enum fixtures to a candidate-only observed-wire trace; it does not call those fixtures real-Chrome measurements.
+- cdpkit's event subscriber is unbounded and its queue depth is not inspectable; the continuously drained RSS and handoff counters are process-level proxies only and do not prove the hidden queue is bounded.
 - acknowledgement latency is a receive-to-ack-completion proxy, not a wire-enqueue timestamp.
 - Krometrail owns reconnect/session restoration, bounded handoff, backpressure, capture gaps, cancellation, and flush behavior.
 

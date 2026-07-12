@@ -9,6 +9,16 @@
     "candidate": {
       "$ref": "#/$defs/CandidateIdentity"
     },
+    "candidate_contract": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CandidateContractEvidence"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "configuration": {
       "$ref": "#/$defs/GateConfiguration"
     },
@@ -71,6 +81,29 @@
         "product",
         "protocol",
         "revision"
+      ]
+    },
+    "CandidateContractEvidence": {
+      "description": "Evidence produced by the candidate-only wire contract. It is deliberately separate from\nreal-Chrome measurements: Chrome cannot be instructed to emit unknown future protocol fields.",
+      "type": "object",
+      "properties": {
+        "connection_survived": {
+          "type": "boolean"
+        },
+        "fixtures": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "trace_sha256": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "fixtures",
+        "connection_survived",
+        "trace_sha256"
       ]
     },
     "CandidateIdentity": {

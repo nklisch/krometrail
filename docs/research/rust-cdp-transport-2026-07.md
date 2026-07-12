@@ -74,11 +74,11 @@ The committed reports are the only decisive inputs:
 - `docs/evidence/cdp-transport/v1/cdpkit-linux.json` — SHA-256 `081259729e2495e999745bcd7caa509ec7effc844f50b2a4d786d6cc744c7feb`; Linux x86_64, Chrome 149.0.7827.155.
 - `docs/evidence/cdp-transport/v1/cdpkit-macos.json` — SHA-256 `3ffe94f405038fd8d9efd9fa7f8acbf15e8cb02c1f9e19bf24397f180981d401`; macOS aarch64, Chrome 149.0.7827.201.
 
-The Rust decision function validates schema version, the complete 13-gate registry, unchanged thresholds, exact candidate/version/checksum, Linux/macOS identity, fixture consistency, redaction, and every measured gate contract before producing `docs/evidence/cdp-transport/v1/decision.json`. It reaches `adopt_cdpkit` only because both reports pass all 13 gates; no gate is waived or hand-copied into the decision.
+The Rust decision function validates schema version, the complete 13-gate registry, unchanged thresholds, exact candidate/version/checksum, Linux/macOS identity, fixture consistency, redaction, and every measured gate contract before producing `docs/evidence/cdp-transport/v1/decision.json`. The committed reports and decision are historical pre-remediation outputs; the wire-authenticity remediation intentionally does not edit or recapture them. A rerun binds candidate-only drift fixtures to a trace digest while labeling them separately from real-Chrome measurements.
 
 ### 1. Exact cdpkit 0.4.0
 
-Its source API maps cleanly to Krometrail's replaceable transport adapter and leaves reconnect ownership in the right layer. The unchanged fake and real-Chrome gates now provide the required qualification evidence: typed domains, flat routing, named raw params, protocol-drift survival, sustained screencast acknowledgement, bounded-handoff saturation, RSS trend, disconnect cleanup, and explicit session rebuild all pass on both decisive platforms.
+Its source API maps cleanly to Krometrail's replaceable transport adapter and leaves reconnect ownership in the right layer. The remediation harness derives candidate routing, ordering, detach, close, and rebuild assertions from one observed wire controller. Real-Chrome routing counts are derived from unique correlated command/event tokens. The sustained run remains a continuously drained RSS/counter proxy; it does not prove that cdpkit's hidden unbounded subscriber queue is bounded.
 
 The selection does not broaden cdpkit's API. `event_stream::<Value>(name)` preserves parameters for one named event only; it is not wildcard or full-envelope receive. The subscriber remains unbounded and queue depth remains uninspectable. Krometrail must acknowledge before its bounded handoff, own backpressure and capture-gap policy, and own reconnect/session restoration.
 

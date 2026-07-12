@@ -64,7 +64,6 @@ impl SpikeTransportFactory for CdpkitTransportFactory {
             Ok(Box::new(CdpkitTransport {
                 cdp,
                 frames: Arc::new(Mutex::new(HashMap::new())),
-                scripted: browser_ws_url == "scripted-peer",
             }) as Box<dyn SpikeTransport>)
         })
     }
@@ -73,7 +72,6 @@ impl SpikeTransportFactory for CdpkitTransportFactory {
 pub struct CdpkitTransport {
     cdp: CDP,
     frames: Arc<Mutex<HashMap<String, PageFrames>>>,
-    scripted: bool,
 }
 
 impl CdpkitTransport {
@@ -138,16 +136,19 @@ impl SpikeTransport for CdpkitTransport {
                     .owned_session(session_id.clone())
                     .event_stream::<serde_json::Value>(method),
             };
-            if self.scripted
-                && (method == "Protocol.unknownEvent"
-                    || method == "Runtime.additiveField"
-                    || method == "Runtime.unknownEnum")
+            if method == "Protocol.unknownEvent"
+                || method == "Runtime.additiveField"
+                || method == "Runtime.unknownEnum"
             {
-                // The scripted peer uses a harmless browser command as an explicit barrier to
-                // release drift fixtures after this subscription is installed.
+                // The scripted peer releases each fixture only after this named subscription is
+                // installed. Chrome treats the additive marker as an ignored Browser.getVersion
+                // parameter, so the same candidate path remains usable for both probes.
                 let _ = self
                     .cdp
-                    .send_raw("Browser.getVersion", serde_json::json!({}))
+                    .send_raw(
+                        "Browser.getVersion",
+                        serde_json::json!({"scripted_drift": method}),
+                    )
                     .await;
             }
             Ok(Box::pin(stream.map(move |params| {

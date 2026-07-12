@@ -14,8 +14,8 @@ pub mod scenarios;
 pub mod scripted_peer;
 
 pub use contract::{
-    EventStream, NamedEventParams, SpikeFuture, SpikeTransport, SpikeTransportFactory,
-    TransportScope,
+    CandidateContractEvidence, EventStream, NamedEventParams, SpikeFuture, SpikeTransport,
+    SpikeTransportFactory, TransportScope,
 };
 pub use error::{SpikeError, SpikeErrorCode};
 pub use evidence::{
@@ -27,4 +27,6 @@ pub use evidence::{
 };
 pub use fake::{FakeTransport, FakeTransportFactory};
 pub use scenarios::{ScenarioEvidence, run_transport_scenarios};
-pub use scripted_peer::{ScriptedCdpPeer, ScriptedMessage};
+pub use scripted_peer::{
+    RoutingMeasurements, ScriptedCdpPeer, ScriptedCdpServer, WireObservation, WireObservationKind,
+};

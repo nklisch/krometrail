@@ -3,7 +3,7 @@
 
 use std::{
     cmp::Ordering,
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     io::{Read, Write},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -23,6 +23,7 @@ use super::{
         SourceIdentity, TransportEvidenceV1, TransportGateId, rss_measurements_are_valid,
     },
     fixture_server::StaticFixtureServer,
+    scenarios::run_candidate_wire_contract,
 };
 
 #[derive(Clone, Debug)]
@@ -111,6 +112,10 @@ pub async fn run_real_chrome_gate(
     configuration: GateConfiguration,
     chrome_binary: &Path,
 ) -> Result<TransportEvidenceV1, SpikeError> {
+    // Unknown future events cannot be made to occur in real Chrome. Run the exact candidate
+    // contract against the wire-connected scripted controller and bind its trace digest to this
+    // report instead of presenting those fixtures as a Chrome measurement.
+    let candidate_contract = run_candidate_wire_contract(factory).await?;
     let mut browser = ChromeHarness::start(chrome_binary)?;
     let transport = factory.connect(&browser.ws_url).await?;
     let target_a = create_target(transport.as_ref(), &browser.fixture_url).await?;
@@ -133,35 +138,25 @@ pub async fn run_real_chrome_gate(
         )
         .await?;
     let typed = transport.run_typed_probe(&session_a).await?;
+    if !typed.browser_version_observed
+        || !typed.page_enable_observed
+        || !typed.runtime_evaluate_observed
+        || !typed.accessibility_observed
+        || !typed.input_observed
+    {
+        return Err(SpikeError::new(
+            SpikeErrorCode::Protocol,
+            "typed domain probe was incomplete",
+        ));
+    }
     let mut gates = Vec::new();
-    gates.push(pass(
-        TransportGateId::DeterministicRouting,
-        [
-            ("commands", 200.0),
-            ("events", 200.0),
-            ("cross_delivery", 0.0),
-        ],
-    ));
     gates.push(pass(
         TransportGateId::TypedDomains,
         [("typed_operations", 5.0)],
     ));
-    if typed.browser_version_observed
-        && typed.page_enable_observed
-        && typed.runtime_evaluate_observed
-        && typed.accessibility_observed
-        && typed.input_observed
-    {
-        gates.push(pass(
-            TransportGateId::FlatSessionIsolation,
-            [("sessions", 2.0), ("cross_delivery", 0.0)],
-        ));
-    } else {
-        gates.push(fail(
-            TransportGateId::FlatSessionIsolation,
-            "typed probe did not establish both flat sessions",
-        ));
-    }
+    let mut observed_commands = BTreeSet::new();
+    let mut observed_events = BTreeSet::new();
+    let mut cross_delivery = 0_u64;
     if version.get("product").and_then(Value::as_str).is_some() {
         gates.push(pass(
             TransportGateId::RawBrowserCommand,
@@ -236,20 +231,25 @@ pub async fn run_real_chrome_gate(
     let mut events_b = transport
         .subscribe_named(&session_b, "Runtime.consoleAPICalled")
         .await?;
-    let mut cross_delivery = 0_u64;
+    let session_a_id = session_a.session_id().unwrap_or("session-a");
+    let session_b_id = session_b.session_id().unwrap_or("session-b");
     for token in 0..100_u64 {
+        let token_a = format!("cdp-session-a-{token}");
+        let token_b = format!("cdp-session-b-{token}");
+        observed_commands.insert((session_a_id.to_owned(), token_a.clone()));
+        observed_commands.insert((session_b_id.to_owned(), token_b.clone()));
         transport
             .send_raw(
                 &session_a,
                 "Runtime.evaluate",
-                serde_json::json!({"expression":format!("console.log('cdp-session-a-{token}')")}),
+                serde_json::json!({"expression":format!("console.log('{token_a}')")}),
             )
             .await?;
         transport
             .send_raw(
                 &session_b,
                 "Runtime.evaluate",
-                serde_json::json!({"expression":format!("console.log('cdp-session-b-{token}')")}),
+                serde_json::json!({"expression":format!("console.log('{token_b}')")}),
             )
             .await?;
         let event_a = tokio::time::timeout(Duration::from_secs(5), events_a.next())
@@ -270,42 +270,64 @@ pub async fn run_real_chrome_gate(
                     "session-b event stream closed",
                 )
             })??;
-        if !contains_string(&event_a.params, "cdp-session-a-")
-            || !contains_string(&event_b.params, "cdp-session-b-")
-        {
+        let event_a_matches =
+            event_a.scope == session_a && contains_string(&event_a.params, &token_a);
+        let event_b_matches =
+            event_b.scope == session_b && contains_string(&event_b.params, &token_b);
+        if event_a_matches {
+            observed_events.insert((session_a_id.to_owned(), token_a));
+        } else {
+            cross_delivery += 1;
+        }
+        if event_b_matches {
+            observed_events.insert((session_b_id.to_owned(), token_b));
+        } else {
             cross_delivery += 1;
         }
     }
+    let correlated_pairs: BTreeSet<_> = observed_commands
+        .intersection(&observed_events)
+        .cloned()
+        .collect();
+    let correlated_commands = correlated_pairs.len() as f64;
+    let correlated_events = correlated_pairs.len() as f64;
+    gates.push(pass(
+        TransportGateId::DeterministicRouting,
+        [
+            ("commands", correlated_commands),
+            ("events", correlated_events),
+            ("cross_delivery", cross_delivery as f64),
+        ],
+    ));
     if cross_delivery == 0 {
-        gates.retain(|gate| gate.id != TransportGateId::FlatSessionIsolation);
         gates.push(pass(
             TransportGateId::FlatSessionIsolation,
-            [
-                ("sessions", 2.0),
-                ("commands_per_session", 100.0),
-                ("events_per_session", 100.0),
-                ("cross_delivery", 0.0),
-            ],
+            [("sessions", 2.0), ("cross_delivery", cross_delivery as f64)],
         ));
     } else {
-        gates.retain(|gate| gate.id != TransportGateId::FlatSessionIsolation);
         gates.push(fail(
             TransportGateId::FlatSessionIsolation,
             "same-named events crossed flat sessions",
         ));
     }
 
-    // The shared scripted peer covers unknown event/enum fixtures; Chrome contributes the
-    // additive-field raw path here. cdpkit's named Value stream is intentionally not called a
-    // wildcard/full-envelope stream.
-    gates.push(pass(
+    // Unknown event/enum fixtures are candidate-contract evidence, not real-Chrome
+    // measurements. The attached trace digest makes that boundary auditable.
+    let mut drift_gate = pass(
         TransportGateId::ProtocolDriftSurvival,
         [
-            ("fixtures", 3.0),
-            ("connection_survived", 1.0),
+            ("fixtures", candidate_contract.fixtures as f64),
+            (
+                "connection_survived",
+                f64::from(candidate_contract.connection_survived),
+            ),
             ("wildcard_envelope_available", 0.0),
         ],
-    ));
+    );
+    drift_gate.summary =
+        "candidate wire-contract drift trace attached; not a real-Chrome fixture measurement"
+            .into();
+    gates.push(drift_gate);
     transport
         .send_raw(&session_a, "Page.bringToFront", serde_json::json!({}))
         .await?;
@@ -498,7 +520,8 @@ pub async fn run_real_chrome_gate(
 		fixture: FixtureEvidence { name: "cdp-transport-gate".into(), sha256: fixture_sha },
 		configuration,
 		gates,
-		limitations: vec!["cdpkit exposes named event params through an unbounded subscriber; wildcard/full-envelope receive and queue-depth introspection are unavailable".into(), "ack latency values are receive-to-ack-completion proxies, not wire-enqueue timestamps".into(), "RSS is a process-level bounded-memory trend proxy".into()],
+		limitations: vec!["cdpkit exposes named event params through an unbounded subscriber; wildcard/full-envelope receive and queue-depth introspection are unavailable".into(), "ack latency values are receive-to-ack-completion proxies, not wire-enqueue timestamps".into(), "RSS is a process-level proxy from a continuously drained reader; it does not prove the hidden cdpkit subscriber queue is bounded".into(), format!("candidate-contract drift trace digest: {}", candidate_contract.trace_sha256)],
+        candidate_contract: Some(candidate_contract),
 	};
     // Keep output deterministic even when gate construction order changes.
     evidence.gates.sort_by_key(|gate| gate.id);
@@ -550,6 +573,7 @@ pub fn failure_evidence(
         limitations: vec![
             "candidate qualification stopped before all real-Chrome measurements".into(),
         ],
+        candidate_contract: None,
     }
 }
 

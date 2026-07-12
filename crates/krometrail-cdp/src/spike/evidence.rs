@@ -6,7 +6,10 @@ use std::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::error::{SpikeError, SpikeErrorCode};
+use super::{
+    contract::CandidateContractEvidence,
+    error::{SpikeError, SpikeErrorCode},
+};
 
 pub const EVIDENCE_SCHEMA_VERSION: u16 = 1;
 
@@ -199,6 +202,8 @@ pub struct TransportEvidenceV1 {
     pub configuration: GateConfiguration,
     pub gates: Vec<GateResult>,
     pub limitations: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_contract: Option<CandidateContractEvidence>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -303,8 +308,26 @@ pub fn validate_evidence(value: &TransportEvidenceV1) -> Result<(), SpikeError> 
             }
         }
     }
+    if let Some(contract) = &value.candidate_contract {
+        if contract.fixtures < 3
+            || !contract.connection_survived
+            || !is_sha256_digest(&contract.trace_sha256)
+        {
+            return Err(SpikeError::new(
+                SpikeErrorCode::Evidence,
+                "candidate wire-contract evidence is incomplete",
+            ));
+        }
+    }
     validate_sanitized_strings(value)?;
     Ok(())
+}
+
+fn is_sha256_digest(value: &str) -> bool {
+    let Some(hex) = value.strip_prefix("sha256:") else {
+        return false;
+    };
+    hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 pub fn rss_measurements_are_valid(

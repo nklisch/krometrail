@@ -60,6 +60,16 @@ pub struct TypedProbeEvidence {
     pub input_observed: bool,
 }
 
+/// Evidence produced by the candidate-only wire contract. It is deliberately separate from
+/// real-Chrome measurements: Chrome cannot be instructed to emit unknown future protocol fields.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CandidateContractEvidence {
+    pub fixtures: u64,
+    pub connection_survived: bool,
+    pub trace_sha256: String,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DisconnectEvidence {

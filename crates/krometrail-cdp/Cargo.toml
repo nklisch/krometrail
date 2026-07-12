@@ -14,6 +14,8 @@ cdp-spike = [
 	"dep:serde_json",
 	"dep:sha2",
 	"dep:tokio-tungstenite",
+	"tokio/sync",
+	"tokio/time",
 ]
 cdp-spike-cdpkit = ["cdp-spike", "dep:cdpkit"]
 

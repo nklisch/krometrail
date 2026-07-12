@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cdp-transport-gate-wire-authenticity-remediation
 kind: story
-stage: implementing
+stage: review
 tags: [bug, browser, infra, testing]
 parent: epic-rust-cdp-capture-foundation-cdp-transport-gate
 depends_on: []
@@ -23,7 +23,15 @@ Replace the parallel expected deque with one wire-connected scripted server/cont
 
 ## Acceptance criteria
 
-- [ ] Candidate lifecycle and ordering assertions derive from one observed wire script, not a parallel expected deque.
-- [ ] Routing counts derive from unique correlated responses/events; drift is genuinely exercised or honestly represented as separate contract evidence.
-- [ ] Hidden-queue/RSS claims match the experiment actually run; no static pass is presented as measured.
-- [ ] Deterministic fake/candidate tests and denied-warning clippy pass; no production adapter or core-port change lands.
+- [x] Candidate lifecycle and ordering assertions derive from one observed wire script, not a parallel expected deque.
+- [x] Routing counts derive from unique correlated responses/events; drift is genuinely exercised or honestly represented as separate contract evidence.
+- [x] Hidden-queue/RSS claims match the experiment actually run; no static pass is presented as measured.
+- [x] Deterministic fake/candidate tests and denied-warning clippy pass; no production adapter or core-port change lands.
+
+## Implementation notes
+
+- Replaced the disconnected expected-message deque with a loopback WebSocket `ScriptedCdpPeer` controller that records candidate commands, responses, events, and connection closes in one ordered trace. The controller drives event-before-response, detach-during-pending plus socket close, and a fresh connection with two rebuilt sessions.
+- Candidate routing measurements now use unique correlated command/event tokens observed by the controller. Real-Chrome routing uses unique correlated command/event tokens from the candidate path rather than static counts.
+- Added optional candidate-contract evidence with a SHA-256 trace binding. Unknown-event, additive-field, and unknown-enum fixtures are explicitly not described as real-Chrome measurements.
+- Narrowed the RSS limitation to the continuously drained reader/counter proxy; the cdpkit unbounded subscriber queue remains an explicit unproven limitation. No final Linux/macOS evidence was recaptured or hand-edited.
+- Verification: `cargo fmt --all --check`; workspace default tests; spike tests/clippy; candidate-feature tests/clippy all pass. No production adapter, root composition, or core-port files changed.
