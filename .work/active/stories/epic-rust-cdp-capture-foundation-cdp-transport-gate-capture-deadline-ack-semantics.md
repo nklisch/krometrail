@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cdp-transport-gate-capture-deadline-ack-semantics
 kind: story
-stage: review
+stage: done
 tags: [bug, browser, infra, testing]
 parent: epic-rust-cdp-capture-foundation-cdp-transport-gate
 depends_on: []
@@ -37,3 +37,13 @@ Make the configured operation deadline authoritative when minimum frames are not
 - Verification: `cargo fmt --all -- --check`; default workspace tests/clippy; `cdp-spike` tests/clippy; `cdp-spike-cdpkit` tests/clippy; schema generation check; documentation build.
 - Discrepancies from design: evidence measurement names were made explicit (`capture_elapsed_seconds` and `handoff_elapsed_seconds`) so observed elapsed work cannot be confused with configured thresholds; the generated schema description was refreshed without changing schema version or historical evidence files.
 - Adjacent issues parked: none.
+
+## Review (2026-07-12)
+
+**Verdict:** Approve
+
+**Blockers:** none
+**Important:** none
+**Nits:** none
+
+**Notes:** Fast-lane timing review verified no frame-rate cutoff, global-limit authority, cancellation-safe process/profile guard coverage, timer placement after frame receipt, acknowledgement before handoff, explicit elapsed names, 30 candidate-feature tests, and denied-warning clippy. Verdict: Approve - story verified by implement; fast-lane advance.
