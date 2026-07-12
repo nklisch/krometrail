@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cdp-transport-gate-macos-decisive-evidence
 kind: story
-stage: review
+stage: done
 tags: [browser, infra, testing]
 parent: epic-rust-cdp-capture-foundation-cdp-transport-gate
 depends_on: [epic-rust-cdp-capture-foundation-cdp-transport-gate-cdpkit-linux-qualification, epic-rust-cdp-capture-foundation-cdp-transport-gate-fixture-hashing-cross-platform, epic-rust-cdp-capture-foundation-cdp-transport-gate-rss-evidence-validity, epic-rust-cdp-capture-foundation-cdp-transport-gate-macos-rss-compile-fix]
@@ -56,5 +56,15 @@ The final exact-SHA run [29199026540](https://github.com/nklisch/krometrail/acti
 - All 13 gate IDs passed. Named-event-only/raw-envelope and unbounded subscriber-depth limitations remain explicit.
 - Local validation and normalization reproduced the uploaded sanitized file byte-for-byte against the checked-in schema.
 - No production adapter, core contract, capture pipeline, threshold waiver, or platform-specific candidate path was added.
+
+## Review (2026-07-12)
+
+**Verdict**: Approve
+
+**Blockers**: none
+**Important**: none
+**Nits**: none
+
+**Notes**: Fast-lane evidence review. The orchestrator verified hosted run 29199026540 at the exact pushed SHA, downloaded only the final sanitized artifact, confirmed 13 passing gates including 51 valid RSS samples, and reproduced schema validation/normalization byte-for-byte locally. Earlier invalid artifacts remain uncommitted. Verdict: Approve - story verified by implement; fast-lane advance.
 
 A subsequent compile run, [29198801356](https://github.com/nathan/krometrail/actions/runs/29198801356), failed before the gate because the macOS-only `process_rss` path used `.parse::<u64>()?` in an `Option<u64>` function. Rust therefore emitted E0277: the `Result` residual cannot be propagated as `Option`. The focused fix is tracked by `epic-rust-cdp-capture-foundation-cdp-transport-gate-macos-rss-compile-fix`; it moves parsing and checked KiB-to-byte normalization into a target-neutral helper covered by Linux tests and a static sampler contract assertion. After that story is committed, an operator must manually rerun the unchanged workflow with the exact commit SHA (`workflow_dispatch` `ref` and `sha`); only a successful, schema-valid rerun may produce macOS evidence. No toolchain installation, dispatch, evidence fabrication, or evidence commit is performed here.
