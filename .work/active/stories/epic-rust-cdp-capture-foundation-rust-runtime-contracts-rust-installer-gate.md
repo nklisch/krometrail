@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-rust-runtime-contracts-rust-installer-gate
 kind: story
-stage: review
+stage: done
 tags: [bug, infra, tests]
 parent: epic-rust-cdp-capture-foundation-rust-runtime-contracts
 depends_on: []
@@ -46,3 +46,13 @@ Filed from the operator-authorized third GPT-5.6 Sol adversarial feature review.
 - Verification: POSIX/Bash shell syntax, installer fixtures, distribution contracts, `bun run docs:build`, `cargo fmt --all -- --check`, locked workspace check/test/clippy gates.
 - Discrepancies from design: none.
 - Adjacent issues parked: none.
+
+## Review (2026-07-12)
+
+**Verdict**: Approve
+
+**Blockers**: none
+**Important**: none
+**Nits**: none
+
+**Notes**: Fast-lane story review. The orchestrator independently reran POSIX syntax, the hermetic installer/distribution suite, and all 41 workspace tests, and spot-checked pre-replacement execution validation and truthful source-only docs. Both installer findings are resolved. Verdict: Approve - story verified by implement; fast-lane advance.
