@@ -842,3 +842,18 @@ The feature returns to `stage: implementing` until these review-created stories 
 All three review-created stories reached `stage: done`. Core aggregates now enforce invariants through private fields, validated APIs, and validated Serde while preserving valid wire shapes. Lifecycle transitions, gap reasons, and error codes have exhaustive single-sourced coverage. Distribution now rebuilds developer installs, validates release tags against Cargo, locks Bun documentation dependencies, tests Rust 1.85, performs narrow lock refreshes before locked release gates, and removes stale harness ignores.
 
 The post-remediation gate passes with 38 total workspace tests (35 core plus 3 executable smoke tests), locked clippy, distribution failure-path contracts, and documentation dependency/build checks. The feature is ready for a fresh two-model implementation review.
+
+## Second other-agent review
+
+- Reviewer (Phase 1 — completeness): GLM 5.2 xhigh, three-round convergence.
+  - Verified all eight prior findings resolved and the original ten-story scope complete; no new findings.
+- Reviewer (Phase 2 — adversarial): GPT-5.6 Sol high, three-round convergence.
+  - Confirmed invariant and exhaustive-test remediation, then found ambiguous release ref provenance, stale identifier documentation, restart-repeating process IDs, unsafe distribution-test output mutation, non-single-sourced typed-ID coverage, and an unbounded glibc compatibility promise.
+- Accepted follow-ups:
+  - `epic-rust-cdp-capture-foundation-rust-runtime-contracts-release-provenance`
+  - `epic-rust-cdp-capture-foundation-rust-runtime-contracts-identifier-integrity`
+  - `epic-rust-cdp-capture-foundation-rust-runtime-contracts-linux-compatibility`
+
+## Stuck at review
+
+This feature has now completed two implementing → review → unresolved-review cycles. The second review's blockers and important findings are captured in the three follow-up stories above. Per the autopilot review circuit breaker, the feature remains at `stage: review` and is escalated rather than being automatically bounced or approved again. Autopilot may implement and fast-review the concrete child stories, but final feature approval requires explicit operator resolution of this escalation.
