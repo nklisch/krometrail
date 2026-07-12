@@ -4,6 +4,7 @@
 use std::{
     cmp::Ordering,
     collections::{BTreeMap, BTreeSet},
+    future::Future,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
@@ -38,6 +39,22 @@ pub async fn run_with_hard_stop<T, F>(hard_stop_seconds: u64, operation: F) -> R
 where
     F: std::future::Future<Output = Result<T, SpikeError>>,
 {
+    run_with_hard_stop_stage(
+        hard_stop_seconds,
+        StageTracker::new(QualificationStage::Initializing),
+        operation,
+    )
+    .await
+}
+
+pub async fn run_with_hard_stop_stage<T, F>(
+    hard_stop_seconds: u64,
+    stage: StageTracker,
+    operation: F,
+) -> Result<T, SpikeError>
+where
+    F: std::future::Future<Output = Result<T, SpikeError>>,
+{
     if hard_stop_seconds == 0 {
         return Err(SpikeError::new(
             SpikeErrorCode::Evidence,
@@ -47,17 +64,22 @@ where
     tokio::time::timeout(Duration::from_secs(hard_stop_seconds), operation)
         .await
         .map_err(|_| {
+            let active = stage.current();
             SpikeError::new(
                 SpikeErrorCode::Deadline,
-                format!("complete real-Chrome gate exceeded {hard_stop_seconds} seconds"),
+                format!(
+                    "complete real-Chrome gate exceeded {hard_stop_seconds} seconds at stage {active}"
+                ),
             )
+            .at_stage(active)
         })?
+        .map_err(|error| error.at_stage(stage.current()))
 }
 
 use super::{
     cdpkit_adapter::CdpkitTransportFactory,
     contract::{SpikeTransport, SpikeTransportFactory, TransportScope},
-    error::{SpikeError, SpikeErrorCode},
+    error::{QualificationStage, SpikeError, SpikeErrorCode, StageTracker},
     evidence::{
         BrowserEvidence, EVIDENCE_SCHEMA_VERSION, FixtureEvidence, GateConfiguration,
         GateProvenance, GateResult, GateStatus, RSS_SAMPLE_INTERVAL_SECONDS, RSS_WARMUP_SECONDS,
@@ -65,7 +87,7 @@ use super::{
         configuration_digest, rss_measurements_are_valid,
     },
     fixture_server::StaticFixtureServer,
-    scenarios::run_candidate_wire_contract,
+    scenarios::run_candidate_wire_contract_with_stage,
 };
 
 #[derive(Clone, Debug)]
@@ -163,9 +185,11 @@ pub async fn run_real_chrome_gate(
     chrome_binary: &Path,
 ) -> Result<TransportEvidenceV1, SpikeError> {
     let hard_stop_seconds = configuration.hard_stop_seconds;
-    run_with_hard_stop(
+    let stage = StageTracker::new(QualificationStage::Initializing);
+    run_with_hard_stop_stage(
         hard_stop_seconds,
-        run_real_chrome_gate_inner(factory, configuration, chrome_binary),
+        stage.clone(),
+        run_real_chrome_gate_inner(factory, configuration, chrome_binary, stage),
     )
     .await
 }
@@ -174,36 +198,79 @@ async fn run_real_chrome_gate_inner(
     factory: &dyn SpikeTransportFactory,
     configuration: GateConfiguration,
     chrome_binary: &Path,
+    stage: StageTracker,
 ) -> Result<TransportEvidenceV1, SpikeError> {
     // Unknown future events cannot be made to occur in real Chrome. Run the exact candidate
     // contract against the wire-connected scripted controller and bind its trace digest to this
     // report instead of presenting those fixtures as a Chrome measurement.
-    let candidate_contract = run_candidate_wire_contract(|endpoint| {
-        Box::new(CdpkitTransportFactory::with_scripted_endpoint(endpoint))
-    })
+    stage.set(QualificationStage::CandidateContract);
+    let candidate_contract = run_candidate_wire_contract_with_stage(
+        |endpoint| Box::new(CdpkitTransportFactory::with_scripted_endpoint(endpoint)),
+        stage.clone(),
+    )
     .await?;
+    stage.set(QualificationStage::ChromeStartup);
     let mut browser = ChromeHarness::start(chrome_binary).await?;
-    let transport = factory.connect(&browser.ws_url).await?;
-    let target_a = create_target(transport.as_ref(), &browser.fixture_url).await?;
-    let target_b = create_target(transport.as_ref(), &browser.fixture_url).await?;
-    let session_a = transport.attach_flat_page(&target_a).await?;
-    let session_b = transport.attach_flat_page(&target_b).await?;
-    transport
-        .send_raw(
+    stage.set(QualificationStage::BrowserConnect);
+    let transport = bounded(
+        &stage,
+        QualificationStage::BrowserConnect,
+        factory.connect(&browser.ws_url),
+    )
+    .await?;
+    stage.set(QualificationStage::TargetSetup);
+    let target_a = bounded(
+        &stage,
+        QualificationStage::TargetSetup,
+        create_target(transport.as_ref(), &browser.fixture_url),
+    )
+    .await?;
+    let target_b = bounded(
+        &stage,
+        QualificationStage::TargetSetup,
+        create_target(transport.as_ref(), &browser.fixture_url),
+    )
+    .await?;
+    let session_a = bounded(
+        &stage,
+        QualificationStage::TargetSetup,
+        transport.attach_flat_page(&target_a),
+    )
+    .await?;
+    let session_b = bounded(
+        &stage,
+        QualificationStage::TargetSetup,
+        transport.attach_flat_page(&target_b),
+    )
+    .await?;
+    bounded(
+        &stage,
+        QualificationStage::TargetSetup,
+        transport.send_raw(
             &TransportScope::Browser,
             "Target.activateTarget",
             serde_json::json!({"targetId": target_a}),
-        )
-        .await?;
+        ),
+    )
+    .await?;
 
-    let version = transport
-        .send_raw(
+    stage.set(QualificationStage::TypedProbe);
+    let version = bounded(
+        &stage,
+        QualificationStage::TypedProbe,
+        transport.send_raw(
             &TransportScope::Browser,
             "Browser.getVersion",
             serde_json::json!({}),
-        )
-        .await?;
-    let typed = transport.run_typed_probe(&session_a).await?;
+        ),
+    )
+    .await?;
+    let typed = bounded(
+        &stage,
+        QualificationStage::TypedProbe,
+        transport.run_typed_probe(&session_a),
+    )
+    .await?;
     if !typed.browser_version_observed
         || !typed.page_enable_observed
         || !typed.runtime_evaluate_observed
@@ -235,13 +302,16 @@ async fn run_real_chrome_gate_inner(
         ));
     }
 
-    let raw_session = transport
-        .send_raw(
+    let raw_session = bounded(
+        &stage,
+        QualificationStage::RoutingSubscriptions,
+        transport.send_raw(
             &session_a,
             "Runtime.evaluate",
             serde_json::json!({"expression":"1 + 1", "returnByValue":true}),
-        )
-        .await?;
+        ),
+    )
+    .await?;
     if raw_session.is_object() {
         gates.push(pass(
             TransportGateId::RawSessionCommand,
@@ -254,31 +324,42 @@ async fn run_real_chrome_gate_inner(
         ));
     }
 
-    transport
-        .send_raw(&session_a, "Runtime.enable", serde_json::json!({}))
-        .await?;
-    transport
-        .send_raw(&session_b, "Runtime.enable", serde_json::json!({}))
-        .await?;
-    let mut named = transport
-        .subscribe_named(&session_a, "Runtime.consoleAPICalled")
-        .await?;
-    transport
-        .send_raw(
+    stage.set(QualificationStage::RoutingSubscriptions);
+    bounded(
+        &stage,
+        QualificationStage::RoutingSubscriptions,
+        transport.send_raw(&session_a, "Runtime.enable", serde_json::json!({})),
+    )
+    .await?;
+    bounded(
+        &stage,
+        QualificationStage::RoutingSubscriptions,
+        transport.send_raw(&session_b, "Runtime.enable", serde_json::json!({})),
+    )
+    .await?;
+    let mut named = bounded(
+        &stage,
+        QualificationStage::RoutingSubscriptions,
+        transport.subscribe_named(&session_a, "Runtime.consoleAPICalled"),
+    )
+    .await?;
+    bounded(
+        &stage,
+        QualificationStage::RoutingSubscriptions,
+        transport.send_raw(
             &session_a,
             "Runtime.evaluate",
             serde_json::json!({"expression":"console.log('cdp-transport-named-event')"}),
-        )
-        .await?;
-    let named_event = tokio::time::timeout(Duration::from_secs(5), named.next())
-        .await
-        .map_err(|_| SpikeError::new(SpikeErrorCode::Deadline, "named raw event deadline"))?
-        .ok_or_else(|| {
-            SpikeError::new(
-                SpikeErrorCode::SubscriptionClosed,
-                "named raw event subscription closed",
-            )
-        })??;
+        ),
+    )
+    .await?;
+    let named_event = bounded_stream(
+        &stage,
+        QualificationStage::RoutingSubscriptions,
+        &mut named,
+        "named raw event subscription closed",
+    )
+    .await?;
     if named_event.method == "Runtime.consoleAPICalled" {
         gates.push(pass(
             TransportGateId::NamedRawEventParams,
@@ -291,12 +372,18 @@ async fn run_real_chrome_gate_inner(
         ));
     }
 
-    let mut events_a = transport
-        .subscribe_named(&session_a, "Runtime.consoleAPICalled")
-        .await?;
-    let mut events_b = transport
-        .subscribe_named(&session_b, "Runtime.consoleAPICalled")
-        .await?;
+    let mut events_a = bounded(
+        &stage,
+        QualificationStage::RoutingSubscriptions,
+        transport.subscribe_named(&session_a, "Runtime.consoleAPICalled"),
+    )
+    .await?;
+    let mut events_b = bounded(
+        &stage,
+        QualificationStage::RoutingSubscriptions,
+        transport.subscribe_named(&session_b, "Runtime.consoleAPICalled"),
+    )
+    .await?;
     let session_a_id = session_a.session_id().unwrap_or("session-a");
     let session_b_id = session_b.session_id().unwrap_or("session-b");
     for token in 0..100_u64 {
@@ -304,38 +391,40 @@ async fn run_real_chrome_gate_inner(
         let token_b = format!("cdp-session-b-{token}");
         observed_commands.insert((session_a_id.to_owned(), token_a.clone()));
         observed_commands.insert((session_b_id.to_owned(), token_b.clone()));
-        transport
-            .send_raw(
+        bounded(
+            &stage,
+            QualificationStage::RoutingSubscriptions,
+            transport.send_raw(
                 &session_a,
                 "Runtime.evaluate",
                 serde_json::json!({"expression":format!("console.log('{token_a}')")}),
-            )
-            .await?;
-        transport
-            .send_raw(
+            ),
+        )
+        .await?;
+        bounded(
+            &stage,
+            QualificationStage::RoutingSubscriptions,
+            transport.send_raw(
                 &session_b,
                 "Runtime.evaluate",
                 serde_json::json!({"expression":format!("console.log('{token_b}')")}),
-            )
-            .await?;
-        let event_a = tokio::time::timeout(Duration::from_secs(5), events_a.next())
-            .await
-            .map_err(|_| SpikeError::new(SpikeErrorCode::Deadline, "session-a event deadline"))?
-            .ok_or_else(|| {
-                SpikeError::new(
-                    SpikeErrorCode::SubscriptionClosed,
-                    "session-a event stream closed",
-                )
-            })??;
-        let event_b = tokio::time::timeout(Duration::from_secs(5), events_b.next())
-            .await
-            .map_err(|_| SpikeError::new(SpikeErrorCode::Deadline, "session-b event deadline"))?
-            .ok_or_else(|| {
-                SpikeError::new(
-                    SpikeErrorCode::SubscriptionClosed,
-                    "session-b event stream closed",
-                )
-            })??;
+            ),
+        )
+        .await?;
+        let event_a = bounded_stream(
+            &stage,
+            QualificationStage::RoutingSubscriptions,
+            &mut events_a,
+            "session-a event stream closed",
+        )
+        .await?;
+        let event_b = bounded_stream(
+            &stage,
+            QualificationStage::RoutingSubscriptions,
+            &mut events_b,
+            "session-b event stream closed",
+        )
+        .await?;
         let event_a_matches =
             event_a.scope == session_a && contains_string(&event_a.params, &token_a);
         let event_b_matches =
@@ -425,11 +514,22 @@ async fn run_real_chrome_gate_inner(
         "candidate wire-contract drift trace attached; not a real-Chrome fixture measurement"
             .into();
     gates.push(drift_gate);
-    transport
-        .send_raw(&session_a, "Page.bringToFront", serde_json::json!({}))
-        .await?;
-    transport.start_screencast(&session_a).await?;
-    let measurements = run_screencast_gate(transport.as_ref(), &session_a, &configuration).await?;
+    stage.set(QualificationStage::ScreencastStart);
+    bounded(
+        &stage,
+        QualificationStage::ScreencastStart,
+        transport.send_raw(&session_a, "Page.bringToFront", serde_json::json!({})),
+    )
+    .await?;
+    bounded(
+        &stage,
+        QualificationStage::ScreencastStart,
+        transport.start_screencast(&session_a),
+    )
+    .await?;
+    stage.set(QualificationStage::ScreencastFrameReceive);
+    let measurements =
+        run_screencast_gate(transport.as_ref(), &session_a, &configuration, &stage).await?;
     let rss_values = rss_measurement_map(&measurements);
     let rss_valid = rss_measurements_are_valid(&rss_values, configuration.minimum_seconds);
     if rss_valid {
@@ -555,7 +655,8 @@ async fn run_real_chrome_gate_inner(
         ));
     }
 
-    match run_disconnect_probe(transport.as_ref(), &session_a, &mut browser).await {
+    stage.set(QualificationStage::Disconnect);
+    match run_disconnect_probe(transport.as_ref(), &session_a, &mut browser, &stage).await {
         Ok(measurements) => {
             gates.push(pass(
                 TransportGateId::DisconnectCleanup,
@@ -592,9 +693,11 @@ async fn run_real_chrome_gate_inner(
             &format!("disconnect cleanup failed: {error}"),
         )),
     }
-    match run_with_hard_stop(
+    stage.set(QualificationStage::Rebuild);
+    match run_with_hard_stop_stage(
         REBUILD_DEADLINE_SECONDS as u64,
-        rebuild_sessions(factory, &browser.fixture_url, chrome_binary),
+        stage.clone(),
+        rebuild_sessions(factory, &browser.fixture_url, chrome_binary, stage.clone()),
     )
     .await
     {
@@ -680,13 +783,12 @@ pub fn failure_evidence(
         .map(|id| GateResult {
             id,
             status: GateStatus::Fail,
-            summary: error.message.clone(),
+            summary: error.to_string(),
             measurements: BTreeMap::new(),
-            failure: Some(SpikeError::for_gate(
-                SpikeErrorCode::Evidence,
-                id,
-                error.message.clone(),
-            )),
+            failure: Some(
+                SpikeError::for_gate(SpikeErrorCode::Evidence, id, error.message.clone())
+                    .at_stage(error.stage.unwrap_or(QualificationStage::Evidence)),
+            ),
         })
         .collect();
     TransportEvidenceV1 {
@@ -723,6 +825,52 @@ pub fn failure_evidence(
     }
 }
 
+async fn bounded<T, F>(
+    stage: &StageTracker,
+    phase: QualificationStage,
+    operation: F,
+) -> Result<T, SpikeError>
+where
+    F: Future<Output = Result<T, SpikeError>>,
+{
+    stage.set(phase);
+    tokio::time::timeout(Duration::from_secs(5), operation)
+        .await
+        .map_err(|_| {
+            SpikeError::new(
+                SpikeErrorCode::Deadline,
+                "qualification operation exceeded five-second phase deadline",
+            )
+            .at_stage(phase)
+        })?
+        .map_err(|error| error.at_stage(phase))
+}
+
+async fn bounded_stream<T, S>(
+    stage: &StageTracker,
+    phase: QualificationStage,
+    stream: &mut S,
+    closed_message: &str,
+) -> Result<T, SpikeError>
+where
+    S: futures_util::Stream<Item = Result<T, SpikeError>> + Unpin,
+{
+    stage.set(phase);
+    tokio::time::timeout(Duration::from_secs(5), stream.next())
+        .await
+        .map_err(|_| {
+            SpikeError::new(
+                SpikeErrorCode::Deadline,
+                "qualification subscription receive exceeded five-second phase deadline",
+            )
+            .at_stage(phase)
+        })?
+        .ok_or_else(|| {
+            SpikeError::new(SpikeErrorCode::SubscriptionClosed, closed_message).at_stage(phase)
+        })?
+        .map_err(|error| error.at_stage(phase))
+}
+
 async fn create_target(
     transport: &dyn SpikeTransport,
     fixture_url: &str,
@@ -750,6 +898,7 @@ async fn run_screencast_gate(
     transport: &dyn SpikeTransport,
     session: &TransportScope,
     config: &GateConfiguration,
+    stage: &StageTracker,
 ) -> Result<ScreencastMeasurements, SpikeError> {
     let start = Instant::now();
     let mut frames_received = 0_u64;
@@ -768,19 +917,24 @@ async fn run_screencast_gate(
             >= config
                 .minimum_seconds
                 .max(config.minimum_frames as f64 / 60.0)
-                .max(120.0)
         {
             break;
         }
         let before = Instant::now();
-        let frame = tokio::time::timeout(
-            Duration::from_secs(5),
+        stage.set(QualificationStage::ScreencastFrameReceive);
+        let frame = bounded(
+            stage,
+            QualificationStage::ScreencastFrameReceive,
             transport.next_screencast_frame(session),
         )
-        .await
-        .map_err(|_| SpikeError::new(SpikeErrorCode::Deadline, "screencast frame deadline"))??;
+        .await?;
         frames_received += 1;
-        transport.ack_screencast(session, frame.sequence).await?;
+        bounded(
+            stage,
+            QualificationStage::ScreencastAck,
+            transport.ack_screencast(session, frame.sequence),
+        )
+        .await?;
         frames_acknowledged += 1;
         latencies.push(before.elapsed().as_secs_f64() * 1000.0);
         attempts += 1;
@@ -852,10 +1006,14 @@ async fn run_disconnect_probe(
     transport: &dyn SpikeTransport,
     session: &TransportScope,
     browser: &mut ChromeHarness,
+    stage: &StageTracker,
 ) -> Result<DisconnectMeasurements, SpikeError> {
-    let mut subscription = transport
-        .subscribe_named(session, "Runtime.consoleAPICalled")
-        .await?;
+    let mut subscription = bounded(
+        stage,
+        QualificationStage::Disconnect,
+        transport.subscribe_named(session, "Runtime.consoleAPICalled"),
+    )
+    .await?;
     let pending = transport.send_raw(
         session,
         "Runtime.evaluate",
@@ -881,7 +1039,7 @@ async fn run_disconnect_probe(
                 .ok_or_else(|| SpikeError::new(
                     SpikeErrorCode::SubscriptionClosed,
                     "disconnect subscription closed before the pending command started",
-                ))?,
+                ).at_stage(QualificationStage::Disconnect))?,
         }
     })
     .await
@@ -954,14 +1112,41 @@ async fn rebuild_sessions(
     factory: &dyn SpikeTransportFactory,
     fixture_url: &str,
     chrome_binary: &Path,
+    stage: StageTracker,
 ) -> Result<RebuildMeasurements, SpikeError> {
     let started = Instant::now();
+    stage.set(QualificationStage::Rebuild);
     let browser = ChromeHarness::start(chrome_binary).await?;
-    let transport = factory.connect(&browser.ws_url).await?;
-    let a = create_target(transport.as_ref(), fixture_url).await?;
-    let b = create_target(transport.as_ref(), fixture_url).await?;
-    let session_a = transport.attach_flat_page(&a).await?;
-    let session_b = transport.attach_flat_page(&b).await?;
+    let transport = bounded(
+        &stage,
+        QualificationStage::Rebuild,
+        factory.connect(&browser.ws_url),
+    )
+    .await?;
+    let a = bounded(
+        &stage,
+        QualificationStage::Rebuild,
+        create_target(transport.as_ref(), fixture_url),
+    )
+    .await?;
+    let b = bounded(
+        &stage,
+        QualificationStage::Rebuild,
+        create_target(transport.as_ref(), fixture_url),
+    )
+    .await?;
+    let session_a = bounded(
+        &stage,
+        QualificationStage::Rebuild,
+        transport.attach_flat_page(&a),
+    )
+    .await?;
+    let session_b = bounded(
+        &stage,
+        QualificationStage::Rebuild,
+        transport.attach_flat_page(&b),
+    )
+    .await?;
     if session_a == session_b {
         return Err(SpikeError::new(
             SpikeErrorCode::Routing,
@@ -1019,26 +1204,30 @@ fn free_port() -> Result<u16, SpikeError> {
 async fn wait_for_ws_url(port: u16, timeout: Duration) -> Result<String, SpikeError> {
     let start = Instant::now();
     while start.elapsed() < timeout {
-        if let Ok(mut stream) = tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
+        // A debugging endpoint can accept the HTTP request and leave the TCP stream open. Bound
+        // both connect and body receive so startup cannot consume the global hard stop.
+        let attempt = tokio::time::timeout(Duration::from_millis(500), async {
+            let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .ok()?;
             let request = format!(
                 "GET /json/version HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
             );
-            if stream.write_all(request.as_bytes()).await.is_ok() {
-                let mut body = Vec::new();
-                if stream.read_to_end(&mut body).await.is_ok() {
-                    let body = String::from_utf8_lossy(&body);
-                    if let Some(json) = body
-                        .split("\r\n\r\n")
-                        .nth(1)
-                        .and_then(|body| serde_json::from_str::<Value>(body).ok())
-                    {
-                        if let Some(url) = json.get("webSocketDebuggerUrl").and_then(Value::as_str)
-                        {
-                            return Ok(url.to_owned());
-                        }
-                    }
-                }
-            }
+            stream.write_all(request.as_bytes()).await.ok()?;
+            let mut body = [0_u8; 8192];
+            let size = stream.read(&mut body).await.ok()?;
+            let body = String::from_utf8_lossy(&body[..size]);
+            let json = body
+                .split("\r\n\r\n")
+                .nth(1)
+                .and_then(|body| serde_json::from_str::<Value>(body).ok())?;
+            json.get("webSocketDebuggerUrl")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .await;
+        if let Ok(Some(url)) = attempt {
+            return Ok(url);
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -1225,9 +1414,11 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn hard_stop_timeout_is_deterministic_without_sleeping() {
-        let task = tokio::spawn(run_with_hard_stop(
+    async fn hard_stop_timeout_reports_the_active_stage_without_sleeping() {
+        let stage = StageTracker::new(QualificationStage::ScreencastFrameReceive);
+        let task = tokio::spawn(run_with_hard_stop_stage(
             5,
+            stage,
             std::future::pending::<Result<(), SpikeError>>(),
         ));
         tokio::task::yield_now().await;
@@ -1237,6 +1428,42 @@ mod tests {
             .expect("hard-stop task")
             .expect_err("must time out");
         assert_eq!(error.code, SpikeErrorCode::Deadline);
+        assert_eq!(
+            error.stage,
+            Some(QualificationStage::ScreencastFrameReceive)
+        );
+        assert!(error.message.contains("ScreencastFrameReceive"));
+    }
+
+    #[tokio::test]
+    async fn short_real_chrome_gate_is_bounded_when_chrome_is_available() {
+        let chrome = Path::new("/usr/bin/google-chrome");
+        if !chrome.exists() {
+            return;
+        }
+        let configuration = GateConfiguration {
+            minimum_seconds: 2.0,
+            minimum_frames: 20,
+            saturation_seconds: 2.0,
+            saturation_attempts: 20,
+            hard_stop_seconds: 30,
+        };
+        for _ in 0..2 {
+            let evidence = run_real_chrome_gate(
+                &CdpkitTransportFactory::new(),
+                configuration.clone(),
+                chrome,
+            )
+            .await
+            .expect("short real-Chrome gate should complete");
+            assert_eq!(evidence.gates.len(), TransportGateId::ALL.len());
+            assert!(
+                evidence
+                    .gates
+                    .iter()
+                    .any(|gate| gate.id == TransportGateId::SustainedScreencast)
+            );
+        }
     }
 
     #[tokio::test]

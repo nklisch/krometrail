@@ -318,6 +318,32 @@
         "not_run"
       ]
     },
+    "QualificationStage": {
+      "description": "Named phases make a timeout actionable instead of collapsing the whole gate into one\nundifferentiated deadline. This is spike infrastructure state, not a production lifecycle.",
+      "type": "string",
+      "enum": [
+        "initializing",
+        "candidate_contract",
+        "candidate_connect",
+        "candidate_routing",
+        "candidate_drift",
+        "candidate_screencast",
+        "candidate_lifecycle",
+        "candidate_rebuild",
+        "chrome_startup",
+        "browser_connect",
+        "target_setup",
+        "typed_probe",
+        "routing_subscriptions",
+        "protocol_drift",
+        "screencast_start",
+        "screencast_frame_receive",
+        "screencast_ack",
+        "disconnect",
+        "rebuild",
+        "evidence"
+      ]
+    },
     "SanitizedEnvironment": {
       "type": "object",
       "properties": {
@@ -376,6 +402,16 @@
         },
         "retryable": {
           "type": "boolean"
+        },
+        "stage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/QualificationStage"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "additionalProperties": false,

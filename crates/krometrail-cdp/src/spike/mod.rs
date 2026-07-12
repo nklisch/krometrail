@@ -17,7 +17,7 @@ pub use contract::{
     CandidateContractEvidence, CandidateContractResults, EventStream, NamedEventParams,
     SpikeFuture, SpikeTransport, SpikeTransportFactory, TransportScope,
 };
-pub use error::{SpikeError, SpikeErrorCode};
+pub use error::{QualificationStage, SpikeError, SpikeErrorCode, StageTracker};
 pub use evidence::{
     BrowserEvidence, CandidateIdentity, FixtureEvidence, GateConfiguration, GateProvenance,
     GateResult, GateStatus, PlatformEvidence, RSS_SAMPLE_INTERVAL_SECONDS, RSS_WARMUP_SECONDS,

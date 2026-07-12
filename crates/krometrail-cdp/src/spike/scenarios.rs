@@ -1,10 +1,14 @@
-use std::collections::{BTreeMap, HashSet};
+use std::{
+    collections::{BTreeMap, HashSet},
+    future::Future,
+    time::Duration,
+};
 
-use futures_util::StreamExt;
+use futures_util::{Stream, StreamExt};
 
 use super::{
     contract::{SpikeTransportFactory, TransportScope},
-    error::{SpikeError, SpikeErrorCode},
+    error::{QualificationStage, SpikeError, SpikeErrorCode, StageTracker},
     evidence::{GateResult, GateStatus, TransportGateId},
     scripted_peer::ScriptedCdpPeer,
 };
@@ -34,7 +38,20 @@ pub async fn run_transport_scenarios(
     factory: &dyn SpikeTransportFactory,
     peer: &mut ScriptedCdpPeer,
 ) -> ScenarioEvidence {
-    match run(factory, peer).await {
+    run_transport_scenarios_with_stage(
+        factory,
+        peer,
+        StageTracker::new(QualificationStage::CandidateContract),
+    )
+    .await
+}
+
+pub(crate) async fn run_transport_scenarios_with_stage(
+    factory: &dyn SpikeTransportFactory,
+    peer: &mut ScriptedCdpPeer,
+    stage: StageTracker,
+) -> ScenarioEvidence {
+    match run(factory, peer, &stage).await {
         Ok((gates, trace)) => ScenarioEvidence { gates, trace },
         Err(error) => ScenarioEvidence {
             gates: TransportGateId::ALL
@@ -47,7 +64,10 @@ pub async fn run_transport_scenarios(
                     failure: Some(error.clone()),
                 })
                 .collect(),
-            trace: vec!["scenario failed before completion".into()],
+            trace: vec![format!(
+                "scenario failed at stage {:?}: {}",
+                error.stage, error.message
+            )],
         },
     }
 }
@@ -55,11 +75,29 @@ pub async fn run_transport_scenarios(
 async fn run(
     factory: &dyn SpikeTransportFactory,
     peer: &mut ScriptedCdpPeer,
+    stage: &StageTracker,
 ) -> Result<(Vec<GateResult>, Vec<String>), SpikeError> {
     let mut trace = Vec::new();
-    let transport = factory.connect("scripted-peer").await?;
-    let session_a = transport.attach_flat_page("target-a").await?;
-    let session_b = transport.attach_flat_page("target-b").await?;
+    stage.set(QualificationStage::CandidateConnect);
+    let transport = bounded(
+        stage,
+        QualificationStage::CandidateConnect,
+        factory.connect("scripted-peer"),
+    )
+    .await?;
+    stage.set(QualificationStage::CandidateRouting);
+    let session_a = bounded(
+        stage,
+        QualificationStage::CandidateRouting,
+        transport.attach_flat_page("target-a"),
+    )
+    .await?;
+    let session_b = bounded(
+        stage,
+        QualificationStage::CandidateRouting,
+        transport.attach_flat_page("target-b"),
+    )
+    .await?;
     if session_a == session_b {
         return Err(SpikeError::new(
             SpikeErrorCode::Routing,
@@ -68,7 +106,12 @@ async fn run(
     }
     trace.push("two flat sessions attached".into());
 
-    let typed = transport.run_typed_probe(&session_a).await?;
+    let typed = bounded(
+        stage,
+        QualificationStage::CandidateRouting,
+        transport.run_typed_probe(&session_a),
+    )
+    .await?;
     if !typed.browser_version_observed
         || !typed.page_enable_observed
         || !typed.runtime_evaluate_observed
@@ -81,28 +124,41 @@ async fn run(
         ));
     }
 
-    let mut events_a = transport
-        .subscribe_named(&session_a, "Runtime.consoleAPICalled")
-        .await?;
-    let mut events_b = transport
-        .subscribe_named(&session_b, "Runtime.consoleAPICalled")
-        .await?;
+    stage.set(QualificationStage::CandidateRouting);
+    let mut events_a = bounded(
+        stage,
+        QualificationStage::CandidateRouting,
+        transport.subscribe_named(&session_a, "Runtime.consoleAPICalled"),
+    )
+    .await?;
+    let mut events_b = bounded(
+        stage,
+        QualificationStage::CandidateRouting,
+        transport.subscribe_named(&session_b, "Runtime.consoleAPICalled"),
+    )
+    .await?;
     let mut commands_sent = 0_u64;
     for token in 0..100_u64 {
-        let result_a = transport
-            .send_raw(
+        let result_a = bounded(
+            stage,
+            QualificationStage::CandidateRouting,
+            transport.send_raw(
                 &session_a,
                 "Runtime.evaluate",
                 serde_json::json!({ "token": token }),
-            )
-            .await?;
-        let result_b = transport
-            .send_raw(
+            ),
+        )
+        .await?;
+        let result_b = bounded(
+            stage,
+            QualificationStage::CandidateRouting,
+            transport.send_raw(
                 &session_b,
                 "Runtime.evaluate",
                 serde_json::json!({ "token": token }),
-            )
-            .await?;
+            ),
+        )
+        .await?;
         commands_sent += 2;
         if result_a["token"] != serde_json::json!("session-a")
             || result_b["token"] != serde_json::json!("session-b")
@@ -115,18 +171,20 @@ async fn run(
     }
     let mut event_count = 0_u64;
     for _ in 0..100 {
-        let event_a = events_a.next().await.ok_or_else(|| {
-            SpikeError::new(
-                SpikeErrorCode::SubscriptionClosed,
-                "session-a event stream closed early",
-            )
-        })??;
-        let event_b = events_b.next().await.ok_or_else(|| {
-            SpikeError::new(
-                SpikeErrorCode::SubscriptionClosed,
-                "session-b event stream closed early",
-            )
-        })??;
+        let event_a = bounded_stream(
+            stage,
+            QualificationStage::CandidateRouting,
+            &mut events_a,
+            "session-a event stream closed early",
+        )
+        .await?;
+        let event_b = bounded_stream(
+            stage,
+            QualificationStage::CandidateRouting,
+            &mut events_b,
+            "session-b event stream closed early",
+        )
+        .await?;
         if event_a.scope != session_a
             || event_b.scope != session_b
             || event_a.params["token"]
@@ -144,13 +202,16 @@ async fn run(
         event_count += 2;
     }
 
-    let browser_result = transport
-        .send_raw(
+    let browser_result = bounded(
+        stage,
+        QualificationStage::CandidateRouting,
+        transport.send_raw(
             &TransportScope::Browser,
             "Browser.getVersion",
             serde_json::json!({}),
-        )
-        .await?;
+        ),
+    )
+    .await?;
     if browser_result["scope"]["scope"] != serde_json::json!("browser") {
         return Err(SpikeError::new(
             SpikeErrorCode::Routing,
@@ -163,14 +224,21 @@ async fn run(
         "Runtime.unknownEnum",
     ];
     let mut drift_seen = HashSet::new();
+    stage.set(QualificationStage::CandidateDrift);
     for method in drift_methods {
-        let mut stream = transport.subscribe_named(&session_a, method).await?;
-        let event = stream.next().await.ok_or_else(|| {
-            SpikeError::new(
-                SpikeErrorCode::SubscriptionClosed,
-                "drift event was not delivered",
-            )
-        })??;
+        let mut stream = bounded(
+            stage,
+            QualificationStage::CandidateDrift,
+            transport.subscribe_named(&session_a, method),
+        )
+        .await?;
+        let event = bounded_stream(
+            stage,
+            QualificationStage::CandidateDrift,
+            &mut stream,
+            "drift event was not delivered",
+        )
+        .await?;
         if event.method != method || event.scope != session_a {
             return Err(SpikeError::new(
                 SpikeErrorCode::Protocol,
@@ -180,19 +248,60 @@ async fn run(
         drift_seen.insert(method);
     }
 
-    transport.start_screencast(&session_a).await?;
+    stage.set(QualificationStage::CandidateScreencast);
+    bounded(
+        stage,
+        QualificationStage::CandidateScreencast,
+        transport.start_screencast(&session_a),
+    )
+    .await?;
     for _ in 0..100 {
-        let frame = transport.next_screencast_frame(&session_a).await?;
-        transport.ack_screencast(&session_a, frame.sequence).await?;
+        let frame = bounded(
+            stage,
+            QualificationStage::CandidateScreencast,
+            transport.next_screencast_frame(&session_a),
+        )
+        .await?;
+        bounded(
+            stage,
+            QualificationStage::CandidateScreencast,
+            transport.ack_screencast(&session_a, frame.sequence),
+        )
+        .await?;
     }
     trace.push("deterministic screencast frames were acknowledged before handoff".into());
 
     let wire_connected = peer.connection_count() > 0;
     if wire_connected {
-        run_wire_lifecycle(transport.as_ref(), &session_a, &session_b, peer, &mut trace).await?;
-        let rebuilt = factory.connect("scripted-peer").await?;
-        let rebuilt_a = rebuilt.attach_flat_page("target-a").await?;
-        let rebuilt_b = rebuilt.attach_flat_page("target-b").await?;
+        stage.set(QualificationStage::CandidateLifecycle);
+        run_wire_lifecycle(
+            transport.as_ref(),
+            &session_a,
+            &session_b,
+            peer,
+            &mut trace,
+            stage,
+        )
+        .await?;
+        stage.set(QualificationStage::CandidateRebuild);
+        let rebuilt = bounded(
+            stage,
+            QualificationStage::CandidateRebuild,
+            factory.connect("scripted-peer"),
+        )
+        .await?;
+        let rebuilt_a = bounded(
+            stage,
+            QualificationStage::CandidateRebuild,
+            rebuilt.attach_flat_page("target-a"),
+        )
+        .await?;
+        let rebuilt_b = bounded(
+            stage,
+            QualificationStage::CandidateRebuild,
+            rebuilt.attach_flat_page("target-b"),
+        )
+        .await?;
         if rebuilt_a == rebuilt_b || peer.connection_count() < 2 {
             return Err(SpikeError::new(
                 SpikeErrorCode::Routing,
@@ -330,24 +439,46 @@ async fn run(
 pub async fn run_candidate_wire_contract(
     factory_for_endpoint: impl FnOnce(String) -> Box<dyn SpikeTransportFactory>,
 ) -> Result<super::contract::CandidateContractEvidence, SpikeError> {
+    run_candidate_wire_contract_with_stage(
+        factory_for_endpoint,
+        StageTracker::new(QualificationStage::CandidateContract),
+    )
+    .await
+}
+
+#[cfg(feature = "cdp-spike-cdpkit")]
+pub(crate) async fn run_candidate_wire_contract_with_stage(
+    factory_for_endpoint: impl FnOnce(String) -> Box<dyn SpikeTransportFactory>,
+    stage: StageTracker,
+) -> Result<super::contract::CandidateContractEvidence, SpikeError> {
     use super::fixture_server::ScriptedCdpServer;
     use sha2::{Digest, Sha256};
 
-    let server = ScriptedCdpServer::start().await?;
+    stage.set(QualificationStage::CandidateContract);
+    let server = bounded(
+        &stage,
+        QualificationStage::CandidateContract,
+        ScriptedCdpServer::start(),
+    )
+    .await?;
     // The decisive helper owns the scripted server, so the factory must be created only after its
     // endpoint exists. The closure keeps this boundary candidate-neutral: cdpkit binding belongs
     // to the qualification caller, while generic scenarios still receive a normal factory.
     let factory = factory_for_endpoint(server.ws_url.clone());
     let mut peer = server.controller();
-    let scenario = run_transport_scenarios(factory.as_ref(), &mut peer).await;
+    let scenario =
+        run_transport_scenarios_with_stage(factory.as_ref(), &mut peer, stage.clone()).await;
     if !scenario.passed() {
-        return Err(SpikeError::new(
+        let error = SpikeError::new(
             SpikeErrorCode::Evidence,
             format!(
                 "scripted candidate contract scenario failed; {}",
                 scenario.failure_context()
             ),
-        ));
+        )
+        .at_stage(stage.current());
+        server.shutdown().await;
+        return Err(error);
     }
     let observations = peer.observations();
     let routing = peer.observed_routing();
@@ -382,7 +513,7 @@ pub async fn run_candidate_wire_contract(
     };
     let trace = serde_json::to_vec(&observations)
         .map_err(|error| SpikeError::new(SpikeErrorCode::Evidence, error.to_string()))?;
-    Ok(super::contract::CandidateContractEvidence {
+    let evidence = super::contract::CandidateContractEvidence {
         trace_sha256: format!("sha256:{:x}", Sha256::digest(trace)),
         trace_observations: observations.len() as u64,
         results: super::contract::CandidateContractResults {
@@ -407,7 +538,61 @@ pub async fn run_candidate_wire_contract(
                 .copied()
                 .unwrap_or(0.0) as u64,
         },
+    };
+    // Close the listener and every accepted connection before the helper returns. This makes a
+    // repeated in-process invocation independent of detached server tasks from its predecessor.
+    bounded(&stage, QualificationStage::CandidateLifecycle, async {
+        server.shutdown().await;
+        Ok::<(), SpikeError>(())
     })
+    .await?;
+    Ok(evidence)
+}
+
+async fn bounded<T, F>(
+    stage: &StageTracker,
+    phase: QualificationStage,
+    operation: F,
+) -> Result<T, SpikeError>
+where
+    F: Future<Output = Result<T, SpikeError>>,
+{
+    stage.set(phase);
+    tokio::time::timeout(Duration::from_secs(2), operation)
+        .await
+        .map_err(|_| {
+            SpikeError::new(
+                SpikeErrorCode::Deadline,
+                "qualification operation exceeded two-second phase deadline",
+            )
+            .at_stage(phase)
+        })?
+        .map_err(|error| error.at_stage(phase))
+}
+
+async fn bounded_stream<T, S>(
+    stage: &StageTracker,
+    phase: QualificationStage,
+    stream: &mut S,
+    closed_message: &str,
+) -> Result<T, SpikeError>
+where
+    S: Stream<Item = Result<T, SpikeError>> + Unpin,
+{
+    stage.set(phase);
+    tokio::time::timeout(Duration::from_secs(2), stream.next())
+        .await
+        .map_err(|_| {
+            SpikeError::new(
+                SpikeErrorCode::Deadline,
+                "qualification subscription receive exceeded two-second phase deadline",
+            )
+            .at_stage(phase)
+        })?
+        .ok_or_else(|| {
+            SpikeError::new(SpikeErrorCode::SubscriptionClosed, closed_message).at_stage(phase)
+        })?
+        .map_err(|error| error.at_stage(phase))
 }
 
 async fn run_wire_lifecycle(
@@ -416,19 +601,33 @@ async fn run_wire_lifecycle(
     session_b: &TransportScope,
     peer: &ScriptedCdpPeer,
     trace: &mut Vec<String>,
+    stage: &StageTracker,
 ) -> Result<(), SpikeError> {
-    let mut ordering_events = transport
-        .subscribe_named(session_a, "Runtime.consoleAPICalled")
-        .await?;
-    let ordering_result = transport
-        .send_raw(
+    let mut ordering_events = bounded(
+        stage,
+        QualificationStage::CandidateLifecycle,
+        transport.subscribe_named(session_a, "Runtime.consoleAPICalled"),
+    )
+    .await?;
+    let ordering_result = bounded(
+        stage,
+        QualificationStage::CandidateLifecycle,
+        transport.send_raw(
             session_a,
             "Runtime.evaluate",
             serde_json::json!({"phase":"event-before-response", "token": 10_001}),
-        )
-        .await?;
+        ),
+    )
+    .await?;
+    let ordering_event = bounded_stream(
+        stage,
+        QualificationStage::CandidateLifecycle,
+        &mut ordering_events,
+        "ordering subscription closed",
+    )
+    .await?;
     if ordering_result["token"] != serde_json::json!("session-a")
-        || ordering_events.next().await.is_none()
+        || ordering_event.method != "Runtime.consoleAPICalled"
         || !peer.event_before_response("Runtime.evaluate")
     {
         return Err(SpikeError::new(
@@ -438,9 +637,12 @@ async fn run_wire_lifecycle(
     }
     trace.push("wire observed event-before-response before the correlated response".into());
 
-    let mut detach_events = transport
-        .subscribe_named(session_b, "Target.detachedFromTarget")
-        .await?;
+    let mut detach_events = bounded(
+        stage,
+        QualificationStage::CandidateLifecycle,
+        transport.subscribe_named(session_b, "Target.detachedFromTarget"),
+    )
+    .await?;
     let pending = transport.send_raw(
         session_b,
         "Runtime.evaluate",
@@ -454,11 +656,24 @@ async fn run_wire_lifecycle(
         }
     })
     .await
-    .map_err(|_| SpikeError::new(SpikeErrorCode::Deadline, "detach command was not observed"))??;
+    .map_err(|_| {
+        SpikeError::new(SpikeErrorCode::Deadline, "detach command was not observed")
+            .at_stage(QualificationStage::CandidateLifecycle)
+    })??;
     let pending_closed = tokio::time::timeout(std::time::Duration::from_secs(1), pending)
         .await
-        .map_err(|_| SpikeError::new(SpikeErrorCode::Deadline, "pending command did not close"))?;
-    if pending_closed.is_ok() || detach_events.next().await.is_none() {
+        .map_err(|_| {
+            SpikeError::new(SpikeErrorCode::Deadline, "pending command did not close")
+                .at_stage(QualificationStage::CandidateLifecycle)
+        })?;
+    let detach_event = bounded_stream(
+        stage,
+        QualificationStage::CandidateLifecycle,
+        &mut detach_events,
+        "detach subscription closed",
+    )
+    .await?;
+    if pending_closed.is_ok() || detach_event.method != "Target.detachedFromTarget" {
         return Err(SpikeError::new(
             SpikeErrorCode::Disconnected,
             "detach did not close pending command and subscription",

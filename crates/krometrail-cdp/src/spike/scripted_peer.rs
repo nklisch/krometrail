@@ -194,6 +194,9 @@ impl ScriptedCdpPeer {
 
     pub async fn wait_for_command(&self, method: &str, phase: &str) -> Result<(), SpikeError> {
         loop {
+            // Create the notification future before checking the snapshot. Otherwise a command
+            // observed between the check and `notified().await` can lose its wake-up forever.
+            let notified = self.command_notify.notified();
             if self.observations().iter().any(|observation| {
                 observation.kind == WireObservationKind::Command
                     && observation.method.as_deref() == Some(method)
@@ -201,7 +204,7 @@ impl ScriptedCdpPeer {
             }) {
                 return Ok(());
             }
-            self.command_notify.notified().await;
+            notified.await;
         }
     }
 
@@ -291,6 +294,7 @@ pub struct ScriptedCdpServer {
     controller: ScriptedCdpPeer,
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
     task: Option<tokio::task::JoinHandle<()>>,
+    connections: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
 }
 
 impl ScriptedCdpServer {
@@ -301,6 +305,8 @@ impl ScriptedCdpServer {
         let address = listener.local_addr().map_err(io_error)?;
         let controller = ScriptedCdpPeer::empty();
         let server_controller = controller.clone();
+        let connections = Arc::new(Mutex::new(Vec::new()));
+        let server_connections = Arc::clone(&connections);
         let (shutdown, mut stop) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
             loop {
@@ -314,9 +320,13 @@ impl ScriptedCdpServer {
                 };
                 let connection = server_controller.allocate_connection();
                 let connection_controller = server_controller.clone();
-                tokio::spawn(async move {
+                let connection_task = tokio::spawn(async move {
                     serve_connection(socket, connection_controller, connection).await;
                 });
+                server_connections
+                    .lock()
+                    .expect("scripted connection mutex poisoned")
+                    .push(connection_task);
             }
         });
         Ok(Self {
@@ -327,11 +337,33 @@ impl ScriptedCdpServer {
             controller,
             shutdown: Some(shutdown),
             task: Some(task),
+            connections,
         })
     }
 
     pub fn controller(&self) -> ScriptedCdpPeer {
         self.controller.clone()
+    }
+
+    pub async fn shutdown(mut self) {
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
+        }
+        if let Some(task) = self.task.take() {
+            let _ = task.await;
+        }
+        let connections = std::mem::take(
+            &mut *self
+                .connections
+                .lock()
+                .expect("scripted connection mutex poisoned"),
+        );
+        for connection in &connections {
+            connection.abort();
+        }
+        for connection in connections {
+            let _ = connection.await;
+        }
     }
 }
 
@@ -342,6 +374,13 @@ impl Drop for ScriptedCdpServer {
         }
         if let Some(task) = self.task.take() {
             task.abort();
+        }
+        let connections = self
+            .connections
+            .lock()
+            .expect("scripted connection mutex poisoned");
+        for connection in connections.iter() {
+            connection.abort();
         }
     }
 }

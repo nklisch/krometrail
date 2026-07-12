@@ -2,8 +2,7 @@
 
 use krometrail_cdp::spike::{cdpkit_adapter::CdpkitTransportFactory, run_candidate_wire_contract};
 
-#[tokio::test]
-async fn decisive_cdpkit_candidate_contract_binds_its_own_scripted_endpoint() {
+async fn assert_decisive_candidate_contract() {
     let evidence = run_candidate_wire_contract(|endpoint| {
         Box::new(CdpkitTransportFactory::with_scripted_endpoint(endpoint))
     })
@@ -24,4 +23,11 @@ async fn decisive_cdpkit_candidate_contract_binds_its_own_scripted_endpoint() {
     assert!(evidence.results.socket_closed);
     assert_eq!(evidence.results.reconnect_connections, 2);
     assert_eq!(evidence.results.sessions_rebuilt, 2);
+}
+
+#[tokio::test]
+async fn decisive_candidate_contract_is_repeatable_in_one_process() {
+    for _ in 0..2 {
+        assert_decisive_candidate_contract().await;
+    }
 }
