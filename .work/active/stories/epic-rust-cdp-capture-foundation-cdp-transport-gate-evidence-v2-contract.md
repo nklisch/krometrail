@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cdp-transport-gate-evidence-v2-contract
 kind: story
-stage: review
+stage: done
 tags: [bug, browser, infra, testing]
 parent: epic-rust-cdp-capture-foundation-cdp-transport-gate
 depends_on: [epic-rust-cdp-capture-foundation-cdp-transport-gate-wire-authenticity-remediation, epic-rust-cdp-capture-foundation-cdp-transport-gate-deadline-observation-remediation]
@@ -36,3 +36,13 @@ Version the evidence contract if required. Require canonical RSS sample, cadence
 - Added regression coverage for stale schema, legacy aliases, RSS omissions, stale configuration provenance, mixed gate revisions, platform-labelled decisions, and historical report rejection.
 - Generated `docs/evidence/cdp-transport/v2/schema.json` and added its requalification README. Retained v1 reports/decision are unchanged and explicitly obsolete; no replacement reports were fabricated and no current transport selection is claimed.
 - No production, root, or core files changed. Verification passed: `cargo fmt --all --check`; default workspace tests/clippy; spike tests/clippy; and cdpkit-feature tests/clippy.
+
+## Review (2026-07-12)
+
+**Verdict:** Approve
+
+**Blockers:** none
+**Important:** none
+**Nits:** none
+
+**Notes:** Fast-lane contract review verified strict schema v2, canonical RSS/deadline fields, trace-bound candidate evidence, same-revision/config enforcement, platform-labelled decision results, historical v1 rejection, 22 candidate-feature tests, and denied-warning clippy. No current selection is claimed before requalification. Verdict: Approve - story verified by implement; fast-lane advance.
