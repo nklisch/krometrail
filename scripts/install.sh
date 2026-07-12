@@ -3,7 +3,7 @@
 # Linux release assets are statically linked musl binaries; asset names are a
 # public compatibility contract and must stay aligned with the release matrix.
 # Usage: curl -fsSL https://krometrail.dev/install.sh | sh
-#        curl -fsSL https://krometrail.dev/install.sh | sh -s -- --version v0.2.0
+#        curl -fsSL https://krometrail.dev/install.sh | sh -s -- --version VERSION
 #        KROMETRAIL_INSTALL_DIR=/usr/local/bin curl -fsSL https://krometrail.dev/install.sh | sh
 
 set -eu
@@ -11,6 +11,10 @@ set -eu
 REPO="nklisch/krometrail"
 BINARY_NAME="krometrail"
 GITHUB="https://github.com/${REPO}"
+# Immutable boundary: v0.2.20 is the preserved TypeScript/DAP release, not a
+# Rust release. Keep this cutoff in one place so neither latest nor explicit
+# version selection can accidentally serve the legacy runtime.
+LEGACY_RELEASE_CUTOFF="0.2.20"
 
 # --- Color output ---
 
@@ -52,7 +56,7 @@ Usage:
   curl -fsSL https://krometrail.dev/install.sh | sh -s -- [OPTIONS]
 
 Options:
-  --version VERSION        Install a specific version (e.g. v0.2.0)
+  --version VERSION        Install a specific post-cutoff version (e.g. v0.2.21)
   --install-dir DIR        Install to DIR (default: ~/.local/bin)
   --no-modify-path         Don't offer to modify shell PATH
   -h, --help               Show this help
@@ -154,11 +158,12 @@ fetch() {
 
 resolve_version() {
 	if [ -n "$VERSION" ]; then
-		# Ensure version starts with v
+		# Ensure version starts with v before validating the release boundary.
 		case "$VERSION" in
 			v*) ;;
 			*)  VERSION="v${VERSION}" ;;
 		esac
+		reject_legacy_release
 		info "Using requested version: ${VERSION}"
 		return
 	fi
@@ -171,8 +176,75 @@ resolve_version() {
 	if [ -z "$VERSION" ]; then
 		err "Could not determine latest release version"
 		echo ""
-		echo "This may be a GitHub API rate limit. Try:"
-		echo "  curl -fsSL https://krometrail.dev/install.sh | sh -s -- --version v0.2.0"
+		echo "This may be a GitHub API rate limit. Try again later or build from source:"
+		echo "  bash scripts/dev-install.sh"
+		exit 1
+	fi
+
+	reject_legacy_release
+}
+
+# --- Release safety ---
+
+normalize_decimal() {
+	number="$1"
+	number="$(printf '%s' "$number" | sed 's/^0*//')"
+	[ -n "$number" ] || number="0"
+	printf '%s' "$number"
+}
+
+is_valid_release_version() {
+	candidate="$1"
+	case "$candidate" in
+		v*) release_without_prefix="${candidate#v}" ;;
+		*)  release_without_prefix="$candidate" ;;
+	esac
+
+	case "$release_without_prefix" in
+		*.*.*) ;;
+		*) return 1 ;;
+	esac
+
+	release_major="${release_without_prefix%%.*}"
+	release_rest="${release_without_prefix#*.}"
+	release_minor="${release_rest%%.*}"
+	release_patch="${release_rest#*.}"
+	case "$release_major" in ""|*[!0-9]*) return 1 ;; esac
+	case "$release_minor" in ""|*[!0-9]*) return 1 ;; esac
+	case "$release_patch" in ""|*[!0-9]*) return 1 ;; esac
+}
+
+is_legacy_release_version() {
+	candidate="$1"
+	case "$candidate" in
+		v*) release_without_prefix="${candidate#v}" ;;
+		*)  release_without_prefix="$candidate" ;;
+	esac
+	release_major="$(normalize_decimal "${release_without_prefix%%.*}")"
+	release_rest="${release_without_prefix#*.}"
+	release_minor="$(normalize_decimal "${release_rest%%.*}")"
+	release_patch="$(normalize_decimal "${release_rest#*.}")"
+
+	cutoff_major="$(normalize_decimal "${LEGACY_RELEASE_CUTOFF%%.*}")"
+	cutoff_rest="${LEGACY_RELEASE_CUTOFF#*.}"
+	cutoff_minor="$(normalize_decimal "${cutoff_rest%%.*}")"
+	cutoff_patch="$(normalize_decimal "${cutoff_rest#*.}")"
+
+	if [ "$release_major" -lt "$cutoff_major" ]; then return 0; fi
+	if [ "$release_major" -gt "$cutoff_major" ]; then return 1; fi
+	if [ "$release_minor" -lt "$cutoff_minor" ]; then return 0; fi
+	if [ "$release_minor" -gt "$cutoff_minor" ]; then return 1; fi
+	[ "$release_patch" -le "$cutoff_patch" ]
+}
+
+reject_legacy_release() {
+	if ! is_valid_release_version "$VERSION"; then
+		err "Invalid release version: ${VERSION} (expected vMAJOR.MINOR.PATCH)"
+		exit 1
+	fi
+	if is_legacy_release_version "$VERSION"; then
+		err "Release ${VERSION} is blocked: v${LEGACY_RELEASE_CUTOFF} is the immutable legacy TypeScript/DAP boundary."
+		err "No Rust GitHub release newer than v${LEGACY_RELEASE_CUTOFF} is available yet; build from source instead."
 		exit 1
 	fi
 }
@@ -362,9 +434,25 @@ main() {
 
 	verify_checksum "$TMP_FILE" "$ASSET_NAME"
 
+	# Validate the temporary artifact before replacing an existing installation.
+	# The checksum proves integrity, while --version proves that this host can
+	# actually execute the downloaded release. The installed path is untouched
+	# until both checks pass.
+	info "Validating downloaded binary..."
+	if ! chmod +x "$TMP_FILE"; then
+		err "Could not make the downloaded artifact executable; existing installation was preserved"
+		exit 1
+	fi
+	if ! installed_version="$("$TMP_FILE" --version 2>/dev/null)"; then
+		err "Downloaded artifact failed --version; existing installation was preserved"
+		exit 1
+	fi
+
 	# Atomic move into place
-	chmod +x "$TMP_FILE"
-	mv -f "$TMP_FILE" "$INSTALL_PATH"
+	if ! mv -f "$TMP_FILE" "$INSTALL_PATH"; then
+		err "Could not replace ${INSTALL_PATH}; existing installation was preserved"
+		exit 1
+	fi
 	trap - EXIT
 
 	# Remove macOS quarantine attribute
@@ -373,12 +461,7 @@ main() {
 	fi
 
 	ok "Installed ${BINARY_NAME} ${VERSION} to ${INSTALL_PATH}"
-
-	# Verify it runs
-	if "$INSTALL_PATH" --version > /dev/null 2>&1; then
-		installed_version="$("$INSTALL_PATH" --version 2>/dev/null || echo "${VERSION}")"
-		ok "Verified: ${installed_version}"
-	fi
+	ok "Verified: ${installed_version}"
 
 	add_to_path "$INSTALL_DIR"
 

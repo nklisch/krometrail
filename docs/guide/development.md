@@ -53,9 +53,13 @@ bun run docs:preview
 
 `bun run docs:build` regenerates `docs/public/llms-full.txt` and builds the VitePress site. Browser fixtures are standalone applications; consult the [fixture classification](https://github.com/nklisch/krometrail/blob/main/tests/fixtures/browser/README.md) for their uses and launch details.
 
-## Release
+## Release preparation
 
-The root `Cargo.toml` owns the product version. The Bun release helper updates Cargo metadata, runs the Rust quality gate, and creates the repository release commit/tag/push workflow:
+No Rust GitHub release has been published yet; current Rust use is source-build
+only. When the first post-cutoff Rust release is ready, the root `Cargo.toml`
+will own the product version. The Bun release helper updates Cargo metadata,
+runs the Rust quality gate, and creates the repository release commit/tag/push
+workflow:
 
 ```bash
 bun scripts/bump-version.ts patch
@@ -72,4 +76,4 @@ The release matrix builds and checksums these stable asset names:
 - `krometrail-darwin-arm64`
 - `krometrail-windows-x64.exe`
 
-The public installer downloads the matching asset and installs `krometrail`. See the [installation guide](installation.md) for the checksum-verified installer. Use `scripts/dev-install.sh` to install a local host release build into `~/.local/bin`.
+The public installer is guarded until that post-cutoff release exists: it rejects the preserved `v0.2.20` TypeScript/DAP release before downloading it. See the [installation guide](installation.md) for the current source-install path. Use `scripts/dev-install.sh` to install a local host release build into `~/.local/bin`.

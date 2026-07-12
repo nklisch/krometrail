@@ -9,6 +9,7 @@ CI="$ROOT/.github/workflows/ci.yml"
 PAGES="$ROOT/.github/workflows/deploy-pages.yml"
 INSTALLER="$ROOT/scripts/install.sh"
 DEV_INSTALLER="$ROOT/scripts/dev-install.sh"
+INSTALLER_FIXTURES="$ROOT/tests/installer-fixtures.sh"
 VALIDATE="$ROOT/scripts/validate-release-tag.sh"
 VERIFY_TAG="$ROOT/scripts/verify-release-tag-identity.sh"
 BUMP="$ROOT/scripts/bump-version.ts"
@@ -381,5 +382,7 @@ fi
 cmp -s "$lock_tmp/Cargo.toml" "$lock_tmp/Cargo.toml.before" || fail "failed lock validation did not restore Cargo.toml"
 cmp -s "$lock_tmp/Cargo.lock" "$lock_tmp/Cargo.lock.before" || fail "failed lock validation did not restore Cargo.lock"
 rm -rf "$lock_tmp"
+
+bash "$INSTALLER_FIXTURES"
 
 echo "distribution contracts: ok"

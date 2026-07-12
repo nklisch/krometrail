@@ -77,6 +77,7 @@ jobs:
           sh -n scripts/install.sh
           bash -n scripts/dev-install.sh
           bash -n tests/distribution-static.sh
+          bash -n tests/installer-fixtures.sh
 
       - name: Check distribution contracts
         run: bash tests/distribution-static.sh

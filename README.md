@@ -33,15 +33,25 @@ The Rust workspace is the product runtime. The browser fixtures are test applica
 
 ## Installation
 
-Install the latest checksum-verified release with the public POSIX installer:
+No Rust GitHub release has been published yet. The public POSIX installer is
+intentionally guarded: it rejects the preserved `v0.2.20` TypeScript/DAP
+release and every older version, so it cannot present the legacy runtime as a
+Rust installation.
+
+For current use, build and install the Rust binary from source:
 
 ```bash
-curl -fsSL https://krometrail.dev/install.sh | sh
+bash scripts/dev-install.sh
 ```
 
-Linux x64 and arm64 releases are statically linked musl binaries, so the public assets do not inherit a glibc minimum from the release runner. The installer keeps the existing `krometrail-linux-x64`, `krometrail-linux-arm64`, `krometrail-darwin-x64`, and `krometrail-darwin-arm64` mappings. Windows remains a direct-download best-effort artifact and is not supported by the installer.
+Linux x64 and arm64 release assets will be statically linked musl binaries when
+the first post-cutoff Rust release is published. The public asset names remain
+`krometrail-linux-x64`, `krometrail-linux-arm64`, `krometrail-darwin-x64`, and
+`krometrail-darwin-arm64`. Windows remains a best-effort direct-download
+artifact and is not supported by the installer.
 
-See the [full installation guide](https://krometrail.dev/guide/installation) for version selection and install-directory options.
+See the [full installation guide](https://krometrail.dev/guide/installation)
+for the current source-install path and future release behavior.
 
 ## Development
 

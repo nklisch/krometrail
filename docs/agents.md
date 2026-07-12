@@ -14,7 +14,7 @@ The foundation documents intentionally describe capabilities that are being buil
 
 ## Contributor documentation
 
-- [Installation](guide/installation.md) — checksum-verified release installation and local development installs.
+- [Installation](guide/installation.md) — current source installation and guarded future release installs.
 - [Development](guide/development.md) — Rust build, test, lint, run, release, and docs-tooling commands.
 - [MCP configuration](guide/mcp-configuration.md) — why no MCP server entry should be added yet and where the intended boundary is specified.
 - [Runtime reference](reference/runtime.md) — the small command surface currently shipped by the binary.

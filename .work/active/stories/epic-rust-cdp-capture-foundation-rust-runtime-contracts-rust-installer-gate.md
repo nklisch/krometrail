@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-rust-runtime-contracts-rust-installer-gate
 kind: story
-stage: implementing
+stage: review
 tags: [bug, infra, tests]
 parent: epic-rust-cdp-capture-foundation-rust-runtime-contracts
 depends_on: []
@@ -27,12 +27,22 @@ Ensure the public installer never presents the preserved `v0.2.20` TypeScript/DA
 
 ## Acceptance criteria
 
-- [ ] The installer cannot download or execute `v0.2.20` or an older release.
-- [ ] A failed executable check cannot replace an existing installation or report success.
-- [ ] A synthetic post-cutoff Rust release installs successfully in isolation.
-- [ ] Current documentation advertises only truthful installation paths.
-- [ ] Rust, distribution, and docs gates pass.
+- [x] The installer cannot download or execute `v0.2.20` or an older release.
+- [x] A failed executable check cannot replace an existing installation or report success.
+- [x] A synthetic post-cutoff Rust release installs successfully in isolation.
+- [x] Current documentation advertises only truthful installation paths.
+- [x] Rust, distribution, and docs gates pass.
 
 ## Review origin
 
 Filed from the operator-authorized third GPT-5.6 Sol adversarial feature review.
+
+## Implementation notes
+
+- Execution capability: highest-tier direct implementation; the caller prohibited questions and subagents, so ownership remained inline.
+- Review weight: maximum requested by the caller; implementation stops at `stage: review` for the independent review lane.
+- Files changed: `scripts/install.sh`, `tests/installer-fixtures.sh`, `tests/distribution-static.sh`, `.github/workflows/ci.yml`, `README.md`, `docs/agents.md`, `docs/index.md`, `docs/guide/installation.md`, `docs/guide/development.md`, and generated `docs/public/llms-full.txt`.
+- Tests added: hermetic installer fixtures for latest and explicit legacy rejection, checksum-valid non-executable failure with prior-install preservation, and synthetic post-cutoff success without latest-release network access.
+- Verification: POSIX/Bash shell syntax, installer fixtures, distribution contracts, `bun run docs:build`, `cargo fmt --all -- --check`, locked workspace check/test/clippy gates.
+- Discrepancies from design: none.
+- Adjacent issues parked: none.
