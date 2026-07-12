@@ -36,3 +36,7 @@ Run the unchanged shared harness and the currently qualifying candidate on curre
 - [ ] The report demonstrates all decisive gates under unchanged thresholds and honestly records named-event-only/raw-envelope limitations.
 - [ ] A clean checkout can reproduce the report from the documented command; committed output contains no machine-specific secrets or paths.
 - [ ] No production adapter, core contract, capture pipeline, or platform-specific transport branch is introduced.
+
+## Blocker
+
+The non-destructive reproducibility preparation is complete in `.github/workflows/cdp-transport-gate.yml`, but decisive macOS evidence cannot be produced from the current Linux host. An operator must push a ref containing this preparation, then manually dispatch the workflow with that ref and its exact 40-character SHA. A hosted macOS runner must execute the unchanged cdpkit tests and full gate; no macOS evidence has been fabricated, committed, dispatched, or downloaded here. This story remains `stage: implementing` until that hosted run produces validated evidence.
