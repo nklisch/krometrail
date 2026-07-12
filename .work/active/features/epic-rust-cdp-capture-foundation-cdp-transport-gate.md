@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cdp-transport-gate
 kind: feature
-stage: implementing
+stage: review
 tags: [browser, infra]
 parent: epic-rust-cdp-capture-foundation
 depends_on: [epic-rust-cdp-capture-foundation-rust-runtime-contracts]
@@ -579,4 +579,6 @@ A fresh GLM review approved the first remediation, but the second Sol adversaria
 
 Six additional stories repaired those defects, recaptured both platforms from clean exact revision `07b0990c0d9e4fea9057fcab5c35e56691ff69eb`, preserved that evidence under `historical/final-v2-07b0990/`, and regenerated decision digest `91f9032315dd3501068e1dd692b12fbda7ce0d7a57c9b5a49444db73c2a5c015`. The attested final-recapture story then independently normalized and revalidated final5 inputs at `a0e98ad6bd9c53d10385020bc43629f7ac246173`, preserving the prior bytes and installing report digests `c5ed8bfab9cb829f0d1e1622755667084abc09129ed1f2928cdc5f577d3761f8` / `7b2d7c61d61400f47281423d35ea57d51b1292cc78a95c4d7cef3118476c2264` and decision digest `dfbd51c9e7a1f8e051c173df35962bc6f443d2b5c28037e406c3a72beda6472a`.
 
-The next fresh GLM pass found only a corrected Chrome-version typo, but final Sol review reproduced four remaining blockers: descendant Chrome process trees were not group-owned; compile-time worktree paths leaked through shared Cargo cache and a test false-skipped; candidate trace summaries were not reconstructable from committed trace material; and Rust decisive validation did not pin the canonical hard stop. It also reproduced encoded hostname/email/IPv6 redaction bypasses. Four new stories repair and recapture this evidence. The feature returns to `stage: implementing`; no prior report or threshold is waived.
+The next fresh GLM pass found only a corrected Chrome-version typo, but final Sol review reproduced four remaining blockers: descendant Chrome process trees were not group-owned; compile-time worktree paths leaked through shared Cargo cache and a test false-skipped; candidate trace summaries were not reconstructable from committed trace material; and Rust decisive validation did not pin the canonical hard stop. It also reproduced encoded hostname/email/IPv6 redaction bypasses.
+
+Six final follow-ups repaired process-group cleanup/runtime roots, reconstructable trace material, canonical configuration/redaction, Chrome revision grammar, workflow digest verification, and final recapture. All 26 child stories are `stage: done`. Current exact evidence is revision `a0e98ad6bd9c53d10385020bc43629f7ac246173`, hosted run `29212145045`, reports `c5ed8bfa…3761f8` / `7b2d7c61…6c2264`, decision `dfbd51c9…a6472a`, with zero gate profiles and no temporary remote branch. The feature returns to `stage: review`; no prior report or threshold was waived.
