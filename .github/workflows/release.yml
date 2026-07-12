@@ -20,8 +20,21 @@ permissions:
   attestations: write
 
 jobs:
+  validate-release-tag:
+    name: Validate release tag
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Validate tag against Cargo version
+        run: bash scripts/validate-release-tag.sh "$RELEASE_TAG"
+
   build:
     name: Build ${{ matrix.asset }}
+    needs: validate-release-tag
     strategy:
       fail-fast: false
       matrix:
@@ -88,7 +101,7 @@ jobs:
 
   release:
     name: Publish GitHub release
-    needs: build
+    needs: [validate-release-tag, build]
     runs-on: ubuntu-latest
     steps:
       - name: Download release assets

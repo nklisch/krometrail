@@ -7,10 +7,8 @@ set -euo pipefail
 DEST="${KROMETRAIL_INSTALL_DIR:-$HOME/.local/bin}"
 BINARY="target/release/krometrail"
 
-if [[ ! -f "$BINARY" ]]; then
-	echo "Building Rust release binary..."
-	CARGO_TARGET_DIR=target cargo build --locked --release
-fi
+echo "Building current Rust release binary..."
+CARGO_TARGET_DIR=target cargo build --locked --release
 
 mkdir -p "$DEST"
 cp "$BINARY" "$DEST/krometrail"

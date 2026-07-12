@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-rust-runtime-contracts-distribution-integrity
 kind: story
-stage: implementing
+stage: review
 tags: [bug, infra, tests]
 parent: epic-rust-cdp-capture-foundation-rust-runtime-contracts
 depends_on: []
@@ -28,13 +28,22 @@ Resolve the deep-review distribution findings as one cohesive release-boundary c
 
 ## Acceptance criteria
 
-- [ ] A pre-existing release binary cannot bypass a current developer build.
-- [ ] Mismatched or malformed release tags fail before artifact build or publication.
-- [ ] Documentation dependencies install reproducibly from a committed lockfile.
-- [ ] CI proves both MSRV 1.85 compatibility and current-stable quality.
-- [ ] Version bumps perform a narrow lock refresh followed by locked gates.
-- [ ] Static distribution tests cover every corrected failure path and the full Rust/distribution gate passes.
+- [x] A pre-existing release binary cannot bypass a current developer build.
+- [x] Mismatched or malformed release tags fail before artifact build or publication.
+- [x] Documentation dependencies install reproducibly from a committed lockfile.
+- [x] CI proves both MSRV 1.85 compatibility and current-stable quality.
+- [x] Version bumps perform a narrow lock refresh followed by locked gates.
+- [x] Static distribution tests cover every corrected failure path and the full Rust/distribution gate passes.
 
 ## Review origin
 
 Filed from the GPT-5.6 Sol Phase 2 adversarial feature review; it also absorbs both GLM 5.2 Phase 1 nits after independent verification.
+
+## Implementation notes
+
+- Files changed: `.github/workflows/ci.yml`, `.github/workflows/deploy-pages.yml`, `.github/workflows/release.yml`, `.gitignore`, `bun.lock`, `docs/guide/development.md`, `docs/public/llms-full.txt` (regenerated), `scripts/bump-version.ts`, `scripts/dev-install.sh`, `scripts/validate-release-tag.sh`, and `tests/distribution-static.sh`.
+- Tests added: isolated release-tag mismatch/malformed-tag fixtures; stale developer-binary replacement fixture with a fake Cargo builder; committed-lock and frozen-docs assertions; MSRV and locked-gate workflow assertions; narrow lock-refresh fixture.
+- Verification: `cargo fmt --all -- --check`, locked workspace check/test/clippy, distribution static contracts, shell syntax checks, `bun install --frozen-lockfile`, and `bun run docs:build` all passed. Root `bump-version.ts patch --prepare` also passed all locked gates and was restored without creating a tag, commit, or push.
+- Discrepancies from design: none. No core Rust domain files were touched.
+- Dispatch: direct local reads and implementation only, per caller instruction; no questions or subagents.
+- Adjacent issues parked: none.

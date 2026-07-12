@@ -43,7 +43,7 @@ The first two commands succeed. `doctor` currently reports an `unsupported` erro
 Install the JavaScript tooling only when working on the docs site or a preserved browser target:
 
 ```bash
-bun install
+bun install --frozen-lockfile
 bun run docs:dev
 bun run docs:build
 bun run docs:preview
