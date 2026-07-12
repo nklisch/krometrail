@@ -284,18 +284,17 @@ Krometrail does not need to identify the root cause automatically. The evaluatio
 - model input devoted to visual evidence;
 - requests for raw source frames.
 
-## Product-Thesis Gate
+## Product-Thesis Assessment
 
-The temporal product thesis is supported when, across the benchmark:
+The temporal product thesis is supported for an evaluated agent when, across the benchmark:
 
 - temporal evidence improves correct identification of transient defects by at least 25 percentage points over final-screenshot inspection;
 - the improvement occurs for movement, flicker, and layout defects rather than one fixture family alone;
 - the temporal bundle performs at least as well as uniform storyboards while using no more source-frame tiles;
 - stable-control false positives do not increase by more than 10 percentage points;
-- at least two independently developed multimodal model families show improvement;
 - agents can trace every accepted visual claim to retained source evidence.
 
-Failure to meet this gate means the artifact design or capture mechanism changes before broader product claims are made.
+These thresholds produce a reportable pass, fail, or inconclusive assessment; they do not block a software release. A release identifies the measured outcome and does not claim validated improvement when thresholds are unmet. Results apply only to the evaluated agent family until another independently developed family reproduces them.
 
 ## Artifact-Specific Evaluation
 
@@ -432,6 +431,8 @@ Results identify the tested browser versions. Unsupported protocol behavior fail
 
 ## Model Evaluation Discipline
 
+Paid multimodal-agent evaluations are invoked manually through the locally available Codex CLI. Deterministic capture, artifact, control, storage, and scoring checks run without paid agent calls and can execute in CI. Additional independent model families can contribute separate evidence but are not required for the initial assessment.
+
 Every model run records:
 
 - provider and model identifier;
@@ -453,9 +454,9 @@ Model-specific success does not establish general visual comprehensibility. Clai
 
 ## Reproducibility
 
-Benchmark definitions, fixtures, artifact manifests, prompts, scoring rules, and aggregate results are versioned.
+Benchmark definitions, fixtures, prompts, schemas, scoring rules, and harness code are versioned in Git. Per-run manifests, source frames, generated artifacts, raw model answers, transcripts, and aggregate results remain local evaluation outputs and are not committed.
 
-Generated artifacts are reproducible from their manifests and retained source frames.
+Generated artifacts are reproducible from local run manifests and retained source frames. Every local result identifies the exact Git revision containing its benchmark definitions.
 
 An evaluation result identifies:
 
