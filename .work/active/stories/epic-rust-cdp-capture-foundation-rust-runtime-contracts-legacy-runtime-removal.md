@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-rust-runtime-contracts-legacy-runtime-removal
 kind: story
-stage: review
+stage: done
 tags: [browser, infra]
 parent: epic-rust-cdp-capture-foundation-rust-runtime-contracts
 depends_on: [epic-rust-cdp-capture-foundation-rust-runtime-contracts-composition-root]
@@ -68,3 +68,13 @@ AND Rust fmt/check/test/clippy == green
 - Tests added: none; retained Rust tests remain authoritative.
 - Discrepancies from design: none. The root package cleanup was included because its prior `bin`/`main`/test commands were executable paths to the removed runtime, while docs-only VitePress tooling remains for the later documentation cutover.
 - Adjacent issues parked: none.
+
+## Review (2026-07-12)
+
+**Verdict**: Approve
+
+**Blockers**: none
+**Important**: none
+**Nits**: none
+
+**Notes**: Fast-lane story review. The destructive gate, exact remote tag SHA, classified deletion, retained-fixture manifest, and post-teardown Rust gate are recorded. The orchestrator independently reran fmt, check, all 29 workspace tests, and clippy and confirmed only docs/dev-tool and classified browser-fixture TypeScript remains. Verdict: Approve - story verified by implement; fast-lane advance.
