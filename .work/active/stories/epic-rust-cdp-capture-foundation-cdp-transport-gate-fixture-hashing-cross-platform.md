@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cdp-transport-gate-fixture-hashing-cross-platform
 kind: story
-stage: review
+stage: done
 tags: [browser, infra, testing]
 parent: epic-rust-cdp-capture-foundation-cdp-transport-gate
 depends_on: []
@@ -46,3 +46,13 @@ Add a unit regression test beside `sha256_directory` that asserts the determinis
 - Representation: preserved `sha256sum-of-ordered-fixture-files:<index-hash>:<animation-hash>` exactly; no evidence/schema expectation update was needed.
 - Verification: `cargo fmt --all -- --check`; default workspace check/test/clippy; `cdp-spike` check/test/clippy; and `cdp-spike-cdpkit` check/test/clippy all pass with `--locked`.
 - Adjacent issues parked: none.
+
+## Review (2026-07-12)
+
+**Verdict**: Approve
+
+**Blockers**: none
+**Important**: none
+**Nits**: none
+
+**Notes**: Fast-lane bug review. The orchestrator independently reran nine cdpkit/spike test targets and candidate clippy and verified the deterministic known digest plus source-level removal of the external command. Root cause is fixed without changing the evidence representation. Verdict: Approve - story verified by implement; fast-lane advance.
