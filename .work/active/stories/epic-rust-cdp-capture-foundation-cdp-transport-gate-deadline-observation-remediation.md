@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cdp-transport-gate-deadline-observation-remediation
 kind: story
-stage: review
+stage: done
 tags: [bug, browser, infra, testing]
 parent: epic-rust-cdp-capture-foundation-cdp-transport-gate
 depends_on: []
@@ -34,3 +34,13 @@ Enforce a five-second timeout around the complete reconnect/session rebuild and 
 - Plumbed `hard_stop_seconds` into `GateConfiguration` and wrapped the complete real-Chrome operation in a Tokio timeout. Chrome endpoint readiness is now asynchronous so the timeout can cover startup; zero hard stops are rejected.
 - Added paused-time deterministic timeout tests and strict validation regressions for absent, nominal-only, non-finite, and over-threshold deadline evidence. The retained pre-remediation reports are documented as obsolete and left byte-for-byte unchanged.
 - Verification: `cargo fmt --all`; workspace default tests/clippy; `cdp-spike` tests/clippy; `cdp-spike-cdpkit` tests/clippy. Only spike/evidence/schema/docs/test files changed; no production adapter, root, or core-port changes.
+
+## Review (2026-07-12)
+
+**Verdict:** Approve
+
+**Blockers:** none
+**Important:** none
+**Nits:** none
+
+**Notes:** Fast-lane remediation review verified complete hard-stop enforcement, observed pending-command and subscription termination, measured rebuild elapsed time, strict validator failures, deterministic paused-time coverage, 17 candidate-feature tests, and denied-warning clippy. Verdict: Approve - story verified by implement; fast-lane advance.
