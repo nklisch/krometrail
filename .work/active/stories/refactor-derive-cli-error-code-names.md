@@ -1,7 +1,7 @@
 ---
 id: refactor-derive-cli-error-code-names
 kind: story
-stage: implementing
+stage: review
 tags: [refactor, infra]
 parent: null
 depends_on: []
@@ -27,10 +27,17 @@ Replace the root CLI's duplicate `error_code_name` registry with the core-owned 
 
 ## Acceptance criteria
 
-- [ ] `src/main.rs` renders error codes through `ErrorCode::as_str()` and no longer contains `error_code_name` or a second exhaustive `ErrorCode` mapping.
-- [ ] `cargo fmt --all -- --check` passes.
-- [ ] `cargo test --workspace --all-targets --locked` passes, including `tests/rust-runtime-smoke.rs`'s exact `error[unsupported]` contract.
-- [ ] `cargo clippy --workspace --all-targets --locked -- -D warnings` passes.
+- [x] `src/main.rs` renders error codes through `ErrorCode::as_str()` and no longer contains `error_code_name` or a second exhaustive `ErrorCode` mapping.
+- [x] `cargo fmt --all -- --check` passes.
+- [x] `cargo test --workspace --all-targets --locked` passes, including `tests/rust-runtime-smoke.rs`'s exact `error[unsupported]` contract.
+- [x] `cargo clippy --workspace --all-targets --locked -- -D warnings` passes.
+
+## Implementation notes
+- Files changed: `src/main.rs`; this story file.
+- Tests added: none; existing workspace coverage verifies the unchanged CLI error spelling.
+- Discrepancies from design: none.
+- Adjacent issues parked: none.
+- The duplicate root mapping was removed; `report_error` now calls the core-owned `ErrorCode::as_str()` accessor. Verification was direct-read only as requested.
 
 ## Risk and rollback
 

@@ -4,7 +4,7 @@ mod cli;
 use std::process::ExitCode;
 
 use clap::{CommandFactory, Parser};
-use krometrail_core::{ErrorCode, KrometrailError, RetryAdvice};
+use krometrail_core::{KrometrailError, RetryAdvice};
 
 use app::build_runtime;
 use cli::Cli;
@@ -47,7 +47,7 @@ fn main() -> ExitCode {
 fn report_error(error: &KrometrailError) -> ExitCode {
     eprintln!(
         "error[{}] (retry={}): {}",
-        error_code_name(error.code),
+        error.code.as_str(),
         retry_advice_name(error.retry),
         error.message
     );
@@ -55,21 +55,6 @@ fn report_error(error: &KrometrailError) -> ExitCode {
         eprintln!("recovery: {recovery}");
     }
     ExitCode::from(FAILURE_EXIT_CODE)
-}
-
-fn error_code_name(code: ErrorCode) -> &'static str {
-    match code {
-        ErrorCode::InvalidInput => "invalid_input",
-        ErrorCode::InvalidLifecycleTransition => "invalid_lifecycle_transition",
-        ErrorCode::InvalidTime => "invalid_time",
-        ErrorCode::NotFound => "not_found",
-        ErrorCode::Unsupported => "unsupported",
-        ErrorCode::BrowserDisconnected => "browser_disconnected",
-        ErrorCode::CaptureRejected => "capture_rejected",
-        ErrorCode::PersistenceFailed => "persistence_failed",
-        ErrorCode::BudgetExhausted => "budget_exhausted",
-        ErrorCode::Internal => "internal",
-    }
 }
 
 fn retry_advice_name(advice: RetryAdvice) -> &'static str {
