@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cdp-transport-gate
 kind: feature
-stage: review
+stage: done
 tags: [browser, infra]
 parent: epic-rust-cdp-capture-foundation
 depends_on: [epic-rust-cdp-capture-foundation-rust-runtime-contracts]
@@ -581,4 +581,10 @@ Six additional stories repaired those defects, recaptured both platforms from cl
 
 The next fresh GLM pass found only a corrected Chrome-version typo, but final Sol review reproduced four remaining blockers: descendant Chrome process trees were not group-owned; compile-time worktree paths leaked through shared Cargo cache and a test false-skipped; candidate trace summaries were not reconstructable from committed trace material; and Rust decisive validation did not pin the canonical hard stop. It also reproduced encoded hostname/email/IPv6 redaction bypasses.
 
-Six final follow-ups repaired process-group cleanup/runtime roots, reconstructable trace material, canonical configuration/redaction, Chrome revision grammar, workflow digest verification, and final recapture. All 26 child stories are `stage: done`. Current exact evidence is revision `a0e98ad6bd9c53d10385020bc43629f7ac246173`, hosted run `29212145045`, reports `c5ed8bfa…3761f8` / `7b2d7c61…6c2264`, decision `dfbd51c9…a6472a`, with zero gate profiles and no temporary remote branch. The feature returns to `stage: review`; no prior report or threshold was waived.
+Six final follow-ups repaired process-group cleanup/runtime roots, reconstructable trace material, canonical configuration/redaction, Chrome revision grammar, workflow digest verification, and final recapture. All 26 child stories are `stage: done`. Current exact evidence is revision `a0e98ad6bd9c53d10385020bc43629f7ac246173`, hosted run `29212145045`, reports `c5ed8bfa…3761f8` / `7b2d7c61…6c2264`, decision `dfbd51c9…a6472a`, with zero gate profiles and no temporary remote branch. No prior report or threshold was waived.
+
+## Final feature review (2026-07-13)
+
+**Verdict:** Approve
+
+Fresh GLM completeness review independently recomputed current report, decision, configuration, fixture, trace, source-attestation, historical, and schema digests; verified all 26 children; and cleared every prior blocker. Fresh GPT-5.6 Sol adversarial review reran the formerly successful mutation and lifecycle attacks against clean `a0e98ad` checkouts and hosted run artifacts, converging after three rounds with zero reproducible defects. The exact cdpkit 0.4.0 selection is approved. Production adapter implementation remains downstream work behind the replaceable boundary.
