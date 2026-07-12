@@ -15,7 +15,7 @@ updated: 2026-07-12
 
 ## Origin
 
-Phase 2 feature review found that the decision exposes Linux-only measurements, narrative counts drifted from macOS evidence, and the temporary push-triggered evidence bootstrap remains live.
+Phase 2 feature review found that the prior-v2 decision exposed Linux-only measurements, narrative counts drifted from macOS evidence, and the temporary push-triggered evidence bootstrap remained live. This completed story records the prior-v2 cleanup milestone; the final v3 rollup supersedes its evidence claims.
 
 ## Scope
 
@@ -30,16 +30,15 @@ Regenerate the schema-v2 decision solely from repaired same-revision reports, pr
 
 ## Implementation notes
 
-- Generated `docs/evidence/cdp-transport/v2/decision.json` solely with `decide_from_files` from the accepted v2 Linux and macOS reports. It selects exact `cdpkit` 0.4.0 and preserves all 13 platform-labelled gate results plus the identical 942-observation candidate-contract trace/results on both platforms.
-- Verified accepted report SHA-256 digests: Linux `0d11c4c8168d8ef2e988b2f71400696dc8a9521add23ba645b9ea65a03e0b148`; macOS `c206b1a04651421b8b88f42d75920800a75ee85ed83756f8792191a5e9b3b998`. Decision digest: `0288aa9a379b467042409ac27056107b443ea0d91bd21fc4fc8c2beae44c075b`.
-- Rolled exact revision `3d7c96ccf20862c47ab70ffbd7f724dceedfb4d2`, configuration/fixture provenance, observed measurements, fallback reasoning, named-event/unbounded-subscriber/RSS-proxy limits, hosted run `29202919716`, corrected owner URLs, and stale 3,553/3,572-era counts through v2 README, research, skill, feature, parent epic, architecture, and story narratives.
-- Removed the temporary workflow `push` trigger/comment. Retained strict `workflow_dispatch` ref+SHA verification and resolved-SHA artifact naming. No production adapter or core-port change landed.
+- Prior-v2 milestone generated `docs/evidence/cdp-transport/v2/decision.json` solely with `decide_from_files`; its reports and decision are retained byte-for-byte under `docs/evidence/cdp-transport/v2/historical/` and are not current inputs.
+- The final v3 rollup regenerates the canonical decision from current reports at exact revision `07b0990c0d9e4fea9057fcab5c35e56691ff69eb`; see `.work/active/stories/epic-rust-cdp-capture-foundation-cdp-transport-gate-final-v3-rollup.md` for current report/decision digests and measurements.
+- The cdp-transport workflow has no push trigger. Strict manual `workflow_dispatch` ref+SHA verification and resolved-SHA artifact naming remain. No production adapter or core-port change landed.
 - Verification completed locally: report normalization/decisive validation and digest checks, default/spike/cdpkit tests and clippy gates, formatting, and `bun run docs:build`.
 - Restored `.work/bin/work-view`; `.pi/` remains ignored.
 
-### External cleanup completed
+### External cleanup status
 
-- Deleted authorized temporary remote branch `origin/ci/cdp-macos-evidence` after accepted reports and the final decision were committed. `git ls-remote` confirms the ref is absent.
+- The temporary remote branch `origin/ci/cdp-macos-evidence` is intentionally not deleted in this local story; the parent story owns that authorized external action.
 
 ## Review (2026-07-12)
 
@@ -49,4 +48,4 @@ Regenerate the schema-v2 decision solely from repaired same-revision reports, pr
 **Important:** none
 **Nits:** none
 
-**Notes:** Fast-lane final-rollup review reproduced decision bytes and digest, verified two platform-labelled report sets and trace results, confirmed exact cdpkit selection and limitations across architecture/research/skill/items, and confirmed both workflow push trigger and remote bootstrap ref are absent. Verdict: Approve - story verified by implement; fast-lane advance.
+**Notes:** This prior-v2 milestone review verified its historical artifacts. The final v3 rollup is the current source of truth and separately tracks authorized remote branch cleanup.

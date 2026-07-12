@@ -62,10 +62,11 @@ The spike remains non-default and is not root-wired. This rollup selects the mec
 
 # CDP transport qualification evidence v2
 
-This directory contains the **current schema-v2 canonical qualification reports**. The final decision is intentionally not installed here; the next story generates it from these two reports. The schema remains the Rust-generated v2 contract at [`schema.json`](./schema.json).
+This directory contains the **current schema-v2 canonical qualification reports and generated decision**. The decision is derived solely from these two reports; the schema remains the Rust-generated v2 contract at [`schema.json`](./schema.json). Prior v1 and prior-v2 artifacts are historical only.
 
 - [`cdpkit-linux.json`](./cdpkit-linux.json) — clean detached-worktree Linux run
 - [`cdpkit-macos.json`](./cdpkit-macos.json) — hosted manual `workflow_dispatch` run `29207244853`
+- [`decision.json`](./decision.json) — generated solely by `decide_from_files`
 - [`historical provenance`](./historical/README) — byte-for-byte prior v2 reports and decision, retained with provenance
 
 ## Final qualification identity
@@ -76,6 +77,7 @@ Both reports were captured from exact revision `07b0990c0d9e4fea9057fcab5c35e566
 | --- | --- |
 | Linux report SHA-256 | `a7195eda1667e613b1b3f857fd56cc60153500544493a86afac8448706d20270` |
 | macOS report SHA-256 | `46901e41bb2a4bb674d76d9dce41fc4200032280cd9720daaaad965ee89d257b` |
+| Generated decision SHA-256 | `91f9032315dd3501068e1dd692b12fbda7ce0d7a57c9b5a49444db73c2a5c015` |
 | Configuration SHA-256 | `sha256:06388b5f8ad042093d22408dedb8d02d5a04a9e59d485158edc533334bab956e` |
 | Browser fixture identity | `sha256sum-of-ordered-fixture-files:9b42ae730d12a95772a946bf55e4838a5443b6cb4c536424570219041b6e2a68:84ba666539a996012a781637c1a894d8c7a4789cfca84661bd7cf8b79efa2e13` |
 | Candidate-contract fixture digest | `sha256:6dc599e64e0245b5f29eae0644dddb3a5e7222a234b7e2602a6a8577a25e677e` |
@@ -230,7 +232,7 @@ These files were the prior v2 canonical reports and generated decision before th
 | [`cdpkit-macos.json`](./cdpkit-macos.json) | Prior accepted hosted macOS v2 report, workflow run `29202919716`, same revision | `c206b1a04651421b8b88f42d75920800a75ee85ed83756f8792191a5e9b3b998` | 6,944 |
 | [`decision.json`](./decision.json) | Prior generated v2 decision selecting `adopt_cdpkit` | `0288aa9a379b467042409ac27056107b443ea0d91bd21fc4fc8c2beae44c075b` | 13,546 |
 
-The historical reports and decision are retained byte-for-byte. They are obsolete because the final requalification binds evidence to exact revision `07b0990c0d9e4fea9057fcab5c35e56691ff69eb`, adds the repaired source attestation and final observed measurements, and requires a new decision. The current v2 directory contains only the final Linux and macOS reports; the replacement decision is deliberately deferred to the next story.
+The historical reports and decision are retained byte-for-byte. They are obsolete because the final requalification binds evidence to exact revision `07b0990c0d9e4fea9057fcab5c35e56691ff69eb`, adds the repaired source attestation and final observed measurements, and uses the regenerated current decision at [`../decision.json`](../decision.json). The current v2 directory contains the final Linux and macOS reports and that decision; this directory is retained provenance, not a qualification input.
 
 ---
 
@@ -465,7 +467,7 @@ Use [`SPEC.md`](../SPEC.md) for intended external behavior and [`ARCHITECTURE.md
 
 This research grounds `epic-rust-cdp-capture-foundation-cdp-transport-gate`. Krometrail needs a browser-level Chrome DevTools Protocol (CDP) connection with flat target sessions, typed control operations, raw protocol escape hatches, and a screencast event path that Krometrail—not the library—can supervise and bound.
 
-Evidence was frozen on 2026-07-12 from crates.io metadata, published/repository source at `cdpkit` 0.4.0 (`15dd5e6d`) and `chromey` 2.52.0 (`6eeca5e8`), their CI/tests, and their public GitHub issues. The retained schema-v2 real-Chrome reports and decision are historical and obsolete after the capture-deadline and acknowledgement-semantics repair; fresh qualification must re-run all 13 gates from one exact revision before any transport selection is current. The revised contract uses observed `capture_elapsed_seconds` and `handoff_elapsed_seconds` measurements and measures acknowledgement from returned frame to ack completion only. No production lifecycle or capture implementation is implied.
+Evidence was frozen on 2026-07-12 from crates.io metadata, published/repository source at `cdpkit` 0.4.0 (`15dd5e6d`) and `chromey` 2.52.0 (`6eeca5e8`), their CI/tests, their public GitHub issues, and the final schema-v2 qualification. The final reports and generated decision are current and bind every claim to exact revision `07b0990c0d9e4fea9057fcab5c35e56691ff69eb`; retained v1 and prior-v2 reports/decision are historical only. The revised contract uses observed `capture_elapsed_seconds` and `handoff_elapsed_seconds` measurements and measures acknowledgement from returned frame to ack completion only. No production lifecycle or capture implementation is implied.
 
 Caller-aware research ran direct-read only: the caller prohibited subagents and questions, and the bounded candidate/source surfaces did not warrant delegation. Reversible uncertainties are therefore converted into explicit spike gates below.
 
@@ -532,17 +534,17 @@ The important limitation is equally concrete: `event_stream::<Value>("Domain.eve
 
 ### Qualification evidence
 
-The retained version-1 reports and decision are historical inputs only. The accepted version-2 reports use the exact same gate revision/configuration/fixture and include canonical RSS fields, observed lifecycle fields, and bound candidate-contract results:
+The retained version-1 reports and prior-v2 reports/decision are historical inputs only. The current final reports use the exact same gate revision/configuration/fixture and include canonical RSS fields, observed lifecycle fields, source attestation, and bound candidate-contract results:
 
-- `docs/evidence/cdp-transport/v2/cdpkit-linux.json` — SHA-256 `0d11c4c8168d8ef2e988b2f71400696dc8a9521add23ba645b9ea65a03e0b148`; Linux x86_64, Chrome 149.0.7827.155.
-- `docs/evidence/cdp-transport/v2/cdpkit-macos.json` — SHA-256 `c206b1a04651421b8b88f42d75920800a75ee85ed83756f8792191a5e9b3b998`; macOS aarch64, Chrome 149.0.7827.201, hosted run `29202919716`.
-- `docs/evidence/cdp-transport/v2/decision.json` — generated by `decide_from_files`; SHA-256 `0288aa9a379b467042409ac27056107b443ea0d91bd21fc4fc8c2beae44c075b`.
+- `docs/evidence/cdp-transport/v2/cdpkit-linux.json` — SHA-256 `a7195eda1667e613b1b3f857fd56cc60153500544493a86afac8448706d20270`; Linux x86_64, Chrome 149.0.7827.155.
+- `docs/evidence/cdp-transport/v2/cdpkit-macos.json` — SHA-256 `46901e41bb2a4bb674d76d9dce41fc4200032280cd9720daaaad965ee89d257b`; macOS aarch64, Chrome 149.0.7827.201, hosted run `29207244853`.
+- `docs/evidence/cdp-transport/v2/decision.json` — generated solely by `decide_from_files`; SHA-256 `91f9032315dd3501068e1dd692b12fbda7ce0d7a57c9b5a49444db73c2a5c015`.
 
-The version-2 Rust decision function validates the complete 13-gate registry, exact canonical RSS fields, immutable gate implementation/configuration/fixture identity, exact candidate/version/checksum, Linux/macOS identity, redaction, observed lifecycle fields, and every measured gate contract. Its platform-labelled output binds each report's candidate-contract trace/hash/results and selects `adopt_cdpkit` without waivers.
+Both reports bind exact `cdpkit` 0.4.0 and Cargo checksum `c3fdb566d913b31e0014391a94c0db4ed871dbb76577dd1b2f2c5f6df158bfaa` to revision `07b0990c0d9e4fea9057fcab5c35e56691ff69eb`, configuration digest `sha256:06388b5f8ad042093d22408dedb8d02d5a04a9e59d485158edc533334bab956e`, source-attestation digest `sha256:b4147b12577e980123bfb711d314dd17f22b0639303956e97441af74a8b297b0`, browser fixture digest `sha256sum-of-ordered-fixture-files:9b42ae730d12a95772a946bf55e4838a5443b6cb4c536424570219041b6e2a68:84ba666539a996012a781637c1a894d8c7a4789cfca84661bd7cf8b79efa2e13`, and candidate-contract fixture/trace digests `sha256:6dc599e64e0245b5f29eae0644dddb3a5e7222a234b7e2602a6a8577a25e677e` / `sha256:6c6be028c511d4d8c28cbecec368a7d4f09e0d87612741d02ac19a8663964d54` with 942 observations. The decision validates the complete 13-gate registry and preserves platform-labelled gates and candidate-contract results without waivers.
 
 ### 1. Exact cdpkit 0.4.0
 
-The generated v2 decision selects exact `cdpkit` 0.4.0: its source API maps cleanly to Krometrail's replaceable transport adapter and leaves reconnect ownership in the right layer. The remediation harness derives candidate routing, ordering, detach, close, and rebuild assertions from one observed wire controller. Real-Chrome routing counts are derived from unique correlated command/event tokens. The sustained runs remain continuously drained RSS/counter proxies; they do not prove that cdpkit's hidden unbounded subscriber queue is bounded.
+The generated v2 decision selects exact `cdpkit` 0.4.0: its source API maps cleanly to Krometrail's replaceable transport adapter and leaves reconnect ownership in the right layer. The remediation harness derives candidate routing, ordering, detach, close, and rebuild assertions from one observed wire controller. Real-Chrome routing counts are derived from unique correlated command/event tokens. The sustained runs remain continuously drained RSS/counter proxies; they do not prove that cdpkit's hidden unbounded subscriber queue is bounded. Linux measured 3,601 frames in 60.012037205 seconds and macOS measured 3,566 frames in 60.011273167 seconds. In both reports the exact order is receive → ack completion → bounded handoff: ack p99/max were Linux 0.3979589999999999/2.785427 ms and macOS 1.062666/7.058083 ms, with handoff elapsed equal to the measured capture elapsed.
 
 The selection does not broaden cdpkit's API. `event_stream::<Value>(name)` preserves parameters for one named event only; it is not wildcard or full-envelope receive. The subscriber remains unbounded and queue depth remains uninspectable. Krometrail must acknowledge before its bounded handoff, own backpressure and capture-gap policy, and own reconnect/session restoration.
 

@@ -11,7 +11,7 @@ created: 2026-07-12
 updated: 2026-07-12
 ---
 
-# Capture decisive macOS transport evidence
+# Capture decisive macOS transport evidence (prior-v2 milestone)
 
 ## Scope
 
@@ -45,11 +45,11 @@ A later successful run, [29198272740](https://github.com/nklisch/krometrail/acti
 
 Run [29198801356](https://github.com/nklisch/krometrail/actions/runs/29198801356) then caught a macOS-only compile error in the new sampler. `epic-rust-cdp-capture-foundation-cdp-transport-gate-macos-rss-compile-fix` corrected it with target-neutral parsing coverage.
 
-The accepted exact-SHA run [29202919716](https://github.com/nklisch/krometrail/actions/runs/29202919716) passed every unchanged gate and uploaded sanitized evidence. Earlier evidence was rejected; only the v2 report from the shared revision `3d7c96ccf20862c47ab70ffbd7f724dceedfb4d2` is accepted for the final decision.
+The prior-v2 exact-SHA run [29202919716](https://github.com/nklisch/krometrail/actions/runs/29202919716) passed every then-current gate and uploaded sanitized evidence. Earlier evidence was rejected. Its report is retained as historical provenance; the current final report is from hosted manual run `29207244853` at revision `07b0990c0d9e4fea9057fcab5c35e56691ff69eb` and is the only report used by the regenerated decision.
 
 ## Implementation notes
 
-- Evidence file: `docs/evidence/cdp-transport/v2/cdpkit-macos.json` from exact gate commit `3d7c96ccf20862c47ab70ffbd7f724dceedfb4d2`.
+- Historical evidence file: `docs/evidence/cdp-transport/v2/historical/cdpkit-macos.json` from exact prior-v2 gate commit `3d7c96ccf20862c47ab70ffbd7f724dceedfb4d2`. Current evidence is `docs/evidence/cdp-transport/v2/cdpkit-macos.json` from final revision `07b0990c0d9e4fea9057fcab5c35e56691ff69eb`.
 - Environment: macOS arm64, Chrome 149.0.7827.201, Rust 1.97.0, cdpkit 0.4.0.
 - Sustained gate: 60.019783292 seconds, 3,571 frames received and acknowledged, 3,570 explicit capacity-1 handoff drops, acknowledgement p99 22.518792 ms and observed max 556.233375 ms.
 - RSS gate: 51 nonzero samples, nonzero first/last medians and peak, sampling interval within the unchanged contract, bounded growth/slope pass.

@@ -1,9 +1,10 @@
 # CDP transport qualification evidence v2
 
-This directory contains the **current schema-v2 canonical qualification reports**. The final decision is intentionally not installed here; the next story generates it from these two reports. The schema remains the Rust-generated v2 contract at [`schema.json`](./schema.json).
+This directory contains the **current schema-v2 canonical qualification reports and generated decision**. The decision is derived solely from these two reports; the schema remains the Rust-generated v2 contract at [`schema.json`](./schema.json). Prior v1 and prior-v2 artifacts are historical only.
 
 - [`cdpkit-linux.json`](./cdpkit-linux.json) — clean detached-worktree Linux run
 - [`cdpkit-macos.json`](./cdpkit-macos.json) — hosted manual `workflow_dispatch` run `29207244853`
+- [`decision.json`](./decision.json) — generated solely by `decide_from_files`
 - [`historical provenance`](./historical/README) — byte-for-byte prior v2 reports and decision, retained with provenance
 
 ## Final qualification identity
@@ -14,6 +15,7 @@ Both reports were captured from exact revision `07b0990c0d9e4fea9057fcab5c35e566
 | --- | --- |
 | Linux report SHA-256 | `a7195eda1667e613b1b3f857fd56cc60153500544493a86afac8448706d20270` |
 | macOS report SHA-256 | `46901e41bb2a4bb674d76d9dce41fc4200032280cd9720daaaad965ee89d257b` |
+| Generated decision SHA-256 | `91f9032315dd3501068e1dd692b12fbda7ce0d7a57c9b5a49444db73c2a5c015` |
 | Configuration SHA-256 | `sha256:06388b5f8ad042093d22408dedb8d02d5a04a9e59d485158edc533334bab956e` |
 | Browser fixture identity | `sha256sum-of-ordered-fixture-files:9b42ae730d12a95772a946bf55e4838a5443b6cb4c536424570219041b6e2a68:84ba666539a996012a781637c1a894d8c7a4789cfca84661bd7cf8b79efa2e13` |
 | Candidate-contract fixture digest | `sha256:6dc599e64e0245b5f29eae0644dddb3a5e7222a234b7e2602a6a8577a25e677e` |

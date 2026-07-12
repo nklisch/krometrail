@@ -11,7 +11,7 @@ created: 2026-07-12
 updated: 2026-07-12
 ---
 
-# Requalify cdpkit on Linux and macOS from one immutable revision
+# Requalify cdpkit on Linux and macOS from one immutable revision (prior-v2 milestone)
 
 ## Origin
 
@@ -23,15 +23,15 @@ Phase 2 feature review found that Linux provenance was edited after its run and 
 - At exact revision `8d01d50956650befe603bd4178afbbb2ff473105`, hosted macOS run `29202075722` passed the exact-path candidate test and then failed the gate with an immediate connection close. The simultaneous Linux run exhausted the complete 120-second hard stop without stage context. Neither report was accepted.
 - Preparation commit `39149eac1f955b1533bce52dd3ae61f74f2ec723` installed the strict runner, CLI, workflow, and v2 documentation but intentionally performed no hosted dispatch and produced no evidence.
 
-The endpoint-binding and runtime-determinism repairs were complete at accepted gate revision `3d7c96ccf20862c47ab70ffbd7f724dceedfb4d2`. Thresholds were not weakened.
+The endpoint-binding and runtime-determinism repairs were complete at the prior-v2 gate revision `3d7c96ccf20862c47ab70ffbd7f724dceedfb4d2`. Thresholds were not weakened. That evidence was later superseded by final requalification at `07b0990c0d9e4fea9057fcab5c35e56691ff69eb`.
 
 ## Scope
 
 Consume the strict schema-v2 contract from `...-evidence-v2-contract`, run the unchanged qualification on Linux and hosted macOS from one exact immutable SHA/configuration/fixture, and commit only runner-emitted reports that pass every required observed gate. Validate and normalize without editing report bytes. The follow-up decision/cleanup story owns generated decision rollup and architecture/bootstrap updates. No production adapter or core-port change is permitted.
 
-## Accepted evidence
+## Accepted evidence for this prior-v2 milestone
 
-The only accepted reports are:
+These reports were accepted at the time of this story and are now historical inputs retained under `docs/evidence/cdp-transport/v2/historical/`. The current final v2 reports and decision are documented by the dependent final-v3 rollup story. The prior-v2 report paths were:
 
 - `docs/evidence/cdp-transport/v2/cdpkit-linux.json`
 - `docs/evidence/cdp-transport/v2/cdpkit-macos.json`
