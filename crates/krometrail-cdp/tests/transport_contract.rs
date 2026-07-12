@@ -766,6 +766,40 @@ fn decisive_configuration_is_one_exact_digestable_contract() {
 }
 
 #[test]
+fn workflow_contract_uses_generated_configuration_with_a_valid_synthetic_report() {
+    let report = evidence(
+        TransportGateId::ALL
+            .into_iter()
+            .map(|id| GateResult {
+                id,
+                status: GateStatus::Pass,
+                summary: "fixture passed".into(),
+                measurements: id
+                    .measurement_keys()
+                    .iter()
+                    .map(|key| ((*key).into(), valid_measurement(key)))
+                    .collect(),
+                failure: None,
+            })
+            .collect(),
+    );
+    validate_evidence(&report).expect("synthetic report must satisfy the strict evidence contract");
+
+    let generated = serde_json::json!({
+        "configuration": canonical_decisive_configuration(),
+        "configuration_sha256": canonical_decisive_configuration_digest(),
+    });
+    assert_eq!(
+        report.configuration,
+        serde_json::from_value(generated["configuration"].clone()).unwrap()
+    );
+    assert_eq!(
+        report.gate_provenance.configuration_sha256,
+        generated["configuration_sha256"].as_str().unwrap()
+    );
+}
+
+#[test]
 fn evidence_rejects_recomputed_noncanonical_hard_stop() {
     let gates = TransportGateId::ALL
         .into_iter()

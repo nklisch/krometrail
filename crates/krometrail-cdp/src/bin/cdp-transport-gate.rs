@@ -1,6 +1,9 @@
 #[cfg(feature = "cdp-spike")]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+
+#[cfg(feature = "cdp-spike")]
+use serde::Deserialize;
 
 #[cfg(feature = "cdp-spike-cdpkit")]
 use krometrail_cdp::spike::{
@@ -64,12 +67,12 @@ async fn run() -> Result<(), String> {
         "canonical-config" => {
             let mut args = remaining.iter().cloned();
             let output = required_path(&mut args, "--output")?;
-            let configuration = krometrail_cdp::spike::canonical_decisive_configuration();
-            let document = serde_json::json!({
-                "configuration": configuration,
-                "configuration_sha256": krometrail_cdp::spike::canonical_decisive_configuration_digest(),
-            });
-            write_json(&output, &document)?;
+            write_json(&output, &canonical_config_document())?;
+        }
+        "verify-canonical-config" => {
+            let mut args = remaining.iter().cloned();
+            let input = required_path(&mut args, "--input")?;
+            verify_canonical_config(&input)?;
         }
         "validate-and-normalize" => {
             let mut args = remaining.iter().cloned();
@@ -338,6 +341,83 @@ mod tests {
         .expect_err("exact gate runs must bind an expected revision");
         assert!(error.contains("--expected-git-revision"));
     }
+
+    fn temporary_json(contents: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "krometrail-cdp-canonical-config-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock is after unix epoch")
+                .as_nanos()
+        ));
+        std::fs::write(&path, contents).expect("write canonical config fixture");
+        path
+    }
+
+    #[test]
+    fn canonical_config_verification_ignores_pretty_key_order() {
+        let generated = serde_json::to_value(super::canonical_config_document()).unwrap();
+        let configuration = &generated["configuration"];
+        let digest = serde_json::to_string(&generated["configuration_sha256"]).unwrap();
+        let reordered = format!(
+            "{{\"configuration\":{{\"hard_stop_seconds\":{},\"saturation_attempts\":{},\"saturation_seconds\":{},\"minimum_frames\":{},\"minimum_seconds\":{}}},\"configuration_sha256\":{}}}",
+            configuration["hard_stop_seconds"],
+            configuration["saturation_attempts"],
+            configuration["saturation_seconds"],
+            configuration["minimum_frames"],
+            configuration["minimum_seconds"],
+            digest,
+        );
+        let path = temporary_json(&reordered);
+        let result = super::verify_canonical_config(&path);
+        std::fs::remove_file(path).expect("remove canonical config fixture");
+        result.expect("pretty JSON key reordering must not change the digest");
+    }
+
+    #[test]
+    fn canonical_config_verification_rejects_a_real_configuration_mutation() {
+        let mut generated = serde_json::to_value(super::canonical_config_document()).unwrap();
+        generated["configuration"]["hard_stop_seconds"] = serde_json::json!(121);
+        let path = temporary_json(&serde_json::to_string_pretty(&generated).unwrap());
+        let error = super::verify_canonical_config(&path)
+            .expect_err("a mutated canonical configuration must fail closed");
+        std::fs::remove_file(path).expect("remove canonical config fixture");
+        assert!(error.contains("canonical"));
+    }
+}
+
+#[cfg(feature = "cdp-spike")]
+fn canonical_config_document() -> serde_json::Value {
+    serde_json::json!({
+        "configuration": krometrail_cdp::spike::canonical_decisive_configuration(),
+        "configuration_sha256": krometrail_cdp::spike::canonical_decisive_configuration_digest(),
+    })
+}
+
+#[cfg(feature = "cdp-spike")]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CanonicalConfigDocument {
+    configuration: krometrail_cdp::spike::GateConfiguration,
+    configuration_sha256: String,
+}
+
+#[cfg(feature = "cdp-spike")]
+fn verify_canonical_config(path: &Path) -> Result<(), String> {
+    let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
+    let document: CanonicalConfigDocument =
+        serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    let canonical = krometrail_cdp::spike::canonical_decisive_configuration();
+    if document.configuration != canonical {
+        return Err("canonical configuration values do not match Rust contract".into());
+    }
+    let computed = krometrail_cdp::spike::configuration_digest(&document.configuration);
+    let expected = krometrail_cdp::spike::canonical_decisive_configuration_digest();
+    if document.configuration_sha256 != expected || computed != expected {
+        return Err("canonical configuration digest does not match Rust contract".into());
+    }
+    Ok(())
 }
 
 #[cfg(feature = "cdp-spike")]

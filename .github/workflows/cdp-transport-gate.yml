@@ -107,6 +107,10 @@ jobs:
             --features cdp-spike-cdpkit \
             --bin cdp-transport-gate -- canonical-config \
             --output target/cdp-transport-gate/canonical-config.json
+          cargo run --locked -p krometrail-cdp \
+            --features cdp-spike-cdpkit \
+            --bin cdp-transport-gate -- verify-canonical-config \
+            --input target/cdp-transport-gate/canonical-config.json
 
       - name: Run unchanged candidate and deterministic transport tests
         shell: bash
@@ -205,19 +209,7 @@ jobs:
 
           expected_configuration = canonical["configuration"]
           expected_configuration_digest = canonical["configuration_sha256"]
-          assert expected_configuration == {
-              "minimum_seconds": 60.0,
-              "minimum_frames": 1000,
-              "saturation_seconds": 10.0,
-              "saturation_attempts": 100,
-              "hard_stop_seconds": 120,
-          }
-          assert expected_configuration_digest == "sha256:06388b5f8ad042093d22408dedb8d02d5a04a9e59d485158edc533334bab956e"
           assert evidence["configuration"] == expected_configuration
-          encoded_configuration = json.dumps(
-              expected_configuration, separators=(",", ":"), ensure_ascii=False
-          ).encode()
-          assert "sha256:" + hashlib.sha256(encoded_configuration).hexdigest() == expected_configuration_digest
           provenance = evidence["gate_provenance"]
           assert set(provenance) == {
               "implementation_revision", "configuration_sha256", "source_attestation"
