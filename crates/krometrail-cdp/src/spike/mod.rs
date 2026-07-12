@@ -27,6 +27,8 @@ pub use evidence::{
     validate_decisive_report, validate_evidence, write_json_schema,
 };
 pub use fake::{FakeTransport, FakeTransportFactory};
+#[cfg(feature = "cdp-spike-cdpkit")]
+pub use scenarios::run_candidate_wire_contract;
 pub use scenarios::{ScenarioEvidence, run_transport_scenarios};
 pub use scripted_peer::{
     RoutingMeasurements, ScriptedCdpPeer, ScriptedCdpServer, WireObservation, WireObservationKind,

@@ -55,6 +55,7 @@ where
 }
 
 use super::{
+    cdpkit_adapter::CdpkitTransportFactory,
     contract::{SpikeTransport, SpikeTransportFactory, TransportScope},
     error::{SpikeError, SpikeErrorCode},
     evidence::{
@@ -177,7 +178,10 @@ async fn run_real_chrome_gate_inner(
     // Unknown future events cannot be made to occur in real Chrome. Run the exact candidate
     // contract against the wire-connected scripted controller and bind its trace digest to this
     // report instead of presenting those fixtures as a Chrome measurement.
-    let candidate_contract = run_candidate_wire_contract(factory).await?;
+    let candidate_contract = run_candidate_wire_contract(|endpoint| {
+        Box::new(CdpkitTransportFactory::with_scripted_endpoint(endpoint))
+    })
+    .await?;
     let mut browser = ChromeHarness::start(chrome_binary).await?;
     let transport = factory.connect(&browser.ws_url).await?;
     let target_a = create_target(transport.as_ref(), &browser.fixture_url).await?;

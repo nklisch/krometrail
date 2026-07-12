@@ -21,6 +21,13 @@ impl ScenarioEvidence {
             .iter()
             .all(|gate| gate.status == GateStatus::Pass)
     }
+
+    /// Keep the gate registry and execution trace together when a decisive run fails. The
+    /// candidate helper is the evidence boundary, so dropping either here makes a qualification
+    /// failure unnecessarily difficult to diagnose.
+    pub fn failure_context(&self) -> String {
+        format!("gates={:?}; trace={:?}", self.gates, self.trace)
+    }
 }
 
 pub async fn run_transport_scenarios(
@@ -321,18 +328,25 @@ async fn run(
 
 #[cfg(feature = "cdp-spike-cdpkit")]
 pub async fn run_candidate_wire_contract(
-    factory: &dyn SpikeTransportFactory,
+    factory_for_endpoint: impl FnOnce(String) -> Box<dyn SpikeTransportFactory>,
 ) -> Result<super::contract::CandidateContractEvidence, SpikeError> {
     use super::fixture_server::ScriptedCdpServer;
     use sha2::{Digest, Sha256};
 
     let server = ScriptedCdpServer::start().await?;
+    // The decisive helper owns the scripted server, so the factory must be created only after its
+    // endpoint exists. The closure keeps this boundary candidate-neutral: cdpkit binding belongs
+    // to the qualification caller, while generic scenarios still receive a normal factory.
+    let factory = factory_for_endpoint(server.ws_url.clone());
     let mut peer = server.controller();
-    let scenario = run_transport_scenarios(factory, &mut peer).await;
+    let scenario = run_transport_scenarios(factory.as_ref(), &mut peer).await;
     if !scenario.passed() {
         return Err(SpikeError::new(
             SpikeErrorCode::Evidence,
-            "scripted candidate contract scenario failed",
+            format!(
+                "scripted candidate contract scenario failed; {}",
+                scenario.failure_context()
+            ),
         ));
     }
     let observations = peer.observations();
