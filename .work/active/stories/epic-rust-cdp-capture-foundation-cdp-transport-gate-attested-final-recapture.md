@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cdp-transport-gate-attested-final-recapture
 kind: story
-stage: review
+stage: done
 tags: [bug, browser, infra, testing]
 parent: epic-rust-cdp-capture-foundation-cdp-transport-gate
 depends_on: [epic-rust-cdp-capture-foundation-cdp-transport-gate-process-tree-runtime-root, epic-rust-cdp-capture-foundation-cdp-transport-gate-trace-reconstructability, epic-rust-cdp-capture-foundation-cdp-transport-gate-decisive-config-redaction, epic-rust-cdp-capture-foundation-cdp-transport-gate-browser-revision-identity, epic-rust-cdp-capture-foundation-cdp-transport-gate-workflow-config-digest-order]
@@ -43,3 +43,13 @@ After final validator/runtime fixes, run clean exact-SHA Linux and hosted manual
 - Workflow/cleanup: workflow remains manual-only exact-ref+SHA with default/spike/cdpkit/schema/normalization/decisive/docs gates and no push trigger. `.work/bin/work-view` was restored, `.pi/` remains ignored, and no production/core files or temporary branch were deleted locally.
 - Discrepancies from design: supplied final5 reports were already sanitized, so normalization proved byte stability rather than changing report bytes; parent completed the separately authorized remote branch deletion after the evidence commit.
 - Adjacent issues parked: none.
+
+## Review (2026-07-13)
+
+**Verdict:** Approve
+
+**Blockers:** none
+**Important:** none
+**Nits:** none
+
+**Notes:** Fast-lane final evidence review reproduced decision bytes and all canonical digests, verified exact clean revision, reconstructable identical trace material, canonical configuration, hosted run success, zero gate profiles, preserved historical generations, and absent temporary remote branch. Verdict: Approve - story verified by implement; fast-lane advance.
