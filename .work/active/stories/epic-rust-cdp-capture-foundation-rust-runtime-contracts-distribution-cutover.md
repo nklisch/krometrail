@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-rust-runtime-contracts-distribution-cutover
 kind: story
-stage: review
+stage: done
 tags: [infra]
 parent: epic-rust-cdp-capture-foundation-rust-runtime-contracts
 depends_on: [epic-rust-cdp-capture-foundation-rust-runtime-contracts-legacy-runtime-removal]
@@ -48,3 +48,13 @@ Preserve these public release asset names exactly: `krometrail-linux-x64`, `krom
 - Verification: `cargo fmt --all --check`; locked workspace check/test/clippy with denied warnings; shell syntax checks; static distribution tests; `cargo run -- --version`, `--help`, and unavailable `doctor`; isolated `scripts/dev-install.sh` install/version check.
 - Discrepancies from design: `Cargo.lock` required no content change; `package.json` already satisfied the private docs/fixture-only contract; `deploy-pages.yml` was already isolated to VitePress docs.
 - Adjacent issues parked: none.
+
+## Review (2026-07-12)
+
+**Verdict**: Approve
+
+**Blockers**: none
+**Important**: none
+**Nits**: none
+
+**Notes**: Fast-lane story review. The orchestrator independently reran Rust formatting, all 29 workspace tests, clippy, installer shell syntax, and the actual `tests/distribution-static.sh` contract suite successfully. An initial orchestrator command named a nonexistent Cargo test target; this was a review-command mistake, not an implementation failure, and the intended static suite passed. Verdict: Approve - story verified by implement; fast-lane advance.
