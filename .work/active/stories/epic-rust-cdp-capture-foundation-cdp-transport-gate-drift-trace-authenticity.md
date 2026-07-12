@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cdp-transport-gate-drift-trace-authenticity
 kind: story
-stage: review
+stage: done
 tags: [bug, browser, infra, testing]
 parent: epic-rust-cdp-capture-foundation-cdp-transport-gate
 depends_on: []
@@ -35,3 +35,13 @@ Load the committed unknown-event/additive-field/unknown-enum fixtures into the s
 - Decision assembly now rejects any cross-platform candidate fixture digest, trace hash, or complete deterministic result mismatch. The generated schema and v2 evidence README describe the new contract; existing v2 reports are historical/obsolete and were not edited or regenerated as evidence.
 - Verification: `cargo fmt --all`; default, spike, and cdpkit test suites; denied-warning clippy for spike and cdpkit features. No production/core code or evidence JSON changed.
 - Restored `.work/bin/work-view` before handoff; `.pi/` remains ignored.
+
+## Review (2026-07-12)
+
+**Verdict:** Approve
+
+**Blockers:** none
+**Important:** none
+**Nits:** none
+
+**Notes:** Fast-lane review verified exact committed fixture params through cdpkit, ordered fixture-byte digest, observation-derived wire results, typed runtime assertions, cross-platform complete-contract equality, 26 candidate-feature tests, and denied-warning clippy. Verdict: Approve - story verified by implement; fast-lane advance.
