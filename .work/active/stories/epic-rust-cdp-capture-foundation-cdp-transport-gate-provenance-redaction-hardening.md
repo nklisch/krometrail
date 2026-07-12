@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cdp-transport-gate-provenance-redaction-hardening
 kind: story
-stage: review
+stage: done
 tags: [bug, browser, infra, security, testing]
 parent: epic-rust-cdp-capture-foundation-cdp-transport-gate
 depends_on: []
@@ -36,3 +36,13 @@ Require lowercase 40-hex source and implementation revisions. Before and after q
 - Regenerated `docs/evidence/cdp-transport/v2/schema.json` and documented the new contract without modifying historical evidence JSON.
 
 Verification: `cargo test --workspace`; `cargo test -p krometrail-cdp --features cdp-spike`; `cargo test -p krometrail-cdp --features cdp-spike-cdpkit`; `cargo clippy --workspace --all-targets -- -D warnings`; feature-specific clippy for `cdp-spike` and `cdp-spike-cdpkit`; schema generation/check; `git diff --check`.
+
+## Review (2026-07-12)
+
+**Verdict:** Approve
+
+**Blockers:** none
+**Important:** none
+**Nits:** none
+
+**Notes:** Fast-lane security/provenance review verified exact lowercase SHA binding, before/after relevant-tree attestation, recursive failure-aware redaction, gate status/failure consistency, regenerated schema, 27 candidate-feature tests, and denied-warning clippy. Historical evidence remains untouched. Verdict: Approve - story verified by implement; fast-lane advance.
