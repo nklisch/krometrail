@@ -13,6 +13,15 @@ use krometrail_cdp::spike::{
     FakeTransport, FakeTransportFactory, SpikeTransport, TransportScope, run_transport_scenarios,
 };
 
+fn valid_measurement(key: &&str) -> f64 {
+    match *key {
+        "rss_samples" => 50.0,
+        "rss_warmup_seconds" => 10.0,
+        "rss_sampling_interval_seconds" => 1.0,
+        _ => 1.0,
+    }
+}
+
 fn evidence(gates: Vec<GateResult>) -> TransportEvidenceV1 {
     TransportEvidenceV1 {
         schema_version: 1,
@@ -132,7 +141,7 @@ fn evidence_round_trips_and_requires_every_registered_gate() {
             measurements: id
                 .measurement_keys()
                 .iter()
-                .map(|key| ((*key).into(), 1.0))
+                .map(|key| ((*key).into(), valid_measurement(key)))
                 .collect::<BTreeMap<_, _>>(),
             failure: None,
         })
@@ -157,7 +166,7 @@ fn evidence_rejects_duplicate_or_missing_gates_non_finite_values_and_leaks() {
             measurements: id
                 .measurement_keys()
                 .iter()
-                .map(|key| ((*key).into(), 1.0))
+                .map(|key| ((*key).into(), valid_measurement(key)))
                 .collect(),
             failure: None,
         })
@@ -187,7 +196,7 @@ fn evidence_rejects_duplicate_or_missing_gates_non_finite_values_and_leaks() {
                 measurements: id
                     .measurement_keys()
                     .iter()
-                    .map(|key| ((*key).into(), 1.0))
+                    .map(|key| ((*key).into(), valid_measurement(key)))
                     .collect(),
                 failure: None,
             })
@@ -196,6 +205,40 @@ fn evidence_rejects_duplicate_or_missing_gates_non_finite_values_and_leaks() {
     .unwrap();
     unknown["unexpected"] = serde_json::json!(true);
     assert!(serde_json::from_value::<TransportEvidenceV1>(unknown).is_err());
+}
+
+#[test]
+fn evidence_rejects_zero_rss_samples_and_window_values() {
+    let gates = TransportGateId::ALL
+        .into_iter()
+        .map(|id| GateResult {
+            id,
+            status: GateStatus::Pass,
+            summary: "fixture passed".into(),
+            measurements: id
+                .measurement_keys()
+                .iter()
+                .map(|key| ((*key).into(), valid_measurement(key)))
+                .collect::<BTreeMap<_, _>>(),
+            failure: None,
+        })
+        .collect::<Vec<_>>();
+    let mut value = evidence(gates);
+    let memory = value
+        .gates
+        .iter_mut()
+        .find(|gate| gate.id == TransportGateId::BoundedMemoryProxy)
+        .unwrap();
+    memory.measurements.insert("rss_samples".into(), 0.0);
+    memory
+        .measurements
+        .insert("rss_first_window_median_bytes".into(), 0.0);
+    memory
+        .measurements
+        .insert("rss_last_window_median_bytes".into(), 0.0);
+    memory.measurements.insert("rss_peak_bytes".into(), 0.0);
+
+    assert!(validate_evidence(&value).is_err());
 }
 
 #[test]

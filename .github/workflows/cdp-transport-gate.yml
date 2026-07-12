@@ -181,6 +181,26 @@ jobs:
           assert len(gates) == 13
           assert {gate["id"] for gate in gates} == expected_ids
           assert all(gate["status"] == "pass" for gate in gates)
+
+          required_rss = {
+              "rss_samples",
+              "rss_peak_bytes",
+              "rss_first_window_median_bytes",
+              "rss_last_window_median_bytes",
+              "rss_theil_sen_bytes_per_minute",
+              "rss_sampling_interval_seconds",
+              "rss_warmup_seconds",
+          }
+          for gate_id in ("sustained-screencast", "bounded-memory-proxy"):
+              gate = next(gate for gate in gates if gate["id"] == gate_id)
+              measurements = gate["measurements"]
+              assert required_rss <= measurements.keys()
+              assert measurements["rss_samples"] >= 50
+              assert measurements["rss_peak_bytes"] > 0
+              assert measurements["rss_first_window_median_bytes"] > 0
+              assert measurements["rss_last_window_median_bytes"] > 0
+              assert 0.75 <= measurements["rss_sampling_interval_seconds"] <= 1.25
+              assert measurements["rss_warmup_seconds"] == 10.0
           PY
 
       - name: Upload raw and sanitized evidence

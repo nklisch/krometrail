@@ -9,6 +9,22 @@ use super::error::{SpikeError, SpikeErrorCode};
 
 pub const EVIDENCE_SCHEMA_VERSION: u16 = 1;
 
+/// RSS samples begin after a short setup interval so the first window reflects steady-state
+/// capture rather than browser startup. The manual gate contract asserts these values too.
+pub const RSS_WARMUP_SECONDS: u64 = 10;
+pub const RSS_SAMPLE_INTERVAL_SECONDS: u64 = 1;
+pub const RSS_MIN_SAMPLES_FOR_60_SECONDS: u64 = 50;
+
+fn minimum_rss_samples(minimum_seconds: f64) -> u64 {
+    let post_warmup_seconds = (minimum_seconds - RSS_WARMUP_SECONDS as f64).max(0.0);
+    let contract_minimum = if minimum_seconds >= 60.0 {
+        RSS_MIN_SAMPLES_FOR_60_SECONDS
+    } else {
+        1
+    };
+    (post_warmup_seconds.floor() as u64).max(contract_minimum)
+}
+
 #[derive(
     Clone,
     Copy,
@@ -65,11 +81,33 @@ impl TransportGateId {
             Self::NamedRawEventParams => &["named_events"],
             Self::ProtocolDriftSurvival => &["fixtures", "connection_survived"],
             Self::SustainedScreencast => {
-                &["elapsed_seconds", "frames_received", "frames_acknowledged"]
+                // A sustained pass is not valid without the same RSS evidence used by the
+                // bounded-memory proxy; otherwise a missing sampler can still look successful.
+                &[
+                    "elapsed_seconds",
+                    "frames_received",
+                    "frames_acknowledged",
+                    "rss_samples",
+                    "rss_peak_bytes",
+                    "rss_first_window_median_bytes",
+                    "rss_last_window_median_bytes",
+                    "rss_theil_sen_bytes_per_minute",
+                    "rss_sampling_interval_seconds",
+                    "rss_warmup_seconds",
+                ]
             }
             Self::PromptAcknowledgement => &["ack_before_handoff"],
             Self::BoundedHandoffSaturation => &["handoff_attempts", "handoff_dropped"],
-            Self::BoundedMemoryProxy => &["rss_samples", "rss_growth_bytes"],
+            Self::BoundedMemoryProxy => &[
+                "rss_samples",
+                "rss_growth_bytes",
+                "rss_peak_bytes",
+                "rss_first_window_median_bytes",
+                "rss_last_window_median_bytes",
+                "rss_theil_sen_bytes_per_minute",
+                "rss_sampling_interval_seconds",
+                "rss_warmup_seconds",
+            ],
             Self::DisconnectCleanup => &["pending_calls_closed", "subscriptions_closed"],
             Self::ExplicitReconnectRebuild => &["connections", "sessions_rebuilt"],
         }
@@ -250,9 +288,78 @@ pub fn validate_evidence(value: &TransportEvidenceV1) -> Result<(), SpikeError> 
                     ));
                 }
             }
+            if matches!(
+                gate.id,
+                TransportGateId::SustainedScreencast | TransportGateId::BoundedMemoryProxy
+            ) {
+                validate_rss_measurements(
+                    gate.id,
+                    &gate.measurements,
+                    value.configuration.minimum_seconds,
+                )?;
+            }
         }
     }
     validate_sanitized_strings(value)?;
+    Ok(())
+}
+
+pub fn rss_measurements_are_valid(
+    measurements: &BTreeMap<String, f64>,
+    minimum_seconds: f64,
+) -> bool {
+    validate_rss_measurements(
+        TransportGateId::BoundedMemoryProxy,
+        measurements,
+        minimum_seconds,
+    )
+    .is_ok()
+}
+
+fn validate_rss_measurements(
+    gate: TransportGateId,
+    measurements: &BTreeMap<String, f64>,
+    minimum_seconds: f64,
+) -> Result<(), SpikeError> {
+    let measurement = |key: &str| measurements.get(key).copied();
+    let samples = measurement("rss_samples").unwrap_or(0.0);
+    let required_samples = minimum_rss_samples(minimum_seconds) as f64;
+    if samples < required_samples || samples.fract() != 0.0 {
+        return Err(SpikeError::for_gate(
+            SpikeErrorCode::Evidence,
+            gate,
+            format!("RSS sample count is below the required {required_samples:.0}"),
+        ));
+    }
+    for key in [
+        "rss_peak_bytes",
+        "rss_first_window_median_bytes",
+        "rss_last_window_median_bytes",
+    ] {
+        if measurement(key).unwrap_or(0.0) <= 0.0 {
+            return Err(SpikeError::for_gate(
+                SpikeErrorCode::Evidence,
+                gate,
+                format!("RSS measurement {key} is absent or zero"),
+            ));
+        }
+    }
+    let interval = measurement("rss_sampling_interval_seconds").unwrap_or(0.0);
+    if !(0.75..=1.25).contains(&interval) {
+        return Err(SpikeError::for_gate(
+            SpikeErrorCode::Evidence,
+            gate,
+            "RSS sampling interval is not approximately one sample per second",
+        ));
+    }
+    let warmup = measurement("rss_warmup_seconds").unwrap_or(0.0);
+    if warmup != RSS_WARMUP_SECONDS as f64 {
+        return Err(SpikeError::for_gate(
+            SpikeErrorCode::Evidence,
+            gate,
+            "RSS warmup does not match the declared gate contract",
+        ));
+    }
     Ok(())
 }
 

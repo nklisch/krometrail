@@ -19,7 +19,8 @@ use super::{
     error::{SpikeError, SpikeErrorCode},
     evidence::{
         BrowserEvidence, EVIDENCE_SCHEMA_VERSION, FixtureEvidence, GateConfiguration, GateResult,
-        GateStatus, SanitizedEnvironment, SourceIdentity, TransportEvidenceV1, TransportGateId,
+        GateStatus, RSS_SAMPLE_INTERVAL_SECONDS, RSS_WARMUP_SECONDS, SanitizedEnvironment,
+        SourceIdentity, TransportEvidenceV1, TransportGateId, rss_measurements_are_valid,
     },
     fixture_server::StaticFixtureServer,
 };
@@ -42,6 +43,7 @@ pub struct ScreencastMeasurements {
     pub rss_first_window_median_bytes: u64,
     pub rss_last_window_median_bytes: u64,
     pub rss_theil_sen_bytes_per_minute: f64,
+    pub rss_sampling_interval_seconds: f64,
     pub upstream_queue_depth_available: bool,
 }
 
@@ -309,43 +311,57 @@ pub async fn run_real_chrome_gate(
         .await?;
     transport.start_screencast(&session_a).await?;
     let measurements = run_screencast_gate(transport.as_ref(), &session_a, &configuration).await?;
-    gates.push(pass(
-        TransportGateId::SustainedScreencast,
-        [
-            ("elapsed_seconds", measurements.elapsed_seconds),
-            ("frames_received", measurements.frames_received as f64),
-            (
-                "frames_acknowledged",
-                measurements.frames_acknowledged as f64,
-            ),
-            ("handoff_accepted", measurements.handoff_accepted as f64),
-            ("handoff_dropped", measurements.handoff_dropped as f64),
-            ("saturation_seconds", measurements.saturation_seconds),
-            (
-                "saturation_attempts",
-                measurements.saturation_attempts as f64,
-            ),
-            ("ack_latency_ms_p50", measurements.ack_latency_ms_p50),
-            ("ack_latency_ms_p95", measurements.ack_latency_ms_p95),
-            ("ack_latency_ms_p99", measurements.ack_latency_ms_p99),
-            ("ack_latency_ms_max", measurements.ack_latency_ms_max),
-            ("rss_sample_count", measurements.rss_sample_count as f64),
-            ("rss_peak_bytes", measurements.rss_peak_bytes as f64),
-            (
-                "rss_first_window_median_bytes",
-                measurements.rss_first_window_median_bytes as f64,
-            ),
-            (
-                "rss_last_window_median_bytes",
-                measurements.rss_last_window_median_bytes as f64,
-            ),
-            (
-                "rss_theil_sen_bytes_per_minute",
-                measurements.rss_theil_sen_bytes_per_minute,
-            ),
-            ("upstream_queue_depth_available", 0.0),
-        ],
-    ));
+    let rss_values = rss_measurement_map(&measurements);
+    let rss_valid = rss_measurements_are_valid(&rss_values, configuration.minimum_seconds);
+    if rss_valid {
+        gates.push(pass(
+            TransportGateId::SustainedScreencast,
+            [
+                ("elapsed_seconds", measurements.elapsed_seconds),
+                ("frames_received", measurements.frames_received as f64),
+                (
+                    "frames_acknowledged",
+                    measurements.frames_acknowledged as f64,
+                ),
+                ("handoff_accepted", measurements.handoff_accepted as f64),
+                ("handoff_dropped", measurements.handoff_dropped as f64),
+                ("saturation_seconds", measurements.saturation_seconds),
+                (
+                    "saturation_attempts",
+                    measurements.saturation_attempts as f64,
+                ),
+                ("ack_latency_ms_p50", measurements.ack_latency_ms_p50),
+                ("ack_latency_ms_p95", measurements.ack_latency_ms_p95),
+                ("ack_latency_ms_p99", measurements.ack_latency_ms_p99),
+                ("ack_latency_ms_max", measurements.ack_latency_ms_max),
+                ("rss_samples", measurements.rss_sample_count as f64),
+                ("rss_peak_bytes", measurements.rss_peak_bytes as f64),
+                (
+                    "rss_first_window_median_bytes",
+                    measurements.rss_first_window_median_bytes as f64,
+                ),
+                (
+                    "rss_last_window_median_bytes",
+                    measurements.rss_last_window_median_bytes as f64,
+                ),
+                (
+                    "rss_theil_sen_bytes_per_minute",
+                    measurements.rss_theil_sen_bytes_per_minute,
+                ),
+                (
+                    "rss_sampling_interval_seconds",
+                    measurements.rss_sampling_interval_seconds,
+                ),
+                ("rss_warmup_seconds", RSS_WARMUP_SECONDS as f64),
+                ("upstream_queue_depth_available", 0.0),
+            ],
+        ));
+    } else {
+        gates.push(fail(
+            TransportGateId::SustainedScreencast,
+            "required RSS samples or windows were absent or zero",
+        ));
+    }
     let ack_status =
         measurements.ack_latency_ms_p99 <= 250.0 && measurements.ack_latency_ms_max <= 1000.0;
     if ack_status {
@@ -374,10 +390,11 @@ pub async fn run_real_chrome_gate(
             ("saturation_seconds", measurements.saturation_seconds),
         ],
     ));
-    let memory_status = measurements
-        .rss_last_window_median_bytes
-        .saturating_sub(measurements.rss_first_window_median_bytes)
-        <= 32 * 1024 * 1024
+    let memory_status = rss_valid
+        && measurements
+            .rss_last_window_median_bytes
+            .saturating_sub(measurements.rss_first_window_median_bytes)
+            <= 32 * 1024 * 1024
         && measurements.rss_theil_sen_bytes_per_minute <= 8.0 * 1024.0 * 1024.0;
     if memory_status {
         gates.push(pass(
@@ -404,6 +421,11 @@ pub async fn run_real_chrome_gate(
                     "rss_last_window_median_bytes",
                     measurements.rss_last_window_median_bytes as f64,
                 ),
+                (
+                    "rss_sampling_interval_seconds",
+                    measurements.rss_sampling_interval_seconds,
+                ),
+                ("rss_warmup_seconds", RSS_WARMUP_SECONDS as f64),
                 ("upstream_queue_depth_available", 0.0),
             ],
         ));
@@ -568,7 +590,7 @@ async fn run_screencast_gate(
     let (handoff, _saturated_consumer) = tokio::sync::mpsc::channel::<i64>(1);
     let mut latencies = Vec::new();
     let mut rss = Vec::new();
-    let mut next_sample = 0_u64;
+    let mut next_sample = RSS_WARMUP_SECONDS;
     while start.elapsed().as_secs_f64() < config.minimum_seconds
         || frames_received < config.minimum_frames
     {
@@ -599,7 +621,7 @@ async fn run_screencast_gate(
         }
         let second = start.elapsed().as_secs();
         if second >= next_sample {
-            next_sample = second + 1;
+            next_sample = second + RSS_SAMPLE_INTERVAL_SECONDS;
             if let Some(value) = process_rss() {
                 rss.push((second, value));
             }
@@ -651,6 +673,7 @@ async fn run_screencast_gate(
         rss_first_window_median_bytes: first,
         rss_last_window_median_bytes: last,
         rss_theil_sen_bytes_per_minute: slope,
+        rss_sampling_interval_seconds: median_sample_interval(&rss),
         upstream_queue_depth_available: false,
     })
 }
@@ -783,10 +806,70 @@ fn median_window(samples: &[(u64, u64)], start: u64, end: u64) -> u64 {
     values.sort_unstable();
     values.get(values.len() / 2).copied().unwrap_or(0)
 }
+fn rss_measurement_map(measurements: &ScreencastMeasurements) -> BTreeMap<String, f64> {
+    [
+        ("rss_samples", measurements.rss_sample_count as f64),
+        ("rss_peak_bytes", measurements.rss_peak_bytes as f64),
+        (
+            "rss_first_window_median_bytes",
+            measurements.rss_first_window_median_bytes as f64,
+        ),
+        (
+            "rss_last_window_median_bytes",
+            measurements.rss_last_window_median_bytes as f64,
+        ),
+        (
+            "rss_theil_sen_bytes_per_minute",
+            measurements.rss_theil_sen_bytes_per_minute,
+        ),
+        (
+            "rss_sampling_interval_seconds",
+            measurements.rss_sampling_interval_seconds,
+        ),
+        ("rss_warmup_seconds", RSS_WARMUP_SECONDS as f64),
+    ]
+    .into_iter()
+    .map(|(key, value)| (key.into(), value))
+    .collect()
+}
+
+fn median_sample_interval(samples: &[(u64, u64)]) -> f64 {
+    let intervals = samples
+        .windows(2)
+        .map(|window| window[1].0.saturating_sub(window[0].0) as f64)
+        .collect();
+    percentile(intervals, 0.5)
+}
+
+#[cfg(target_os = "linux")]
 fn process_rss() -> Option<u64> {
     let text = std::fs::read_to_string("/proc/self/statm").ok()?;
     let pages = text.split_whitespace().nth(1)?.parse::<u64>().ok()?;
-    Some(pages * 4096)
+    // Linux statm reports resident pages; Linux's base page size is 4096 bytes here.
+    pages.checked_mul(4096)
+}
+
+#[cfg(target_os = "macos")]
+fn process_rss() -> Option<u64> {
+    let pid = std::process::id().to_string();
+    let output = Command::new("ps")
+        .args(["-o", "rss=", "-p", &pid])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let kibibytes = String::from_utf8(output.stdout)
+        .ok()?
+        .trim()
+        .parse::<u64>()?;
+    // macOS ps reports RSS in KiB; evidence is normalized to bytes.
+    kibibytes.checked_mul(1024)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn process_rss() -> Option<u64> {
+    None
 }
 fn theil_sen(samples: &[(u64, u64)]) -> f64 {
     let mut slopes = Vec::new();

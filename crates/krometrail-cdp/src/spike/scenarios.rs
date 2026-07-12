@@ -235,6 +235,7 @@ async fn run(
         let mut values = one("elapsed_seconds", 60.0);
         values.insert("frames_received".into(), 1000.0);
         values.insert("frames_acknowledged".into(), 1000.0);
+        values.extend(valid_rss_measurements());
         values
     }));
     gates.push(pass(
@@ -256,7 +257,7 @@ async fn run(
         values
     }));
     gates.push(pass(TransportGateId::BoundedMemoryProxy, {
-        let mut values = one("rss_samples", 20.0);
+        let mut values = valid_rss_measurements();
         values.insert("rss_growth_bytes".into(), 0.0);
         values
     }));
@@ -275,6 +276,20 @@ async fn run(
 
 fn one(key: &str, value: f64) -> BTreeMap<String, f64> {
     [(key.to_owned(), value)].into_iter().collect()
+}
+
+fn valid_rss_measurements() -> BTreeMap<String, f64> {
+    [
+        ("rss_samples".into(), 50.0),
+        ("rss_peak_bytes".into(), 1.0),
+        ("rss_first_window_median_bytes".into(), 1.0),
+        ("rss_last_window_median_bytes".into(), 1.0),
+        ("rss_theil_sen_bytes_per_minute".into(), 0.0),
+        ("rss_sampling_interval_seconds".into(), 1.0),
+        ("rss_warmup_seconds".into(), 10.0),
+    ]
+    .into_iter()
+    .collect()
 }
 
 fn pass(id: TransportGateId, measurements: BTreeMap<String, f64>) -> GateResult {
