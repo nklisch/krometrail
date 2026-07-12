@@ -28,6 +28,11 @@ This epic does not own browser capture, persistent sessions, agent tool schemas,
 - `docs/VISUAL-EVIDENCE.md` — complete artifact and provenance contract
 - `docs/EVALUATION.md` — Artifact Evaluation Conditions and Artifact-Specific Evaluation
 
+## Design decisions
+
+- **Processing model:** Expose an immutable batch-sequence API that generates measurements and artifacts on demand. Streaming and rolling analysis remain caller responsibilities until measured workloads demonstrate that a stateful crate API is necessary.
+- **Browser-agnostic proof:** Validate reuse through deterministic synthetic and non-browser frame-sequence examples inside the crate. A real Silas integration is not part of this epic and can consume the crate later without shaping its initial public surface.
+
 ## Anticipated child features
 
 - Generic frame-sequence, marker, gap, region, and provenance contracts
