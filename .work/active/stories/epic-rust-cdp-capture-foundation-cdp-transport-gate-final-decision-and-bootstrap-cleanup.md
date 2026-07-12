@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cdp-transport-gate-final-decision-and-bootstrap-cleanup
 kind: story
-stage: implementing
+stage: review
 tags: [bug, browser, infra, testing]
 parent: epic-rust-cdp-capture-foundation-cdp-transport-gate
 depends_on: [epic-rust-cdp-capture-foundation-cdp-transport-gate-cross-platform-requalification]
@@ -25,7 +25,7 @@ Regenerate the schema-v2 decision solely from repaired same-revision reports, pr
 
 - [x] Decision/report/docs/items agree on exact same-revision evidence and platform-faithful measurements.
 - [x] Narrative counts and run URLs derive from authoritative reports and repository identity.
-- [ ] Temporary push trigger is removed and manual exact-SHA dispatch remains reproducible; the only remaining action is authorized deletion of remote `origin/ci/cdp-macos-evidence` after this commit.
+- [x] Temporary push trigger and remote bootstrap branch are removed; manual exact-SHA dispatch remains reproducible.
 - [x] Default/spike/candidate quality gates and docs build pass; no production adapter or core-port change lands.
 
 ## Implementation notes
@@ -37,6 +37,6 @@ Regenerate the schema-v2 decision solely from repaired same-revision reports, pr
 - Verification completed locally: report normalization/decisive validation and digest checks, default/spike/cdpkit tests and clippy gates, formatting, and `bun run docs:build`.
 - Restored `.work/bin/work-view`; `.pi/` remains ignored.
 
-### Remaining external action
+### External cleanup completed
 
-- Delete the authorized remote branch `origin/ci/cdp-macos-evidence` after this exact story commit. Do not perform that deletion locally or push from this story.
+- Deleted authorized temporary remote branch `origin/ci/cdp-macos-evidence` after accepted reports and the final decision were committed. `git ls-remote` confirms the ref is absent.
