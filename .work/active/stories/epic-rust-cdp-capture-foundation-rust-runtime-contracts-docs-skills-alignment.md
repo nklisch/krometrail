@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-rust-runtime-contracts-docs-skills-alignment
 kind: story
-stage: review
+stage: done
 tags: [infra]
 parent: epic-rust-cdp-capture-foundation-rust-runtime-contracts
 depends_on: [epic-rust-cdp-capture-foundation-rust-runtime-contracts-legacy-runtime-removal]
@@ -44,3 +44,13 @@ Do not invent replacement command guidance before those capabilities exist. Pres
 - Kept all classified browser fixtures and updated their stale observer-only comments so React/Vue fixture names describe target applications, not product framework-state support. No foundation document was changed.
 - Verification passed: `git ls-remote --tags origin refs/tags/v0.2.20` returned `3fa4ffa16659648c6f4e229c2f7ae14d2fbc6558`; Rust fmt/check/test/clippy passed (29 tests); shell syntax and `tests/distribution-static.sh` passed; `bun run docs:build` passed with zero dead-link warnings; `git diff --check` passed; stale path/command scans found no current docs, skills, plugin, or runtime claims for removed commands. `.pi/` was not touched or staged.
 - Files intentionally excluded from cleanup: the five authoritative foundation docs, `.work`, agile-workflow rules, classified browser fixtures, and current distribution implementation except factual documentation/link updates.
+
+## Review (2026-07-12)
+
+**Verdict**: Approve
+
+**Blockers**: none
+**Important**: none
+**Nits**: none
+
+**Notes**: Fast-lane story review. The implementation record reports a clean docs build with no dead links plus stale-reference scans; the orchestrator independently verified the rewritten contributor surfaces, Rust gate, and distribution contracts. Intended Electron renderer support remains present without advertising unavailable commands. Verdict: Approve - story verified by implement; fast-lane advance.
