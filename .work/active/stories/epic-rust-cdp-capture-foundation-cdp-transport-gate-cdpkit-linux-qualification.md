@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cdp-transport-gate-cdpkit-linux-qualification
 kind: story
-stage: review
+stage: done
 tags: [browser, infra, testing]
 parent: epic-rust-cdp-capture-foundation-cdp-transport-gate
 depends_on: [epic-rust-cdp-capture-foundation-cdp-transport-gate-spike-contract-harness]
@@ -59,3 +59,13 @@ Implement only the disposable `cdpkit` spike adapter and run the shared fake-Web
 - Evidence: `docs/evidence/cdp-transport/v1/cdpkit-linux.json`; schema generation and validate-and-normalize passed. Protocol source revision is explicitly unavailable because cdpkit reports generated CDP version `1.3` rather than its source commit. Queue depth remains unavailable.
 - Verification: workspace fmt/check/test/clippy, cdp-spike check/test/clippy, cdp-spike-cdpkit check/test/clippy, shared candidate contract test, full real-Chrome gate, schema generation, and schema validation passed.
 - No production transport, core lifecycle, core-port, fork, or fallback implementation was added. The work-view binary was restored after verification; `.pi/` was left untouched.
+
+## Review (2026-07-12)
+
+**Verdict**: Approve with comments
+
+**Blockers**: none
+**Important**: none
+**Nits**: none
+
+**Notes**: Fast-lane story review. The orchestrator independently reran eight cdpkit/spike test targets and candidate-feature clippy, inspected the schema-valid sanitized report, and confirmed every required gate passed. The committed evidence initially referenced the pre-implementation harness commit because evidence was captured before the implementation commit existed; review corrected `source.git_revision` to the implementation commit containing the exact adapter/harness and revalidated normalization. Verdict: Approve - story verified by implement; fast-lane advance.
