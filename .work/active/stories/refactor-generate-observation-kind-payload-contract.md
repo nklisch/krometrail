@@ -1,7 +1,7 @@
 ---
 id: refactor-generate-observation-kind-payload-contract
 kind: story
-stage: review
+stage: done
 tags: [refactor]
 parent: null
 depends_on: []
@@ -53,3 +53,13 @@ Replace those parallel declarations with one local declarative macro invocation 
 - Scope: second mandatory five-story autopilot cadence; distribution workflows/scripts/manifests/static contract tests, current contributor/docs navigation surfaces, and remediation-touched core invariant/enum modules.
 - Dispatch: direct-read only as required; no questions or subagents. `.pi/`, escalated review metadata, and the existing `refactor-derive-cli-error-code-names` finding were excluded.
 - Value: high — a ten-kind public taxonomy currently has three coordinated sources of truth; generation removes that drift risk without changing its boundary.
+
+## Review (2026-07-12)
+
+**Verdict**: Approve
+
+**Blockers**: none
+**Important**: none
+**Nits**: none
+
+**Notes**: Fast-lane story review. The orchestrator independently reran the 41-test locked Rust gate, including generated legal-association coverage. Verdict: Approve - story verified by implement; fast-lane advance.
