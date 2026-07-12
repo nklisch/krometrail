@@ -53,12 +53,12 @@ Supervise recordable page targets through flat CDP sessions so target creation, 
 ## Design decisions
 
 - **Dispatch:** direct-read only — the caller prohibited questions and subagents, and the parent, final5 decision, research, skill, current ports, workspace, and fixtures resolve the design surface.
-- **Transport selection:** exact `cdpkit = 0.4.0` becomes a normal `krometrail-cdp` dependency behind an owned object-safe transport trait. This is the approved candidate and keeps replacement localized.
+- **Transport selection:** exact `cdpkit = 0.4.0` is enabled by `krometrail-cdp`'s default `cdpkit-transport` feature behind an owned object-safe transport trait. The existing spike features remain opt-in evidence paths and reuse the same workspace pin; no production behavior imports a `spike` module.
 - **Target attachment:** install named target-event subscriptions before enabling `Target.setDiscoverTargets` and `Target.setAutoAttach(autoAttach=true, waitForDebuggerOnStart=false, flatten=true)`, then reconcile with `Target.getTargets`. Event and snapshot inputs are reduced through one idempotent state machine, preventing discovery/attach races from creating duplicate logical targets.
 - **Target identity across reconnect:** preserve a Krometrail `TargetId` only when the same browser target key is rediscovered. Never match by URL or title. Missing old keys close their targets; newly observed keys receive new IDs.
 - **Reconnect safety:** reconnect the CDP connection to the same endpoint while a managed child remains alive or an attached endpoint remains reachable. Do not relaunch Chrome or reopen URLs. Re-probe compatibility and rebuild discovery, flat attachments, and domain state on every successful connection.
 - **Electron support:** classify endpoint kind from observed product/user-agent only for status; accept Chrome, Chromium, or Electron only when the runtime capability probe passes on a recordable page target. This supports Electron renderers without claiming control of its Node main process.
-- **Profile ownership:** named and temporary profiles are always under Krometrail's configured profile root. A held lease prevents concurrent use of a named profile; temporary directories are deleted only by their owning guard. Attach mode never acquires, mutates, or deletes a profile.
+- **Profile ownership:** named and temporary profiles are always under Krometrail's configured profile root. A held lease prevents concurrent use of a named profile; temporary directories are deleted only by their owning guard. `ProfileRef::Managed` records the acquired Krometrail identity, while attach sessions report `ProfileRef::External` and never imply knowledge or ownership of an external profile. Attach mode never acquires, mutates, or deletes a profile.
 - **Shutdown:** a managed session sends `Browser.close`, waits a bounded grace period, then terminates its owned process group if required. Attach mode cancels supervision and drops the transport without `Browser.close`. Drop guards remain a last-resort cancellation-safe cleanup path.
 - **Visibility without capture:** probe initial `document.visibilityState` after attachment and expose `Unknown | Visible | Hidden`. The target state reducer accepts later visibility signals, but this feature does not start a screencast merely to obtain `Page.screencastVisibilityChanged`; the ingestion feature will feed that event into the same reducer.
 - **Foundation updates:** code-first. Implementation must roll `docs/ARCHITECTURE.md`'s stale “historical decision not current” sentence to the final5 selection and document the landed boundary; `docs/SPEC.md` already describes the intended behavior.
@@ -92,7 +92,26 @@ pub struct LaunchBrowser {
 pub enum ManagedProfile { Reusable { name: ProfileIdentity }, Temporary }
 pub struct AttachBrowser { pub endpoint: String }
 pub enum BrowserOwnership { Managed, Attached }
+pub enum ProfileRef { Managed(ProfileIdentity), External }
+
+pub enum BrowserInstallationSource { ExplicitRequest, EnvironmentOverride, PlatformDefault, PathLookup }
 pub enum BrowserProduct { Chrome, Chromium, ElectronRenderer, OtherChromium }
+pub struct BrowserProductVersion(NonEmptyText);
+pub struct BrowserInstallation {
+    pub executable: std::path::PathBuf,
+    pub source: BrowserInstallationSource,
+    pub product: BrowserProduct,
+    pub version: BrowserProductVersion,
+}
+pub struct BrowserVersion {
+    pub product: BrowserProduct,
+    pub product_version: BrowserProductVersion,
+    pub revision: NonEmptyText,
+    pub protocol_version: NonEmptyText,
+    pub user_agent: NonEmptyText,
+    pub js_version: NonEmptyText,
+}
+
 pub enum BrowserSessionState { Connecting, Ready, Reconnecting, Stopping, Ended }
 pub enum TargetVisibility { Unknown, Visible, Hidden }
 pub enum BrowserStopOutcome { ManagedBrowserClosed, Detached }
@@ -116,8 +135,7 @@ pub struct CapabilitySupport {
 }
 
 pub struct BrowserCompatibility {
-    pub version: BrowserVersion,
-    pub product: BrowserProduct,
+    pub version: BrowserVersion, // product classification lives here as the SSOT
     pub capabilities: Vec<CapabilitySupport>,
 }
 
@@ -130,6 +148,7 @@ pub struct SupervisedTarget {
 
 pub enum BrowserSessionEvent {
     SessionStateChanged { state: BrowserSessionState },
+    SessionFailed { error: KrometrailError },
     TargetDiscovered { target: SupervisedTarget },
     TargetChanged { target: SupervisedTarget },
     TargetClosed { target_id: TargetId },
@@ -149,7 +168,7 @@ pub trait BrowserConnector: Send + Sync {
 pub trait BrowserSessionPort: Send + Sync {
     fn compatibility(&self) -> &BrowserCompatibility;
     fn ownership(&self) -> BrowserOwnership;
-    fn profile(&self) -> &ProfileIdentity;
+    fn profile(&self) -> &ProfileRef;
     fn state(&self) -> BrowserSessionState;
     fn targets(&self) -> PortFuture<'_, Result<Vec<SupervisedTarget>>>;
     fn subscribe(&self) -> PortFuture<'_, Result<Box<dyn BrowserSessionEvents>>>;
@@ -157,9 +176,11 @@ pub trait BrowserSessionPort: Send + Sync {
 }
 ```
 
-Add stable core error codes `browser_launch_failed`, `browser_compatibility_failed`, `profile_in_use`, `target_failed`, `reconnect_exhausted`, `cancelled`, and `shutdown_incomplete`. Adapter-private errors retain sources for structured logs and map once at the core boundary with safe messages, `RetryAdvice`, and concrete recovery. Unknown endpoint input fails before filesystem/process/network side effects; missing required capability fails before the session reaches `Ready`.
+Add stable core error codes `browser_not_found`, `browser_launch_failed`, `browser_process_terminated`, `browser_compatibility_failed`, `profile_in_use`, `target_failed`, `reconnect_exhausted`, `cancelled`, and `shutdown_incomplete`. `browser_process_terminated` is distinct from transport closure: a managed-child watcher emits a process-termination input with sanitized exit status, the session does not reconnect to or relaunch a dead owned child, and `SessionFailed` publishes that stable error before bounded cleanup. Adapter-private errors retain sources for structured logs and map once at the core boundary with safe messages, `RetryAdvice`, and concrete recovery. Unknown endpoint input fails before filesystem/process/network side effects; missing required capability fails before the session reaches `Ready`.
 
-`TargetLifecycle` gains `Suspended`. Connection loss transitions nonterminal targets to `Suspended`; restoration returns them to their prior attached/visible state with an incremented attachment generation, while absence after reconciliation closes them. Target-local detach/probe failure transitions only that target to `Failed`.
+`BrowserSessionState` is the browser connector/supervisor connectivity state and does not replace `SessionLifecycle`, which remains the recording workflow state on `RecordingSession`. `RecordingSession.profile` and its constructor/accessor/wire form migrate in this story from `ProfileIdentity` to `ProfileRef`; managed recordings carry `ProfileRef::Managed`, while attached recordings carry `ProfileRef::External`. Its `BrowserVersion` use migrates to the complete runtime identity above.
+
+`TargetLifecycle` gains `Suspended`, and the single lifecycle registry declares every legal edge: `Discovered -> Attached | Suspended | Closed | Failed`; `Attached -> Recording | Hidden | Suspended | Closed | Failed`; `Recording -> Hidden | Suspended | Closed | Failed`; `Hidden -> Recording | Suspended | Closed | Failed`; `Suspended -> Discovered | Attached | Recording | Hidden | Closed | Failed`; terminal `Closed` and `Failed` have no outgoing transitions. `SupervisorState` stores the pre-suspension lifecycle so exact-key restoration chooses the corresponding `Suspended` exit and increments attachment generation; absence after reconciliation closes the target. Target-local detach/probe failure transitions only that target to `Failed`. Exhaustive pair tests must reject every edge not listed.
 
 ## Replaceable cdpkit transport boundary
 
@@ -169,6 +190,7 @@ Add stable core error codes `browser_launch_failed`, `browser_compatibility_fail
 
 ```rust
 pub enum CommandScope { Browser, Session(TransportSessionId) }
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct TransportSessionId(String);
 pub struct NamedEvent { pub method: String, pub params: serde_json::Value }
 pub struct TransportClose { pub reason: NonEmptyText }
@@ -194,7 +216,7 @@ pub trait CdpTransportFactory: Send + Sync {
 
 The contract states the honest cdpkit limit: named subscriptions return event `params`, not wildcard/full envelopes. `CdpkitTransport` wraps browser/session senders, inserts session ids through `OwnedSession`, uses cdpkit's connection close state, and never reconnects. Command names and JSON decoding stay in compatibility/target adapters, where each response is fail-fast decoded into owned structs with `serde(deny_unknown_fields)` omitted intentionally for additive CDP compatibility. No spike type is imported.
 
-The normal manifest pins cdpkit and enables only required Tokio/futures/serde-json features. `cdp-spike-cdpkit` reuses the same workspace pin but remains a separately gated evidence path.
+The workspace adds `url = "2"`, used non-optionally by `krometrail-cdp` endpoint validation. The crate manifest declares `default = ["cdpkit-transport"]`; `cdpkit-transport` enables the optional exact workspace `cdpkit = 0.4.0` dependency plus only the Tokio sync/time, futures-util, and serde-json dependencies required by production. `cdp-spike` remains opt-in, and `cdp-spike-cdpkit = ["cdp-spike", "cdpkit-transport", "dep:libc"]` reuses the production workspace pin without making any spike module reachable from default production code.
 
 ## Implementation units and exact files
 
@@ -207,6 +229,7 @@ The normal manifest pins cdpkit and enables only required Tokio/futures/serde-js
 - `crates/krometrail-core/src/browser/target.rs`
 - `crates/krometrail-core/src/browser/session.rs` (new)
 - `crates/krometrail-core/src/ports/browser.rs`
+- `crates/krometrail-core/src/recording/session.rs`
 - `crates/krometrail-core/src/lifecycle.rs`
 - `crates/krometrail-core/src/error.rs`
 - `crates/krometrail-core/src/lib.rs`
@@ -216,7 +239,7 @@ Implementation notes:
 - Preserve UUID-backed `TargetId`; CDP target/session keys remain validated opaque adapter-origin strings.
 - Generate stable enum names and exhaustive round-trip coverage from existing registry macros.
 - `BrowserSessionEvents` is runtime-neutral like existing ports; Tokio channels remain adapter-private.
-- Keep `RecordingSession` compatible with the richer profile/version values; do not add capture behavior.
+- Migrate `RecordingSession`'s profile field/constructor/accessor/wire form from `ProfileIdentity` to `ProfileRef` and update its complete `BrowserVersion` fixtures; do not add capture behavior.
 
 Acceptance:
 - Core has no cdpkit, CDP, WebSocket, Tokio, URL-parser, or filesystem adapter type.
@@ -240,6 +263,16 @@ Acceptance:
 - `crates/krometrail-cdp/tests/production_transport.rs` (new)
 - `crates/krometrail-cdp/tests/compatibility_probe.rs` (new)
 
+```rust
+pub struct LocalCdpEndpoint {
+    // Constructible only by endpoint normalization/readiness code: loopback HTTP
+    // origin plus the resolved browser WebSocket URL and a redacted display label.
+    http_origin: url::Url,
+    browser_websocket_url: url::Url,
+    redacted_label: NonEmptyText,
+}
+```
+
 Implementation notes:
 - Normalize `http://127.0.0.1:<port>`, `http://[::1]:<port>`, `ws://127.0.0.1:<port>/...`, and localhost equivalents. Resolve HTTP endpoints through `/json/version`; reject credentials, fragments, non-loopback resolved addresses, TLS/public endpoints, and unsupported schemes before connect.
 - `RENDERER_CAPABILITY_PROBES` is the single registry for capability id, requirement, scope, command, and decoder. Compatibility status derives from it rather than separate lists.
@@ -249,13 +282,15 @@ Implementation notes:
 Acceptance:
 - Scripted tests prove browser/session scoping, named-event params, event-before-response ordering, close propagation, malformed response rejection, and no cross-session delivery.
 - Chrome-, generic Chromium-, and Electron-labelled fixtures with equal capabilities are accepted; an Electron main-process-only/Node inspector fixture and every missing required capability are rejected with stable errors.
-- Default builds compile production cdpkit while spike gates remain opt-in and unchanged.
+- `cargo check -p krometrail-cdp` compiles the production cdpkit adapter through the default feature; `cargo check -p krometrail-cdp --no-default-features` compiles the replaceable seam without cdpkit; spike modules remain absent unless their opt-in feature is supplied, and the spike regression remains green.
+- `browser.compatibility.probed` tracing is emitted here with product, browser/protocol versions, endpoint kind, and registry-derived required-capability outcome. Endpoint credentials, full URLs, event params, and source/debug error strings are absent from info-level fields.
 
 ### Unit 3: Chrome discovery, profiles, endpoints, and process ownership
 
 **Story:** `epic-rust-cdp-capture-foundation-chrome-target-supervision-managed-launch`
 
 **Files:**
+- `crates/krometrail-cdp/src/lib.rs`
 - `crates/krometrail-cdp/src/launcher/mod.rs` (new)
 - `crates/krometrail-cdp/src/launcher/discovery.rs` (new)
 - `crates/krometrail-cdp/src/launcher/profile.rs` (new)
@@ -271,6 +306,12 @@ pub struct LauncherConfig {
     pub shutdown_timeout: Duration,
 }
 
+pub enum ProfileLeaseKind { Reusable, Temporary }
+pub struct ProfileLease { /* private canonical path, lock, and cleanup guard */ }
+
+pub enum SanitizedProcessExit { Code(i32), Signaled, Unknown }
+pub struct ManagedChromeProcess { /* private child and process-group ownership */ }
+
 pub struct LaunchedChrome {
     pub endpoint: LocalCdpEndpoint,
     pub profile: ProfileLease,
@@ -285,14 +326,16 @@ pub trait ChromeLauncher: Send + Sync {
 ```
 
 Implementation notes:
-- Deterministic discovery order: explicit executable, environment override, platform stable-channel paths, then PATH names. Canonicalize, require a regular executable file, and deduplicate canonical paths.
+- `LocalCdpEndpoint` is defined by Unit 2 in `endpoint.rs` and is an adapter-owned validated endpoint value, not a process owner; it exposes read-only WebSocket/redacted-label accessors, while endpoint resolution remains in that module. `ProfileLease` exclusively owns the profile lock and temporary cleanup guard and exposes read-only `profile_ref()`/`kind()` accessors. `ManagedChromeProcess` exclusively owns the child/process-group kill authority and exposes bounded `wait_for_termination()`/`terminate()` operations. `LaunchedChrome` transfers all three values into the session; drop order stops the child before releasing/deleting its profile. Attached sessions construct only a normalized `LocalCdpEndpoint` and never construct either ownership guard.
+- The shared discovery helper accepts an optional launch-request executable and orders candidates: explicit request, environment override, platform stable-channel paths, then PATH names. `ChromeLauncher::installations()` calls it without a request (therefore environment/platform/PATH only); `launch()` supplies `LaunchBrowser.executable`. Canonicalize, require a regular executable file, invoke the bounded product-version probe, and deduplicate canonical paths. Each result populates the complete `BrowserInstallation { executable, source, product, version }`; Electron is not platform-discovered as a managed Chrome installation.
 - Reusable profile names permit a conservative portable character set and map below `profile_root/profiles/<name>`. Hold an exclusive lock for the complete managed session. Temporary profiles live below `profile_root/tmp/` and their guard removes only its own directory.
 - Launch with `--remote-debugging-address=127.0.0.1`, an OS-selected free port, `--user-data-dir`, no-first-run/default-browser prompts, and the optional initial URL. Headless/gpu/sandbox policy is not hard-coded product behavior; tests may add explicit test-only flags.
 - Establish process/profile ownership synchronously before the first await. On Unix create an isolated process group. Startup cancellation, timeout, and drop terminate the owned tree and release/clean the correct profile. Never kill by executable name.
 
 Acceptance:
-- Fake filesystem/process tests prove discovery precedence, profile traversal rejection, named-profile exclusion, temporary cleanup, cancellation before endpoint readiness, graceful close, escalation, and no attached-resource cleanup.
+- Fake filesystem/process tests prove discovery precedence, source/product/version classification, profile traversal rejection, named-profile exclusion, temporary cleanup, cancellation before endpoint readiness, graceful close, escalation, distinct managed-child termination notification, ownership transfer/drop order, and no attached-resource cleanup.
 - Tests use injected process/endpoint probes rather than sleeps.
+- `browser.discovery.completed`, `browser.launch.started|ready|failed`, and `browser.shutdown.completed|incomplete` tracing is emitted by this story with the parent design's sanitized fields. Full executable/profile paths, command-line secrets, and source/debug errors never appear at info level.
 
 ### Unit 4: Target reducer, session supervision, root wiring, and real browser tests
 
@@ -321,6 +364,40 @@ pub struct ReconnectPolicy {
     pub attempt_timeout: Duration,
 }
 
+pub struct TransportTargetInfo {
+    pub target_key: String,
+    pub target_type: String,
+    pub url: String,
+    pub title: String,
+    pub attached: bool,
+    pub browser_context_key: Option<String>,
+}
+
+pub struct ReconnectedTarget {
+    pub info: TransportTargetInfo,
+    pub session: Option<TransportSessionId>,
+    pub visibility: TargetVisibility,
+}
+pub struct ReconnectedSnapshot {
+    pub connection_generation: u64,
+    pub compatibility: BrowserCompatibility,
+    pub targets: Vec<ReconnectedTarget>,
+}
+
+pub struct SupervisorTargetState {
+    pub target: SupervisedTarget,
+    pub transport_session: Option<TransportSessionId>,
+    pub prior_to_suspension: Option<TargetLifecycle>,
+}
+pub struct SupervisorState {
+    pub session_state: BrowserSessionState,
+    pub connection_generation: u64,
+    pub revision: u64,
+    pub compatibility: BrowserCompatibility,
+    pub targets_by_key: HashMap<String, SupervisorTargetState>,
+    pub target_key_by_session: HashMap<TransportSessionId, String>,
+}
+
 pub enum SupervisorInput {
     InitialTargets(Vec<TransportTargetInfo>),
     TargetCreated(TransportTargetInfo),
@@ -330,10 +407,22 @@ pub enum SupervisorInput {
     TargetDestroyed { target_key: String },
     VisibilityChanged { target_key: String, visibility: TargetVisibility },
     ConnectionLost(TransportClose),
+    BrowserProcessTerminated { exit: SanitizedProcessExit },
     Reconnected(ReconnectedSnapshot),
+    ReconnectExhausted,
+    StopRequested,
     Cancelled,
 }
 
+pub enum ShutdownCause { StopRequested, Cancelled, BrowserProcessTerminated, ReconnectExhausted }
+pub enum SupervisorEffect {
+    Attach { target_key: String },
+    Detach { session: TransportSessionId },
+    ProbeInitialVisibility { target_key: String, session: TransportSessionId },
+    Publish(BrowserSessionEvent),
+    BeginReconnect,
+    Shutdown { cause: ShutdownCause },
+}
 pub struct Reduction { pub state: SupervisorState, pub effects: Vec<SupervisorEffect> }
 pub fn reduce(state: SupervisorState, input: SupervisorInput) -> Result<Reduction>;
 ```
@@ -343,11 +432,13 @@ Implementation notes:
 - One reducer serializes all target state. Event tasks carry a connection generation; stale-generation events are discarded after reconnect.
 - Reconnect delays come from configuration and a `RetrySleeper` adapter so deterministic tests advance attempts without wall-clock sleeps. Each successful reconnect repeats compatibility, subscriptions, discovery, flat auto-attach, and reconciliation before `Ready`.
 - Local target decode/domain failure emits `TargetFailed` and detaches that target only. Browser transport loss moves the session to `Reconnecting`. Exhaustion emits `reconnect_exhausted`, cancels target tasks, performs ownership-correct shutdown, and ends the session.
-- Event fan-out is bounded. Slow subscribers receive an explicit lag/refresh-required error and recover through `targets()`; supervisor state cannot be backpressured by observers.
-- `src/app.rs` constructs the production connector. `doctor` calls `installations()` and reports a stable no-browser error when empty; it does not launch, attach, or mutate profiles.
+- Event fan-out is bounded. Each subscriber tracks the supervisor `revision`; overflow yields a typed lag/refresh-required error containing only the missed revision range, increments a measurable outbound-subscriber lag counter, and requires recovery through `targets()`. Supervisor state cannot be backpressured by observers. No acceptance or telemetry claim is made about cdpkit's private upstream queue depth because that depth is not observable through its API.
+- `ProductionBrowserConnector::installations()` delegates directly to `ChromeLauncher::installations()`; discovery policy and precedence exist only in `launcher/discovery.rs`. `src/app.rs` constructs that production connector. `doctor` calls `installations()` exactly once and never calls `connect`: nonempty results print a stable availability summary and exit 0; empty results return the stable no-browser error and recovery text. It does not launch, attach, allocate a port, acquire a profile, or mutate the filesystem.
+- Replace `doctor_reports_unavailable_browser_transport` in `tests/rust-runtime-smoke.rs`. The new smoke accepts exactly the environment-dependent production outcomes: success with `browser available:` or exit 1 with `error[browser_not_found]` plus recovery; it rejects the provisional `unsupported`/`browser transport is not available` text. An `src/app.rs` fake asserts one `installations()` call and panics if `connect()` is called.
 
 Acceptance:
-- Deterministic tests cover initial snapshot/event races, duplicate attach, two flat sessions with no cross-delivery, navigation/title mutation, initial visibility, target-local detach during a pending operation, unrelated target survival, reconnect success, stale-generation rejection, changed target ids, retry exhaustion, cancellation at every await boundary, slow subscriber behavior, managed close, and attach detach.
+- Reducer table tests construct the defined `SupervisorState`, `SupervisorInput`, `SupervisorEffect`, `TransportTargetInfo`, and `ReconnectedSnapshot` values directly and cover initial snapshot/event races, duplicate attach, every legal and illegal `Suspended` transition, two flat sessions with no cross-delivery, navigation/title mutation, initial visibility, target-local detach during a pending operation, unrelated target survival, reconnect success, stale-generation rejection, changed target ids, retry exhaustion, explicit cancellation/stop, and slow-subscriber revision lag.
+- Managed child exit is delivered as `BrowserProcessTerminated`, publishes `SessionFailed(browser_process_terminated)`, skips reconnect/relaunch, and performs bounded owned cleanup; a transport `ConnectionLost` while the managed child remains alive follows the finite reconnect path. These are separately asserted.
 - Real-Chrome tests launch an isolated temporary profile, serve `tests/fixtures/browser/cdp-transport-gate`, create two page targets, verify flat isolated sessions and target events, disconnect/reconnect the transport, and verify bounded clean shutdown with no leaked process/profile. A second test attaches to that same loopback browser and proves stopping the attached session leaves the browser alive.
 - An opt-in `KROMETRAIL_ELECTRON_ENDPOINT` real test runs the same capability probe against an explicitly debug-enabled Electron renderer when available; deterministic fixtures remain the required Electron contract in ordinary CI.
 - No real or deterministic test starts a production screencast.
@@ -360,9 +451,10 @@ Acceptance:
 4. Install target subscriptions, enable flat auto-attach/discovery, fetch the target snapshot, and run the capability probe.
 5. Return `Ready` only after reconciliation; publish supervised recordable targets.
 6. On target events, reduce state and apply idempotent attach/detach/probe effects. Failures remain target-local.
-7. On connection loss, mark the session `Reconnecting`, suspend nonterminal targets, reject new target operations, and retry using the finite injected policy.
-8. On reconnect, repeat steps 3–5. Preserve identity only for exact target keys; increment attachment generation and discard stale prior-generation events.
-9. On explicit stop/cancellation or retry exhaustion, cancel event/retry tasks, close channels, detach or close according to ownership, wait for bounded cleanup, and return a typed outcome/error. No frame-store flush occurs in this feature.
+7. On transport connection loss, mark the session `Reconnecting`, suspend nonterminal targets, reject new target operations, and retry using the finite injected policy only while the managed child is alive or the attached endpoint remains eligible.
+8. On managed-process termination, publish `browser_process_terminated`, skip reconnect/relaunch, and begin bounded owned cleanup.
+9. On reconnect, repeat steps 3–5. Preserve identity only for exact target keys; increment attachment generation and discard stale prior-generation events.
+10. On explicit stop/cancellation or retry exhaustion, cancel event/retry tasks, close channels, detach or close according to ownership, wait for bounded cleanup, and return a typed outcome/error. No frame-store flush occurs in this feature.
 
 ## Profile and process ownership matrix
 
@@ -406,6 +498,7 @@ Use `tracing` events with stable event names and fields:
 - `browser.launch.started|ready|failed`: ownership mode, sanitized executable basename, profile kind, child id, elapsed time; never full profile path or command-line secrets.
 - `browser.compatibility.probed`: product, browser/protocol version, endpoint kind, required capability result, Electron-renderer classification.
 - `browser.session.state_changed`: managed/attached, prior/next state, connection generation, reconnect attempt.
+- `browser.session.subscriber_lagged`: missed outbound revision range and current revision only; no inferred cdpkit queue depth.
 - `browser.target.discovered|attached|changed|suspended|closed|failed`: Krometrail target id, hashed/opaque browser target key, target type, attachment generation; do not log title, URL query, page text, event params, or raw adapter errors.
 - `browser.shutdown.completed|incomplete`: disposition, elapsed time, forced termination, unfinished task count.
 
@@ -414,15 +507,16 @@ Private source errors may be attached to local debug spans but never copied into
 ## Implementation order
 
 1. `epic-rust-cdp-capture-foundation-chrome-target-supervision-contracts`
-2. After contracts, in parallel: `epic-rust-cdp-capture-foundation-chrome-target-supervision-transport-adapter` and `epic-rust-cdp-capture-foundation-chrome-target-supervision-managed-launch`
-3. `epic-rust-cdp-capture-foundation-chrome-target-supervision-session-supervisor`
+2. `epic-rust-cdp-capture-foundation-chrome-target-supervision-transport-adapter`
+3. `epic-rust-cdp-capture-foundation-chrome-target-supervision-managed-launch`
+4. `epic-rust-cdp-capture-foundation-chrome-target-supervision-session-supervisor`
 
-This is the minimal useful split: one shared contract foundation, two independently owned adapters, and one integration/reconciliation unit. Smaller stories would divide tightly coupled files without creating independent verification surfaces.
+The chain is intentionally serialized. Managed launch consumes transport-owned `LocalCdpEndpoint`, and stories 2–4 each append exports to `crates/krometrail-cdp/src/lib.rs`; their `depends_on` edges make those shared-file edits compile-real rather than pretending the adapters can land concurrently. The split still preserves cohesive verification surfaces: core contract, transport/probe, managed resources, then integrated supervision.
 
 ## Risks and pre-mortem
 
 - **Riskiest assumption — auto-attach ordering remains tractable through cdpkit's named subscriptions.** Mitigation: subscribe first, reconcile against `getTargets`, reduce idempotently, carry connection generations, and prove race permutations plus real Chrome. A routing/decoder/lifecycle patch or fork is forbidden; demonstrated failure reopens the approved fallback decision.
-- **Upstream cdpkit subscriptions are unbounded.** Target lifecycle volume is much lower than frames, but this remains real. Event readers drain continuously into the reducer's bounded command path; lag is measured and a sustained growth failure triggers transport reconsideration rather than an invisible queue claim.
+- **Upstream cdpkit subscriptions may queue beyond Krometrail's visibility.** The adapter drains them continuously, but cdpkit exposes no measurable queue depth, so this design makes no upstream-lag acceptance claim. Krometrail measures only its own bounded outbound subscriber channels via revision gaps; overflow returns refresh-required and increments the outbound lag counter. If real evidence later shows upstream growth, the transport decision is reopened rather than hidden behind invented telemetry.
 - **Chrome process cleanup can leak descendants or delete the wrong profile under cancellation.** Ownership guards are established before awaits, process groups are killed only by held child identity, reusable profiles are never deleted, and cancellation-point tests verify every path.
 - **Attach reconnect can bind to a replaced browser instance.** Exact target keys are the only continuity key. Changed keys become closed/new targets, compatibility is re-probed, and no URL/title matching fabricates continuity.
 - **Electron branding is inconsistent.** Product strings are status hints only. Acceptance is capability-based against a page target; Node-only endpoints fail explicitly.
@@ -439,12 +533,23 @@ This is the minimal useful split: one shared contract foundation, two independen
 - [ ] Target supervision uses flat sessions, publishes creation/navigation/initial visibility/closure/failure changes, isolates target-local failures, and never confuses two sessions or duplicate discovery inputs.
 - [ ] Reconnect is finite, observable, cancellation-aware, and reconstructs subscriptions/discovery/attachments/domain state. Exact target keys preserve identity; missing/changed keys close/create rather than URL-match.
 - [ ] Managed browser death and reconnect exhaustion end the session with a stable structured error and bounded cleanup; explicit stop returns `ManagedBrowserClosed` or `Detached` correctly.
-- [ ] Root composition uses the production connector and `doctor` performs discovery only.
+- [ ] Root composition uses the default-feature production connector; installation discovery delegates to `ChromeLauncher`, and the replaced doctor smoke proves the discovery-only success/no-browser contract without the provisional unsupported message.
 - [ ] Real Chrome proves managed launch, attach-without-close, two target sessions, disconnect/rebuild, and leak-free shutdown against the current fixture. Electron has mandatory deterministic probe coverage and an opt-in real-endpoint test.
 - [ ] Structured logs expose lifecycle, compatibility, target, reconnect, and cleanup measurements without page content, raw URLs, credentials, or serialized source errors.
 - [ ] No production screencast ingestion, frame acknowledgement, bounded frame queue, persistence, or capture-gap behavior lands in this feature.
 - [ ] Workspace format/check/test/clippy, production real-browser integration, spike regression, and dependency-boundary scans pass; `docs/ARCHITECTURE.md` is rolled forward to the landed final5 production boundary.
 
+## Review repair ledger
+
+- **B1 — profile semantics:** `ProfileRef` now distinguishes managed identity from externally owned/unknown attach profiles, `BrowserSessionPort` returns it, and Unit 1 explicitly migrates the downstream `RecordingSession` field, wire form, constructor, accessor, fixtures, and tests.
+- **B2 — browser identity contracts:** `BrowserInstallation`, `BrowserInstallationSource`, `BrowserProduct`, `BrowserProductVersion`, and the full runtime `BrowserVersion` are defined with their fields and discovery/runtime roles.
+- **B3 — compile-real ownership/dependencies:** stories are serialized contracts → transport → managed launch → supervisor. `LocalCdpEndpoint` is defined in Unit 2 and consumed in Unit 3; sequential `src/lib.rs` ownership is explicit in required files and dependency edges.
+- **Supervisor contract gap:** `SupervisorState`, target state, input, effect, transport target info, reconnect snapshot, shutdown cause, and sanitized process exit are concrete. `browser_process_terminated` has a separate watcher input, event error, and no-reconnect path.
+- **Resource ownership gap:** endpoint, profile lease, managed process, and `LaunchedChrome` transfer/drop responsibilities are explicit; attach constructs no ownership guards.
+- **Acceptance allocation:** compatibility tracing is owned by story 2; discovery/launch/shutdown tracing by story 3; story 4 owns supervisor/target tracing and the exact doctor smoke replacement.
+- **State/measurement gaps:** only observable outbound subscriber revision lag is measurable; `BrowserSessionState` and recording `SessionLifecycle` are distinct; connector discovery delegates to `ChromeLauncher`; every legal and illegal `Suspended` edge is specified.
+- **Feature topology:** default builds enable production cdpkit through `cdpkit-transport`, no-default builds retain the seam, and spike features remain opt-in. No production/default path imports spike code.
+
 ## Advisory review
 
-Design-time advisory review was skipped because the caller explicitly prohibited subagents. This is non-blocking under the principles policy. The feature is high-risk and must receive the normal independent feature review after implementation; this design does not claim that review has occurred.
+This repair resolves the recorded GLM findings without another advisory pass because the caller explicitly prohibited subagents. The feature remains `implementing` and must receive the normal independent feature review after implementation; this design does not claim that review has occurred.
