@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cdp-transport-gate-architecture-ack-order
 kind: story
-stage: review
+stage: done
 tags: [bug, browser, documentation]
 parent: epic-rust-cdp-capture-foundation-cdp-transport-gate
 depends_on: []
@@ -34,3 +34,13 @@ Correct the authoritative Frame Ingestion diagram and accompanying prose so fram
 - Regenerated `docs/public/llms-full.txt` through `bun run docs:build`; no generated file was hand-edited. No runtime files changed.
 - Verification: `bun run docs:build`; contract grep rejects the former enqueue-before-ack wording and confirms the receive/ack/handoff/gap ordering; `git diff --check` passes.
 - Restored `.work/bin/work-view`; `.pi/` remains ignored.
+
+## Review (2026-07-12)
+
+**Verdict:** Approve
+
+**Blockers:** none
+**Important:** none
+**Nits:** none
+
+**Notes:** Fast-lane foundation review verified receive → immediate acknowledgement → bounded handoff → explicit gap ordering in the authoritative diagram and prose, consistent post-receive latency semantics across foundation/reference docs, and a clean generated docs build. Verdict: Approve - story verified by implement; fast-lane advance.
