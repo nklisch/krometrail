@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cdp-transport-gate-deadline-observation-remediation
 kind: story
-stage: implementing
+stage: review
 tags: [bug, browser, infra, testing]
 parent: epic-rust-cdp-capture-foundation-cdp-transport-gate
 depends_on: []
@@ -23,7 +23,14 @@ Enforce a five-second timeout around the complete reconnect/session rebuild and 
 
 ## Acceptance criteria
 
-- [ ] Rebuild passes only when observed completion is within five seconds, with measured elapsed time in evidence.
-- [ ] Disconnect closure fields derive from observed pending-command and subscription termination within one second.
-- [ ] `hard_stop_seconds` bounds the complete gate and is covered by deterministic timeout tests.
-- [ ] Default/spike/candidate tests and denied-warning clippy pass; no production adapter or core-port change lands.
+- [x] Rebuild passes only when observed completion is within five seconds, with measured elapsed time in evidence.
+- [x] Disconnect closure fields derive from observed pending-command and subscription termination within one second.
+- [x] `hard_stop_seconds` bounds the complete gate and is covered by deterministic timeout tests.
+- [x] Default/spike/candidate tests and denied-warning clippy pass; no production adapter or core-port change lands.
+
+## Implementation notes
+
+- Added strict observed deadline measurements: reconnect/session rebuild records wall-clock completion and is rejected at or beyond five seconds; disconnect records independent pending-command and subscription termination elapsed times, requires the command-start readiness event, and cross-checks both outcomes with the transport close reason.
+- Plumbed `hard_stop_seconds` into `GateConfiguration` and wrapped the complete real-Chrome operation in a Tokio timeout. Chrome endpoint readiness is now asynchronous so the timeout can cover startup; zero hard stops are rejected.
+- Added paused-time deterministic timeout tests and strict validation regressions for absent, nominal-only, non-finite, and over-threshold deadline evidence. The retained pre-remediation reports are documented as obsolete and left byte-for-byte unchanged.
+- Verification: `cargo fmt --all`; workspace default tests/clippy; `cdp-spike` tests/clippy; `cdp-spike-cdpkit` tests/clippy. Only spike/evidence/schema/docs/test files changed; no production adapter, root, or core-port changes.

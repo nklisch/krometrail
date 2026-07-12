@@ -145,6 +145,12 @@
     "GateConfiguration": {
       "type": "object",
       "properties": {
+        "hard_stop_seconds": {
+          "description": "Maximum wall-clock time for the complete real-Chrome qualification operation.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
         "minimum_frames": {
           "type": "integer",
           "format": "uint64",
@@ -169,7 +175,8 @@
         "minimum_seconds",
         "minimum_frames",
         "saturation_seconds",
-        "saturation_attempts"
+        "saturation_attempts",
+        "hard_stop_seconds"
       ]
     },
     "GateResult": {

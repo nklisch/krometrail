@@ -4,7 +4,6 @@
 use std::{
     cmp::Ordering,
     collections::{BTreeMap, BTreeSet},
-    io::{Read, Write},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
@@ -13,6 +12,47 @@ use std::{
 use futures_util::StreamExt;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+const DISCONNECT_DEADLINE_SECONDS: f64 = 1.0;
+const REBUILD_DEADLINE_SECONDS: f64 = 5.0;
+
+#[derive(Clone, Debug)]
+struct DisconnectMeasurements {
+    pending_command_started: bool,
+    pending_command_elapsed_seconds: f64,
+    subscription_elapsed_seconds: f64,
+    pending_calls_closed: bool,
+    subscriptions_closed: bool,
+    close_reason_observed: bool,
+}
+
+#[derive(Clone, Debug)]
+struct RebuildMeasurements {
+    connections: u64,
+    sessions_rebuilt: u64,
+    elapsed_seconds: f64,
+}
+
+pub async fn run_with_hard_stop<T, F>(hard_stop_seconds: u64, operation: F) -> Result<T, SpikeError>
+where
+    F: std::future::Future<Output = Result<T, SpikeError>>,
+{
+    if hard_stop_seconds == 0 {
+        return Err(SpikeError::new(
+            SpikeErrorCode::Evidence,
+            "hard-stop seconds must be positive",
+        ));
+    }
+    tokio::time::timeout(Duration::from_secs(hard_stop_seconds), operation)
+        .await
+        .map_err(|_| {
+            SpikeError::new(
+                SpikeErrorCode::Deadline,
+                format!("complete real-Chrome gate exceeded {hard_stop_seconds} seconds"),
+            )
+        })?
+}
 
 use super::{
     contract::{SpikeTransport, SpikeTransportFactory, TransportScope},
@@ -57,7 +97,7 @@ struct ChromeHarness {
 }
 
 impl ChromeHarness {
-    fn start(chrome_binary: &Path) -> Result<Self, SpikeError> {
+    async fn start(chrome_binary: &Path) -> Result<Self, SpikeError> {
         let fixture_root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/browser/cdp-transport-gate");
         let fixture = StaticFixtureServer::start(&fixture_root)?;
@@ -67,7 +107,7 @@ impl ChromeHarness {
         let _ = std::fs::remove_dir_all(&profile);
         std::fs::create_dir_all(&profile).map_err(io_error)?;
         let port = free_port()?;
-        let child = Command::new(chrome_binary)
+        let mut child = Command::new(chrome_binary)
             .args([
                 "--headless=new",
                 "--no-sandbox",
@@ -84,7 +124,15 @@ impl ChromeHarness {
             .stderr(Stdio::null())
             .spawn()
             .map_err(io_error)?;
-        let ws_url = wait_for_ws_url(port, Duration::from_secs(15))?;
+        let ws_url = match wait_for_ws_url(port, Duration::from_secs(15)).await {
+            Ok(url) => url,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = std::fs::remove_dir_all(&profile);
+                return Err(error);
+            }
+        };
         Ok(Self {
             child,
             profile,
@@ -112,11 +160,24 @@ pub async fn run_real_chrome_gate(
     configuration: GateConfiguration,
     chrome_binary: &Path,
 ) -> Result<TransportEvidenceV1, SpikeError> {
+    let hard_stop_seconds = configuration.hard_stop_seconds;
+    run_with_hard_stop(
+        hard_stop_seconds,
+        run_real_chrome_gate_inner(factory, configuration, chrome_binary),
+    )
+    .await
+}
+
+async fn run_real_chrome_gate_inner(
+    factory: &dyn SpikeTransportFactory,
+    configuration: GateConfiguration,
+    chrome_binary: &Path,
+) -> Result<TransportEvidenceV1, SpikeError> {
     // Unknown future events cannot be made to occur in real Chrome. Run the exact candidate
     // contract against the wire-connected scripted controller and bind its trace digest to this
     // report instead of presenting those fixtures as a Chrome measurement.
     let candidate_contract = run_candidate_wire_contract(factory).await?;
-    let mut browser = ChromeHarness::start(chrome_binary)?;
+    let mut browser = ChromeHarness::start(chrome_binary).await?;
     let transport = factory.connect(&browser.ws_url).await?;
     let target_a = create_target(transport.as_ref(), &browser.fixture_url).await?;
     let target_b = create_target(transport.as_ref(), &browser.fixture_url).await?;
@@ -458,37 +519,61 @@ pub async fn run_real_chrome_gate(
         ));
     }
 
-    let disconnect = run_disconnect_probe(transport.as_ref(), &session_a, &mut browser).await;
-    if disconnect {
-        gates.push(pass(
+    match run_disconnect_probe(transport.as_ref(), &session_a, &mut browser).await {
+        Ok(measurements) => {
+            gates.push(pass(
+                TransportGateId::DisconnectCleanup,
+                [
+                    (
+                        "pending_command_started",
+                        bool_measurement(measurements.pending_command_started),
+                    ),
+                    (
+                        "pending_calls_closed",
+                        bool_measurement(measurements.pending_calls_closed),
+                    ),
+                    (
+                        "subscriptions_closed",
+                        bool_measurement(measurements.subscriptions_closed),
+                    ),
+                    (
+                        "pending_command_elapsed_seconds",
+                        measurements.pending_command_elapsed_seconds,
+                    ),
+                    (
+                        "subscription_elapsed_seconds",
+                        measurements.subscription_elapsed_seconds,
+                    ),
+                    (
+                        "close_reason_observed",
+                        bool_measurement(measurements.close_reason_observed),
+                    ),
+                ],
+            ));
+        }
+        Err(error) => gates.push(fail(
             TransportGateId::DisconnectCleanup,
-            [
-                ("pending_calls_closed", 1.0),
-                ("subscriptions_closed", 1.0),
-                ("deadline_seconds", 1.0),
-            ],
-        ));
-    } else {
-        gates.push(fail(
-            TransportGateId::DisconnectCleanup,
-            "forced disconnect did not close pending work within one second",
-        ));
+            &format!("disconnect cleanup failed: {error}"),
+        )),
     }
-    let rebuilt = rebuild_sessions(factory, &browser.fixture_url, chrome_binary).await?;
-    if rebuilt {
-        gates.push(pass(
+    match run_with_hard_stop(
+        REBUILD_DEADLINE_SECONDS as u64,
+        rebuild_sessions(factory, &browser.fixture_url, chrome_binary),
+    )
+    .await
+    {
+        Ok(measurements) => gates.push(pass(
             TransportGateId::ExplicitReconnectRebuild,
             [
-                ("connections", 2.0),
-                ("sessions_rebuilt", 2.0),
-                ("deadline_seconds", 5.0),
+                ("connections", measurements.connections as f64),
+                ("sessions_rebuilt", measurements.sessions_rebuilt as f64),
+                ("elapsed_seconds", measurements.elapsed_seconds),
             ],
-        ));
-    } else {
-        gates.push(fail(
+        )),
+        Err(error) => gates.push(fail(
             TransportGateId::ExplicitReconnectRebuild,
-            "explicit reconnect/rebuild exceeded five seconds",
-        ));
+            &format!("explicit reconnect/rebuild failed: {error}"),
+        )),
     }
 
     let (product, revision, protocol) = (
@@ -706,34 +791,139 @@ async fn run_disconnect_probe(
     transport: &dyn SpikeTransport,
     session: &TransportScope,
     browser: &mut ChromeHarness,
-) -> bool {
+) -> Result<DisconnectMeasurements, SpikeError> {
+    let mut subscription = transport
+        .subscribe_named(session, "Runtime.consoleAPICalled")
+        .await?;
     let pending = transport.send_raw(
         session,
         "Runtime.evaluate",
-        serde_json::json!({"expression":"while (true) {}"}),
+        serde_json::json!({
+            "expression": "console.log('cdp-transport-pending'); while (true) {}",
+            "returnByValue": true
+        }),
     );
     tokio::pin!(pending);
-    tokio::select! {
-        _result = &mut pending => false,
-        _ = tokio::time::sleep(Duration::from_millis(100)) => {
-            browser.kill_browser();
-            tokio::time::timeout(Duration::from_secs(1), pending).await.is_ok()
+
+    // The console event is the wire-level barrier that proves Chrome started the command before
+    // the browser is killed. It supplies deterministic readiness without a timing sleep.
+    let started = tokio::time::timeout(Duration::from_secs(1), async {
+        tokio::select! {
+            result = &mut pending => {
+                let _ = result;
+                Err(SpikeError::new(
+                    SpikeErrorCode::Disconnected,
+                    "pending disconnect command completed before its readiness event",
+                ))
+            }
+            event = subscription.next() => event
+                .ok_or_else(|| SpikeError::new(
+                    SpikeErrorCode::SubscriptionClosed,
+                    "disconnect subscription closed before the pending command started",
+                ))?,
         }
+    })
+    .await
+    .map_err(|_| {
+        SpikeError::new(
+            SpikeErrorCode::Deadline,
+            "pending disconnect command did not start within one second",
+        )
+    })??;
+    if !contains_string(&started.params, "cdp-transport-pending") {
+        return Err(SpikeError::new(
+            SpikeErrorCode::Protocol,
+            "pending disconnect command did not produce its readiness event",
+        ));
     }
+
+    let disconnect_started = Instant::now();
+    browser.kill_browser();
+    let (pending_result, subscription_result) = tokio::join!(
+        async {
+            let result = tokio::time::timeout(DISCONNECT_DURATION, &mut pending).await;
+            (result, disconnect_started.elapsed().as_secs_f64())
+        },
+        async {
+            let result = tokio::time::timeout(DISCONNECT_DURATION, subscription.next()).await;
+            (result, disconnect_started.elapsed().as_secs_f64())
+        }
+    );
+    let (pending_result, pending_command_elapsed_seconds) = pending_result;
+    let (subscription_result, subscription_elapsed_seconds) = subscription_result;
+    let pending_calls_closed = matches!(pending_result, Ok(Err(_)));
+    let subscriptions_closed = matches!(subscription_result, Ok(None) | Ok(Some(Err(_))));
+    let close_reason = transport.close_reason();
+    let close_reason_observed = close_reason.is_some();
+    let close_reason = close_reason.ok_or_else(|| {
+        SpikeError::new(
+            SpikeErrorCode::Disconnected,
+            "candidate did not expose a close reason after socket close",
+        )
+    })?;
+
+    if !pending_calls_closed
+        || !subscriptions_closed
+        || !close_reason.pending_calls_closed
+        || !close_reason.subscriptions_closed
+        || pending_command_elapsed_seconds >= DISCONNECT_DEADLINE_SECONDS
+        || subscription_elapsed_seconds >= DISCONNECT_DEADLINE_SECONDS
+    {
+        return Err(SpikeError::new(
+            SpikeErrorCode::Disconnected,
+            format!(
+                "disconnect outcomes were not both observed within one second: pending={pending_calls_closed}, subscription={subscriptions_closed}, reason={:?}",
+                close_reason.reason
+            ),
+        ));
+    }
+    Ok(DisconnectMeasurements {
+        pending_command_started: true,
+        pending_command_elapsed_seconds,
+        subscription_elapsed_seconds,
+        pending_calls_closed,
+        subscriptions_closed,
+        close_reason_observed,
+    })
 }
+
+const DISCONNECT_DURATION: Duration = Duration::from_secs(1);
 
 async fn rebuild_sessions(
     factory: &dyn SpikeTransportFactory,
     fixture_url: &str,
     chrome_binary: &Path,
-) -> Result<bool, SpikeError> {
-    let browser = ChromeHarness::start(chrome_binary)?;
+) -> Result<RebuildMeasurements, SpikeError> {
+    let started = Instant::now();
+    let browser = ChromeHarness::start(chrome_binary).await?;
     let transport = factory.connect(&browser.ws_url).await?;
     let a = create_target(transport.as_ref(), fixture_url).await?;
     let b = create_target(transport.as_ref(), fixture_url).await?;
-    let _ = transport.attach_flat_page(&a).await?;
-    let _ = transport.attach_flat_page(&b).await?;
-    Ok(true)
+    let session_a = transport.attach_flat_page(&a).await?;
+    let session_b = transport.attach_flat_page(&b).await?;
+    if session_a == session_b {
+        return Err(SpikeError::new(
+            SpikeErrorCode::Routing,
+            "rebuild produced duplicate flat sessions",
+        ));
+    }
+    let elapsed_seconds = started.elapsed().as_secs_f64();
+    if elapsed_seconds >= REBUILD_DEADLINE_SECONDS {
+        return Err(SpikeError::new(
+            SpikeErrorCode::Deadline,
+            "reconnect/session rebuild exceeded five seconds",
+        ));
+    }
+    Ok(RebuildMeasurements {
+        // The original gate connection plus this newly established connection.
+        connections: 2,
+        sessions_rebuilt: 2,
+        elapsed_seconds,
+    })
+}
+
+fn bool_measurement(value: bool) -> f64 {
+    if value { 1.0 } else { 0.0 }
 }
 
 fn pass<const N: usize>(id: TransportGateId, values: [(&str, f64); N]) -> GateResult {
@@ -765,40 +955,31 @@ fn free_port() -> Result<u16, SpikeError> {
     Ok(listener.local_addr().map_err(io_error)?.port())
 }
 
-fn wait_for_ws_url(port: u16, timeout: Duration) -> Result<String, SpikeError> {
+async fn wait_for_ws_url(port: u16, timeout: Duration) -> Result<String, SpikeError> {
     let start = Instant::now();
     while start.elapsed() < timeout {
-        if let Ok(mut stream) = std::net::TcpStream::connect(("127.0.0.1", port)) {
-            let _ = stream.set_read_timeout(Some(Duration::from_secs(1)));
-            let _ = stream.write_all(
-                format!("GET /json/version HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n").as_bytes(),
+        if let Ok(mut stream) = tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
+            let request = format!(
+                "GET /json/version HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
             );
-            let mut bytes = [0_u8; 8192];
-            let mut body = Vec::new();
-            for _ in 0..20 {
-                match stream.read(&mut bytes) {
-                    Ok(0) => break,
-                    Ok(size) => {
-                        body.extend_from_slice(&bytes[..size]);
-                        if body.windows(4).any(|window| window == b"\\r\\n\\r\\n") {
-                            break;
+            if stream.write_all(request.as_bytes()).await.is_ok() {
+                let mut body = Vec::new();
+                if stream.read_to_end(&mut body).await.is_ok() {
+                    let body = String::from_utf8_lossy(&body);
+                    if let Some(json) = body
+                        .split("\r\n\r\n")
+                        .nth(1)
+                        .and_then(|body| serde_json::from_str::<Value>(body).ok())
+                    {
+                        if let Some(url) = json.get("webSocketDebuggerUrl").and_then(Value::as_str)
+                        {
+                            return Ok(url.to_owned());
                         }
                     }
-                    Err(_) => break,
-                }
-            }
-            let body = String::from_utf8_lossy(&body);
-            if let Some(json) = body
-                .split("\r\n\r\n")
-                .nth(1)
-                .and_then(|body| serde_json::from_str::<Value>(body).ok())
-            {
-                if let Some(url) = json.get("webSocketDebuggerUrl").and_then(Value::as_str) {
-                    return Ok(url.to_owned());
                 }
             }
         }
-        std::thread::sleep(Duration::from_millis(100));
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
     Err(SpikeError::new(
         SpikeErrorCode::Connect,
@@ -980,5 +1161,32 @@ mod tests {
 
         assert!(macos_sampler.contains("parse_rss_kibibytes_to_bytes"));
         assert!(!macos_sampler.contains(".parse::<u64>()?"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn hard_stop_timeout_is_deterministic_without_sleeping() {
+        let task = tokio::spawn(run_with_hard_stop(
+            5,
+            std::future::pending::<Result<(), SpikeError>>(),
+        ));
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(5)).await;
+        let error = task
+            .await
+            .expect("hard-stop task")
+            .expect_err("must time out");
+        assert_eq!(error.code, SpikeErrorCode::Deadline);
+    }
+
+    #[tokio::test]
+    async fn hard_stop_rejects_zero_without_starting_the_operation() {
+        let error = run_with_hard_stop(0, async {
+            panic!("operation must not start");
+            #[allow(unreachable_code)]
+            Ok::<(), SpikeError>(())
+        })
+        .await
+        .expect_err("zero hard stop must fail");
+        assert_eq!(error.code, SpikeErrorCode::Evidence);
     }
 }

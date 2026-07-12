@@ -16,6 +16,7 @@ cdp-spike = [
 	"dep:tokio-tungstenite",
 	"tokio/sync",
 	"tokio/time",
+	"tokio/test-util",
 ]
 cdp-spike-cdpkit = ["cdp-spike", "dep:cdpkit"]
 

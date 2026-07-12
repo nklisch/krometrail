@@ -18,6 +18,9 @@ fn valid_measurement(key: &&str) -> f64 {
         "rss_samples" => 50.0,
         "rss_warmup_seconds" => 10.0,
         "rss_sampling_interval_seconds" => 1.0,
+        "pending_command_elapsed_seconds" => 0.25,
+        "subscription_elapsed_seconds" => 0.5,
+        "elapsed_seconds" => 2.0,
         _ => 1.0,
     }
 }
@@ -53,6 +56,7 @@ fn evidence(gates: Vec<GateResult>) -> TransportEvidenceV1 {
             minimum_frames: 1000,
             saturation_seconds: 10.0,
             saturation_attempts: 100,
+            hard_stop_seconds: 120,
         },
         gates,
         limitations: vec!["named event parameters are not wildcard envelopes".into()],
@@ -236,6 +240,55 @@ fn evidence_rejects_duplicate_or_missing_gates_non_finite_values_and_leaks() {
 }
 
 #[test]
+fn evidence_rejects_nominal_missing_and_over_threshold_deadline_values() {
+    let gates = TransportGateId::ALL
+        .into_iter()
+        .map(|id| GateResult {
+            id,
+            status: GateStatus::Pass,
+            summary: "fixture passed".into(),
+            measurements: id
+                .measurement_keys()
+                .iter()
+                .map(|key| ((*key).into(), valid_measurement(key)))
+                .collect::<BTreeMap<_, _>>(),
+            failure: None,
+        })
+        .collect::<Vec<_>>();
+
+    let mut nominal = evidence(gates.clone());
+    let disconnect = nominal
+        .gates
+        .iter_mut()
+        .find(|gate| gate.id == TransportGateId::DisconnectCleanup)
+        .unwrap();
+    disconnect
+        .measurements
+        .insert("deadline_seconds".into(), 1.0);
+    assert!(validate_evidence(&nominal).is_err());
+
+    let mut missing = evidence(gates.clone());
+    missing
+        .gates
+        .iter_mut()
+        .find(|gate| gate.id == TransportGateId::ExplicitReconnectRebuild)
+        .unwrap()
+        .measurements
+        .remove("elapsed_seconds");
+    assert!(validate_evidence(&missing).is_err());
+
+    let mut over_threshold = evidence(gates);
+    over_threshold
+        .gates
+        .iter_mut()
+        .find(|gate| gate.id == TransportGateId::ExplicitReconnectRebuild)
+        .unwrap()
+        .measurements
+        .insert("elapsed_seconds".into(), 5.1);
+    assert!(validate_evidence(&over_threshold).is_err());
+}
+
+#[test]
 fn evidence_rejects_zero_rss_samples_and_window_values() {
     let gates = TransportGateId::ALL
         .into_iter()
@@ -270,44 +323,16 @@ fn evidence_rejects_zero_rss_samples_and_window_values() {
 }
 
 #[test]
-fn committed_linux_and_macos_reports_select_exact_cdpkit_with_report_digests() {
+fn historical_reports_are_rejected_until_requalified_with_observed_deadlines() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../docs/evidence/cdp-transport/v1");
-    let decision = decide_from_files(
+    let result = decide_from_files(
         &root.join("cdpkit-linux.json"),
         &root.join("cdpkit-macos.json"),
-    )
-    .expect("committed decisive reports must independently qualify");
-    assert_eq!(
-        decision.decision,
-        krometrail_cdp::spike::TransportDecision::AdoptCdpkit
     );
-    assert_eq!(decision.candidate.name, "cdpkit");
-    assert_eq!(decision.candidate.version, "0.4.0");
-    assert_eq!(decision.evidence.len(), 2);
-    assert_eq!(decision.evidence[0].platform, "linux");
-    assert_eq!(
-        decision.evidence[0].sha256,
-        "sha256:081259729e2495e999745bcd7caa509ec7effc844f50b2a4d786d6cc744c7feb"
-    );
-    assert_eq!(decision.evidence[1].platform, "macos");
-    assert_eq!(
-        decision.evidence[1].sha256,
-        "sha256:3ffe94f405038fd8d9efd9fa7f8acbf15e8cb02c1f9e19bf24397f180981d401"
-    );
-    assert_eq!(decision.gates.len(), TransportGateId::ALL.len());
     assert!(
-        decision
-            .gates
-            .iter()
-            .all(|gate| gate.status == GateStatus::Pass)
-    );
-    assert!(decision.rationale.contains("all 13 unchanged gates"));
-    assert!(
-        decision
-            .limitations
-            .iter()
-            .any(|limitation| limitation.contains("wildcard/full-envelope"))
+        result.is_err(),
+        "nominal-only historical reports must be obsolete"
     );
 }
 

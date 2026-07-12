@@ -13,7 +13,7 @@ The historical Rust decision selected exact published `cdpkit` **0.4.0** (`Cargo
   - SHA-256: `3ffe94f405038fd8d9efd9fa7f8acbf15e8cb02c1f9e19bf24397f180981d401`
   - Platform: macOS aarch64; Chrome 149.0.7827.201
 
-Both reports use schema version 1, the same exact candidate, fixture digest, and unchanged configuration: at least 60 seconds, 1,000 frames, 10 seconds of capacity-1 saturation, and 100 saturation attempts. Every gate is present and `pass`; no platform exception or threshold waiver exists.
+Both reports use schema version 1, the same exact candidate, fixture digest, and unchanged configuration: at least 60 seconds, 1,000 frames, 10 seconds of capacity-1 saturation, and 100 saturation attempts. Every gate is present and `pass`; no platform exception or threshold waiver exists. They are now explicitly historical/obsolete inputs: the strict contract additionally requires a positive `hard_stop_seconds` and observed disconnect/rebuild elapsed fields, which these unchanged reports do not contain. They must not be edited or used for a new decision; both platforms require fresh qualification.
 
 ## Validation and decision reproduction
 
@@ -37,7 +37,7 @@ sha256sum docs/evidence/cdp-transport/v1/cdpkit-linux.json \
 cmp /tmp/decision.json docs/evidence/cdp-transport/v1/decision.json
 ```
 
-The decision command verifies schema decoding, strict fields, complete gate registry, measured thresholds, candidate/version/checksum consistency, Linux/macOS platform identity, fixture/configuration consistency, and redaction before hashing the exact report bytes. The schema is generated from the Rust evidence types; `schema.json` is not a separate source of truth.
+The decision command verifies schema decoding, strict fields, complete gate registry, observed deadline measurements, measured thresholds, candidate/version/checksum consistency, Linux/macOS platform identity, fixture/configuration consistency, and redaction before hashing the exact report bytes. Against the retained historical reports it now fails during strict decoding/validation by design; re-run it only after fresh Linux and macOS reports are captured. The schema is generated from the Rust evidence types; `schema.json` is not a separate source of truth.
 
 ## Gate interpretation and limitations
 

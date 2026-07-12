@@ -80,6 +80,7 @@ async fn run() -> Result<(), String> {
                     minimum_frames: cli.minimum_frames,
                     saturation_seconds: 10.0,
                     saturation_attempts: 100,
+                    hard_stop_seconds: cli.hard_stop_seconds,
                 };
                 let factory = CdpkitTransportFactory::new();
                 let result =
@@ -99,7 +100,6 @@ async fn run() -> Result<(), String> {
                         return Err(error.to_string());
                     }
                 }
-                let _ = cli.hard_stop_seconds;
             }
             #[cfg(not(feature = "cdp-spike-cdpkit"))]
             {
@@ -140,7 +140,10 @@ fn parse_gate(args: Vec<String>) -> Result<GateCli, String> {
             "--hard-stop-seconds" => {
                 hard_stop_seconds = value
                     .parse()
-                    .map_err(|_| "invalid --hard-stop-seconds".to_owned())?
+                    .map_err(|_| "invalid --hard-stop-seconds".to_owned())?;
+                if hard_stop_seconds == 0 {
+                    return Err("--hard-stop-seconds must be positive".into());
+                }
             }
             other => return Err(format!("unknown flag {other}")),
         }

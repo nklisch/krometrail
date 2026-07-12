@@ -108,8 +108,17 @@ impl TransportGateId {
                 "rss_last_window_median_bytes",
                 "rss_theil_sen_bytes_per_minute",
             ],
-            Self::DisconnectCleanup => &["pending_calls_closed", "subscriptions_closed"],
-            Self::ExplicitReconnectRebuild => &["connections", "sessions_rebuilt"],
+            Self::DisconnectCleanup => &[
+                "pending_command_started",
+                "pending_calls_closed",
+                "subscriptions_closed",
+                "pending_command_elapsed_seconds",
+                "subscription_elapsed_seconds",
+                "close_reason_observed",
+            ],
+            Self::ExplicitReconnectRebuild => {
+                &["connections", "sessions_rebuilt", "elapsed_seconds"]
+            }
         }
     }
 }
@@ -178,6 +187,8 @@ pub struct GateConfiguration {
     pub minimum_frames: u64,
     pub saturation_seconds: f64,
     pub saturation_attempts: u64,
+    /// Maximum wall-clock time for the complete real-Chrome qualification operation.
+    pub hard_stop_seconds: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -253,10 +264,11 @@ pub fn validate_evidence(value: &TransportEvidenceV1) -> Result<(), SpikeError> 
         || value.configuration.minimum_frames < 1_000
         || value.configuration.saturation_seconds < 10.0
         || value.configuration.saturation_attempts < 100
+        || value.configuration.hard_stop_seconds == 0
     {
         return Err(SpikeError::new(
             SpikeErrorCode::Evidence,
-            "gate configuration has no positive capture threshold",
+            "gate configuration has no positive capture or hard-stop threshold",
         ));
     }
     if value.gates.len() != TransportGateId::ALL.len() {
@@ -308,6 +320,7 @@ pub fn validate_evidence(value: &TransportEvidenceV1) -> Result<(), SpikeError> 
             }
         }
     }
+    validate_observed_deadlines(value)?;
     if let Some(contract) = &value.candidate_contract {
         if contract.fixtures < 3
             || !contract.connection_survived
@@ -320,6 +333,83 @@ pub fn validate_evidence(value: &TransportEvidenceV1) -> Result<(), SpikeError> 
         }
     }
     validate_sanitized_strings(value)?;
+    Ok(())
+}
+
+fn validate_observed_deadlines(value: &TransportEvidenceV1) -> Result<(), SpikeError> {
+    let disconnect = value
+        .gates
+        .iter()
+        .find(|gate| gate.id == TransportGateId::DisconnectCleanup)
+        .expect("gate registry was validated before deadline validation");
+    if disconnect.status == GateStatus::Pass {
+        if disconnect.measurements.contains_key("deadline_seconds") {
+            return Err(SpikeError::for_gate(
+                SpikeErrorCode::Evidence,
+                disconnect.id,
+                "nominal deadline_seconds is obsolete; observed termination elapsed time is required",
+            ));
+        }
+        for key in [
+            "pending_command_elapsed_seconds",
+            "subscription_elapsed_seconds",
+        ] {
+            let elapsed = disconnect.measurements.get(key).copied().ok_or_else(|| {
+                SpikeError::for_gate(
+                    SpikeErrorCode::Evidence,
+                    disconnect.id,
+                    format!("passing gate lacks observed measurement {key}"),
+                )
+            })?;
+            if !elapsed.is_finite() || !(0.0..1.0).contains(&elapsed) {
+                return Err(SpikeError::for_gate(
+                    SpikeErrorCode::Evidence,
+                    disconnect.id,
+                    format!("observed {key} is absent, nominal-only, or over one second"),
+                ));
+            }
+        }
+        for key in [
+            "pending_command_started",
+            "pending_calls_closed",
+            "subscriptions_closed",
+            "close_reason_observed",
+        ] {
+            if disconnect.measurements.get(key).copied() != Some(1.0) {
+                return Err(SpikeError::for_gate(
+                    SpikeErrorCode::Evidence,
+                    disconnect.id,
+                    format!("observed disconnect outcome {key} was not proved"),
+                ));
+            }
+        }
+    }
+
+    let rebuild = value
+        .gates
+        .iter()
+        .find(|gate| gate.id == TransportGateId::ExplicitReconnectRebuild)
+        .expect("gate registry was validated before deadline validation");
+    if rebuild.status == GateStatus::Pass {
+        let elapsed = rebuild
+            .measurements
+            .get("elapsed_seconds")
+            .copied()
+            .ok_or_else(|| {
+                SpikeError::for_gate(
+                    SpikeErrorCode::Evidence,
+                    rebuild.id,
+                    "passing gate lacks observed rebuild elapsed_seconds",
+                )
+            })?;
+        if !elapsed.is_finite() || !(0.0..5.0).contains(&elapsed) {
+            return Err(SpikeError::for_gate(
+                SpikeErrorCode::Evidence,
+                rebuild.id,
+                "observed rebuild elapsed_seconds is absent, nominal-only, or over five seconds",
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -622,24 +712,29 @@ fn validate_gate_contract(report: &TransportEvidenceV1) -> Result<(), SpikeError
     }
 
     let disconnect = gate(report, TransportGateId::DisconnectCleanup)?;
+    require_equal(disconnect, "pending_command_started", 1.0)?;
     require_at_least(disconnect, "pending_calls_closed", 1.0)?;
     require_at_least(disconnect, "subscriptions_closed", 1.0)?;
-    if measurement(disconnect, "deadline_seconds")? > 1.0 {
+    require_equal(disconnect, "close_reason_observed", 1.0)?;
+    let pending_elapsed = measurement(disconnect, "pending_command_elapsed_seconds")?;
+    let subscription_elapsed = measurement(disconnect, "subscription_elapsed_seconds")?;
+    if !(0.0..1.0).contains(&pending_elapsed) || !(0.0..1.0).contains(&subscription_elapsed) {
         return Err(SpikeError::for_gate(
             SpikeErrorCode::Evidence,
             disconnect.id,
-            "disconnect cleanup exceeds the unchanged deadline",
+            "disconnect cleanup observed termination exceeds the one-second deadline",
         ));
     }
 
     let rebuild = gate(report, TransportGateId::ExplicitReconnectRebuild)?;
     require_at_least(rebuild, "connections", 2.0)?;
     require_at_least(rebuild, "sessions_rebuilt", 2.0)?;
-    if measurement(rebuild, "deadline_seconds")? > 5.0 {
+    let elapsed = measurement(rebuild, "elapsed_seconds")?;
+    if elapsed <= 0.0 || elapsed >= 5.0 {
         return Err(SpikeError::for_gate(
             SpikeErrorCode::Evidence,
             rebuild.id,
-            "explicit reconnect/rebuild exceeds the unchanged deadline",
+            "explicit reconnect/rebuild observed elapsed time exceeds five seconds",
         ));
     }
     Ok(())
