@@ -246,7 +246,7 @@ A temporal range can be specified by:
 - navigation or marker identifier;
 - a source-frame range.
 
-Natural anchors resolve to an explicit target and time range before artifact generation. The resolved range is returned with the response.
+Natural anchors resolve to an explicit target and time range before artifact generation. When an interaction query omits an explicit range, Krometrail uses bounded pre-action context through the interaction lifecycle and post-action observation, plus bounded trailing context. The resolved range is returned with every response.
 
 Queries fail clearly when part or all of the requested range has been evicted, was never captured, belongs to a different target, or contains known capture gaps.
 
@@ -265,9 +265,9 @@ The temporal-vision capability supports:
 - report visual-change measurements;
 - combine related outputs into a temporal debug bundle.
 
-A temporal debug bundle contains a concise text summary, artifact references, source-frame references, provenance, resolved timing, and capture-quality warnings.
+A temporal debug bundle is the primary investigation entry point. It contains a concise text summary, artifact references, source-frame references, provenance, resolved timing, capture-quality warnings, and a compact deterministic selection of errors, failed requests, navigation, and browser events nearest major visual changes. Focused tools provide source frames, region artifacts, individual artifact variants, verbose events, and pin controls for progressive detail.
 
-Large images and raw frame collections are returned by file or MCP resource reference. The response may include a context-sized primary image for immediate model inspection.
+Large images and raw frame collections are returned by file or MCP resource reference. The response may include a context-sized primary image for immediate model inspection. Request and response bodies are drill-down evidence rather than default bundle content.
 
 ## Regions of Interest
 
@@ -347,4 +347,5 @@ The system does not guarantee:
 - deterministic replay;
 - logical element tracking across recreation;
 - framework-state availability;
+- automatic comparison between interactions or sessions;
 - support for non-Chromium browser engines.

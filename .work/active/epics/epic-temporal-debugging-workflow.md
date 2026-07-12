@@ -28,6 +28,13 @@ This epic does not perform automatic root-cause diagnosis or deterministic repla
 - `docs/ARCHITECTURE.md` — Temporal Range Resolution, Artifact Generation, MCP Boundary, and Failure Isolation
 - `docs/VISUAL-EVIDENCE.md` — Temporal Debug Bundle and Progressive Detail
 
+## Design decisions
+
+- **Agent query surface:** Make one temporal debug-bundle tool the primary interaction/range entry point. Focused tools retrieve source frames, region filmstrips, individual artifacts, and pin state for progressive drill-down rather than reproducing the bundle schema in every tool.
+- **Implicit interaction range:** Resolve an unspecified interaction query from bounded pre-action context through the action lifecycle and post-action observation, with bounded trailing context. Every response reports the exact resolved range.
+- **Default browser-event context:** Include a compact deterministic selection of errors, failed requests, navigation, and events nearest major visual changes. Request and response bodies and verbose event lists require drill-down.
+- **Comparison scope:** Defer automatic comparison between interactions or sessions. The epic optimizes single-range investigation; agents can inspect two independently grounded bundles until comparison receives its own evidence-backed design.
+
 ## Anticipated child features
 
 - Interaction-relative and explicit temporal query contracts

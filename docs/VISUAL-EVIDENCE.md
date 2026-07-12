@@ -297,7 +297,7 @@ It contains:
 4. temporal difference map;
 5. source and artifact references;
 6. capture-quality information;
-7. related interaction and browser-event markers.
+7. related interaction markers and a compact deterministic selection of errors, failed requests, navigation, and browser events nearest major visual changes.
 
 A typical header reports:
 
