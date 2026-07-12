@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cdp-transport-gate
 kind: feature
-stage: review
+stage: implementing
 tags: [browser, infra]
 parent: epic-rust-cdp-capture-foundation
 depends_on: [epic-rust-cdp-capture-foundation-rust-runtime-contracts]
@@ -577,4 +577,6 @@ The final v2 reports were emitted from exact revision `07b0990c0d9e4fea9057fcab5
 
 A fresh GLM review approved the first remediation, but the second Sol adversarial review reproduced new blockers: protocol-drift checks did not assert committed fixture params; local Linux provenance did not attest a clean source tree; architecture diagrams contradicted acknowledgement order; recursive redaction/status consistency was bypassable; candidate trace equality/results were incomplete; capture deadline/cancellation behavior was unsafe; and latency included frame wait while claiming receive-to-ack timing.
 
-Six additional stories repaired those defects, recaptured both platforms from clean exact revision `07b0990c0d9e4fea9057fcab5c35e56691ff69eb`, preserved prior v2 evidence under `historical/`, and regenerated decision digest `91f9032315dd3501068e1dd692b12fbda7ce0d7a57c9b5a49444db73c2a5c015`. All 20 child stories are `stage: done`; no evidence or threshold was waived. The feature returns to `stage: review` for a final fresh two-model pass.
+Six additional stories repaired those defects, recaptured both platforms from clean exact revision `07b0990c0d9e4fea9057fcab5c35e56691ff69eb`, preserved prior v2 evidence under `historical/`, and regenerated decision digest `91f9032315dd3501068e1dd692b12fbda7ce0d7a57c9b5a49444db73c2a5c015`.
+
+The next fresh GLM pass found only a corrected Chrome-version typo, but final Sol review reproduced four remaining blockers: descendant Chrome process trees were not group-owned; compile-time worktree paths leaked through shared Cargo cache and a test false-skipped; candidate trace summaries were not reconstructable from committed trace material; and Rust decisive validation did not pin the canonical hard stop. It also reproduced encoded hostname/email/IPv6 redaction bypasses. Four new stories repair and recapture this evidence. The feature returns to `stage: implementing`; no prior report or threshold is waived.
