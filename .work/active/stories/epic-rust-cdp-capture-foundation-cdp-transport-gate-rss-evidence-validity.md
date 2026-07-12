@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cdp-transport-gate-rss-evidence-validity
 kind: story
-stage: review
+stage: done
 tags: [bug, browser, infra, testing]
 parent: epic-rust-cdp-capture-foundation-cdp-transport-gate
 depends_on: []
@@ -41,3 +41,13 @@ The macOS evidence story is blocked by run [29198272740](https://github.com/nath
 - Test added: `evidence_rejects_zero_rss_samples_and_window_values`, first run red before the validator fix and green afterward.
 - Verification: default workspace tests, `cdp-spike` tests, `cdp-spike-cdpkit` tests, and all-features clippy with `-D warnings` pass.
 - Adjacent issues parked: none; the invalid macOS evidence remains uncommitted and no waiver is introduced.
+
+## Review (2026-07-12)
+
+**Verdict**: Approve
+
+**Blockers**: none
+**Important**: none
+**Nits**: none
+
+**Notes**: Fast-lane bug review. The orchestrator independently reran ten cdpkit/spike test targets and clippy and verified Linux `/proc`, macOS `ps` KiB conversion, fail-closed sample/window validation, and hosted-workflow assertions. The zero-sample pass is no longer representable. Verdict: Approve - story verified by implement; fast-lane advance.
