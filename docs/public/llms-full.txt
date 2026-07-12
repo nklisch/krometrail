@@ -62,13 +62,13 @@ The spike remains non-default and is not root-wired. This rollup selects the mec
 
 # CDP transport qualification evidence v2
 
-Version 2 is the strict, platform-faithful evidence contract after wire-authenticity and deadline remediation. The accepted reports are emitted and sanitized by the gate; they are not hand-edited:
+Version 2 is the strict, platform-faithful evidence contract after wire-authenticity, deadline, cancellation, and acknowledgement remediation. The previously committed reports are historical artifacts and are obsolete after these contract revisions; fresh qualification must emit replacement reports. No historical report is hand-edited:
 
-- [`cdpkit-linux.json`](./cdpkit-linux.json) — local Linux strict run
-- [`cdpkit-macos.json`](./cdpkit-macos.json) — hosted macOS run `29202919716`
-- [`decision.json`](./decision.json) — generated v2 decision from the two accepted reports
+- [`cdpkit-linux.json`](./cdpkit-linux.json) — historical local Linux strict run (obsolete)
+- [`cdpkit-macos.json`](./cdpkit-macos.json) — historical hosted macOS run `29202919716` (obsolete)
+- [`decision.json`](./decision.json) — historical v2 decision (obsolete until fresh reports are requalified)
 
-The generated decision selects exact `cdpkit` 0.4.0 (`adopt_cdpkit`). It preserves all 13 platform-labelled gate results and the complete trace-bound candidate-contract results for Linux and macOS; it does not collapse platform measurements into a Linux-only rollup.
+The historical generated decision selected exact `cdpkit` 0.4.0 (`adopt_cdpkit`). It preserved all 13 platform-labelled gate results and the then-current candidate-contract results for Linux and macOS; it did not collapse platform measurements into a Linux-only rollup. It is not a decision under the revised contract.
 
 ## Decision provenance
 
@@ -94,6 +94,8 @@ sha256: sha256sum-of-ordered-fixture-files:9b42ae730d12a95772a946bf55e4838a5443b
 
 The exact candidate in both reports is `cdpkit` `0.4.0`, Cargo checksum `c3fdb566d913b31e0014391a94c0db4ed871dbb76577dd1b2f2c5f6df158bfaa`. The checksum is independently confirmed by the `cdpkit 0.4.0` entry in the locked dependency graph (`Cargo.lock` / `cargo tree --locked`).
 
+Fresh decisive reports must include `gate_provenance.source_attestation`. The attestation records the expected lowercase full SHA, the sorted SHA-256 digest of every relevant committed file, and each file digest. Qualification computes it before and after the run; any relevant tracked or untracked change, revision mismatch, omitted relevant file, or digest mismatch fails closed. The relevant set includes the workspace and cdpkit manifests, lockfile, gate binary, spike sources, spike tests, workflow, and browser fixtures. `validate-decisive` recomputes the attestation against the current clean checkout, while `validate-and-normalize` recursively rejects paths, endpoints, credentials, usernames, and secret-bearing failure text in every serialized string.
+
 The unchanged thresholds are:
 
 ```text
@@ -103,6 +105,14 @@ saturation_seconds=10
 saturation_attempts=100
 hard_stop_seconds=120
 ```
+
+Fresh reports use observed measurement names that do not confuse configured thresholds with elapsed work:
+
+- `capture_elapsed_seconds` is the actual sustained screencast loop duration.
+- `handoff_elapsed_seconds` is the actual interval represented by bounded handoff attempts.
+- `ack_latency_ms_*` measures from returned frame to acknowledgement completion, before `try_send`.
+
+The global `hard_stop_seconds` is authoritative when the frame minimum is unmet; each frame receive and acknowledgement remains independently phase-bounded. The retired reports' measurement names and values remain historical and are not updated in place.
 
 ## Run provenance and exact report bytes
 
@@ -164,30 +174,23 @@ for platform in linux macos; do
 done
 ```
 
-Both reports are schema v2, contain exactly 13 unique passing gates, have no `rss_sample_count` alias or nominal `deadline_seconds`, preserve the runner revisions, and contain no rejected path/endpoint/secret-bearing strings.
+The historical reports were schema v2 and contained exactly 13 unique passing gates, with no `rss_sample_count` alias or nominal `deadline_seconds`; they are retained only for provenance. Fresh reports must validate against the regenerated schema and revised candidate-contract fields.
 
 ## Candidate-contract trace
 
-Both reports bind the same complete scripted candidate-contract trace:
+The candidate-contract shape now binds the exact ordered protocol fixtures and classifies its projections:
 
 ```text
-trace_sha256: sha256:6c6be028c511d4d8c28cbecec368a7d4f09e0d87612741d02ac19a8663964d54
-trace_observations: 942
-drift_fixtures: 3
-connection_survived: true
-routing_commands: 200
-routing_events: 200
-routing_cross_delivery: 0
-event_before_response: true
-detach_during_pending: true
-pending_calls_closed: true
-subscriptions_closed: true
-socket_closed: true
-reconnect_connections: 2
-sessions_rebuilt: 2
+fixture_sha256: sha256:6dc599e64e0245b5f29eae0644dddb3a5e7222a234b7e2602a6a8577a25e677e
+wire.drift_methods: Protocol.unknownEvent, Runtime.additiveField, Runtime.unknownEnum
+wire.drift_fixtures: count(wire.drift_methods)
+wire.*: projected only from recorded scripted WebSocket observations
+runtime.*: cdpkit close-status assertions, not wire observations
 ```
 
-The candidate trace is separate from real-Chrome measurements: Chrome cannot be instructed to emit unknown future protocol fields. The protocol-drift gate therefore reports the three trace fixtures and survival result, while the trace hash and derived results remain attached to each platform report.
+The scripted server loads `crates/krometrail-cdp/tests/fixtures/protocol/{unknown-event,additive-field,unknown-enum}.json` in that order. The scenario asserts each exact method, session scope, and parameter object, including `new_field: 7` and `value: future-value`, through cdpkit. The trace digest is over the ordered observation bytes; fixture count and methods are projected from those observations. Chrome cannot be instructed to emit unknown future protocol fields, so this contract remains separate from real-Chrome measurements.
+
+Decision generation rejects Linux/macOS reports unless fixture digest, trace hash, and the complete deterministic wire/runtime result object match exactly. Historical JSON reports still use the retired flat result shape and must not be normalized or hand-edited.
 
 ## Exact observed gate measurements
 
@@ -479,7 +482,7 @@ Use [`SPEC.md`](../SPEC.md) for intended external behavior and [`ARCHITECTURE.md
 
 This research grounds `epic-rust-cdp-capture-foundation-cdp-transport-gate`. Krometrail needs a browser-level Chrome DevTools Protocol (CDP) connection with flat target sessions, typed control operations, raw protocol escape hatches, and a screencast event path that Krometrail—not the library—can supervise and bound.
 
-Evidence was frozen on 2026-07-12 from crates.io metadata, published/repository source at `cdpkit` 0.4.0 (`15dd5e6d`) and `chromey` 2.52.0 (`6eeca5e8`), their CI/tests, and their public GitHub issues. Strict schema-v2 real-Chrome qualification selected exact published `cdpkit` 0.4.0 after all 13 unchanged gates passed on Linux and macOS from gate revision `3d7c96ccf20862c47ab70ffbd7f724dceedfb4d2`. That selection remains a replaceable adapter decision, not production lifecycle or capture implementation.
+Evidence was frozen on 2026-07-12 from crates.io metadata, published/repository source at `cdpkit` 0.4.0 (`15dd5e6d`) and `chromey` 2.52.0 (`6eeca5e8`), their CI/tests, and their public GitHub issues. The retained schema-v2 real-Chrome reports and decision are historical and obsolete after the capture-deadline and acknowledgement-semantics repair; fresh qualification must re-run all 13 gates from one exact revision before any transport selection is current. The revised contract uses observed `capture_elapsed_seconds` and `handoff_elapsed_seconds` measurements and measures acknowledgement from returned frame to ack completion only. No production lifecycle or capture implementation is implied.
 
 Caller-aware research ran direct-read only: the caller prohibited subagents and questions, and the bounded candidate/source surfaces did not warrant delegation. Reversible uncertainties are therefore converted into explicit spike gates below.
 

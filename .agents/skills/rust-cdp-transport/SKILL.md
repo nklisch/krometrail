@@ -10,7 +10,7 @@ user-invocable: false
 
 # Rust CDP Transport Reference
 
-Evidence date: **2026-07-12**. Strict schema-v2 qualification selected exact published `cdpkit` **0.4.0** from accepted Linux and macOS reports emitted at gate revision `3d7c96ccf20862c47ab70ffbd7f724dceedfb4d2`, with configuration digest `sha256:06388b5f8ad042093d22408dedb8d02d5a04a9e59d485158edc533334bab956e` and the shared fixture digest recorded in the reports. The selection remains behind the replaceable adapter boundary; production lifecycle and capture implementation remain later work.
+Evidence date: **2026-07-12**. The retained schema-v2 Linux/macOS qualification reports and decision are historical and obsolete after the capture-deadline and acknowledgement-semantics repair; fresh reports must be emitted from one exact revision before selecting a candidate. The revised contract names observed `capture_elapsed_seconds` and `handoff_elapsed_seconds` measurements and measures acknowledgement from returned frame to ack completion only. Any eventual selection remains behind the replaceable adapter boundary; production lifecycle and capture implementation remain later work.
 
 Full evidence and pinned sources: [`docs/research/rust-cdp-transport-2026-07.md`](../../../docs/research/rust-cdp-transport-2026-07.md).
 
@@ -50,10 +50,12 @@ let session = cdp.owned_session(attached.session_id);
 let mut frames = page::events::ScreencastFrame::subscribe(&session);
 page::methods::StartScreencast::new().send(&session).await?;
 while let Some(frame) = frames.next().await {
+    let ack_started = std::time::Instant::now();
     page::methods::ScreencastFrameAck::new(frame.session_id)
         .send(&session)
         .await?;
-    // Bounded handoff happens after prompt ack.
+    // Bounded handoff happens after prompt ack; ack latency excludes frame receive time.
+    let _ack_latency = ack_started.elapsed();
 }
 
 let value = session.send_raw("Page.getLayoutMetrics", serde_json::json!({})).await?;

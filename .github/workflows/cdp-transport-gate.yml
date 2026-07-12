@@ -260,11 +260,11 @@ jobs:
                   "fixtures", "connection_survived", "wildcard_envelope_available"
               },
               "sustained-screencast": {
-                  "elapsed_seconds", "frames_received", "frames_acknowledged",
+                  "capture_elapsed_seconds", "frames_received", "frames_acknowledged",
                   "rss_samples", "rss_sampling_interval_seconds", "rss_warmup_seconds",
                   "rss_peak_bytes", "rss_first_window_median_bytes",
                   "rss_last_window_median_bytes", "rss_theil_sen_bytes_per_minute",
-                  "handoff_accepted", "handoff_dropped", "saturation_seconds",
+                  "handoff_accepted", "handoff_dropped", "handoff_elapsed_seconds",
                   "saturation_attempts", "ack_latency_ms_p50", "ack_latency_ms_p95",
                   "ack_latency_ms_p99", "ack_latency_ms_max", "upstream_queue_depth_available",
               },
@@ -273,7 +273,7 @@ jobs:
                   "ack_latency_ms_p99", "ack_latency_ms_max",
               },
               "bounded-handoff-saturation": {
-                  "handoff_attempts", "handoff_accepted", "handoff_dropped", "saturation_seconds"
+                  "handoff_attempts", "handoff_accepted", "handoff_dropped", "handoff_elapsed_seconds"
               },
               "bounded-memory-proxy": {
                   "rss_samples", "rss_sampling_interval_seconds", "rss_warmup_seconds",
@@ -300,6 +300,17 @@ jobs:
               assert measurements["rss_last_window_median_bytes"] > 0
               assert measurements["rss_sampling_interval_seconds"] == 1.0
               assert measurements["rss_warmup_seconds"] == 10.0
+
+          sustained = by_id["sustained-screencast"]["measurements"]
+          assert sustained["capture_elapsed_seconds"] >= expected_configuration["minimum_seconds"]
+          assert sustained["capture_elapsed_seconds"] < expected_configuration["hard_stop_seconds"]
+          assert sustained["handoff_elapsed_seconds"] >= expected_configuration["saturation_seconds"]
+          assert sustained["frames_received"] >= expected_configuration["minimum_frames"]
+          assert sustained["frames_acknowledged"] == sustained["frames_received"]
+
+          handoff = by_id["bounded-handoff-saturation"]["measurements"]
+          assert handoff["handoff_elapsed_seconds"] >= expected_configuration["saturation_seconds"]
+          assert handoff["handoff_dropped"] >= 1
 
           disconnect = by_id["disconnect-cleanup"]["measurements"]
           assert "deadline_seconds" not in disconnect

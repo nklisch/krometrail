@@ -203,7 +203,7 @@ The CDP adapter owns:
 
 The adapter exposes typed domain operations through ports defined by `krometrail-core`.
 
-Strict schema-v2 qualification selected exact published `cdpkit` 0.4.0 behind the replaceable `krometrail-cdp::transport` boundary. Linux and macOS reports in `docs/evidence/cdp-transport/v2/` use one immutable gate implementation revision (`3d7c96ccf20862c47ab70ffbd7f724dceedfb4d2`), configuration, and fixture; the accepted macOS report comes from hosted run `29202919716`. Version 2 preserves platform-labelled gate results and candidate-contract trace/hash/results, and requires canonical RSS sample/cadence/warmup plus observed lifecycle measurements. The adapter must preserve cdpkit's named-event-params-only escape hatch: it is not wildcard or full-envelope receive, and its subscriber queue depth is not inspectable. Krometrail therefore owns prompt acknowledgement before bounded handoff, backpressure and capture-gap policy, reconnect/session restoration, cancellation, and flush behavior. A cdpkit routing, decoder, lifecycle patch, or fork would invalidate the selection and trigger the documented fallback rules.
+The retained schema-v2 Linux/macOS reports and decision in `docs/evidence/cdp-transport/v2/` are historical and obsolete after the capture-deadline and acknowledgement-semantics repair; fresh qualification must regenerate them from one exact revision. The revised contract names observed `capture_elapsed_seconds` and `handoff_elapsed_seconds` measurements, keeps the configured 120-second global hard stop authoritative when frame minima are unmet, and measures acknowledgement only from returned frame to ack completion. The adapter must preserve cdpkit's named-event-params-only escape hatch: it is not wildcard or full-envelope receive, and its subscriber queue depth is not inspectable. Krometrail therefore owns prompt acknowledgement before bounded handoff, backpressure and capture-gap policy, reconnect/session restoration, cancellation, and flush behavior. A cdpkit routing, decoder, lifecycle patch, or fork would invalidate a future selection and trigger the documented fallback rules.
 
 A compatibility probe runs when connecting. It reports browser and protocol versions, identifies Electron renderer endpoints when detectable, and verifies the required domains before recording begins. Renderer support is decided from the observed protocol capabilities rather than the host application's brand. The production adapter implementation remains downstream of this qualification; spike features are non-default and are not root-wired.
 
@@ -235,10 +235,10 @@ Page.screencastFrame
 decode envelope and timestamp
         │
         ▼
-try enqueue compressed frame ── queue full ──▶ record capture gap
+acknowledge CDP frame
         │
         ▼
-acknowledge CDP frame
+try enqueue compressed frame ── queue full ──▶ record capture gap
         │
         ▼
 segment writer
@@ -250,7 +250,7 @@ segment writer
 
 The event-reading task never performs image decoding, artifact generation, or synchronous disk I/O.
 
-The ingestion queue is bounded. When saturated, Krometrail acknowledges the CDP frame and records a gap rather than stalling the browser connection or growing memory without limit.
+The ingestion queue is bounded. Krometrail completes the CDP acknowledgement before attempting bounded handoff; when the queue is saturated, it records a gap rather than stalling the browser connection or growing memory without limit.
 
 Compressed image bytes are stored without transcoding during ingestion.
 

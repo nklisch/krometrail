@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cdp-transport-gate-capture-deadline-ack-semantics
 kind: story
-stage: implementing
+stage: review
 tags: [bug, browser, infra, testing]
 parent: epic-rust-cdp-capture-foundation-cdp-transport-gate
 depends_on: []
@@ -23,7 +23,17 @@ Make the configured operation deadline authoritative when minimum frames are not
 
 ## Acceptance criteria
 
-- [ ] Slow capture may continue until the configured hard stop; no derived frame-rate deadline terminates it early.
-- [ ] Startup/global timeout cancellation reliably kills Chrome and removes its temporary profile.
-- [ ] Ack latency measures only post-receive acknowledgement completion and ack remains before `try_send`.
-- [ ] Default/spike/candidate tests and denied-warning clippy pass; no production/core change or evidence hand edit lands.
+- [x] Slow capture may continue until the configured hard stop; no derived frame-rate deadline terminates it early.
+- [x] Startup/global timeout cancellation reliably kills Chrome and removes its temporary profile.
+- [x] Ack latency measures only post-receive acknowledgement completion and ack remains before `try_send`.
+- [x] Default/spike/candidate tests and denied-warning clippy pass; no production/core change or evidence hand edit lands.
+
+## Implementation notes
+
+- Execution capability: inline implementation; one spike-only ownership surface with deterministic tests and documentation/schema contract updates, with no production/core changes.
+- Review weight: standard, caller explicitly requested the implementing-to-review boundary.
+- Files changed: `crates/krometrail-cdp/src/spike/chrome_harness.rs`, `crates/krometrail-cdp/src/spike/evidence.rs`, `crates/krometrail-cdp/src/spike/scenarios.rs`, `crates/krometrail-cdp/tests/transport_contract.rs`, `.github/workflows/cdp-transport-gate.yml`, `docs/evidence/cdp-transport/v2/schema.json`, `docs/evidence/cdp-transport/v2/README.md`, `docs/ARCHITECTURE.md`, `docs/research/rust-cdp-transport-2026-07.md`, `.agents/skills/rust-cdp-transport/SKILL.md`, generated `docs/public/llms-full.txt`, and the parent feature contract.
+- Tests added: deterministic paused-time timeout regression proves the startup process is reaped and the temporary profile is removed; source-order regression proves no frame-rate cutoff and ack timer placement; evidence-contract regression rejects retired elapsed measurement names.
+- Verification: `cargo fmt --all -- --check`; default workspace tests/clippy; `cdp-spike` tests/clippy; `cdp-spike-cdpkit` tests/clippy; schema generation check; documentation build.
+- Discrepancies from design: evidence measurement names were made explicit (`capture_elapsed_seconds` and `handoff_elapsed_seconds`) so observed elapsed work cannot be confused with configured thresholds; the generated schema description was refreshed without changing schema version or historical evidence files.
+- Adjacent issues parked: none.

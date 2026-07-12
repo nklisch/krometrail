@@ -388,12 +388,12 @@ pub async fn run_real_chrome_gate(
 ```rust
 #[derive(Clone, Debug, serde::Serialize, schemars::JsonSchema)]
 pub struct ScreencastMeasurements {
-    pub elapsed_seconds: f64,
+    pub capture_elapsed_seconds: f64,
     pub frames_received: u64,
     pub frames_acknowledged: u64,
     pub handoff_accepted: u64,
     pub handoff_dropped: u64,
-    pub saturation_seconds: f64,
+    pub handoff_elapsed_seconds: f64,
     pub saturation_attempts: u64,
     pub ack_latency_ms_p50: f64,
     pub ack_latency_ms_p95: f64,
@@ -416,8 +416,8 @@ pub async fn run_screencast_gate(
 ```
 
 **Implementation notes:**
-- Run for at least 60 seconds and until at least 1,000 frames arrive, failing at 120 seconds if both conditions are not met.
-- For every event, await typed `ScreencastFrameAck` completion before `try_send` to a bounded capacity-1 handoff. Hold the consumer saturated for at least 10 seconds and 100 attempts; require at least one drop and continued frame/ack progress.
+- Run until both the 60-second and 1,000-frame minima are met; the configured 120-second global hard stop is authoritative when slow capture has not met both minima. Each frame receive and acknowledgement remains independently phase-bounded.
+- For every returned event, start the receive-to-ack-completion timer after `next_screencast_frame` returns, await typed `ScreencastFrameAck` before `try_send` to a bounded capacity-1 handoff, and hold the consumer saturated for at least 10 seconds and 100 attempts; require at least one drop and continued frame/ack progress.
 - Ack proxy passes at p99 ≤ 250 ms and max ≤ 1,000 ms. RSS proxy samples once/second, excludes 10-second warmup, compares first/last 20-second medians (growth ≤ 32 MiB), and computes Theil-Sen slope (≤ 8 MiB/minute).
 - `upstream_queue_depth_available` must be false for cdpkit. The report may conclude “bounded in this measured run” only from RSS/counter evidence; it cannot claim the library queue is structurally bounded.
 - Forced disconnect resolves active subscriptions/pending calls within 1 second; fresh connection and two-session rebuild complete within 5 seconds with no transparent reconnect.

@@ -4,7 +4,7 @@
 
 This research grounds `epic-rust-cdp-capture-foundation-cdp-transport-gate`. Krometrail needs a browser-level Chrome DevTools Protocol (CDP) connection with flat target sessions, typed control operations, raw protocol escape hatches, and a screencast event path that Krometrail—not the library—can supervise and bound.
 
-Evidence was frozen on 2026-07-12 from crates.io metadata, published/repository source at `cdpkit` 0.4.0 (`15dd5e6d`) and `chromey` 2.52.0 (`6eeca5e8`), their CI/tests, and their public GitHub issues. Strict schema-v2 real-Chrome qualification selected exact published `cdpkit` 0.4.0 after all 13 unchanged gates passed on Linux and macOS from gate revision `3d7c96ccf20862c47ab70ffbd7f724dceedfb4d2`. That selection remains a replaceable adapter decision, not production lifecycle or capture implementation.
+Evidence was frozen on 2026-07-12 from crates.io metadata, published/repository source at `cdpkit` 0.4.0 (`15dd5e6d`) and `chromey` 2.52.0 (`6eeca5e8`), their CI/tests, and their public GitHub issues. The retained schema-v2 real-Chrome reports and decision are historical and obsolete after the capture-deadline and acknowledgement-semantics repair; fresh qualification must re-run all 13 gates from one exact revision before any transport selection is current. The revised contract uses observed `capture_elapsed_seconds` and `handoff_elapsed_seconds` measurements and measures acknowledgement from returned frame to ack completion only. No production lifecycle or capture implementation is implied.
 
 Caller-aware research ran direct-read only: the caller prohibited subagents and questions, and the bounded candidate/source surfaces did not warrant delegation. Reversible uncertainties are therefore converted into explicit spike gates below.
 

@@ -374,12 +374,12 @@ async fn run(
         values
     }));
     gates.push(pass(TransportGateId::SustainedScreencast, {
-        let mut values = one("elapsed_seconds", 60.0);
+        let mut values = one("capture_elapsed_seconds", 60.0);
         values.insert("frames_received".into(), 1000.0);
         values.insert("frames_acknowledged".into(), 1000.0);
         values.insert("handoff_accepted".into(), 1.0);
         values.insert("handoff_dropped".into(), 99.0);
-        values.insert("saturation_seconds".into(), 10.0);
+        values.insert("handoff_elapsed_seconds".into(), 10.0);
         values.insert("saturation_attempts".into(), 100.0);
         values.insert("ack_latency_ms_p50".into(), 1.0);
         values.insert("ack_latency_ms_p95".into(), 1.0);
@@ -410,7 +410,7 @@ async fn run(
         let mut values = one("handoff_attempts", 100.0);
         values.insert("handoff_accepted".into(), 1.0);
         values.insert("handoff_dropped".into(), dropped as f64);
-        values.insert("saturation_seconds".into(), 10.0);
+        values.insert("handoff_elapsed_seconds".into(), 10.0);
         values
     }));
     gates.push(pass(TransportGateId::BoundedMemoryProxy, {

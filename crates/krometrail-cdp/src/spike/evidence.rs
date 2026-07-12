@@ -100,7 +100,7 @@ impl TransportGateId {
                 // A sustained pass is not valid without the same RSS evidence used by the
                 // bounded-memory proxy; otherwise a missing sampler can still look successful.
                 &[
-                    "elapsed_seconds",
+                    "capture_elapsed_seconds",
                     "frames_received",
                     "frames_acknowledged",
                     "rss_samples",
@@ -112,7 +112,7 @@ impl TransportGateId {
                     "rss_theil_sen_bytes_per_minute",
                     "handoff_accepted",
                     "handoff_dropped",
-                    "saturation_seconds",
+                    "handoff_elapsed_seconds",
                     "saturation_attempts",
                     "ack_latency_ms_p50",
                     "ack_latency_ms_p95",
@@ -132,7 +132,7 @@ impl TransportGateId {
                 "handoff_attempts",
                 "handoff_accepted",
                 "handoff_dropped",
-                "saturation_seconds",
+                "handoff_elapsed_seconds",
             ],
             Self::BoundedMemoryProxy => &[
                 "rss_samples",
@@ -224,7 +224,9 @@ pub struct GateConfiguration {
     pub minimum_frames: u64,
     pub saturation_seconds: f64,
     pub saturation_attempts: u64,
-    /// Maximum wall-clock time for the complete real-Chrome qualification operation.
+    /// Absolute maximum wall-clock time for the complete real-Chrome qualification operation.
+    /// This global hard stop remains authoritative when the frame minimum is unmet; it is not
+    /// derived from an assumed frame rate.
     pub hard_stop_seconds: u64,
 }
 
@@ -1092,7 +1094,7 @@ fn validate_gate_contract(report: &TransportEvidenceV1) -> Result<(), SpikeError
     let sustained = gate(report, TransportGateId::SustainedScreencast)?;
     require_at_least(
         sustained,
-        "elapsed_seconds",
+        "capture_elapsed_seconds",
         report.configuration.minimum_seconds,
     )?;
     require_at_least(
@@ -1123,7 +1125,7 @@ fn validate_gate_contract(report: &TransportEvidenceV1) -> Result<(), SpikeError
     let saturation = gate(report, TransportGateId::BoundedHandoffSaturation)?;
     require_at_least(
         saturation,
-        "saturation_seconds",
+        "handoff_elapsed_seconds",
         report.configuration.saturation_seconds,
     )?;
     require_at_least(

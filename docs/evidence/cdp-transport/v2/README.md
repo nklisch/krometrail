@@ -1,6 +1,6 @@
 # CDP transport qualification evidence v2
 
-Version 2 is the strict, platform-faithful evidence contract after wire-authenticity and deadline remediation. The previously committed reports are historical artifacts and are obsolete after the drift-trace contract revision; fresh qualification must emit replacement reports. No historical report is hand-edited:
+Version 2 is the strict, platform-faithful evidence contract after wire-authenticity, deadline, cancellation, and acknowledgement remediation. The previously committed reports are historical artifacts and are obsolete after these contract revisions; fresh qualification must emit replacement reports. No historical report is hand-edited:
 
 - [`cdpkit-linux.json`](./cdpkit-linux.json) — historical local Linux strict run (obsolete)
 - [`cdpkit-macos.json`](./cdpkit-macos.json) — historical hosted macOS run `29202919716` (obsolete)
@@ -43,6 +43,14 @@ saturation_seconds=10
 saturation_attempts=100
 hard_stop_seconds=120
 ```
+
+Fresh reports use observed measurement names that do not confuse configured thresholds with elapsed work:
+
+- `capture_elapsed_seconds` is the actual sustained screencast loop duration.
+- `handoff_elapsed_seconds` is the actual interval represented by bounded handoff attempts.
+- `ack_latency_ms_*` measures from returned frame to acknowledgement completion, before `try_send`.
+
+The global `hard_stop_seconds` is authoritative when the frame minimum is unmet; each frame receive and acknowledgement remains independently phase-bounded. The retired reports' measurement names and values remain historical and are not updated in place.
 
 ## Run provenance and exact report bytes
 

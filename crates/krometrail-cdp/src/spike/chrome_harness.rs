@@ -92,12 +92,12 @@ use super::{
 
 #[derive(Clone, Debug)]
 pub struct ScreencastMeasurements {
-    pub elapsed_seconds: f64,
+    pub capture_elapsed_seconds: f64,
     pub frames_received: u64,
     pub frames_acknowledged: u64,
     pub handoff_accepted: u64,
     pub handoff_dropped: u64,
-    pub saturation_seconds: f64,
+    pub handoff_elapsed_seconds: f64,
     pub saturation_attempts: u64,
     pub ack_latency_ms_p50: f64,
     pub ack_latency_ms_p95: f64,
@@ -120,6 +120,50 @@ struct ChromeHarness {
     ws_url: String,
 }
 
+/// Owns the spawned browser and profile while startup is waiting on an external endpoint.
+///
+/// This guard must be constructed immediately after `spawn`, before the first await. A startup
+/// future can be cancelled by the global hard stop at any await; keeping ownership in a local
+/// `Child` until the endpoint is ready would leak both Chrome and its temporary profile.
+struct ChromeProcessGuard {
+    child: Option<Child>,
+    profile: Option<PathBuf>,
+}
+
+impl ChromeProcessGuard {
+    fn new(child: Child, profile: PathBuf) -> Self {
+        Self {
+            child: Some(child),
+            profile: Some(profile),
+        }
+    }
+
+    fn into_parts(mut self) -> (Child, PathBuf) {
+        let child = self
+            .child
+            .take()
+            .expect("Chrome process guard still owns child");
+        let profile = self
+            .profile
+            .take()
+            .expect("Chrome process guard still owns profile");
+        // The returned ChromeHarness now owns both resources; the empty guard drops harmlessly.
+        (child, profile)
+    }
+}
+
+impl Drop for ChromeProcessGuard {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        if let Some(profile) = self.profile.take() {
+            let _ = std::fs::remove_dir_all(profile);
+        }
+    }
+}
+
 impl ChromeHarness {
     async fn start(chrome_binary: &Path) -> Result<Self, SpikeError> {
         let fixture_root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -131,7 +175,7 @@ impl ChromeHarness {
         let _ = std::fs::remove_dir_all(&profile);
         std::fs::create_dir_all(&profile).map_err(io_error)?;
         let port = free_port()?;
-        let mut child = Command::new(chrome_binary)
+        let child = Command::new(chrome_binary)
             .args([
                 "--headless=new",
                 "--no-sandbox",
@@ -148,15 +192,10 @@ impl ChromeHarness {
             .stderr(Stdio::null())
             .spawn()
             .map_err(io_error)?;
-        let ws_url = match wait_for_ws_url(port, Duration::from_secs(15)).await {
-            Ok(url) => url,
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = std::fs::remove_dir_all(&profile);
-                return Err(error);
-            }
-        };
+        // Establish cancellation-safe ownership before waiting for Chrome's endpoint.
+        let process = ChromeProcessGuard::new(child, profile);
+        let ws_url = wait_for_ws_url(port, Duration::from_secs(15)).await?;
+        let (child, profile) = process.into_parts();
         Ok(Self {
             child,
             profile,
@@ -548,7 +587,10 @@ async fn run_real_chrome_gate_inner(
         gates.push(pass(
             TransportGateId::SustainedScreencast,
             [
-                ("elapsed_seconds", measurements.elapsed_seconds),
+                (
+                    "capture_elapsed_seconds",
+                    measurements.capture_elapsed_seconds,
+                ),
                 ("frames_received", measurements.frames_received as f64),
                 (
                     "frames_acknowledged",
@@ -556,7 +598,10 @@ async fn run_real_chrome_gate_inner(
                 ),
                 ("handoff_accepted", measurements.handoff_accepted as f64),
                 ("handoff_dropped", measurements.handoff_dropped as f64),
-                ("saturation_seconds", measurements.saturation_seconds),
+                (
+                    "handoff_elapsed_seconds",
+                    measurements.handoff_elapsed_seconds,
+                ),
                 (
                     "saturation_attempts",
                     measurements.saturation_attempts as f64,
@@ -618,7 +663,10 @@ async fn run_real_chrome_gate_inner(
             ("handoff_attempts", measurements.saturation_attempts as f64),
             ("handoff_accepted", measurements.handoff_accepted as f64),
             ("handoff_dropped", measurements.handoff_dropped as f64),
-            ("saturation_seconds", measurements.saturation_seconds),
+            (
+                "handoff_elapsed_seconds",
+                measurements.handoff_elapsed_seconds,
+            ),
         ],
     ));
     let memory_status = rss_valid
@@ -934,14 +982,6 @@ async fn run_screencast_gate(
     while start.elapsed().as_secs_f64() < config.minimum_seconds
         || frames_received < config.minimum_frames
     {
-        if start.elapsed().as_secs_f64()
-            >= config
-                .minimum_seconds
-                .max(config.minimum_frames as f64 / 60.0)
-        {
-            break;
-        }
-        let before = Instant::now();
         stage.set(QualificationStage::ScreencastFrameReceive);
         let frame = bounded(
             stage,
@@ -950,6 +990,9 @@ async fn run_screencast_gate(
         )
         .await?;
         frames_received += 1;
+        // Measure only the acknowledgement after receipt. Including the bounded receive wait
+        // would turn frame availability into apparent acknowledgement latency.
+        let ack_started = Instant::now();
         bounded(
             stage,
             QualificationStage::ScreencastAck,
@@ -957,7 +1000,7 @@ async fn run_screencast_gate(
         )
         .await?;
         frames_acknowledged += 1;
-        latencies.push(before.elapsed().as_secs_f64() * 1000.0);
+        latencies.push(ack_started.elapsed().as_secs_f64() * 1000.0);
         attempts += 1;
         if handoff.try_send(frame.sequence).is_ok() {
             accepted += 1;
@@ -1002,12 +1045,12 @@ async fn run_screencast_gate(
     );
     let slope = theil_sen(&rss);
     Ok(ScreencastMeasurements {
-        elapsed_seconds: elapsed,
+        capture_elapsed_seconds: elapsed,
         frames_received,
         frames_acknowledged,
         handoff_accepted: accepted,
         handoff_dropped: dropped,
-        saturation_seconds: elapsed,
+        handoff_elapsed_seconds: elapsed,
         saturation_attempts: attempts,
         ack_latency_ms_p50: median,
         ack_latency_ms_p95: p95,
@@ -1454,6 +1497,69 @@ mod tests {
             Some(QualificationStage::ScreencastFrameReceive)
         );
         assert!(error.message.contains("ScreencastFrameReceive"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(start_paused = true)]
+    async fn global_timeout_reaps_startup_process_and_removes_profile() {
+        let profile = std::env::temp_dir().join(format!(
+            "krometrail-cdp-gate-cancellation-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&profile);
+        std::fs::create_dir_all(&profile).expect("test profile");
+        let child = Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .expect("long-lived test child");
+        let pid = child.id().to_string();
+        let stage = StageTracker::new(QualificationStage::ChromeStartup);
+        let task = tokio::spawn(run_with_hard_stop_stage(5, stage, async move {
+            let _process = ChromeProcessGuard::new(child, profile);
+            std::future::pending::<Result<(), SpikeError>>().await
+        }));
+
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(5)).await;
+        let error = task
+            .await
+            .expect("global timeout task")
+            .expect_err("global timeout must cancel startup");
+        assert_eq!(error.code, SpikeErrorCode::Deadline);
+        assert!(
+            !Path::new(&format!("/proc/{pid}")).exists() || {
+                Command::new("kill")
+                    .args(["-0", &pid])
+                    .status()
+                    .map(|status| !status.success())
+                    .unwrap_or(true)
+            }
+        );
+        assert!(
+            !std::env::temp_dir()
+                .join(format!(
+                    "krometrail-cdp-gate-cancellation-test-{}",
+                    std::process::id()
+                ))
+                .exists()
+        );
+    }
+
+    #[test]
+    fn screencast_deadline_and_ack_measurement_are_not_derived_from_frame_rate() {
+        let source = include_str!("chrome_harness.rs");
+        let derived_cutoff = ["minimum_frames", " as f64 / 60.0"].concat();
+        assert!(!source.contains(&derived_cutoff));
+        let receive = source
+            .find("let frame = bounded(")
+            .expect("bounded frame receive");
+        let ack_timer = source
+            .find("let ack_started = Instant::now();")
+            .expect("ack timer");
+        let handoff = source
+            .find("handoff.try_send(frame.sequence)")
+            .expect("bounded handoff");
+        assert!(receive < ack_timer && ack_timer < handoff);
     }
 
     #[tokio::test]

@@ -256,7 +256,7 @@
       "type": "object",
       "properties": {
         "hard_stop_seconds": {
-          "description": "Maximum wall-clock time for the complete real-Chrome qualification operation.",
+          "description": "Absolute maximum wall-clock time for the complete real-Chrome qualification operation.\nThis global hard stop remains authoritative when the frame minimum is unmet; it is not\nderived from an assumed frame rate.",
           "type": "integer",
           "format": "uint64",
           "minimum": 0

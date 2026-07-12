@@ -24,6 +24,8 @@ fn valid_measurement(key: &&str) -> f64 {
         "rss_sampling_interval_seconds" => 1.0,
         "pending_command_elapsed_seconds" => 0.25,
         "subscription_elapsed_seconds" => 0.5,
+        "capture_elapsed_seconds" => 60.0,
+        "handoff_elapsed_seconds" => 10.0,
         "elapsed_seconds" => 2.0,
         _ => 1.0,
     }
@@ -416,6 +418,47 @@ fn evidence_rejects_nominal_missing_and_over_threshold_deadline_values() {
         .measurements
         .insert("elapsed_seconds".into(), 5.1);
     assert!(validate_evidence(&over_threshold).is_err());
+}
+
+#[test]
+fn evidence_rejects_retired_capture_elapsed_measurement_names() {
+    let mut report = evidence(
+        TransportGateId::ALL
+            .into_iter()
+            .map(|id| GateResult {
+                id,
+                status: GateStatus::Pass,
+                summary: "fixture passed".into(),
+                measurements: id
+                    .measurement_keys()
+                    .iter()
+                    .map(|key| ((*key).into(), valid_measurement(key)))
+                    .collect(),
+                failure: None,
+            })
+            .collect(),
+    );
+    let sustained = report
+        .gates
+        .iter_mut()
+        .find(|gate| gate.id == TransportGateId::SustainedScreencast)
+        .expect("sustained gate");
+    sustained.measurements.remove("capture_elapsed_seconds");
+    sustained
+        .measurements
+        .insert("elapsed_seconds".into(), 60.0);
+    assert!(validate_evidence(&report).is_err());
+
+    let handoff = report
+        .gates
+        .iter_mut()
+        .find(|gate| gate.id == TransportGateId::BoundedHandoffSaturation)
+        .expect("handoff gate");
+    handoff.measurements.remove("handoff_elapsed_seconds");
+    handoff
+        .measurements
+        .insert("saturation_seconds".into(), 10.0);
+    assert!(validate_evidence(&report).is_err());
 }
 
 #[test]
