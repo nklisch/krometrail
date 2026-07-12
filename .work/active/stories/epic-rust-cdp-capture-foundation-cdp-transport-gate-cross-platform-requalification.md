@@ -4,7 +4,7 @@ kind: story
 stage: implementing
 tags: [bug, browser, infra, testing]
 parent: epic-rust-cdp-capture-foundation-cdp-transport-gate
-depends_on: [epic-rust-cdp-capture-foundation-cdp-transport-gate-evidence-v2-contract]
+depends_on: [epic-rust-cdp-capture-foundation-cdp-transport-gate-evidence-v2-contract, epic-rust-cdp-capture-foundation-cdp-transport-gate-candidate-contract-endpoint-binding]
 release_binding: null
 gate_origin: null
 created: 2026-07-12
@@ -16,6 +16,10 @@ updated: 2026-07-12
 ## Origin
 
 Phase 2 feature review found that Linux provenance was edited after its run and that accepted Linux/macOS reports used materially different gate implementations. Existing reports remain historical rejected inputs after the replacement run.
+
+## Failed attempt
+
+Linux qualification at exact commit `1688178f3938876ec4f3aec2a41711b38deace87` failed before Chrome capture because the decisive candidate-contract helper started a scripted server without binding the supplied cdpkit factory to it. No report was produced. The fix is tracked by `epic-rust-cdp-capture-foundation-cdp-transport-gate-candidate-contract-endpoint-binding`; both platforms must rerun from the later fixed SHA.
 
 ## Scope
 
