@@ -1,14 +1,14 @@
 ---
 id: epic-rust-cdp-capture-foundation
 kind: epic
-stage: drafting
+stage: implementing
 tags: [browser, infra]
 parent: null
 depends_on: []
 release_binding: null
 gate_origin: null
 created: 2026-07-11
-updated: 2026-07-11
+updated: 2026-07-12
 ---
 
 # Rust CDP Capture Foundation
@@ -33,13 +33,28 @@ This epic does not deliver durable history, complete browser automation, tempora
 - **Rust CDP client selection:** Start with a gated `cdpkit` spike covering every required domain, flat target sessions, raw command/event access, and sustained screencast acknowledgement. Adopt it only if the real-browser compatibility and capture gates pass; otherwise choose between `chromey` and a minimal owned transport from the spike evidence.
 - **Legacy runtime removal:** Remove the TypeScript/DAP implementation while establishing the Rust workspace rather than keeping two buildable runtimes. Git tag `v0.2.20` remains the implementation reference if the spike requires recovering prior browser lifecycle or framework-state behavior.
 
-## Anticipated child features
+## Other agent review
 
-- Rust workspace and core capture contracts
-- Rust CDP client research and required-domain compatibility spike
-- Chrome discovery, isolated profiles, launch, attach, and shutdown
-- Flat target-session supervision and reconnect behavior
-- Sustained screencast ingestion, acknowledgement, clocks, and gap statistics
-- Real-browser capture-fidelity smoke fixtures
+- Phase 1 advisory: GLM 5.2 reviewed the architectural seams before decomposition; local reads of the foundation docs, sibling epics, and the v0.2.20 browser recorder verified the recommendations. No further exploratory dispatch was needed.
+- Accepted: five capability arcs with a transport gate before production lifecycle and ingestion; a disposable spike isolated from production; an explicit evidence-based transport fallback; revisable core ports with enforced inward dependency direction; remote legacy-tag verification; and a deliberately narrow cross-platform smoke.
+- Rejected: keeping launch/profile lifecycle and target/reconnect supervision as separate features, because together they form one browser-session continuity capability and would share the selected transport boundary too tightly. Also rejected expanding the final smoke into the full defect-duration or agent-evaluation corpus, which belongs to `epic-prove-temporal-advantage`.
 
-<!-- The design pass on each child feature will fill in real specifics. -->
+## Decomposition
+
+The epic is split into five end-to-end capabilities along the evidence path: establish one Rust runtime and its inward-facing contracts, qualify the transport against real Chrome, supervise browser and target sessions through that transport, ingest screencast frames with bounded and explicit loss semantics, then prove the complete path on supported platforms. The dependency chain is intentionally linear because each stage supplies evidence or contracts required to commit safely to the next; artificial parallelism would let production code outrun the transport and lifecycle gates.
+
+### Child features
+
+- `epic-rust-cdp-capture-foundation-rust-runtime-contracts` — establish the Rust workspace, core capture contracts and ports, and the immediate TypeScript/DAP single-runtime cutover — depends on: `[]`
+- `epic-rust-cdp-capture-foundation-cdp-transport-gate` — qualify `cdpkit` against required domains, flat sessions, raw protocol access, and sustained acknowledgement, with an explicit fallback decision — depends on: `[epic-rust-cdp-capture-foundation-rust-runtime-contracts]`
+- `epic-rust-cdp-capture-foundation-chrome-target-supervision` — deliver production Chrome lifecycle, compatibility probing, flat target supervision, and reconnect behavior — depends on: `[epic-rust-cdp-capture-foundation-cdp-transport-gate]`
+- `epic-rust-cdp-capture-foundation-bounded-screencast-ingestion` — deliver prompt acknowledgement, bounded ingestion, distinct clocks, explicit capture and visibility gaps, statistics, cancellation, and flush — depends on: `[epic-rust-cdp-capture-foundation-chrome-target-supervision]`
+- `epic-rust-cdp-capture-foundation-cross-platform-capture-smoke` — prove the live stream with minimal real-browser fidelity smoke on Linux and macOS high-DPI — depends on: `[epic-rust-cdp-capture-foundation-bounded-screencast-ingestion]`
+
+### Decomposition risks
+
+- The first feature could freeze transport-shaped ports before the spike reports evidence. Keep contracts minimal and revisable through the transport gate while enforcing that `krometrail-core` never imports infrastructure.
+- Spike scaffolding could leak into production and hide unsupported behavior. Keep it disposable, require a recorded pass/fail decision for every transport gate, and make fallback selection explicit rather than silently weakening requirements.
+- The runtime cutover removes the convenient local legacy reference. The remote `v0.2.20` tag was verified at commit `3fa4ffa16659648c6f4e229c2f7ae14d2fbc6558`; the cutover must preserve that reference and avoid compatibility shims or dual runtimes.
+- Screencast acknowledgement can appear healthy while clocks, queue loss, or visibility pauses misrepresent continuity. The ingestion capability must preserve source, observed, and normalized session times separately and classify every known gap.
+- The final smoke could grow into the evaluation epic and lengthen this foundation's critical path. Limit it to transport, scaling, timing, loss-reporting, and shutdown confidence on the two supported platforms.
