@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-rust-runtime-contracts-release-provenance
 kind: story
-stage: review
+stage: done
 tags: [bug, infra, tests]
 parent: epic-rust-cdp-capture-foundation-rust-runtime-contracts
 depends_on: []
@@ -27,11 +27,11 @@ Close the second adversarial review's release-integrity findings. A release must
 
 ## Acceptance criteria
 
-- [ ] A branch named like a release cannot supply release artifacts or create a tag implicitly.
-- [ ] Every artifact and the published release are bound to one verified tag SHA.
-- [ ] Distribution tests leave repository release outputs byte-for-byte unchanged.
-- [ ] Lock refresh validation cannot hide duplicate-name dependency changes.
-- [ ] Rust and distribution gates pass.
+- [x] A branch named like a release cannot supply release artifacts or create a tag implicitly.
+- [x] Every artifact and the published release are bound to one verified tag SHA.
+- [x] Distribution tests leave repository release outputs byte-for-byte unchanged.
+- [x] Lock refresh validation cannot hide duplicate-name dependency changes.
+- [x] Rust and distribution gates pass.
 
 ## Review origin
 
@@ -46,3 +46,13 @@ Filed from the second GPT-5.6 Sol adversarial feature review.
 - Discrepancies from design: none.
 - Dispatch: direct local reads and implementation only, per caller instruction; no questions or subagents. `.pi/` was not edited or staged.
 - Adjacent issues parked: none.
+
+## Review (2026-07-12)
+
+**Verdict**: Approve
+
+**Blockers**: none
+**Important**: none
+**Nits**: none
+
+**Notes**: Fast-lane story review. The orchestrator independently reran all 40 workspace tests, locked clippy, and the full hermetic distribution suite, and spot-checked exact-tag SHA propagation through build and publication. Acceptance boxes were aligned with the green evidence. Verdict: Approve - story verified by implement; fast-lane advance.
