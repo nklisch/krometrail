@@ -5,10 +5,12 @@ use std::collections::BTreeMap;
 use futures_util::{SinkExt, StreamExt};
 
 use krometrail_cdp::spike::{
-    CandidateContractEvidence, CandidateContractResults, CandidateIdentity, FixtureEvidence,
-    GateConfiguration, GateProvenance, GateResult, GateStatus, SanitizedEnvironment,
-    ScriptedCdpPeer, SourceIdentity, TransportEvidenceV1, TransportEvidenceV2, TransportGateId,
-    configuration_digest, decide_from_files, validate_evidence, write_json_schema,
+    CandidateContractEvidence, CandidateContractResults, CandidateIdentity,
+    CandidateRuntimeAssertions, CandidateWireResults, FixtureEvidence, GateConfiguration,
+    GateProvenance, GateResult, GateStatus, SanitizedEnvironment, ScriptedCdpPeer, SourceIdentity,
+    TransportEvidenceV1, TransportEvidenceV2, TransportGateId, committed_protocol_fixtures,
+    configuration_digest, decide_from_files, ordered_protocol_fixture_digest, validate_evidence,
+    write_json_schema,
 };
 use krometrail_cdp::spike::{
     FakeTransport, FakeTransportFactory, SpikeTransport, TransportScope, run_transport_scenarios,
@@ -135,15 +137,28 @@ async fn fake_disconnect_and_rebuild_are_explicit_and_deterministic() {
 
 #[test]
 fn protocol_fixtures_are_named_inputs_to_the_drift_scenarios() {
-    for fixture in [
-        include_str!("fixtures/protocol/unknown-event.json"),
-        include_str!("fixtures/protocol/additive-field.json"),
-        include_str!("fixtures/protocol/unknown-enum.json"),
-    ] {
-        let value: serde_json::Value = serde_json::from_str(fixture).unwrap();
-        assert!(value["method"].as_str().is_some());
-        assert!(value["params"].is_object());
-    }
+    let fixtures = committed_protocol_fixtures().unwrap();
+    assert_eq!(
+        fixtures
+            .iter()
+            .map(|fixture| fixture.method.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "Protocol.unknownEvent",
+            "Runtime.additiveField",
+            "Runtime.unknownEnum",
+        ]
+    );
+    assert_eq!(fixtures[0].params, serde_json::json!({"kind":"unknown"}));
+    assert_eq!(
+        fixtures[1].params,
+        serde_json::json!({"known":true,"new_field":7})
+    );
+    assert_eq!(
+        fixtures[2].params,
+        serde_json::json!({"value":"future-value"})
+    );
+    assert!(ordered_protocol_fixture_digest().starts_with("sha256:"));
 }
 
 #[test]
@@ -189,21 +204,31 @@ fn candidate_wire_contract_is_separate_and_trace_bound() {
         .collect();
     let mut value = evidence(gates);
     value.candidate_contract = Some(CandidateContractEvidence {
+        fixture_sha256: krometrail_cdp::spike::ordered_protocol_fixture_digest(),
         trace_sha256: format!("sha256:{}", "a".repeat(64)),
         trace_observations: 10,
         results: CandidateContractResults {
-            drift_fixtures: 3,
-            connection_survived: true,
-            routing_commands: 200,
-            routing_events: 200,
-            routing_cross_delivery: 0,
-            event_before_response: true,
-            detach_during_pending: true,
-            pending_calls_closed: true,
-            subscriptions_closed: true,
-            socket_closed: true,
-            reconnect_connections: 2,
-            sessions_rebuilt: 2,
+            wire: CandidateWireResults {
+                drift_fixtures: 3,
+                drift_methods: vec![
+                    "Protocol.unknownEvent".into(),
+                    "Runtime.additiveField".into(),
+                    "Runtime.unknownEnum".into(),
+                ],
+                connection_survived: true,
+                routing_commands: 200,
+                routing_events: 200,
+                routing_cross_delivery: 0,
+                event_before_response: true,
+                detach_during_pending: true,
+                socket_closed: true,
+                reconnect_connections: 2,
+                sessions_rebuilt: 2,
+            },
+            runtime: CandidateRuntimeAssertions {
+                pending_calls_closed: true,
+                subscriptions_closed: true,
+            },
         },
     });
     validate_evidence(&value).unwrap();

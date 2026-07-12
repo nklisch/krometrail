@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 use super::{
     contract::CandidateContractEvidence,
     error::{SpikeError, SpikeErrorCode},
+    scripted_peer::{committed_protocol_fixtures, ordered_protocol_fixture_digest},
 };
 
 pub const EVIDENCE_SCHEMA_VERSION: u16 = 2;
@@ -466,25 +467,32 @@ fn validate_observed_deadlines(value: &TransportEvidenceV1) -> Result<(), SpikeE
 }
 
 fn validate_candidate_contract(contract: &CandidateContractEvidence) -> Result<(), SpikeError> {
+    let fixtures = committed_protocol_fixtures()?;
+    let expected_methods = fixtures
+        .iter()
+        .map(|fixture| fixture.method.clone())
+        .collect::<Vec<_>>();
     let results = &contract.results;
-    if contract.trace_observations == 0
+    if contract.fixture_sha256 != ordered_protocol_fixture_digest()
+        || contract.trace_observations == 0
         || !is_sha256_digest(&contract.trace_sha256)
-        || results.drift_fixtures < 3
-        || !results.connection_survived
-        || results.routing_commands < 200
-        || results.routing_events < 200
-        || results.routing_cross_delivery != 0
-        || !results.event_before_response
-        || !results.detach_during_pending
-        || !results.pending_calls_closed
-        || !results.subscriptions_closed
-        || !results.socket_closed
-        || results.reconnect_connections < 2
-        || results.sessions_rebuilt < 2
+        || results.wire.drift_fixtures != fixtures.len() as u64
+        || results.wire.drift_methods != expected_methods
+        || !results.wire.connection_survived
+        || results.wire.routing_commands < 200
+        || results.wire.routing_events < 200
+        || results.wire.routing_cross_delivery != 0
+        || !results.wire.event_before_response
+        || !results.wire.detach_during_pending
+        || !results.wire.socket_closed
+        || results.wire.reconnect_connections < 2
+        || results.wire.sessions_rebuilt < 2
+        || !results.runtime.pending_calls_closed
+        || !results.runtime.subscriptions_closed
     {
         return Err(SpikeError::new(
             SpikeErrorCode::Evidence,
-            "candidate wire-contract evidence is incomplete or failed",
+            "candidate wire-contract evidence is incomplete, mismatched, or failed",
         ));
     }
     Ok(())
@@ -951,6 +959,23 @@ fn decide_with_digests(
             "platform reports use different immutable gate revision, configuration, or fixture",
         ));
     }
+    let linux_contract = reports[0]
+        .candidate_contract
+        .as_ref()
+        .expect("validated candidate contract");
+    let macos_contract = reports[1]
+        .candidate_contract
+        .as_ref()
+        .expect("validated candidate contract");
+    if linux_contract.fixture_sha256 != macos_contract.fixture_sha256
+        || linux_contract.trace_sha256 != macos_contract.trace_sha256
+        || linux_contract.results != macos_contract.results
+    {
+        return Err(SpikeError::new(
+            SpikeErrorCode::Evidence,
+            "platform reports use different deterministic candidate-contract trace, fixture digest, or results",
+        ));
+    }
     let mut platforms = reports
         .iter()
         .map(|report| report.environment.platform.as_str())
@@ -1078,22 +1103,32 @@ mod tests {
             gates: Vec::new(),
             limitations: Vec::new(),
             candidate_contract: Some(CandidateContractEvidence {
+                fixture_sha256: ordered_protocol_fixture_digest(),
                 trace_sha256:
                     "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
                 trace_observations: 1,
                 results: CandidateContractResults {
-                    drift_fixtures: 3,
-                    connection_survived: true,
-                    routing_commands: 200,
-                    routing_events: 200,
-                    routing_cross_delivery: 0,
-                    event_before_response: true,
-                    detach_during_pending: true,
-                    pending_calls_closed: true,
-                    subscriptions_closed: true,
-                    socket_closed: true,
-                    reconnect_connections: 2,
-                    sessions_rebuilt: 2,
+                    wire: crate::spike::contract::CandidateWireResults {
+                        drift_fixtures: 3,
+                        drift_methods: vec![
+                            "Protocol.unknownEvent".into(),
+                            "Runtime.additiveField".into(),
+                            "Runtime.unknownEnum".into(),
+                        ],
+                        connection_survived: true,
+                        routing_commands: 200,
+                        routing_events: 200,
+                        routing_cross_delivery: 0,
+                        event_before_response: true,
+                        detach_during_pending: true,
+                        socket_closed: true,
+                        reconnect_connections: 2,
+                        sessions_rebuilt: 2,
+                    },
+                    runtime: crate::spike::contract::CandidateRuntimeAssertions {
+                        pending_calls_closed: true,
+                        subscriptions_closed: true,
+                    },
                 },
             }),
         }
@@ -1138,5 +1173,25 @@ mod tests {
             decision.evidence[1].candidate_contract.trace_observations,
             1
         );
+    }
+
+    #[test]
+    fn decision_rejects_each_candidate_contract_identity_mismatch() {
+        let cases = ["fixture", "trace", "result"];
+        for case in cases {
+            let linux = report("linux", "revision-a");
+            let mut macos = report("macos", "revision-a");
+            let contract = macos.candidate_contract.as_mut().unwrap();
+            match case {
+                "fixture" => contract.fixture_sha256.push('x'),
+                "trace" => contract.trace_sha256.replace_range(7..8, "b"),
+                "result" => contract.results.wire.routing_commands += 1,
+                _ => unreachable!(),
+            }
+            let error =
+                decide_with_digests(&[linux, macos], &["sha256:a".into(), "sha256:b".into()])
+                    .expect_err("cross-platform candidate contract drift must reject the decision");
+            assert!(error.message.contains("deterministic candidate-contract"));
+        }
     }
 }

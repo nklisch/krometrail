@@ -1,22 +1,19 @@
-use std::{
-    collections::{BTreeMap, HashSet},
-    future::Future,
-    time::Duration,
-};
+use std::{collections::BTreeMap, future::Future, time::Duration};
 
 use futures_util::{Stream, StreamExt};
 
 use super::{
-    contract::{SpikeTransportFactory, TransportScope},
+    contract::{CandidateRuntimeAssertions, SpikeTransportFactory, TransportScope},
     error::{QualificationStage, SpikeError, SpikeErrorCode, StageTracker},
     evidence::{GateResult, GateStatus, TransportGateId},
-    scripted_peer::ScriptedCdpPeer,
+    scripted_peer::{ScriptedCdpPeer, committed_protocol_fixtures},
 };
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ScenarioEvidence {
     pub gates: Vec<GateResult>,
     pub trace: Vec<String>,
+    pub runtime_assertions: Option<CandidateRuntimeAssertions>,
 }
 
 impl ScenarioEvidence {
@@ -52,7 +49,11 @@ pub(crate) async fn run_transport_scenarios_with_stage(
     stage: StageTracker,
 ) -> ScenarioEvidence {
     match run(factory, peer, &stage).await {
-        Ok((gates, trace)) => ScenarioEvidence { gates, trace },
+        Ok((gates, trace, runtime_assertions)) => ScenarioEvidence {
+            gates,
+            trace,
+            runtime_assertions,
+        },
         Err(error) => ScenarioEvidence {
             gates: TransportGateId::ALL
                 .into_iter()
@@ -68,6 +69,7 @@ pub(crate) async fn run_transport_scenarios_with_stage(
                 "scenario failed at stage {:?}: {}",
                 error.stage, error.message
             )],
+            runtime_assertions: None,
         },
     }
 }
@@ -76,8 +78,16 @@ async fn run(
     factory: &dyn SpikeTransportFactory,
     peer: &mut ScriptedCdpPeer,
     stage: &StageTracker,
-) -> Result<(Vec<GateResult>, Vec<String>), SpikeError> {
+) -> Result<
+    (
+        Vec<GateResult>,
+        Vec<String>,
+        Option<CandidateRuntimeAssertions>,
+    ),
+    SpikeError,
+> {
     let mut trace = Vec::new();
+    let mut runtime_assertions = None;
     stage.set(QualificationStage::CandidateConnect);
     let transport = bounded(
         stage,
@@ -218,18 +228,13 @@ async fn run(
             "browser raw command acquired a session",
         ));
     }
-    let drift_methods = [
-        "Protocol.unknownEvent",
-        "Runtime.additiveField",
-        "Runtime.unknownEnum",
-    ];
-    let mut drift_seen = HashSet::new();
+    let drift_fixtures = committed_protocol_fixtures()?;
     stage.set(QualificationStage::CandidateDrift);
-    for method in drift_methods {
+    for fixture in &drift_fixtures {
         let mut stream = bounded(
             stage,
             QualificationStage::CandidateDrift,
-            transport.subscribe_named(&session_a, method),
+            transport.subscribe_named(&session_a, &fixture.method),
         )
         .await?;
         let event = bounded_stream(
@@ -239,13 +244,15 @@ async fn run(
             "drift event was not delivered",
         )
         .await?;
-        if event.method != method || event.scope != session_a {
+        if event.method != fixture.method
+            || event.scope != session_a
+            || event.params != fixture.params
+        {
             return Err(SpikeError::new(
                 SpikeErrorCode::Protocol,
-                "named drift event changed method or session identity",
+                format!("drift fixture did not survive exactly: {}", fixture.method),
             ));
         }
-        drift_seen.insert(method);
     }
 
     stage.set(QualificationStage::CandidateScreencast);
@@ -274,15 +281,17 @@ async fn run(
     let wire_connected = peer.connection_count() > 0;
     if wire_connected {
         stage.set(QualificationStage::CandidateLifecycle);
-        run_wire_lifecycle(
-            transport.as_ref(),
-            &session_a,
-            &session_b,
-            peer,
-            &mut trace,
-            stage,
-        )
-        .await?;
+        runtime_assertions = Some(
+            run_wire_lifecycle(
+                transport.as_ref(),
+                &session_a,
+                &session_b,
+                peer,
+                &mut trace,
+                stage,
+            )
+            .await?,
+        );
         stage.set(QualificationStage::CandidateRebuild);
         let rebuilt = bounded(
             stage,
@@ -359,7 +368,7 @@ async fn run(
         one("named_events", 3.0),
     ));
     gates.push(pass(TransportGateId::ProtocolDriftSurvival, {
-        let mut values = one("fixtures", drift_seen.len() as f64);
+        let mut values = one("fixtures", drift_fixtures.len() as f64);
         values.insert("connection_survived".into(), 1.0);
         values.insert("wildcard_envelope_available".into(), 0.0);
         values
@@ -432,7 +441,7 @@ async fn run(
         values.insert("elapsed_seconds".into(), 0.1);
         values
     }));
-    Ok((gates, trace))
+    Ok((gates, trace, runtime_assertions))
 }
 
 #[cfg(feature = "cdp-spike-cdpkit")]
@@ -481,62 +490,39 @@ pub(crate) async fn run_candidate_wire_contract_with_stage(
         return Err(error);
     }
     let observations = peer.observations();
+    let fixtures = committed_protocol_fixtures()?;
     let routing = peer.observed_routing();
+    let (drift_fixtures, drift_methods) = peer.observed_drift(&fixtures);
     let socket_closed = observations.iter().any(|observation| {
         observation.kind == super::scripted_peer::WireObservationKind::ConnectionClosed
     });
-    let detach_during_pending = observations.iter().any(|observation| {
-        observation.kind == super::scripted_peer::WireObservationKind::Command
-            && observation
-                .params
-                .get("phase")
-                .and_then(serde_json::Value::as_str)
-                == Some("detach-during-pending")
-    });
-    let drift = scenario
-        .gates
-        .iter()
-        .find(|gate| gate.id == TransportGateId::ProtocolDriftSurvival)
-        .expect("scenario registry includes drift gate");
-    let disconnect = scenario
-        .gates
-        .iter()
-        .find(|gate| gate.id == TransportGateId::DisconnectCleanup)
-        .expect("scenario registry includes disconnect gate");
-    let rebuild = scenario
-        .gates
-        .iter()
-        .find(|gate| gate.id == TransportGateId::ExplicitReconnectRebuild)
-        .expect("scenario registry includes rebuild gate");
-    let observed = |gate: &super::evidence::GateResult, key: &str| {
-        gate.measurements.get(key).copied() == Some(1.0)
-    };
+    let runtime_assertions = scenario.runtime_assertions.ok_or_else(|| {
+        SpikeError::new(
+            SpikeErrorCode::Evidence,
+            "candidate contract lacks classified runtime assertions",
+        )
+    })?;
     let trace = serde_json::to_vec(&observations)
         .map_err(|error| SpikeError::new(SpikeErrorCode::Evidence, error.to_string()))?;
     let evidence = super::contract::CandidateContractEvidence {
+        fixture_sha256: super::scripted_peer::ordered_protocol_fixture_digest(),
         trace_sha256: format!("sha256:{:x}", Sha256::digest(trace)),
         trace_observations: observations.len() as u64,
         results: super::contract::CandidateContractResults {
-            drift_fixtures: drift.measurements.get("fixtures").copied().unwrap_or(0.0) as u64,
-            connection_survived: observed(drift, "connection_survived"),
-            routing_commands: routing.commands,
-            routing_events: routing.events,
-            routing_cross_delivery: routing.cross_delivery,
-            event_before_response: peer.event_before_response("Runtime.evaluate"),
-            detach_during_pending,
-            pending_calls_closed: observed(disconnect, "pending_calls_closed"),
-            subscriptions_closed: observed(disconnect, "subscriptions_closed"),
-            socket_closed,
-            reconnect_connections: rebuild
-                .measurements
-                .get("connections")
-                .copied()
-                .unwrap_or(0.0) as u64,
-            sessions_rebuilt: rebuild
-                .measurements
-                .get("sessions_rebuilt")
-                .copied()
-                .unwrap_or(0.0) as u64,
+            wire: super::contract::CandidateWireResults {
+                drift_fixtures,
+                drift_methods,
+                connection_survived: peer.observed_connection_survived(&fixtures),
+                routing_commands: routing.commands,
+                routing_events: routing.events,
+                routing_cross_delivery: routing.cross_delivery,
+                event_before_response: peer.event_before_response("Runtime.evaluate"),
+                detach_during_pending: peer.observed_detach_during_pending(),
+                socket_closed,
+                reconnect_connections: peer.connection_count(),
+                sessions_rebuilt: peer.observed_rebuilt_sessions(),
+            },
+            runtime: runtime_assertions,
         },
     };
     // Close the listener and every accepted connection before the helper returns. This makes a
@@ -602,7 +588,7 @@ async fn run_wire_lifecycle(
     peer: &ScriptedCdpPeer,
     trace: &mut Vec<String>,
     stage: &StageTracker,
-) -> Result<(), SpikeError> {
+) -> Result<CandidateRuntimeAssertions, SpikeError> {
     let mut ordering_events = bounded(
         stage,
         QualificationStage::CandidateLifecycle,
@@ -700,7 +686,10 @@ async fn run_wire_lifecycle(
         ));
     }
     trace.push("wire observed detach during a pending command followed by socket close".into());
-    Ok(())
+    Ok(CandidateRuntimeAssertions {
+        pending_calls_closed: close_reason.pending_calls_closed,
+        subscriptions_closed: close_reason.subscriptions_closed,
+    })
 }
 
 fn one(key: &str, value: f64) -> BTreeMap<String, f64> {

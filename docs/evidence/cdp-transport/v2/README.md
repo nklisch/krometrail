@@ -1,12 +1,12 @@
 # CDP transport qualification evidence v2
 
-Version 2 is the strict, platform-faithful evidence contract after wire-authenticity and deadline remediation. The accepted reports are emitted and sanitized by the gate; they are not hand-edited:
+Version 2 is the strict, platform-faithful evidence contract after wire-authenticity and deadline remediation. The previously committed reports are historical artifacts and are obsolete after the drift-trace contract revision; fresh qualification must emit replacement reports. No historical report is hand-edited:
 
-- [`cdpkit-linux.json`](./cdpkit-linux.json) — local Linux strict run
-- [`cdpkit-macos.json`](./cdpkit-macos.json) — hosted macOS run `29202919716`
-- [`decision.json`](./decision.json) — generated v2 decision from the two accepted reports
+- [`cdpkit-linux.json`](./cdpkit-linux.json) — historical local Linux strict run (obsolete)
+- [`cdpkit-macos.json`](./cdpkit-macos.json) — historical hosted macOS run `29202919716` (obsolete)
+- [`decision.json`](./decision.json) — historical v2 decision (obsolete until fresh reports are requalified)
 
-The generated decision selects exact `cdpkit` 0.4.0 (`adopt_cdpkit`). It preserves all 13 platform-labelled gate results and the complete trace-bound candidate-contract results for Linux and macOS; it does not collapse platform measurements into a Linux-only rollup.
+The historical generated decision selected exact `cdpkit` 0.4.0 (`adopt_cdpkit`). It preserved all 13 platform-labelled gate results and the then-current candidate-contract results for Linux and macOS; it did not collapse platform measurements into a Linux-only rollup. It is not a decision under the revised contract.
 
 ## Decision provenance
 
@@ -102,30 +102,23 @@ for platform in linux macos; do
 done
 ```
 
-Both reports are schema v2, contain exactly 13 unique passing gates, have no `rss_sample_count` alias or nominal `deadline_seconds`, preserve the runner revisions, and contain no rejected path/endpoint/secret-bearing strings.
+The historical reports were schema v2 and contained exactly 13 unique passing gates, with no `rss_sample_count` alias or nominal `deadline_seconds`; they are retained only for provenance. Fresh reports must validate against the regenerated schema and revised candidate-contract fields.
 
 ## Candidate-contract trace
 
-Both reports bind the same complete scripted candidate-contract trace:
+The candidate-contract shape now binds the exact ordered protocol fixtures and classifies its projections:
 
 ```text
-trace_sha256: sha256:6c6be028c511d4d8c28cbecec368a7d4f09e0d87612741d02ac19a8663964d54
-trace_observations: 942
-drift_fixtures: 3
-connection_survived: true
-routing_commands: 200
-routing_events: 200
-routing_cross_delivery: 0
-event_before_response: true
-detach_during_pending: true
-pending_calls_closed: true
-subscriptions_closed: true
-socket_closed: true
-reconnect_connections: 2
-sessions_rebuilt: 2
+fixture_sha256: sha256:6dc599e64e0245b5f29eae0644dddb3a5e7222a234b7e2602a6a8577a25e677e
+wire.drift_methods: Protocol.unknownEvent, Runtime.additiveField, Runtime.unknownEnum
+wire.drift_fixtures: count(wire.drift_methods)
+wire.*: projected only from recorded scripted WebSocket observations
+runtime.*: cdpkit close-status assertions, not wire observations
 ```
 
-The candidate trace is separate from real-Chrome measurements: Chrome cannot be instructed to emit unknown future protocol fields. The protocol-drift gate therefore reports the three trace fixtures and survival result, while the trace hash and derived results remain attached to each platform report.
+The scripted server loads `crates/krometrail-cdp/tests/fixtures/protocol/{unknown-event,additive-field,unknown-enum}.json` in that order. The scenario asserts each exact method, session scope, and parameter object, including `new_field: 7` and `value: future-value`, through cdpkit. The trace digest is over the ordered observation bytes; fixture count and methods are projected from those observations. Chrome cannot be instructed to emit unknown future protocol fields, so this contract remains separate from real-Chrome measurements.
+
+Decision generation rejects Linux/macOS reports unless fixture digest, trace hash, and the complete deterministic wire/runtime result object match exactly. Historical JSON reports still use the retired flat result shape and must not be normalized or hand-edited.
 
 ## Exact observed gate measurements
 

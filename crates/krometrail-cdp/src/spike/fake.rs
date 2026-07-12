@@ -12,6 +12,7 @@ use super::{
     },
     error::{SpikeError, SpikeErrorCode},
     evidence::CandidateIdentity,
+    scripted_peer::committed_protocol_fixtures,
 };
 
 #[derive(Debug)]
@@ -43,26 +44,6 @@ impl FakeTransport {
                     method: "Runtime.consoleAPICalled".into(),
                     scope: scope.clone(),
                     params: serde_json::json!({ "token": format!("{session_id}-{token}") }),
-                });
-            }
-            for (method, params) in [
-                (
-                    "Protocol.unknownEvent",
-                    serde_json::json!({ "kind": "unknown" }),
-                ),
-                (
-                    "Runtime.additiveField",
-                    serde_json::json!({ "known": true, "new_field": 7 }),
-                ),
-                (
-                    "Runtime.unknownEnum",
-                    serde_json::json!({ "value": "future-value" }),
-                ),
-            ] {
-                queue.push_back(super::contract::NamedEventParams {
-                    method: method.into(),
-                    scope: scope.clone(),
-                    params,
                 });
             }
             events.insert((scope, "Runtime.consoleAPICalled".into()), queue);
@@ -165,18 +146,17 @@ impl SpikeTransport for FakeTransport {
                 .events
                 .remove(&(scope.clone(), method.to_owned()))
                 .unwrap_or_else(|| {
-                    let params = match method {
-                        "Protocol.unknownEvent" => serde_json::json!({ "kind": "unknown" }),
-                        "Runtime.additiveField" => {
-                            serde_json::json!({ "known": true, "new_field": 7 })
-                        }
-                        "Runtime.unknownEnum" => serde_json::json!({ "value": "future-value" }),
-                        _ => return VecDeque::new(),
+                    let fixture = committed_protocol_fixtures()
+                        .expect("committed protocol fixtures are valid")
+                        .into_iter()
+                        .find(|fixture| fixture.method == method);
+                    let Some(fixture) = fixture else {
+                        return VecDeque::new();
                     };
                     VecDeque::from([super::contract::NamedEventParams {
-                        method: method.to_owned(),
+                        method: fixture.method,
                         scope: scope.clone(),
-                        params,
+                        params: fixture.params,
                     }])
                 });
             Ok(Box::pin(stream::iter(queue.into_iter().map(Ok))) as EventStream)

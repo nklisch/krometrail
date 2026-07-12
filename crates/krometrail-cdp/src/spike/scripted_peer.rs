@@ -3,14 +3,78 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use super::error::{SpikeError, SpikeErrorCode};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use tokio::net::TcpListener;
 use tokio::sync::Notify;
 use tokio_tungstenite::{WebSocketStream, accept_async, tungstenite::Message};
 
-use super::error::{SpikeError, SpikeErrorCode};
+/// A committed protocol-drift fixture loaded byte-for-byte by the scripted server.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProtocolDriftFixture {
+    pub method: String,
+    pub params: Value,
+}
+
+const PROTOCOL_FIXTURE_BYTES: [(&str, &[u8]); 3] = [
+    (
+        "unknown-event.json",
+        include_bytes!("../../tests/fixtures/protocol/unknown-event.json"),
+    ),
+    (
+        "additive-field.json",
+        include_bytes!("../../tests/fixtures/protocol/additive-field.json"),
+    ),
+    (
+        "unknown-enum.json",
+        include_bytes!("../../tests/fixtures/protocol/unknown-enum.json"),
+    ),
+];
+
+/// Parse the ordered committed fixtures once at the scripted-server boundary. The event method
+/// and params are loaded from the bytes so the server cannot silently drift from the fixture
+/// files by maintaining a second hand-copied registry.
+pub fn committed_protocol_fixtures() -> Result<Vec<ProtocolDriftFixture>, SpikeError> {
+    PROTOCOL_FIXTURE_BYTES
+        .into_iter()
+        .map(|(name, bytes)| {
+            let value: Value = serde_json::from_slice(bytes).map_err(|error| {
+                SpikeError::new(
+                    SpikeErrorCode::Evidence,
+                    format!("invalid protocol fixture {name}: {error}"),
+                )
+            })?;
+            let method = value.get("method").and_then(Value::as_str).ok_or_else(|| {
+                SpikeError::new(
+                    SpikeErrorCode::Evidence,
+                    format!("protocol fixture {name} lacks method"),
+                )
+            })?;
+            let params = value.get("params").cloned().ok_or_else(|| {
+                SpikeError::new(
+                    SpikeErrorCode::Evidence,
+                    format!("protocol fixture {name} lacks params"),
+                )
+            })?;
+            Ok(ProtocolDriftFixture {
+                method: method.to_owned(),
+                params,
+            })
+        })
+        .collect()
+}
+
+/// Digest the exact ordered fixture bytes, without JSON reserialization or separators.
+pub fn ordered_protocol_fixture_digest() -> String {
+    let mut hasher = Sha256::new();
+    for (_, bytes) in PROTOCOL_FIXTURE_BYTES {
+        hasher.update(bytes);
+    }
+    format!("sha256:{:x}", hasher.finalize())
+}
 
 /// The in-memory socket pair is a real WebSocket framing boundary over Tokio's deterministic
 /// duplex stream. It lets candidate adapters be exercised without binding a machine port.
@@ -90,15 +154,94 @@ impl ScriptedCdpPeer {
     }
 
     pub fn connection_count(&self) -> u64 {
-        self.state
-            .lock()
-            .expect("scripted peer mutex poisoned")
-            .observations
-            .iter()
-            .filter(|observation| observation.kind == WireObservationKind::Command)
+        self.observed_connection_ids().len() as u64
+    }
+
+    pub fn observed_connection_ids(&self) -> BTreeSet<u64> {
+        self.observations()
+            .into_iter()
             .map(|observation| observation.connection)
-            .max()
-            .unwrap_or(0)
+            .collect()
+    }
+
+    pub fn observed_rebuilt_sessions(&self) -> u64 {
+        let observations = self.observations();
+        let first_connection = observations
+            .iter()
+            .map(|observation| observation.connection)
+            .min()
+            .unwrap_or(0);
+        observations
+            .iter()
+            .filter(|observation| {
+                observation.kind == WireObservationKind::Command
+                    && observation.method.as_deref() == Some("Target.attachToTarget")
+                    && observation.connection > first_connection
+                    && observation.params.get("targetId").is_some()
+            })
+            .filter_map(|observation| observation.params.get("targetId").and_then(Value::as_str))
+            .collect::<BTreeSet<_>>()
+            .len() as u64
+    }
+
+    pub fn observed_drift(&self, fixtures: &[ProtocolDriftFixture]) -> (u64, Vec<String>) {
+        let mut observations = self
+            .observations()
+            .into_iter()
+            .filter(|observation| {
+                observation.kind == WireObservationKind::Event
+                    && observation.session_id.as_deref() == Some("session-a")
+                    && fixtures.iter().any(|fixture| {
+                        observation.method.as_deref() == Some(fixture.method.as_str())
+                            && observation.params == fixture.params
+                    })
+            })
+            .collect::<Vec<_>>();
+        observations.sort_by_key(|observation| observation.sequence);
+        let methods = observations
+            .into_iter()
+            .filter_map(|observation| observation.method)
+            .collect::<Vec<_>>();
+        (methods.len() as u64, methods)
+    }
+
+    pub fn observed_connection_survived(&self, fixtures: &[ProtocolDriftFixture]) -> bool {
+        let observations = self.observations();
+        let drift_sequences = observations.iter().filter(|observation| {
+            observation.kind == WireObservationKind::Event
+                && fixtures.iter().any(|fixture| {
+                    observation.method.as_deref() == Some(fixture.method.as_str())
+                        && observation.params == fixture.params
+                })
+        });
+        let Some(last_drift) = drift_sequences.max_by_key(|observation| observation.sequence)
+        else {
+            return false;
+        };
+        observations.iter().any(|observation| {
+            observation.connection == last_drift.connection
+                && observation.sequence > last_drift.sequence
+                && matches!(
+                    observation.kind,
+                    WireObservationKind::Command | WireObservationKind::Response
+                )
+        })
+    }
+
+    pub fn observed_detach_during_pending(&self) -> bool {
+        let observations = self.observations();
+        observations.iter().any(|command| {
+            command.kind == WireObservationKind::Command
+                && command.method.as_deref() == Some("Runtime.evaluate")
+                && command.params.get("phase").and_then(Value::as_str)
+                    == Some("detach-during-pending")
+                && observations.iter().any(|event| {
+                    event.kind == WireObservationKind::Event
+                        && event.connection == command.connection
+                        && event.method.as_deref() == Some("Target.detachedFromTarget")
+                        && event.sequence > command.sequence
+                })
+        })
     }
 
     pub fn observed_routing(&self) -> RoutingMeasurements {
@@ -299,12 +442,14 @@ pub struct ScriptedCdpServer {
 
 impl ScriptedCdpServer {
     pub async fn start() -> Result<Self, SpikeError> {
+        let fixtures = Arc::new(committed_protocol_fixtures()?);
         let listener = TcpListener::bind(("127.0.0.1", 0))
             .await
             .map_err(io_error)?;
         let address = listener.local_addr().map_err(io_error)?;
         let controller = ScriptedCdpPeer::empty();
         let server_controller = controller.clone();
+        let server_fixtures = Arc::clone(&fixtures);
         let connections = Arc::new(Mutex::new(Vec::new()));
         let server_connections = Arc::clone(&connections);
         let (shutdown, mut stop) = tokio::sync::oneshot::channel();
@@ -320,8 +465,15 @@ impl ScriptedCdpServer {
                 };
                 let connection = server_controller.allocate_connection();
                 let connection_controller = server_controller.clone();
+                let connection_fixtures = Arc::clone(&server_fixtures);
                 let connection_task = tokio::spawn(async move {
-                    serve_connection(socket, connection_controller, connection).await;
+                    serve_connection(
+                        socket,
+                        connection_controller,
+                        connection,
+                        connection_fixtures,
+                    )
+                    .await;
                 });
                 server_connections
                     .lock()
@@ -385,8 +537,12 @@ impl Drop for ScriptedCdpServer {
     }
 }
 
-async fn serve_connection<S>(mut socket: WebSocketStream<S>, peer: ScriptedCdpPeer, connection: u64)
-where
+async fn serve_connection<S>(
+    mut socket: WebSocketStream<S>,
+    peer: ScriptedCdpPeer,
+    connection: u64,
+    fixtures: Arc<Vec<ProtocolDriftFixture>>,
+) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     while let Some(Ok(Message::Text(text))) = socket.next().await {
@@ -449,12 +605,11 @@ where
 
         if method == "Browser.getVersion" {
             if let Some(drift) = params.get("scripted_drift").and_then(Value::as_str) {
-                let drift_params = match drift {
-                    "Protocol.unknownEvent" => serde_json::json!({"kind":"unknown"}),
-                    "Runtime.additiveField" => serde_json::json!({"known":true,"new_field":7}),
-                    "Runtime.unknownEnum" => serde_json::json!({"value":"future-value"}),
-                    _ => serde_json::json!({}),
-                };
+                let drift_params = fixtures
+                    .iter()
+                    .find(|fixture| fixture.method == drift)
+                    .map(|fixture| fixture.params.clone())
+                    .unwrap_or_else(|| serde_json::json!({}));
                 let target = session_id.unwrap_or("session-a");
                 if send_event(&mut socket, &peer, connection, drift, target, drift_params)
                     .await

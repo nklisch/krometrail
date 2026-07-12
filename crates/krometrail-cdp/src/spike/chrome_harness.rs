@@ -502,10 +502,13 @@ async fn run_real_chrome_gate_inner(
     let mut drift_gate = pass(
         TransportGateId::ProtocolDriftSurvival,
         [
-            ("fixtures", candidate_contract.results.drift_fixtures as f64),
+            (
+                "fixtures",
+                candidate_contract.results.wire.drift_fixtures as f64,
+            ),
             (
                 "connection_survived",
-                f64::from(candidate_contract.results.connection_survived),
+                f64::from(candidate_contract.results.wire.connection_survived),
             ),
             ("wildcard_envelope_available", 0.0),
         ],

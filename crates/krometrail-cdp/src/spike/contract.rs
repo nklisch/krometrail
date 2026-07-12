@@ -60,23 +60,41 @@ pub struct TypedProbeEvidence {
     pub input_observed: bool,
 }
 
-/// Evidence produced by the candidate-only wire contract. It is deliberately separate from
-/// real-Chrome measurements: Chrome cannot be instructed to emit unknown future protocol fields.
+/// Results that can be proved from the scripted WebSocket observations alone.
+///
+/// Keeping these fields in a wire-specific type prevents adapter convenience APIs from being
+/// accidentally presented as protocol evidence. Values are projected from recorded envelopes,
+/// not from scenario expectations.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct CandidateContractResults {
+pub struct CandidateWireResults {
     pub drift_fixtures: u64,
+    pub drift_methods: Vec<String>,
     pub connection_survived: bool,
     pub routing_commands: u64,
     pub routing_events: u64,
     pub routing_cross_delivery: u64,
     pub event_before_response: bool,
     pub detach_during_pending: bool,
-    pub pending_calls_closed: bool,
-    pub subscriptions_closed: bool,
     pub socket_closed: bool,
     pub reconnect_connections: u64,
     pub sessions_rebuilt: u64,
+}
+
+/// Assertions exposed by the candidate runtime after the socket closes. These are deliberately
+/// classified separately because a cdpkit close-status API is not a wire observation.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CandidateRuntimeAssertions {
+    pub pending_calls_closed: bool,
+    pub subscriptions_closed: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CandidateContractResults {
+    pub wire: CandidateWireResults,
+    pub runtime: CandidateRuntimeAssertions,
 }
 
 /// Results and the exact observed wire trace are inseparable: a report that uses scripted
@@ -84,6 +102,7 @@ pub struct CandidateContractResults {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CandidateContractEvidence {
+    pub fixture_sha256: String,
     pub trace_sha256: String,
     pub trace_observations: u64,
     pub results: CandidateContractResults,

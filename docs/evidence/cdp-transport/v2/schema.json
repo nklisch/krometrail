@@ -92,6 +92,9 @@
       "description": "Results and the exact observed wire trace are inseparable: a report that uses scripted\ncandidate evidence must carry both the digest and the measurements derived from that trace.",
       "type": "object",
       "properties": {
+        "fixture_sha256": {
+          "type": "string"
+        },
         "results": {
           "$ref": "#/$defs/CandidateContractResults"
         },
@@ -106,13 +109,67 @@
       },
       "additionalProperties": false,
       "required": [
+        "fixture_sha256",
         "trace_sha256",
         "trace_observations",
         "results"
       ]
     },
     "CandidateContractResults": {
-      "description": "Evidence produced by the candidate-only wire contract. It is deliberately separate from\nreal-Chrome measurements: Chrome cannot be instructed to emit unknown future protocol fields.",
+      "type": "object",
+      "properties": {
+        "runtime": {
+          "$ref": "#/$defs/CandidateRuntimeAssertions"
+        },
+        "wire": {
+          "$ref": "#/$defs/CandidateWireResults"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "wire",
+        "runtime"
+      ]
+    },
+    "CandidateIdentity": {
+      "type": "object",
+      "properties": {
+        "checksum": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "version",
+        "checksum"
+      ]
+    },
+    "CandidateRuntimeAssertions": {
+      "description": "Assertions exposed by the candidate runtime after the socket closes. These are deliberately\nclassified separately because a cdpkit close-status API is not a wire observation.",
+      "type": "object",
+      "properties": {
+        "pending_calls_closed": {
+          "type": "boolean"
+        },
+        "subscriptions_closed": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "pending_calls_closed",
+        "subscriptions_closed"
+      ]
+    },
+    "CandidateWireResults": {
+      "description": "Results that can be proved from the scripted WebSocket observations alone.\n\nKeeping these fields in a wire-specific type prevents adapter convenience APIs from being\naccidentally presented as protocol evidence. Values are projected from recorded envelopes,\nnot from scenario expectations.",
       "type": "object",
       "properties": {
         "connection_survived": {
@@ -126,10 +183,13 @@
           "format": "uint64",
           "minimum": 0
         },
-        "event_before_response": {
-          "type": "boolean"
+        "drift_methods": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         },
-        "pending_calls_closed": {
+        "event_before_response": {
           "type": "boolean"
         },
         "reconnect_connections": {
@@ -159,45 +219,21 @@
         },
         "socket_closed": {
           "type": "boolean"
-        },
-        "subscriptions_closed": {
-          "type": "boolean"
         }
       },
       "additionalProperties": false,
       "required": [
         "drift_fixtures",
+        "drift_methods",
         "connection_survived",
         "routing_commands",
         "routing_events",
         "routing_cross_delivery",
         "event_before_response",
         "detach_during_pending",
-        "pending_calls_closed",
-        "subscriptions_closed",
         "socket_closed",
         "reconnect_connections",
         "sessions_rebuilt"
-      ]
-    },
-    "CandidateIdentity": {
-      "type": "object",
-      "properties": {
-        "checksum": {
-          "type": "string"
-        },
-        "name": {
-          "type": "string"
-        },
-        "version": {
-          "type": "string"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "name",
-        "version",
-        "checksum"
       ]
     },
     "FixtureEvidence": {
