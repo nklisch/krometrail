@@ -1,7 +1,7 @@
 ---
 id: refactor-derive-cli-error-code-names
 kind: story
-stage: review
+stage: done
 tags: [refactor, infra]
 parent: null
 depends_on: []
@@ -50,3 +50,13 @@ Replace the root CLI's duplicate `error_code_name` registry with the core-owned 
 - Scope: the first five-story Rust foundation batch surfaces only — root `Cargo.toml` and workspace topology, `src/`, all of `crates/krometrail-core/`, skeleton crate manifests/libs, and `tests/rust-runtime-smoke.rs`; deleted legacy TypeScript paths and `.pi/` were excluded.
 - Dispatch: direct-read only, as explicitly requested; no questions or subagents.
 - Value: medium — small implementation, but it removes a full growing-variant duplicate at an external reporting boundary.
+
+## Review (2026-07-12)
+
+**Verdict**: Approve
+
+**Blockers**: none
+**Important**: none
+**Nits**: none
+
+**Notes**: Fast-lane story review. The orchestrator independently reran the 41-test locked Rust gate and confirmed the exact CLI error contract remains green. Verdict: Approve - story verified by implement; fast-lane advance.
