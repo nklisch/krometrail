@@ -38,8 +38,11 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 tracing = "0.1"
 
 [dependencies]
+clap.workspace = true
 krometrail-core.workspace = true
 krometrail-cdp.workspace = true
 krometrail-store.workspace = true
 krometrail-mcp.workspace = true
 temporal-vision.workspace = true
+tokio.workspace = true
+uuid.workspace = true

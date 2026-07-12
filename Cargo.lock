@@ -177,11 +177,14 @@ dependencies = [
 name = "krometrail"
 version = "0.2.20"
 dependencies = [
+ "clap",
  "krometrail-cdp",
  "krometrail-core",
  "krometrail-mcp",
  "krometrail-store",
  "temporal-vision",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]
