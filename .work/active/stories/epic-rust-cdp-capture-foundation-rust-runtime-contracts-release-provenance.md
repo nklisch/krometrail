@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-rust-runtime-contracts-release-provenance
 kind: story
-stage: implementing
+stage: review
 tags: [bug, infra, tests]
 parent: epic-rust-cdp-capture-foundation-rust-runtime-contracts
 depends_on: []
@@ -36,3 +36,13 @@ Close the second adversarial review's release-integrity findings. A release must
 ## Review origin
 
 Filed from the second GPT-5.6 Sol adversarial feature review.
+
+## Implementation notes
+
+- Files changed: `.github/workflows/release.yml`, `scripts/validate-release-tag.sh`, `scripts/verify-release-tag-identity.sh`, `scripts/bump-version.ts`, `tests/distribution-static.sh`.
+- Tests added: exact lightweight and annotated tag fixtures; release-shaped branch rejection; remote tag identity mismatch checks; immutable checkout/publish wiring assertions; temporary-repository developer-install isolation with byte-for-byte repository-target protection; duplicate-name Cargo.lock multiset positive and mutation/rollback negative fixtures.
+- Verification: Rust fmt/check/test/clippy with locked dependencies, installer and distribution shell syntax, distribution static contracts, release workflow YAML parsing, and `git diff --check` all passed.
+- Design decisions: the validator reads `Cargo.toml` from the exact resolved tag commit and emits only its SHA; build and publication jobs consume that single job output. Publication identity is checked before and after upload through the exact remote tag ref. Lock comparisons preserve complete package records while using name/version/source/checksum identity fields and multiplicity, normalizing only source-less workspace package versions.
+- Discrepancies from design: none.
+- Dispatch: direct local reads and implementation only, per caller instruction; no questions or subagents. `.pi/` was not edited or staged.
+- Adjacent issues parked: none.

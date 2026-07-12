@@ -23,18 +23,28 @@ jobs:
   validate-release-tag:
     name: Validate release tag
     runs-on: ubuntu-latest
+    outputs:
+      tag_sha: ${{ steps.resolve-tag.outputs.tag_sha }}
     steps:
-      - name: Checkout release tag
+      - name: Checkout repository with tags
         uses: actions/checkout@v4
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
 
-      - name: Validate tag against Cargo version
-        run: bash scripts/validate-release-tag.sh "$RELEASE_TAG"
+      - name: Validate and resolve exact tag
+        id: resolve-tag
+        run: |
+          set -euo pipefail
+          tag_sha="$(bash scripts/validate-release-tag.sh "$RELEASE_TAG")"
+          test "${#tag_sha}" -eq 40
+          echo "tag_sha=$tag_sha" >> "$GITHUB_OUTPUT"
+          echo "Release tag $RELEASE_TAG resolved once to $tag_sha"
 
   build:
     name: Build ${{ matrix.asset }}
     needs: validate-release-tag
+    env:
+      RELEASE_SHA: ${{ needs.validate-release-tag.outputs.tag_sha }}
     strategy:
       fail-fast: false
       matrix:
@@ -61,10 +71,17 @@ jobs:
             extension: ".exe"
     runs-on: ${{ matrix.runner }}
     steps:
-      - name: Checkout release tag
+      - name: Checkout immutable release commit
         uses: actions/checkout@v4
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: ${{ needs.validate-release-tag.outputs.tag_sha }}
+          fetch-depth: 1
+
+      - name: Verify immutable checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -103,7 +120,21 @@ jobs:
     name: Publish GitHub release
     needs: [validate-release-tag, build]
     runs-on: ubuntu-latest
+    env:
+      RELEASE_SHA: ${{ needs.validate-release-tag.outputs.tag_sha }}
     steps:
+      - name: Checkout immutable release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate-release-tag.outputs.tag_sha }}
+          fetch-depth: 1
+
+      - name: Verify immutable checkout
+        run: test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+
+      - name: Verify publication tag identity before upload
+        run: bash scripts/verify-release-tag-identity.sh "$RELEASE_TAG" "$RELEASE_SHA"
+
       - name: Download release assets
         uses: actions/download-artifact@v4
         with:
@@ -140,3 +171,6 @@ jobs:
             dist/krometrail-darwin-arm64
             dist/krometrail-windows-x64.exe
             dist/checksums.txt
+
+      - name: Verify publication tag identity after upload
+        run: bash scripts/verify-release-tag-identity.sh "$RELEASE_TAG" "$RELEASE_SHA"

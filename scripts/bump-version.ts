@@ -130,45 +130,81 @@ if (mode === "release" && run(["git", "status", "--porcelain"], true).trim() !==
 const lockPath = "Cargo.lock";
 const originalLock = (await Bun.file(lockPath).exists()) ? await Bun.file(lockPath).text() : undefined;
 
-function lockPackages(lock: string): Map<string, string> {
-	const packages = new Map<string, string>();
-	for (const body of lock.split(/^\[\[package\]\]\n/m).slice(1)) {
+type LockPackage = {
+	name: string;
+	version: string;
+	source: string;
+	checksum: string;
+	section: string;
+};
+
+function lockPackages(lock: string): LockPackage[] {
+	const normalized = lock.replaceAll("\r\n", "\n");
+	return normalized.split(/^\[\[package\]\]\n/m).slice(1).map((body) => {
 		const section = `[[package]]\n${body}`;
-		const name = section.match(/^name = "([^"]+)"$/m)?.[1];
-		if (!name) throw new Error("Cargo.lock contains a package without a name");
-		packages.set(name, section);
+		const readField = (field: string): string | undefined => section.match(new RegExp(`^${field} = "([^"]*)"$`, "m"))?.[1];
+		const name = readField("name");
+		const version = readField("version");
+		if (!name || !version) throw new Error("Cargo.lock contains a package without a name or version");
+		return {
+			name,
+			version,
+			source: readField("source") ?? "",
+			checksum: readField("checksum") ?? "",
+			section: section.trimEnd(),
+		};
+	});
+}
+
+function packageMultiset(packages: LockPackage[]): Map<string, number> {
+	const multiset = new Map<string, number>();
+	for (const pkg of packages) {
+		// Include the complete record as well as identity fields. Cargo.lock can
+		// contain duplicate names from different sources or versions.
+		const identity = [pkg.name, pkg.version, pkg.source, pkg.checksum].join("\u0000");
+		const key = `${identity}\u0000${pkg.section}`;
+		multiset.set(key, (multiset.get(key) ?? 0) + 1);
 	}
-	return packages;
+	return multiset;
+}
+
+function sameMultiset(left: Map<string, number>, right: Map<string, number>): boolean {
+	if (left.size !== right.size) return false;
+	for (const [key, count] of left) if (right.get(key) !== count) return false;
+	return true;
+}
+
+function isWorkspacePackage(pkg: LockPackage): boolean {
+	return workspacePackageNames.includes(pkg.name) && pkg.source === "";
 }
 
 function verifyLockRefresh(original: string | undefined, updated: string, expectedVersion: string): void {
-	const originalPackages = original === undefined ? new Map<string, string>() : lockPackages(original);
+	const originalPackages = original === undefined ? [] : lockPackages(original);
 	const updatedPackages = lockPackages(updated);
-	if (original !== undefined && original.split(/\n(?=\[\[package\]\])/m)[0] !== updated.split(/\n(?=\[\[package\]\])/m)[0]) {
-		throw new Error("Cargo.lock header changed during the narrow version refresh");
+	if (original !== undefined) {
+		const originalHeader = original.replaceAll("\r\n", "\n").split("[[package]]", 1)[0];
+		const updatedHeader = updated.replaceAll("\r\n", "\n").split("[[package]]", 1)[0];
+		if (originalHeader !== updatedHeader) throw new Error("Cargo.lock header changed during the narrow version refresh");
 	}
 	for (const packageName of workspacePackageNames) {
-		const before = originalPackages.get(packageName);
-		const after = updatedPackages.get(packageName);
-		if (!after) throw new Error(`Cargo.lock is missing workspace package ${packageName}`);
-		if (before && !new RegExp(`^version = "${current.replaceAll(".", "\\.")}"$`, "m").test(before)) {
+		const before = originalPackages.filter((pkg) => pkg.name === packageName && isWorkspacePackage(pkg));
+		const after = updatedPackages.filter((pkg) => pkg.name === packageName && isWorkspacePackage(pkg));
+		if (after.length !== 1) throw new Error(`Cargo.lock must contain exactly one workspace package ${packageName}`);
+		if (before.length === 1 && before[0].version !== current) {
 			throw new Error(`Cargo.lock workspace package ${packageName} did not start at ${current}`);
 		}
-		if (!new RegExp(`^version = "${expectedVersion.replaceAll(".", "\\.")}"$`, "m").test(after)) {
+		if (before.length > 1) throw new Error(`Cargo.lock contains duplicate workspace package ${packageName}`);
+		if (after[0].version !== expectedVersion) {
 			throw new Error(`Cargo.lock workspace package ${packageName} was not refreshed to ${expectedVersion}`);
 		}
 	}
-	for (const [packageName, before] of originalPackages) {
-		if (!updatedPackages.has(packageName)) {
-			throw new Error(`Cargo.lock package ${packageName} disappeared during the narrow version refresh`);
-		}
-		if (!workspacePackageNames.includes(packageName) && updatedPackages.get(packageName) !== before) {
-			throw new Error(`Cargo.lock dependency ${packageName} changed outside the workspace version refresh`);
-		}
-	}
-	for (const packageName of updatedPackages.keys()) {
-		if (!originalPackages.has(packageName) && !workspacePackageNames.includes(packageName)) {
-			throw new Error(`Cargo.lock gained dependency ${packageName} during the narrow version refresh`);
+	if (original !== undefined) {
+		const normalizedMultiset = (packages: LockPackage[]): Map<string, number> => packageMultiset(packages.map((pkg) => {
+			if (!isWorkspacePackage(pkg)) return pkg;
+			return { ...pkg, version: "<workspace-version>", section: pkg.section.replace(/^version = "[^"]+"$/m, 'version = "<workspace-version>"') };
+		}));
+		if (!sameMultiset(normalizedMultiset(originalPackages), normalizedMultiset(updatedPackages))) {
+			throw new Error("Cargo.lock package multiset changed outside expected workspace version updates");
 		}
 	}
 }

@@ -10,6 +10,7 @@ PAGES="$ROOT/.github/workflows/deploy-pages.yml"
 INSTALLER="$ROOT/scripts/install.sh"
 DEV_INSTALLER="$ROOT/scripts/dev-install.sh"
 VALIDATE="$ROOT/scripts/validate-release-tag.sh"
+VERIFY_TAG="$ROOT/scripts/verify-release-tag-identity.sh"
 BUMP="$ROOT/scripts/bump-version.ts"
 PACKAGE="$ROOT/package.json"
 CARGO="$ROOT/Cargo.toml"
@@ -121,30 +122,81 @@ fi
 require_text "$RELEASE" 'validate-release-tag'
 require_text "$RELEASE" 'needs: validate-release-tag'
 require_text "$RELEASE" 'needs: [validate-release-tag, build]'
+require_text "$RELEASE" 'outputs:'
+require_text "$RELEASE" 'tag_sha:'
+require_text "$RELEASE" 'ref: ${{ needs.validate-release-tag.outputs.tag_sha }}'
+require_text "$RELEASE" 'RELEASE_SHA:'
+require_text "$RELEASE" 'git rev-parse HEAD'
+require_text "$RELEASE" 'verify-release-tag-identity.sh'
+require_text "$RELEASE" 'Verify publication tag identity after upload'
 require_text "$RELEASE" 'workflow_dispatch:'
 require_text "$BUMP" '["cargo", "update", "-p"'
 require_text "$BUMP" '--precise'
 require_text "$BUMP" '--locked'
-require_text "$BUMP" 'verifyLockRefresh'
+require_text "$BUMP" 'packageMultiset'
+require_text "$BUMP" 'source'
+require_text "$BUMP" 'checksum'
+require_text "$BUMP" 'sameMultiset'
 
-# Validate malformed and mismatched tags against isolated manifests before any build.
+# Validate exact tag refs against the manifest at the tagged commit. A branch
+# with a release-shaped name is not a substitute for an existing tag.
 tag_tmp="$(mktemp -d)"
+cleanup_tag() { rm -rf "$tag_tmp"; }
+trap cleanup_tag EXIT
 cat > "$tag_tmp/Cargo.toml" <<'EOF'
 [package]
 name = "tag-fixture"
 version = "1.2.3"
 EOF
-( bash "$VALIDATE" v1.2.3 "$tag_tmp/Cargo.toml" )
-if bash "$VALIDATE" v1.2.4 "$tag_tmp/Cargo.toml" >/dev/null 2>&1; then
-	fail "release tag validation must reject a version mismatch"
+git -C "$tag_tmp" init -q
+git -C "$tag_tmp" config user.email test@example.invalid
+git -C "$tag_tmp" config user.name distribution-test
+git -C "$tag_tmp" add Cargo.toml
+git -C "$tag_tmp" commit -q -m tagged
+git -C "$tag_tmp" tag v1.2.3
+tag_sha="$(cd "$tag_tmp" && bash "$VALIDATE" v1.2.3)"
+test "$tag_sha" = "$(git -C "$tag_tmp" rev-parse HEAD)" || fail "tag validator must print the exact tag commit"
+if ( cd "$tag_tmp" && bash "$VALIDATE" v1.2.4 ) >/dev/null 2>&1; then
+	fail "release tag validation must reject a branch/tag mismatch"
 fi
-if bash "$VALIDATE" v1.2.3-alpha "$tag_tmp/Cargo.toml" >/dev/null 2>&1; then
+if ( cd "$tag_tmp" && bash "$VALIDATE" v1.2.3-alpha ) >/dev/null 2>&1; then
 	fail "release tag validation must reject prerelease tags"
 fi
-rm -rf "$tag_tmp"
+# A release-shaped branch without the exact tag must never be accepted.
+git -C "$tag_tmp" branch v1.2.4
+if ( cd "$tag_tmp" && bash "$VALIDATE" v1.2.4 ) >/dev/null 2>&1; then
+	fail "release tag validation must reject a release-shaped branch"
+fi
+# An annotated tag is valid too, but its manifest and commit are still read
+# through the exact refs/tags name rather than from the similarly named branch.
+sed -i 's/version = "1.2.3"/version = "1.2.4"/' "$tag_tmp/Cargo.toml"
+git -C "$tag_tmp" add Cargo.toml
+git -C "$tag_tmp" commit -q -m annotated
+git -C "$tag_tmp" tag -a -m annotated v1.2.4
+annotated_sha="$(cd "$tag_tmp" && bash "$VALIDATE" v1.2.4)"
+test "$annotated_sha" = "$(git -C "$tag_tmp" rev-parse HEAD)" || fail "annotated tag validator must dereference its commit"
 
-# A stale target binary must be replaced even when it already exists.
+# Verify publication identity for both lightweight and annotated tags.
+( cd "$tag_tmp" && bash "$VERIFY_TAG" v1.2.3 "$tag_sha" . )
+( cd "$tag_tmp" && bash "$VERIFY_TAG" v1.2.4 "$annotated_sha" . )
+wrong_tag_sha="$(printf '%040d' 0)"
+if ( cd "$tag_tmp" && bash "$VERIFY_TAG" v1.2.3 "$wrong_tag_sha" . ) >/dev/null 2>&1; then
+	fail "publication identity verification must reject the wrong SHA"
+fi
+rm -rf "$tag_tmp"
+trap - EXIT
+
+# A stale target binary must be replaced even when it already exists. Run the
+# entire fixture from its temporary repository and prove the real target output
+# was not touched by the fake Cargo builder.
 stale_tmp="$(mktemp -d)"
+repo_binary="$ROOT/target/release/krometrail"
+repo_snapshot="$stale_tmp/repository-krometrail-before"
+repo_had_binary=false
+if [[ -f "$repo_binary" ]]; then
+	repo_had_binary=true
+	cp "$repo_binary" "$repo_snapshot"
+fi
 mkdir -p "$stale_tmp/bin" "$stale_tmp/target/release" "$stale_tmp/home"
 printf '#!/usr/bin/env bash\necho stale-binary\n' > "$stale_tmp/target/release/krometrail"
 chmod +x "$stale_tmp/target/release/krometrail"
@@ -160,10 +212,18 @@ BINARY
 chmod +x target/release/krometrail
 EOF
 chmod +x "$stale_tmp/bin/cargo"
-CARGO_TEST_LOG="$stale_tmp/cargo.log" PATH="$stale_tmp/bin:$PATH" HOME="$stale_tmp/home" KROMETRAIL_INSTALL_DIR="$stale_tmp/install" \
-	bash "$DEV_INSTALLER" > "$stale_tmp/install.log"
+(
+	cd "$stale_tmp"
+	CARGO_TEST_LOG="$stale_tmp/cargo.log" PATH="$stale_tmp/bin:$PATH" HOME="$stale_tmp/home" KROMETRAIL_INSTALL_DIR="$stale_tmp/install" \
+		bash "$DEV_INSTALLER" > "$stale_tmp/install.log"
+)
 require_text "$stale_tmp/cargo.log" 'build --locked --release'
 require_text "$stale_tmp/install.log" 'krometrail-current'
+if $repo_had_binary; then
+	cmp -s "$repo_binary" "$repo_snapshot" || fail "isolated developer install changed repository target/release/krometrail"
+elif [[ -e "$repo_binary" ]]; then
+	fail "isolated developer install created repository target/release/krometrail"
+fi
 rm -rf "$stale_tmp"
 
 # Exercise the version bump's write path in an isolated throwaway Cargo repo.
@@ -196,5 +256,95 @@ if git -C "$tmp" log -1 --format=%s >/dev/null 2>&1; then
 fi
 ( cd "$tmp" && bun bump-version.ts patch --dry-run )
 require_text "$tmp/Cargo.toml" 'version = "1.3.0"'
+
+# Exercise lock refresh validation with duplicate package names. The fake Cargo
+# command keeps this test hermetic while the bump helper still performs its
+# real parser, multiset comparison, and rollback behavior.
+lock_tmp="$(mktemp -d)"
+cat > "$lock_tmp/Cargo.toml" <<'EOF'
+[package]
+name = "lock-fixture"
+version = "2.0.0"
+edition = "2024"
+EOF
+cat > "$lock_tmp/Cargo.lock" <<'EOF'
+# fixture lock
+version = 4
+
+[[package]]
+name = "lock-fixture"
+version = "2.0.0"
+
+[[package]]
+name = "duplicate"
+version = "1.0.0"
+source = "git+https://example.invalid/one"
+checksum = "checksum-one"
+
+[[package]]
+name = "duplicate"
+version = "1.0.0"
+source = "registry+https://example.invalid/index"
+checksum = "checksum-two"
+EOF
+cat > "$lock_tmp/cargo" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == update ]]; then
+	sed '0,/version = "2.0.0"/s//version = "2.0.1"/' Cargo.lock > Cargo.lock.next
+	if [[ "${LOCK_MODE:-positive}" == negative ]]; then
+		sed '0,/checksum-one/s//checksum-changed/' Cargo.lock.next > Cargo.lock
+		rm Cargo.lock.next
+	else
+		mv Cargo.lock.next Cargo.lock
+	fi
+fi
+EOF
+chmod +x "$lock_tmp/cargo"
+cp "$BUMP" "$lock_tmp/bump-version.ts"
+# The fixture's original lock has two distinct duplicate-name records; an
+# unchanged refresh must pass and retain both records.
+(
+	cd "$lock_tmp"
+	LOCK_MODE=positive PATH="$lock_tmp:$PATH" bun bump-version.ts patch --prepare
+)
+test "$(grep -Ec '^name = "duplicate"$' "$lock_tmp/Cargo.lock")" -eq 2 || fail "lock multiset positive fixture lost a duplicate package"
+test "$(grep -Ec '^version = "2\.0\.1"$' "$lock_tmp/Cargo.lock")" -eq 1 || fail "lock multiset positive fixture did not refresh workspace version"
+# Restore the original fixture, then mutate one duplicate's checksum. The
+# helper must reject the change and restore both Cargo files without tagging.
+cat > "$lock_tmp/Cargo.toml" <<'EOF'
+[package]
+name = "lock-fixture"
+version = "2.0.0"
+edition = "2024"
+EOF
+cat > "$lock_tmp/Cargo.lock" <<'EOF'
+# fixture lock
+version = 4
+
+[[package]]
+name = "lock-fixture"
+version = "2.0.0"
+
+[[package]]
+name = "duplicate"
+version = "1.0.0"
+source = "git+https://example.invalid/one"
+checksum = "checksum-one"
+
+[[package]]
+name = "duplicate"
+version = "1.0.0"
+source = "registry+https://example.invalid/index"
+checksum = "checksum-two"
+EOF
+cp "$lock_tmp/Cargo.toml" "$lock_tmp/Cargo.toml.before"
+cp "$lock_tmp/Cargo.lock" "$lock_tmp/Cargo.lock.before"
+if ( cd "$lock_tmp" && LOCK_MODE=negative PATH="$lock_tmp:$PATH" bun bump-version.ts patch --prepare ) >/dev/null 2>&1; then
+	fail "lock multiset negative fixture accepted a duplicate package mutation"
+fi
+cmp -s "$lock_tmp/Cargo.toml" "$lock_tmp/Cargo.toml.before" || fail "failed lock validation did not restore Cargo.toml"
+cmp -s "$lock_tmp/Cargo.lock" "$lock_tmp/Cargo.lock.before" || fail "failed lock validation did not restore Cargo.lock"
+rm -rf "$lock_tmp"
 
 echo "distribution contracts: ok"
