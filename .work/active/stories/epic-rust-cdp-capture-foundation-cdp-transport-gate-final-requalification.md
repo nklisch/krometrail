@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cdp-transport-gate-final-requalification
 kind: story
-stage: review
+stage: done
 tags: [bug, browser, infra, testing]
 parent: epic-rust-cdp-capture-foundation-cdp-transport-gate
 depends_on: [epic-rust-cdp-capture-foundation-cdp-transport-gate-drift-trace-authenticity, epic-rust-cdp-capture-foundation-cdp-transport-gate-provenance-redaction-hardening, epic-rust-cdp-capture-foundation-cdp-transport-gate-capture-deadline-ack-semantics, epic-rust-cdp-capture-foundation-cdp-transport-gate-architecture-ack-order]
@@ -34,3 +34,13 @@ After all second-review repairs commit, capture Linux and hosted macOS evidence 
 - History: prior v2 Linux/macOS reports and decision were moved byte-for-byte to `docs/evidence/cdp-transport/v2/historical/` with provenance README. The generated final decision remains ignored under `target/cdp-transport-gate/final/` and was not generated, installed, or committed by this story; the next story owns it.
 - Discrepancies from design: the supplied final artifacts were already sanitized JSON inputs, so normalization proved byte stability rather than producing a changed sanitized copy; no raw unsanitized payload was promoted into tracked evidence.
 - Adjacent issues parked: none.
+
+## Review (2026-07-12)
+
+**Verdict:** Approve
+
+**Blockers:** none
+**Important:** none
+**Nits:** none
+
+**Notes:** Fast-lane final evidence review independently regenerated the decision, verified canonical report digests, clean exact-revision attestation inventories, exact fixture params/digest, identical trace/runtime results, all 13 passing gates, corrected post-receive ack metrics, and preserved historical reports. Verdict: Approve - story verified by implement; fast-lane advance.
