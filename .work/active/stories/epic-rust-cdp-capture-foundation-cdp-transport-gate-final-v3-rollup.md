@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cdp-transport-gate-final-v3-rollup
 kind: story
-stage: implementing
+stage: review
 tags: [bug, browser, infra, testing]
 parent: epic-rust-cdp-capture-foundation-cdp-transport-gate
 depends_on: [epic-rust-cdp-capture-foundation-cdp-transport-gate-final-requalification]
@@ -23,7 +23,7 @@ Generate and install the final platform-faithful decision solely from accepted p
 - [x] All docs/items agree on exact revision `07b0990c0d9e4fea9057fcab5c35e56691ff69eb`, exact `cdpkit` 0.4.0, report/fixture/trace digests, platform measurements, receive → ack completion → bounded handoff order, limitations, and historical v1/prior-v2 status.
 - [x] The local workflow remains manual exact-ref+SHA only with resolved-SHA artifacts and no cdp-transport push trigger; no production/core leakage landed.
 - [x] Default, spike, cdpkit, and docs build gates pass.
-- [ ] Parent deletes remote `ci/cdp-macos-evidence` as the separately authorized external action.
+- [x] Parent deleted remote `ci/cdp-macos-evidence` as the separately authorized external action; `git ls-remote` confirms it is absent.
 
 ## Local implementation notes
 
@@ -31,4 +31,4 @@ Generate and install the final platform-faithful decision solely from accepted p
 - Current reports bind revision `07b0990c0d9e4fea9057fcab5c35e56691ff69eb`, source-attestation digest `sha256:b4147b12577e980123bfb711d314dd17f22b0639303956e97441af74a8b297b0`, configuration digest `sha256:06388b5f8ad042093d22408dedb8d02d5a04a9e59d485158edc533334bab956e`, browser fixture digest `sha256sum-of-ordered-fixture-files:9b42ae730d12a95772a946bf55e4838a5443b6cb4c536424570219041b6e2a68:84ba666539a996012a781637c1a894d8c7a4789cfca84661bd7cf8b79efa2e13`, candidate trace digest `sha256:6c6be028c511d4d8c28cbecec368a7d4f09e0d87612741d02ac19a8663964d54`, and 942 observations.
 - The exact acknowledgement contract is receive → ack completion → bounded handoff. Linux: 3,601 frames / 60.012037205 s, ack p99/max `0.3979589999999999/2.785427` ms, handoff drops `3,600`. macOS: 3,566 frames / 60.011273167 s, ack p99/max `1.062666/7.058083` ms, handoff drops `3,565`. Ack metrics begin after the frame is returned and exclude receive wait and later handoff.
 - Limitations remain explicit: named event params rather than wildcard/full-envelope receive; unbounded cdpkit subscriber with no queue-depth introspection; RSS process-level proxy; candidate-contract trace is scripted evidence rather than a real-Chrome drift measurement. Selection is exact `cdpkit` 0.4.0; chromey and owned transport remain fallback reasoning only after demonstrated failure.
-- Verification: default/spike/cdpkit full gates, formatting, and docs build passed. `.work/bin/work-view` was restored; `.pi/` was ignored. No remote deletion or push was performed.
+- Verification: default/spike/cdpkit full gates, formatting, and docs build passed. `.work/bin/work-view` was restored; `.pi/` was ignored. The authorized temporary remote branch was deleted after the local decision commit.
