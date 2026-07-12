@@ -8,7 +8,7 @@ depends_on: [epic-rust-cdp-capture-foundation]
 release_binding: null
 gate_origin: null
 created: 2026-07-11
-updated: 2026-07-11
+updated: 2026-07-12
 ---
 
 # Agent Browser Operation
@@ -33,11 +33,13 @@ This epic does not provide historical temporal bundles or derived visual artifac
 - **MCP tool shape:** Expose composable standalone lifecycle, observation, navigation, and interaction tools plus an ordered batch tool. Standalone and batch actions derive from the same action registry and generated contracts rather than maintaining parallel schemas.
 - **Element targeting:** Treat snapshot-scoped accessibility references as the primary target form. Explicit CSS selectors and declared coordinate-space targets remain escape hatches for debugging and DOM-opaque surfaces, and responses identify their weaker validation guarantees.
 - **Browser start default:** Launch an isolated reusable Krometrail-managed profile by default. Attaching to an existing debug-enabled Chrome, selecting another named profile, or requesting a temporary profile remains explicit.
+- **Electron boundary:** Support explicit attachment to Electron renderer targets through a local remote-debugging endpoint using the same capability-probed CDP control surface. Electron's Node main process and Electron-specific native APIs remain out of scope.
 
 ## Anticipated child features
 
 - Accessibility snapshots and generation-scoped actionable references
 - Page and history navigation plus target selection and lifecycle actions
+- Electron renderer attachment and compatibility validation
 - Pointer, keyboard, form, scroll, drag, dialog, and upload interactions
 - Action-specific completion and wait semantics
 - Post-action screenshots and structured live observations

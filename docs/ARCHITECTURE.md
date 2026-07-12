@@ -6,7 +6,7 @@ Krometrail separates browser-specific capture and control from temporal visual a
 
 The system has two central domains:
 
-1. **Browser session recording** — Chrome lifecycle, actions, targets, frames, events, timing, persistence, and temporal queries.
+1. **Browser session recording** — Chrome-compatible renderer lifecycle, actions, targets, frames, events, timing, persistence, and temporal queries.
 2. **Temporal visual analysis** — browser-agnostic transformation of timestamped frames into visual artifacts.
 
 Browser infrastructure depends on domain contracts. The temporal visual crate does not depend on Krometrail.
@@ -169,12 +169,14 @@ Clock conversion is explicit. Krometrail does not compare unrelated native clock
 
 ## Browser Connection
 
+The CDP adapter treats Chrome pages and explicitly debug-enabled Electron renderer processes as the same renderer-target boundary. Electron's Node main process is a separate inspector surface and is not part of the browser adapter.
+
 The CDP adapter owns:
 
 - Chrome binary discovery;
 - isolated profile paths;
 - process launch and shutdown;
-- attachment to an existing local endpoint;
+- attachment to an existing local Chrome-compatible endpoint, including an Electron renderer endpoint;
 - browser WebSocket connection;
 - flat target sessions;
 - domain enablement;
@@ -185,7 +187,7 @@ The adapter exposes typed domain operations through ports defined by `krometrail
 
 The CDP library is replaceable behind the transport boundary. Krometrail requires both typed commands for supported operations and a raw command/event escape hatch for protocol evolution.
 
-A compatibility probe runs when connecting. It reports browser and protocol versions and verifies the required domains before recording begins.
+A compatibility probe runs when connecting. It reports browser and protocol versions, identifies Electron renderer endpoints when detectable, and verifies the required domains before recording begins. Renderer support is decided from the observed protocol capabilities rather than the host application's brand.
 
 ## Target Lifecycle
 

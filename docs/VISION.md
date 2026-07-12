@@ -8,7 +8,7 @@ Krometrail gives local coding agents a visual memory of what a browser did over 
 
 Coding agents can operate browsers, inspect pages, and take screenshots, but their observations are usually isolated moments. This works when a defect persists in the final page state. It fails when the visible problem occurs only during a transition and disappears before the next screenshot.
 
-Krometrail continuously records a controlled Chrome session and lets an agent inspect selected intervals as compact visual evidence. It exposes movement, jitter, flicker, transient layout changes, and incorrect intermediate states without requiring the model to consume video.
+Krometrail continuously records a controlled Chromium renderer session and lets an agent inspect selected intervals as compact visual evidence. The renderer may belong to Chrome, a compatible Chromium browser, or an explicitly debug-enabled Electron application. Krometrail exposes movement, jitter, flicker, transient layout changes, and incorrect intermediate states without requiring the model to consume video.
 
 ## Problem
 
@@ -33,7 +33,7 @@ A coding agent becomes more capable when browser activity is represented as a qu
 Krometrail separates live operation from historical investigation:
 
 1. Browser actions return the current visual and structured page state needed for ordinary agent operation.
-2. Chrome is continuously recorded while the agent works.
+2. The active Chrome-compatible renderer target is continuously recorded while the agent works.
 3. Agent actions and browser activity mark the timeline.
 4. The agent selects a relevant interval after observing a symptom.
 5. Krometrail turns that interval into still visual artifacts.
@@ -73,7 +73,7 @@ Generated artifacts are lossy views of authoritative source frames. They carry t
 
 ## Local-First Operation
 
-Krometrail runs locally and controls Chrome through the Chrome DevTools Protocol. Captured frames and browser evidence remain on the user’s machine.
+Krometrail runs locally and controls Chrome-compatible renderer targets through the Chrome DevTools Protocol. It can explicitly attach to Electron renderer targets when the application exposes a local remote-debugging endpoint; Electron's Node main process is outside this browser-recording boundary. Captured frames and browser evidence remain on the user’s machine.
 
 Recording is bounded by a user-configured disk budget rather than a short fixed history window. Krometrail evicts the oldest unpinned recording segments when the budget is reached. Important intervals can be pinned for continued investigation.
 

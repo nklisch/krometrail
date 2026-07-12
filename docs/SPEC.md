@@ -2,7 +2,7 @@
 
 ## Scope
 
-Krometrail is a local browser-control and temporal-recording system for coding agents. A Rust daemon launches or attaches to Chrome, exposes browser operations through MCP, records visual and browser evidence, retains that evidence within a configurable disk budget, and generates temporal visual artifacts on demand.
+Krometrail is a local browser-control and temporal-recording system for coding agents. A Rust daemon launches Chrome or attaches to a compatible Chromium renderer endpoint, exposes browser operations through MCP, records visual and browser evidence, retains that evidence within a configurable disk budget, and generates temporal visual artifacts on demand.
 
 This specification defines the system’s externally observable behavior. Visual artifact semantics are defined in [VISUAL-EVIDENCE.md](VISUAL-EVIDENCE.md). Internal component boundaries are defined in [ARCHITECTURE.md](ARCHITECTURE.md).
 
@@ -13,9 +13,10 @@ Krometrail supports:
 - Linux;
 - macOS;
 - locally installed Chrome or Chromium-compatible browsers that expose the required Chrome DevTools Protocol domains;
+- Electron renderer processes exposed through an explicitly enabled local remote-debugging endpoint;
 - MCP clients using standard input and output transport.
 
-Krometrail does not require the inspected application to install a package or modify its source code for visual capture and ordinary browser control.
+Krometrail does not require the inspected application to install a package or modify its source code for visual capture and ordinary browser control. Electron attachment requires the application to opt into a local Chromium remote-debugging endpoint; Krometrail does not instrument or control the Electron Node main process.
 
 ## Browser Lifecycle
 
@@ -34,7 +35,7 @@ CDP endpoints bind to the local machine. Krometrail does not expose browser cont
 
 ## Sessions and Targets
 
-A recording session begins when Krometrail connects to a browser and ends when recording is stopped or the connection becomes unrecoverable.
+A recording session begins when Krometrail connects to a browser or Electron renderer endpoint and ends when recording is stopped or the connection becomes unrecoverable.
 
 Each session has:
 
@@ -348,4 +349,5 @@ The system does not guarantee:
 - logical element tracking across recreation;
 - framework-state availability;
 - automatic comparison between interactions or sessions;
+- inspection or control of an Electron Node main process;
 - support for non-Chromium browser engines.
