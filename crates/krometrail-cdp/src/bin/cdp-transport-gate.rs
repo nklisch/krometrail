@@ -11,7 +11,7 @@ use krometrail_cdp::spike::{
 #[cfg(feature = "cdp-spike")]
 use krometrail_cdp::spike::{
     decide_from_files,
-    evidence::{sanitize_evidence, validate_decisive_report},
+    evidence::{is_git_revision, sanitize_evidence, validate_decisive_report},
     write_json_schema,
 };
 
@@ -85,6 +85,12 @@ async fn run() -> Result<(), String> {
             let expected_revision = required_value(&mut args, "--expected-git-revision")?;
             let bytes = std::fs::read(&input).map_err(|error| error.to_string())?;
             let evidence = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+            if !is_git_revision(&expected_revision) {
+                return Err(
+                    "--expected-git-revision must be exactly 40 lowercase hexadecimal characters"
+                        .into(),
+                );
+            }
             validate_decisive_report(&evidence, &platform).map_err(|error| error.to_string())?;
             if evidence.source.git_revision != expected_revision {
                 return Err(format!(
@@ -105,8 +111,13 @@ async fn run() -> Result<(), String> {
                     hard_stop_seconds: cli.hard_stop_seconds,
                 };
                 let factory = CdpkitTransportFactory::new();
-                let result =
-                    run_real_chrome_gate(&factory, configuration.clone(), &cli.chrome_binary).await;
+                let result = run_real_chrome_gate(
+                    &factory,
+                    configuration.clone(),
+                    &cli.chrome_binary,
+                    &cli.expected_git_revision,
+                )
+                .await;
                 match result {
                     Ok(evidence) => {
                         validate_evidence(&evidence).map_err(|error| error.to_string())?;
@@ -121,7 +132,12 @@ async fn run() -> Result<(), String> {
                     Err(error) => {
                         // A failed candidate still emits a complete, schema-valid report. The exact
                         // error is retained in every represented gate; no threshold is waived.
-                        let evidence = failure_evidence(&factory, configuration, &error);
+                        let evidence = failure_evidence(
+                            &factory,
+                            configuration,
+                            &cli.expected_git_revision,
+                            &error,
+                        );
                         validate_evidence(&evidence)
                             .map_err(|validation| validation.to_string())?;
                         write_json(&cli.output, &evidence)?;
@@ -191,11 +207,17 @@ fn parse_gate(args: Vec<String>) -> Result<GateCli, String> {
         }
         index += 2;
     }
+    let expected_git_revision =
+        expected_git_revision.ok_or("--expected-git-revision is required")?;
+    if !is_git_revision(&expected_git_revision) {
+        return Err(
+            "--expected-git-revision must be exactly 40 lowercase hexadecimal characters".into(),
+        );
+    }
     Ok(GateCli {
         chrome_binary: chrome_binary.ok_or("--chrome-binary is required")?,
         output: output.ok_or("--output is required")?,
-        expected_git_revision: expected_git_revision
-            .ok_or("--expected-git-revision is required")?,
+        expected_git_revision,
         minimum_seconds,
         minimum_frames,
         saturation_seconds,

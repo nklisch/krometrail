@@ -22,10 +22,11 @@ pub use error::{QualificationStage, SpikeError, SpikeErrorCode, StageTracker};
 pub use evidence::{
     BrowserEvidence, CandidateIdentity, FixtureEvidence, GateConfiguration, GateProvenance,
     GateResult, GateStatus, PlatformEvidence, RSS_SAMPLE_INTERVAL_SECONDS, RSS_WARMUP_SECONDS,
-    SanitizedEnvironment, SourceIdentity, TransportDecision, TransportDecisionV1,
-    TransportDecisionV2, TransportEvidenceV1, TransportEvidenceV2, TransportGateId,
-    configuration_digest, decide, decide_from_files, rss_measurements_are_valid, sanitize_evidence,
-    validate_decisive_report, validate_evidence, write_json_schema,
+    SanitizedEnvironment, SourceAttestation, SourceFileAttestation, SourceIdentity,
+    TransportDecision, TransportDecisionV1, TransportDecisionV2, TransportEvidenceV1,
+    TransportEvidenceV2, TransportGateId, attest_relevant_source, configuration_digest, decide,
+    decide_from_files, is_git_revision, rss_measurements_are_valid, sanitize_evidence,
+    validate_decisive_report, validate_evidence, validate_source_attestation, write_json_schema,
 };
 pub use fake::{FakeTransport, FakeTransportFactory};
 #[cfg(feature = "cdp-spike-cdpkit")]

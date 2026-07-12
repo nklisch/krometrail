@@ -1,6 +1,8 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    net::IpAddr,
     path::Path,
+    process::Command,
 };
 
 use serde::{Deserialize, Serialize};
@@ -233,6 +235,9 @@ pub struct GateProvenance {
     pub implementation_revision: String,
     /// Digest of the exact serialized GateConfiguration used by the runner.
     pub configuration_sha256: String,
+    /// Deterministic attestation of every tracked input to the qualification gate.
+    /// This is optional only for non-decisive failure/unit evidence.
+    pub source_attestation: Option<SourceAttestation>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -243,6 +248,21 @@ pub struct GateResult {
     pub summary: String,
     pub measurements: BTreeMap<String, f64>,
     pub failure: Option<SpikeError>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SourceFileAttestation {
+    pub path: String,
+    pub sha256: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SourceAttestation {
+    pub revision: String,
+    pub digest: String,
+    pub files: Vec<SourceFileAttestation>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -298,6 +318,219 @@ pub struct TransportDecisionV2 {
 pub type TransportEvidenceV1 = TransportEvidenceV2;
 pub type TransportDecisionV1 = TransportDecisionV2;
 
+const RELEVANT_SOURCE_PATHS: &[&str] = &[
+    "Cargo.toml",
+    "Cargo.lock",
+    "crates/krometrail-cdp/Cargo.toml",
+    "crates/krometrail-cdp/src/bin/cdp-transport-gate.rs",
+    ".github/workflows/cdp-transport-gate.yml",
+];
+const RELEVANT_SOURCE_PREFIXES: &[&str] = &[
+    "crates/krometrail-cdp/src/spike/",
+    "crates/krometrail-cdp/tests/",
+    "tests/fixtures/browser/cdp-transport-gate/",
+];
+
+pub fn is_git_revision(value: &str) -> bool {
+    value.len() == 40
+        && value
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// Enumerate and hash the source that can affect qualification. The expected commit is used as
+/// the byte source so a report cannot bind a digest to a merely similar working tree.
+pub fn attest_relevant_source(expected_revision: &str) -> Result<SourceAttestation, SpikeError> {
+    if !is_git_revision(expected_revision) {
+        return Err(SpikeError::new(
+            SpikeErrorCode::Evidence,
+            "expected source revision must be exactly 40 lowercase hexadecimal characters",
+        ));
+    }
+    let root = repository_root();
+    let resolved = git_output(&root, &["rev-parse", "--verify", "HEAD"])?;
+    if resolved != expected_revision {
+        return Err(SpikeError::new(
+            SpikeErrorCode::Evidence,
+            "qualification checkout is not at the expected source revision",
+        ));
+    }
+    let commit_ref = format!("{expected_revision}^{{commit}}");
+    let commit = git_output(&root, &["rev-parse", "--verify", &commit_ref])?;
+    if commit != expected_revision {
+        return Err(SpikeError::new(
+            SpikeErrorCode::Evidence,
+            "expected source revision does not resolve to the checked-out commit",
+        ));
+    }
+
+    let paths = relevant_paths_at_revision(&root, expected_revision)?;
+    if paths.is_empty() {
+        return Err(SpikeError::new(
+            SpikeErrorCode::Evidence,
+            "relevant qualification source set is empty",
+        ));
+    }
+    let pathspecs = relevant_pathspecs();
+    let mut diff_args = vec!["diff", "--quiet", expected_revision, "--"];
+    diff_args.extend(pathspecs.iter().map(String::as_str));
+    let mut cached_diff_args = vec!["diff", "--cached", "--quiet", expected_revision, "--"];
+    cached_diff_args.extend(pathspecs.iter().map(String::as_str));
+    if git_status(&root, &diff_args) || git_status(&root, &cached_diff_args) {
+        return Err(SpikeError::new(
+            SpikeErrorCode::Evidence,
+            "relevant tracked qualification source differs from the expected revision",
+        ));
+    }
+    let mut untracked_args = vec!["ls-files", "--others", "--exclude-standard", "--"];
+    untracked_args.extend(pathspecs.iter().map(String::as_str));
+    let untracked = git_output_allow_empty(&root, &untracked_args)?;
+    if !untracked.is_empty() {
+        return Err(SpikeError::new(
+            SpikeErrorCode::Evidence,
+            "relevant untracked qualification source is present",
+        ));
+    }
+
+    let mut files = Vec::with_capacity(paths.len());
+    for path in paths {
+        let expected = git_bytes(&root, expected_revision, &path)?;
+        let current_path = root.join(&path);
+        let current = std::fs::read(&current_path).map_err(|error| {
+            SpikeError::new(
+                SpikeErrorCode::Io,
+                format!("cannot read relevant qualification source: {error}"),
+            )
+        })?;
+        if current != expected {
+            return Err(SpikeError::new(
+                SpikeErrorCode::Evidence,
+                "relevant tracked qualification source differs from the expected revision",
+            ));
+        }
+        files.push(SourceFileAttestation {
+            path,
+            sha256: sha256_digest(&expected),
+        });
+    }
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+    let digest = source_attestation_digest(expected_revision, &files)?;
+    Ok(SourceAttestation {
+        revision: expected_revision.into(),
+        digest,
+        files,
+    })
+}
+
+pub fn validate_source_attestation(attestation: &SourceAttestation) -> Result<(), SpikeError> {
+    if !is_git_revision(&attestation.revision)
+        || !is_sha256_digest(&attestation.digest)
+        || attestation.files.is_empty()
+        || attestation
+            .files
+            .windows(2)
+            .any(|files| files[0].path >= files[1].path)
+        || attestation
+            .files
+            .iter()
+            .any(|file| !is_relevant_source_path(&file.path) || !is_sha256_digest(&file.sha256))
+        || source_attestation_digest(&attestation.revision, &attestation.files)?
+            != attestation.digest
+    {
+        return Err(SpikeError::new(
+            SpikeErrorCode::Evidence,
+            "source attestation is malformed or its digest does not match",
+        ));
+    }
+    Ok(())
+}
+
+fn source_attestation_digest(
+    revision: &str,
+    files: &[SourceFileAttestation],
+) -> Result<String, SpikeError> {
+    let encoded = serde_json::to_vec(&(revision, files))
+        .map_err(|error| SpikeError::new(SpikeErrorCode::Evidence, error.to_string()))?;
+    Ok(sha256_digest(&encoded))
+}
+
+fn repository_root() -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+fn relevant_pathspecs() -> Vec<String> {
+    RELEVANT_SOURCE_PATHS
+        .iter()
+        .chain(RELEVANT_SOURCE_PREFIXES)
+        .map(|path| (*path).to_owned())
+        .collect()
+}
+
+fn relevant_paths_at_revision(root: &Path, revision: &str) -> Result<Vec<String>, SpikeError> {
+    let pathspecs = relevant_pathspecs();
+    let mut args = vec!["ls-tree", "-r", "--name-only", revision, "--"];
+    args.extend(pathspecs.iter().map(String::as_str));
+    let output = git_command(root, &args)?;
+    let output = String::from_utf8(output).map_err(|error| {
+        SpikeError::new(
+            SpikeErrorCode::Evidence,
+            format!("git returned non-UTF-8 qualification paths: {error}"),
+        )
+    })?;
+    let mut paths = output.lines().map(str::to_owned).collect::<Vec<_>>();
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
+fn is_relevant_source_path(path: &str) -> bool {
+    RELEVANT_SOURCE_PATHS.contains(&path)
+        || RELEVANT_SOURCE_PREFIXES
+            .iter()
+            .any(|prefix| path.starts_with(prefix))
+}
+
+fn git_bytes(root: &Path, revision: &str, path: &str) -> Result<Vec<u8>, SpikeError> {
+    git_command_bytes(root, &["show", &format!("{revision}:{path}")])
+}
+
+fn git_output(root: &Path, args: &[&str]) -> Result<String, SpikeError> {
+    let output = git_command(root, args)?;
+    Ok(String::from_utf8_lossy(&output).trim().to_owned())
+}
+
+fn git_output_allow_empty(root: &Path, args: &[&str]) -> Result<String, SpikeError> {
+    git_output(root, args)
+}
+
+fn git_status(root: &Path, args: &[&str]) -> bool {
+    Command::new("git")
+        .current_dir(root)
+        .args(args)
+        .status()
+        .map(|status| !status.success())
+        .unwrap_or(true)
+}
+
+fn git_command(root: &Path, args: &[&str]) -> Result<Vec<u8>, SpikeError> {
+    git_command_bytes(root, args)
+}
+
+fn git_command_bytes(root: &Path, args: &[&str]) -> Result<Vec<u8>, SpikeError> {
+    let output = Command::new("git")
+        .current_dir(root)
+        .args(args)
+        .output()
+        .map_err(|error| SpikeError::new(SpikeErrorCode::Io, format!("cannot run git: {error}")))?;
+    if !output.status.success() {
+        return Err(SpikeError::new(
+            SpikeErrorCode::Evidence,
+            "git qualification provenance command failed",
+        ));
+    }
+    Ok(output.stdout)
+}
+
 pub fn validate_evidence(value: &TransportEvidenceV1) -> Result<(), SpikeError> {
     if value.schema_version != EVIDENCE_SCHEMA_VERSION {
         return Err(SpikeError::new(
@@ -340,6 +573,23 @@ pub fn validate_evidence(value: &TransportEvidenceV1) -> Result<(), SpikeError> 
         ));
     }
     for gate in &value.gates {
+        let has_failure = gate.failure.is_some();
+        if (gate.status == GateStatus::Pass) == has_failure {
+            return Err(SpikeError::for_gate(
+                SpikeErrorCode::Evidence,
+                gate.id,
+                "gate status and failure payload are inconsistent",
+            ));
+        }
+        if let Some(failure) = &gate.failure {
+            if failure.gate != Some(gate.id) {
+                return Err(SpikeError::for_gate(
+                    SpikeErrorCode::Evidence,
+                    gate.id,
+                    "gate failure payload is bound to a different gate",
+                ));
+            }
+        }
         for measurement in gate.measurements.values() {
             if !measurement.is_finite() {
                 return Err(SpikeError::for_gate(
@@ -372,6 +622,30 @@ pub fn validate_evidence(value: &TransportEvidenceV1) -> Result<(), SpikeError> 
         }
     }
     validate_observed_deadlines(value)?;
+    if let Some(attestation) = &value.gate_provenance.source_attestation {
+        validate_source_attestation(attestation)?;
+        if attestation.revision != value.source.git_revision {
+            return Err(SpikeError::new(
+                SpikeErrorCode::Evidence,
+                "source attestation revision does not match report provenance",
+            ));
+        }
+    }
+    let failure_report = !value.gates.is_empty()
+        && value
+            .gates
+            .iter()
+            .all(|gate| gate.status != GateStatus::Pass);
+    let unavailable_provenance = value.source.git_revision == "unavailable"
+        && value.gate_provenance.implementation_revision == "unavailable";
+    let exact_provenance = is_git_revision(&value.source.git_revision)
+        && is_git_revision(&value.gate_provenance.implementation_revision);
+    if !(exact_provenance || (failure_report && unavailable_provenance)) {
+        return Err(SpikeError::new(
+            SpikeErrorCode::Evidence,
+            "evidence source and implementation revisions must be lowercase full 40-hex SHAs",
+        ));
+    }
     if let Some(contract) = &value.candidate_contract {
         validate_candidate_contract(contract)?;
     }
@@ -586,67 +860,136 @@ pub fn sanitize_evidence(value: TransportEvidenceV1) -> Result<TransportEvidence
 }
 
 fn validate_sanitized_strings(value: &TransportEvidenceV1) -> Result<(), SpikeError> {
-    let strings = [
-        &value.candidate.name,
-        &value.candidate.version,
-        &value.candidate.checksum,
-        &value.source.git_revision,
-        &value.source.protocol_revision,
-        &value.source.rust_version,
-        &value.environment.platform,
-        &value.environment.architecture,
-        &value.browser.product,
-        &value.browser.protocol,
-        &value.browser.revision,
-        &value.fixture.name,
-        &value.fixture.sha256,
-        &value.gate_provenance.implementation_revision,
-        &value.gate_provenance.configuration_sha256,
-    ];
-    for text in strings {
-        if contains_machine_detail(text) {
-            return Err(SpikeError::new(
-                SpikeErrorCode::Evidence,
-                "evidence contains a path or endpoint",
-            ));
+    let encoded = serde_json::to_value(value)
+        .map_err(|error| SpikeError::new(SpikeErrorCode::Evidence, error.to_string()))?;
+    fn walk(value: &serde_json::Value) -> bool {
+        match value {
+            serde_json::Value::String(text) => contains_machine_detail(text),
+            serde_json::Value::Array(values) => values.iter().any(walk),
+            serde_json::Value::Object(values) => values.values().any(walk),
+            serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {
+                false
+            }
         }
     }
-    for gate in &value.gates {
-        if contains_machine_detail(&gate.summary) {
-            return Err(SpikeError::for_gate(
-                SpikeErrorCode::Evidence,
-                gate.id,
-                "gate summary contains a path or endpoint",
-            ));
-        }
-    }
-    for text in &value.limitations {
-        if contains_machine_detail(text) {
-            return Err(SpikeError::new(
-                SpikeErrorCode::Evidence,
-                "limitation contains a path or endpoint",
-            ));
-        }
+    if walk(&encoded) {
+        return Err(SpikeError::new(
+            SpikeErrorCode::Evidence,
+            "evidence contains a private path, endpoint, URL, or credential",
+        ));
     }
     Ok(())
 }
 
 fn contains_machine_detail(text: &str) -> bool {
-    text.contains("ws://")
-        || text.contains("wss://")
-        || text.contains("file://")
-        || text.contains("/home/")
-        || text.contains("/Users/")
-        || text.contains("/tmp/")
-        || text.contains("\\\\")
-        || text.contains("127.0.0.1")
-        || text.contains("localhost")
-        || text.contains("--user-data-dir")
-        || text.contains("--remote-debugging-port")
-        || text.contains("PASSWORD=")
-        || text.contains("TOKEN=")
-        || text.contains("HOME=")
-        || text.contains("USER=")
+    let lower = text.to_ascii_lowercase();
+    if ["http://", "https://", "ws://", "wss://", "file://"]
+        .iter()
+        .any(|prefix| lower.contains(prefix))
+        || lower.contains("localhost")
+        || lower.contains("--user-data-dir")
+        || lower.contains("--remote-debugging-port")
+        || lower.contains("/home/")
+        || lower.contains("/users/")
+        || lower.contains("/private/")
+        || lower.contains("/tmp/")
+        || lower.contains("/var/")
+        || lower.contains("/root/")
+        || lower.contains("/workspace/")
+        || lower.contains("/build/")
+        || lower.contains("\\\\")
+        || lower.contains("c:\\")
+        || lower.contains("c:/")
+        || has_absolute_path(&lower)
+        || has_ip_endpoint(&lower)
+        || has_sensitive_assignment(&lower)
+    {
+        return true;
+    }
+    false
+}
+
+fn has_absolute_path(text: &str) -> bool {
+    text.char_indices().any(|(index, character)| {
+        character == '/'
+            && (index == 0
+                || text[..index].chars().next_back().is_some_and(|previous| {
+                    previous.is_whitespace() || "([{'\"=:".contains(previous)
+                }))
+    })
+}
+
+fn has_ip_endpoint(text: &str) -> bool {
+    text.split(|character: char| {
+        character.is_whitespace()
+            || matches!(
+                character,
+                '[' | ']' | '(' | ')' | '{' | '}' | ',' | ';' | '"' | '='
+            )
+    })
+    .filter(|token| !token.is_empty())
+    .any(is_ip_literal_or_endpoint)
+}
+
+fn is_ip_literal_or_endpoint(token: &str) -> bool {
+    let token = token.trim_matches(|character: char| ".,:;".contains(character));
+    if token.parse::<IpAddr>().is_ok() {
+        return true;
+    }
+    if let Some(bracketed) = token.strip_prefix('[') {
+        if let Some((host, port)) = bracketed.split_once("]:") {
+            return port.parse::<u16>().is_ok() && host.parse::<IpAddr>().is_ok();
+        }
+    }
+    token
+        .rsplit_once(':')
+        .is_some_and(|(host, port)| port.parse::<u16>().is_ok() && host.parse::<IpAddr>().is_ok())
+}
+
+fn has_sensitive_assignment(text: &str) -> bool {
+    const SENSITIVE_KEYS: &[&str] = &[
+        "password",
+        "passwd",
+        "passphrase",
+        "token",
+        "secret",
+        "api_key",
+        "apikey",
+        "authorization",
+        "credential",
+        "credentials",
+        "username",
+        "user",
+        "login",
+        "email",
+        "cookie",
+        "session",
+        "bearer",
+    ];
+
+    for key in SENSITIVE_KEYS {
+        let mut rest = text;
+        while let Some(index) = rest.find(key) {
+            let before = &rest[..index];
+            let after = &rest[index + key.len()..];
+            let valid_boundary = before
+                .chars()
+                .next_back()
+                .is_none_or(|character| !character.is_ascii_alphanumeric() && character != '_');
+            let after_boundary = after
+                .chars()
+                .next()
+                .is_none_or(|character| !character.is_ascii_alphanumeric() && character != '_');
+            if valid_boundary && after_boundary {
+                let assignment = after.trim_start();
+                if assignment.starts_with('=') || assignment.starts_with(':') {
+                    return true;
+                }
+            }
+            rest = &rest[index + key.len()..];
+        }
+    }
+    false
 }
 
 const CDPKIT_NAME: &str = "cdpkit";
@@ -875,13 +1218,31 @@ pub fn validate_decisive_report(
             "decisive evidence uses an unexpected fixture identity",
         ));
     }
-    if report.gate_provenance.implementation_revision == "unavailable"
+    if !is_git_revision(&report.source.git_revision)
+        || report.gate_provenance.implementation_revision != report.source.git_revision
         || report.gate_provenance.configuration_sha256
             != configuration_digest(&report.configuration)
     {
         return Err(SpikeError::new(
             SpikeErrorCode::Evidence,
             "decisive evidence lacks immutable gate implementation/configuration provenance",
+        ));
+    }
+    let attestation = report
+        .gate_provenance
+        .source_attestation
+        .as_ref()
+        .ok_or_else(|| {
+            SpikeError::new(
+                SpikeErrorCode::Evidence,
+                "decisive evidence lacks relevant-source attestation",
+            )
+        })?;
+    let current_attestation = attest_relevant_source(&report.source.git_revision)?;
+    if attestation != &current_attestation {
+        return Err(SpikeError::new(
+            SpikeErrorCode::Evidence,
+            "decisive evidence source attestation does not match the clean qualification tree",
         ));
     }
     let candidate_contract = report.candidate_contract.as_ref().ok_or_else(|| {
@@ -1098,6 +1459,7 @@ mod tests {
             gate_provenance: GateProvenance {
                 implementation_revision: revision.into(),
                 configuration_sha256: configuration_digest(&configuration),
+                source_attestation: None,
             },
             configuration,
             gates: Vec::new(),

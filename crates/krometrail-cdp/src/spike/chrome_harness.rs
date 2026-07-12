@@ -84,7 +84,7 @@ use super::{
         BrowserEvidence, EVIDENCE_SCHEMA_VERSION, FixtureEvidence, GateConfiguration,
         GateProvenance, GateResult, GateStatus, RSS_SAMPLE_INTERVAL_SECONDS, RSS_WARMUP_SECONDS,
         SanitizedEnvironment, SourceIdentity, TransportEvidenceV1, TransportGateId,
-        configuration_digest, rss_measurements_are_valid,
+        attest_relevant_source, configuration_digest, rss_measurements_are_valid,
     },
     fixture_server::StaticFixtureServer,
     scenarios::run_candidate_wire_contract_with_stage,
@@ -183,13 +183,20 @@ pub async fn run_real_chrome_gate(
     factory: &dyn SpikeTransportFactory,
     configuration: GateConfiguration,
     chrome_binary: &Path,
+    expected_revision: &str,
 ) -> Result<TransportEvidenceV1, SpikeError> {
     let hard_stop_seconds = configuration.hard_stop_seconds;
     let stage = StageTracker::new(QualificationStage::Initializing);
     run_with_hard_stop_stage(
         hard_stop_seconds,
         stage.clone(),
-        run_real_chrome_gate_inner(factory, configuration, chrome_binary, stage),
+        run_real_chrome_gate_inner(
+            factory,
+            configuration,
+            chrome_binary,
+            expected_revision,
+            stage,
+        ),
     )
     .await
 }
@@ -198,8 +205,10 @@ async fn run_real_chrome_gate_inner(
     factory: &dyn SpikeTransportFactory,
     configuration: GateConfiguration,
     chrome_binary: &Path,
+    expected_revision: &str,
     stage: StageTracker,
 ) -> Result<TransportEvidenceV1, SpikeError> {
+    let source_attestation = attest_relevant_source(expected_revision)?;
     // Unknown future events cannot be made to occur in real Chrome. Run the exact candidate
     // contract against the wire-connected scripted controller and bind its trace digest to this
     // report instead of presenting those fixtures as a Chrome measurement.
@@ -738,13 +747,20 @@ async fn run_real_chrome_gate_inner(
     let fixture_path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/fixtures/browser/cdp-transport-gate");
     let fixture_sha = sha256_directory(&fixture_path)?;
-    let implementation_revision =
-        command_output("git", &["rev-parse", "HEAD"]).unwrap_or_else(|_| "unavailable".into());
+    let implementation_revision = expected_revision.to_owned();
     let rust_version =
         command_output("rustc", &["--version"]).unwrap_or_else(|_| "unavailable".into());
+    let after_attestation = attest_relevant_source(expected_revision)?;
+    if source_attestation != after_attestation {
+        return Err(SpikeError::new(
+            SpikeErrorCode::Evidence,
+            "relevant qualification source changed during gate execution",
+        ));
+    }
     let gate_provenance = GateProvenance {
         implementation_revision: implementation_revision.clone(),
         configuration_sha256: configuration_digest(&configuration),
+        source_attestation: Some(source_attestation),
     };
     let mut evidence = TransportEvidenceV1 {
         schema_version: EVIDENCE_SCHEMA_VERSION,
@@ -779,6 +795,7 @@ async fn run_real_chrome_gate_inner(
 pub fn failure_evidence(
     factory: &dyn SpikeTransportFactory,
     configuration: GateConfiguration,
+    expected_revision: &str,
     error: &SpikeError,
 ) -> TransportEvidenceV1 {
     let gates = TransportGateId::ALL
@@ -798,7 +815,7 @@ pub fn failure_evidence(
         schema_version: EVIDENCE_SCHEMA_VERSION,
         candidate: factory.candidate(),
         source: SourceIdentity {
-            git_revision: "unavailable".into(),
+            git_revision: expected_revision.to_owned(),
             protocol_revision: "unavailable".into(),
             rust_version: "unavailable".into(),
         },
@@ -816,8 +833,9 @@ pub fn failure_evidence(
             sha256: "unavailable".into(),
         },
         gate_provenance: GateProvenance {
-            implementation_revision: "unavailable".into(),
+            implementation_revision: expected_revision.to_owned(),
             configuration_sha256: configuration_digest(&configuration),
+            source_attestation: attest_relevant_source(expected_revision).ok(),
         },
         configuration,
         gates,
@@ -1452,10 +1470,19 @@ mod tests {
             hard_stop_seconds: 30,
         };
         for _ in 0..2 {
+            let expected_revision =
+                command_output("git", &["rev-parse", "HEAD"]).expect("test checkout revision");
+            // The production gate must reject dirty relevant inputs. A developer checkout with
+            // this test change is therefore not a valid short-gate fixture; the test becomes
+            // live again from a clean commit instead of weakening the production precondition.
+            if attest_relevant_source(&expected_revision).is_err() {
+                return;
+            }
             let evidence = run_real_chrome_gate(
                 &CdpkitTransportFactory::new(),
                 configuration.clone(),
                 chrome,
+                &expected_revision,
             )
             .await
             .expect("short real-Chrome gate should complete");

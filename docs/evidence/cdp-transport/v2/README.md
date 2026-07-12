@@ -32,6 +32,8 @@ sha256: sha256sum-of-ordered-fixture-files:9b42ae730d12a95772a946bf55e4838a5443b
 
 The exact candidate in both reports is `cdpkit` `0.4.0`, Cargo checksum `c3fdb566d913b31e0014391a94c0db4ed871dbb76577dd1b2f2c5f6df158bfaa`. The checksum is independently confirmed by the `cdpkit 0.4.0` entry in the locked dependency graph (`Cargo.lock` / `cargo tree --locked`).
 
+Fresh decisive reports must include `gate_provenance.source_attestation`. The attestation records the expected lowercase full SHA, the sorted SHA-256 digest of every relevant committed file, and each file digest. Qualification computes it before and after the run; any relevant tracked or untracked change, revision mismatch, omitted relevant file, or digest mismatch fails closed. The relevant set includes the workspace and cdpkit manifests, lockfile, gate binary, spike sources, spike tests, workflow, and browser fixtures. `validate-decisive` recomputes the attestation against the current clean checkout, while `validate-and-normalize` recursively rejects paths, endpoints, credentials, usernames, and secret-bearing failure text in every serialized string.
+
 The unchanged thresholds are:
 
 ```text

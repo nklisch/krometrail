@@ -299,6 +299,17 @@
         "implementation_revision": {
           "description": "The immutable source revision of the gate implementation used by the runner.",
           "type": "string"
+        },
+        "source_attestation": {
+          "description": "Deterministic attestation of every tracked input to the qualification gate.\nThis is optional only for non-decisive failure/unit evidence.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SourceAttestation"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "additionalProperties": false,
@@ -394,6 +405,45 @@
       "required": [
         "platform",
         "architecture"
+      ]
+    },
+    "SourceAttestation": {
+      "type": "object",
+      "properties": {
+        "digest": {
+          "type": "string"
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SourceFileAttestation"
+          }
+        },
+        "revision": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "revision",
+        "digest",
+        "files"
+      ]
+    },
+    "SourceFileAttestation": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256"
       ]
     },
     "SourceIdentity": {

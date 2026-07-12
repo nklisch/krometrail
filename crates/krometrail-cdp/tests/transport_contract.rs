@@ -9,11 +9,12 @@ use krometrail_cdp::spike::{
     CandidateRuntimeAssertions, CandidateWireResults, FixtureEvidence, GateConfiguration,
     GateProvenance, GateResult, GateStatus, SanitizedEnvironment, ScriptedCdpPeer, SourceIdentity,
     TransportEvidenceV1, TransportEvidenceV2, TransportGateId, committed_protocol_fixtures,
-    configuration_digest, decide_from_files, ordered_protocol_fixture_digest, validate_evidence,
-    write_json_schema,
+    configuration_digest, decide_from_files, is_git_revision, ordered_protocol_fixture_digest,
+    sanitize_evidence, validate_evidence, write_json_schema,
 };
 use krometrail_cdp::spike::{
-    FakeTransport, FakeTransportFactory, SpikeTransport, TransportScope, run_transport_scenarios,
+    FakeTransport, FakeTransportFactory, SpikeError, SpikeErrorCode, SpikeTransport,
+    TransportScope, run_transport_scenarios,
 };
 
 fn valid_measurement(key: &&str) -> f64 {
@@ -37,7 +38,7 @@ fn evidence(gates: Vec<GateResult>) -> TransportEvidenceV2 {
             checksum: "sha256:published-crate".into(),
         },
         source: SourceIdentity {
-            git_revision: "0123456789abcdef".into(),
+            git_revision: "0123456789abcdef0123456789abcdef01234567".into(),
             protocol_revision: "0123456789abcdef".into(),
             rust_version: "1.85".into(),
         },
@@ -62,7 +63,7 @@ fn evidence(gates: Vec<GateResult>) -> TransportEvidenceV2 {
             hard_stop_seconds: 120,
         },
         gate_provenance: GateProvenance {
-            implementation_revision: "0123456789abcdef".into(),
+            implementation_revision: "0123456789abcdef0123456789abcdef01234567".into(),
             configuration_sha256: configuration_digest(&GateConfiguration {
                 minimum_seconds: 60.0,
                 minimum_frames: 1000,
@@ -70,6 +71,7 @@ fn evidence(gates: Vec<GateResult>) -> TransportEvidenceV2 {
                 saturation_attempts: 100,
                 hard_stop_seconds: 120,
             }),
+            source_attestation: None,
         },
         gates,
         limitations: vec!["named event parameters are not wildcard envelopes".into()],
@@ -133,6 +135,13 @@ async fn fake_disconnect_and_rebuild_are_explicit_and_deterministic() {
         fake.attach_flat_page("target-b").await.unwrap(),
         TransportScope::session("session-b")
     );
+}
+
+#[test]
+fn revisions_require_lowercase_full_shas() {
+    assert!(is_git_revision("0123456789abcdef0123456789abcdef01234567"));
+    assert!(!is_git_revision("0123456789ABCDEF0123456789abcdef01234567"));
+    assert!(!is_git_revision("0123456789abcdef"));
 }
 
 #[test]
@@ -267,6 +276,78 @@ fn evidence_rejects_duplicate_or_missing_gates_non_finite_values_and_leaks() {
     let mut leaked = valid;
     leaked.source.git_revision = "/home/operator/project".into();
     assert!(validate_evidence(&leaked).is_err());
+
+    let mut pass_with_failure = evidence(
+        TransportGateId::ALL
+            .into_iter()
+            .map(|id| GateResult {
+                id,
+                status: GateStatus::Pass,
+                summary: "fixture passed".into(),
+                measurements: id
+                    .measurement_keys()
+                    .iter()
+                    .map(|key| ((*key).into(), valid_measurement(key)))
+                    .collect(),
+                failure: None,
+            })
+            .collect(),
+    );
+    pass_with_failure.gates[0].failure = Some(SpikeError::for_gate(
+        SpikeErrorCode::Evidence,
+        pass_with_failure.gates[0].id,
+        "unexpected failure",
+    ));
+    assert!(validate_evidence(&pass_with_failure).is_err());
+
+    let mut fail_without_failure = pass_with_failure.clone();
+    fail_without_failure.gates[0].failure = None;
+    fail_without_failure.gates[0].status = GateStatus::Fail;
+    assert!(validate_evidence(&fail_without_failure).is_err());
+
+    let mut secret_failure = evidence(
+        TransportGateId::ALL
+            .into_iter()
+            .map(|id| GateResult {
+                id,
+                status: GateStatus::Pass,
+                summary: "fixture passed".into(),
+                measurements: id
+                    .measurement_keys()
+                    .iter()
+                    .map(|key| ((*key).into(), valid_measurement(key)))
+                    .collect(),
+                failure: None,
+            })
+            .collect(),
+    );
+    secret_failure.gates[0].summary = "failure: USER = operator TOKEN=hidden".into();
+    assert!(sanitize_evidence(secret_failure).is_err());
+
+    let mut failure_url = evidence(
+        TransportGateId::ALL
+            .into_iter()
+            .map(|id| GateResult {
+                id,
+                status: GateStatus::Pass,
+                summary: "fixture passed".into(),
+                measurements: id
+                    .measurement_keys()
+                    .iter()
+                    .map(|key| ((*key).into(), valid_measurement(key)))
+                    .collect(),
+                failure: None,
+            })
+            .collect(),
+    );
+    failure_url.gates[0].status = GateStatus::Fail;
+    failure_url.gates[0].failure = Some(SpikeError::for_gate(
+        SpikeErrorCode::Evidence,
+        failure_url.gates[0].id,
+        "request failed at ws://127.0.0.1:9222",
+    ));
+    assert!(sanitize_evidence(failure_url).is_err());
+
     let mut unknown = serde_json::to_value(evidence(
         TransportGateId::ALL
             .into_iter()
