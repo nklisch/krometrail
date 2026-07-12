@@ -12,18 +12,36 @@ if (!bump || (prepare && dryRun) || args.some((arg) => arg.startsWith("--") && a
 	process.exit(1);
 }
 
+// Keep section discovery intentionally narrow: release behavior depends on the
+// exact headers this helper names, not on a general TOML parser.
+type TomlSection = {
+	start: number;
+	end: number;
+	content: string;
+};
+
+function findTomlSection(source: string, header: string): TomlSection | undefined {
+	const start = source.indexOf(header);
+	if (start < 0) return undefined;
+
+	const contentStart = start + header.length;
+	const nextSectionOffset = source.slice(contentStart).search(/^\[/m);
+	const end = nextSectionOffset < 0 ? source.length : contentStart + nextSectionOffset;
+	return { start, end, content: source.slice(start, end) };
+}
+
 const semverRe = /^(\d+)\.(\d+)\.(\d+)$/;
 const cargoPath = "Cargo.toml";
 const cargoFile = Bun.file(cargoPath);
 const originalCargo = await cargoFile.text();
-const packageStart = originalCargo.indexOf("[package]");
-if (packageStart < 0) {
+const packageSectionBounds = findTomlSection(originalCargo, "[package]");
+if (!packageSectionBounds) {
 	throw new Error("Cargo.toml is missing the root [package] section");
 }
 
-const nextSectionOffset = originalCargo.slice(packageStart + "[package]".length).search(/^\[/m);
-const packageEnd = nextSectionOffset < 0 ? originalCargo.length : packageStart + "[package]".length + nextSectionOffset;
-const packageSection = originalCargo.slice(packageStart, packageEnd);
+const packageStart = packageSectionBounds.start;
+const packageEnd = packageSectionBounds.end;
+const packageSection = packageSectionBounds.content;
 const nameAssignments = [...packageSection.matchAll(/^\s*name\s*=\s*"([^"]+)"\s*(?:#.*)?$/gm)];
 if (nameAssignments.length !== 1) {
 	throw new Error(`Expected exactly one root [package].name assignment, found ${nameAssignments.length}`);
@@ -68,36 +86,28 @@ let updatedCargo = originalCargo.slice(0, packageStart) + updatedPackageSection 
 // Workspace members inherit their crate version from [workspace.package]. Keep
 // that Cargo-owned metadata in sync without treating it as another product
 // version source; package.json and plugin metadata are intentionally untouched.
-const workspaceStart = updatedCargo.indexOf("[workspace.package]");
-if (workspaceStart >= 0) {
-	const workspaceContentStart = workspaceStart + "[workspace.package]".length;
-	const nextWorkspaceSectionOffset = updatedCargo.slice(workspaceContentStart).search(/^\[/m);
-	const workspaceEnd = nextWorkspaceSectionOffset < 0 ? updatedCargo.length : workspaceContentStart + nextWorkspaceSectionOffset;
-	const workspaceSection = updatedCargo.slice(workspaceStart, workspaceEnd);
-	const workspaceVersions = [...workspaceSection.matchAll(/^\s*version\s*=\s*"([^"]+)"\s*(?:#.*)?$/gm)];
+const workspacePackage = findTomlSection(updatedCargo, "[workspace.package]");
+if (workspacePackage) {
+	const workspaceVersions = [...workspacePackage.content.matchAll(/^\s*version\s*=\s*"([^"]+)"\s*(?:#.*)?$/gm)];
 	if (workspaceVersions.length !== 1 || workspaceVersions[0][1] !== current) {
 		throw new Error("[workspace.package].version must contain exactly the current root package version");
 	}
-	const updatedWorkspaceSection = workspaceSection.replace(versionLine, `$1${nextVersion}$2`);
-	updatedCargo = updatedCargo.slice(0, workspaceStart) + updatedWorkspaceSection + updatedCargo.slice(workspaceEnd);
+	const updatedWorkspaceSection = workspacePackage.content.replace(versionLine, `$1${nextVersion}$2`);
+	updatedCargo = updatedCargo.slice(0, workspacePackage.start) + updatedWorkspaceSection + updatedCargo.slice(workspacePackage.end);
 }
 
 const workspacePackageNames = [rootPackageName];
-const workspaceStartForMembers = originalCargo.indexOf("[workspace]");
-if (workspaceStartForMembers >= 0) {
-	const workspaceContentStart = workspaceStartForMembers + "[workspace]".length;
-	const nextWorkspaceSectionOffset = originalCargo.slice(workspaceContentStart).search(/^\[/m);
-	const workspaceEnd = nextWorkspaceSectionOffset < 0 ? originalCargo.length : workspaceContentStart + nextWorkspaceSectionOffset;
-	const workspaceSection = originalCargo.slice(workspaceStartForMembers, workspaceEnd);
-	const membersMatch = workspaceSection.match(/members\s*=\s*\[([\s\S]*?)\]/m);
+const workspaceMembers = findTomlSection(originalCargo, "[workspace]");
+if (workspaceMembers) {
+	const membersMatch = workspaceMembers.content.match(/members\s*=\s*\[([\s\S]*?)\]/m);
 	if (membersMatch) {
 		for (const memberPath of membersMatch[1].matchAll(/"([^"]+)"/g)) {
 			const memberCargo = await Bun.file(`${memberPath[1]}/Cargo.toml`).text();
-			const memberPackageStart = memberCargo.indexOf("[package]");
-			const memberPackageEndOffset = memberPackageStart < 0 ? -1 : memberCargo.slice(memberPackageStart + "[package]".length).search(/^\[/m);
-			const memberPackageEnd = memberPackageEndOffset < 0 ? memberCargo.length : memberPackageStart + "[package]".length + memberPackageEndOffset;
-			const memberPackageSection = memberCargo.slice(memberPackageStart, memberPackageEnd);
-			const memberName = memberPackageSection.match(/^\s*name\s*=\s*"([^"]+)"\s*(?:#.*)?$/m)?.[1];
+			const memberPackage = findTomlSection(memberCargo, "[package]");
+			if (!memberPackage) {
+				throw new Error(`Workspace member ${memberPath[1]} is missing a root package name`);
+			}
+			const memberName = memberPackage.content.match(/^\s*name\s*=\s*"([^"]+)"\s*(?:#.*)?$/m)?.[1];
 			if (!memberName) {
 				throw new Error(`Workspace member ${memberPath[1]} is missing a root package name`);
 			}

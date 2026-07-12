@@ -1,7 +1,7 @@
 ---
 id: refactor-centralize-cargo-toml-section-parsing
 kind: story
-stage: implementing
+stage: review
 tags: [refactor, infra]
 parent: null
 depends_on: []
@@ -27,10 +27,10 @@ Extract one local helper that resolves an exact TOML section header and returns 
 
 ## Acceptance criteria
 
-- [ ] `scripts/bump-version.ts` has one section-boundary helper used for `[package]`, `[workspace.package]`, `[workspace]`, and workspace-member `[package]` lookup.
-- [ ] Existing required and optional section semantics and exact release side effects remain unchanged.
-- [ ] `bash tests/distribution-static.sh` passes, including prepare, dry-run, lock-refresh, rollback, and duplicate-package fixtures.
-- [ ] `bun scripts/bump-version.ts patch --dry-run` succeeds without changing tracked files.
+- [x] `scripts/bump-version.ts` has one section-boundary helper used for `[package]`, `[workspace.package]`, `[workspace]`, and workspace-member `[package]` lookup.
+- [x] Existing required and optional section semantics and exact release side effects remain unchanged.
+- [x] `bash tests/distribution-static.sh` passes, including prepare, dry-run, lock-refresh, rollback, and duplicate-package fixtures.
+- [x] `bun scripts/bump-version.ts patch --dry-run` succeeds without changing tracked files.
 
 ## Risk and rollback
 
@@ -43,3 +43,10 @@ Extract one local helper that resolves an exact TOML section header and returns 
 - Scope: second mandatory five-story autopilot cadence; distribution workflows/scripts/manifests/static contract tests, current contributor/docs navigation surfaces, and remediation-touched core invariant/enum modules.
 - Dispatch: direct-read only as required; no questions or subagents. `.pi/`, escalated review metadata, generated lockfile internals, and the existing `refactor-derive-cli-error-code-names` finding were excluded.
 - Value: medium — a small local abstraction removes repeated release-critical parsing without introducing another parser dependency.
+
+## Implementation notes
+- Files changed: `scripts/bump-version.ts`; this story record.
+- Tests added: none; existing isolated distribution coverage exercises the helper through root/workspace parsing, prepare, dry-run, lock refresh, rollback, and duplicate-package fixtures.
+- Discrepancies from design: none.
+- Adjacent issues parked: none.
+- Verification: `bash tests/distribution-static.sh`; `bun scripts/bump-version.ts patch --dry-run`; Rust gates (`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --locked`, `cargo test --workspace --all-targets --locked`, `cargo clippy --workspace --all-targets --locked -- -D warnings`).
