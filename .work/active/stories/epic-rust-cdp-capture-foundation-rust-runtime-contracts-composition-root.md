@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-rust-runtime-contracts-composition-root
 kind: story
-stage: review
+stage: done
 tags: [browser, infra]
 parent: epic-rust-cdp-capture-foundation-rust-runtime-contracts
 depends_on: [epic-rust-cdp-capture-foundation-rust-runtime-contracts-core-ports]
@@ -48,3 +48,13 @@ This story does not select a production CDP adapter or claim browser capture wor
 - [x] Root composition preserves the architecture dependency direction.
 - [x] `cargo fmt --all --check`, check, test, and clippy with denied warnings pass across the workspace.
 - [x] Record the green pre-teardown gate in this story's implementation notes.
+
+## Review (2026-07-12)
+
+**Verdict**: Approve
+
+**Blockers**: none
+**Important**: none
+**Nits**: none
+
+**Notes**: Fast-lane story review. The green pre-teardown gate is recorded, and the orchestrator independently reran formatting, all 29 workspace tests, and clippy successfully. Verdict: Approve - story verified by implement; fast-lane advance.
