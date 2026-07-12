@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cdp-transport-gate-process-tree-runtime-root
 kind: story
-stage: review
+stage: done
 tags: [bug, browser, infra, testing]
 parent: epic-rust-cdp-capture-foundation-cdp-transport-gate
 depends_on: []
@@ -34,3 +34,13 @@ Launch gate Chrome in an isolated process group/session and terminate/reap the e
 - Gate profiles are unique per launch. Startup removes only stale `/tmp/krometrail-cdp-gate-*` directories after the same ownership check and logs the removed/retained count. Added real-Chrome cancellation and active-reference cleanup regressions; missing Chrome emits an explicit `SKIP`, while invalid Chrome paths and attestation failures fail.
 - Qualification paths now use a validated runtime/CLI `--repo-root`; attestation, fixtures, decisive validation, and decision loading all use that root. Added an `attest` command and a shared-target cross-worktree script/workflow check that deletes the build worktree before invoking the cached binary.
 - Verification: `cargo fmt --all -- --check`; default, `cdp-spike`, and `cdp-spike-cdpkit` tests plus denied-warning clippy; the full candidate suite passed 32 tests including real Chrome; and `scripts/cdp-transport-gate-cross-worktree.sh` passed after deleting its build worktree. Before final verification, three pre-existing gate profiles were retained only while 24 matching Chrome command lines were verified, then terminated and removed; subsequent cleanup found none. No evidence artifacts, production adapter, or core files changed.
+
+## Review (2026-07-13)
+
+**Verdict:** Approve
+
+**Blockers:** none
+**Important:** none
+**Nits:** none
+
+**Notes:** Fast-lane runtime review reran 32 candidate tests including real Chrome, verified isolated process-group signaling and descendant/profile cleanup, confirmed zero remaining gate profiles/processes, validated explicit runtime repo roots and cross-worktree cached-binary coverage, and passed denied-warning clippy. Verdict: Approve - story verified by implement; fast-lane advance.
