@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-rust-runtime-contracts-core-ports
 kind: story
-stage: review
+stage: done
 tags: [browser, infra]
 parent: epic-rust-cdp-capture-foundation-rust-runtime-contracts
 depends_on: [epic-rust-cdp-capture-foundation-rust-runtime-contracts-core-domain]
@@ -44,3 +44,13 @@ The browser-facing request/response shape is provisional and may be revised by t
 - [x] Structured errors round-trip with stable snake-case codes and safe context.
 - [x] Empty user-facing messages/recovery text fail fast.
 - [x] Metadata/source scans prove no infrastructure-specific type leaks through core.
+
+## Review (2026-07-12)
+
+**Verdict**: Approve
+
+**Blockers**: none
+**Important**: none
+**Nits**: none
+
+**Notes**: Fast-lane story review. The implementation record reports the complete workspace gate green; the orchestrator independently reran formatting, 26 core tests, and workspace clippy successfully. Verdict: Approve - story verified by implement; fast-lane advance.
