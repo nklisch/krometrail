@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-rust-runtime-contracts-exhaustive-contract-coverage
 kind: story
-stage: implementing
+stage: review
 tags: [tests, infra]
 parent: epic-rust-cdp-capture-foundation-rust-runtime-contracts
 depends_on: [epic-rust-cdp-capture-foundation-rust-runtime-contracts-core-invariant-boundaries]
@@ -33,3 +33,13 @@ Fulfill the feature design's exhaustive contract-test requirement after invarian
 ## Review origin
 
 Filed from the GPT-5.6 Sol Phase 2 adversarial feature review.
+
+## Implementation notes
+
+- Files changed: `crates/krometrail-core/src/lib.rs`, `crates/krometrail-core/src/lifecycle.rs`, `crates/krometrail-core/src/recording/gap.rs`, `crates/krometrail-core/src/error.rs`.
+- Authoritative registries: a shared stable-enum declaration generates `ALL` and stable Serde names for `CaptureGapReason` and `ErrorCode`; the lifecycle declaration generates `ALL`, `TRANSITIONS`, and names for both lifecycle types.
+- Tests added: exhaustive Cartesian-pair tests for all session and target lifecycle states, registry-closure checks, and Serde/name round trips for every gap reason and error code (including structured errors).
+- Dependency readiness: verified with `.work/bin/work-view --stage done --paths`; `epic-rust-cdp-capture-foundation-rust-runtime-contracts-core-invariant-boundaries` was present in the done set.
+- Exact quality gate: `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --locked`; `cargo test --workspace --all-targets --locked`; `cargo clippy --workspace --all-targets --locked -- -D warnings` — all passed.
+- Discrepancies from design: none.
+- Adjacent issues parked: none.

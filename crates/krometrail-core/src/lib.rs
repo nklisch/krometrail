@@ -1,5 +1,34 @@
 //! Stable, infrastructure-free domain contracts for browser recording.
 
+macro_rules! define_stable_enum {
+    (
+        $(#[$meta:meta])*
+        $vis:vis enum $name:ident {
+            $( $variant:ident => $stable_name:literal ),+ $(,)?
+        }
+    ) => {
+        $(#[$meta])*
+        #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
+        $vis enum $name {
+            $( #[serde(rename = $stable_name)] $variant ),+
+        }
+
+        impl $name {
+            /// The complete variant registry and the serialized boundary name for each value
+            /// are generated from the same declaration as the enum.
+            pub const ALL: &'static [Self] = &[
+                $(Self::$variant),+
+            ];
+
+            pub const fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $stable_name),+
+                }
+            }
+        }
+    };
+}
+
 pub mod browser;
 pub mod capabilities;
 pub mod error;

@@ -9,16 +9,16 @@ use crate::{
     validation::deserialize_validated,
 };
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CaptureGapReason {
-    IngestionQueueSaturated,
-    PersistenceRejected,
-    SourceSequenceDiscontinuity,
-    TargetHidden,
-    ScreencastPaused,
-    BrowserDisconnected,
-    CaptureStopped,
+define_stable_enum! {
+    pub enum CaptureGapReason {
+        IngestionQueueSaturated => "ingestion_queue_saturated",
+        PersistenceRejected => "persistence_rejected",
+        SourceSequenceDiscontinuity => "source_sequence_discontinuity",
+        TargetHidden => "target_hidden",
+        ScreencastPaused => "screencast_paused",
+        BrowserDisconnected => "browser_disconnected",
+        CaptureStopped => "capture_stopped",
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -131,6 +131,18 @@ mod tests {
     };
 
     const UUID: &str = "123e4567-e89b-12d3-a456-426614174000";
+
+    #[test]
+    fn every_gap_reason_round_trips_with_its_stable_name() {
+        for reason in CaptureGapReason::ALL {
+            let encoded = serde_json::to_string(reason).unwrap();
+            assert_eq!(encoded, format!("\"{}\"", reason.as_str()));
+            assert_eq!(
+                serde_json::from_str::<CaptureGapReason>(&encoded).unwrap(),
+                *reason
+            );
+        }
+    }
 
     #[test]
     fn gap_is_explicit_and_rejects_empty_detail() {

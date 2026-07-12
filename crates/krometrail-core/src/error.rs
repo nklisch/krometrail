@@ -13,20 +13,20 @@ use crate::{
     time::SessionRange,
 };
 
-/// The stable categories exposed at the core boundary.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ErrorCode {
-    InvalidInput,
-    InvalidLifecycleTransition,
-    InvalidTime,
-    NotFound,
-    Unsupported,
-    BrowserDisconnected,
-    CaptureRejected,
-    PersistenceFailed,
-    BudgetExhausted,
-    Internal,
+define_stable_enum! {
+    /// The stable categories exposed at the core boundary.
+    pub enum ErrorCode {
+        InvalidInput => "invalid_input",
+        InvalidLifecycleTransition => "invalid_lifecycle_transition",
+        InvalidTime => "invalid_time",
+        NotFound => "not_found",
+        Unsupported => "unsupported",
+        BrowserDisconnected => "browser_disconnected",
+        CaptureRejected => "capture_rejected",
+        PersistenceFailed => "persistence_failed",
+        BudgetExhausted => "budget_exhausted",
+        Internal => "internal",
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -195,13 +195,20 @@ mod tests {
     }
 
     #[test]
-    fn stable_codes_are_snake_case() {
-        let error = KrometrailError::new(
-            ErrorCode::BrowserDisconnected,
-            NonEmptyText::new("browser connection ended").unwrap(),
-        );
-        let json = serde_json::to_string(&error).unwrap();
-        assert!(json.contains("browser_disconnected"));
+    fn every_error_code_round_trips_with_its_stable_name() {
+        for code in ErrorCode::ALL {
+            let encoded = serde_json::to_string(code).unwrap();
+            assert_eq!(encoded, format!("\"{}\"", code.as_str()));
+            assert_eq!(serde_json::from_str::<ErrorCode>(&encoded).unwrap(), *code);
+
+            let error = KrometrailError::new(*code, NonEmptyText::new("boundary failure").unwrap());
+            let error_json = serde_json::to_string(&error).unwrap();
+            assert!(error_json.contains(code.as_str()));
+            assert_eq!(
+                serde_json::from_str::<KrometrailError>(&error_json).unwrap(),
+                error
+            );
+        }
     }
 
     #[test]
