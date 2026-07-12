@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cdp-transport-gate
 kind: feature
-stage: review
+stage: implementing
 tags: [browser, infra]
 parent: epic-rust-cdp-capture-foundation
 depends_on: [epic-rust-cdp-capture-foundation-rust-runtime-contracts]
@@ -572,4 +572,6 @@ GLM completeness review reproduced all committed reports and decisions and ident
 
 No threshold or requirement was waived. The v1 reports and decision remain historical implementation outputs. Nine evidence-integrity and portability follow-ups were ultimately required after the first review, including exact endpoint binding and runtime nondeterminism discovered during fresh qualification. All 14 child stories are now `stage: done`.
 
-The accepted v2 reports were emitted from exact revision `3d7c96ccf20862c47ab70ffbd7f724dceedfb4d2` on Linux and hosted macOS run `29202919716`; both pass all 13 unchanged gates with identical candidate trace results and canonical observed measurements. The generated platform-faithful decision selects exact cdpkit 0.4.0. The temporary workflow push trigger and remote evidence branch are removed. The feature now returns to `stage: review` for a fresh two-model pass.
+The v2 reports were emitted from exact revision `3d7c96ccf20862c47ab70ffbd7f724dceedfb4d2` on Linux and hosted macOS run `29202919716`; both pass all 13 then-current gates with identical candidate trace results and canonical observed measurements. The generated platform-faithful decision selected exact cdpkit 0.4.0, and temporary workflow paths were removed.
+
+A fresh GLM review approved the remediation, but the second Sol adversarial review reproduced new blockers: protocol-drift checks did not assert committed fixture params; local Linux provenance did not attest a clean source tree; architecture diagrams contradicted acknowledgement order; recursive redaction/status consistency was bypassable; candidate trace equality/results were incomplete; capture deadline/cancellation behavior was unsafe; and latency included frame wait while claiming receive-to-ack timing. The feature is again `stage: implementing`. Six new stories repair these defects, recapture both platforms, and regenerate the decision. No existing evidence is rewritten or waived.
