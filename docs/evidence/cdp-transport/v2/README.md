@@ -121,7 +121,7 @@ Every gate is `pass` with `failure: null` on both reports. Values below are the 
 | disconnect-cleanup | `pending_command_started=1.0`, `pending_calls_closed=1.0`, `subscriptions_closed=1.0`, `close_reason_observed=1.0`, `pending_command_elapsed_seconds=0.010723987`, `subscription_elapsed_seconds=0.010727187` |
 | explicit-reconnect-rebuild | `connections=2.0`, `sessions_rebuilt=2.0`, `elapsed_seconds=0.224187241` |
 
-### macOS (`aarch64`, Chrome/149.0.7827.155, rustc 1.97.0)
+### macOS (`aarch64`, Chrome/149.0.7827.201, rustc 1.97.0)
 
 | Gate | Measurements |
 | --- | --- |
