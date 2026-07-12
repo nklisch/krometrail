@@ -435,9 +435,9 @@ main() {
 	verify_checksum "$TMP_FILE" "$ASSET_NAME"
 
 	# Validate the temporary artifact before replacing an existing installation.
-	# The checksum proves integrity, while --version proves that this host can
-	# actually execute the downloaded release. The installed path is untouched
-	# until both checks pass.
+	# The checksum proves integrity, while the exact --version identity proves
+	# that this host can execute the selected release. The installed path is
+	# untouched until both checks pass.
 	info "Validating downloaded binary..."
 	if ! chmod +x "$TMP_FILE"; then
 		err "Could not make the downloaded artifact executable; existing installation was preserved"
@@ -445,6 +445,15 @@ main() {
 	fi
 	if ! installed_version="$("$TMP_FILE" --version 2>/dev/null)"; then
 		err "Downloaded artifact failed --version; existing installation was preserved"
+		exit 1
+	fi
+	expected_version="${BINARY_NAME} ${VERSION#v}"
+	if [ -z "$installed_version" ]; then
+		err "Downloaded artifact returned empty --version output; expected ${expected_version}; existing installation was preserved"
+		exit 1
+	fi
+	if [ "$installed_version" != "$expected_version" ]; then
+		err "Downloaded artifact reported '${installed_version}', expected '${expected_version}'; existing installation was preserved"
 		exit 1
 	fi
 

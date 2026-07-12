@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-rust-runtime-contracts-installer-identity
 kind: story
-stage: implementing
+stage: review
 tags: [bug, infra, tests]
 parent: epic-rust-cdp-capture-foundation-rust-runtime-contracts
 depends_on: [epic-rust-cdp-capture-foundation-rust-runtime-contracts-rust-installer-gate]
@@ -27,11 +27,21 @@ Complete pre-replacement installer validation by requiring the downloaded execut
 
 ## Acceptance criteria
 
-- [ ] Only the requested Krometrail version can replace the installed binary.
-- [ ] Empty, wrong-product, wrong-version, and failed-download paths are hermetically covered.
-- [ ] Latest-resolved post-cutoff installation succeeds in isolation.
-- [ ] Existing cutoff, preservation, Rust, distribution, and docs gates pass.
+- [x] Only the requested Krometrail version can replace the installed binary.
+- [x] Empty, wrong-product, wrong-version, and failed-download paths are hermetically covered.
+- [x] Latest-resolved post-cutoff installation succeeds in isolation.
+- [x] Existing cutoff, preservation, Rust, distribution, and docs gates pass.
 
 ## Review origin
 
 Filed from the operator-authorized fourth GPT-5.6 Sol adversarial feature review; includes both remaining GLM installer coverage nits.
+
+## Implementation notes
+
+- Execution capability: highest-tier direct implementation; installer and hermetic fixture ownership stayed inline per the caller's no-questions/no-subagents constraint.
+- Review weight: maximum requested by the active autopilot caller; implementation stops at `stage: review` for the review lane.
+- Files changed: `scripts/install.sh`, `tests/installer-fixtures.sh`, `docs/guide/installation.md`, and generated `docs/public/llms-full.txt`.
+- Tests added: exact product/version identity fixtures for empty, wrong-product, and wrong-version output; direct partial asset-download failure; configurable latest-release response with post-cutoff success; preservation and temporary-file cleanup assertions for every failure path.
+- Verification: POSIX shell syntax, hermetic installer fixtures, distribution contracts, Cargo fmt/check/test/clippy with locked dependencies, and `bun run docs:build` all pass.
+- Discrepancies from design: none.
+- Adjacent issues parked: none.

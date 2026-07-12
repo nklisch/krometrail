@@ -96,8 +96,9 @@ Set `KROMETRAIL_INSTALL_DIR` to choose another destination. This path builds
 ## Public installer readiness
 
 The public POSIX installer will select a release asset for the current host,
-verify it against `checksums.txt`, validate the temporary binary with
-`--version`, and replace an existing installation only after all checks pass.
+verify it against `checksums.txt`, require the temporary binary's exact
+`krometrail <selected-semver>` `--version` output, and replace an existing
+installation only after all checks pass.
 Until a post-cutoff Rust release exists, it rejects the preserved `v0.2.20`
 TypeScript/DAP release and every older version before downloading an artifact.
 The cutoff is immutable and centralized in `scripts/install.sh`.
