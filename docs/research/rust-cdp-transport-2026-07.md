@@ -4,7 +4,7 @@
 
 This research grounds `epic-rust-cdp-capture-foundation-cdp-transport-gate`. Krometrail needs a browser-level Chrome DevTools Protocol (CDP) connection with flat target sessions, typed control operations, raw protocol escape hatches, and a screencast event path that Krometrail—not the library—can supervise and bound.
 
-Evidence was frozen on 2026-07-12 from crates.io metadata, published/repository source at `cdpkit` 0.4.0 (`15dd5e6d`) and `chromey` 2.52.0 (`6eeca5e8`), their CI/tests, and their public GitHub issues. The unchanged real-Chrome gate selected exact published `cdpkit` 0.4.0 after all 13 gates passed on Linux and macOS. The selection is a replaceable adapter decision, not production lifecycle or capture implementation.
+Evidence was frozen on 2026-07-12 from crates.io metadata, published/repository source at `cdpkit` 0.4.0 (`15dd5e6d`) and `chromey` 2.52.0 (`6eeca5e8`), their CI/tests, and their public GitHub issues. The historical pre-remediation real-Chrome gate selected exact published `cdpkit` 0.4.0 after all 13 then-current gates passed on Linux and macOS. That selection is obsolete until schema-v2 reports are requalified from one immutable gate revision; it remains a replaceable adapter decision, not production lifecycle or capture implementation.
 
 Caller-aware research ran direct-read only: the caller prohibited subagents and questions, and the bounded candidate/source surfaces did not warrant delegation. Reversible uncertainties are therefore converted into explicit spike gates below.
 
@@ -69,12 +69,12 @@ The important limitation is equally concrete: `event_stream::<Value>("Domain.eve
 
 ### Qualification evidence
 
-The committed reports are the only decisive inputs:
+The committed version-1 reports are retained historical inputs only. They lack the strict schema-v2 gate provenance, canonical RSS contract, observed lifecycle fields, and bound candidate-contract results, so no current transport selection is claimed. Fresh Linux and macOS reports must be emitted from the same immutable gate revision before selection.
 
 - `docs/evidence/cdp-transport/v1/cdpkit-linux.json` — SHA-256 `081259729e2495e999745bcd7caa509ec7effc844f50b2a4d786d6cc744c7feb`; Linux x86_64, Chrome 149.0.7827.155.
 - `docs/evidence/cdp-transport/v1/cdpkit-macos.json` — SHA-256 `3ffe94f405038fd8d9efd9fa7f8acbf15e8cb02c1f9e19bf24397f180981d401`; macOS aarch64, Chrome 149.0.7827.201.
 
-The Rust decision function validates schema version, the complete 13-gate registry, unchanged thresholds, exact candidate/version/checksum, Linux/macOS identity, fixture consistency, redaction, and every measured gate contract before producing `docs/evidence/cdp-transport/v1/decision.json`. The committed reports and decision are historical pre-remediation outputs; the wire-authenticity remediation intentionally does not edit or recapture them. A rerun binds candidate-only drift fixtures to a trace digest while labeling them separately from real-Chrome measurements.
+The version-2 Rust decision function validates the complete 13-gate registry, exact canonical RSS fields, immutable gate implementation/configuration/fixture identity, exact candidate/version/checksum, Linux/macOS identity, redaction, observed lifecycle fields, and every measured gate contract. Its platform-labelled output binds each report's candidate-contract trace/hash/results. The committed version-1 reports and decision are historical pre-remediation outputs; the remediation intentionally does not edit or recapture them.
 
 ### 1. Exact cdpkit 0.4.0
 

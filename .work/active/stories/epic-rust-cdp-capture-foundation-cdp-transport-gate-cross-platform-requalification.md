@@ -19,7 +19,7 @@ Phase 2 feature review found that Linux provenance was edited after its run and 
 
 ## Scope
 
-Commit the repaired harness/contract first. Run full unchanged qualification on Linux and hosted macOS from that same exact immutable SHA and fixture digest. Preserve runner-emitted revisions unchanged. Validate, normalize, hash, and commit only reports that pass every required observed gate under existing thresholds. Do not weaken thresholds, carry aliases, or fabricate portability evidence.
+Consume the strict schema-v2 contract from `...-evidence-v2-contract` and commit the repaired harness/contract first. Run full unchanged qualification on Linux and hosted macOS from that same exact immutable SHA and fixture digest. Preserve runner-emitted revisions unchanged. Validate, normalize, hash, and commit only reports that pass every required observed gate under existing thresholds. Do not weaken thresholds, carry aliases, or fabricate portability evidence.
 
 ## Acceptance criteria
 

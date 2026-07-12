@@ -11,7 +11,7 @@ use super::{
     error::{SpikeError, SpikeErrorCode},
 };
 
-pub const EVIDENCE_SCHEMA_VERSION: u16 = 1;
+pub const EVIDENCE_SCHEMA_VERSION: u16 = 2;
 
 /// RSS samples begin after a short setup interval so the first window reflects steady-state
 /// capture rather than browser startup. The manual gate contract asserts these values too.
@@ -80,10 +80,19 @@ impl TransportGateId {
         match self {
             Self::DeterministicRouting => &["commands", "events", "cross_delivery"],
             Self::TypedDomains => &["typed_operations"],
-            Self::FlatSessionIsolation => &["sessions", "cross_delivery"],
+            Self::FlatSessionIsolation => &[
+                "sessions",
+                "commands_per_session",
+                "events_per_session",
+                "cross_delivery",
+            ],
             Self::RawBrowserCommand | Self::RawSessionCommand => &["commands"],
             Self::NamedRawEventParams => &["named_events"],
-            Self::ProtocolDriftSurvival => &["fixtures", "connection_survived"],
+            Self::ProtocolDriftSurvival => &[
+                "fixtures",
+                "connection_survived",
+                "wildcard_envelope_available",
+            ],
             Self::SustainedScreencast => {
                 // A sustained pass is not valid without the same RSS evidence used by the
                 // bounded-memory proxy; otherwise a missing sampler can still look successful.
@@ -92,21 +101,46 @@ impl TransportGateId {
                     "frames_received",
                     "frames_acknowledged",
                     "rss_samples",
+                    "rss_sampling_interval_seconds",
+                    "rss_warmup_seconds",
                     "rss_peak_bytes",
                     "rss_first_window_median_bytes",
                     "rss_last_window_median_bytes",
                     "rss_theil_sen_bytes_per_minute",
+                    "handoff_accepted",
+                    "handoff_dropped",
+                    "saturation_seconds",
+                    "saturation_attempts",
+                    "ack_latency_ms_p50",
+                    "ack_latency_ms_p95",
+                    "ack_latency_ms_p99",
+                    "ack_latency_ms_max",
+                    "upstream_queue_depth_available",
                 ]
             }
-            Self::PromptAcknowledgement => &["ack_before_handoff"],
-            Self::BoundedHandoffSaturation => &["handoff_attempts", "handoff_dropped"],
+            Self::PromptAcknowledgement => &[
+                "ack_before_handoff",
+                "ack_latency_ms_p50",
+                "ack_latency_ms_p95",
+                "ack_latency_ms_p99",
+                "ack_latency_ms_max",
+            ],
+            Self::BoundedHandoffSaturation => &[
+                "handoff_attempts",
+                "handoff_accepted",
+                "handoff_dropped",
+                "saturation_seconds",
+            ],
             Self::BoundedMemoryProxy => &[
                 "rss_samples",
+                "rss_sampling_interval_seconds",
+                "rss_warmup_seconds",
                 "rss_growth_bytes",
                 "rss_peak_bytes",
                 "rss_first_window_median_bytes",
                 "rss_last_window_median_bytes",
                 "rss_theil_sen_bytes_per_minute",
+                "upstream_queue_depth_available",
             ],
             Self::DisconnectCleanup => &[
                 "pending_command_started",
@@ -191,6 +225,15 @@ pub struct GateConfiguration {
     pub hard_stop_seconds: u64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GateProvenance {
+    /// The immutable source revision of the gate implementation used by the runner.
+    pub implementation_revision: String,
+    /// Digest of the exact serialized GateConfiguration used by the runner.
+    pub configuration_sha256: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GateResult {
@@ -203,7 +246,7 @@ pub struct GateResult {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct TransportEvidenceV1 {
+pub struct TransportEvidenceV2 {
     pub schema_version: u16,
     pub candidate: CandidateIdentity,
     pub source: SourceIdentity,
@@ -211,8 +254,10 @@ pub struct TransportEvidenceV1 {
     pub browser: BrowserEvidence,
     pub fixture: FixtureEvidence,
     pub configuration: GateConfiguration,
+    pub gate_provenance: GateProvenance,
     pub gates: Vec<GateResult>,
     pub limitations: Vec<String>,
+    /// Required on decisive reports; optional for candidate-neutral unit evidence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub candidate_contract: Option<CandidateContractEvidence>,
 }
@@ -225,25 +270,32 @@ pub enum TransportDecision {
     OwnTransport,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct EvidenceDigest {
+pub struct PlatformEvidence {
     pub platform: String,
     pub sha256: String,
+    pub gates: Vec<GateResult>,
+    pub candidate_contract: CandidateContractEvidence,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct TransportDecisionV1 {
+pub struct TransportDecisionV2 {
     pub schema_version: u16,
     pub decision: TransportDecision,
     pub candidate: CandidateIdentity,
-    pub evidence: Vec<EvidenceDigest>,
-    pub gates: Vec<GateResult>,
+    /// Platform-labelled results prevent a Linux-only rollup from hiding macOS values.
+    pub evidence: Vec<PlatformEvidence>,
     pub limitations: Vec<String>,
     pub rejected_alternatives: Vec<String>,
     pub rationale: String,
 }
+
+// Rust aliases keep the spike's internal call sites source-compatible while the serialized
+// contract is explicitly version 2. They are not accepted as legacy JSON schema aliases.
+pub type TransportEvidenceV1 = TransportEvidenceV2;
+pub type TransportDecisionV1 = TransportDecisionV2;
 
 pub fn validate_evidence(value: &TransportEvidenceV1) -> Result<(), SpikeError> {
     if value.schema_version != EVIDENCE_SCHEMA_VERSION {
@@ -298,13 +350,11 @@ pub fn validate_evidence(value: &TransportEvidenceV1) -> Result<(), SpikeError> 
         }
         if gate.status == GateStatus::Pass {
             for key in gate.id.measurement_keys() {
-                let aliased =
-                    *key == "rss_samples" && gate.measurements.contains_key("rss_sample_count");
-                if !gate.measurements.contains_key(*key) && !aliased {
+                if !gate.measurements.contains_key(*key) {
                     return Err(SpikeError::for_gate(
                         SpikeErrorCode::Evidence,
                         gate.id,
-                        format!("passing gate lacks measurement {key}"),
+                        format!("passing gate lacks canonical measurement {key}"),
                     ));
                 }
             }
@@ -322,15 +372,17 @@ pub fn validate_evidence(value: &TransportEvidenceV1) -> Result<(), SpikeError> 
     }
     validate_observed_deadlines(value)?;
     if let Some(contract) = &value.candidate_contract {
-        if contract.fixtures < 3
-            || !contract.connection_survived
-            || !is_sha256_digest(&contract.trace_sha256)
-        {
-            return Err(SpikeError::new(
-                SpikeErrorCode::Evidence,
-                "candidate wire-contract evidence is incomplete",
-            ));
-        }
+        validate_candidate_contract(contract)?;
+    }
+    if value.gate_provenance.implementation_revision.is_empty()
+        || value.gate_provenance.implementation_revision != value.source.git_revision
+        || !is_sha256_digest(&value.gate_provenance.configuration_sha256)
+        || configuration_digest(&value.configuration) != value.gate_provenance.configuration_sha256
+    {
+        return Err(SpikeError::new(
+            SpikeErrorCode::Evidence,
+            "gate provenance does not identify the exact implementation and configuration",
+        ));
     }
     validate_sanitized_strings(value)?;
     Ok(())
@@ -413,11 +465,41 @@ fn validate_observed_deadlines(value: &TransportEvidenceV1) -> Result<(), SpikeE
     Ok(())
 }
 
+fn validate_candidate_contract(contract: &CandidateContractEvidence) -> Result<(), SpikeError> {
+    let results = &contract.results;
+    if contract.trace_observations == 0
+        || !is_sha256_digest(&contract.trace_sha256)
+        || results.drift_fixtures < 3
+        || !results.connection_survived
+        || results.routing_commands < 200
+        || results.routing_events < 200
+        || results.routing_cross_delivery != 0
+        || !results.event_before_response
+        || !results.detach_during_pending
+        || !results.pending_calls_closed
+        || !results.subscriptions_closed
+        || !results.socket_closed
+        || results.reconnect_connections < 2
+        || results.sessions_rebuilt < 2
+    {
+        return Err(SpikeError::new(
+            SpikeErrorCode::Evidence,
+            "candidate wire-contract evidence is incomplete or failed",
+        ));
+    }
+    Ok(())
+}
+
 fn is_sha256_digest(value: &str) -> bool {
     let Some(hex) = value.strip_prefix("sha256:") else {
         return false;
     };
     hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+pub fn configuration_digest(configuration: &GateConfiguration) -> String {
+    let encoded = serde_json::to_vec(configuration).expect("gate configuration is serializable");
+    sha256_digest(&encoded)
 }
 
 pub fn rss_measurements_are_valid(
@@ -438,9 +520,7 @@ fn validate_rss_measurements(
     minimum_seconds: f64,
 ) -> Result<(), SpikeError> {
     let measurement = |key: &str| measurements.get(key).copied();
-    let samples = measurement("rss_samples")
-        .or_else(|| measurement("rss_sample_count"))
-        .unwrap_or(0.0);
+    let samples = measurement("rss_samples").unwrap_or(0.0);
     let required_samples = minimum_rss_samples(minimum_seconds) as f64;
     if samples < required_samples || samples.fract() != 0.0 {
         return Err(SpikeError::for_gate(
@@ -462,22 +542,28 @@ fn validate_rss_measurements(
             ));
         }
     }
-    if let Some(interval) = measurement("rss_sampling_interval_seconds")
-        && !(0.75..=1.25).contains(&interval)
-    {
+    let interval = measurement("rss_sampling_interval_seconds").ok_or_else(|| {
+        SpikeError::for_gate(
+            SpikeErrorCode::Evidence,
+            gate,
+            "RSS sampling cadence is absent",
+        )
+    })?;
+    if interval != RSS_SAMPLE_INTERVAL_SECONDS as f64 {
         return Err(SpikeError::for_gate(
             SpikeErrorCode::Evidence,
             gate,
-            "RSS sampling interval is not approximately one sample per second",
+            "RSS sampling interval does not match the canonical one-second cadence",
         ));
     }
-    if let Some(warmup) = measurement("rss_warmup_seconds")
-        && warmup != RSS_WARMUP_SECONDS as f64
-    {
+    let warmup = measurement("rss_warmup_seconds").ok_or_else(|| {
+        SpikeError::for_gate(SpikeErrorCode::Evidence, gate, "RSS warmup is absent")
+    })?;
+    if warmup != RSS_WARMUP_SECONDS as f64 {
         return Err(SpikeError::for_gate(
             SpikeErrorCode::Evidence,
             gate,
-            "RSS warmup does not match the declared gate contract",
+            "RSS warmup does not match the canonical gate contract",
         ));
     }
     Ok(())
@@ -506,6 +592,8 @@ fn validate_sanitized_strings(value: &TransportEvidenceV1) -> Result<(), SpikeEr
         &value.browser.revision,
         &value.fixture.name,
         &value.fixture.sha256,
+        &value.gate_provenance.implementation_revision,
+        &value.gate_provenance.configuration_sha256,
     ];
     for text in strings {
         if contains_machine_detail(text) {
@@ -775,6 +863,22 @@ fn validate_decisive_report(
             "decisive evidence uses an unexpected fixture identity",
         ));
     }
+    if report.gate_provenance.implementation_revision == "unavailable"
+        || report.gate_provenance.configuration_sha256
+            != configuration_digest(&report.configuration)
+    {
+        return Err(SpikeError::new(
+            SpikeErrorCode::Evidence,
+            "decisive evidence lacks immutable gate implementation/configuration provenance",
+        ));
+    }
+    let candidate_contract = report.candidate_contract.as_ref().ok_or_else(|| {
+        SpikeError::new(
+            SpikeErrorCode::Evidence,
+            "decisive evidence lacks scripted candidate-contract trace and results",
+        )
+    })?;
+    validate_candidate_contract(candidate_contract)?;
     if !report.limitations.iter().any(|limitation| {
         limitation.contains("named event params")
             && limitation.contains("wildcard/full-envelope")
@@ -835,11 +939,12 @@ fn decide_with_digests(
         ));
     }
     if reports[0].configuration != reports[1].configuration
+        || reports[0].gate_provenance != reports[1].gate_provenance
         || reports[0].fixture != reports[1].fixture
     {
         return Err(SpikeError::new(
             SpikeErrorCode::Evidence,
-            "platform reports use different gate configuration or fixture",
+            "platform reports use different immutable gate revision, configuration, or fixture",
         ));
     }
     let mut platforms = reports
@@ -856,19 +961,25 @@ fn decide_with_digests(
     for report in reports {
         limitations.extend(report.limitations.iter().cloned());
     }
+    let mut platform_evidence = reports
+        .iter()
+        .zip(digests)
+        .map(|(report, sha256)| PlatformEvidence {
+            platform: report.environment.platform.clone(),
+            sha256: sha256.clone(),
+            gates: report.gates.clone(),
+            candidate_contract: report
+                .candidate_contract
+                .clone()
+                .expect("decisive report candidate contract was validated"),
+        })
+        .collect::<Vec<_>>();
+    platform_evidence.sort_by(|left, right| left.platform.cmp(&right.platform));
     Ok(TransportDecisionV1 {
         schema_version: EVIDENCE_SCHEMA_VERSION,
         decision: TransportDecision::AdoptCdpkit,
         candidate: reports[0].candidate.clone(),
-        evidence: reports
-            .iter()
-            .zip(digests)
-            .map(|(report, sha256)| EvidenceDigest {
-                platform: report.environment.platform.clone(),
-                sha256: sha256.clone(),
-            })
-            .collect(),
-        gates: reports[0].gates.clone(),
+        evidence: platform_evidence,
         limitations: limitations.into_iter().collect(),
         rejected_alternatives: vec![
             "chromey 2.52.0 was not tested because cdpkit passed every unchanged gate; revisit it only after a demonstrated cdpkit lifecycle, ordering, or sustained-capture failure".into(),
@@ -906,7 +1017,7 @@ pub fn decide_from_files(
 }
 
 pub fn write_json_schema(path: &Path) -> Result<(), SpikeError> {
-    let schema = schemars::schema_for!(TransportEvidenceV1);
+    let schema = schemars::schema_for!(TransportEvidenceV2);
     let encoded = serde_json::to_vec_pretty(&schema)
         .map_err(|error| SpikeError::new(SpikeErrorCode::Evidence, error.to_string()))?;
     if let Some(parent) = path.parent() {
@@ -915,4 +1026,113 @@ pub fn write_json_schema(path: &Path) -> Result<(), SpikeError> {
     }
     std::fs::write(path, encoded)
         .map_err(|error| SpikeError::new(SpikeErrorCode::Io, error.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::spike::contract::{CandidateContractEvidence, CandidateContractResults};
+
+    fn report(platform: &str, revision: &str) -> TransportEvidenceV2 {
+        let configuration = GateConfiguration {
+            minimum_seconds: 60.0,
+            minimum_frames: 1_000,
+            saturation_seconds: 10.0,
+            saturation_attempts: 100,
+            hard_stop_seconds: 120,
+        };
+        TransportEvidenceV2 {
+            schema_version: EVIDENCE_SCHEMA_VERSION,
+            candidate: CandidateIdentity {
+                name: "candidate".into(),
+                version: "1".into(),
+                checksum: "checksum".into(),
+            },
+            source: SourceIdentity {
+                git_revision: revision.into(),
+                protocol_revision: "protocol".into(),
+                rust_version: "rust".into(),
+            },
+            environment: SanitizedEnvironment {
+                platform: platform.into(),
+                architecture: "x86_64".into(),
+            },
+            browser: BrowserEvidence {
+                product: "Chrome".into(),
+                protocol: "1.3".into(),
+                revision: "revision".into(),
+            },
+            fixture: FixtureEvidence {
+                name: "fixture".into(),
+                sha256: "fixture-sha".into(),
+            },
+            gate_provenance: GateProvenance {
+                implementation_revision: revision.into(),
+                configuration_sha256: configuration_digest(&configuration),
+            },
+            configuration,
+            gates: Vec::new(),
+            limitations: Vec::new(),
+            candidate_contract: Some(CandidateContractEvidence {
+                trace_sha256:
+                    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+                trace_observations: 1,
+                results: CandidateContractResults {
+                    drift_fixtures: 3,
+                    connection_survived: true,
+                    routing_commands: 200,
+                    routing_events: 200,
+                    routing_cross_delivery: 0,
+                    event_before_response: true,
+                    detach_during_pending: true,
+                    pending_calls_closed: true,
+                    subscriptions_closed: true,
+                    socket_closed: true,
+                    reconnect_connections: 2,
+                    sessions_rebuilt: 2,
+                },
+            }),
+        }
+    }
+
+    #[test]
+    fn decision_rejects_mixed_gate_implementation_revisions() {
+        let linux = report("linux", "revision-a");
+        let macos = report("macos", "revision-b");
+        let error = decide_with_digests(&[linux, macos], &["sha256:a".into(), "sha256:b".into()])
+            .expect_err("mixed revisions must not be selected");
+        assert!(error.message.contains("immutable gate revision"));
+    }
+
+    #[test]
+    fn decision_rejects_linux_only_rollups() {
+        let linux_a = report("linux", "revision-a");
+        let linux_b = report("linux", "revision-a");
+        let error =
+            decide_with_digests(&[linux_a, linux_b], &["sha256:a".into(), "sha256:b".into()])
+                .expect_err("two Linux reports must not stand in for Linux and macOS");
+        assert!(error.message.contains("one Linux and one macOS"));
+    }
+
+    #[test]
+    fn decision_keeps_platform_labelled_gate_and_candidate_results() {
+        let linux = report("linux", "revision-a");
+        let macos = report("macos", "revision-a");
+        let decision =
+            decide_with_digests(&[linux, macos], &["sha256:a".into(), "sha256:b".into()])
+                .expect("same revision reports should roll up");
+        assert_eq!(decision.evidence.len(), 2);
+        assert_eq!(decision.evidence[0].platform, "linux");
+        assert_eq!(decision.evidence[1].platform, "macos");
+        assert_eq!(decision.evidence[0].gates.len(), 0);
+        assert_eq!(decision.evidence[1].gates.len(), 0);
+        assert_eq!(
+            decision.evidence[0].candidate_contract.trace_observations,
+            1
+        );
+        assert_eq!(
+            decision.evidence[1].candidate_contract.trace_observations,
+            1
+        );
+    }
 }

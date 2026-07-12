@@ -1,10 +1,10 @@
-# CDP transport qualification evidence
+# CDP transport qualification evidence (historical)
 
-This directory contains the version-1 machine-readable evidence for the Rust CDP transport decision. The committed Linux and final macOS reports are the only decisive inputs; raw runner logs and browser profiles remain outside Git under `target/`.
+This directory contains retained version-1 machine-readable evidence. It is obsolete and is not accepted by the strict version-2 contract under `../v2/`; reports and the decision remain byte-for-byte historical records. Raw runner logs and browser profiles remain outside Git under `target/`.
 
 ## Selected transport
 
-The historical Rust decision selected exact published `cdpkit` **0.4.0** (`Cargo.lock` checksum `c3fdb566d913b31e0014391a94c0db4ed871dbb76577dd1b2f2c5f6df158bfaa`) because both reports passed all 13 gates. Phase 2 wire-authenticity remediation changed the qualification harness after these reports were captured; the reports and `decision.json` are retained unchanged and must not be treated as refreshed decisive evidence until both platforms are requalified.
+The historical Rust decision selected exact published `cdpkit` **0.4.0** (`Cargo.lock` checksum `c3fdb566d913b31e0014391a94c0db4ed871dbb76577dd1b2f2c5f6df158bfaa`) because both reports passed the then-current 13 gates. That is not a current qualification claim. Phase 2 wire-authenticity remediation changed the qualification harness after these reports were captured; the reports and `decision.json` are retained unchanged and must not be treated as refreshed decisive evidence until both platforms are requalified.
 
 - Linux report: `cdpkit-linux.json`
   - SHA-256: `081259729e2495e999745bcd7caa509ec7effc844f50b2a4d786d6cc744c7feb`

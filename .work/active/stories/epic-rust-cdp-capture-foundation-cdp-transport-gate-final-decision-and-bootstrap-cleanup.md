@@ -19,7 +19,7 @@ Phase 2 feature review found that the decision exposes Linux-only measurements, 
 
 ## Scope
 
-Regenerate the decision solely from repaired same-revision reports. Roll exact measurements, digests, revision, selection, and limitations through evidence README, research, skill, feature, parent epic, architecture, and story narratives. Remove the temporary push trigger and delete the authorized remote bootstrap branch after hosted evidence is safely committed; retain exact-ref/SHA manual dispatch only and use resolved SHA in artifact names.
+Regenerate the schema-v2 decision solely from repaired same-revision reports, preserving each platform's labelled gates and candidate-contract trace/results. Roll exact measurements, digests, revision, selection, and limitations through evidence README, research, skill, feature, parent epic, architecture, and story narratives. Remove the temporary push trigger and delete the authorized remote bootstrap branch after hosted evidence is safely committed; retain exact-ref/SHA manual dispatch only and use resolved SHA in artifact names.
 
 ## Acceptance criteria
 

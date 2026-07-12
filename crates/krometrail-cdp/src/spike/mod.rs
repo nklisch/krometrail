@@ -14,16 +14,17 @@ pub mod scenarios;
 pub mod scripted_peer;
 
 pub use contract::{
-    CandidateContractEvidence, EventStream, NamedEventParams, SpikeFuture, SpikeTransport,
-    SpikeTransportFactory, TransportScope,
+    CandidateContractEvidence, CandidateContractResults, EventStream, NamedEventParams,
+    SpikeFuture, SpikeTransport, SpikeTransportFactory, TransportScope,
 };
 pub use error::{SpikeError, SpikeErrorCode};
 pub use evidence::{
-    BrowserEvidence, CandidateIdentity, EvidenceDigest, FixtureEvidence, GateConfiguration,
-    GateResult, GateStatus, RSS_SAMPLE_INTERVAL_SECONDS, RSS_WARMUP_SECONDS, SanitizedEnvironment,
-    SourceIdentity, TransportDecision, TransportDecisionV1, TransportEvidenceV1, TransportGateId,
-    decide, decide_from_files, rss_measurements_are_valid, sanitize_evidence, validate_evidence,
-    write_json_schema,
+    BrowserEvidence, CandidateIdentity, FixtureEvidence, GateConfiguration, GateProvenance,
+    GateResult, GateStatus, PlatformEvidence, RSS_SAMPLE_INTERVAL_SECONDS, RSS_WARMUP_SECONDS,
+    SanitizedEnvironment, SourceIdentity, TransportDecision, TransportDecisionV1,
+    TransportDecisionV2, TransportEvidenceV1, TransportEvidenceV2, TransportGateId,
+    configuration_digest, decide, decide_from_files, rss_measurements_are_valid, sanitize_evidence,
+    validate_evidence, write_json_schema,
 };
 pub use fake::{FakeTransport, FakeTransportFactory};
 pub use scenarios::{ScenarioEvidence, run_transport_scenarios};

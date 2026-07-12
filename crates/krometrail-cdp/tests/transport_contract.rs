@@ -5,9 +5,10 @@ use std::collections::BTreeMap;
 use futures_util::{SinkExt, StreamExt};
 
 use krometrail_cdp::spike::{
-    CandidateContractEvidence, CandidateIdentity, FixtureEvidence, GateConfiguration, GateResult,
-    GateStatus, SanitizedEnvironment, ScriptedCdpPeer, SourceIdentity, TransportEvidenceV1,
-    TransportGateId, decide_from_files, validate_evidence, write_json_schema,
+    CandidateContractEvidence, CandidateContractResults, CandidateIdentity, FixtureEvidence,
+    GateConfiguration, GateProvenance, GateResult, GateStatus, SanitizedEnvironment,
+    ScriptedCdpPeer, SourceIdentity, TransportEvidenceV1, TransportEvidenceV2, TransportGateId,
+    configuration_digest, decide_from_files, validate_evidence, write_json_schema,
 };
 use krometrail_cdp::spike::{
     FakeTransport, FakeTransportFactory, SpikeTransport, TransportScope, run_transport_scenarios,
@@ -25,9 +26,9 @@ fn valid_measurement(key: &&str) -> f64 {
     }
 }
 
-fn evidence(gates: Vec<GateResult>) -> TransportEvidenceV1 {
-    TransportEvidenceV1 {
-        schema_version: 1,
+fn evidence(gates: Vec<GateResult>) -> TransportEvidenceV2 {
+    TransportEvidenceV2 {
+        schema_version: 2,
         candidate: CandidateIdentity {
             name: "cdpkit".into(),
             version: "0.4.0".into(),
@@ -57,6 +58,16 @@ fn evidence(gates: Vec<GateResult>) -> TransportEvidenceV1 {
             saturation_seconds: 10.0,
             saturation_attempts: 100,
             hard_stop_seconds: 120,
+        },
+        gate_provenance: GateProvenance {
+            implementation_revision: "0123456789abcdef".into(),
+            configuration_sha256: configuration_digest(&GateConfiguration {
+                minimum_seconds: 60.0,
+                minimum_frames: 1000,
+                saturation_seconds: 10.0,
+                saturation_attempts: 100,
+                hard_stop_seconds: 120,
+            }),
         },
         gates,
         limitations: vec!["named event parameters are not wildcard envelopes".into()],
@@ -178,9 +189,22 @@ fn candidate_wire_contract_is_separate_and_trace_bound() {
         .collect();
     let mut value = evidence(gates);
     value.candidate_contract = Some(CandidateContractEvidence {
-        fixtures: 3,
-        connection_survived: true,
         trace_sha256: format!("sha256:{}", "a".repeat(64)),
+        trace_observations: 10,
+        results: CandidateContractResults {
+            drift_fixtures: 3,
+            connection_survived: true,
+            routing_commands: 200,
+            routing_events: 200,
+            routing_cross_delivery: 0,
+            event_before_response: true,
+            detach_during_pending: true,
+            pending_calls_closed: true,
+            subscriptions_closed: true,
+            socket_closed: true,
+            reconnect_connections: 2,
+            sessions_rebuilt: 2,
+        },
     });
     validate_evidence(&value).unwrap();
     value.candidate_contract.as_mut().unwrap().trace_sha256 = "not-a-digest".into();
@@ -289,6 +313,98 @@ fn evidence_rejects_nominal_missing_and_over_threshold_deadline_values() {
 }
 
 #[test]
+fn evidence_rejects_legacy_rss_alias_and_omitted_cadence_or_warmup() {
+    let gates = TransportGateId::ALL
+        .into_iter()
+        .map(|id| GateResult {
+            id,
+            status: GateStatus::Pass,
+            summary: "fixture passed".into(),
+            measurements: id
+                .measurement_keys()
+                .iter()
+                .map(|key| ((*key).into(), valid_measurement(key)))
+                .collect::<BTreeMap<_, _>>(),
+            failure: None,
+        })
+        .collect::<Vec<_>>();
+    let mut aliased = evidence(gates.clone());
+    for id in [
+        TransportGateId::SustainedScreencast,
+        TransportGateId::BoundedMemoryProxy,
+    ] {
+        let gate = aliased.gates.iter_mut().find(|gate| gate.id == id).unwrap();
+        gate.measurements.remove("rss_samples");
+        gate.measurements.insert("rss_sample_count".into(), 50.0);
+    }
+    assert!(
+        validate_evidence(&aliased).is_err(),
+        "legacy RSS alias must be rejected"
+    );
+
+    let mut missing_cadence = evidence(gates.clone());
+    missing_cadence.gates.iter_mut().for_each(|gate| {
+        if matches!(
+            gate.id,
+            TransportGateId::SustainedScreencast | TransportGateId::BoundedMemoryProxy
+        ) {
+            gate.measurements.remove("rss_sampling_interval_seconds");
+        }
+    });
+    assert!(validate_evidence(&missing_cadence).is_err());
+
+    let mut missing_warmup = evidence(gates);
+    missing_warmup.gates.iter_mut().for_each(|gate| {
+        if matches!(
+            gate.id,
+            TransportGateId::SustainedScreencast | TransportGateId::BoundedMemoryProxy
+        ) {
+            gate.measurements.remove("rss_warmup_seconds");
+        }
+    });
+    assert!(validate_evidence(&missing_warmup).is_err());
+}
+
+#[test]
+fn evidence_rejects_stale_schema_and_configuration_provenance() {
+    let gates = TransportGateId::ALL
+        .into_iter()
+        .map(|id| GateResult {
+            id,
+            status: GateStatus::Pass,
+            summary: "fixture passed".into(),
+            measurements: id
+                .measurement_keys()
+                .iter()
+                .map(|key| ((*key).into(), valid_measurement(key)))
+                .collect::<BTreeMap<_, _>>(),
+            failure: None,
+        })
+        .collect();
+    let mut stale = evidence(gates);
+    stale.schema_version = 1;
+    assert!(validate_evidence(&stale).is_err());
+    let mut mixed_config = evidence(
+        TransportGateId::ALL
+            .into_iter()
+            .map(|id| GateResult {
+                id,
+                status: GateStatus::Pass,
+                summary: "fixture passed".into(),
+                measurements: id
+                    .measurement_keys()
+                    .iter()
+                    .map(|key| ((*key).into(), valid_measurement(key)))
+                    .collect(),
+                failure: None,
+            })
+            .collect(),
+    );
+    mixed_config.gate_provenance.configuration_sha256 = format!("sha256:{}", "b".repeat(64));
+    assert!(validate_evidence(&mixed_config).is_err());
+}
+
+#[test]
 fn evidence_rejects_zero_rss_samples_and_window_values() {
     let gates = TransportGateId::ALL
         .into_iter()
@@ -341,9 +457,9 @@ fn checked_schema_is_generated_by_the_rust_evidence_types() {
     let temporary = std::env::temp_dir().join("krometrail-cdp-transport-schema.json");
     write_json_schema(&temporary).unwrap();
     let generated = std::fs::read_to_string(&temporary).unwrap();
-    assert!(generated.contains("TransportEvidenceV1"));
+    assert!(generated.contains("TransportEvidenceV2"));
     let committed = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/evidence/cdp-transport/v1/schema.json");
+        .join("../../docs/evidence/cdp-transport/v2/schema.json");
     if std::env::var_os("CDP_SPIKE_WRITE_SCHEMA").is_some() {
         write_json_schema(&committed).unwrap();
     }

@@ -64,10 +64,29 @@ pub struct TypedProbeEvidence {
 /// real-Chrome measurements: Chrome cannot be instructed to emit unknown future protocol fields.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct CandidateContractEvidence {
-    pub fixtures: u64,
+pub struct CandidateContractResults {
+    pub drift_fixtures: u64,
     pub connection_survived: bool,
+    pub routing_commands: u64,
+    pub routing_events: u64,
+    pub routing_cross_delivery: u64,
+    pub event_before_response: bool,
+    pub detach_during_pending: bool,
+    pub pending_calls_closed: bool,
+    pub subscriptions_closed: bool,
+    pub socket_closed: bool,
+    pub reconnect_connections: u64,
+    pub sessions_rebuilt: u64,
+}
+
+/// Results and the exact observed wire trace are inseparable: a report that uses scripted
+/// candidate evidence must carry both the digest and the measurements derived from that trace.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CandidateContractEvidence {
     pub trace_sha256: String,
+    pub trace_observations: u64,
+    pub results: CandidateContractResults,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]

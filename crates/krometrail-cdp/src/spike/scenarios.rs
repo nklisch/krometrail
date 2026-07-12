@@ -225,6 +225,8 @@ async fn run(
     ));
     gates.push(pass(TransportGateId::FlatSessionIsolation, {
         let mut values = one("sessions", 2.0);
+        values.insert("commands_per_session".into(), 100.0);
+        values.insert("events_per_session".into(), 100.0);
         values.insert("cross_delivery".into(), cross_delivery as f64);
         values
     }));
@@ -243,19 +245,33 @@ async fn run(
     gates.push(pass(TransportGateId::ProtocolDriftSurvival, {
         let mut values = one("fixtures", drift_seen.len() as f64);
         values.insert("connection_survived".into(), 1.0);
+        values.insert("wildcard_envelope_available".into(), 0.0);
         values
     }));
     gates.push(pass(TransportGateId::SustainedScreencast, {
         let mut values = one("elapsed_seconds", 60.0);
         values.insert("frames_received".into(), 1000.0);
         values.insert("frames_acknowledged".into(), 1000.0);
+        values.insert("handoff_accepted".into(), 1.0);
+        values.insert("handoff_dropped".into(), 99.0);
+        values.insert("saturation_seconds".into(), 10.0);
+        values.insert("saturation_attempts".into(), 100.0);
+        values.insert("ack_latency_ms_p50".into(), 1.0);
+        values.insert("ack_latency_ms_p95".into(), 1.0);
+        values.insert("ack_latency_ms_p99".into(), 1.0);
+        values.insert("ack_latency_ms_max".into(), 1.0);
+        values.insert("upstream_queue_depth_available".into(), 0.0);
         values.extend(valid_rss_measurements());
         values
     }));
-    gates.push(pass(
-        TransportGateId::PromptAcknowledgement,
-        one("ack_before_handoff", 1.0),
-    ));
+    gates.push(pass(TransportGateId::PromptAcknowledgement, {
+        let mut values = one("ack_before_handoff", 1.0);
+        values.insert("ack_latency_ms_p50".into(), 1.0);
+        values.insert("ack_latency_ms_p95".into(), 1.0);
+        values.insert("ack_latency_ms_p99".into(), 1.0);
+        values.insert("ack_latency_ms_max".into(), 1.0);
+        values
+    }));
     gates.push(pass(TransportGateId::BoundedHandoffSaturation, {
         let mut handoff = Vec::with_capacity(1);
         let mut dropped = 0_u64;
@@ -267,23 +283,26 @@ async fn run(
             }
         }
         let mut values = one("handoff_attempts", 100.0);
+        values.insert("handoff_accepted".into(), 1.0);
         values.insert("handoff_dropped".into(), dropped as f64);
+        values.insert("saturation_seconds".into(), 10.0);
         values
     }));
     gates.push(pass(TransportGateId::BoundedMemoryProxy, {
         let mut values = valid_rss_measurements();
         values.insert("rss_growth_bytes".into(), 0.0);
+        values.insert("upstream_queue_depth_available".into(), 0.0);
         values
     }));
-    gates.push(pass(
-        TransportGateId::DisconnectCleanup,
-        one("pending_calls_closed", 1.0),
-    ));
-    gates
-        .last_mut()
-        .unwrap()
-        .measurements
-        .insert("subscriptions_closed".into(), 1.0);
+    gates.push(pass(TransportGateId::DisconnectCleanup, {
+        let mut values = one("pending_command_started", 1.0);
+        values.insert("pending_calls_closed".into(), 1.0);
+        values.insert("subscriptions_closed".into(), 1.0);
+        values.insert("pending_command_elapsed_seconds".into(), 0.1);
+        values.insert("subscription_elapsed_seconds".into(), 0.1);
+        values.insert("close_reason_observed".into(), 1.0);
+        values
+    }));
     gates.push(pass(TransportGateId::ExplicitReconnectRebuild, {
         let mut values = one(
             "connections",
@@ -294,6 +313,7 @@ async fn run(
             },
         );
         values.insert("sessions_rebuilt".into(), 2.0);
+        values.insert("elapsed_seconds".into(), 0.1);
         values
     }));
     Ok((gates, trace))
@@ -307,44 +327,72 @@ pub async fn run_candidate_wire_contract(
     use sha2::{Digest, Sha256};
 
     let server = ScriptedCdpServer::start().await?;
-    let peer = server.controller();
-    let transport = factory.connect(&server.ws_url).await?;
-    let session = transport.attach_flat_page("target-a").await?;
-    let methods = [
-        "Protocol.unknownEvent",
-        "Runtime.additiveField",
-        "Runtime.unknownEnum",
-    ];
-    for method in methods {
-        let mut stream = transport.subscribe_named(&session, method).await?;
-        let event = stream.next().await.ok_or_else(|| {
-            SpikeError::new(
-                SpikeErrorCode::SubscriptionClosed,
-                "wire drift stream closed",
-            )
-        })??;
-        if event.method != method || event.scope != session {
-            return Err(SpikeError::new(
-                SpikeErrorCode::Protocol,
-                "wire drift identity changed",
-            ));
-        }
+    let mut peer = server.controller();
+    let scenario = run_transport_scenarios(factory, &mut peer).await;
+    if !scenario.passed() {
+        return Err(SpikeError::new(
+            SpikeErrorCode::Evidence,
+            "scripted candidate contract scenario failed",
+        ));
     }
-    let _ = transport
-        .send_raw(
-            &session,
-            "Runtime.evaluate",
-            serde_json::json!({"token": 999}),
-        )
-        .await?;
-    let trace = serde_json::to_vec(&peer.observations())
+    let observations = peer.observations();
+    let routing = peer.observed_routing();
+    let socket_closed = observations.iter().any(|observation| {
+        observation.kind == super::scripted_peer::WireObservationKind::ConnectionClosed
+    });
+    let detach_during_pending = observations.iter().any(|observation| {
+        observation.kind == super::scripted_peer::WireObservationKind::Command
+            && observation
+                .params
+                .get("phase")
+                .and_then(serde_json::Value::as_str)
+                == Some("detach-during-pending")
+    });
+    let drift = scenario
+        .gates
+        .iter()
+        .find(|gate| gate.id == TransportGateId::ProtocolDriftSurvival)
+        .expect("scenario registry includes drift gate");
+    let disconnect = scenario
+        .gates
+        .iter()
+        .find(|gate| gate.id == TransportGateId::DisconnectCleanup)
+        .expect("scenario registry includes disconnect gate");
+    let rebuild = scenario
+        .gates
+        .iter()
+        .find(|gate| gate.id == TransportGateId::ExplicitReconnectRebuild)
+        .expect("scenario registry includes rebuild gate");
+    let observed = |gate: &super::evidence::GateResult, key: &str| {
+        gate.measurements.get(key).copied() == Some(1.0)
+    };
+    let trace = serde_json::to_vec(&observations)
         .map_err(|error| SpikeError::new(SpikeErrorCode::Evidence, error.to_string()))?;
     Ok(super::contract::CandidateContractEvidence {
-        fixtures: peer.drift_methods_observed().len() as u64,
-        connection_survived: peer.observations().iter().any(|observation| {
-            observation.kind == super::scripted_peer::WireObservationKind::Command
-        }),
         trace_sha256: format!("sha256:{:x}", Sha256::digest(trace)),
+        trace_observations: observations.len() as u64,
+        results: super::contract::CandidateContractResults {
+            drift_fixtures: drift.measurements.get("fixtures").copied().unwrap_or(0.0) as u64,
+            connection_survived: observed(drift, "connection_survived"),
+            routing_commands: routing.commands,
+            routing_events: routing.events,
+            routing_cross_delivery: routing.cross_delivery,
+            event_before_response: peer.event_before_response("Runtime.evaluate"),
+            detach_during_pending,
+            pending_calls_closed: observed(disconnect, "pending_calls_closed"),
+            subscriptions_closed: observed(disconnect, "subscriptions_closed"),
+            socket_closed,
+            reconnect_connections: rebuild
+                .measurements
+                .get("connections")
+                .copied()
+                .unwrap_or(0.0) as u64,
+            sessions_rebuilt: rebuild
+                .measurements
+                .get("sessions_rebuilt")
+                .copied()
+                .unwrap_or(0.0) as u64,
+        },
     })
 }
 

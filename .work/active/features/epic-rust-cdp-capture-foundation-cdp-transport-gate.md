@@ -36,16 +36,16 @@ Turn the spike results into an explicit transport decision: adopt `cdpkit` only 
 - Versioned evidence: `docs/research/rust-cdp-transport-2026-07.md`
 - Execution reference: `.agents/skills/rust-cdp-transport/SKILL.md`
 - Dispatch rationale: direct-read only because the autopilot caller prohibited subagents and questions; crates.io metadata, pinned published source, CI/tests, current GitHub issues, and the official CDP source supplied the required evidence.
-- Decision posture: the committed Linux and final macOS reports are the only decisive inputs. The Rust decision function independently selected exact published `cdpkit` 0.4.0 after all 13 unchanged gates passed. `chromey` 2.52.0 and the owned raw-envelope transport remain documented fallbacks only after a demonstrated cdpkit failure.
+- Decision posture: the committed Linux and final macOS reports are historical pre-remediation inputs and are obsolete under the strict v2 contract. No current candidate is selected until both platforms are requalified from one immutable gate implementation revision/configuration/fixture with bound candidate-contract evidence. `chromey` 2.52.0 and the owned raw-envelope transport remain documented fallbacks only after a demonstrated cdpkit failure.
 
 ## Design decisions
 
 - **Spike location:** Keep all disposable qualification code in the existing `krometrail-cdp` crate behind non-default `cdp-spike` and candidate-specific feature flags. A sixth crate would make disposal clearer but would expand the workspace for code that must never become a product boundary.
 - **Production boundary:** Leave `crates/krometrail-cdp/src/lib.rs` as the truthful empty production adapter boundary outside spike feature gates. Do not add `unimplemented!`, a fake success adapter, root composition wiring, production lifecycle/capture code, or a core-port revision without evidence that the current seam is unworkable.
-- **Candidate decision:** The unchanged exact `cdpkit` 0.4.0 candidate passed all 13 Linux and macOS gates. Its adapter remains replaceable; `chromey` and owned-transport work stay late-bound and no fallback story was created because no cdpkit failure was demonstrated.
+- **Candidate decision:** Historical v1 evidence selected exact `cdpkit` 0.4.0, but that selection is suspended. Version 2 requires one strict platform-faithful contract, canonical RSS fields, observed lifecycle/wire-trace results, and identical immutable gate provenance before selection can be restored. Its adapter remains replaceable; `chromey` and owned-transport work stay late-bound.
 - **Shared qualification contract:** One spike-only `SpikeTransport` trait and one `run_transport_scenarios` suite drive the in-memory fake and candidate adapters. This makes the fake a proof of the harness and prevents candidate-specific gate drift.
 - **Raw compatibility claim:** Represent cdpkit's escape hatch as named raw event parameters, not a wildcard/full-envelope stream. The limitation is explicit in types, evidence, and selection. If a real foundation requirement needs authoritative full envelopes, cdpkit fails rather than the requirement being weakened.
-- **Evidence authority:** Rust evidence types and `TransportGateId::ALL` are the source of truth; checked-in JSON Schema is generated. Sanitized Linux/macOS reports and a digest-linked decision are committed under `docs/evidence/cdp-transport/v1/`; raw logs and profiles stay under ignored `target/` paths.
+- **Evidence authority:** Rust v2 evidence types and `TransportGateId::ALL` are the source of truth; checked-in JSON Schema is generated under `docs/evidence/cdp-transport/v2/`. The retained v1 Linux/macOS reports and decision are historical and invalid for current selection; fresh sanitized reports and a platform-labelled decision may be committed only after requalification. Raw logs and profiles stay under ignored `target/` paths.
 - **Quantified sustained gate:** Require both 60 seconds and 1,000 frames, prompt typed acknowledgement before a deliberately saturated capacity-1 handoff, explicit drops, bounded ack-latency and RSS-trend proxies, and honest disclosure that cdpkit subscriber queue depth cannot be inspected.
 - **Cross-platform decision:** Linux supplies implementation and first qualification evidence; unchanged decisive gates run on macOS before the feature can complete. A macOS failure blocks selection rather than creating a platform exception.
 - **UI surface:** None; this is disposable protocol qualification and evidence.
@@ -469,9 +469,9 @@ pub async fn run_screencast_gate(
 - [ ] No gate is waived and no named-params limitation is promoted to wildcard-envelope support.
 - [ ] Core ports remain unchanged unless a report-cited incompatibility proves revision unavoidable; no production capture code lands.
 
-## Decision rollup
+## Decision rollup (historical, superseded by schema v2)
 
-- Selected: `cdpkit` 0.4.0, Cargo.lock checksum `c3fdb566d913b31e0014391a94c0db4ed871dbb76577dd1b2f2c5f6df158bfaa`.
+- Historical selection: `cdpkit` 0.4.0, Cargo.lock checksum `c3fdb566d913b31e0014391a94c0db4ed871dbb76577dd1b2f2c5f6df158bfaa`; no current selection is claimed until v2 requalification.
 - Evidence: `docs/evidence/cdp-transport/v1/cdpkit-linux.json` SHA-256 `081259729e2495e999745bcd7caa509ec7effc844f50b2a4d786d6cc744c7feb`; `docs/evidence/cdp-transport/v1/cdpkit-macos.json` SHA-256 `3ffe94f405038fd8d9efd9fa7f8acbf15e8cb02c1f9e19bf24397f180981d401`.
 - Decision output: `docs/evidence/cdp-transport/v1/decision.json`, generated by `decide_from_files` after schema, gate, threshold, candidate, platform, configuration, fixture, digest, and redaction validation.
 - Limitations carried forward: named event params only (not wildcard/full envelope), unbounded subscriber with no queue-depth introspection, and RSS/ack-latency proxies.
@@ -558,9 +558,9 @@ Default and spike-feature gates both pass. The default dependency graph proves s
 
 ## Implementation summary
 
-All seven realized child stories reached `stage: done`: the four designed stories plus three evidence-driven macOS portability fixes. Exact cdpkit 0.4.0 passed the shared deterministic harness and every unchanged real-Chrome gate on Linux and macOS. Linux recorded 3,601 frames over 60 seconds with acknowledgement p99 17.72 ms; macOS recorded 3,553 frames with acknowledgement p99 21.08 ms and 51 valid RSS samples. Both saturated capacity-1 handoffs produced explicit drops while all frames were acknowledged.
+The original child stories reached their pre-remediation milestones, but the feature review returned the gate for remediation. Exact cdpkit 0.4.0 passed the historical shared harness and then-current real-Chrome gates; those reports are now obsolete and cannot support a current selection.
 
-The generated decision validates and hashes both sanitized reports and selects cdpkit without a fallback story. Named-event-params-only access, unbounded subscriber depth, unavailable wildcard envelopes, and proxy measurement limits remain explicit. Spike features remain non-default; no production adapter, root wiring, capture pipeline, or core-port revision landed. Default and candidate-feature Rust gates and documentation builds pass.
+The generated v1 decision is retained as historical evidence only. The v2 contract now requires platform-labelled gate/candidate results, canonical RSS fields, observed lifecycle measurements, and identical immutable gate provenance; no current selection is claimed until both platforms requalify. Spike features remain non-default; no production adapter, root wiring, capture pipeline, or core-port revision landed.
 
 ## Feature review (2026-07-12)
 

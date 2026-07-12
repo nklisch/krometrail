@@ -58,9 +58,10 @@ use super::{
     contract::{SpikeTransport, SpikeTransportFactory, TransportScope},
     error::{SpikeError, SpikeErrorCode},
     evidence::{
-        BrowserEvidence, EVIDENCE_SCHEMA_VERSION, FixtureEvidence, GateConfiguration, GateResult,
-        GateStatus, RSS_SAMPLE_INTERVAL_SECONDS, RSS_WARMUP_SECONDS, SanitizedEnvironment,
-        SourceIdentity, TransportEvidenceV1, TransportGateId, rss_measurements_are_valid,
+        BrowserEvidence, EVIDENCE_SCHEMA_VERSION, FixtureEvidence, GateConfiguration,
+        GateProvenance, GateResult, GateStatus, RSS_SAMPLE_INTERVAL_SECONDS, RSS_WARMUP_SECONDS,
+        SanitizedEnvironment, SourceIdentity, TransportEvidenceV1, TransportGateId,
+        configuration_digest, rss_measurements_are_valid,
     },
     fixture_server::StaticFixtureServer,
     scenarios::run_candidate_wire_contract,
@@ -377,10 +378,10 @@ async fn run_real_chrome_gate_inner(
     let mut drift_gate = pass(
         TransportGateId::ProtocolDriftSurvival,
         [
-            ("fixtures", candidate_contract.fixtures as f64),
+            ("fixtures", candidate_contract.results.drift_fixtures as f64),
             (
                 "connection_survived",
-                f64::from(candidate_contract.connection_survived),
+                f64::from(candidate_contract.results.connection_survived),
             ),
             ("wildcard_envelope_available", 0.0),
         ],
@@ -596,18 +597,39 @@ async fn run_real_chrome_gate_inner(
     let fixture_path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/fixtures/browser/cdp-transport-gate");
     let fixture_sha = sha256_directory(&fixture_path)?;
+    let implementation_revision =
+        command_output("git", &["rev-parse", "HEAD"]).unwrap_or_else(|_| "unavailable".into());
+    let rust_version =
+        command_output("rustc", &["--version"]).unwrap_or_else(|_| "unavailable".into());
+    let gate_provenance = GateProvenance {
+        implementation_revision: implementation_revision.clone(),
+        configuration_sha256: configuration_digest(&configuration),
+    };
     let mut evidence = TransportEvidenceV1 {
-		schema_version: EVIDENCE_SCHEMA_VERSION,
-		candidate: factory.candidate(),
-		source: SourceIdentity { git_revision: command_output("git", &["rev-parse", "HEAD"]).unwrap_or_else(|_| "unavailable".into()), protocol_revision: "unavailable (cdpkit generated CDP_VERSION=1.3)".into(), rust_version: command_output("rustc", &["--version"]).unwrap_or_else(|_| "unavailable".into()) },
-		environment: SanitizedEnvironment { platform: std::env::consts::OS.into(), architecture: std::env::consts::ARCH.into() },
-		browser: BrowserEvidence { product, protocol, revision },
-		fixture: FixtureEvidence { name: "cdp-transport-gate".into(), sha256: fixture_sha },
-		configuration,
-		gates,
-		limitations: vec!["cdpkit exposes named event params through an unbounded subscriber; wildcard/full-envelope receive and queue-depth introspection are unavailable".into(), "ack latency values are receive-to-ack-completion proxies, not wire-enqueue timestamps".into(), "RSS is a process-level proxy from a continuously drained reader; it does not prove the hidden cdpkit subscriber queue is bounded".into(), format!("candidate-contract drift trace digest: {}", candidate_contract.trace_sha256)],
+        schema_version: EVIDENCE_SCHEMA_VERSION,
+        candidate: factory.candidate(),
+        source: SourceIdentity {
+            git_revision: implementation_revision,
+            protocol_revision: "unavailable (cdpkit generated CDP_VERSION=1.3)".into(),
+            rust_version,
+        },
+        environment: SanitizedEnvironment {
+            platform: std::env::consts::OS.into(),
+            architecture: std::env::consts::ARCH.into(),
+        },
+        browser: BrowserEvidence { product, protocol, revision },
+        fixture: FixtureEvidence { name: "cdp-transport-gate".into(), sha256: fixture_sha },
+        configuration,
+        gate_provenance,
+        gates,
+        limitations: vec![
+            "cdpkit exposes named event params through an unbounded subscriber; wildcard/full-envelope receive and queue-depth introspection are unavailable".into(),
+            "ack latency values are receive-to-ack-completion proxies, not wire-enqueue timestamps".into(),
+            "RSS is a process-level proxy from a continuously drained reader; it does not prove the hidden cdpkit subscriber queue is bounded".into(),
+            format!("candidate-contract trace digest: {}", candidate_contract.trace_sha256),
+        ],
         candidate_contract: Some(candidate_contract),
-	};
+    };
     // Keep output deterministic even when gate construction order changes.
     evidence.gates.sort_by_key(|gate| gate.id);
     Ok(evidence)
@@ -652,6 +674,10 @@ pub fn failure_evidence(
         fixture: FixtureEvidence {
             name: "cdp-transport-gate".into(),
             sha256: "unavailable".into(),
+        },
+        gate_provenance: GateProvenance {
+            implementation_revision: "unavailable".into(),
+            configuration_sha256: configuration_digest(&configuration),
         },
         configuration,
         gates,

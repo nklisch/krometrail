@@ -1,0 +1,422 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TransportEvidenceV2",
+  "type": "object",
+  "properties": {
+    "browser": {
+      "$ref": "#/$defs/BrowserEvidence"
+    },
+    "candidate": {
+      "$ref": "#/$defs/CandidateIdentity"
+    },
+    "candidate_contract": {
+      "description": "Required on decisive reports; optional for candidate-neutral unit evidence.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CandidateContractEvidence"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "configuration": {
+      "$ref": "#/$defs/GateConfiguration"
+    },
+    "environment": {
+      "$ref": "#/$defs/SanitizedEnvironment"
+    },
+    "fixture": {
+      "$ref": "#/$defs/FixtureEvidence"
+    },
+    "gate_provenance": {
+      "$ref": "#/$defs/GateProvenance"
+    },
+    "gates": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/GateResult"
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "schema_version": {
+      "type": "integer",
+      "format": "uint16",
+      "maximum": 65535,
+      "minimum": 0
+    },
+    "source": {
+      "$ref": "#/$defs/SourceIdentity"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "candidate",
+    "source",
+    "environment",
+    "browser",
+    "fixture",
+    "configuration",
+    "gate_provenance",
+    "gates",
+    "limitations"
+  ],
+  "$defs": {
+    "BrowserEvidence": {
+      "type": "object",
+      "properties": {
+        "product": {
+          "type": "string"
+        },
+        "protocol": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "product",
+        "protocol",
+        "revision"
+      ]
+    },
+    "CandidateContractEvidence": {
+      "description": "Results and the exact observed wire trace are inseparable: a report that uses scripted\ncandidate evidence must carry both the digest and the measurements derived from that trace.",
+      "type": "object",
+      "properties": {
+        "results": {
+          "$ref": "#/$defs/CandidateContractResults"
+        },
+        "trace_observations": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "trace_sha256": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "trace_sha256",
+        "trace_observations",
+        "results"
+      ]
+    },
+    "CandidateContractResults": {
+      "description": "Evidence produced by the candidate-only wire contract. It is deliberately separate from\nreal-Chrome measurements: Chrome cannot be instructed to emit unknown future protocol fields.",
+      "type": "object",
+      "properties": {
+        "connection_survived": {
+          "type": "boolean"
+        },
+        "detach_during_pending": {
+          "type": "boolean"
+        },
+        "drift_fixtures": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "event_before_response": {
+          "type": "boolean"
+        },
+        "pending_calls_closed": {
+          "type": "boolean"
+        },
+        "reconnect_connections": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "routing_commands": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "routing_cross_delivery": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "routing_events": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "sessions_rebuilt": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "socket_closed": {
+          "type": "boolean"
+        },
+        "subscriptions_closed": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "drift_fixtures",
+        "connection_survived",
+        "routing_commands",
+        "routing_events",
+        "routing_cross_delivery",
+        "event_before_response",
+        "detach_during_pending",
+        "pending_calls_closed",
+        "subscriptions_closed",
+        "socket_closed",
+        "reconnect_connections",
+        "sessions_rebuilt"
+      ]
+    },
+    "CandidateIdentity": {
+      "type": "object",
+      "properties": {
+        "checksum": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "version",
+        "checksum"
+      ]
+    },
+    "FixtureEvidence": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "sha256"
+      ]
+    },
+    "GateConfiguration": {
+      "type": "object",
+      "properties": {
+        "hard_stop_seconds": {
+          "description": "Maximum wall-clock time for the complete real-Chrome qualification operation.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "minimum_frames": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "minimum_seconds": {
+          "type": "number",
+          "format": "double"
+        },
+        "saturation_attempts": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "saturation_seconds": {
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "minimum_seconds",
+        "minimum_frames",
+        "saturation_seconds",
+        "saturation_attempts",
+        "hard_stop_seconds"
+      ]
+    },
+    "GateProvenance": {
+      "type": "object",
+      "properties": {
+        "configuration_sha256": {
+          "description": "Digest of the exact serialized GateConfiguration used by the runner.",
+          "type": "string"
+        },
+        "implementation_revision": {
+          "description": "The immutable source revision of the gate implementation used by the runner.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "implementation_revision",
+        "configuration_sha256"
+      ]
+    },
+    "GateResult": {
+      "type": "object",
+      "properties": {
+        "failure": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SpikeError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/TransportGateId"
+        },
+        "measurements": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number",
+            "format": "double"
+          }
+        },
+        "status": {
+          "$ref": "#/$defs/GateStatus"
+        },
+        "summary": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "status",
+        "summary",
+        "measurements"
+      ]
+    },
+    "GateStatus": {
+      "type": "string",
+      "enum": [
+        "pass",
+        "fail",
+        "blocked",
+        "not_run"
+      ]
+    },
+    "SanitizedEnvironment": {
+      "type": "object",
+      "properties": {
+        "architecture": {
+          "type": "string"
+        },
+        "platform": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "platform",
+        "architecture"
+      ]
+    },
+    "SourceIdentity": {
+      "type": "object",
+      "properties": {
+        "git_revision": {
+          "type": "string"
+        },
+        "protocol_revision": {
+          "type": "string"
+        },
+        "rust_version": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "git_revision",
+        "protocol_revision",
+        "rust_version"
+      ]
+    },
+    "SpikeError": {
+      "description": "Errors deliberately exposed by the disposable qualification boundary.",
+      "type": "object",
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/SpikeErrorCode"
+        },
+        "gate": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TransportGateId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "message": {
+          "type": "string"
+        },
+        "retryable": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message",
+        "retryable"
+      ]
+    },
+    "SpikeErrorCode": {
+      "type": "string",
+      "enum": [
+        "connect",
+        "command",
+        "protocol",
+        "routing",
+        "subscription_closed",
+        "disconnected",
+        "deadline",
+        "invariant",
+        "io",
+        "evidence"
+      ]
+    },
+    "TransportGateId": {
+      "type": "string",
+      "enum": [
+        "deterministic-routing",
+        "typed-domains",
+        "flat-session-isolation",
+        "raw-browser-command",
+        "raw-session-command",
+        "named-raw-event-params",
+        "protocol-drift-survival",
+        "sustained-screencast",
+        "prompt-acknowledgement",
+        "bounded-handoff-saturation",
+        "bounded-memory-proxy",
+        "disconnect-cleanup",
+        "explicit-reconnect-rebuild"
+      ]
+    }
+  }
+}
