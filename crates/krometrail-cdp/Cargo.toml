@@ -12,6 +12,7 @@ cdp-spike = [
 	"dep:futures-util",
 	"dep:schemars",
 	"dep:serde_json",
+	"dep:sha2",
 	"dep:tokio-tungstenite",
 ]
 cdp-spike-cdpkit = ["cdp-spike", "dep:cdpkit"]
@@ -26,4 +27,5 @@ cdpkit = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 schemars = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
 tokio-tungstenite = { workspace = true, optional = true }

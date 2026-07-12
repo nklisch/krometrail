@@ -12,6 +12,7 @@ use std::{
 
 use futures_util::StreamExt;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use super::{
     contract::{SpikeTransport, SpikeTransportFactory, TransportScope},
@@ -799,27 +800,14 @@ fn theil_sen(samples: &[(u64, u64)]) -> f64 {
     percentile(slopes, 0.5)
 }
 fn sha256_directory(path: &Path) -> Result<String, SpikeError> {
-    let output = Command::new("sha256sum")
-        .arg(path.join("index.html"))
-        .arg(path.join("animation.js"))
-        .output()
-        .map_err(io_error)?;
-    if !output.status.success() {
-        return Err(SpikeError::new(
-            SpikeErrorCode::Evidence,
-            "fixture digest command failed",
-        ));
-    }
-    let hashes: Vec<String> = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter_map(|line| line.split_whitespace().next().map(str::to_owned))
-        .collect();
-    if hashes.len() != 2 {
-        return Err(SpikeError::new(
-            SpikeErrorCode::Evidence,
-            "fixture digest output was incomplete",
-        ));
-    }
+    let hashes = ["index.html", "animation.js"]
+        .into_iter()
+        .map(|file| {
+            let bytes = std::fs::read(path.join(file)).map_err(io_error)?;
+            Ok::<String, SpikeError>(format!("{:x}", Sha256::digest(bytes)))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
     Ok(format!(
         "sha256sum-of-ordered-fixture-files:{}:{}",
         hashes[0], hashes[1]
@@ -834,5 +822,27 @@ fn command_output(command: &str, args: &[&str]) -> Result<String, SpikeError> {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
     } else {
         Err(SpikeError::new(SpikeErrorCode::Evidence, "command failed"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fixture_hashing_is_deterministic_and_does_not_require_external_hashing() {
+        let fixture_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/browser/cdp-transport-gate");
+        let first = sha256_directory(&fixture_path).expect("fixture digest");
+        let second = sha256_directory(&fixture_path).expect("fixture digest");
+        let expected = "sha256sum-of-ordered-fixture-files:9b42ae730d12a95772a946bf55e4838a5443b6cb4c536424570219041b6e2a68:84ba666539a996012a781637c1a894d8c7a4789cfca84661bd7cf8b79efa2e13";
+
+        assert_eq!(first, expected);
+        assert_eq!(first, second);
+
+        // PATH manipulation is process-global and unsafe to simulate in parallel tests;
+        // the source check is the safe cross-platform reproduction of the old failure.
+        let source = include_str!("chrome_harness.rs");
+        assert!(!source.contains("Command::new(\"sha256sum\")"));
     }
 }

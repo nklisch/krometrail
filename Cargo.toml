@@ -39,6 +39,7 @@ tracing = "0.1"
 cdpkit = "=0.4.0"
 futures-util = "0.3"
 schemars = "1"
+sha2 = "0.10"
 tokio-tungstenite = "=0.30.0"
 
 [dependencies]
