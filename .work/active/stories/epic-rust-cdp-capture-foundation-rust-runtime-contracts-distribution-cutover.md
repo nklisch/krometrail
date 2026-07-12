@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-rust-runtime-contracts-distribution-cutover
 kind: story
-stage: implementing
+stage: review
 tags: [infra]
 parent: epic-rust-cdp-capture-foundation-rust-runtime-contracts
 depends_on: [epic-rust-cdp-capture-foundation-rust-runtime-contracts-legacy-runtime-removal]
@@ -31,8 +31,20 @@ Preserve these public release asset names exactly: `krometrail-linux-x64`, `krom
 
 ## Acceptance criteria
 
-- [ ] Rust CI covers the complete quality gate.
-- [ ] Static workflow tests prove every expected asset, checksum, and installer mapping.
-- [ ] No npm publish or Bun product build remains.
-- [ ] Cargo is the only product version source and `--version` reflects it.
-- [ ] Installer shell syntax/checksum behavior and developer install pass.
+- [x] Rust CI covers the complete quality gate.
+- [x] Static workflow tests prove every expected asset, checksum, and installer mapping.
+- [x] No npm publish or Bun product build remains.
+- [x] Cargo is the only product version source and `--version` reflects it.
+- [x] Installer shell syntax/checksum behavior and developer install pass.
+
+## Implementation notes
+
+- Dispatch: direct local reads only, per caller; no subagents or questions.
+- Files changed: `.github/workflows/ci.yml`, `.github/workflows/release.yml`, `.gitignore`, `scripts/install.sh`, `scripts/dev-install.sh`, `scripts/bump-version.ts`, `tests/distribution-static.sh`.
+- Release builds use native GitHub-hosted runners for the five explicit Rust target/asset rows, `dtolnay/rust-toolchain@stable`, `Swatinem/rust-cache@v2`, per-asset provenance attestations, and a fail-fast checksum/release aggregation step. The existing Pages workflow remains docs-only and does not compile the product.
+- The installer now has an explicit four-platform mapping, preserves the public Windows download reference, and rejects missing, malformed, or unverifiable checksums instead of continuing.
+- Versioning reads the root Cargo `[package].version`; Cargo workspace metadata is synchronized for inherited member versions, while `package.json` remains private and docs/fixture-only. `--prepare` and `--dry-run` make bump behavior testable without commit, tag, or push side effects.
+- Tests added: `tests/distribution-static.sh` validates all asset/checksum/installer mappings, Rust CI commands, package/version ownership, developer-install path, and isolated bump behavior.
+- Verification: `cargo fmt --all --check`; locked workspace check/test/clippy with denied warnings; shell syntax checks; static distribution tests; `cargo run -- --version`, `--help`, and unavailable `doctor`; isolated `scripts/dev-install.sh` install/version check.
+- Discrepancies from design: `Cargo.lock` required no content change; `package.json` already satisfied the private docs/fixture-only contract; `deploy-pages.yml` was already isolated to VitePress docs.
+- Adjacent issues parked: none.

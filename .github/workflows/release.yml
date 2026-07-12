@@ -9,6 +9,7 @@ on:
       tag:
         description: "Tag to release (e.g. v1.2.3)"
         required: true
+        type: string
 
 env:
   RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
@@ -20,80 +21,99 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    name: Build ${{ matrix.asset }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset: krometrail-linux-x64
+            extension: ""
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            asset: krometrail-linux-arm64
+            extension: ""
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            asset: krometrail-darwin-x64
+            extension: ""
+          - runner: macos-14
+            target: aarch64-apple-darwin
+            asset: krometrail-darwin-arm64
+            extension: ""
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: krometrail-windows-x64.exe
+            extension: ".exe"
+    runs-on: ${{ matrix.runner }}
     steps:
-      - name: Checkout
+      - name: Checkout release tag
         uses: actions/checkout@v4
         with:
           ref: ${{ env.RELEASE_TAG }}
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
 
-      - name: Run unit tests
-        run: bun run test:unit
+      - name: Build release binary
+        run: cargo build --locked --release --target ${{ matrix.target }}
 
-      - name: Build linux-x64
-        run: bun run build:linux-x64
+      - name: Stage release asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/krometrail${{ matrix.extension }}" "dist/${{ matrix.asset }}"
+          test -f "dist/${{ matrix.asset }}"
 
-      - name: Build linux-arm64
-        run: bun run build:linux-arm64
-
-      - name: Build darwin-x64
-        run: bun run build:darwin-x64
-
-      - name: Build darwin-arm64
-        run: bun run build:darwin-arm64
-
-      - name: Build windows-x64
-        run: bun run build:windows-x64
-
-      - name: Attest linux-x64
+      - name: Attest release asset
         uses: actions/attest-build-provenance@v2
         with:
-          subject-path: dist/krometrail-linux-x64
+          subject-path: dist/${{ matrix.asset }}
 
-      - name: Attest linux-arm64
-        uses: actions/attest-build-provenance@v2
-        with:
-          subject-path: dist/krometrail-linux-arm64
-
-      - name: Attest darwin-x64
-        uses: actions/attest-build-provenance@v2
-        with:
-          subject-path: dist/krometrail-darwin-x64
-
-      - name: Attest darwin-arm64
-        uses: actions/attest-build-provenance@v2
-        with:
-          subject-path: dist/krometrail-darwin-arm64
-
-      - name: Attest windows-x64
-        uses: actions/attest-build-provenance@v2
-        with:
-          subject-path: dist/krometrail-windows-x64.exe
-
-      - name: Upload dist artifacts
+      - name: Upload release asset
         uses: actions/upload-artifact@v4
         with:
-          name: dist
-          path: dist/
+          name: binary-${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}
+          if-no-files-found: error
 
   release:
+    name: Publish GitHub release
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - name: Download artifacts
+      - name: Download release assets
         uses: actions/download-artifact@v4
         with:
-          name: dist
-          path: dist/
+          pattern: binary-*
+          path: dist
+          merge-multiple: true
 
-      - name: Generate checksums
-        run: cd dist && sha256sum krometrail-* > checksums.txt
+      - name: Verify release matrix and generate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected=(
+            krometrail-linux-x64
+            krometrail-linux-arm64
+            krometrail-darwin-x64
+            krometrail-darwin-arm64
+            krometrail-windows-x64.exe
+          )
+          for asset in "${expected[@]}"; do
+            test -f "dist/${asset}"
+          done
+          (cd dist && sha256sum "${expected[@]}" > checksums.txt)
+          test "$(wc -l < dist/checksums.txt)" -eq "${#expected[@]}"
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
@@ -101,35 +121,9 @@ jobs:
           tag_name: ${{ env.RELEASE_TAG }}
           generate_release_notes: true
           files: |
-            dist/krometrail-*
+            dist/krometrail-linux-x64
+            dist/krometrail-linux-arm64
+            dist/krometrail-darwin-x64
+            dist/krometrail-darwin-arm64
+            dist/krometrail-windows-x64.exe
             dist/checksums.txt
-
-  publish-npm:
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ env.RELEASE_TAG }}
-
-      - name: Setup Node 22
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          registry-url: https://registry.npmjs.org
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Upgrade npm
-        run: npm install -g npm@latest
-
-      - name: Publish to npm
-        run: npm publish --access public

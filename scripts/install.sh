@@ -95,7 +95,6 @@ detect_platform() {
 	case "$OS" in
 		Linux)   PLATFORM="linux" ;;
 		Darwin)  PLATFORM="darwin" ;;
-		FreeBSD) PLATFORM="linux" ;; # use linux binary on FreeBSD
 		MINGW*|MSYS*|CYGWIN*)
 			err "Windows is not supported by this installer."
 			echo ""
@@ -186,20 +185,25 @@ verify_checksum() {
 	info "Verifying checksum..."
 
 	checksums_file="$(mktemp)"
-	trap_cleanup="$checksums_file"
-
 	if ! download "$checksums_url" "$checksums_file" 2>/dev/null; then
-		warn "Checksums not available for ${VERSION} — skipping verification"
 		rm -f "$checksums_file"
-		return
+		err "Checksums are not available for ${VERSION}; refusing an unverified install"
+		exit 1
 	fi
 
-	expected="$(grep "${asset_name}" "$checksums_file" | awk '{print $1}')"
+	expected="$(awk -v asset="$asset_name" '$2 == asset { print $1 }' "$checksums_file")"
 	rm -f "$checksums_file"
 
-	if [ -z "$expected" ]; then
-		warn "No checksum found for ${asset_name} — skipping verification"
-		return
+	case "$expected" in
+		""|*[!0123456789abcdefABCDEF]*)
+			err "No valid checksum found for ${asset_name}"
+			exit 1
+			;;
+	esac
+
+	if [ "$(printf '%s' "$expected" | wc -c | tr -d ' ')" -ne 64 ]; then
+		err "Invalid checksum length for ${asset_name}"
+		exit 1
 	fi
 
 	if has_cmd sha256sum; then
@@ -207,8 +211,8 @@ verify_checksum() {
 	elif has_cmd shasum; then
 		actual="$(shasum -a 256 "$binary_path" | awk '{print $1}')"
 	else
-		warn "sha256sum/shasum not found — skipping verification"
-		return
+		err "sha256sum or shasum is required to verify the download"
+		exit 1
 	fi
 
 	if [ "$actual" != "$expected" ]; then
@@ -317,7 +321,16 @@ main() {
 
 	resolve_version
 
-	ASSET_NAME="${BINARY_NAME}-${PLATFORM}-${ARCH_SUFFIX}"
+	case "${PLATFORM}-${ARCH_SUFFIX}" in
+		linux-x64)   ASSET_NAME="krometrail-linux-x64" ;;
+		linux-arm64) ASSET_NAME="krometrail-linux-arm64" ;;
+		darwin-x64)  ASSET_NAME="krometrail-darwin-x64" ;;
+		darwin-arm64) ASSET_NAME="krometrail-darwin-arm64" ;;
+		*)
+			err "No release asset is available for ${PLATFORM}-${ARCH_SUFFIX}"
+			exit 1
+			;;
+	esac
 	DOWNLOAD_URL="${GITHUB}/releases/download/${VERSION}/${ASSET_NAME}"
 
 	# Default install directory
