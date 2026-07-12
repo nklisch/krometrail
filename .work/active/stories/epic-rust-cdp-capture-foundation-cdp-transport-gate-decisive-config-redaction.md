@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cdp-transport-gate-decisive-config-redaction
 kind: story
-stage: review
+stage: done
 tags: [bug, browser, infra, security, testing]
 parent: epic-rust-cdp-capture-foundation-cdp-transport-gate
 depends_on: []
@@ -36,3 +36,13 @@ Define one canonical decisive configuration (60 seconds, 1,000 frames, 10 second
 - Tests added: exact canonical configuration/digest and recomputed `999999` hard-stop regressions; capture/handoff elapsed boundary regressions; recursive hostname/email/bracketed IPv6/percent-encoding/credential redaction regressions; canonical identity false-positive coverage; CLI noncanonical hard-stop regression.
 - Discrepancies from design: none.
 - Adjacent issues parked: none.
+
+## Review (2026-07-13)
+
+**Verdict:** Approve
+
+**Blockers:** none
+**Important:** none
+**Nits:** none
+
+**Notes:** Fast-lane validator review verified canonical configuration/digest SSOT, elapsed-below-hard-stop checks, rejection of recomputed 999999 hard stop, recursive decoded hostname/email/IPv6/credential redaction, identity allowlist regressions, 41 candidate-feature tests, and denied-warning clippy. Verdict: Approve - story verified by implement; fast-lane advance.
