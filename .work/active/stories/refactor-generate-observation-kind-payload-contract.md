@@ -1,7 +1,7 @@
 ---
 id: refactor-generate-observation-kind-payload-contract
 kind: story
-stage: implementing
+stage: review
 tags: [refactor]
 parent: null
 depends_on: []
@@ -27,13 +27,20 @@ Replace those parallel declarations with one local declarative macro invocation 
 
 ## Acceptance criteria
 
-- [ ] One declaration in `timeline/observation.rs` generates both existing enums and the complete legal kind/payload compatibility match.
-- [ ] All current enum variant names, trait derives, serde names/tag/content fields, constructors, accessors, and validation errors remain unchanged.
-- [ ] External payload non-empty validation and session-time ordering validation remain independent and unchanged.
-- [ ] Tests exhaustively cover every generated legal association and representative illegal associations without hand-copying the registry again.
-- [ ] `cargo fmt --all -- --check` passes.
-- [ ] `cargo test --workspace --all-targets --locked` passes.
-- [ ] `cargo clippy --workspace --all-targets --locked -- -D warnings` passes.
+- [x] One declaration in `timeline/observation.rs` generates both existing enums and the complete legal kind/payload compatibility match.
+- [x] All current enum variant names, trait derives, serde names/tag/content fields, constructors, accessors, and validation errors remain unchanged.
+- [x] External payload non-empty validation and session-time ordering validation remain independent and unchanged.
+- [x] Tests exhaustively cover every generated legal association and representative illegal associations without hand-copying the registry again.
+- [x] `cargo fmt --all -- --check` passes.
+- [x] `cargo test --workspace --all-targets --locked` passes.
+- [x] `cargo clippy --workspace --all-targets --locked -- -D warnings` passes.
+
+## Implementation notes
+- Files changed: `crates/krometrail-core/src/timeline/observation.rs`; this story file.
+- Tests added: a macro-generated contract test enumerates every generated payload and asserts each generated kind has exactly one compatible payload, covering all legal and nonmatching associations without a second hand-maintained registry.
+- Discrepancies from design: none.
+- Adjacent issues parked: none.
+- The local declaration preserves the original enum order, derives, Serde attributes, payload variants, validation messages, and independent external-payload/time checks while generating the compatibility predicate.
 
 ## Risk and rollback
 

@@ -7,30 +7,122 @@ use crate::{
     validation::deserialize_validated,
 };
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ObservationKind {
-    Frame,
-    InteractionBoundary,
-    Navigation,
-    TargetLifecycle,
-    VisibilityChange,
-    CaptureGap,
-    ConsoleMessage,
-    JavascriptException,
-    NetworkLifecycle,
-    Marker,
+macro_rules! define_observation_contract {
+    ($( $kind:ident => $payload_spec:tt ),+ $(,)?) => {
+        define_observation_contract!(@collect [] [] [] [] ; $( $kind => $payload_spec ),+);
+    };
+
+    (@collect
+        [$($kind:ident,)*]
+        [$($payload_variant:tt)*]
+        [$($payload_pattern:tt)*]
+        [$($test_payload:tt)*]
+        ;
+    ) => {
+        #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        pub enum ObservationKind {
+            $($kind,)*
+        }
+
+        #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+        #[serde(tag = "kind", content = "id", rename_all = "snake_case")]
+        pub enum ObservationPayloadRef {
+            $($payload_variant)*
+            External(String),
+        }
+
+        impl ObservationKind {
+            fn matches_payload(self, payload: &ObservationPayloadRef) -> bool {
+                match (self, payload) {
+                    $($payload_pattern)*
+                    _ => false,
+                }
+            }
+
+            #[cfg(test)]
+            const ALL: &'static [Self] = &[$(Self::$kind),*];
+        }
+
+        #[cfg(test)]
+        mod generated_contract_tests {
+            use super::*;
+
+            const UUID: &str = "123e4567-e89b-12d3-a456-426614174000";
+
+            fn payloads() -> Vec<ObservationPayloadRef> {
+                let mut payloads: Vec<_> = [$($test_payload)*]
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                payloads.push(ObservationPayloadRef::External("external".into()));
+                payloads
+            }
+
+            #[test]
+            fn all_registered_observation_pairs_are_compatible() {
+                let payloads = payloads();
+                for kind in ObservationKind::ALL {
+                    let compatible = payloads
+                        .iter()
+                        .filter(|payload| kind.matches_payload(payload))
+                        .count();
+                    assert_eq!(compatible, 1, "unexpected payload contract for {kind:?}");
+                }
+            }
+        }
+    };
+
+    (@collect
+        [$($kind:ident,)*]
+        [$($payload_variant:tt)*]
+        [$($payload_pattern:tt)*]
+        [$($test_payload:tt)*]
+        ;
+        $next_kind:ident => (typed($payload:ident, $payload_type:ty))
+        $(, $rest_kind:ident => $rest_spec:tt)*
+    ) => {
+        define_observation_contract!(@collect
+            [$($kind,)* $next_kind,]
+            [$($payload_variant)* $payload($payload_type),]
+            [$($payload_pattern)* (ObservationKind::$next_kind, ObservationPayloadRef::$payload(_)) => true,]
+            [$($test_payload)* Some(ObservationPayloadRef::$payload(<$payload_type>::from_uuid(UUID.parse().unwrap()))),]
+            ; $( $rest_kind => $rest_spec ),*
+        );
+    };
+
+    (@collect
+        [$($kind:ident,)*]
+        [$($payload_variant:tt)*]
+        [$($payload_pattern:tt)*]
+        [$($test_payload:tt)*]
+        ;
+        $next_kind:ident => (external)
+        $(, $rest_kind:ident => $rest_spec:tt)*
+    ) => {
+        define_observation_contract!(@collect
+            [$($kind,)* $next_kind,]
+            [$($payload_variant)*]
+            [$($payload_pattern)* (ObservationKind::$next_kind, ObservationPayloadRef::External(_)) => true,]
+            [$($test_payload)* None,]
+            ; $( $rest_kind => $rest_spec ),*
+        );
+    };
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "id", rename_all = "snake_case")]
-pub enum ObservationPayloadRef {
-    Frame(FrameId),
-    Interaction(InteractionId),
-    Navigation(NavigationId),
-    Gap(GapId),
-    Marker(MarkerId),
-    External(String),
+// Keep the public observation taxonomy and its payload compatibility contract in
+// one declaration. External observations intentionally share one payload variant.
+define_observation_contract! {
+    Frame => (typed(Frame, FrameId)),
+    InteractionBoundary => (typed(Interaction, InteractionId)),
+    Navigation => (typed(Navigation, NavigationId)),
+    TargetLifecycle => (external),
+    VisibilityChange => (external),
+    CaptureGap => (typed(Gap, GapId)),
+    ConsoleMessage => (external),
+    JavascriptException => (external),
+    NetworkLifecycle => (external),
+    Marker => (typed(Marker, MarkerId)),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -102,29 +194,7 @@ impl TimelineObservation {
     }
 
     pub fn validate(&self) -> Result<()> {
-        let matches_kind = matches!(
-            (&self.kind, &self.payload),
-            (ObservationKind::Frame, ObservationPayloadRef::Frame(_))
-                | (
-                    ObservationKind::InteractionBoundary,
-                    ObservationPayloadRef::Interaction(_)
-                )
-                | (
-                    ObservationKind::Navigation,
-                    ObservationPayloadRef::Navigation(_)
-                )
-                | (ObservationKind::CaptureGap, ObservationPayloadRef::Gap(_))
-                | (ObservationKind::Marker, ObservationPayloadRef::Marker(_))
-                | (
-                    ObservationKind::TargetLifecycle
-                        | ObservationKind::VisibilityChange
-                        | ObservationKind::ConsoleMessage
-                        | ObservationKind::JavascriptException
-                        | ObservationKind::NetworkLifecycle,
-                    ObservationPayloadRef::External(_)
-                ),
-        );
-        if !matches_kind {
+        if !self.kind.matches_payload(&self.payload) {
             return Err(invalid(format!(
                 "payload does not match observation kind {:?}",
                 self.kind
