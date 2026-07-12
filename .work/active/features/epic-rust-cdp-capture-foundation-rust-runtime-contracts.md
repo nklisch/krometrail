@@ -882,3 +882,7 @@ The operator explicitly authorized continued review and remediation beyond the t
 - Reviewer (Phase 1 — completeness): GLM 5.2 xhigh; verdict ready with two installer coverage nits.
 - Reviewer (Phase 2 — adversarial): GPT-5.6 Sol high; found that executable validation did not require the requested Krometrail product/version identity.
 - Accepted follow-up: `epic-rust-cdp-capture-foundation-rust-runtime-contracts-installer-identity`, including the two remaining coverage nits.
+
+## Fourth-review remediation status
+
+`epic-rust-cdp-capture-foundation-rust-runtime-contracts-installer-identity` reached `stage: done`. The installer now requires exact `krometrail <selected-version>` identity before replacement and directly covers empty, wrong-product, wrong-version, download-failure, cleanup/preservation, and latest-resolved post-cutoff success paths.
