@@ -6,7 +6,7 @@
     "checksum": "c3fdb566d913b31e0014391a94c0db4ed871dbb76577dd1b2f2c5f6df158bfaa"
   },
   "source": {
-    "git_revision": "3d7c96ccf20862c47ab70ffbd7f724dceedfb4d2",
+    "git_revision": "07b0990c0d9e4fea9057fcab5c35e56691ff69eb",
     "protocol_revision": "unavailable (cdpkit generated CDP_VERSION=1.3)",
     "rust_version": "rustc 1.95.0 (59807616e 2026-04-14) (Fedora 1.95.0-1.fc43)"
   },
@@ -31,8 +31,102 @@
     "hard_stop_seconds": 120
   },
   "gate_provenance": {
-    "implementation_revision": "3d7c96ccf20862c47ab70ffbd7f724dceedfb4d2",
-    "configuration_sha256": "sha256:06388b5f8ad042093d22408dedb8d02d5a04a9e59d485158edc533334bab956e"
+    "implementation_revision": "07b0990c0d9e4fea9057fcab5c35e56691ff69eb",
+    "configuration_sha256": "sha256:06388b5f8ad042093d22408dedb8d02d5a04a9e59d485158edc533334bab956e",
+    "source_attestation": {
+      "revision": "07b0990c0d9e4fea9057fcab5c35e56691ff69eb",
+      "digest": "sha256:b4147b12577e980123bfb711d314dd17f22b0639303956e97441af74a8b297b0",
+      "files": [
+        {
+          "path": ".github/workflows/cdp-transport-gate.yml",
+          "sha256": "sha256:727f7733863dae78f462bbb5e4edee1ddf6751f07b55dd95843496115e14de62"
+        },
+        {
+          "path": "Cargo.lock",
+          "sha256": "sha256:7fdefbc19ef2a241da2c9cc79fd1ad64c53ea725124da67cc87672f052be9a37"
+        },
+        {
+          "path": "Cargo.toml",
+          "sha256": "sha256:08c290aaf1d1bcd7f0507500da7ac48f03c51d9f1e24bc3ec1787002a4680625"
+        },
+        {
+          "path": "crates/krometrail-cdp/Cargo.toml",
+          "sha256": "sha256:fc75d31498d93de7cba67bdb7c296dd8d117400cc5e4d7befec5562bdfbd69aa"
+        },
+        {
+          "path": "crates/krometrail-cdp/src/bin/cdp-transport-gate.rs",
+          "sha256": "sha256:83a7def532d251056af5d5db32572eccf76fcb6e614e8ba97dff5b90c6cba666"
+        },
+        {
+          "path": "crates/krometrail-cdp/src/spike/cdpkit_adapter.rs",
+          "sha256": "sha256:6b743cf84e23da7e38a0eeb66a2f4cfea5b9d06dc42943b49d9bcbf12b614c31"
+        },
+        {
+          "path": "crates/krometrail-cdp/src/spike/chrome_harness.rs",
+          "sha256": "sha256:f12ec4bdde841c3f26063eec3c3ffbeb1409f925d1e61ceb2b288be422361810"
+        },
+        {
+          "path": "crates/krometrail-cdp/src/spike/contract.rs",
+          "sha256": "sha256:52e84b958db6b628edf19dc96a86a726ccf8f77ad41fb8321dcf4918f62f2c47"
+        },
+        {
+          "path": "crates/krometrail-cdp/src/spike/error.rs",
+          "sha256": "sha256:4da7b931559d8fa66f6dd3c34a132bce3514089583912396fb6846f7593f8ca5"
+        },
+        {
+          "path": "crates/krometrail-cdp/src/spike/evidence.rs",
+          "sha256": "sha256:832b7e580b02682b8560d2fe34a5065f55e3945e00d94dec7e1c17679c823f1c"
+        },
+        {
+          "path": "crates/krometrail-cdp/src/spike/fake.rs",
+          "sha256": "sha256:07f2613c18c01a3dfe546f6c9b4fb579e740a421e2b622c9ad1c41277a28d8bd"
+        },
+        {
+          "path": "crates/krometrail-cdp/src/spike/fixture_server.rs",
+          "sha256": "sha256:8f7db255c22c6791e61ef0362eec4c76867eab6e4e7f8d98389f8172ac2ea87c"
+        },
+        {
+          "path": "crates/krometrail-cdp/src/spike/mod.rs",
+          "sha256": "sha256:9ac0ffc885d48f9024e9fcaefa78c3d242fae5744734f663f0470794ce9633b4"
+        },
+        {
+          "path": "crates/krometrail-cdp/src/spike/scenarios.rs",
+          "sha256": "sha256:15bee4fe567c174ad247cd68640e6d3ce04c8e8571356cf32d8a9f5573b621e0"
+        },
+        {
+          "path": "crates/krometrail-cdp/src/spike/scripted_peer.rs",
+          "sha256": "sha256:d0d31c3e0315bedb579003eb4ba4d3b54749dad09c58ee5de2b97d90541b8af1"
+        },
+        {
+          "path": "crates/krometrail-cdp/tests/cdpkit_transport_contract.rs",
+          "sha256": "sha256:bb3b1d38147a007be63cd699b3cad33a2d48a76e58af98166141002240c7997e"
+        },
+        {
+          "path": "crates/krometrail-cdp/tests/fixtures/protocol/additive-field.json",
+          "sha256": "sha256:72be8368a42eb36816a4d08942f8d7b7ad18790000db5a96cca532f699b203e5"
+        },
+        {
+          "path": "crates/krometrail-cdp/tests/fixtures/protocol/unknown-enum.json",
+          "sha256": "sha256:98189617ef6632ce738917ed88c1d273bc95f65f33300311f3f58c34cafe4a89"
+        },
+        {
+          "path": "crates/krometrail-cdp/tests/fixtures/protocol/unknown-event.json",
+          "sha256": "sha256:de70ce94d3a5af666382a9ca2077d6cb3756a647d6e54a1139397029c848ed78"
+        },
+        {
+          "path": "crates/krometrail-cdp/tests/transport_contract.rs",
+          "sha256": "sha256:78cfe572e263ec0041a7f18e4906f02d11dc540cce6390bcf8da38df1bab8ff2"
+        },
+        {
+          "path": "tests/fixtures/browser/cdp-transport-gate/animation.js",
+          "sha256": "sha256:84ba666539a996012a781637c1a894d8c7a4789cfca84661bd7cf8b79efa2e13"
+        },
+        {
+          "path": "tests/fixtures/browser/cdp-transport-gate/index.html",
+          "sha256": "sha256:9b42ae730d12a95772a946bf55e4838a5443b6cb4c536424570219041b6e2a68"
+        }
+      ]
+    }
   },
   "gates": [
     {
@@ -110,24 +204,24 @@
       "status": "pass",
       "summary": "real-Chrome gate passed",
       "measurements": {
-        "ack_latency_ms_max": 19.721226,
-        "ack_latency_ms_p50": 16.655679,
-        "ack_latency_ms_p95": 17.205039,
-        "ack_latency_ms_p99": 17.795669,
-        "elapsed_seconds": 60.013945058,
+        "ack_latency_ms_max": 2.785427,
+        "ack_latency_ms_p50": 0.14341,
+        "ack_latency_ms_p95": 0.217149,
+        "ack_latency_ms_p99": 0.3979589999999999,
+        "capture_elapsed_seconds": 60.012037205,
         "frames_acknowledged": 3601.0,
         "frames_received": 3601.0,
         "handoff_accepted": 1.0,
         "handoff_dropped": 3600.0,
-        "rss_first_window_median_bytes": 12976128.0,
-        "rss_last_window_median_bytes": 12976128.0,
-        "rss_peak_bytes": 12976128.0,
+        "handoff_elapsed_seconds": 60.012037205,
+        "rss_first_window_median_bytes": 13283328.0,
+        "rss_last_window_median_bytes": 13479936.0,
+        "rss_peak_bytes": 13479936.0,
         "rss_samples": 51.0,
         "rss_sampling_interval_seconds": 1.0,
-        "rss_theil_sen_bytes_per_minute": 0.0,
+        "rss_theil_sen_bytes_per_minute": 245760.0,
         "rss_warmup_seconds": 10.0,
         "saturation_attempts": 3601.0,
-        "saturation_seconds": 60.013945058,
         "upstream_queue_depth_available": 0.0
       },
       "failure": null
@@ -138,10 +232,10 @@
       "summary": "real-Chrome gate passed",
       "measurements": {
         "ack_before_handoff": 1.0,
-        "ack_latency_ms_max": 19.721226,
-        "ack_latency_ms_p50": 16.655679,
-        "ack_latency_ms_p95": 17.205039,
-        "ack_latency_ms_p99": 17.795669
+        "ack_latency_ms_max": 2.785427,
+        "ack_latency_ms_p50": 0.14341,
+        "ack_latency_ms_p95": 0.217149,
+        "ack_latency_ms_p99": 0.3979589999999999
       },
       "failure": null
     },
@@ -153,7 +247,7 @@
         "handoff_accepted": 1.0,
         "handoff_attempts": 3601.0,
         "handoff_dropped": 3600.0,
-        "saturation_seconds": 60.013945058
+        "handoff_elapsed_seconds": 60.012037205
       },
       "failure": null
     },
@@ -162,13 +256,13 @@
       "status": "pass",
       "summary": "real-Chrome gate passed",
       "measurements": {
-        "rss_first_window_median_bytes": 12976128.0,
-        "rss_growth_bytes": 0.0,
-        "rss_last_window_median_bytes": 12976128.0,
-        "rss_peak_bytes": 12976128.0,
+        "rss_first_window_median_bytes": 13283328.0,
+        "rss_growth_bytes": 196608.0,
+        "rss_last_window_median_bytes": 13479936.0,
+        "rss_peak_bytes": 13479936.0,
         "rss_samples": 51.0,
         "rss_sampling_interval_seconds": 1.0,
-        "rss_theil_sen_bytes_per_minute": 0.0,
+        "rss_theil_sen_bytes_per_minute": 245760.0,
         "rss_warmup_seconds": 10.0,
         "upstream_queue_depth_available": 0.0
       },
@@ -181,9 +275,9 @@
       "measurements": {
         "close_reason_observed": 1.0,
         "pending_calls_closed": 1.0,
-        "pending_command_elapsed_seconds": 0.009479799,
+        "pending_command_elapsed_seconds": 0.010723987,
         "pending_command_started": 1.0,
-        "subscription_elapsed_seconds": 0.009483069,
+        "subscription_elapsed_seconds": 0.010727187,
         "subscriptions_closed": 1.0
       },
       "failure": null
@@ -194,7 +288,7 @@
       "summary": "real-Chrome gate passed",
       "measurements": {
         "connections": 2.0,
-        "elapsed_seconds": 0.22490539,
+        "elapsed_seconds": 0.224187241,
         "sessions_rebuilt": 2.0
       },
       "failure": null
@@ -207,21 +301,31 @@
     "candidate-contract trace digest: sha256:6c6be028c511d4d8c28cbecec368a7d4f09e0d87612741d02ac19a8663964d54"
   ],
   "candidate_contract": {
+    "fixture_sha256": "sha256:6dc599e64e0245b5f29eae0644dddb3a5e7222a234b7e2602a6a8577a25e677e",
     "trace_sha256": "sha256:6c6be028c511d4d8c28cbecec368a7d4f09e0d87612741d02ac19a8663964d54",
     "trace_observations": 942,
     "results": {
-      "drift_fixtures": 3,
-      "connection_survived": true,
-      "routing_commands": 200,
-      "routing_events": 200,
-      "routing_cross_delivery": 0,
-      "event_before_response": true,
-      "detach_during_pending": true,
-      "pending_calls_closed": true,
-      "subscriptions_closed": true,
-      "socket_closed": true,
-      "reconnect_connections": 2,
-      "sessions_rebuilt": 2
+      "wire": {
+        "drift_fixtures": 3,
+        "drift_methods": [
+          "Protocol.unknownEvent",
+          "Runtime.additiveField",
+          "Runtime.unknownEnum"
+        ],
+        "connection_survived": true,
+        "routing_commands": 200,
+        "routing_events": 200,
+        "routing_cross_delivery": 0,
+        "event_before_response": true,
+        "detach_during_pending": true,
+        "socket_closed": true,
+        "reconnect_connections": 2,
+        "sessions_rebuilt": 2
+      },
+      "runtime": {
+        "pending_calls_closed": true,
+        "subscriptions_closed": true
+      }
     }
   }
 }
