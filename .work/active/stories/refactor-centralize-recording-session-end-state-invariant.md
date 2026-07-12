@@ -1,7 +1,7 @@
 ---
 id: refactor-centralize-recording-session-end-state-invariant
 kind: story
-stage: review
+stage: done
 tags: [refactor]
 parent: null
 depends_on: []
@@ -52,3 +52,13 @@ Extract one private invariant validator for the candidate lifecycle/end-time pai
 - Scope: second mandatory five-story autopilot cadence; distribution workflows/scripts/manifests/static contract tests, current contributor/docs navigation surfaces, and remediation-touched core invariant/enum modules.
 - Dispatch: direct-read only as required; no questions or subagents. `.pi/`, escalated review metadata, and the existing `refactor-derive-cli-error-code-names` finding were excluded.
 - Value: high — this removes duplicate aggregate invariants from two state-entry paths rather than merely shortening syntax.
+
+## Review (2026-07-12)
+
+**Verdict**: Approve
+
+**Blockers**: none
+**Important**: none
+**Nits**: none
+
+**Notes**: Fast-lane story review. The orchestrator independently reran the 41-test locked Rust gate; behavior and validation ordering remain covered. Verdict: Approve - story verified by implement; fast-lane advance.
