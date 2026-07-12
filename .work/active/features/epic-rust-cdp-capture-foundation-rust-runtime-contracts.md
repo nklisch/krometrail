@@ -860,4 +860,8 @@ This feature has now completed two implementing → review → unresolved-review
 
 ## Escalated remediation status
 
-All three second-review follow-ups reached `stage: done`. Release artifacts now bind to one exact tag SHA, distribution fixtures are hermetic, lockfile checks preserve package multiplicity, runtime identifiers use UUID v4 with single-sourced typed-ID coverage, architecture identifiers are aligned, and Linux assets use pinned musl cross-builds with architecture-matched pre-upload smoke gates. The integrated Rust and distribution checks pass with 40 tests. These fixes clear the recorded technical findings, but the circuit-breaker escalation intentionally remains unresolved until the operator authorizes another feature-level review or disposition.
+All three second-review follow-ups reached `stage: done`. Release artifacts now bind to one exact tag SHA, distribution fixtures are hermetic, lockfile checks preserve package multiplicity, runtime identifiers use UUID v4 with single-sourced typed-ID coverage, architecture identifiers are aligned, and Linux assets use pinned musl cross-builds with architecture-matched pre-upload smoke gates. The integrated Rust and distribution checks pass with 40 tests. These fixes clear the recorded technical findings.
+
+## Escalation resolution
+
+The operator explicitly authorized continued review and remediation beyond the two-bounce circuit breaker, with intervention requested only for genuinely irreducible strategic decisions. Autopilot may therefore run another feature-level review and keep fixing verified findings until approval.
