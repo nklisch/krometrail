@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cdp-transport-gate-transport-decision-rollup
 kind: story
-stage: review
+stage: done
 tags: [browser, infra, testing]
 parent: epic-rust-cdp-capture-foundation-cdp-transport-gate
 depends_on: [epic-rust-cdp-capture-foundation-cdp-transport-gate-macos-decisive-evidence]
@@ -55,3 +55,13 @@ Validate the Linux and macOS evidence set, compute the transport decision withou
 - Adjacent issues parked: none.
 - Dispatch rationale: direct-read only; no subagent or question dispatch was used per caller instruction.
 - Production boundary: no adapter/root wiring/core-port revision landed. The spike remains non-default. Reconnect, bounded handoff/backpressure, capture gaps, cancellation, and flush remain Krometrail-owned.
+
+## Review (2026-07-12)
+
+**Verdict**: Approve
+
+**Blockers**: none
+**Important**: none
+**Nits**: none
+
+**Notes**: Fast-lane decision review. The orchestrator independently reran 13 cdpkit/spike tests, candidate clippy, and the docs build; verified exact report digests and cross-platform evidence; and confirmed the generated decision selects cdpkit 0.4.0 with no waived gates or production wiring. Verdict: Approve - story verified by implement; fast-lane advance.
