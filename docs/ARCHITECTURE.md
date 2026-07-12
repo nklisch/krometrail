@@ -350,9 +350,9 @@ Metadata does not claim that a frame exists until its complete segment record is
 
 ## Retention
 
-The recording store is the authority for disk usage.
+The recording store is the authority for one global data-directory budget.
 
-Budget accounting includes:
+Budget accounting spans active and stopped sessions and includes:
 
 - frame segments;
 - indexes;
@@ -361,13 +361,13 @@ Budget accounting includes:
 
 Retention operates on sealed segments:
 
-1. calculate current usage;
-2. identify oldest unpinned segments;
+1. calculate total current usage;
+2. identify the oldest unpinned segments across all sessions;
 3. delete candidates in chronological order;
 4. remove associated indexes and unprotected artifacts;
 5. stop when usage is within budget.
 
-Pinning protects segments intersecting a requested range. Initial pinning is deliberately segment-granular.
+Stopping a session leaves its segments retained and queryable. Pinning protects segments intersecting a requested range. Initial pinning is deliberately segment-granular.
 
 When no unpinned data can satisfy the budget, the recorder enters a paused-budget state. It does not delete pinned evidence.
 

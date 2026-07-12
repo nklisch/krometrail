@@ -213,11 +213,11 @@ Tools belonging to a disabled capability are not registered with MCP. The regist
 
 ## Disk Budget and Retention
 
-Each session uses a configurable disk budget. The default budget is 10 GB.
+The Krometrail data directory uses one configurable global disk budget across active sessions, retained sessions, indexes, browser events, and generated artifacts. The default budget is 10 GB.
 
-Recorded data is stored in time-based immutable segments. Session metadata and artifact indexes are stored separately from frame payloads.
+Recorded data is stored in time-based immutable segments. Session metadata and artifact indexes are stored separately from frame payloads. Stopping a session leaves its retained ranges queryable under the global budget.
 
-When stored session data exceeds its budget, Krometrail removes the oldest unpinned segments until usage returns below the limit.
+When total stored data exceeds the budget, Krometrail removes the oldest unpinned segments across all sessions until usage returns below the limit.
 
 A time range can be pinned. Pinning protects every storage segment required to reconstruct that range. If pinned data consumes the entire budget, recording pauses before deleting protected evidence and reports the condition clearly.
 

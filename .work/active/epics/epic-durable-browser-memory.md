@@ -28,6 +28,11 @@ This epic does not render temporal visual artifacts or expose the complete agent
 - `docs/ARCHITECTURE.md` — Recording Store, Retention, Crash Recovery, and Temporal Range Resolution
 - `docs/EVALUATION.md` — Storage and Retention Evaluation
 
+## Design decisions
+
+- **Disk-budget scope:** Apply one user-configured budget to the complete Krometrail data directory across active sessions, retained sessions, indexes, browser events, and generated artifacts. Eviction selects the oldest unpinned segments globally so total storage remains bounded.
+- **Stopped-session retention:** Keep stopped sessions queryable under the global budget. They require no explicit archive action and become eligible for ordinary oldest-first eviction unless a range is pinned.
+
 ## Anticipated child features
 
 - Versioned append-only frame segment format and writer
