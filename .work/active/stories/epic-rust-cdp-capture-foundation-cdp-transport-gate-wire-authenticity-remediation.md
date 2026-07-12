@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cdp-transport-gate-wire-authenticity-remediation
 kind: story
-stage: review
+stage: done
 tags: [bug, browser, infra, testing]
 parent: epic-rust-cdp-capture-foundation-cdp-transport-gate
 depends_on: []
@@ -35,3 +35,13 @@ Replace the parallel expected deque with one wire-connected scripted server/cont
 - Added optional candidate-contract evidence with a SHA-256 trace binding. Unknown-event, additive-field, and unknown-enum fixtures are explicitly not described as real-Chrome measurements.
 - Narrowed the RSS limitation to the continuously drained reader/counter proxy; the cdpkit unbounded subscriber queue remains an explicit unproven limitation. No final Linux/macOS evidence was recaptured or hand-edited.
 - Verification: `cargo fmt --all --check`; workspace default tests; spike tests/clippy; candidate-feature tests/clippy all pass. No production adapter, root composition, or core-port files changed.
+
+## Review (2026-07-12)
+
+**Verdict:** Approve
+
+**Blockers:** none
+**Important:** none
+**Nits:** none
+
+**Notes:** Fast-lane remediation review verified one shared wire-observation controller, correlation-derived routing, trace-bound drift evidence, narrowed RSS claims, 14 candidate-feature tests, and denied-warning clippy. No production/core leakage. Verdict: Approve - story verified by implement; fast-lane advance.
