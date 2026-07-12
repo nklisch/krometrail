@@ -1,6 +1,6 @@
 # Historical schema-v2 qualification artifacts
 
-These files were the prior v2 canonical reports and generated decision before the final strict requalification. On 2026-07-12 they were moved from `docs/evidence/cdp-transport/v2/` into this historical directory **without editing their bytes**. They remain available for audit and are not current qualification inputs.
+The direct files in this directory are the earlier prior-v2 reports and generated decision. The superseded 07b0990 canonical reports and decision are preserved byte-for-byte in `final-v2-07b0990/`. All files remain available for audit and are not current qualification inputs.
 
 | File | Original role | SHA-256 | Bytes |
 | --- | --- | --- | ---: |
@@ -8,4 +8,4 @@ These files were the prior v2 canonical reports and generated decision before th
 | [`cdpkit-macos.json`](./cdpkit-macos.json) | Prior accepted hosted macOS v2 report, workflow run `29202919716`, same revision | `c206b1a04651421b8b88f42d75920800a75ee85ed83756f8792191a5e9b3b998` | 6,944 |
 | [`decision.json`](./decision.json) | Prior generated v2 decision selecting `adopt_cdpkit` | `0288aa9a379b467042409ac27056107b443ea0d91bd21fc4fc8c2beae44c075b` | 13,546 |
 
-The historical reports and decision are retained byte-for-byte. They are obsolete because the final requalification binds evidence to exact revision `07b0990c0d9e4fea9057fcab5c35e56691ff69eb`, adds the repaired source attestation and final observed measurements, and uses the regenerated current decision at [`../decision.json`](../decision.json). The current v2 directory contains the final Linux and macOS reports and that decision; this directory is retained provenance, not a qualification input.
+The direct historical reports and decision are retained byte-for-byte. The nested `final-v2-07b0990/` set is likewise byte-for-byte preserved from exact revision `07b0990c0d9e4fea9057fcab5c35e56691ff69eb`. The current v2 directory contains the independently validated final5 Linux and macOS reports and regenerated decision; this directory is retained provenance, not a qualification input.

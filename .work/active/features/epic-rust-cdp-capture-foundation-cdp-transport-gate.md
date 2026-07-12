@@ -36,7 +36,7 @@ Turn the spike results into an explicit transport decision: adopt `cdpkit` only 
 - Versioned evidence: `docs/research/rust-cdp-transport-2026-07.md`
 - Execution reference: `.agents/skills/rust-cdp-transport/SKILL.md`
 - Dispatch rationale: direct-read only because the autopilot caller prohibited subagents and questions; crates.io metadata, pinned published source, CI/tests, current GitHub issues, and the official CDP source supplied the required evidence.
-- Decision posture: final v2 Linux and macOS reports select exact `cdpkit` 0.4.0 from gate revision `07b0990c0d9e4fea9057fcab5c35e56691ff69eb`, unchanged configuration/fixture/source attestation, and bound candidate-contract evidence. `chromey` 2.52.0 and the owned raw-envelope transport remain documented fallbacks only after a demonstrated cdpkit failure; retained v1/prior-v2 evidence is historical.
+- Decision posture: final5 Linux and macOS reports select exact `cdpkit` 0.4.0 from gate revision `a0e98ad6bd9c53d10385020bc43629f7ac246173`, canonical configuration/fixture/source attestation, and reconstructable candidate-contract evidence. `chromey` 2.52.0 and the owned raw-envelope transport remain documented fallbacks only after a demonstrated cdpkit failure; the prior 07b0990 reports/decision are preserved byte-for-byte under `docs/evidence/cdp-transport/v2/historical/final-v2-07b0990/`.
 
 ## Design decisions
 
@@ -472,11 +472,11 @@ pub async fn run_screencast_gate(
 ## Decision rollup (schema v2)
 
 - Selection: exact `cdpkit` 0.4.0, Cargo.lock checksum `c3fdb566d913b31e0014391a94c0db4ed871dbb76577dd1b2f2c5f6df158bfaa`.
-- Immutable provenance: gate/source revision `07b0990c0d9e4fea9057fcab5c35e56691ff69eb`, source-attestation digest `sha256:b4147b12577e980123bfb711d314dd17f22b0639303956e97441af74a8b297b0`, configuration digest `sha256:06388b5f8ad042093d22408dedb8d02d5a04a9e59d485158edc533334bab956e`, and browser fixture digest `sha256sum-of-ordered-fixture-files:9b42ae730d12a95772a946bf55e4838a5443b6cb4c536424570219041b6e2a68:84ba666539a996012a781637c1a894d8c7a4789cfca84661bd7cf8b79efa2e13`.
-- Accepted current evidence: v2 Linux `a7195eda1667e613b1b3f857fd56cc60153500544493a86afac8448706d20270`; v2 macOS `46901e41bb2a4bb674d76d9dce41fc4200032280cd9720daaaad965ee89d257b` from hosted run `29207244853`.
-- Decision output: `docs/evidence/cdp-transport/v2/decision.json`, generated solely by `decide_from_files`; decision SHA-256 `91f9032315dd3501068e1dd692b12fbda7ce0d7a57c9b5a49444db73c2a5c015`.
-- The generated decision preserves all 13 platform-labelled gates and the identical candidate-contract fixture digest `sha256:6dc599e64e0245b5f29eae0644dddb3a5e7222a234b7e2602a6a8577a25e677e`, trace digest `sha256:6c6be028c511d4d8c28cbecec368a7d4f09e0d87612741d02ac19a8663964d54`, 942 observations, and three drift fixtures for both platforms.
-- Exact post-receive ack p99/max are Linux `0.3979589999999999/2.785427 ms` and macOS `1.062666/7.058083 ms`; receive → ack completion → bounded handoff and measured capture/handoff elapsed fields remain the contract.
+- Immutable provenance: gate/source revision `a0e98ad6bd9c53d10385020bc43629f7ac246173`, source-attestation digest `sha256:96acbed658fb89a71a90107ac0bfec0ab78860e57f95a374cc9e183d672a4c5a`, configuration digest `sha256:06388b5f8ad042093d22408dedb8d02d5a04a9e59d485158edc533334bab956e`, and browser fixture digest `sha256sum-of-ordered-fixture-files:9b42ae730d12a95772a946bf55e4838a5443b6cb4c536424570219041b6e2a68:84ba666539a996012a781637c1a894d8c7a4789cfca84661bd7cf8b79efa2e13`.
+- Accepted current evidence: v2 Linux `c5ed8bfab9cb829f0d1e1622755667084abc09129ed1f2928cdc5f577d3761f8`; v2 macOS `7b2d7c61d61400f47281423d35ea57d51b1292cc78a95c4d7cef3118476c2264` from hosted run `29212145045`.
+- Decision output: `docs/evidence/cdp-transport/v2/decision.json`, generated solely by `decide_from_files`; decision SHA-256 `dfbd51c9e7a1f8e051c173df35962bc6f443d2b5c28037e406c3a72beda6472a`.
+- The generated decision preserves all 13 platform-labelled gates and the identical candidate-contract fixture digest `sha256:622fb296e0b50bf0dc81123c5f54a797040cdc48bd6b5f9ca96167bbe87fce76`, trace digest `sha256:33ccc161726cc35f68e6a260c129a06f9050af4a616a76c8b957525f557a6e00`, 942 observations, and three drift fixtures for both platforms.
+- Exact post-receive ack p99/max are Linux `0.214389/0.889178 ms` and macOS `0.582458/12.67025 ms`; receive → ack completion → bounded handoff and measured capture/handoff elapsed fields remain the contract.
 - Limitations remain explicit: named event params only, unbounded subscriber with no queue-depth introspection, and RSS/ack-latency proxies. No chromey or owned-transport failure was evidenced; production adapter, reconnect policy, and bounded capture/backpressure remain downstream work.
 
 ## Conditional fallback protocol
@@ -516,7 +516,7 @@ The chain is intentionally sequential: harness integrity precedes candidate evid
 Commands from a clean checkout:
 
 ```bash
-export GATE_SHA=07b0990c0d9e4fea9057fcab5c35e56691ff69eb
+export GATE_SHA=a0e98ad6bd9c53d10385020bc43629f7ac246173
 cargo test --locked -p krometrail-cdp --features cdp-spike --test transport_contract
 cargo test --locked -p krometrail-cdp --features cdp-spike-cdpkit --test cdpkit_transport_contract
 cargo run --locked -p krometrail-cdp --features cdp-spike-cdpkit --bin cdp-transport-gate -- gate \
@@ -561,7 +561,7 @@ Default and spike-feature gates both pass. The default dependency graph proves s
 
 ## Implementation summary
 
-The original child stories reached their pre-remediation milestones, but the feature review returned the gate for remediation. The final v2 Linux and macOS reports now pass the unchanged contract from exact revision `07b0990c0d9e4fea9057fcab5c35e56691ff69eb` with identical configuration/fixture/source-attestation provenance, and `docs/evidence/cdp-transport/v2/decision.json` selects exact cdpkit 0.4.0.
+The original child stories reached their pre-remediation milestones, but the feature review returned the gate for remediation. The superseded final-v2 Linux and macOS reports passed the unchanged contract from exact revision `07b0990c0d9e4fea9057fcab5c35e56691ff69eb` and are preserved under `historical/final-v2-07b0990/`. The current final5 Linux and macOS reports now pass the unchanged contract from exact revision `a0e98ad6bd9c53d10385020bc43629f7ac246173` with identical canonical configuration/fixture/source-attestation provenance and reconstructable trace material, and `docs/evidence/cdp-transport/v2/decision.json` selects exact cdpkit 0.4.0.
 
 The generated v1 and prior-v2 reports/decision remain historical evidence only. The current v2 decision preserves platform-labelled gate/candidate results, canonical RSS fields, observed lifecycle measurements, and identical immutable provenance. Spike features remain non-default; no production adapter, root wiring, capture pipeline, or core-port revision landed.
 
@@ -573,10 +573,10 @@ GLM completeness review reproduced all committed reports and decisions and ident
 
 No threshold or requirement was waived. The v1 reports and decision remain historical implementation outputs. Nine evidence-integrity and portability follow-ups were ultimately required after the first review, including exact endpoint binding and runtime nondeterminism discovered during fresh qualification. All 14 child stories are now `stage: done`.
 
-The final v2 reports were emitted from exact revision `07b0990c0d9e4fea9057fcab5c35e56691ff69eb` on Linux and hosted macOS run `29207244853`; both pass all 13 unchanged gates with identical candidate trace results and current observed measurements. The generated platform-faithful decision selects exact cdpkit 0.4.0. The manual workflow remains exact-ref+SHA only with resolved-SHA artifacts and no cdp-transport push trigger.
+The final5 reports were emitted from exact revision `a0e98ad6bd9c53d10385020bc43629f7ac246173` on clean Linux and hosted macOS run `29212145045`; both pass all 13 unchanged gates with identical candidate trace/results, canonical configuration, redaction, source attestation, and current observed measurements. The generated platform-faithful decision selects exact cdpkit 0.4.0. The manual workflow remains exact-ref+SHA only with resolved-SHA artifacts and no cdp-transport push trigger; default, spike, cdpkit, schema, normalization, decisive, and docs gates were reproduced.
 
 A fresh GLM review approved the first remediation, but the second Sol adversarial review reproduced new blockers: protocol-drift checks did not assert committed fixture params; local Linux provenance did not attest a clean source tree; architecture diagrams contradicted acknowledgement order; recursive redaction/status consistency was bypassable; candidate trace equality/results were incomplete; capture deadline/cancellation behavior was unsafe; and latency included frame wait while claiming receive-to-ack timing.
 
-Six additional stories repaired those defects, recaptured both platforms from clean exact revision `07b0990c0d9e4fea9057fcab5c35e56691ff69eb`, preserved prior v2 evidence under `historical/`, and regenerated decision digest `91f9032315dd3501068e1dd692b12fbda7ce0d7a57c9b5a49444db73c2a5c015`.
+Six additional stories repaired those defects, recaptured both platforms from clean exact revision `07b0990c0d9e4fea9057fcab5c35e56691ff69eb`, preserved that evidence under `historical/final-v2-07b0990/`, and regenerated decision digest `91f9032315dd3501068e1dd692b12fbda7ce0d7a57c9b5a49444db73c2a5c015`. The attested final-recapture story then independently normalized and revalidated final5 inputs at `a0e98ad6bd9c53d10385020bc43629f7ac246173`, preserving the prior bytes and installing report digests `c5ed8bfab9cb829f0d1e1622755667084abc09129ed1f2928cdc5f577d3761f8` / `7b2d7c61d61400f47281423d35ea57d51b1292cc78a95c4d7cef3118476c2264` and decision digest `dfbd51c9e7a1f8e051c173df35962bc6f443d2b5c28037e406c3a72beda6472a`.
 
 The next fresh GLM pass found only a corrected Chrome-version typo, but final Sol review reproduced four remaining blockers: descendant Chrome process trees were not group-owned; compile-time worktree paths leaked through shared Cargo cache and a test false-skipped; candidate trace summaries were not reconstructable from committed trace material; and Rust decisive validation did not pin the canonical hard stop. It also reproduced encoded hostname/email/IPv6 redaction bypasses. Four new stories repair and recapture this evidence. The feature returns to `stage: implementing`; no prior report or threshold is waived.

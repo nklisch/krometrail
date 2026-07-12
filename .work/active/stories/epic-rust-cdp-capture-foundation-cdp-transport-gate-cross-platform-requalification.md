@@ -23,7 +23,7 @@ Phase 2 feature review found that Linux provenance was edited after its run and 
 - At exact revision `8d01d50956650befe603bd4178afbbb2ff473105`, hosted macOS run `29202075722` passed the exact-path candidate test and then failed the gate with an immediate connection close. The simultaneous Linux run exhausted the complete 120-second hard stop without stage context. Neither report was accepted.
 - Preparation commit `39149eac1f955b1533bce52dd3ae61f74f2ec723` installed the strict runner, CLI, workflow, and v2 documentation but intentionally performed no hosted dispatch and produced no evidence.
 
-The endpoint-binding and runtime-determinism repairs were complete at the prior-v2 gate revision `3d7c96ccf20862c47ab70ffbd7f724dceedfb4d2`. Thresholds were not weakened. That evidence was later superseded by final requalification at `07b0990c0d9e4fea9057fcab5c35e56691ff69eb`.
+The endpoint-binding and runtime-determinism repairs were complete at the prior-v2 gate revision `3d7c96ccf20862c47ab70ffbd7f724dceedfb4d2`. Thresholds were not weakened. That evidence was later superseded by final-v2 requalification at `07b0990c0d9e4fea9057fcab5c35e56691ff69eb`, whose bytes are preserved under `historical/final-v2-07b0990/`; final5 requalification at `a0e98ad6bd9c53d10385020bc43629f7ac246173` is current.
 
 ## Scope
 
@@ -47,7 +47,7 @@ candidate: cdpkit 0.4.0
 candidate checksum: c3fdb566d913b31e0014391a94c0db4ed871dbb76577dd1b2f2c5f6df158bfaa
 fixture: cdp-transport-gate
 fixture digest: sha256sum-of-ordered-fixture-files:9b42ae730d12a95772a946bf55e4838a5443b6cb4c536424570219041b6e2a68:84ba666539a996012a781637c1a894d8c7a4789cfca84661bd7cf8b79efa2e13
-candidate trace: sha256:6c6be028c511d4d8c28cbecec368a7d4f09e0d87612741d02ac19a8663964d54
+candidate trace: sha256:6c6be028c511d4d8c28cbecec368a7d4f09e0d87612741d02ac19a8663964d54 (superseded final-v2; final5 trace: sha256:33ccc161726cc35f68e6a260c129a06f9050af4a616a76c8b957525f557a6e00)
 trace observations: 942
 trace results: drift_fixtures=3, connection_survived=true, routing_commands=200,
   routing_events=200, routing_cross_delivery=0, event_before_response=true,

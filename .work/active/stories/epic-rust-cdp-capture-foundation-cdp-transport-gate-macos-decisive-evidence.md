@@ -45,11 +45,11 @@ A later successful run, [29198272740](https://github.com/nklisch/krometrail/acti
 
 Run [29198801356](https://github.com/nklisch/krometrail/actions/runs/29198801356) then caught a macOS-only compile error in the new sampler. `epic-rust-cdp-capture-foundation-cdp-transport-gate-macos-rss-compile-fix` corrected it with target-neutral parsing coverage.
 
-The prior-v2 exact-SHA run [29202919716](https://github.com/nklisch/krometrail/actions/runs/29202919716) passed every then-current gate and uploaded sanitized evidence. Earlier evidence was rejected. Its report is retained as historical provenance; the current final report is from hosted manual run `29207244853` at revision `07b0990c0d9e4fea9057fcab5c35e56691ff69eb` and is the only report used by the regenerated decision.
+The prior-v2 exact-SHA run [29202919716](https://github.com/nklisch/krometrail/actions/runs/29202919716) passed every then-current gate and uploaded sanitized evidence. Earlier evidence was rejected. Its report remains historical provenance. The superseded final-v2 report came from hosted manual run `29207244853` at revision `07b0990c0d9e4fea9057fcab5c35e56691ff69eb` and is preserved byte-for-byte under `historical/final-v2-07b0990/`; the current final5 report is hosted run `29212145045` at revision `a0e98ad6bd9c53d10385020bc43629f7ac246173` and is the only macOS report used by the regenerated decision.
 
 ## Implementation notes
 
-- Historical evidence file: `docs/evidence/cdp-transport/v2/historical/cdpkit-macos.json` from exact prior-v2 gate commit `3d7c96ccf20862c47ab70ffbd7f724dceedfb4d2`. Current evidence is `docs/evidence/cdp-transport/v2/cdpkit-macos.json` from final revision `07b0990c0d9e4fea9057fcab5c35e56691ff69eb`.
+- Historical evidence files: `docs/evidence/cdp-transport/v2/historical/cdpkit-macos.json` from exact prior-v2 gate commit `3d7c96ccf20862c47ab70ffbd7f724dceedfb4d2` and `docs/evidence/cdp-transport/v2/historical/final-v2-07b0990/cdpkit-macos.json` from revision `07b0990c0d9e4fea9057fcab5c35e56691ff69eb`. Current evidence is `docs/evidence/cdp-transport/v2/cdpkit-macos.json` from final5 revision `a0e98ad6bd9c53d10385020bc43629f7ac246173`.
 - Environment: macOS arm64, Chrome 149.0.7827.201, Rust 1.97.0, cdpkit 0.4.0.
 - Sustained gate: 60.019783292 seconds, 3,571 frames received and acknowledged, 3,570 explicit capacity-1 handoff drops, acknowledgement p99 22.518792 ms and observed max 556.233375 ms.
 - RSS gate: 51 nonzero samples, nonzero first/last medians and peak, sampling interval within the unchanged contract, bounded growth/slope pass.

@@ -31,7 +31,7 @@ Regenerate the schema-v2 decision solely from repaired same-revision reports, pr
 ## Implementation notes
 
 - Prior-v2 milestone generated `docs/evidence/cdp-transport/v2/decision.json` solely with `decide_from_files`; its reports and decision are retained byte-for-byte under `docs/evidence/cdp-transport/v2/historical/` and are not current inputs.
-- The final v3 rollup regenerates the canonical decision from current reports at exact revision `07b0990c0d9e4fea9057fcab5c35e56691ff69eb`; see `.work/active/stories/epic-rust-cdp-capture-foundation-cdp-transport-gate-final-v3-rollup.md` for current report/decision digests and measurements.
+- The final v3 rollup regenerated the superseded canonical decision from reports at exact revision `07b0990c0d9e4fea9057fcab5c35e56691ff69eb`; those bytes are preserved under `docs/evidence/cdp-transport/v2/historical/final-v2-07b0990/`. Current final5 report/decision digests and measurements are recorded by `epic-rust-cdp-capture-foundation-cdp-transport-gate-attested-final-recapture`.
 - The cdp-transport workflow has no push trigger. Strict manual `workflow_dispatch` ref+SHA verification and resolved-SHA artifact naming remain. No production adapter or core-port change landed.
 - Verification completed locally: report normalization/decisive validation and digest checks, default/spike/cdpkit tests and clippy gates, formatting, and `bun run docs:build`.
 - Restored `.work/bin/work-view`; `.pi/` remains ignored.
