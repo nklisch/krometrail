@@ -1,0 +1,6 @@
+{
+  "method": "Protocol.unknownEvent",
+  "params": {
+    "kind": "unknown"
+  }
+}

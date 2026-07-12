@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cdp-transport-gate-spike-contract-harness
 kind: story
-stage: implementing
+stage: review
 tags: [browser, infra, testing]
 parent: epic-rust-cdp-capture-foundation-cdp-transport-gate
 depends_on: []
@@ -45,8 +45,18 @@ Add the non-default `krometrail-cdp` spike surface, one candidate-neutral `Spike
 
 ## Acceptance criteria
 
-- [ ] The default crate remains a truthful empty production adapter boundary and has no selected CDP dependency.
-- [ ] Both `FakeTransport` and a candidate adapter can consume the same `run_transport_scenarios` suite; no second hand-maintained scenario list exists.
-- [ ] Fake routing, drift, ordering, disconnect, reconnect, and session rebuild tests are deterministic and contain no `sleep` calls.
-- [ ] The schema is generated, versioned as `1`, and round-trip/negative tests prove strict validation and secret/path redaction.
-- [ ] `cargo fmt --all --check`, default workspace check/test/clippy, and `cargo test -p krometrail-cdp --features cdp-spike --test transport_contract` pass.
+- [x] The default crate remains a truthful empty production adapter boundary and has no selected CDP dependency.
+- [x] Both `FakeTransport` and a candidate adapter can consume the same `run_transport_scenarios` suite; no second hand-maintained scenario list exists.
+- [x] Fake routing, drift, ordering, disconnect, reconnect, and session rebuild tests are deterministic and contain no `sleep` calls.
+- [x] The schema is generated, versioned as `1`, and round-trip/negative tests prove strict validation and secret/path redaction.
+- [x] `cargo fmt --all --check`, default workspace check/test/clippy, and `cargo test -p krometrail-cdp --features cdp-spike --test transport_contract` pass.
+
+## Implementation notes
+- Execution capability: highest-tier direct implementation; the caller prohibited questions and subagents, and the bounded crate/filesystem scope had clear ownership.
+- Review weight: standard, inherited from the active autopilot policy; implementation stops at `stage: review` for the requested handoff.
+- Dispatch rationale: direct-read only. The parent design, research reference, existing workspace manifests, and adapter boundary answered the integration questions without exploratory delegation.
+- Files changed: root `Cargo.toml` and `Cargo.lock`; `crates/krometrail-cdp/Cargo.toml`, `src/lib.rs`, all six spike modules, contract tests, and three protocol fixtures; generated `docs/evidence/cdp-transport/v1/schema.json`.
+- Tests added: deterministic fake/candidate-neutral scenario coverage, local in-memory WebSocket framing, disconnect/rebuild behavior, fixture loading, strict evidence round-trip/negative validation, and generated-schema parity.
+- Discrepancies from design: the scripted peer uses a real Tokio WebSocket framing pair over an in-memory duplex stream rather than binding a machine port, preserving deterministic no-port behavior; no candidate adapter was added because this story owns only the harness.
+- Adjacent issues parked: none.
+- Verification: default workspace fmt/check/test/clippy; `cdp-spike` fmt/check/test/clippy; `cdp-spike-cdpkit` check/test/clippy; dependency-tree isolation confirms cdpkit is absent from the default graph and present only with its feature.

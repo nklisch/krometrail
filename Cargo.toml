@@ -36,6 +36,10 @@ uuid = { version = "1", features = ["serde", "v4"] }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 tracing = "0.1"
+cdpkit = "=0.4.0"
+futures-util = "0.3"
+schemars = "1"
+tokio-tungstenite = "=0.30.0"
 
 [dependencies]
 clap.workspace = true

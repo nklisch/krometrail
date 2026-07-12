@@ -6,8 +6,24 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+cdp-spike = [
+	"dep:futures-util",
+	"dep:schemars",
+	"dep:serde_json",
+	"dep:tokio-tungstenite",
+]
+cdp-spike-cdpkit = ["cdp-spike", "dep:cdpkit"]
+
 [dependencies]
 krometrail-core.workspace = true
 serde.workspace = true
+thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+cdpkit = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
+schemars = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+tokio-tungstenite = { workspace = true, optional = true }

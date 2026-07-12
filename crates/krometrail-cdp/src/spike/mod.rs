@@ -1,0 +1,23 @@
+//! Disposable CDP qualification laboratory. Nothing in this module is a production adapter.
+
+pub mod contract;
+pub mod error;
+pub mod evidence;
+pub mod fake;
+pub mod scenarios;
+pub mod scripted_peer;
+
+pub use contract::{
+    EventStream, NamedEventParams, SpikeFuture, SpikeTransport, SpikeTransportFactory,
+    TransportScope,
+};
+pub use error::{SpikeError, SpikeErrorCode};
+pub use evidence::{
+    BrowserEvidence, CandidateIdentity, EvidenceDigest, FixtureEvidence, GateConfiguration,
+    GateResult, GateStatus, SanitizedEnvironment, SourceIdentity, TransportDecision,
+    TransportDecisionV1, TransportEvidenceV1, TransportGateId, decide, sanitize_evidence,
+    validate_evidence, write_json_schema,
+};
+pub use fake::{FakeTransport, FakeTransportFactory};
+pub use scenarios::{ScenarioEvidence, run_transport_scenarios};
+pub use scripted_peer::{ScriptedCdpPeer, ScriptedMessage};

@@ -1,0 +1,290 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TransportEvidenceV1",
+  "type": "object",
+  "properties": {
+    "browser": {
+      "$ref": "#/$defs/BrowserEvidence"
+    },
+    "candidate": {
+      "$ref": "#/$defs/CandidateIdentity"
+    },
+    "configuration": {
+      "$ref": "#/$defs/GateConfiguration"
+    },
+    "environment": {
+      "$ref": "#/$defs/SanitizedEnvironment"
+    },
+    "fixture": {
+      "$ref": "#/$defs/FixtureEvidence"
+    },
+    "gates": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/GateResult"
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "schema_version": {
+      "type": "integer",
+      "format": "uint16",
+      "maximum": 65535,
+      "minimum": 0
+    },
+    "source": {
+      "$ref": "#/$defs/SourceIdentity"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "candidate",
+    "source",
+    "environment",
+    "browser",
+    "fixture",
+    "configuration",
+    "gates",
+    "limitations"
+  ],
+  "$defs": {
+    "BrowserEvidence": {
+      "type": "object",
+      "properties": {
+        "product": {
+          "type": "string"
+        },
+        "protocol": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "product",
+        "protocol",
+        "revision"
+      ]
+    },
+    "CandidateIdentity": {
+      "type": "object",
+      "properties": {
+        "checksum": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "version",
+        "checksum"
+      ]
+    },
+    "FixtureEvidence": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "sha256"
+      ]
+    },
+    "GateConfiguration": {
+      "type": "object",
+      "properties": {
+        "minimum_frames": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "minimum_seconds": {
+          "type": "number",
+          "format": "double"
+        },
+        "saturation_attempts": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "saturation_seconds": {
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "minimum_seconds",
+        "minimum_frames",
+        "saturation_seconds",
+        "saturation_attempts"
+      ]
+    },
+    "GateResult": {
+      "type": "object",
+      "properties": {
+        "failure": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SpikeError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/TransportGateId"
+        },
+        "measurements": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number",
+            "format": "double"
+          }
+        },
+        "status": {
+          "$ref": "#/$defs/GateStatus"
+        },
+        "summary": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "status",
+        "summary",
+        "measurements"
+      ]
+    },
+    "GateStatus": {
+      "type": "string",
+      "enum": [
+        "pass",
+        "fail",
+        "blocked",
+        "not_run"
+      ]
+    },
+    "SanitizedEnvironment": {
+      "type": "object",
+      "properties": {
+        "architecture": {
+          "type": "string"
+        },
+        "platform": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "platform",
+        "architecture"
+      ]
+    },
+    "SourceIdentity": {
+      "type": "object",
+      "properties": {
+        "git_revision": {
+          "type": "string"
+        },
+        "protocol_revision": {
+          "type": "string"
+        },
+        "rust_version": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "git_revision",
+        "protocol_revision",
+        "rust_version"
+      ]
+    },
+    "SpikeError": {
+      "description": "Errors deliberately exposed by the disposable qualification boundary.",
+      "type": "object",
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/SpikeErrorCode"
+        },
+        "gate": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TransportGateId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "message": {
+          "type": "string"
+        },
+        "retryable": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message",
+        "retryable"
+      ]
+    },
+    "SpikeErrorCode": {
+      "type": "string",
+      "enum": [
+        "connect",
+        "command",
+        "protocol",
+        "routing",
+        "subscription_closed",
+        "disconnected",
+        "deadline",
+        "invariant",
+        "io",
+        "evidence"
+      ]
+    },
+    "TransportGateId": {
+      "type": "string",
+      "enum": [
+        "deterministic-routing",
+        "typed-domains",
+        "flat-session-isolation",
+        "raw-browser-command",
+        "raw-session-command",
+        "named-raw-event-params",
+        "protocol-drift-survival",
+        "sustained-screencast",
+        "prompt-acknowledgement",
+        "bounded-handoff-saturation",
+        "bounded-memory-proxy",
+        "disconnect-cleanup",
+        "explicit-reconnect-rebuild"
+      ]
+    }
+  }
+}
