@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-rust-runtime-contracts
 kind: feature
-stage: implementing
+stage: review
 tags: [browser, infra]
 parent: epic-rust-cdp-capture-foundation
 depends_on: []
@@ -836,3 +836,9 @@ The implementation followed the designed dependency chain and then completed dis
   - Follow-up: `epic-rust-cdp-capture-foundation-rust-runtime-contracts-distribution-integrity`
 
 The feature returns to `stage: implementing` until these review-created stories are verified.
+
+## Review remediation summary
+
+All three review-created stories reached `stage: done`. Core aggregates now enforce invariants through private fields, validated APIs, and validated Serde while preserving valid wire shapes. Lifecycle transitions, gap reasons, and error codes have exhaustive single-sourced coverage. Distribution now rebuilds developer installs, validates release tags against Cargo, locks Bun documentation dependencies, tests Rust 1.85, performs narrow lock refreshes before locked release gates, and removes stale harness ignores.
+
+The post-remediation gate passes with 38 total workspace tests (35 core plus 3 executable smoke tests), locked clippy, distribution failure-path contracts, and documentation dependency/build checks. The feature is ready for a fresh two-model implementation review.
