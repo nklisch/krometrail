@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cdp-transport-gate-candidate-contract-endpoint-binding
 kind: story
-stage: review
+stage: done
 tags: [bug, browser, infra, testing]
 parent: epic-rust-cdp-capture-foundation-cdp-transport-gate
 depends_on: [epic-rust-cdp-capture-foundation-cdp-transport-gate-evidence-v2-contract]
@@ -47,3 +47,13 @@ The decisive helper now accepts a candidate-neutral factory constructor closure,
 - Changed files: `crates/krometrail-cdp/src/spike/chrome_harness.rs`, `crates/krometrail-cdp/src/spike/mod.rs`, `crates/krometrail-cdp/src/spike/scenarios.rs`, and `crates/krometrail-cdp/tests/cdpkit_transport_contract.rs`.
 - Verification: `cargo fmt --all -- --check`; default workspace tests; `cdp-spike` tests; `cdp-spike-cdpkit` tests; and denied-warning clippy for default, spike, and cdpkit configurations all passed.
 - Deliberately not run: fresh 60-second evidence qualification. No production/core changes, push, or dispatch were made. No adjacent issues were parked.
+
+## Review (2026-07-12)
+
+**Verdict:** Approve
+
+**Blockers:** none
+**Important:** none
+**Nits:** none
+
+**Notes:** Fast-lane verified-bug review confirmed the exact decisive helper binds its own scripted endpoint through a candidate-neutral constructor, retains the separate real-Chrome factory, exposes underlying scenario evidence on failure, and is covered by the same function used in qualification. All 24 candidate-feature tests and denied-warning clippy pass. Verdict: Approve - story verified by implement; fast-lane advance.
