@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cdp-transport-gate
 kind: feature
-stage: implementing
+stage: review
 tags: [browser, infra]
 parent: epic-rust-cdp-capture-foundation
 depends_on: [epic-rust-cdp-capture-foundation-rust-runtime-contracts]
@@ -575,4 +575,6 @@ No threshold or requirement was waived. The v1 reports and decision remain histo
 
 The final v2 reports were emitted from exact revision `07b0990c0d9e4fea9057fcab5c35e56691ff69eb` on Linux and hosted macOS run `29207244853`; both pass all 13 unchanged gates with identical candidate trace results and current observed measurements. The generated platform-faithful decision selects exact cdpkit 0.4.0. The manual workflow remains exact-ref+SHA only with resolved-SHA artifacts and no cdp-transport push trigger.
 
-A fresh GLM review approved the remediation, but the second Sol adversarial review reproduced new blockers: protocol-drift checks did not assert committed fixture params; local Linux provenance did not attest a clean source tree; architecture diagrams contradicted acknowledgement order; recursive redaction/status consistency was bypassable; candidate trace equality/results were incomplete; capture deadline/cancellation behavior was unsafe; and latency included frame wait while claiming receive-to-ack timing. The feature is again `stage: implementing`. Six new stories repair these defects, recapture both platforms, and regenerate the decision. No existing evidence is rewritten or waived.
+A fresh GLM review approved the first remediation, but the second Sol adversarial review reproduced new blockers: protocol-drift checks did not assert committed fixture params; local Linux provenance did not attest a clean source tree; architecture diagrams contradicted acknowledgement order; recursive redaction/status consistency was bypassable; candidate trace equality/results were incomplete; capture deadline/cancellation behavior was unsafe; and latency included frame wait while claiming receive-to-ack timing.
+
+Six additional stories repaired those defects, recaptured both platforms from clean exact revision `07b0990c0d9e4fea9057fcab5c35e56691ff69eb`, preserved prior v2 evidence under `historical/`, and regenerated decision digest `91f9032315dd3501068e1dd692b12fbda7ce0d7a57c9b5a49444db73c2a5c015`. All 20 child stories are `stage: done`; no evidence or threshold was waived. The feature returns to `stage: review` for a final fresh two-model pass.
