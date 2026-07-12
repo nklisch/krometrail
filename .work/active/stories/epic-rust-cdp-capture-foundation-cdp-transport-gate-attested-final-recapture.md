@@ -15,7 +15,7 @@ updated: 2026-07-12
 
 ## Failed attempt
 
-Clean Linux qualification at exact revision `a0593c041f541fdc43e5e4f732eeb2a5a0dea777` failed after capture because the new allowlist rejected Chrome's canonical `@` + 40-hex browser revision. No report was accepted. The fix is tracked by `epic-rust-cdp-capture-foundation-cdp-transport-gate-browser-revision-identity`; both platforms must rerun from its later SHA.
+Clean Linux qualification and hosted macOS run `29211340202` at exact revision `a0593c041f541fdc43e5e4f732eeb2a5a0dea777` both failed after capture because the new allowlist rejected Chrome's canonical `@` + 40-hex browser revision. No report was accepted. The fix is tracked by `epic-rust-cdp-capture-foundation-cdp-transport-gate-browser-revision-identity`; both platforms must rerun from its later SHA.
 
 ## Scope
 
