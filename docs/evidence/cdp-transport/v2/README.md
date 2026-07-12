@@ -91,7 +91,9 @@ The hosted macOS capture used manual `workflow_dispatch` run `29207244853`, exac
 
 ## Configuration and exact fixture contract
 
-Both reports use:
+Every decisive report and decision must use the one canonical configuration below. The Rust
+report, CLI, workflow, and decision validators reject any field deviation, even when a caller
+recomputes a matching digest (for example, a `999999`-second hard stop).
 
 ```text
 minimum_seconds=60
@@ -99,7 +101,15 @@ minimum_frames=1000
 saturation_seconds=10
 saturation_attempts=100
 hard_stop_seconds=120
+configuration_sha256=sha256:06388b5f8ad042093d22408dedb8d02d5a04a9e59d485158edc533334bab956e
 ```
+
+The observed capture and handoff elapsed measurements must be positive, meet their configured
+thresholds, and be strictly below the 120-second hard stop. Sanitization applies recursively to
+candidate trace values and rejects hostnames with ports, email identities, bracketed IPv6,
+percent-encoded URLs/endpoints after bounded repeated decoding, and generic endpoint or user
+credentials. Field-specific identity allowlists preserve browser, Rust, candidate, revision,
+digest, fixture, and summary evidence that is valid by contract.
 
 The three ordered committed drift fixtures were consumed through the cdpkit path. Exact observed methods were `Protocol.unknownEvent`, `Runtime.additiveField`, and `Runtime.unknownEnum`; the additive fixture carried `new_field: 7`, and the unknown-enum fixture carried `value: future-value`. The candidate trace has 942 observations, three fixtures, zero routing cross-delivery, event-before-response, detach-during-pending, socket closure, two explicit reconnects, and two rebuilt sessions. Linux and macOS candidate-contract fixture digest, trace digest, observations, and complete wire/runtime result object are byte-for-byte equal.
 

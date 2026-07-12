@@ -92,7 +92,7 @@ jobs:
           set -euo pipefail
           scripts/cdp-transport-gate-cross-worktree.sh
 
-      - name: Verify generated evidence schema-v2 contract
+      - name: Verify generated evidence schema-v2 contract and canonical configuration
         shell: bash
         run: |
           set -euo pipefail
@@ -103,6 +103,10 @@ jobs:
             --output target/cdp-transport-gate/schema.generated.json
           cmp -- docs/evidence/cdp-transport/v2/schema.json \
             target/cdp-transport-gate/schema.generated.json
+          cargo run --locked -p krometrail-cdp \
+            --features cdp-spike-cdpkit \
+            --bin cdp-transport-gate -- canonical-config \
+            --output target/cdp-transport-gate/canonical-config.json
 
       - name: Run unchanged candidate and deterministic transport tests
         shell: bash
@@ -158,7 +162,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 - target/cdp-transport-gate/cdpkit-macos.sanitized.json "$RESOLVED_SHA" <<'PY'
+          python3 - target/cdp-transport-gate/cdpkit-macos.sanitized.json "$RESOLVED_SHA" target/cdp-transport-gate/canonical-config.json <<'PY'
           import hashlib
           import json
           import re
@@ -166,6 +170,8 @@ jobs:
 
           with open(sys.argv[1], encoding="utf-8") as evidence_file:
               evidence = json.load(evidence_file)
+          with open(sys.argv[3], encoding="utf-8") as canonical_file:
+              canonical = json.load(canonical_file)
           resolved_sha = sys.argv[2]
 
           assert set(evidence) == {
@@ -197,18 +203,21 @@ jobs:
               "sha256": "sha256sum-of-ordered-fixture-files:9b42ae730d12a95772a946bf55e4838a5443b6cb4c536424570219041b6e2a68:84ba666539a996012a781637c1a894d8c7a4789cfca84661bd7cf8b79efa2e13",
           }
 
-          expected_configuration = {
+          expected_configuration = canonical["configuration"]
+          expected_configuration_digest = canonical["configuration_sha256"]
+          assert expected_configuration == {
               "minimum_seconds": 60.0,
               "minimum_frames": 1000,
               "saturation_seconds": 10.0,
               "saturation_attempts": 100,
               "hard_stop_seconds": 120,
           }
+          assert expected_configuration_digest == "sha256:06388b5f8ad042093d22408dedb8d02d5a04a9e59d485158edc533334bab956e"
           assert evidence["configuration"] == expected_configuration
           encoded_configuration = json.dumps(
               expected_configuration, separators=(",", ":"), ensure_ascii=False
           ).encode()
-          expected_configuration_digest = "sha256:" + hashlib.sha256(encoded_configuration).hexdigest()
+          assert "sha256:" + hashlib.sha256(encoded_configuration).hexdigest() == expected_configuration_digest
           provenance = evidence["gate_provenance"]
           assert set(provenance) == {
               "implementation_revision", "configuration_sha256", "source_attestation"

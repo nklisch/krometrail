@@ -9,7 +9,8 @@ use krometrail_cdp::spike::{
     CandidateRuntimeAssertions, CanonicalProtocolFixture, CanonicalWireObservation,
     CanonicalWireObservationKind, FixtureEvidence, GateConfiguration, GateProvenance, GateResult,
     GateStatus, SanitizedEnvironment, ScriptedCdpPeer, SourceIdentity, TransportEvidenceV1,
-    TransportEvidenceV2, TransportGateId, committed_protocol_fixtures, configuration_digest,
+    TransportEvidenceV2, TransportGateId, canonical_decisive_configuration,
+    canonical_decisive_configuration_digest, committed_protocol_fixtures, configuration_digest,
     decide_from_files, is_git_revision, ordered_protocol_fixture_digest, sanitize_evidence,
     validate_evidence, write_json_schema,
 };
@@ -26,6 +27,10 @@ fn valid_measurement(key: &&str) -> f64 {
         "pending_command_elapsed_seconds" => 0.25,
         "subscription_elapsed_seconds" => 0.5,
         "capture_elapsed_seconds" => 60.0,
+        "frames_received" => 1_000.0,
+        "frames_acknowledged" => 1_000.0,
+        "saturation_attempts" => 100.0,
+        "handoff_attempts" => 100.0,
         "handoff_elapsed_seconds" => 10.0,
         "elapsed_seconds" => 2.0,
         _ => 1.0,
@@ -744,6 +749,155 @@ fn evidence_rejects_stale_schema_and_configuration_provenance() {
     );
     mixed_config.gate_provenance.configuration_sha256 = format!("sha256:{}", "b".repeat(64));
     assert!(validate_evidence(&mixed_config).is_err());
+}
+
+#[test]
+fn decisive_configuration_is_one_exact_digestable_contract() {
+    let configuration = canonical_decisive_configuration();
+    assert_eq!(configuration.minimum_seconds, 60.0);
+    assert_eq!(configuration.minimum_frames, 1_000);
+    assert_eq!(configuration.saturation_seconds, 10.0);
+    assert_eq!(configuration.saturation_attempts, 100);
+    assert_eq!(configuration.hard_stop_seconds, 120);
+    assert_eq!(
+        configuration_digest(&configuration),
+        canonical_decisive_configuration_digest()
+    );
+}
+
+#[test]
+fn evidence_rejects_recomputed_noncanonical_hard_stop() {
+    let gates = TransportGateId::ALL
+        .into_iter()
+        .map(|id| GateResult {
+            id,
+            status: GateStatus::Pass,
+            summary: "fixture passed".into(),
+            measurements: id
+                .measurement_keys()
+                .iter()
+                .map(|key| ((*key).into(), valid_measurement(key)))
+                .collect::<BTreeMap<_, _>>(),
+            failure: None,
+        })
+        .collect();
+    let mut report = evidence(gates);
+    report.configuration.hard_stop_seconds = 999_999;
+    report.gate_provenance.configuration_sha256 = configuration_digest(&report.configuration);
+    assert!(
+        validate_evidence(&report).is_err(),
+        "recomputing a digest must not authorize a noncanonical hard stop"
+    );
+}
+
+#[test]
+fn evidence_rejects_nonpositive_or_over_hard_stop_capture_and_handoff() {
+    let gates = TransportGateId::ALL
+        .into_iter()
+        .map(|id| GateResult {
+            id,
+            status: GateStatus::Pass,
+            summary: "fixture passed".into(),
+            measurements: id
+                .measurement_keys()
+                .iter()
+                .map(|key| ((*key).into(), valid_measurement(key)))
+                .collect::<BTreeMap<_, _>>(),
+            failure: None,
+        })
+        .collect();
+    let valid = evidence(gates);
+    for (gate_id, key, value) in [
+        (
+            TransportGateId::SustainedScreencast,
+            "capture_elapsed_seconds",
+            0.0,
+        ),
+        (
+            TransportGateId::SustainedScreencast,
+            "handoff_elapsed_seconds",
+            120.0,
+        ),
+        (
+            TransportGateId::BoundedHandoffSaturation,
+            "handoff_elapsed_seconds",
+            120.0,
+        ),
+    ] {
+        let mut report = valid.clone();
+        report
+            .gates
+            .iter_mut()
+            .find(|gate| gate.id == gate_id)
+            .unwrap()
+            .measurements
+            .insert(key.into(), value);
+        assert!(
+            validate_evidence(&report).is_err(),
+            "{gate_id:?} {key} must be rejected"
+        );
+    }
+}
+
+#[test]
+fn redaction_rejects_recursive_endpoint_identity_and_encoding_bypasses() {
+    let gates = TransportGateId::ALL
+        .into_iter()
+        .map(|id| GateResult {
+            id,
+            status: GateStatus::Pass,
+            summary: "fixture passed".into(),
+            measurements: id
+                .measurement_keys()
+                .iter()
+                .map(|key| ((*key).into(), valid_measurement(key)))
+                .collect::<BTreeMap<_, _>>(),
+            failure: None,
+        })
+        .collect();
+    let valid = evidence(gates);
+    for text in [
+        "example.test:9222",
+        "operator@example.test",
+        "[2001:db8::1]:9222",
+        "%2568%2574%2574%2570%2573%253A%252F%252Fexample.test%253A9222",
+        "endpoint=example.test:9222",
+        "username=operator password=secret",
+    ] {
+        let mut report = valid.clone();
+        report.gates[0].summary = text.into();
+        assert!(
+            sanitize_evidence(report).is_err(),
+            "redaction bypass accepted: {text}"
+        );
+    }
+}
+
+#[test]
+fn redaction_allows_canonical_browser_rust_candidate_fixture_and_summary_evidence() {
+    let gates = TransportGateId::ALL
+        .into_iter()
+        .map(|id| GateResult {
+            id,
+            status: GateStatus::Pass,
+            summary: "fixture passed".into(),
+            measurements: id
+                .measurement_keys()
+                .iter()
+                .map(|key| ((*key).into(), valid_measurement(key)))
+                .collect::<BTreeMap<_, _>>(),
+            failure: None,
+        })
+        .collect();
+    let mut report = evidence(gates);
+    report.candidate.checksum =
+        "c3fdb566d913b31e0014391a94c0db4ed871dbb76577dd1b2f2c5f6df158bfaa".into();
+    report.source.rust_version = "rustc 1.85.1 (4d91de4e4 2025-02-17)".into();
+    report.browser.product = "Chrome/149.0.7827.155".into();
+    report.browser.revision = "a1b2c3d4".into();
+    report.fixture.sha256 = "sha256sum-of-ordered-fixture-files:abc:def".into();
+    report.gates[0].summary = "session-a-999; phase:1; 100% complete".into();
+    sanitize_evidence(report).expect("canonical evidence identities must remain valid");
 }
 
 #[test]

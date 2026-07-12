@@ -220,17 +220,42 @@ pub struct FixtureEvidence {
     pub sha256: String,
 }
 
+pub const DECISIVE_MINIMUM_SECONDS: f64 = 60.0;
+pub const DECISIVE_MINIMUM_FRAMES: u64 = 1_000;
+pub const DECISIVE_SATURATION_SECONDS: f64 = 10.0;
+pub const DECISIVE_SATURATION_ATTEMPTS: u64 = 100;
+pub const DECISIVE_HARD_STOP_SECONDS: u64 = 120;
+pub const DECISIVE_CONFIGURATION_SHA256: &str =
+    "sha256:06388b5f8ad042093d22408dedb8d02d5a04a9e59d485158edc533334bab956e";
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GateConfiguration {
+    /// Canonical decisive value: 60 seconds.
     pub minimum_seconds: f64,
+    /// Canonical decisive value: 1,000 frames.
     pub minimum_frames: u64,
+    /// Canonical decisive value: 10 seconds.
     pub saturation_seconds: f64,
+    /// Canonical decisive value: 100 attempts.
     pub saturation_attempts: u64,
-    /// Absolute maximum wall-clock time for the complete real-Chrome qualification operation.
-    /// This global hard stop remains authoritative when the frame minimum is unmet; it is not
-    /// derived from an assumed frame rate.
+    /// Canonical decisive value: 120 seconds. This is the strict upper bound for observed
+    /// capture and handoff elapsed measurements; it is not derived from an assumed frame rate.
     pub hard_stop_seconds: u64,
+}
+
+pub fn canonical_decisive_configuration() -> GateConfiguration {
+    GateConfiguration {
+        minimum_seconds: DECISIVE_MINIMUM_SECONDS,
+        minimum_frames: DECISIVE_MINIMUM_FRAMES,
+        saturation_seconds: DECISIVE_SATURATION_SECONDS,
+        saturation_attempts: DECISIVE_SATURATION_ATTEMPTS,
+        hard_stop_seconds: DECISIVE_HARD_STOP_SECONDS,
+    }
+}
+
+pub fn canonical_decisive_configuration_digest() -> &'static str {
+    DECISIVE_CONFIGURATION_SHA256
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -610,15 +635,13 @@ pub fn validate_evidence(value: &TransportEvidenceV1) -> Result<(), SpikeError> 
             "gate configuration contains a non-finite measurement",
         ));
     }
-    if value.configuration.minimum_seconds < 60.0
-        || value.configuration.minimum_frames < 1_000
-        || value.configuration.saturation_seconds < 10.0
-        || value.configuration.saturation_attempts < 100
-        || value.configuration.hard_stop_seconds == 0
+    let canonical_configuration = canonical_decisive_configuration();
+    if value.configuration != canonical_configuration
+        || configuration_digest(&value.configuration) != DECISIVE_CONFIGURATION_SHA256
     {
         return Err(SpikeError::new(
             SpikeErrorCode::Evidence,
-            "gate configuration has no positive capture or hard-stop threshold",
+            "gate configuration is not the exact canonical decisive configuration",
         ));
     }
     if value.gates.len() != TransportGateId::ALL.len() {
@@ -686,6 +709,7 @@ pub fn validate_evidence(value: &TransportEvidenceV1) -> Result<(), SpikeError> 
         }
     }
     validate_observed_deadlines(value)?;
+    validate_observed_capture_and_handoff(value)?;
     if let Some(attestation) = &value.gate_provenance.source_attestation {
         validate_source_attestation(attestation)?;
         if attestation.revision != value.source.git_revision {
@@ -723,7 +747,116 @@ pub fn validate_evidence(value: &TransportEvidenceV1) -> Result<(), SpikeError> 
             "gate provenance does not identify the exact implementation and configuration",
         ));
     }
+    validate_sanitized_fields(value)?;
     validate_sanitized_strings(value)?;
+    Ok(())
+}
+
+fn validate_observed_capture_and_handoff(value: &TransportEvidenceV1) -> Result<(), SpikeError> {
+    let configuration = &value.configuration;
+    for (gate_id, key, minimum) in [
+        (
+            TransportGateId::SustainedScreencast,
+            "capture_elapsed_seconds",
+            configuration.minimum_seconds,
+        ),
+        (
+            TransportGateId::SustainedScreencast,
+            "handoff_elapsed_seconds",
+            configuration.saturation_seconds,
+        ),
+        (
+            TransportGateId::BoundedHandoffSaturation,
+            "handoff_elapsed_seconds",
+            configuration.saturation_seconds,
+        ),
+    ] {
+        let gate = value
+            .gates
+            .iter()
+            .find(|gate| gate.id == gate_id)
+            .expect("gate registry was validated before elapsed validation");
+        if gate.status != GateStatus::Pass {
+            continue;
+        }
+        let elapsed = gate.measurements.get(key).copied().ok_or_else(|| {
+            SpikeError::for_gate(
+                SpikeErrorCode::Evidence,
+                gate_id,
+                format!("passing gate lacks observed measurement {key}"),
+            )
+        })?;
+        if !elapsed.is_finite() || elapsed <= 0.0 || elapsed < minimum {
+            return Err(SpikeError::for_gate(
+                SpikeErrorCode::Evidence,
+                gate_id,
+                format!("observed {key} does not meet the positive {minimum}-second threshold"),
+            ));
+        }
+        if elapsed >= configuration.hard_stop_seconds as f64 {
+            return Err(SpikeError::for_gate(
+                SpikeErrorCode::Evidence,
+                gate_id,
+                format!("observed {key} is not strictly below the hard stop"),
+            ));
+        }
+    }
+
+    let sustained = value
+        .gates
+        .iter()
+        .find(|gate| gate.id == TransportGateId::SustainedScreencast)
+        .expect("gate registry was validated before elapsed validation");
+    if sustained.status == GateStatus::Pass {
+        for (key, minimum) in [
+            ("frames_received", configuration.minimum_frames as f64),
+            ("frames_acknowledged", configuration.minimum_frames as f64),
+            (
+                "saturation_attempts",
+                configuration.saturation_attempts as f64,
+            ),
+        ] {
+            let measurement = sustained.measurements.get(key).copied().ok_or_else(|| {
+                SpikeError::for_gate(
+                    SpikeErrorCode::Evidence,
+                    sustained.id,
+                    format!("passing gate lacks observed measurement {key}"),
+                )
+            })?;
+            if measurement < minimum {
+                return Err(SpikeError::for_gate(
+                    SpikeErrorCode::Evidence,
+                    sustained.id,
+                    format!("observed {key} is below the canonical threshold {minimum}"),
+                ));
+            }
+        }
+    }
+    let handoff = value
+        .gates
+        .iter()
+        .find(|gate| gate.id == TransportGateId::BoundedHandoffSaturation)
+        .expect("gate registry was validated before elapsed validation");
+    if handoff.status == GateStatus::Pass {
+        let attempts = handoff
+            .measurements
+            .get("handoff_attempts")
+            .copied()
+            .ok_or_else(|| {
+                SpikeError::for_gate(
+                    SpikeErrorCode::Evidence,
+                    handoff.id,
+                    "passing gate lacks observed measurement handoff_attempts",
+                )
+            })?;
+        if attempts < configuration.saturation_attempts as f64 {
+            return Err(SpikeError::for_gate(
+                SpikeErrorCode::Evidence,
+                handoff.id,
+                "observed handoff_attempts is below the canonical threshold",
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -968,6 +1101,93 @@ fn validate_sanitized_strings(value: &TransportEvidenceV1) -> Result<(), SpikeEr
     Ok(())
 }
 
+fn validate_sanitized_fields(value: &TransportEvidenceV1) -> Result<(), SpikeError> {
+    let identity = [
+        ("candidate.name", value.candidate.name.as_str()),
+        ("candidate.version", value.candidate.version.as_str()),
+        ("source.git_revision", value.source.git_revision.as_str()),
+        (
+            "source.protocol_revision",
+            value.source.protocol_revision.as_str(),
+        ),
+        ("source.rust_version", value.source.rust_version.as_str()),
+        ("environment.platform", value.environment.platform.as_str()),
+        (
+            "environment.architecture",
+            value.environment.architecture.as_str(),
+        ),
+        ("browser.product", value.browser.product.as_str()),
+        ("browser.protocol", value.browser.protocol.as_str()),
+        ("browser.revision", value.browser.revision.as_str()),
+        ("fixture.name", value.fixture.name.as_str()),
+        (
+            "gate_provenance.implementation_revision",
+            value.gate_provenance.implementation_revision.as_str(),
+        ),
+    ];
+    for (field, text) in identity {
+        if !text.is_ascii() || !text.bytes().all(is_safe_identity_byte) {
+            return Err(SpikeError::new(
+                SpikeErrorCode::Evidence,
+                format!("{field} contains a non-canonical identity character"),
+            ));
+        }
+    }
+    if !value.candidate.checksum.is_ascii()
+        || !value
+            .candidate
+            .checksum
+            .bytes()
+            .all(|byte| is_safe_identity_byte(byte) || byte == b':')
+    {
+        return Err(SpikeError::new(
+            SpikeErrorCode::Evidence,
+            "candidate.checksum contains a non-canonical identity character",
+        ));
+    }
+    if !is_repo_relative_path_safe(&value.fixture.sha256) {
+        return Err(SpikeError::new(
+            SpikeErrorCode::Evidence,
+            "fixture digest contains a non-canonical identity character",
+        ));
+    }
+    if let Some(attestation) = &value.gate_provenance.source_attestation {
+        if !attestation.revision.is_ascii()
+            || !attestation.revision.bytes().all(is_safe_identity_byte)
+            || !is_sha256_digest(&attestation.digest)
+        {
+            return Err(SpikeError::new(
+                SpikeErrorCode::Evidence,
+                "source attestation contains a non-canonical revision or digest",
+            ));
+        }
+        for file in &attestation.files {
+            if !is_repo_relative_path_safe(&file.path) || !is_sha256_digest(&file.sha256) {
+                return Err(SpikeError::new(
+                    SpikeErrorCode::Evidence,
+                    "source attestation contains a non-canonical path or digest",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn is_safe_identity_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric()
+        || matches!(byte, b'.' | b'_' | b'-' | b'/' | b'(' | b')' | b' ' | b'=')
+}
+
+fn is_repo_relative_path_safe(path: &str) -> bool {
+    !path.is_empty()
+        && !path.starts_with('/')
+        && !path.contains("..")
+        && !path.contains('\\')
+        && path.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b'/' | b':')
+        })
+}
+
 fn is_sensitive_key(key: &str) -> bool {
     matches!(
         key.to_ascii_lowercase().as_str(),
@@ -988,6 +1208,14 @@ fn is_sensitive_key(key: &str) -> bool {
             | "cookie"
             | "session"
             | "bearer"
+            | "endpoint"
+            | "url"
+            | "uri"
+            | "host"
+            | "hostname"
+            | "port"
+            | "user_info"
+            | "userinfo"
     )
 }
 
@@ -1008,9 +1236,30 @@ fn is_safe_canonical_value(key: &str, value: &serde_json::Value) -> bool {
     }
 }
 
+const MAX_PERCENT_DECODE_PASSES: usize = 8;
+
 fn contains_machine_detail(text: &str) -> bool {
+    let mut decoded = text.to_owned();
+    for _ in 0..=MAX_PERCENT_DECODE_PASSES {
+        if contains_machine_detail_once(&decoded) {
+            return true;
+        }
+        let Some(next) = percent_decode_once(&decoded) else {
+            return true;
+        };
+        if next == decoded {
+            return false;
+        }
+        decoded = next;
+    }
+    // Evidence has no legitimate need for an encoded value. Rejecting a residual escape after
+    // the bounded decode prevents an attacker from hiding a tenth-level URL or endpoint.
+    has_percent_encoded_octet(&decoded)
+}
+
+fn contains_machine_detail_once(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
-    if ["http://", "https://", "ws://", "wss://", "file://"]
+    ["http://", "https://", "ws://", "wss://", "file://"]
         .iter()
         .any(|prefix| lower.contains(prefix))
         || lower.contains("localhost")
@@ -1029,11 +1278,59 @@ fn contains_machine_detail(text: &str) -> bool {
         || lower.contains("c:/")
         || has_absolute_path(&lower)
         || has_ip_endpoint(&lower)
+        || has_hostname_endpoint(&lower)
+        || has_email_identity(&lower)
+        || has_user_credentials(&lower)
         || has_sensitive_assignment(&lower)
-    {
-        return true;
+}
+
+fn percent_decode_once(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut changed = false;
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            if index + 2 >= bytes.len() {
+                return Some(text.to_owned());
+            }
+            let Some(high) = hex_value(bytes[index + 1]) else {
+                decoded.push(bytes[index]);
+                index += 1;
+                continue;
+            };
+            let Some(low) = hex_value(bytes[index + 2]) else {
+                decoded.push(bytes[index]);
+                index += 1;
+                continue;
+            };
+            decoded.push((high << 4) | low);
+            changed = true;
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
     }
-    false
+    if !changed {
+        return Some(text.to_owned());
+    }
+    String::from_utf8(decoded).ok()
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn has_percent_encoded_octet(text: &str) -> bool {
+    text.as_bytes().windows(3).any(|bytes| {
+        bytes[0] == b'%' && hex_value(bytes[1]).is_some() && hex_value(bytes[2]).is_some()
+    })
 }
 
 fn has_absolute_path(text: &str) -> bool {
@@ -1046,31 +1343,87 @@ fn has_absolute_path(text: &str) -> bool {
     })
 }
 
-fn has_ip_endpoint(text: &str) -> bool {
+fn endpoint_tokens(text: &str) -> impl Iterator<Item = &str> {
     text.split(|character: char| {
         character.is_whitespace()
-            || matches!(
-                character,
-                '[' | ']' | '(' | ')' | '{' | '}' | ',' | ';' | '"' | '='
-            )
+            || matches!(character, '(' | ')' | '{' | '}' | ',' | ';' | '"' | '\'')
     })
     .filter(|token| !token.is_empty())
-    .any(is_ip_literal_or_endpoint)
+}
+
+fn has_ip_endpoint(text: &str) -> bool {
+    endpoint_tokens(text).any(is_ip_literal_or_endpoint)
 }
 
 fn is_ip_literal_or_endpoint(token: &str) -> bool {
-    let token = token.trim_matches(|character: char| ".,:;".contains(character));
+    let token = token.trim_matches(|character: char| ".,;".contains(character));
     if token.parse::<IpAddr>().is_ok() {
         return true;
     }
-    if let Some(bracketed) = token.strip_prefix('[') {
-        if let Some((host, port)) = bracketed.split_once("]:") {
-            return port.parse::<u16>().is_ok() && host.parse::<IpAddr>().is_ok();
+    if let Some(close) = token.find(']') {
+        if token.starts_with('[') {
+            let host = &token[1..close];
+            let suffix = &token[close + 1..];
+            if host.parse::<IpAddr>().is_ok()
+                && (suffix.is_empty()
+                    || suffix
+                        .strip_prefix(':')
+                        .is_some_and(|port| port.parse::<u16>().is_ok()))
+            {
+                return true;
+            }
         }
     }
     token
         .rsplit_once(':')
         .is_some_and(|(host, port)| port.parse::<u16>().is_ok() && host.parse::<IpAddr>().is_ok())
+}
+
+fn has_hostname_endpoint(text: &str) -> bool {
+    endpoint_tokens(text).any(|token| {
+        let token = token.trim_matches(|character: char| ".,;".contains(character));
+        let Some((host, port)) = token.rsplit_once(':') else {
+            return false;
+        };
+        if host.is_empty()
+            || host.contains('/')
+            || !port.bytes().all(|byte| byte.is_ascii_digit())
+            || port.len() > 5
+        {
+            return false;
+        }
+        let host_is_name = host
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'.' || byte == b'-');
+        host_is_name && (host.contains('.') || port.parse::<u16>().is_ok_and(|port| port >= 1024))
+    })
+}
+
+fn has_email_identity(text: &str) -> bool {
+    endpoint_tokens(text).any(|token| {
+        let token = token.trim_matches(|character: char| ".,;".contains(character));
+        let Some((local, domain)) = token.rsplit_once('@') else {
+            return false;
+        };
+        !local.is_empty()
+            && domain.contains('.')
+            && local
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b".!#$%&'*+-/=?^_`{|}~".contains(&byte))
+            && domain
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'.' || byte == b'-')
+    })
+}
+
+fn has_user_credentials(text: &str) -> bool {
+    endpoint_tokens(text).any(|token| {
+        let token = token.trim_matches(|character: char| ".,;".contains(character));
+        token.contains('@')
+            && token
+                .split_once(':')
+                .is_some_and(|(_, secret)| !secret.is_empty())
+    })
 }
 
 fn has_sensitive_assignment(text: &str) -> bool {
@@ -1092,6 +1445,14 @@ fn has_sensitive_assignment(text: &str) -> bool {
         "cookie",
         "session",
         "bearer",
+        "endpoint",
+        "url",
+        "uri",
+        "host",
+        "hostname",
+        "port",
+        "user_info",
+        "userinfo",
     ];
 
     for key in SENSITIVE_KEYS {
@@ -1167,6 +1528,25 @@ fn require_equal(gate: &GateResult, key: &str, expected: f64) -> Result<(), Spik
     Ok(())
 }
 
+fn require_elapsed_below_hard_stop(
+    gate: &GateResult,
+    key: &str,
+    minimum: f64,
+    hard_stop_seconds: u64,
+) -> Result<(), SpikeError> {
+    let elapsed = measurement(gate, key)?;
+    if elapsed <= 0.0 || elapsed < minimum || elapsed >= hard_stop_seconds as f64 {
+        return Err(SpikeError::for_gate(
+            SpikeErrorCode::Evidence,
+            gate.id,
+            format!(
+                "observed {key} must be positive, meet {minimum} seconds, and be strictly below the {hard_stop_seconds}-second hard stop"
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_gate_contract(report: &TransportEvidenceV1) -> Result<(), SpikeError> {
     for result in &report.gates {
         if result.status != GateStatus::Pass {
@@ -1217,10 +1597,17 @@ fn validate_gate_contract(report: &TransportEvidenceV1) -> Result<(), SpikeError
     require_equal(drift, "wildcard_envelope_available", 0.0)?;
 
     let sustained = gate(report, TransportGateId::SustainedScreencast)?;
-    require_at_least(
+    require_elapsed_below_hard_stop(
         sustained,
         "capture_elapsed_seconds",
         report.configuration.minimum_seconds,
+        report.configuration.hard_stop_seconds,
+    )?;
+    require_elapsed_below_hard_stop(
+        sustained,
+        "handoff_elapsed_seconds",
+        report.configuration.saturation_seconds,
+        report.configuration.hard_stop_seconds,
     )?;
     require_at_least(
         sustained,
@@ -1248,10 +1635,11 @@ fn validate_gate_contract(report: &TransportEvidenceV1) -> Result<(), SpikeError
     }
 
     let saturation = gate(report, TransportGateId::BoundedHandoffSaturation)?;
-    require_at_least(
+    require_elapsed_below_hard_stop(
         saturation,
         "handoff_elapsed_seconds",
         report.configuration.saturation_seconds,
+        report.configuration.hard_stop_seconds,
     )?;
     require_at_least(
         saturation,

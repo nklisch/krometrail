@@ -23,11 +23,14 @@ pub use contract::{
 };
 pub use error::{QualificationStage, SpikeError, SpikeErrorCode, StageTracker};
 pub use evidence::{
-    BrowserEvidence, CandidateIdentity, FixtureEvidence, GateConfiguration, GateProvenance,
-    GateResult, GateStatus, PlatformEvidence, RSS_SAMPLE_INTERVAL_SECONDS, RSS_WARMUP_SECONDS,
+    BrowserEvidence, CandidateIdentity, DECISIVE_CONFIGURATION_SHA256, DECISIVE_HARD_STOP_SECONDS,
+    DECISIVE_MINIMUM_FRAMES, DECISIVE_MINIMUM_SECONDS, DECISIVE_SATURATION_ATTEMPTS,
+    DECISIVE_SATURATION_SECONDS, FixtureEvidence, GateConfiguration, GateProvenance, GateResult,
+    GateStatus, PlatformEvidence, RSS_SAMPLE_INTERVAL_SECONDS, RSS_WARMUP_SECONDS,
     SanitizedEnvironment, SourceAttestation, SourceFileAttestation, SourceIdentity,
     TransportDecision, TransportDecisionV1, TransportDecisionV2, TransportEvidenceV1,
     TransportEvidenceV2, TransportGateId, attest_relevant_source, attest_relevant_source_at,
+    canonical_decisive_configuration, canonical_decisive_configuration_digest,
     configuration_digest, decide, decide_from_files, decide_from_files_at, is_git_revision,
     resolve_repository_root, rss_measurements_are_valid, sanitize_evidence,
     validate_decisive_report, validate_decisive_report_at, validate_evidence,

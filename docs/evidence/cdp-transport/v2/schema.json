@@ -362,26 +362,30 @@
       "type": "object",
       "properties": {
         "hard_stop_seconds": {
-          "description": "Absolute maximum wall-clock time for the complete real-Chrome qualification operation.\nThis global hard stop remains authoritative when the frame minimum is unmet; it is not\nderived from an assumed frame rate.",
+          "description": "Canonical decisive value: 120 seconds. This is the strict upper bound for observed\ncapture and handoff elapsed measurements; it is not derived from an assumed frame rate.",
           "type": "integer",
           "format": "uint64",
           "minimum": 0
         },
         "minimum_frames": {
+          "description": "Canonical decisive value: 1,000 frames.",
           "type": "integer",
           "format": "uint64",
           "minimum": 0
         },
         "minimum_seconds": {
+          "description": "Canonical decisive value: 60 seconds.",
           "type": "number",
           "format": "double"
         },
         "saturation_attempts": {
+          "description": "Canonical decisive value: 100 attempts.",
           "type": "integer",
           "format": "uint64",
           "minimum": 0
         },
         "saturation_seconds": {
+          "description": "Canonical decisive value: 10 seconds.",
           "type": "number",
           "format": "double"
         }

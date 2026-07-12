@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cdp-transport-gate-decisive-config-redaction
 kind: story
-stage: implementing
+stage: review
 tags: [bug, browser, infra, security, testing]
 parent: epic-rust-cdp-capture-foundation-cdp-transport-gate
 depends_on: []
@@ -23,7 +23,16 @@ Define one canonical decisive configuration (60 seconds, 1,000 frames, 10 second
 
 ## Acceptance criteria
 
-- [ ] Any decisive configuration or digest deviation is rejected; elapsed capture must be below hard stop.
-- [ ] All reproduced encoded/hostname/email/IPv6 redaction bypasses are rejected recursively.
-- [ ] Legitimate browser/Rust/candidate/revision/digest/fixture identities remain valid by explicit contract.
-- [ ] Default/spike/candidate tests and denied-warning clippy pass; no production/core change or evidence edit lands.
+- [x] Any decisive configuration or digest deviation is rejected; elapsed capture and handoff are positive, thresholded, and strictly below hard stop.
+- [x] All reproduced encoded/hostname/email/IPv6 redaction bypasses are rejected recursively.
+- [x] Legitimate browser/Rust/candidate/revision/digest/fixture identities remain valid by explicit contract.
+- [x] Default/spike/candidate tests and denied-warning clippy pass; no production/core change or evidence edit lands.
+
+## Implementation notes
+
+- Execution capability: inline; one spike-only evidence/CLI/schema/workflow surface with no production or core ownership.
+- Review weight: standard, default project review lane.
+- Files changed: `crates/krometrail-cdp/src/spike/evidence.rs`, `crates/krometrail-cdp/src/bin/cdp-transport-gate.rs`, `crates/krometrail-cdp/src/spike/mod.rs`, `crates/krometrail-cdp/tests/transport_contract.rs`, `docs/evidence/cdp-transport/v2/schema.json`, `docs/evidence/cdp-transport/v2/README.md`, `.github/workflows/cdp-transport-gate.yml`.
+- Tests added: exact canonical configuration/digest and recomputed `999999` hard-stop regressions; capture/handoff elapsed boundary regressions; recursive hostname/email/bracketed IPv6/percent-encoding/credential redaction regressions; canonical identity false-positive coverage; CLI noncanonical hard-stop regression.
+- Discrepancies from design: none.
+- Adjacent issues parked: none.

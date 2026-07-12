@@ -28,11 +28,7 @@ struct GateCli {
     output: PathBuf,
     repo_root: Option<PathBuf>,
     expected_git_revision: String,
-    minimum_seconds: f64,
-    minimum_frames: u64,
-    saturation_seconds: f64,
-    saturation_attempts: u64,
-    hard_stop_seconds: u64,
+    configuration: GateConfiguration,
 }
 
 #[cfg(feature = "cdp-spike")]
@@ -64,6 +60,16 @@ async fn run() -> Result<(), String> {
             let mut args = remaining.iter().cloned();
             let output = required_path(&mut args, "--output")?;
             write_json_schema(&output).map_err(|error| error.to_string())?;
+        }
+        "canonical-config" => {
+            let mut args = remaining.iter().cloned();
+            let output = required_path(&mut args, "--output")?;
+            let configuration = krometrail_cdp::spike::canonical_decisive_configuration();
+            let document = serde_json::json!({
+                "configuration": configuration,
+                "configuration_sha256": krometrail_cdp::spike::canonical_decisive_configuration_digest(),
+            });
+            write_json(&output, &document)?;
         }
         "validate-and-normalize" => {
             let mut args = remaining.iter().cloned();
@@ -134,13 +140,7 @@ async fn run() -> Result<(), String> {
                 let cli = parse_gate(remaining)?;
                 let repo_root = resolve_repository_root(cli.repo_root.as_deref())
                     .map_err(|error| error.to_string())?;
-                let configuration = GateConfiguration {
-                    minimum_seconds: cli.minimum_seconds,
-                    minimum_frames: cli.minimum_frames,
-                    saturation_seconds: cli.saturation_seconds,
-                    saturation_attempts: cli.saturation_attempts,
-                    hard_stop_seconds: cli.hard_stop_seconds,
-                };
+                let configuration = cli.configuration.clone();
                 let factory = CdpkitTransportFactory::new();
                 let result = run_real_chrome_gate(
                     &factory,
@@ -249,16 +249,25 @@ fn parse_gate(args: Vec<String>) -> Result<GateCli, String> {
             "--expected-git-revision must be exactly 40 lowercase hexadecimal characters".into(),
         );
     }
-    Ok(GateCli {
-        chrome_binary: chrome_binary.ok_or("--chrome-binary is required")?,
-        output: output.ok_or("--output is required")?,
-        repo_root,
-        expected_git_revision,
+    let configuration = GateConfiguration {
         minimum_seconds,
         minimum_frames,
         saturation_seconds,
         saturation_attempts,
         hard_stop_seconds,
+    };
+    if configuration != krometrail_cdp::spike::canonical_decisive_configuration() {
+        return Err(
+            "gate configuration must exactly match the canonical decisive 60/1000/10/100/120 contract"
+                .into(),
+        );
+    }
+    Ok(GateCli {
+        chrome_binary: chrome_binary.ok_or("--chrome-binary is required")?,
+        output: output.ok_or("--output is required")?,
+        repo_root,
+        expected_git_revision,
+        configuration,
     })
 }
 
@@ -293,12 +302,29 @@ mod tests {
         )
         .expect("complete gate configuration");
 
-        assert_eq!(gate.minimum_seconds, 60.0);
-        assert_eq!(gate.minimum_frames, 1_000);
-        assert_eq!(gate.saturation_seconds, 10.0);
-        assert_eq!(gate.saturation_attempts, 100);
-        assert_eq!(gate.hard_stop_seconds, 120);
+        assert_eq!(gate.configuration.minimum_seconds, 60.0);
+        assert_eq!(gate.configuration.minimum_frames, 1_000);
+        assert_eq!(gate.configuration.saturation_seconds, 10.0);
+        assert_eq!(gate.configuration.saturation_attempts, 100);
+        assert_eq!(gate.configuration.hard_stop_seconds, 120);
         assert_eq!(gate.expected_git_revision.len(), 40);
+    }
+
+    #[test]
+    fn rejects_a_noncanonical_hard_stop_even_when_other_values_match() {
+        let mut arguments = vec![
+            "--chrome-binary",
+            "/chrome",
+            "--output",
+            "report.json",
+            "--expected-git-revision",
+            "0123456789abcdef0123456789abcdef01234567",
+            "--hard-stop-seconds",
+            "999999",
+        ];
+        let error = parse_gate(arguments.drain(..).map(str::to_owned).collect())
+            .expect_err("noncanonical hard stop must be rejected");
+        assert!(error.contains("canonical decisive"));
     }
 
     #[test]
