@@ -23,6 +23,7 @@ META-INF/
 # Runtime
 *.log
 .bugscope/
+.pi/
 
 # Python cache in scenario fixtures
 **/__pycache__/
