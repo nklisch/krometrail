@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-rust-runtime-contracts-workspace-skeleton
 kind: story
-stage: implementing
+stage: review
 tags: [browser, infra]
 parent: epic-rust-cdp-capture-foundation-rust-runtime-contracts
 depends_on: []
@@ -34,3 +34,12 @@ Do not implement domain behavior, select a CDP transport, or delete TypeScript i
 - [ ] `cargo check --workspace --all-targets` passes before teardown.
 - [ ] Dependency direction matches the parent design.
 - [ ] Cargo owns the product package/version; no Bun fallback is introduced.
+
+## Implementation notes
+
+- Files changed: `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `src/main.rs`, and the five member manifests and `src/lib.rs` skeletons under `crates/`.
+- Tests added: none; this unit establishes compiling package boundaries only.
+- Discrepancies from design: added `workspace.package.version = "0.2.20"` so member manifests can inherit the required package version; added root workspace path declarations for the five internal crates so the composition-root dependency direction is explicit. The toolchain uses the stable channel with rustfmt and clippy components while manifests enforce the minimum Rust 1.85.
+- Adjacent issues parked: none.
+- Verification: `cargo metadata --no-deps --format-version 1` confirmed the root plus exactly five member crates; a metadata/source scan confirmed root-to-adapter edges, inward adapter dependencies, infrastructure-free core, and Krometrail-free `temporal-vision`. `cargo fmt --all --check`, `cargo check --workspace --all-targets`, `cargo test --workspace --all-targets`, and `cargo clippy --workspace --all-targets -- -D warnings` all passed.
+- TypeScript runtime files were not modified or removed.
