@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-rust-runtime-contracts
 kind: feature
-stage: implementing
+stage: review
 tags: [browser, infra]
 parent: epic-rust-cdp-capture-foundation
 depends_on: []
@@ -792,3 +792,17 @@ No real Chrome, CDP command, frame ingestion, SQLite, MCP, or visual algorithm i
 - **Fixture ambiguity:** Preserving all browser fixtures could leave stale framework-product claims; deleting all could discard useful browser-control/evaluation targets. Mitigation: preserve only target applications with a documented current use, never their old recorder/harness code.
 - **Cross-platform release drift:** Rust target builds may require runner/tool changes, especially arm64. Mitigation: treat each existing asset as a tested matrix row and fail release if any expected artifact or attestation is absent.
 - **Least certain area:** Exact release cross-compilation action/tool choice is implementation-time and version-sensitive. The distribution story must choose a maintained mechanism from current CI evidence without changing the locked output contract.
+
+## Implementation summary
+
+All seven child stories reached `stage: done`:
+
+- `epic-rust-cdp-capture-foundation-rust-runtime-contracts-workspace-skeleton`
+- `epic-rust-cdp-capture-foundation-rust-runtime-contracts-core-domain`
+- `epic-rust-cdp-capture-foundation-rust-runtime-contracts-core-ports`
+- `epic-rust-cdp-capture-foundation-rust-runtime-contracts-composition-root`
+- `epic-rust-cdp-capture-foundation-rust-runtime-contracts-legacy-runtime-removal`
+- `epic-rust-cdp-capture-foundation-rust-runtime-contracts-distribution-cutover`
+- `epic-rust-cdp-capture-foundation-rust-runtime-contracts-docs-skills-alignment`
+
+The implementation followed the designed dependency chain and then completed distribution and documentation alignment as separate serialized deliveries to avoid shared-index conflicts. The remote `v0.2.20` tag was verified before classified legacy deletion. The integrated Rust formatting, check, 29-test workspace suite, clippy, distribution contract suite, installer shell checks, and documentation build/link checks passed. Cargo is now the sole product runtime and version source; Bun remains docs/browser-fixture development tooling only.
