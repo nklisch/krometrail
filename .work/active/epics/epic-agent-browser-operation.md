@@ -28,6 +28,12 @@ This epic does not provide historical temporal bundles or derived visual artifac
 - `docs/ARCHITECTURE.md` — Structured Snapshots and References, Interaction Execution, Capability Registry, and MCP Boundary
 - `docs/EVALUATION.md` — Browser-Control Evaluation
 
+## Design decisions
+
+- **MCP tool shape:** Expose composable standalone lifecycle, observation, navigation, and interaction tools plus an ordered batch tool. Standalone and batch actions derive from the same action registry and generated contracts rather than maintaining parallel schemas.
+- **Element targeting:** Treat snapshot-scoped accessibility references as the primary target form. Explicit CSS selectors and declared coordinate-space targets remain escape hatches for debugging and DOM-opaque surfaces, and responses identify their weaker validation guarantees.
+- **Browser start default:** Launch an isolated reusable Krometrail-managed profile by default. Attaching to an existing debug-enabled Chrome, selecting another named profile, or requesting a temporary profile remains explicit.
+
 ## Anticipated child features
 
 - Accessibility snapshots and generation-scoped actionable references

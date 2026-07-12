@@ -28,7 +28,7 @@ Krometrail can:
 - report browser, profile, target, and recording status;
 - close a controlled browser or detach without closing it.
 
-A launched profile has independent cookies, storage, permissions, and login state. Krometrail does not modify the user’s default browser profile unless the user explicitly chooses an attach workflow.
+By default, Krometrail launches an isolated reusable managed profile. A launched profile has independent cookies, storage, permissions, and login state. Attaching to an existing debug-enabled Chrome, selecting another named profile, or requesting a temporary profile is explicit. Krometrail does not modify the user’s default browser profile unless the user explicitly chooses an attach workflow.
 
 CDP endpoints bind to the local machine. Krometrail does not expose browser control over a public network interface by default.
 
@@ -110,7 +110,7 @@ Element references are scoped to the snapshot generation that produced them. The
 
 Before executing an action against a reference, Krometrail verifies that the backing node remains valid and actionable. It fails with a specific stale-reference error when it cannot safely resolve the target. Errors instruct the agent to refresh the snapshot.
 
-Canvas, WebGL, video, and other DOM-opaque surfaces remain visible through screenshots and temporal capture even when structured targeting is unavailable. Coordinate-based interaction is available as a fallback capability.
+Snapshot references are the primary target form. Explicit CSS selectors remain a debugging escape hatch with weaker validation guarantees. Canvas, WebGL, video, and other DOM-opaque surfaces remain visible through screenshots and temporal capture even when structured targeting is unavailable; declared coordinate-space interaction is the final fallback.
 
 ## Browser-Control Surface
 
@@ -156,7 +156,7 @@ The control capability provides operations for:
 
 Related actions can be submitted as an ordered batch. Every step receives its own status, timing, and timeline anchor. Execution stops on the first failed step unless the request explicitly permits continuation.
 
-The exact MCP schemas derive from a single capability registry and shared domain contracts.
+The MCP surface provides composable standalone tools plus batching. Both derive actions and schemas from the same capability registry and shared domain contracts.
 
 ## Action Timeline
 
