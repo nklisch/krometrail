@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-rust-runtime-contracts-core-domain
 kind: story
-stage: review
+stage: done
 tags: [browser, infra]
 parent: epic-rust-cdp-capture-foundation-rust-runtime-contracts
 depends_on: [epic-rust-cdp-capture-foundation-rust-runtime-contracts-workspace-skeleton]
@@ -43,3 +43,13 @@ Stable domain invariants land now. Chrome timestamp interpretation, transport en
 - Discrepancies from design: Unit 2 signatures use a shared `Result<T, E = KrometrailError>` alias and a deliberately small domain-owned `KrometrailError` (`ErrorCode` plus message). The next ports story extends this same type with structured context/retry/recovery fields rather than introducing a second error vocabulary. Capability enum variants, `ALL`, and definitions are generated from one registry macro; `PageState` and `FrameworkState` remain unavailable. Source sequence zero is accepted because the domain does not assign CDP sequence interpretation before the transport gate.
 - Adjacent issues parked: none.
 - Verification: dependency `epic-rust-cdp-capture-foundation-rust-runtime-contracts-workspace-skeleton` was confirmed `stage: done`. `cargo fmt --all --check`, `cargo check --workspace --all-targets`, `cargo test --workspace --all-targets`, and `cargo clippy --workspace --all-targets -- -D warnings` all pass; the final core test run passed 18 tests.
+
+## Review (2026-07-12)
+
+**Verdict**: Approve
+
+**Blockers**: none
+**Important**: none
+**Nits**: none
+
+**Notes**: Fast-lane story review. The implementation record reports the full workspace gate green; the orchestrator independently reran formatting, all core tests, and workspace clippy successfully. Verdict: Approve - story verified by implement; fast-lane advance.
