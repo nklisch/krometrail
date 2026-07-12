@@ -865,3 +865,10 @@ All three second-review follow-ups reached `stage: done`. Release artifacts now 
 ## Escalation resolution
 
 The operator explicitly authorized continued review and remediation beyond the two-bounce circuit breaker, with intervention requested only for genuinely irreducible strategic decisions. Autopilot may therefore run another feature-level review and keep fixing verified findings until approval.
+
+## Third other-agent review
+
+- Reviewer (Phase 1 — completeness): GLM 5.2 xhigh, three-round convergence; verdict ready with one optional capability-wire-name nit.
+- Reviewer (Phase 2 — adversarial): GPT-5.6 Sol high, three-round convergence; found that the public installer resolves the preserved `v0.2.20` TypeScript release and ignores post-copy executable-check failure.
+- Accepted follow-up: `epic-rust-cdp-capture-foundation-rust-runtime-contracts-rust-installer-gate`.
+- Capability wire-name anchoring remains a non-blocking nit because current names are correct and the MCP schema is not yet shipped.
