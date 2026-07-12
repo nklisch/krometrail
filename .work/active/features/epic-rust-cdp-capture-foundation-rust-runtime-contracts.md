@@ -876,3 +876,9 @@ The operator explicitly authorized continued review and remediation beyond the t
 ## Third-review remediation status
 
 `epic-rust-cdp-capture-foundation-rust-runtime-contracts-rust-installer-gate` reached `stage: done`. The installer now rejects the immutable legacy release boundary before download, validates a temporary binary before replacement, preserves existing installations on failure, and has hermetic success/failure fixtures. Current docs truthfully direct Rust users to source builds until a post-`v0.2.20` Rust release exists.
+
+## Fourth other-agent review
+
+- Reviewer (Phase 1 — completeness): GLM 5.2 xhigh; verdict ready with two installer coverage nits.
+- Reviewer (Phase 2 — adversarial): GPT-5.6 Sol high; found that executable validation did not require the requested Krometrail product/version identity.
+- Accepted follow-up: `epic-rust-cdp-capture-foundation-rust-runtime-contracts-installer-identity`, including the two remaining coverage nits.
