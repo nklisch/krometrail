@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cdp-transport-gate
 kind: feature
-stage: implementing
+stage: review
 tags: [browser, infra]
 parent: epic-rust-cdp-capture-foundation
 depends_on: [epic-rust-cdp-capture-foundation-rust-runtime-contracts]
@@ -555,3 +555,9 @@ Default and spike-feature gates both pass. The default dependency graph proves s
 - **Spike leakage into production:** qualification helpers could become tempting lifecycle code. Mitigation: non-default `spike` module, no root wiring, no core types, explicit disposable naming, and final selection story forbids production capture implementation.
 - **Fallback uncertainty:** cdpkit may fail in a way chromey can or cannot address. Mitigation: late-bind exactly one follow-up from demonstrated evidence; do not pre-create or parallelize speculative adapters.
 - **Least certain area:** whether 1,000 Chrome screencast frames arrive inside 60 seconds on all supported machines. The gate requires both conditions and permits up to 120 seconds; failing to reach 1,000 is decisive evidence rather than a threshold change.
+
+## Implementation summary
+
+All seven realized child stories reached `stage: done`: the four designed stories plus three evidence-driven macOS portability fixes. Exact cdpkit 0.4.0 passed the shared deterministic harness and every unchanged real-Chrome gate on Linux and macOS. Linux recorded 3,601 frames over 60 seconds with acknowledgement p99 17.72 ms; macOS recorded 3,553 frames with acknowledgement p99 21.08 ms and 51 valid RSS samples. Both saturated capacity-1 handoffs produced explicit drops while all frames were acknowledged.
+
+The generated decision validates and hashes both sanitized reports and selects cdpkit without a fallback story. Named-event-params-only access, unbounded subscriber depth, unavailable wildcard envelopes, and proxy measurement limits remain explicit. Spike features remain non-default; no production adapter, root wiring, capture pipeline, or core-port revision landed. Default and candidate-feature Rust gates and documentation builds pass.
