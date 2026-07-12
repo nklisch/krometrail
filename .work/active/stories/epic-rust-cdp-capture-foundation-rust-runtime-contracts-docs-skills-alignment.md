@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-rust-runtime-contracts-docs-skills-alignment
 kind: story
-stage: implementing
+stage: review
 tags: [infra]
 parent: epic-rust-cdp-capture-foundation-rust-runtime-contracts
 depends_on: [epic-rust-cdp-capture-foundation-rust-runtime-contracts-legacy-runtime-removal]
@@ -30,8 +30,17 @@ Do not invent replacement command guidance before those capabilities exist. Pres
 
 ## Acceptance criteria
 
-- [ ] Current docs alone let a contributor build, test, lint, run, and release Rust.
-- [ ] No current instruction or skill claims Bun/TypeScript product runtime, DAP support, npm publication, or unavailable command behavior.
-- [ ] Inbound links are repaired and foundation documents remain authoritative.
-- [ ] Agile-workflow rules/substrate instructions remain intact.
-- [ ] Documentation/link/stale-reference checks pass.
+- [x] Current docs alone let a contributor build, test, lint, run, and release Rust.
+- [x] No current instruction or skill claims Bun/TypeScript product runtime, DAP support, npm publication, or unavailable command behavior.
+- [x] Inbound links are repaired and foundation documents remain authoritative.
+- [x] Agile-workflow rules/substrate instructions remain intact.
+- [x] Documentation/link/stale-reference checks pass.
+
+## Implementation notes
+
+- Preserved the interrupted deletion set after verifying the working tree and diff. Removed the obsolete docs trees (`docs/legacy/`, old generated/runtime pages, old language pages, and stale landing components), the browser command skill, published Krometrail skills, citty/framework-devtools/TypeScript refactor skills, and their Claude mirrors. The five foundation documents and `.work` substrate remain.
+- Rewrote `README.md`, `.agents/AGENTS.md` (the `AGENTS.md` and `CLAUDE.md` symlinks therefore resolve to the same content), `docs/agents.md`, the VitePress index/nav, current development/MCP/runtime/configuration/privacy pages, generated LLM docs, and the Open Graph image. The docs now distinguish intended Chrome/Electron-renderer contracts from the current Rust binary and keep Bun limited to documentation/fixture tooling.
+- Reduced catalogs and plugin configuration to no installed Krometrail skills and no MCP permission/server advertisement. Removed the stale pattern mirror and settings that described deleted TypeScript/DAP behavior. Preserved `.agents/rules/agile-workflow.md`.
+- Kept all classified browser fixtures and updated their stale observer-only comments so React/Vue fixture names describe target applications, not product framework-state support. No foundation document was changed.
+- Verification passed: `git ls-remote --tags origin refs/tags/v0.2.20` returned `3fa4ffa16659648c6f4e229c2f7ae14d2fbc6558`; Rust fmt/check/test/clippy passed (29 tests); shell syntax and `tests/distribution-static.sh` passed; `bun run docs:build` passed with zero dead-link warnings; `git diff --check` passed; stale path/command scans found no current docs, skills, plugin, or runtime claims for removed commands. `.pi/` was not touched or staged.
+- Files intentionally excluded from cleanup: the five authoritative foundation docs, `.work`, agile-workflow rules, classified browser fixtures, and current distribution implementation except factual documentation/link updates.

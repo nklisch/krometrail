@@ -1,5 +1,5 @@
 /**
- * Vue 3 bug demo app for testing pattern detection.
+ * Vue 3 bug demo app for temporal browser-evaluation scenarios.
  * Contains InfiniteWatcher (watcher_infinite_loop) and LostReactivity (lost_reactivity) components.
  *
  * Usage: bun run tests/fixtures/browser/vue-bugs/server.ts <port>

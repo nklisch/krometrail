@@ -1,8 +1,0 @@
-{
-	"mcpServers": {
-		"krometrail": {
-			"command": "sh",
-			"args": ["-c", "command -v krometrail >/dev/null && exec krometrail mcp || exec npx krometrail@latest mcp"]
-		}
-	}
-}

@@ -1,48 +1,4 @@
 {
 	"version": 1,
-	"skills": [
-		{
-			"name": "citty",
-			"description": "Reference for the citty CLI framework (UnJS). Use this skill whenever writing CLI commands, defining arguments/options, creating subcommands, or working with any file in packages/cli/. This covers defineCommand, runMain, argument definitions, subcommands, lifecycle hooks, and all citty patterns used in this project.",
-			"repo": "https://github.com/nklisch/skills.git",
-			"ref": null,
-			"sha": "820ffdbc206eda564184271e19ee12254bf5430a",
-			"scope": "project",
-			"path": ".agents/skills/citty",
-			"tap": "skills",
-			"also": ["claude-code"],
-			"installedAt": "2026-03-08T18:31:21.917Z",
-			"updatedAt": "2026-03-08T18:31:21.917Z",
-			"trust": {
-				"tier": "publisher",
-				"publisher": {
-					"name": "nklisch",
-					"platform": "github"
-				},
-				"tap": "skills"
-			},
-			"active": true
-		},
-		{
-			"name": "krometrail-mcp",
-			"description": "Krometrail MCP tool reference. LOAD THIS SKILL before invoking any mcp__krometrail__* tool. Covers debug_*, chrome_*, and session_* namespaces with per-language references for Python, Node.js, Go, and Chrome.",
-			"repo": null,
-			"ref": null,
-			"sha": null,
-			"scope": "project",
-			"path": ".agents/skills/krometrail-mcp",
-			"tap": null,
-			"also": ["claude-code"],
-			"installedAt": "2026-03-08T00:00:00.000Z",
-			"updatedAt": "2026-03-08T00:00:00.000Z",
-			"trust": {
-				"tier": "publisher",
-				"publisher": {
-					"name": "nklisch",
-					"platform": "github"
-				}
-			},
-			"active": true
-		}
-	]
+	"skills": []
 }

@@ -1,5 +1,5 @@
 /**
- * Minimal React counter app for testing framework state observation.
+ * Minimal React counter app for browser interaction and temporal capture.
  * Serves a single page with:
  * - A Counter component using useState
  * - A CountDisplay child component receiving count as props

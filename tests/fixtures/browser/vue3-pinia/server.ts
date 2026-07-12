@@ -1,5 +1,5 @@
 /**
- * Minimal Vue 3 + Pinia app for testing store observation.
+ * Minimal Vue 3 + Pinia app for browser interaction and temporal capture.
  * Serves a single page with a Pinia store and action/direct mutation buttons.
  *
  * Usage: bun run tests/fixtures/browser/vue3-pinia/server.ts <port>

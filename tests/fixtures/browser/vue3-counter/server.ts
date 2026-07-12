@@ -1,5 +1,5 @@
 /**
- * Minimal Vue 3 counter app for testing framework state observation.
+ * Minimal Vue 3 counter app for browser interaction and temporal capture.
  * Serves a single page with a Counter component using Composition API (ref, computed).
  *
  * Usage: bun run tests/fixtures/browser/vue3-counter/server.ts <port>

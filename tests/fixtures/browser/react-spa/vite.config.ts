@@ -5,7 +5,7 @@ export default defineConfig({
 	plugins: [react()],
 	build: {
 		outDir: "dist",
-		// No minification: preserves component function names for framework observer testing
+		// No minification: keeps the target easy to inspect during browser evaluation
 		minify: false,
 		sourcemap: true,
 	},

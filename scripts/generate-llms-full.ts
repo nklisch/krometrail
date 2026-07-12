@@ -1,17 +1,19 @@
 /**
  * Generates llms-full.txt for the Krometrail docs site.
  *
- * Reads all .md files from docs/ (excluding .vitepress/, .generated/, designs/, legacy/, node_modules/),
- * strips YAML frontmatter, concatenates with --- separators, and writes to docs/public/llms-full.txt.
+ * Reads current contributor and reference pages, strips YAML frontmatter, and writes one
+ * deterministic document. Foundation documents remain separately authoritative and are
+ * linked from the generated guide rather than duplicated here.
  */
 
 const HEADER = `# Krometrail Documentation
 
-> Complete documentation for Krometrail — runtime debugging and browser observation for AI coding agents.
+> Current contributor and runtime-reference documentation for Krometrail's Rust browser-capture foundation.
 
 `;
 
-const EXCLUDED_DIRS = [".vitepress", ".generated", "designs", "legacy", "framework-state", "node_modules"];
+const EXCLUDED_DIRS = [".vitepress", "node_modules"];
+const FOUNDATION_DOCS = ["ARCHITECTURE.md", "EVALUATION.md", "SPEC.md", "VISION.md", "VISUAL-EVIDENCE.md", "agents.md"];
 
 function stripFrontmatter(content: string): string {
 	// Strip YAML frontmatter: opening ---, content, closing ---
@@ -31,8 +33,8 @@ async function main(): Promise<void> {
 		if (parts.some((part) => EXCLUDED_DIRS.includes(part))) {
 			continue;
 		}
-		// Exclude root-level foundation docs
-		if (["ARCH.md", "SPEC.md", "UX.md", "VISION.md", "PRIOR_ART.md", "ADAPTER-SDK.md", "agents.md"].includes(relPath)) {
+		// Keep foundation documents and navigation as separate sources of truth.
+		if (FOUNDATION_DOCS.includes(relPath)) {
 			continue;
 		}
 		files.push(relPath);

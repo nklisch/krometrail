@@ -1,15 +1,5 @@
 User-agent: *
 Allow: /
-Disallow: /designs/
-Disallow: /legacy/
-Disallow: /framework-state/
-Disallow: /ARCH
-Disallow: /SPEC
-Disallow: /UX
-Disallow: /VISION
-Disallow: /PRIOR_ART
-Disallow: /ADAPTER-SDK
-Disallow: /agents
 
 User-agent: CCBot
 Disallow: /
