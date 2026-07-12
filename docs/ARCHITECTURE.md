@@ -229,16 +229,16 @@ Target creation and closure do not affect unrelated target streams. A target-lev
 Frame ingestion is designed around CDP’s limited screencast window.
 
 ```text
-Page.screencastFrame
+Page.screencastFrame (receive)
+        │
+        ▼
+immediately acknowledge CDP frame
         │
         ▼
 decode envelope and timestamp
         │
         ▼
-acknowledge CDP frame
-        │
-        ▼
-try enqueue compressed frame ── queue full ──▶ record capture gap
+try bounded handoff of compressed frame ── enqueue fails ──▶ record explicit capture gap
         │
         ▼
 segment writer
@@ -250,7 +250,7 @@ segment writer
 
 The event-reading task never performs image decoding, artifact generation, or synchronous disk I/O.
 
-The ingestion queue is bounded. Krometrail completes the CDP acknowledgement before attempting bounded handoff; when the queue is saturated, it records a gap rather than stalling the browser connection or growing memory without limit.
+The ingestion queue is bounded. On receiving a frame, Krometrail immediately starts and completes the CDP acknowledgement before decoding and attempting bounded handoff. Ack latency therefore measures only the interval from returned frame to acknowledgement completion, not frame receive wait or a wire-enqueue timestamp. When enqueue fails because the queue is saturated, Krometrail records an explicit capture gap after acknowledgement rather than stalling the browser connection or growing memory without limit.
 
 Compressed image bytes are stored without transcoding during ingestion.
 

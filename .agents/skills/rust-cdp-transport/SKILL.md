@@ -10,7 +10,7 @@ user-invocable: false
 
 # Rust CDP Transport Reference
 
-Evidence date: **2026-07-12**. The retained schema-v2 Linux/macOS qualification reports and decision are historical and obsolete after the capture-deadline and acknowledgement-semantics repair; fresh reports must be emitted from one exact revision before selecting a candidate. The revised contract names observed `capture_elapsed_seconds` and `handoff_elapsed_seconds` measurements and measures acknowledgement from returned frame to ack completion only. Any eventual selection remains behind the replaceable adapter boundary; production lifecycle and capture implementation remain later work.
+Evidence date: **2026-07-12**. The retained schema-v2 Linux/macOS qualification reports and decision are historical and obsolete after the capture-deadline and acknowledgement-semantics repair; fresh reports must be emitted from one exact revision before selecting a candidate. The revised contract receives each frame, immediately acknowledges it, then performs bounded handoff; failed enqueue is an explicit capture gap after acknowledgement. It names observed `capture_elapsed_seconds` and `handoff_elapsed_seconds` measurements and measures acknowledgement from returned frame to ack completion only. Any eventual selection remains behind the replaceable adapter boundary; production lifecycle and capture implementation remain later work.
 
 Full evidence and pinned sources: [`docs/research/rust-cdp-transport-2026-07.md`](../../../docs/research/rust-cdp-transport-2026-07.md).
 
@@ -54,7 +54,8 @@ while let Some(frame) = frames.next().await {
     page::methods::ScreencastFrameAck::new(frame.session_id)
         .send(&session)
         .await?;
-    // Bounded handoff happens after prompt ack; ack latency excludes frame receive time.
+    // Bounded handoff happens after prompt ack; failed enqueue is a capture gap.
+    // Ack latency excludes frame receive time and any later handoff/persistence work.
     let _ack_latency = ack_started.elapsed();
 }
 

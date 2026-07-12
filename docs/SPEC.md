@@ -73,9 +73,9 @@ Each captured frame records:
 - storage segment and byte offset;
 - capture warnings associated with the frame.
 
-Krometrail acknowledges CDP screencast frames promptly after accepting them into a bounded ingestion queue. Disk writes and image analysis do not block CDP acknowledgement.
+Krometrail acknowledges each received CDP screencast frame immediately, before attempting bounded handoff. Ack latency covers only the interval from frame receipt to acknowledgement completion; disk writes and image analysis do not block CDP acknowledgement.
 
-If Krometrail cannot accept or persist a frame, it records a capture-gap event. It does not silently imply that adjacent stored frames form a complete sequence.
+If bounded handoff fails because the ingestion queue cannot accept the frame, Krometrail records an explicit capture-gap event after acknowledgement. It does not silently imply that adjacent stored frames form a complete sequence. A later persistence failure is likewise represented as a capture gap.
 
 The source frame stream is authoritative. Generated artifacts are derived views.
 
