@@ -1,7 +1,7 @@
 ---
 id: epic-durable-browser-memory-segment-format
 kind: feature
-stage: implementing
+stage: review
 tags: [storage, browser]
 parent: epic-durable-browser-memory
 depends_on: []
@@ -369,15 +369,15 @@ impl RecordingSink for SegmentWriter {
 - Inject as `recording: Arc<dyn RecordingSink>` into `RuntimeDependencies` and into `ProductionBrowserConnector::with_capture`.
 
 **Acceptance criteria:**
-- [ ] `SegmentWriter::open` creates the segments directory if absent and errors with `PersistenceFailed` if the path is not writable.
-- [ ] `append_frame` writes a frame record, returns a `FrameAddress` whose `segment_id` matches the open segment and whose `byte_offset` points at the record-kind byte (verifiable by seeking and decoding the record back to the original `EncodedFrame`).
-- [ ] Rotation fires when **either** `max_duration` or `max_size` is crossed: the crossed segment is sealed (footer present, CRC valid) and a new segment with a fresh `SegmentId` is opened. The triggering frame lands in the **new** segment.
-- [ ] `flush(session_id)` seals every open segment of that session: each sealed file ends with a valid `SealedFooter` whose `record_count` matches the number of appended frames and whose `first/last_session_t` match the first/last appended frame.
-- [ ] `append_gap` returns `Unsupported` with the documented message and does **not** write any bytes to any segment file (asserted by file-size invariance across the call).
-- [ ] Two concurrent target streams writing to the same `SegmentWriter` produce two disjoint segment files (per-target isolation); per-target frame order is preserved within each file.
-- [ ] Real-write smoke test: write N frames across two targets, flush, then re-open each sealed file and decode every frame record back to the original `EncodedFrame` (metadata + payload byte-equal) using only the stored `FrameAddress`es.
-- [ ] `build_runtime()` in `src/app.rs` constructs and injects `SegmentWriter` as `RecordingSink`; `doctor` still works (it touches the sink but does not append). `UnavailableRecordingSink` is removed.
-- [ ] `cargo fmt --all --check`, `cargo check --workspace --all-targets --locked`, `cargo test --workspace --all-targets --locked`, `cargo clippy --workspace --all-targets --locked -- -D warnings` pass.
+- [x] `SegmentWriter::open` creates the segments directory and reports unusable paths as `PersistenceFailed`.
+- [x] `append_frame` returns an absolute address that decodes back to the complete original frame.
+- [x] Duration and size rotation seal the old segment and place the triggering frame in a fresh segment.
+- [x] Session flush seals every target segment with validated footer counts, payload totals, and frame-time bounds.
+- [x] Gap writes fail explicitly as deferred SQLite metadata work and change no segment bytes.
+- [x] Concurrent target streams remain in disjoint segments with increasing per-target offsets.
+- [x] Real-write tests round trip multiple JPEG/PNG frames across two targets solely through stored addresses.
+- [x] Root composition injects the real segment writer, propagates startup failures, and removes `UnavailableRecordingSink`; isolated `doctor` succeeds.
+- [x] Locked workspace fmt/check/test/clippy gates pass.
 
 ## Implementation order and dependencies
 
@@ -447,5 +447,18 @@ Linear chain. Unit 1 is the cross-crate contract evolution (core + cdp fakes/pip
 
 ## Notes
 
-- The `(segment_id, byte_offset)` frame-address contract, the frame-only segment contents decision, and the recoverable-record layout are the three load-bearing settlements. Everything else (rotation defaults, exact CRC crate, data-dir resolution) is tunable by the implementor within the constraints above.
-- No production code is written in this design pass. No pushes. Stage advances `drafting → implementing`.
+- The `(segment_id, byte_offset)` frame-address contract, the frame-only segment contents decision, and the recoverable-record layout are the three load-bearing settlements. Everything else (rotation defaults, exact CRC crate, data-dir resolution) remains tunable within the constraints above.
+
+## Implementation summary
+
+- Execution capability: highest/raised (autopilot caller), selected because this feature fixes the shared address contract, versioned disk layout, recovery boundary, durability tiers, and production composition.
+- Review weight: standard (autopilot/project default). Implementation is complete and this feature is intentionally left at `stage: review`; no self-review was performed.
+- Child checkpoints: core address contract, binary codec, and writer/wiring all advanced directly to `done` with per-checkpoint evidence.
+- Commits: `4ec4fd1` (core address contract), `a8edd75` (binary codec), `e618437` (writer and composition wiring).
+- Production files: core recording address/port exports; mechanical CDP sink consumers; workspace/store manifests; `krometrail-store::segments` v1 header/record/footer/wire/scanner/writer modules; root composition and startup error propagation.
+- Verification: locked workspace format and check; 246 tests across 24 suites; locked workspace clippy with warnings denied; isolated data-directory `doctor` reported an available browser and created its segments directory.
+- Durability delivered: every append flushes a complete CRC-guarded record before returning its address; rotation and session flush append a sealed footer, flush, `sync_data`, close, and rename the segment from `.open` to immutable `.kts` writer state.
+- Honest partial integration: segments contain frames only. Capture-gap persistence remains explicitly unsupported until the dependent SQLite metadata feature wires it; index commits, recovery, retention, and range resolution are not claimed here.
+- Discrepancies from design: `sealed_observed` uses the last accepted frame's observed time because the settled `SegmentWriter::open(config)` contract carries no monotonic clock; the writer does not fabricate a timestamp from an unrelated clock. Size rotation follows the specified pre-append current-length rule, allowing one frame record past the threshold before the next append rotates.
+- Simplification: the production unavailable recording placeholder is removed; consumers share one core address type, one codec/scanner, and one frame-only writer.
+- Adjacent issues parked: none.
