@@ -7,7 +7,7 @@ use krometrail_core::{ImageFormat, PixelDimensions, Result};
 
 const HEADER_SCAN_LIMIT: usize = 64 * 1024;
 
-pub(super) fn dimensions(format: ImageFormat, bytes: &[u8]) -> Result<PixelDimensions> {
+pub(crate) fn dimensions(format: ImageFormat, bytes: &[u8]) -> Result<PixelDimensions> {
     match format {
         ImageFormat::Png => png_dimensions(bytes),
         ImageFormat::Jpeg => jpeg_dimensions(bytes),

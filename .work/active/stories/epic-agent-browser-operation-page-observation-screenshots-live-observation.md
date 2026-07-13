@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-operation-page-observation-screenshots-live-observation
 kind: story
-stage: implementing
+stage: done
 tags: [browser, agent-ux]
 parent: epic-agent-browser-operation-page-observation
 depends_on: [epic-agent-browser-operation-page-observation-snapshot-references]
@@ -40,3 +40,17 @@ Compose `observe_live` from the same inspection, snapshot, and viewport screensh
 ## Ordering
 
 Depends on `epic-agent-browser-operation-page-observation-snapshot-references`. It completes the reusable current-state evidence result consumed by later state-changing operations.
+
+## Implementation notes
+
+- Added viewport, full-page, reference-element, selector-element, viewport-region, and document-region screenshot capture. Explicit clips use CSS document coordinates and scale `1.0`; viewport regions are translated using fresh layout offsets and every explicit region must remain wholly inside its declared extent.
+- Reference elements call the shared generation resolver with the actionable requirement. Selector elements use the same live-node/geometry floor without minting an identity. Both preserve the caller's requested target form in metadata.
+- Reused the capture module's bounded PNG/JPEG header parser at crate scope. Base64 length is bounded before decoding, decoded bytes are separately capped, malformed/empty/format-mismatched data fails, and encoded dimensions come from the image header.
+- Screenshot metadata keeps measured device scale separate from encoded dimensions and includes target, attachment, timing, requested target, and resolved document rectangle provenance.
+- Added honest live observation composition in inspection → snapshot → viewport-screenshot order. One pre-bound target/attachment is reused; every part carries its own context or stable error, and transport loss makes later parts unavailable rather than switching or using recorder frames.
+- Boxed generated operation result payloads uniformly after Clippy identified a large-variant layout. The operation registry remains the single association source while the internal dispatch enum no longer reserves the largest payload inline.
+
+## Verification
+
+- `cargo test -p krometrail-cdp --lib --locked` — 72 tests passed.
+- `cargo clippy -p krometrail-cdp --lib --locked -- -D warnings` passed with no warnings.

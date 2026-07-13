@@ -66,7 +66,7 @@ macro_rules! define_browser_operations {
         }
 
         #[derive(Clone, Debug, PartialEq)]
-        pub enum BrowserOperationResult { $($variant($result)),+ }
+        pub enum BrowserOperationResult { $($variant(Box<$result>)),+ }
 
         impl BrowserOperationResult {
             pub const fn kind(&self) -> BrowserOperationKind {

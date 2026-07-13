@@ -15,7 +15,7 @@ use krometrail_core::{ImageFormat, PixelDimensions, SessionId, SessionOrigin, Ta
 
 use crate::transport::{CdpTransport, TransportError, TransportSessionId};
 
-mod image_header;
+pub(crate) mod image_header;
 mod pipeline;
 
 #[cfg(test)]

@@ -15,6 +15,7 @@ use crate::{
 };
 
 mod evaluation;
+mod screenshot;
 mod snapshot;
 
 use snapshot::SnapshotRegistry;
@@ -88,12 +89,14 @@ impl PageControl {
             BrowserOperationRequest::SnapshotPage(request) => {
                 self.snapshot(transport, &bound, request, started_at).await
             }
-            BrowserOperationRequest::TakeScreenshot(_)
-            | BrowserOperationRequest::ObserveLive(_) => Err(operation_error(
-                ErrorCode::Unsupported,
-                target_id,
-                "this page observation operation is not available yet",
-            )),
+            BrowserOperationRequest::TakeScreenshot(request) => {
+                self.screenshot(transport, &bound, request, started_at)
+                    .await
+            }
+            BrowserOperationRequest::ObserveLive(request) => {
+                self.observe_live(transport, &bound, request, started_at)
+                    .await
+            }
         }
     }
 
@@ -140,7 +143,7 @@ impl PageControl {
             completed_at,
         )?;
         let state = decode_page_state(context, &identity, &layout, &history, bound.target_id)?;
-        Ok(BrowserOperationResult::InspectPage(state))
+        Ok(BrowserOperationResult::InspectPage(Box::new(state)))
     }
 }
 

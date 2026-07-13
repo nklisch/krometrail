@@ -35,16 +35,18 @@ impl PageControl {
             .map_err(|error| transport_error(error, ErrorCode::EvaluationFailed, bound.target_id))?;
         let completed_at = self.session_time()?;
         let value = decode_evaluation(&response, bound.target_id)?;
-        Ok(BrowserOperationResult::EvaluatePage(EvaluationResult {
-            context: ObservationContext::new(
-                self.session_id,
-                bound.target_id,
-                bound.attachment_generation,
-                started_at,
-                completed_at,
-            )?,
-            value,
-        }))
+        Ok(BrowserOperationResult::EvaluatePage(Box::new(
+            EvaluationResult {
+                context: ObservationContext::new(
+                    self.session_id,
+                    bound.target_id,
+                    bound.attachment_generation,
+                    started_at,
+                    completed_at,
+                )?,
+                value,
+            },
+        )))
     }
 }
 

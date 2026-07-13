@@ -132,7 +132,7 @@ impl PageControl {
                 bindings,
             },
         );
-        Ok(BrowserOperationResult::SnapshotPage(snapshot))
+        Ok(BrowserOperationResult::SnapshotPage(Box::new(snapshot)))
     }
 }
 
@@ -153,12 +153,6 @@ impl SnapshotRegistry {
         let target = self.targets.entry(target_id).or_default();
         target.next_generation = active.generation.get();
         target.active = Some(active);
-    }
-
-    pub(crate) fn invalidate_target(&mut self, target_id: TargetId) {
-        if let Some(target) = self.targets.get_mut(&target_id) {
-            target.active = None;
-        }
     }
 
     pub(crate) fn retain_targets(&mut self, live: impl Iterator<Item = TargetId>) {
