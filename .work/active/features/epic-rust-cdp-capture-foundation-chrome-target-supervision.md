@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-chrome-target-supervision
 kind: feature
-stage: implementing
+stage: review
 tags: [browser]
 parent: epic-rust-cdp-capture-foundation
 depends_on: [epic-rust-cdp-capture-foundation-cdp-transport-gate]
@@ -480,7 +480,9 @@ Production composition now uses `ProductionBrowserConnector`; `doctor` performs 
 
 GLM completeness review found one receiver-confirmed material gap: the parent acceptance contract requires real Chrome disconnect/rebuild, while implementation proved reconnect only through the deterministic transport factory. A new child story, `...-real-reconnect`, owns a real-browser transport-sever/rebuild test without changing the production contract.
 
-The receiver accepted four lower-risk robustness proposals—structured subscriber-lag recovery, graceful cancellation close, late-stop idempotency, and stale reusable-profile lease metadata—and parked them together as unbound backlog item `idea-harden-session-edge-semantics`. Dead no-op code is a nit; polling and approximate lag bookkeeping are proportionate to this local supervisor. The feature returns to `stage: implementing` only for the confirmed real-reconnect acceptance gap.
+The receiver accepted four lower-risk robustness proposals—structured subscriber-lag recovery, graceful cancellation close, late-stop idempotency, and stale reusable-profile lease metadata—and parked them together as unbound backlog item `idea-harden-session-edge-semantics`. Dead no-op code is a nit; polling and approximate lag bookkeeping are proportionate to this local supervisor.
+
+The real-reconnect follow-up now physically severs a real cdpkit connection through an owned loopback fault proxy while Chrome remains alive, verifies a new connection and exact target identity/generation restoration, exercises post-rebuild commands/events, and leaves zero resources. It also fixed a verified late-event reducer rejection that could otherwise discard committed target state. All five child stories are `stage: done`; the feature returns to `stage: review` for adversarial closure.
 
 ## Testing strategy
 
