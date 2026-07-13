@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-bounded-screencast-ingestion-feature-review-remediation
 kind: story
-stage: review
+stage: done
 tags: [browser]
 parent: epic-rust-cdp-capture-foundation-bounded-screencast-ingestion
 depends_on: [epic-rust-cdp-capture-foundation-bounded-screencast-ingestion-real-chrome-fidelity]
@@ -53,5 +53,15 @@ Standard: this repairs a timing metric and the feature's bounded-resource claim.
 ## Review finding (2026-07-13)
 
 The implementation fixed both production findings, but independently running the required opt-in Chrome gate exposed a stale test contract: terminal runtimes are intentionally removed after publishing their final `CaptureStateChanged`, while the managed fidelity test still queried `capture_statuses()` after stop and expected the removed entry. Update the test to subscribe before stop and assert the buffered final `Stopped` status event (including truthful final statistics) instead of requiring stale registry retention. Keep the registry cleanup behavior; rerun the full opt-in suite and correct the falsely completed gate evidence before review resumes.
+
+## Final review (2026-07-13)
+
+**Verdict:** Approve
+
+**Blockers:** none
+**Important:** none
+**Nits:** none
+
+**Notes:** Focused fresh review verified receipt-to-ack timing, exact terminal runtime removal, highest-generation status snapshots, ordinal retention/release semantics, and final `Stopped` event publication before removal. The exact opt-in Chrome command passed twice (5/5 each), workspace gates passed, and post-run process/profile checks were clean. All six criteria are satisfied.
 
 **Status:** resolved by the implementation notes above; the story is staged for review.
