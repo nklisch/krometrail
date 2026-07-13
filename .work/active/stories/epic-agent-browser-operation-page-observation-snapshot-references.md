@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-operation-page-observation-snapshot-references
 kind: story
-stage: implementing
+stage: done
 tags: [browser, agent-ux]
 parent: epic-agent-browser-operation-page-observation
 depends_on: [epic-agent-browser-operation-page-observation-operation-executor]
@@ -39,3 +39,16 @@ Keep fixed 5,000-node, 1 MiB text, and 32-properties-per-node bounds with exact 
 ## Ordering
 
 Depends on `epic-agent-browser-operation-page-observation-operation-executor`. It is the reference-safety checkpoint required before element screenshots or later input actions.
+
+## Implementation notes
+
+- Added one per-target `SnapshotRegistry` owned by `PageControl`. Generations advance with checked non-zero arithmetic and install atomically only after complete AX decoding and core topology validation; a failed refresh leaves the prior active snapshot intact.
+- Added deterministic AX graph traversal that flattens ignored/presentation nodes, preserves protocol child order, emits parent-before-child topology, ignores additive fields and unknown roles/properties, applies the fixed node/text/property bounds, and reports omitted retained nodes exactly.
+- Kept the accessibility property allowlist and actionability roles/signals as local declarations. Only candidates with backing DOM identity and a supported role/signal receive generation-scoped references.
+- Added the shared resolver: it checks target, active generation, attachment generation, main-frame/loader fingerprint, exact backing identity, live runtime connection/hidden/inert/disabled state, and finite non-zero box geometry. It never searches by role or name.
+- Added a selector-only one-shot helper that does not mint durable references. Target pruning and attachment/document checks make closure, reconnect, and navigation invalidation explicit at the next operation boundary.
+
+## Verification
+
+- `cargo check -p krometrail-cdp --all-targets --locked` passed; resolver helpers are intentionally not called until the dependent screenshot checkpoint.
+- `cargo test -p krometrail-cdp --lib --locked` — 72 tests passed, including additive AX decoding, ignored-node flattening, actionable binding, and quad bounds.

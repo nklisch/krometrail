@@ -15,6 +15,9 @@ use crate::{
 };
 
 mod evaluation;
+mod snapshot;
+
+use snapshot::SnapshotRegistry;
 
 #[derive(Clone, Debug)]
 pub(crate) struct PageControlConfig {
@@ -34,6 +37,7 @@ pub(crate) struct PageControl {
     pub(crate) session_id: SessionId,
     pub(crate) session_origin: SessionOrigin,
     pub(crate) config: PageControlConfig,
+    pub(crate) snapshots: SnapshotRegistry,
 }
 
 #[derive(Clone, Debug)]
@@ -54,6 +58,7 @@ impl PageControl {
             session_id,
             session_origin,
             config: PageControlConfig::default(),
+            snapshots: SnapshotRegistry::default(),
         }
     }
 
@@ -63,6 +68,13 @@ impl PageControl {
         state: &SupervisorState,
         request: BrowserOperationRequest,
     ) -> Result<BrowserOperationResult> {
+        self.snapshots.retain_targets(
+            state
+                .targets_by_key
+                .values()
+                .filter(|target| target.target.lifecycle == TargetLifecycle::Attached)
+                .map(|target| target.target.target.id()),
+        );
         let target_id = request.target_id();
         let bound = bind_target(state, target_id)?;
         let started_at = self.session_time()?;
@@ -73,8 +85,10 @@ impl PageControl {
             BrowserOperationRequest::EvaluatePage(request) => {
                 self.evaluate(transport, &bound, request, started_at).await
             }
-            BrowserOperationRequest::SnapshotPage(_)
-            | BrowserOperationRequest::TakeScreenshot(_)
+            BrowserOperationRequest::SnapshotPage(request) => {
+                self.snapshot(transport, &bound, request, started_at).await
+            }
+            BrowserOperationRequest::TakeScreenshot(_)
             | BrowserOperationRequest::ObserveLive(_) => Err(operation_error(
                 ErrorCode::Unsupported,
                 target_id,
