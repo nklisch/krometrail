@@ -18,6 +18,7 @@ define_stable_enum! {
         ScreencastPaused => "screencast_paused",
         BrowserDisconnected => "browser_disconnected",
         CaptureStopped => "capture_stopped",
+        FrameRejected => "frame_rejected",
     }
 }
 

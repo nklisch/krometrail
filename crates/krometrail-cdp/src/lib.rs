@@ -19,6 +19,8 @@ pub use targets::{
 };
 
 #[cfg(feature = "cdpkit-transport")]
+pub mod capture;
+#[cfg(feature = "cdpkit-transport")]
 pub mod compatibility;
 pub mod transport;
 
@@ -26,6 +28,8 @@ pub mod transport;
 #[doc(hidden)]
 pub mod spike;
 
+#[cfg(feature = "cdpkit-transport")]
+pub use capture::CaptureConfig;
 #[cfg(feature = "cdpkit-transport")]
 pub use compatibility::{
     CompatibilityProbeError, EndpointKind, RENDERER_CAPABILITY_PROBES, RendererCapabilityProbe,

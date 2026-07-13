@@ -9,6 +9,7 @@ repository.workspace = true
 [features]
 default = ["cdpkit-transport"]
 cdpkit-transport = [
+	"dep:base64",
 	"dep:cdpkit",
 	"dep:futures-util",
 	"tokio/sync",
@@ -30,6 +31,7 @@ futures-util.workspace = true
 tokio-tungstenite.workspace = true
 
 [dependencies]
+base64 = { workspace = true, optional = true }
 krometrail-core.workspace = true
 serde.workspace = true
 thiserror.workspace = true

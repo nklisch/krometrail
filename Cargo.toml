@@ -30,6 +30,7 @@ krometrail-store = { path = "crates/krometrail-store" }
 krometrail-mcp = { path = "crates/krometrail-mcp" }
 temporal-vision = { path = "crates/temporal-vision" }
 serde = { version = "1", features = ["derive"] }
+base64 = "0.22"
 serde_json = "1"
 thiserror = "2"
 uuid = { version = "1", features = ["serde", "v4"] }

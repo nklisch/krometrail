@@ -40,6 +40,7 @@ impl<'de> Deserialize<'de> for DiskBudgetBytes {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
 pub struct CaptureStatistics {
     received_frames: u64,
+    acknowledged_frames: u64,
     accepted_frames: u64,
     dropped_frames: u64,
     persisted_frames: u64,
@@ -49,6 +50,7 @@ pub struct CaptureStatistics {
 #[derive(Deserialize)]
 struct CaptureStatisticsWire {
     received_frames: u64,
+    acknowledged_frames: u64,
     accepted_frames: u64,
     dropped_frames: u64,
     persisted_frames: u64,
@@ -58,6 +60,7 @@ struct CaptureStatisticsWire {
 impl CaptureStatistics {
     pub fn new(
         received_frames: u64,
+        acknowledged_frames: u64,
         accepted_frames: u64,
         dropped_frames: u64,
         persisted_frames: u64,
@@ -65,6 +68,7 @@ impl CaptureStatistics {
     ) -> Result<Self> {
         let statistics = Self {
             received_frames,
+            acknowledged_frames,
             accepted_frames,
             dropped_frames,
             persisted_frames,
@@ -75,6 +79,10 @@ impl CaptureStatistics {
 
     pub const fn received_frames(&self) -> u64 {
         self.received_frames
+    }
+
+    pub const fn acknowledged_frames(&self) -> u64 {
+        self.acknowledged_frames
     }
 
     pub const fn accepted_frames(&self) -> u64 {
@@ -97,6 +105,7 @@ impl CaptureStatistics {
     pub fn update(
         &mut self,
         received_frames: u64,
+        acknowledged_frames: u64,
         accepted_frames: u64,
         dropped_frames: u64,
         persisted_frames: u64,
@@ -104,6 +113,7 @@ impl CaptureStatistics {
     ) -> Result<()> {
         *self = Self::new(
             received_frames,
+            acknowledged_frames,
             accepted_frames,
             dropped_frames,
             persisted_frames,
@@ -113,13 +123,16 @@ impl CaptureStatistics {
     }
 
     pub fn validate(self) -> Result<Self> {
+        if self.acknowledged_frames > self.received_frames {
+            return Err(invalid("acknowledged frames exceed received frames"));
+        }
         let accounted = self
             .accepted_frames
             .checked_add(self.dropped_frames)
             .ok_or_else(|| invalid("capture frame statistics overflow"))?;
-        if accounted > self.received_frames {
+        if accounted > self.acknowledged_frames {
             return Err(invalid(
-                "accepted and dropped frames exceed received frames",
+                "accepted and dropped frames exceed acknowledged frames",
             ));
         }
         if self.persisted_frames > self.accepted_frames {
@@ -137,10 +150,260 @@ impl<'de> Deserialize<'de> for CaptureStatistics {
         deserialize_validated(deserializer, |wire: CaptureStatisticsWire| {
             Self::new(
                 wire.received_frames,
+                wire.acknowledged_frames,
                 wire.accepted_frames,
                 wire.dropped_frames,
                 wire.persisted_frames,
                 wire.gap_count,
+            )
+        })
+    }
+}
+
+define_stable_enum! {
+    pub enum CaptureStreamState {
+        Starting => "starting",
+        Capturing => "capturing",
+        Hidden => "hidden",
+        Suspended => "suspended",
+        Draining => "draining",
+        Stopped => "stopped",
+        Failed => "failed",
+    }
+}
+
+/// Fixed-bucket percentiles are upper bounds; unlike them, `max_nanos` is exact and may be
+/// lower than a percentile bucket bound.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct CaptureTimingSummary {
+    sample_count: u64,
+    p50_nanos: Option<u64>,
+    p95_nanos: Option<u64>,
+    p99_nanos: Option<u64>,
+    max_nanos: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct CaptureTimingSummaryWire {
+    sample_count: u64,
+    p50_nanos: Option<u64>,
+    p95_nanos: Option<u64>,
+    p99_nanos: Option<u64>,
+    max_nanos: Option<u64>,
+}
+
+impl CaptureTimingSummary {
+    pub fn new(
+        sample_count: u64,
+        p50_nanos: Option<u64>,
+        p95_nanos: Option<u64>,
+        p99_nanos: Option<u64>,
+        max_nanos: Option<u64>,
+    ) -> Result<Self> {
+        let summary = Self {
+            sample_count,
+            p50_nanos,
+            p95_nanos,
+            p99_nanos,
+            max_nanos,
+        };
+        if sample_count == 0 {
+            if p50_nanos.is_some()
+                || p95_nanos.is_some()
+                || p99_nanos.is_some()
+                || max_nanos.is_some()
+            {
+                return Err(invalid(
+                    "empty timing summaries cannot contain measurements",
+                ));
+            }
+        } else if [p50_nanos, p95_nanos, p99_nanos, max_nanos]
+            .iter()
+            .any(Option::is_none)
+        {
+            return Err(invalid(
+                "non-empty timing summaries require all measurements",
+            ));
+        } else if !(p50_nanos.unwrap() <= p95_nanos.unwrap()
+            && p95_nanos.unwrap() <= p99_nanos.unwrap())
+        {
+            return Err(invalid("timing summary percentiles are not ordered"));
+        }
+        Ok(summary)
+    }
+
+    pub const fn empty() -> Self {
+        Self {
+            sample_count: 0,
+            p50_nanos: None,
+            p95_nanos: None,
+            p99_nanos: None,
+            max_nanos: None,
+        }
+    }
+
+    pub const fn sample_count(&self) -> u64 {
+        self.sample_count
+    }
+
+    pub const fn p50_nanos(&self) -> Option<u64> {
+        self.p50_nanos
+    }
+
+    pub const fn p95_nanos(&self) -> Option<u64> {
+        self.p95_nanos
+    }
+
+    pub const fn p99_nanos(&self) -> Option<u64> {
+        self.p99_nanos
+    }
+
+    pub const fn max_nanos(&self) -> Option<u64> {
+        self.max_nanos
+    }
+}
+
+impl<'de> Deserialize<'de> for CaptureTimingSummary {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserialize_validated(deserializer, |wire: CaptureTimingSummaryWire| {
+            Self::new(
+                wire.sample_count,
+                wire.p50_nanos,
+                wire.p95_nanos,
+                wire.p99_nanos,
+                wire.max_nanos,
+            )
+        })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct TargetCaptureStatus {
+    target_id: crate::ids::TargetId,
+    attachment_generation: u64,
+    state: CaptureStreamState,
+    statistics: CaptureStatistics,
+    queue_capacity: usize,
+    queue_depth: usize,
+    last_frame_session_time: Option<crate::time::SessionTime>,
+    ack_latency: CaptureTimingSummary,
+    frame_cadence: CaptureTimingSummary,
+}
+
+#[derive(Deserialize)]
+struct TargetCaptureStatusWire {
+    target_id: crate::ids::TargetId,
+    attachment_generation: u64,
+    state: CaptureStreamState,
+    statistics: CaptureStatistics,
+    queue_capacity: usize,
+    queue_depth: usize,
+    last_frame_session_time: Option<crate::time::SessionTime>,
+    ack_latency: CaptureTimingSummary,
+    frame_cadence: CaptureTimingSummary,
+}
+
+impl TargetCaptureStatus {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        target_id: crate::ids::TargetId,
+        attachment_generation: u64,
+        state: CaptureStreamState,
+        statistics: CaptureStatistics,
+        queue_capacity: usize,
+        queue_depth: usize,
+        last_frame_session_time: Option<crate::time::SessionTime>,
+        ack_latency: CaptureTimingSummary,
+        frame_cadence: CaptureTimingSummary,
+    ) -> Result<Self> {
+        if attachment_generation == 0 {
+            return Err(invalid("capture attachment generation must be non-zero"));
+        }
+        if queue_capacity == 0 {
+            return Err(invalid("capture queue capacity must be non-zero"));
+        }
+        if queue_depth > queue_capacity {
+            return Err(invalid("capture queue depth exceeds capacity"));
+        }
+        if matches!(state, CaptureStreamState::Stopped) && queue_depth != 0 {
+            return Err(invalid(
+                "stopped capture streams cannot retain queued frames",
+            ));
+        }
+        if last_frame_session_time.is_some() && statistics.received_frames() == 0 {
+            return Err(invalid(
+                "last frame time requires at least one received frame",
+            ));
+        }
+        Ok(Self {
+            target_id,
+            attachment_generation,
+            state,
+            statistics,
+            queue_capacity,
+            queue_depth,
+            last_frame_session_time,
+            ack_latency,
+            frame_cadence,
+        })
+    }
+
+    pub const fn target_id(&self) -> crate::ids::TargetId {
+        self.target_id
+    }
+
+    pub const fn attachment_generation(&self) -> u64 {
+        self.attachment_generation
+    }
+
+    pub const fn state(&self) -> CaptureStreamState {
+        self.state
+    }
+
+    pub const fn statistics(&self) -> &CaptureStatistics {
+        &self.statistics
+    }
+
+    pub const fn queue_capacity(&self) -> usize {
+        self.queue_capacity
+    }
+
+    pub const fn queue_depth(&self) -> usize {
+        self.queue_depth
+    }
+
+    pub const fn last_frame_session_time(&self) -> Option<crate::time::SessionTime> {
+        self.last_frame_session_time
+    }
+
+    pub const fn ack_latency(&self) -> &CaptureTimingSummary {
+        &self.ack_latency
+    }
+
+    pub const fn frame_cadence(&self) -> &CaptureTimingSummary {
+        &self.frame_cadence
+    }
+}
+
+impl<'de> Deserialize<'de> for TargetCaptureStatus {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserialize_validated(deserializer, |wire: TargetCaptureStatusWire| {
+            Self::new(
+                wire.target_id,
+                wire.attachment_generation,
+                wire.state,
+                wire.statistics,
+                wire.queue_capacity,
+                wire.queue_depth,
+                wire.last_frame_session_time,
+                wire.ack_latency,
+                wire.frame_cadence,
             )
         })
     }
@@ -337,7 +600,7 @@ impl<'de> Deserialize<'de> for RecordingSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{browser::BrowserVersion, ids::SessionId};
+    use crate::{browser::BrowserVersion, ids::SessionId, time::SessionTime};
 
     const UUID: &str = "123e4567-e89b-12d3-a456-426614174000";
 
@@ -391,17 +654,20 @@ mod tests {
     #[test]
     fn rejects_zero_budget_and_inconsistent_statistics() {
         assert!(DiskBudgetBytes::new(0).is_err());
-        assert!(CaptureStatistics::new(1, 1, 1, 0, 0).is_err());
-        assert!(CaptureStatistics::new(1, 1, 0, 2, 0).is_err());
+        assert!(CaptureStatistics::new(1, 1, 1, 1, 0, 0).is_err());
+        assert!(CaptureStatistics::new(1, 1, 0, 0, 2, 0).is_err());
+        assert!(CaptureStatistics::new(0, 1, 0, 0, 0, 0).is_err());
+        assert!(CaptureStatistics::new(u64::MAX, u64::MAX, u64::MAX, 1, 0, 0).is_err());
     }
 
     #[test]
     fn statistics_are_readable_and_mutated_atomically() {
-        let mut statistics = CaptureStatistics::new(2, 1, 1, 1, 0).unwrap();
+        let mut statistics = CaptureStatistics::new(2, 2, 1, 1, 1, 0).unwrap();
         assert_eq!(statistics.received_frames(), 2);
-        assert!(statistics.update(1, 1, 1, 0, 0).is_err());
+        assert_eq!(statistics.acknowledged_frames(), 2);
+        assert!(statistics.update(1, 1, 1, 1, 0, 0).is_err());
         assert_eq!(statistics.received_frames(), 2);
-        statistics.update(3, 2, 1, 2, 1).unwrap();
+        statistics.update(3, 3, 2, 1, 2, 1).unwrap();
         assert_eq!(statistics.persisted_frames(), 2);
     }
 
@@ -439,11 +705,88 @@ mod tests {
     }
 
     #[test]
+    fn validates_timing_and_target_status_boundaries() {
+        let target = crate::ids::TargetId::from_uuid(UUID.parse().unwrap());
+        let empty = CaptureTimingSummary::empty();
+        assert!(CaptureTimingSummary::new(1, Some(1), None, Some(1), Some(1)).is_err());
+        assert!(
+            TargetCaptureStatus::new(
+                target,
+                0,
+                CaptureStreamState::Capturing,
+                CaptureStatistics::default(),
+                1,
+                0,
+                None,
+                empty.clone(),
+                empty.clone(),
+            )
+            .is_err()
+        );
+        assert!(
+            TargetCaptureStatus::new(
+                target,
+                1,
+                CaptureStreamState::Capturing,
+                CaptureStatistics::default(),
+                0,
+                0,
+                None,
+                empty.clone(),
+                empty.clone(),
+            )
+            .is_err()
+        );
+        assert!(
+            TargetCaptureStatus::new(
+                target,
+                1,
+                CaptureStreamState::Capturing,
+                CaptureStatistics::default(),
+                1,
+                2,
+                None,
+                empty.clone(),
+                empty.clone(),
+            )
+            .is_err()
+        );
+        assert!(
+            TargetCaptureStatus::new(
+                target,
+                1,
+                CaptureStreamState::Capturing,
+                CaptureStatistics::default(),
+                1,
+                0,
+                Some(SessionTime::ZERO),
+                empty.clone(),
+                empty.clone(),
+            )
+            .is_err()
+        );
+        assert!(
+            TargetCaptureStatus::new(
+                target,
+                1,
+                CaptureStreamState::Stopped,
+                CaptureStatistics::default(),
+                1,
+                1,
+                None,
+                empty.clone(),
+                empty,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn rejects_malformed_serialized_statistics_and_sessions() {
-        let malformed_statistics = r#"{"received_frames":1,"accepted_frames":1,"dropped_frames":1,"persisted_frames":0,"gap_count":0}"#;
+        let malformed_statistics = r#"{"received_frames":1,"acknowledged_frames":1,"accepted_frames":1,"dropped_frames":1,"persisted_frames":0,"gap_count":0}"#;
         assert!(serde_json::from_str::<CaptureStatistics>(malformed_statistics).is_err());
         let malformed_session = format!(
-            r#"{{"id":"{UUID}","origin":1,"started_at":{{"secs_since_epoch":0,"nanos_since_epoch":0}},"ended_at":null,"browser":{{"product":"Chrome","product_version":"128","revision":"r","protocol_version":"1.3","user_agent":"Chrome/128","js_version":"12"}},"profile":"profile","lifecycle":"ended","disk_budget":1024,"capabilities":["control"],"statistics":{{"received_frames":0,"accepted_frames":0,"dropped_frames":0,"persisted_frames":0,"gap_count":0}}}}"#
+            r#"{{"id":"{UUID}","origin":1,"started_at":{{"secs_since_epoch":0,"nanos_since_epoch":0}},"ended_at":null,"browser":{{"product":"Chrome","product_version":"128","revision":"r","protocol_version":"1.3","user_agent":"Chrome/128","js_version":"12"}},"profile":"profile","lifecycle":"ended","disk_budget":1024,"capabilities":["control"],"statistics":{{"received_frames":0,"acknowledged_frames":0,"accepted_frames":0,"dropped_frames":0,"persisted_frames":0,"gap_count":0}}}}"#
         );
         assert!(serde_json::from_str::<RecordingSession>(&malformed_session).is_err());
         let valid = session();

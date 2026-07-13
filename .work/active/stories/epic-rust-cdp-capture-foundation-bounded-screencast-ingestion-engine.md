@@ -1,14 +1,14 @@
 ---
 id: epic-rust-cdp-capture-foundation-bounded-screencast-ingestion-engine
 kind: story
-stage: implementing
+stage: review
 tags: [browser]
 parent: epic-rust-cdp-capture-foundation-bounded-screencast-ingestion
 depends_on: []
 release_binding: null
 gate_origin: null
 created: 2026-07-12
-updated: 2026-07-12
+updated: 2026-07-13
 ---
 
 # Build the bounded capture engine
@@ -67,5 +67,14 @@ Add only workspace `base64`. Activate capture-only Tokio/base64 requirements fro
 ## Execution
 
 - Effective worker: `highest`.
-- Review weight: `standard` at the parent feature; story verification may fast-advance, while final feature review remains deeper.
+- Review weight: `standard`; this timing-sensitive story intentionally remains at `stage: review` for a fresh host review rather than fast-advancing.
+- Capability: `cdpkit-transport` (default), with `--no-default-features` and `cdp-spike-cdpkit` compile-real checks retained.
 - File ownership is exclusive to this story in the planned wave. It does not add `BrowserSessionEvent` variants or edit target reducer/model files; the dependent wiring story owns those changes, preserving a compile-real boundary.
+
+## Implementation notes
+
+- Added core acknowledged capture statistics, registry-backed stream states and gap reasons, bounded timing summaries, and validated target status snapshots.
+- Added the private capture coordinator and per-target bounded pipeline. The receive path samples observed time, completes `Page.screencastFrameAck`, records acknowledgement timing, and only then parses metadata or attempts `try_send`; the worker owns base64 decoding, bounded JPEG/PNG header inspection, frame construction, and the single `RecordingSink` append path.
+- Defaults remain 8 active streams × 4 queued payloads × 8 MiB text, with checked 256 MiB aggregate validation and fixed-size ledgers/histograms. No image dependency, pixel decoder, persistence implementation, session wiring, production start/stop composition, or analysis code was introduced.
+- Verification: workspace format/check/test/clippy, `krometrail-cdp` no-default check, and the cdpkit spike-feature check pass. Internal tests cover ack barriers and saturation, parser rejection, transitions, gap coalescing, clock monotonicity, histogram bounds, configuration caps, and privacy-safe status surfaces.
+- Simplification: reused `CdpTransport`, `RecordingSink`, `MonotonicClock`, `IdSource`, `SessionOrigin`, and existing frame/gap contracts; kept the coordinator, error, stop/outcome, transport context, and observer types crate-private and avoided a second queue or image abstraction.

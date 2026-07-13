@@ -8,4 +8,7 @@ pub use frame::{
     CaptureWarning, CapturedFrame, DeviceScaleFactor, EncodedFrame, ImageFormat, PixelDimensions,
 };
 pub use gap::{CaptureGap, CaptureGapReason};
-pub use session::{CaptureStatistics, DiskBudgetBytes, RecordingSession};
+pub use session::{
+    CaptureStatistics, CaptureStreamState, CaptureTimingSummary, DiskBudgetBytes, RecordingSession,
+    TargetCaptureStatus,
+};
