@@ -48,6 +48,11 @@ async fn opt_in_managed_session_stops_without_retaining_temporary_profile() {
     );
     let outcome = session.stop().await.expect("managed stop");
     assert_eq!(outcome, BrowserStopOutcome::ManagedBrowserClosed);
+    let references = support::chrome::process_references(&root);
+    assert!(
+        references.is_empty(),
+        "managed Chrome still references unique profile root before cleanup: {references:?}"
+    );
     assert!(!root.join("tmp").exists() || fs::read_dir(root.join("tmp")).unwrap().next().is_none());
 }
 
@@ -132,6 +137,11 @@ async fn opt_in_managed_launch_attach_targets_and_external_survival() {
     drop(raw);
     launched.shutdown().await.expect("owned browser shutdown");
     drop(launched);
+    let references = support::chrome::process_references(&root);
+    assert!(
+        references.is_empty(),
+        "managed Chrome still references unique profile root before cleanup: {references:?}"
+    );
     assert!(!root.join("tmp").exists() || root.join("tmp").read_dir().unwrap().next().is_none());
 }
 

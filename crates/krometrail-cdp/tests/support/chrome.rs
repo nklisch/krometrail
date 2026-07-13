@@ -86,10 +86,16 @@ pub fn cleanup_real_browser_roots() {
 }
 
 fn remove_empty_root_if_unreferenced(path: &Path) -> std::io::Result<bool> {
-    if process_command_references(path) {
+    if !process_command_references(path).is_empty() {
         return Ok(false);
     }
     remove_empty_directory_tree(path)
+}
+
+/// Returns live command lines that still mention a unique test root. Cleanup callers deliberately
+/// expose this evidence so a root guard cannot make a leaked browser look like a clean test.
+pub fn process_references(path: &Path) -> Vec<String> {
+    process_command_references(path)
 }
 
 /// Prune empty profile subdirectories without ever deleting a file or following a symlink.
@@ -113,28 +119,30 @@ fn remove_empty_directory_tree(path: &Path) -> std::io::Result<bool> {
 }
 
 #[cfg(target_os = "linux")]
-fn process_command_references(path: &Path) -> bool {
+fn process_command_references(path: &Path) -> Vec<String> {
     let needle = path.to_string_lossy();
     let Ok(processes) = fs::read_dir("/proc") else {
-        return false;
+        return Vec::new();
     };
-    processes.flatten().any(|process| {
-        let Some(pid) = process
-            .file_name()
-            .to_str()
-            .and_then(|name| name.parse::<u32>().ok())
-        else {
-            return false;
-        };
-        fs::read(format!("/proc/{pid}/cmdline"))
-            .map(|command| String::from_utf8_lossy(&command).contains(needle.as_ref()))
-            .unwrap_or(false)
-    })
+    processes
+        .flatten()
+        .filter_map(|process| {
+            let pid = process
+                .file_name()
+                .to_str()
+                .and_then(|name| name.parse::<u32>().ok())?;
+            let command = fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+            let command = String::from_utf8_lossy(&command).replace('\0', " ");
+            command
+                .contains(needle.as_ref())
+                .then_some(format!("pid {pid}: {command}"))
+        })
+        .collect()
 }
 
 #[cfg(not(target_os = "linux"))]
-fn process_command_references(_path: &Path) -> bool {
-    false
+fn process_command_references(_path: &Path) -> Vec<String> {
+    Vec::new()
 }
 
 #[cfg(test)]

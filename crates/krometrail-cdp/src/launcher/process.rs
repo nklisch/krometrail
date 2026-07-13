@@ -32,22 +32,32 @@ pub enum ProcessError {
 pub struct ManagedChromeProcess {
     child: Option<Child>,
     pid: u32,
-    process_group: bool,
+    /// The PGID captured after spawning an isolated child. `None` means the child was supplied
+    /// externally (or process-group setup was unavailable), so only its direct `Child` may be
+    /// signaled.
+    process_group: Option<u32>,
 }
 
 impl ManagedChromeProcess {
     pub fn spawn(command: &mut Command) -> Result<Self, ProcessError> {
         Self::configure_process_group(command);
         let child = command.spawn().map_err(|_| ProcessError::SpawnFailed)?;
-        Ok(Self::from_child(child))
+        let pid = child.id();
+        let process_group = owned_process_group(pid);
+        Ok(Self {
+            child: Some(child),
+            pid,
+            process_group,
+        })
     }
 
+    #[cfg(test)]
     pub(crate) fn from_child(child: Child) -> Self {
         let pid = child.id();
         Self {
             child: Some(child),
             pid,
-            process_group: cfg!(unix),
+            process_group: None,
         }
     }
 
@@ -67,7 +77,9 @@ impl ManagedChromeProcess {
         let child = self.child.as_mut()?;
         match child.try_wait() {
             Ok(Some(status)) => {
-                self.child.take();
+                // A browser can leave helpers behind even on natural exit. Reuse the same
+                // ownership-checked force path before removing the process guard from supervision.
+                self.force_kill_now();
                 Some(ProcessTermination {
                     exit: sanitize_exit(status),
                 })
@@ -84,7 +96,7 @@ impl ManagedChromeProcess {
             };
             match child.try_wait() {
                 Ok(Some(status)) => {
-                    self.child.take();
+                    self.force_kill_now();
                     return Ok(ProcessTermination {
                         exit: sanitize_exit(status),
                     });
@@ -95,61 +107,149 @@ impl ManagedChromeProcess {
         }
     }
 
-    /// Gracefully asks the process group to exit, then escalates after the bounded grace period.
+    /// Gracefully asks the isolated process group to exit, then escalates after the bounded grace
+    /// period. A browser leader can exit before helpers do, so direct-child reaping is deliberately
+    /// followed by group cleanup and a positive no-members check.
     pub async fn terminate(&mut self, grace: Duration) -> Result<ProcessTermination, ProcessError> {
-        let Some(child) = self.child.as_mut() else {
+        if self.child.is_none() {
             return Ok(ProcessTermination {
                 exit: SanitizedProcessExit::Unknown,
             });
-        };
-        send_signal(self.pid, self.process_group, false);
+        }
+
         let deadline = tokio::time::Instant::now() + grace;
-        loop {
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    self.child.take();
-                    return Ok(ProcessTermination {
-                        exit: sanitize_exit(status),
-                    });
-                }
+        let direct_alive = self.child_is_alive()?;
+        if !self.signal_group(false, direct_alive) {
+            self.kill_direct_if_alive();
+        }
+
+        let status = loop {
+            let result = self
+                .child
+                .as_mut()
+                .ok_or(ProcessError::TerminationFailed)?
+                .try_wait();
+            match result {
+                Ok(Some(status)) => break status,
                 Ok(None) if tokio::time::Instant::now() < deadline => {
                     tokio::time::sleep(Duration::from_millis(10)).await;
                 }
                 Ok(None) => {
-                    send_signal(self.pid, self.process_group, true);
-                    let status = child.wait().map_err(|_| ProcessError::TerminationFailed)?;
-                    self.child.take();
-                    return Ok(ProcessTermination {
-                        exit: sanitize_exit(status),
-                    });
+                    // The direct child ignored TERM (or a helper kept the group alive). Force the
+                    // owned target before waiting, then reap the direct child below.
+                    if !self.signal_group(true, true) {
+                        self.kill_direct_if_alive();
+                    }
+                    break self
+                        .child
+                        .as_mut()
+                        .ok_or(ProcessError::TerminationFailed)?
+                        .wait()
+                        .map_err(|_| ProcessError::TerminationFailed)?;
                 }
                 Err(_) => return Err(ProcessError::TerminationFailed),
             }
-        }
+        };
+        self.child.take();
+
+        self.finish_group_termination(deadline, grace).await?;
+        Ok(ProcessTermination {
+            exit: sanitize_exit(status),
+        })
     }
 
-    /// Cancellation/drop cannot await. It still kills only the captured PID/process group.
+    /// Cancellation/drop cannot await, but it must still reap the direct child. The group is
+    /// force-killed only while the captured PGID is demonstrably ours; after the leader exits,
+    /// `/proc` membership prevents a recycled PID/PGID from becoming an unrelated signal target.
     pub(crate) fn force_kill_now(&mut self) {
-        if let Some(child) = self.child.as_mut() {
-            send_signal(self.pid, self.process_group, true);
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        let direct_alive = matches!(child.try_wait(), Ok(None));
+        let group_signaled = self.signal_group(true, direct_alive);
+        if !group_signaled && direct_alive && matches!(child.try_wait(), Ok(None)) {
             let _ = child.kill();
         }
-        self.child.take();
+        let _ = child.wait();
+
+        // Drop has no async budget, but do not release a profile while a known group member is
+        // still live. SIGKILL is reliable for ordinary userspace processes; the bound prevents
+        // cancellation cleanup from hanging forever on an uninterruptible kernel task.
+        if group_signaled {
+            let deadline = std::time::Instant::now() + Duration::from_secs(1);
+            while self.group_has_members() && std::time::Instant::now() < deadline {
+                let _ = self.signal_group(true, false);
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        self.process_group = None;
+    }
+
+    async fn finish_group_termination(
+        &mut self,
+        deadline: tokio::time::Instant,
+        grace: Duration,
+    ) -> Result<(), ProcessError> {
+        while self.group_has_members() && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        if self.group_has_members() {
+            if !self.signal_group(true, false) {
+                return Err(ProcessError::TerminationFailed);
+            }
+            let force_deadline = tokio::time::Instant::now()
+                + grace
+                    .max(Duration::from_millis(100))
+                    .min(Duration::from_secs(1));
+            while self.group_has_members() && tokio::time::Instant::now() < force_deadline {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            if self.group_has_members() {
+                return Err(ProcessError::Timeout);
+            }
+        }
+        self.process_group = None;
+        Ok(())
+    }
+
+    fn group_has_members(&self) -> bool {
+        self.process_group.is_some_and(process_group_has_members)
+    }
+
+    fn signal_group(&self, force: bool, direct_child_alive: bool) -> bool {
+        let Some(pgid) = self.process_group else {
+            return false;
+        };
+        if !process_group_is_owned(self.pid, pgid, direct_child_alive) {
+            return false;
+        }
+        signal_process_group(pgid, force)
+    }
+
+    fn child_is_alive(&mut self) -> Result<bool, ProcessError> {
+        self.child
+            .as_mut()
+            .ok_or(ProcessError::TerminationFailed)?
+            .try_wait()
+            .map(|status| status.is_none())
+            .map_err(|_| ProcessError::TerminationFailed)
+    }
+
+    fn kill_direct_if_alive(&mut self) {
+        if let Some(child) = self.child.as_mut()
+            && matches!(child.try_wait(), Ok(None))
+        {
+            let _ = child.kill();
+        }
     }
 
     pub(crate) fn configure_process_group(command: &mut Command) {
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
-            // SAFETY: setpgid is called in the child before exec and does not touch Rust state.
-            unsafe {
-                command.pre_exec(|| {
-                    if libc::setpgid(0, 0) == -1 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                    Ok(())
-                });
-            }
+            // The standard API performs setpgid in the child before exec, avoiding a parent-side
+            // race where a fast browser could exit before its group was isolated.
+            command.process_group(0);
         }
     }
 }
@@ -170,33 +270,110 @@ fn sanitize_exit(status: std::process::ExitStatus) -> SanitizedProcessExit {
     }
 }
 
-fn send_signal(pid: u32, process_group: bool, force: bool) {
-    #[cfg(unix)]
-    {
-        let signal = if force { libc::SIGKILL } else { libc::SIGTERM };
-        let target = if process_group {
-            -(pid as libc::pid_t)
-        } else {
-            pid as libc::pid_t
+#[cfg(unix)]
+fn owned_process_group(pid: u32) -> Option<u32> {
+    let pid = libc::pid_t::try_from(pid).ok()?;
+    let pgid = unsafe { libc::getpgid(pid) };
+    if pgid > 0 && pgid == pid {
+        return Some(pgid as u32);
+    }
+    // A very short-lived leader may exit between spawn and this validation while its helper is
+    // still alive. The expected PGID is safe to retain only when a member currently proves that
+    // the isolated group still exists; an empty/recycled PID is never adopted as ownership.
+    process_group_has_members(pid as u32).then_some(pid as u32)
+}
+
+#[cfg(not(unix))]
+fn owned_process_group(_pid: u32) -> Option<u32> {
+    None
+}
+
+#[cfg(unix)]
+fn process_group_is_owned(child_pid: u32, pgid: u32, direct_child_alive: bool) -> bool {
+    let Ok(child_pid) = libc::pid_t::try_from(child_pid) else {
+        return false;
+    };
+    let Ok(pgid) = libc::pid_t::try_from(pgid) else {
+        return false;
+    };
+    if pgid <= 0 {
+        return false;
+    }
+    // While the leader exists, getpgid proves that the PID still names our child and that it
+    // remains in the PGID captured at spawn. Once it exits, the leader PID may be reused, so only
+    // a currently populated captured group can be signaled. An empty group is never signaled.
+    if direct_child_alive {
+        (unsafe { libc::getpgid(child_pid) == pgid }) && process_group_has_members(pgid as u32)
+    } else {
+        process_group_has_members(pgid as u32)
+    }
+}
+
+#[cfg(not(unix))]
+fn process_group_is_owned(_child_pid: u32, _pgid: u32, _direct_child_alive: bool) -> bool {
+    false
+}
+
+#[cfg(unix)]
+fn signal_process_group(pgid: u32, force: bool) -> bool {
+    let Ok(pgid) = libc::pid_t::try_from(pgid) else {
+        return false;
+    };
+    let signal = if force { libc::SIGKILL } else { libc::SIGTERM };
+    pgid > 0 && unsafe { libc::kill(-pgid, signal) == 0 }
+}
+
+#[cfg(not(unix))]
+fn signal_process_group(_pgid: u32, _force: bool) -> bool {
+    false
+}
+
+#[cfg(target_os = "linux")]
+fn process_group_has_members(pgid: u32) -> bool {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        if entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+            .is_none()
+        {
+            return false;
+        }
+        let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else {
+            return false;
         };
-        // A disappearing child is already clean from the ownership perspective.
-        unsafe {
-            libc::kill(target, signal);
-        }
+        let Some((_, fields)) = stat.rsplit_once(") ") else {
+            return false;
+        };
+        let mut fields = fields.split_whitespace();
+        let _state = fields.next();
+        let _parent_pid = fields.next();
+        fields
+            .next()
+            .and_then(|group| group.parse::<u32>().ok())
+            .is_some_and(|group| group == pgid)
+    })
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn process_group_has_members(pgid: u32) -> bool {
+    let Ok(pgid) = libc::pid_t::try_from(pgid) else {
+        return false;
+    };
+    if pgid <= 0 {
+        return false;
     }
-    #[cfg(windows)]
-    {
-        if force {
-            let _ = std::process::Command::new("taskkill")
-                .args(["/PID", &pid.to_string(), "/T", "/F"])
-                .status();
-        }
-        let _ = process_group;
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        let _ = (pid, process_group, force);
-    }
+    let result = unsafe { libc::kill(-pgid, 0) };
+    result == 0
+        || (result == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM))
+}
+
+#[cfg(not(unix))]
+fn process_group_has_members(_pgid: u32) -> bool {
+    false
 }
 
 #[cfg(test)]
