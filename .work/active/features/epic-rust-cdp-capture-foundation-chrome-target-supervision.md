@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-chrome-target-supervision
 kind: feature
-stage: review
+stage: done
 tags: [browser]
 parent: epic-rust-cdp-capture-foundation
 depends_on: [epic-rust-cdp-capture-foundation-cdp-transport-gate]
@@ -488,7 +488,13 @@ Adversarial review confirmed four material current-cycle blockers: HTTP reconnec
 
 Four dependency-ordered follow-ups repaired those defects. Endpoint resolution rejects mixed sets; HTTP reconnect refreshes rotated paths. Reconstruction is one bounded cancellable transaction with atomic state commit. Event streams deliver one `Ended` then close. Architecture consistently names current final5 evidence.
 
-Final closure review reproduced one remaining endpoint-boundary flaw in two forms: same-authority discovery performed a second resolver lookup that could select a different loopback debugger, and changed-authority synchronous resolution blocked reconnect deadline/cancellation polling. The final follow-up now reuses the exact same-authority pin and uses Tokio asynchronous resolution for changed authorities entirely inside reconnect attempt control. Deterministic adversarial probes and repeated rotating-path real reconnects pass leak-free. All ten child stories are `stage: done`; parked lower-risk findings remain backlog-only. The feature returns to `stage: review`.
+Final closure review reproduced one remaining endpoint-boundary flaw in two forms: same-authority discovery performed a second resolver lookup that could select a different loopback debugger, and changed-authority synchronous resolution blocked reconnect deadline/cancellation polling. The final follow-up now reuses the exact same-authority pin and uses Tokio asynchronous resolution for changed authorities entirely inside reconnect attempt control. Deterministic adversarial probes and repeated rotating-path real reconnects pass leak-free. All ten child stories are `stage: done`; parked lower-risk findings remain backlog-only.
+
+## Final feature review (2026-07-13)
+
+**Verdict:** Approve
+
+Complementary GLM review verified the full acceptance surface and proposed one material gap, which the receiver confirmed and closed with real Chrome reconnect evidence; lower-risk proposals were parked. Adversarial Sol review then found endpoint rebinding, reconstruction-bound, stream-closure, and foundation contradictions; all were fixed and independently rechecked. The final focused closure reproduced exact pin reuse and prompt asynchronous deadline/cancellation/process-death wins, and confirmed every prior blocker remains closed. No material finding remains.
 
 ## Testing strategy
 
