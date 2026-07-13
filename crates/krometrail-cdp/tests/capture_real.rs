@@ -22,10 +22,10 @@ use krometrail_cdp::{
 };
 use krometrail_core::{
     AttachBrowser, BrowserConnectRequest, BrowserConnector, BrowserProduct, BrowserSessionEvent,
-    BrowserSessionEvents, BrowserSessionPort, BrowserSessionState, BrowserStopOutcome,
-    CaptureGapReason, CaptureStreamState, EncodedFrame, ErrorCode, IdSource, IdValue, ImageFormat,
-    LaunchBrowser, ManagedProfile, MonotonicClock, ObservedTime, PortFuture, RecordingSink,
-    SessionId, TargetCaptureStatus, TargetId,
+    BrowserSessionEvents, BrowserSessionPort, BrowserSessionState, BrowserStopOutcome, ByteOffset,
+    CaptureGapReason, CaptureStreamState, EncodedFrame, ErrorCode, FrameAddress, IdSource, IdValue,
+    ImageFormat, LaunchBrowser, ManagedProfile, MonotonicClock, ObservedTime, PortFuture,
+    RecordingSink, SegmentId, SessionId, TargetCaptureStatus, TargetId,
 };
 use support::chrome::ChromeWrapperVariant;
 use uuid::Uuid;
@@ -1517,8 +1517,12 @@ impl TestSink {
 }
 
 impl RecordingSink for TestSink {
-    fn append_frame(&self, frame: EncodedFrame) -> PortFuture<'_, krometrail_core::Result<()>> {
+    fn append_frame(
+        &self,
+        frame: EncodedFrame,
+    ) -> PortFuture<'_, krometrail_core::Result<FrameAddress>> {
         let should_block = self.blocked.load(Ordering::Acquire);
+        let byte_offset = frame.metadata().capture_ordinal().get();
         {
             self.state.lock().expect("sink lock").frames.push(frame);
         }
@@ -1529,7 +1533,10 @@ impl RecordingSink for TestSink {
             }
             self.state.lock().expect("sink lock").completed_frames += 1;
             self.changed.notify_waiters();
-            Ok(())
+            Ok(FrameAddress::new(
+                SegmentId::from_uuid(Uuid::from_u128(1)),
+                ByteOffset::new(byte_offset),
+            ))
         })
     }
 

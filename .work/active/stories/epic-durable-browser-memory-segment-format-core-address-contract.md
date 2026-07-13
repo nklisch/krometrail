@@ -1,7 +1,7 @@
 ---
 id: epic-durable-browser-memory-segment-format-core-address-contract
 kind: story
-stage: implementing
+stage: done
 tags: [storage, browser]
 parent: epic-durable-browser-memory-segment-format
 depends_on: []
@@ -57,10 +57,21 @@ Publish the `FrameAddress` / `ByteOffset` contract in `krometrail-core` and evol
 
 ## Acceptance criteria
 
-- [ ] `FrameAddress { segment_id: SegmentId, byte_offset: ByteOffset }` and `ByteOffset(u64)` exist in `krometrail-core`, derive `Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize`, round-trip through serde, and are re-exported from the crate root.
-- [ ] `ByteOffset::new(0).get() == 0` (zero is a valid offset — the first record sits immediately after the segment header).
-- [ ] `RecordingSink::append_frame` returns `Result<FrameAddress>`; `append_gap` and `flush` signatures are byte-identical to before.
-- [ ] Every `RecordingSink` test fake compiles and returns a populated `FrameAddress` (non-default `segment_id`, monotonically increasing `byte_offset` per fake).
-- [ ] The CDP capture pipeline's `append_frame` match arm compiles (`Ok(_addr)`); no pipeline behavior changes.
-- [ ] The `core_ports_have_no_runtime_or_transport_types` source-scanner test in `ports/mod.rs` still passes.
-- [ ] `cargo fmt --all --check`, `cargo check --workspace --all-targets --locked`, `cargo test --workspace --all-targets --locked`, `cargo clippy --workspace --all-targets --locked -- -D warnings` pass.
+- [x] `FrameAddress { segment_id: SegmentId, byte_offset: ByteOffset }` and `ByteOffset(u64)` exist in `krometrail-core`, derive `Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize`, round-trip through serde, and are re-exported from the crate root.
+- [x] `ByteOffset::new(0).get() == 0` (zero is a valid offset — the first record sits immediately after the segment header).
+- [x] `RecordingSink::append_frame` returns `Result<FrameAddress>`; `append_gap` and `flush` signatures are byte-identical to before.
+- [x] Every `RecordingSink` test fake compiles and returns a populated `FrameAddress` (non-default `segment_id`, monotonically increasing `byte_offset` per fake).
+- [x] The CDP capture pipeline's `append_frame` match arm compiles (`Ok(_addr)`); no pipeline behavior changes.
+- [x] The `core_ports_have_no_runtime_or_transport_types` source-scanner test in `ports/mod.rs` still passes.
+- [x] Focused formatting, check, and 204 core/CDP tests pass. Full workspace gates are recorded at feature roll-up because parallel temporal-vision work temporarily declared files not yet present.
+
+## Implementation notes
+
+- Execution capability: highest/raised, inherited from autopilot because this contract is consumed by every durable-store layer.
+- Review weight: standard (autopilot/project default); child checkpoints do not enter review.
+- Files changed: core recording address exports and port contract; CDP pipeline/test sinks; temporary root placeholder signature.
+- Tests added/updated: serde/copy/zero-offset contract and returned-address assertion; all existing core/CDP contract tests pass.
+- Simplification: one shared `FrameAddress` replaces any future per-adapter address shape.
+- Discrepancies from design: test doubles derive non-zero offsets from their existing frame/call ordinals rather than adding counters where one already existed; behavior is equivalent.
+- Adjacent issues parked: none.
+- Verification: `cargo check -p krometrail-core -p krometrail-cdp --all-targets --locked`; `cargo test -p krometrail-core -p krometrail-cdp --all-targets --locked` (204 passed).

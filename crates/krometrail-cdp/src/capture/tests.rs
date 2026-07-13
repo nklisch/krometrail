@@ -1,8 +1,9 @@
 use super::*;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use krometrail_core::{
-    CaptureGapReason, CaptureStreamState, EncodedFrame, IdValue, ImageFormat, MonotonicClock,
-    ObservedTime, PortFuture, RecordingSink, SessionId, SessionOrigin, TargetId,
+    ByteOffset, CaptureGapReason, CaptureStreamState, EncodedFrame, FrameAddress, IdValue,
+    ImageFormat, MonotonicClock, ObservedTime, PortFuture, RecordingSink, SegmentId, SessionId,
+    SessionOrigin, TargetId,
 };
 use std::{
     collections::HashMap,
@@ -217,19 +218,26 @@ impl TestSink {
 }
 
 impl RecordingSink for TestSink {
-    fn append_frame(&self, frame: EncodedFrame) -> PortFuture<'_, krometrail_core::Result<()>> {
+    fn append_frame(
+        &self,
+        frame: EncodedFrame,
+    ) -> PortFuture<'_, krometrail_core::Result<FrameAddress>> {
         assert!(self.ack_completed.load(Ordering::Acquire));
         self.order.lock().unwrap().push("sink");
         self.frames.lock().unwrap().push(frame);
         let call = self.frame_calls.fetch_add(1, Ordering::AcqRel);
+        let address = FrameAddress::new(
+            SegmentId::from_uuid(uuid::Uuid::from_u128(1)),
+            ByteOffset::new(call + 1),
+        );
         if call == 0 {
             self.first_frame_started.notify_one();
             Box::pin(async move {
                 self.release_first_frame.notified().await;
-                Ok(())
+                Ok(address)
             })
         } else {
-            Box::pin(std::future::ready(Ok(())))
+            Box::pin(std::future::ready(Ok(address)))
         }
     }
 

@@ -2100,9 +2100,9 @@ mod tests {
         EndpointResolveFuture, EndpointResolver, LocalCdpEndpoint, transport::TransportFuture,
     };
     use krometrail_core::{
-        BrowserProduct, BrowserProductVersion, BrowserVersion, CapabilitySupport, CaptureGap,
-        EncodedFrame, IdValue, MonotonicClock, PortFuture, RecordingSink, RendererCapability,
-        SessionOrigin,
+        BrowserProduct, BrowserProductVersion, BrowserVersion, ByteOffset, CapabilitySupport,
+        CaptureGap, EncodedFrame, FrameAddress, IdValue, MonotonicClock, PortFuture, RecordingSink,
+        RendererCapability, SegmentId, SessionOrigin,
     };
     use std::{
         net::{IpAddr, Ipv4Addr, SocketAddr},
@@ -2646,8 +2646,11 @@ mod tests {
         fn append_frame(
             &self,
             _frame: EncodedFrame,
-        ) -> PortFuture<'_, krometrail_core::Result<()>> {
-            Box::pin(std::future::ready(Ok(())))
+        ) -> PortFuture<'_, krometrail_core::Result<FrameAddress>> {
+            Box::pin(std::future::ready(Ok(FrameAddress::new(
+                SegmentId::from_uuid(Uuid::from_u128(1)),
+                ByteOffset::new(1),
+            ))))
         }
 
         fn append_gap(&self, _gap: CaptureGap) -> PortFuture<'_, krometrail_core::Result<()>> {

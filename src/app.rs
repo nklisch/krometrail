@@ -4,9 +4,9 @@ use std::{
 };
 
 use krometrail_core::{
-    BrowserConnector, CaptureGap, EncodedFrame, ErrorCode, IdSource, IdValue, KrometrailError,
-    MonotonicClock, NonEmptyText, PortFuture, RecordingSink, Result, SessionId, SessionRange,
-    TimelineObservation, TimelineStore, WallClock,
+    BrowserConnector, CaptureGap, EncodedFrame, ErrorCode, FrameAddress, IdSource, IdValue,
+    KrometrailError, MonotonicClock, NonEmptyText, PortFuture, RecordingSink, Result, SessionId,
+    SessionRange, TimelineObservation, TimelineStore, WallClock,
 };
 use uuid::Uuid;
 
@@ -116,7 +116,7 @@ impl IdSource for ProcessIdSource {
 struct UnavailableRecordingSink;
 
 impl RecordingSink for UnavailableRecordingSink {
-    fn append_frame(&self, _frame: EncodedFrame) -> PortFuture<'_, Result<()>> {
+    fn append_frame(&self, _frame: EncodedFrame) -> PortFuture<'_, Result<FrameAddress>> {
         Box::pin(std::future::ready(Err(unavailable(
             "recording storage is not available in this build",
         ))))

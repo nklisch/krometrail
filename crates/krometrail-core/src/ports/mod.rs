@@ -28,18 +28,21 @@ mod tests {
     use super::*;
     use crate::{
         BrowserCompatibility, BrowserOwnership, BrowserProduct, BrowserProductVersion,
-        BrowserSessionEvent, BrowserSessionState, BrowserStopOutcome, BrowserVersion, CaptureGap,
-        CaptureGapReason, CapturedFrame, DeviceScaleFactor, EncodedFrame, ErrorCode, ImageFormat,
-        ObservationKind, ObservationPayloadRef, ObservedTime, PageTarget, PixelDimensions,
-        ProfileIdentity, ProfileRef, RendererCapability, SessionId, SessionOrigin, SessionRange,
-        SessionTime, SourceTime, SupervisedTarget, TargetId, TargetLifecycle, TargetVisibility,
-        TimelineObservation,
+        BrowserSessionEvent, BrowserSessionState, BrowserStopOutcome, BrowserVersion, ByteOffset,
+        CaptureGap, CaptureGapReason, CapturedFrame, DeviceScaleFactor, EncodedFrame, ErrorCode,
+        FrameAddress, ImageFormat, ObservationKind, ObservationPayloadRef, ObservedTime,
+        PageTarget, PixelDimensions, ProfileIdentity, ProfileRef, RendererCapability, SegmentId,
+        SessionId, SessionOrigin, SessionRange, SessionTime, SourceTime, SupervisedTarget,
+        TargetId, TargetLifecycle, TargetVisibility, TimelineObservation,
     };
     use std::{
         collections::VecDeque,
         num::NonZeroU64,
         pin::Pin,
-        sync::{Arc, Mutex},
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicU64, Ordering},
+        },
         task::{Context, Poll, Wake, Waker},
         time::{Duration, SystemTime},
     };
@@ -228,11 +231,12 @@ mod tests {
         frames: Mutex<Vec<EncodedFrame>>,
         gaps: Mutex<Vec<CaptureGap>>,
         flushes: Mutex<Vec<SessionId>>,
+        next_offset: AtomicU64,
         fail: bool,
     }
 
     impl RecordingSink for FakeRecording {
-        fn append_frame(&self, frame: EncodedFrame) -> PortFuture<'_, crate::Result<()>> {
+        fn append_frame(&self, frame: EncodedFrame) -> PortFuture<'_, crate::Result<FrameAddress>> {
             let result = if self.fail {
                 Err(crate::KrometrailError::new(
                     ErrorCode::PersistenceFailed,
@@ -240,7 +244,10 @@ mod tests {
                 ))
             } else {
                 self.frames.lock().unwrap().push(frame);
-                Ok(())
+                Ok(FrameAddress::new(
+                    SegmentId::from_uuid(UUID.parse().unwrap()),
+                    ByteOffset::new(self.next_offset.fetch_add(1, Ordering::Relaxed) + 1),
+                ))
             };
             Box::pin(async move { result })
         }
@@ -493,7 +500,12 @@ mod tests {
             None,
         )
         .unwrap();
-        assert!(block_on(sink.append_frame(frame)).is_ok());
+        let address = block_on(sink.append_frame(frame)).unwrap();
+        assert_eq!(
+            address.segment_id,
+            SegmentId::from_uuid(UUID.parse().unwrap())
+        );
+        assert_eq!(address.byte_offset.get(), 1);
         assert!(block_on(sink.append_gap(gap)).is_ok());
         assert!(block_on(sink.flush(session_id)).is_ok());
 

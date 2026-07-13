@@ -798,7 +798,7 @@ async fn worker_loop(runtime: Arc<StreamRuntime>, mut receiver: mpsc::Receiver<R
         }
         match decode_frame(&runtime, raw.clone()) {
             Ok(frame) => match runtime.dependencies.sink.append_frame(frame).await {
-                Ok(()) => {
+                Ok(_address) => {
                     runtime.persisted();
                     runtime.complete_processing();
                 }
