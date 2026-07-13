@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-bounded-screencast-ingestion
 kind: feature
-stage: review
+stage: implementing
 tags: [browser]
 parent: epic-rust-cdp-capture-foundation
 depends_on: [epic-rust-cdp-capture-foundation-chrome-target-supervision]
@@ -287,3 +287,7 @@ A single remediation story is intentionally minimal. Splitting metadata and visi
 - Repaired both cdpkit visibility result shapes and unresolved-visibility Ready guarding.
 - Proved production behavior through repeated real Chrome 149 runs: 30-frame managed fidelity, three-target isolation, exact bounded saturation accounting, generation 1→2 reconnect with continuous ordinals, ownership-correct managed/attached stop, and no process/profile references.
 - Workspace/default/no-default/spike/clippy/doc gates pass. Four child stories are `done`; lower-risk capture-engine and test-root hygiene proposals are parked.
+
+## Feature review findings (2026-07-13)
+
+GLM completeness review approved. A second cross-model seam review found two receiver-confirmed material gaps: acknowledgement latency starts after token extraction rather than at frame return, and stopped target runtimes remain in the coordinator map, violating the stated O(active streams) memory/status bound under target churn. The parent returns to implementing for `...-feature-review-remediation`; approval resumes after that story closes both findings. A transient duplicate-status generation window is included in the same registry repair.
