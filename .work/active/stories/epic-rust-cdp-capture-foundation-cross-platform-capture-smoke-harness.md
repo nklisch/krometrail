@@ -29,7 +29,7 @@ This story is CI-green on every lane without Chrome installed.
 
 ## Required files
 
-- `crates/krometrail-cdp/tests/support/chrome.rs` (extend — add `ChromeWrapperVariant`, `BrowserProduct`, parameterized `ChromeWrapper` with `script_bytes` + `for_product`, and the macOS `process_command_references` branch)
+- `crates/krometrail-cdp/tests/support/chrome.rs` (extend — add `ChromeWrapperVariant`, parameterized `ChromeWrapper` using core `BrowserProduct` with `script_bytes` + `for_product`, and the macOS `process_command_references` branch)
 - `crates/krometrail-cdp/tests/support/mod.rs` (export new module(s))
 - `crates/krometrail-cdp/tests/support/smoke_evidence.rs` (new — serde struct + canonical-bytes serializer + sanitizer + schema path)
 - `crates/krometrail-cdp/tests/capture_real.rs` (behavior-compatible import swap to `ChromeWrapper::for_product(BrowserProduct::Chrome, ChromeWrapperVariant::DefaultDpi)`)

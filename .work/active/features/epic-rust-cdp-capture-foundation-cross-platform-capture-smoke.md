@@ -129,15 +129,11 @@ pub enum ChromeWrapperVariant {
     HighDpi,
 }
 
-/// Which Chromium-family product to select from discovery. `capture_real.rs` selects `Chrome`
-/// (preserving today's behavior of picking a Chrome installation); the smoke selects per config so
-/// Linux Chromium is filtered explicitly rather than "first discovered".
-pub enum BrowserProduct {
-    Chrome,
-    Chromium,
-}
+use krometrail_core::BrowserProduct;
 
-/// Test-only Chrome launcher wrapper. Production launch is unchanged; this only writes the shell
+/// Test-only Chrome launcher wrapper. The existing core `BrowserProduct` is the single product
+/// identity used by discovery, runtime compatibility, wrapper selection, and evidence.
+/// Linux Chromium is filtered explicitly rather than selected as "first discovered". Production launch is unchanged; this only writes the shell
 /// wrapper CI runners require. The wrapper script is a pure function of (executable, variant), so a
 /// no-Chrome test can pass a sentinel path and assert exact bytes.
 pub struct ChromeWrapper {
