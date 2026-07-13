@@ -59,6 +59,7 @@ macro_rules! stable_registry {
 mod error;
 mod frame;
 mod geometry;
+mod measure;
 mod normalize;
 mod provenance;
 mod sequence;
@@ -66,6 +67,10 @@ mod sequence;
 pub use error::{ErrorCode, Result, VisionError};
 pub use frame::{BorrowedFrame, Frame, OwnedFrame, PixelDimensions, PixelFormat, Timestamp};
 pub use geometry::{BinaryMask, FrameRegion, PixelRect};
+pub use measure::{
+    ChangedPixelProportion, ComparisonOutcome, FrameComparison, MeasurementParameters,
+    MeasurementVector, measure_adjacent, measure_pair,
+};
 pub use normalize::{
     IntegerScale, NormalizationParameters, NormalizedFrame, NormalizedSequence, ProcessingLimits,
     Rgb8, normalize_sequence,

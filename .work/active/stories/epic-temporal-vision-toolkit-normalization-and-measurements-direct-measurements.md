@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-vision-toolkit-normalization-and-measurements-direct-measurements
 kind: story
-stage: implementing
+stage: done
 tags: [visual]
 parent: epic-temporal-vision-toolkit-normalization-and-measurements
 depends_on: [epic-temporal-vision-toolkit-normalization-and-measurements-normalized-sequence]
@@ -37,3 +37,14 @@ Every `FrameComparison` carries earlier/later indices and elapsed nanoseconds. `
 ## Ordering
 
 Depends on `epic-temporal-vision-toolkit-normalization-and-measurements-normalized-sequence`, which owns the pixels, geometry, analysis mask, gap ranges, and base provenance.
+
+## Implementation notes
+
+- Execution capability: raised/high, selected by the autopilot caller because every artifact selection and rendering algorithm consumes these metrics.
+- Review weight: standard (caller); child stories close on verification and the parent feature remains the review boundary.
+- Files changed: `crates/temporal-vision/src/measure.rs` and `src/lib.rs`.
+- Tests added: exact identity/threshold behavior and full-range integer-square-root boundaries; the public contract checkpoint adds integrated hand-computed vectors and gap/mask cases.
+- Verification: focused library and existing contract tests pass with clippy warnings denied.
+- Simplification: one checked integer kernel serves arbitrary and adjacent comparisons; no floating metrics, diagnostics, inferred motion, or alternate threshold implementation.
+- Discrepancies from design: none.
+- Adjacent issues parked: none.
