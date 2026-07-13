@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-chrome-target-supervision-async-endpoint-pin
 kind: story
-stage: review
+stage: done
 tags: [browser, security, testing]
 parent: epic-rust-cdp-capture-foundation-chrome-target-supervision
 depends_on: [epic-rust-cdp-capture-foundation-chrome-target-supervision-architecture-final5]
@@ -42,3 +42,13 @@ For identical HTTP/WebSocket authority, reuse the already validated HTTP `Socket
 **Blockers:** none known
 
 **Notes:** Implementation is intentionally left at `stage: review`; the implementation commit contains the endpoint contract change, adversarial supervision tests, and work-item transition.
+
+## Review (2026-07-13)
+
+**Verdict:** Approve
+
+**Blockers:** none
+**Important:** none
+**Nits:** none
+
+**Notes:** Fast-lane boundary review reran endpoint and supervision tests plus denied-warning clippy; verified one-call exact pin reuse, Tokio asynchronous changed-authority resolution, prompt deadline/cancellation/process-death wins, no partial commit, all-address loopback validation, and leak-free real reconnect evidence. Verdict: Approve - story verified by implement; fast-lane advance.
