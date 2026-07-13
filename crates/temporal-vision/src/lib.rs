@@ -43,11 +43,11 @@ macro_rules! stable_registry {
             where
                 D: serde::Deserializer<'de>,
             {
-                let value = <&str as serde::Deserialize>::deserialize(deserializer)?;
-                match value {
+                let value = <String as serde::Deserialize>::deserialize(deserializer)?;
+                match value.as_str() {
                     $($wire => Ok(Self::$variant),)+
                     _ => Err(serde::de::Error::unknown_variant(
-                        value,
+                        &value,
                         &[$($wire),+],
                     )),
                 }

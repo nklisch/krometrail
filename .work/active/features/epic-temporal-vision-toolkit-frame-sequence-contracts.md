@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-vision-toolkit-frame-sequence-contracts
 kind: feature
-stage: implementing
+stage: review
 tags: [visual]
 parent: epic-temporal-vision-toolkit
 depends_on: []
@@ -488,4 +488,18 @@ The feature remains one cohesive implementation and review bundle. Stories are d
 
 ## Blockers
 
-None. The current crate is empty, foundation contracts agree on an immutable browser-agnostic batch, and all child dependencies are acyclic.
+None. The implemented crate remains an immutable browser-agnostic batch boundary, and all child dependencies completed in order.
+
+## Implementation summary
+
+- Execution capability: highest/raised (caller-selected) because this crate-wide public contract is the dependency foundation for every temporal artifact implementation.
+- Review weight: standard (caller/autopilot); the feature is intentionally left at `stage: review` for the parent orchestrator's fresh review lane.
+- Dispatch: one cohesive owner implemented all four sequential child checkpoints to preserve generic type and serde context across the public boundary.
+- Files changed: `crates/temporal-vision/Cargo.toml`, `crates/temporal-vision/src/{lib,error,frame,geometry,sequence,provenance}.rs`, `crates/temporal-vision/tests/contracts.rs`, and `Cargo.lock`.
+- Public contracts delivered: caller-owned generic identifiers; owned/borrowed validated RGBA8 frames; checked dimensions, regions, and complete bit masks; immutable ordered frame sequences with markers and declared gaps; stable registries; deterministic parameters; canonical output hashes; and sequence-projected manifests with validated persistence.
+- Tests added: 12 focused unit/integration tests across two suites, including a browser-free typed-ID consumer, no-copy borrowing, explicit ownership, tied-order stability, deterministic JSON, registry round trips, constructor invariants, and malformed persisted manifests.
+- Simplification: no codec, image, browser, Krometrail, filesystem, async, streaming, or trait-object system was added. Normal dependencies remain only `serde` and `thiserror`.
+- Design deviations: `Timestamp` includes the necessary public `ZERO`, `from_nanos`, and `as_nanos` API; manifest marker/gap IDs require `Eq` to revalidate persisted uniqueness; `FrameRegion` revalidates retained rectangle invariants on deserialize and defers source-frame containment to sequence construction because it intentionally stores no duplicate dimensions.
+- Focused verification: `cargo fmt -p temporal-vision -- --check`, locked package check/test/clippy, and dependency-tree inspection all passed; 12 tests passed.
+- Workspace verification: locked workspace check passed and 213 workspace tests passed. Workspace formatting and clippy were temporarily blocked only by concurrent unowned browser-operation work (`crates/krometrail-cdp/src/control/**` formatting; a `krometrail-core/src/browser/operation.rs` large-enum lint). No failing result originated in `temporal-vision`, and no unowned file was changed or staged for this feature.
+- Adjacent issues parked: none.
