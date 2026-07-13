@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-chrome-target-supervision-bounded-reconstruction
 kind: story
-stage: review
+stage: done
 tags: [browser, testing]
 parent: epic-rust-cdp-capture-foundation-chrome-target-supervision
 depends_on: [epic-rust-cdp-capture-foundation-chrome-target-supervision-endpoint-rebinding]
@@ -23,9 +23,9 @@ Treat reconnect as one transactional attempt: endpoint refresh, connection/setup
 
 ## Acceptance criteria
 
-- [ ] Entire reconstruction is deadline-bound and immediately observes stop/cancel/process death.
-- [ ] Target restoration has explicit count/concurrency bounds and cannot grow attempt duration linearly without limit.
-- [ ] Partial timeout/failure publishes no committed generation or false restored state; next attempt starts cleanly.
+- [x] Entire reconstruction is deadline-bound and immediately observes stop/cancel/process death.
+- [x] Target restoration has explicit count/concurrency bounds and cannot grow attempt duration linearly without limit.
+- [x] Partial timeout/failure publishes no committed generation or false restored state; next attempt starts cleanly.
 
 ## Implementation notes
 
@@ -43,4 +43,14 @@ Treat reconnect as one transactional attempt: endpoint refresh, connection/setup
 - `cargo check --workspace --no-default-features --all-targets --locked`
 - `cargo test -p krometrail-cdp --features cdp-spike --all-targets --locked`
 - `KROMETRAIL_REAL_CHROME_TESTS=1 cargo test -p krometrail-cdp --test session_supervision opt_in_real_chrome_reconnects_through_a_new_physical_proxy_connection`
-- [ ] Deterministic stalled-command/many-target/cancellation tests plus real reconnect tests pass leak-free.
+- [x] Deterministic stalled-command/many-target/cancellation tests plus real reconnect tests pass leak-free.
+
+## Review (2026-07-13)
+
+**Verdict:** Approve
+
+**Blockers:** none
+**Important:** none
+**Nits:** none
+
+**Notes:** Fast-lane transaction review reran focused supervision/reducer tests and denied-warning clippy; verified one deadline/cancellation transaction, explicit target/concurrency bounds, atomic commit after complete reconstruction, partial-session cleanup, real rotating-path reconnect, and no resource leakage. Verdict: Approve - story verified by implement; fast-lane advance.
