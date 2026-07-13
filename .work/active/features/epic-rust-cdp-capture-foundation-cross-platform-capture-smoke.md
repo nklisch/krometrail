@@ -132,7 +132,7 @@ pub enum ChromeWrapperVariant {
 /// Which Chromium-family product to select from discovery. `capture_real.rs` selects `Chrome`
 /// (preserving today's behavior of picking a Chrome installation); the smoke selects per config so
 /// Linux Chromium is filtered explicitly rather than "first discovered".
-pub enum ChromeProduct {
+pub enum BrowserProduct {
     Chrome,
     Chromium,
 }
@@ -144,21 +144,21 @@ pub struct ChromeWrapper {
     pub path: std::path::PathBuf,
     pub variant: ChromeWrapperVariant,
     pub executable: std::path::PathBuf,
-    pub product: ChromeProduct,
+    pub product: BrowserProduct,
 }
 
 impl ChromeWrapper {
     /// Select the first discovered installation matching `product`, then write the wrapper.
     /// Returns `None` when no matching installation is discovered (Linux Chromium absent).
     #[cfg(unix)]
-    pub fn for_product(product: ChromeProduct, variant: ChromeWrapperVariant) -> Option<Self>;
+    pub fn for_product(product: BrowserProduct, variant: ChromeWrapperVariant) -> Option<Self>;
 
     /// Construct from an explicit, already-selected executable. The wrapper script is a pure
     /// function of (executable, variant); discovery is the caller's responsibility.
     #[cfg(unix)]
     pub fn new(
         executable: std::path::PathBuf,
-        product: ChromeProduct,
+        product: BrowserProduct,
         variant: ChromeWrapperVariant,
     ) -> Self;
 
@@ -174,7 +174,7 @@ impl Drop for ChromeWrapper {
 
 `DefaultDpi` emits `#!/bin/sh\nexec {q} --headless=new --disable-gpu --no-sandbox --force-device-scale-factor=1 "$@"\n`; `HighDpi` emits the same line plus `--high-dpi-support=1 --force-device-scale-factor=2` (replacing the `=1`). `{q}` is the shell-quoted executable. `script_bytes` returns exactly these bytes so the deterministic test does not need Chrome or a writable temp dir.
 
-`capture_real.rs` replaces its private `ChromeWrapper` with `support::chrome::ChromeWrapper::for_product(ChromeProduct::Chrome, ChromeWrapperVariant::DefaultDpi)`. This is a **behavior-compatible**, test-only change but no longer byte-identical: the only script difference vs. the prior private wrapper is the added `--force-device-scale-factor=1` flag. That flag is benign for every `capture_real.rs` assertion (none assert `deviceScaleFactor`), and headless Chrome on a display-less CI runner already reports scale `1`, so forcing it changes nothing observable there. The harness story re-runs the enumerated `capture_real.rs` opt-in suite (4 `#[tokio::test]`s — see [capture_real test count](#capture_real-test-count)) as the regression guard; the done real-Chrome fidelity story's acceptance is preserved because no assertion text or observed value changes on a CI lane. The behavior-preservation evidence is the green re-run, not a byte diff.
+`capture_real.rs` replaces its private `ChromeWrapper` with `support::chrome::ChromeWrapper::for_product(BrowserProduct::Chrome, ChromeWrapperVariant::DefaultDpi)`. This is a **behavior-compatible**, test-only change but no longer byte-identical: the only script difference vs. the prior private wrapper is the added `--force-device-scale-factor=1` flag. That flag is benign for every `capture_real.rs` assertion (none assert `deviceScaleFactor`), and headless Chrome on a display-less CI runner already reports scale `1`, so forcing it changes nothing observable there. The harness story re-runs the enumerated `capture_real.rs` opt-in suite (4 `#[tokio::test]`s — see [capture_real test count](#capture_real-test-count)) as the regression guard; the done real-Chrome fidelity story's acceptance is preserved because no assertion text or observed value changes on a CI lane. The behavior-preservation evidence is the green re-run, not a byte diff.
 
 **Smoke-evidence schema** — `docs/evidence/cross-platform-smoke/v1/schema.json` defines `CrossPlatformSmokeEvidence` (Draft 2020-12). It is intentionally not `$ref`-compatible with `TransportEvidenceV2`. Required top-level fields:
 
@@ -269,7 +269,7 @@ The committed `sample.json` is a hand-authored, schema-valid example used by the
 
 **Acceptance criteria:**
 
-- [ ] `ChromeWrapper` exists in `tests/support/chrome.rs` parameterized by explicit `executable: PathBuf`, `product: ChromeProduct`, and `variant: ChromeWrapperVariant` (`DefaultDpi`, `HighDpi`); a pure `script_bytes(executable, variant)` helper returns the wrapper bytes without filesystem access; a `for_product(product, variant)` constructor filters `discover_installations(None)` by `BrowserInstallation::product` so Linux Chrome and Linux Chromium are selected explicitly. `capture_real.rs` migrates to `ChromeWrapper::for_product(ChromeProduct::Chrome, ChromeWrapperVariant::DefaultDpi)`; its enumerated opt-in suite (4 `#[tokio::test]`s — see [capture_real test count](#capture_real-test-count)) re-runs green when `KROMETRAIL_REAL_CHROME_TESTS=1`.
+- [ ] `ChromeWrapper` exists in `tests/support/chrome.rs` parameterized by explicit `executable: PathBuf`, `product: BrowserProduct`, and `variant: ChromeWrapperVariant` (`DefaultDpi`, `HighDpi`); a pure `script_bytes(executable, variant)` helper returns the wrapper bytes without filesystem access; a `for_product(product, variant)` constructor filters `discover_installations(None)` by `BrowserInstallation::product` so Linux Chrome and Linux Chromium are selected explicitly. `capture_real.rs` migrates to `ChromeWrapper::for_product(BrowserProduct::Chrome, ChromeWrapperVariant::DefaultDpi)`; its enumerated opt-in suite (4 `#[tokio::test]`s — see [capture_real test count](#capture_real-test-count)) re-runs green when `KROMETRAIL_REAL_CHROME_TESTS=1`.
 - [ ] The `DefaultDpi` wrapper script contains `--headless=new`, `--disable-gpu`, `--no-sandbox`, and `--force-device-scale-factor=1`; the `HighDpi` script additionally contains `--high-dpi-support=1` and `--force-device-scale-factor=2`. Both are asserted by a deterministic test that reads `ChromeWrapper::script_bytes` (no Chrome, no writable temp dir needed).
 - [ ] `docs/evidence/cross-platform-smoke/v1/schema.json` validates the committed `sample.json` and every `CrossPlatformSmokeEvidence` produced by the serializer (deterministic round-trip test; `additionalProperties: false`).
 - [ ] The canonical-bytes test asserts `serde_json::to_vec_pretty(&CrossPlatformSmokeEvidence::sample())` round-trips to the exact committed `sample.json` bytes: struct fields in schema order, `BTreeMap`-sorted maps, sessions in `fidelity` then `loss_reporting` order, and recursive key sort applied. No host-derived ordering leaks into evidence.
@@ -314,7 +314,7 @@ async fn opt_in_cross_platform_smoke_records_fidelity_loss_and_cleanup_per_confi
 - `target_os = "macos"` → `[MacosChromeDefaultDpi, MacosChromeHighDpi]`
 - other → the test skips with a printed `wrong_platform` reason
 
-Each `Configuration` carries: name, `ChromeWrapperVariant` (`DefaultDpi` or `HighDpi`), `ChromeProduct` selector (`Chrome` or `Chromium`) used to filter `discover_installations`, expected scale band (`Default` ⇒ `≤ 1.5` anchored to forced scale 1, `High` ⇒ `≥ 1.5` anchored to forced scale 2), and the canonical output filename.
+Each `Configuration` carries: name, `ChromeWrapperVariant` (`DefaultDpi` or `HighDpi`), `BrowserProduct` selector (`Chrome` or `Chromium`) used to filter `discover_installations`, expected scale band (`Default` ⇒ `≤ 1.5` anchored to forced scale 1, `High` ⇒ `≥ 1.5` anchored to forced scale 2), and the canonical output filename.
 
 **Fidelity session assertions (per configuration):**
 
@@ -330,7 +330,7 @@ Each `Configuration` carries: name, `ChromeWrapperVariant` (`DefaultDpi` or `Hig
 **Loss-reporting session assertions (per configuration):**
 
 - `CaptureConfig` with `queue_capacity: 1` overridden on `CaptureConfig::default()` (the *one* justified override — every other field stays default) and a blocked `TestSink`; wait for `clock.calls()` to advance and assert an `IngestionQueueSaturated` gap arrives for the target with `estimated_missing_frames()` returning `Some(_)` (the `Option<NonZeroU64>` already guarantees a positive count).
-- Status counters satisfy `received_frames() ≥ acknowledged_frames()`, `acknowledged_frames() == accepted_frames() + dropped_frames()`, `dropped_frames() > 0`, `queue_depth() ≤ queue_capacity()`, and `ack_latency().sample_count() == received_frames()` — acknowledgement continues ahead of bounded handoff. No host-speed percentile is asserted.
+- Status counters satisfy `status.statistics().received_frames() ≥ status.statistics().acknowledged_frames()`, `status.statistics().acknowledged_frames() == status.statistics().accepted_frames() + status.statistics().dropped_frames()`, `status.statistics().dropped_frames() > 0`, `queue_depth() ≤ queue_capacity()`, and `status.ack_latency().sample_count() == status.statistics().received_frames()` — acknowledgement continues ahead of bounded handoff. No host-speed percentile is asserted.
 - Release the sink; accepted work drains before a bounded managed `stop()` that returns `ManagedBrowserClosed` with `flush_count() == 1`; leak check passes.
 - The incomplete-stop and proxy-sever reconnect scenarios are **not** re-run here; they remain owned by `capture_real.rs`.
 
@@ -339,8 +339,8 @@ Each `Configuration` carries: name, `ChromeWrapperVariant` (`DefaultDpi` or `Hig
 **Deterministic no-Chrome tests in the same file:**
 
 - `configurations_for_this_platform()` returns the expected `cfg`-gated set and skips with a reason on unsupported platforms.
-- `real_chrome_test_available()` prints the exact skip reason when `KROMETRAIL_REAL_CHROME_TESTS != 1` or no installation matches the configuration's `ChromeProduct` selector.
-- The product-filter helper returns the Chrome installation for `ChromeProduct::Chrome`, the Chromium installation for `ChromeProduct::Chromium`, and `None` when the requested product is absent (no accidental cross-pollination).
+- `real_chrome_test_available()` prints the exact skip reason when `KROMETRAIL_REAL_CHROME_TESTS != 1` or no installation matches the configuration's `BrowserProduct` selector.
+- The product-filter helper returns the Chrome installation for `BrowserProduct::Chrome`, the Chromium installation for `BrowserProduct::Chromium`, and `None` when the requested product is absent (no accidental cross-pollination).
 - The leak-check helper rejects a known referenced root and accepts an unreferenced one on both Linux and macOS builds (reuses `support::chrome::process_references`).
 - The evidence serializer rejects an empty `non_claims`, a missing `runtime_version` field, a `force_device_scale_factor` that is `null` or outside `{1.0, 2.0}`, and a `wrapper_variant`/`force_device_scale_factor` mismatch (e.g. `default_dpi` with `2.0`).
 
@@ -349,7 +349,7 @@ Each `Configuration` carries: name, `ChromeWrapperVariant` (`DefaultDpi` or `Hig
 - [ ] On a Linux lane with Chrome installed and `KROMETRAIL_REAL_CHROME_TESTS=1`, the smoke selects the `BrowserProduct::Chrome` installation (filtered explicitly, not first-discovered) for `linux-chrome` and runs the fidelity + loss-reporting sessions, writing a schema-valid `linux-chrome.json` whose `provenance.capture_config` equals `CaptureConfig::default()`; if a `BrowserProduct::Chromium` installation is also discovered, `linux-chromium.json` is produced via the same explicit product filter, otherwise the run records `not_installed` and continues.
 - [ ] On a macOS lane with Chrome installed and `KROMETRAIL_REAL_CHROME_TESTS=1`, the smoke runs `macos-chrome-default-dpi` (`DefaultDpi`, forces scale 1) and `macos-chrome-high-dpi` (`HighDpi`, forces scale 2), writes both schema-valid JSON documents, and the high-DPI document records `device_scale_factor ≥ 1.5` strictly greater than the default-DPI document’s scale (which is `≤ 1.5`).
 - [ ] Every fidelity session produces ≥ 30 non-empty JPEG frames with unique `FrameId`, strict per-target `CaptureOrdinal`, valid JPEG dimensions matching `metadata.image()`, positive viewport, finite positive scale, three clocks preserved (`session_time ≤ observed_time`, nondecreasing, `observed ≥ session_origin`), and runtime identity (`session.compatibility().version`) whose `BrowserProduct` matches the discovered `BrowserInstallation::product`.
-- [ ] Every loss-reporting session declares a target-owned `IngestionQueueSaturated` gap with `estimated_missing_frames()` returning `Some(_)`, satisfies the `received_frames() / acknowledged_frames() / accepted_frames() / dropped_frames()` counter invariants with `dropped_frames() > 0`, drains after release, and ends in a bounded `ManagedBrowserClosed` stop with one flush.
+- [ ] Every loss-reporting session declares a target-owned `IngestionQueueSaturated` gap with `estimated_missing_frames()` returning `Some(_)`, satisfies the `status.statistics()` counter invariants with `status.statistics().dropped_frames() > 0`, drains after release, and ends in a bounded `ManagedBrowserClosed` stop with one flush.
 - [ ] No ack/cadence percentile threshold is asserted; histograms are recorded as diagnostics with the percentile-ordering and sample-count invariants only.
 - [ ] Every run ends with `process_references_after` and `profile_references_after` both empty *and verified by a real reference scan* (Linux `/proc/*/cmdline`, macOS `ps -ax -o pid= -o command=`) — not a silent no-op; no managed Chrome process or profile reference outlives its session. macOS evidence that predates the `ps`-based scan must record the limitation in `non_claims` rather than asserting an unverified empty list.
 - [ ] The committed `docs/evidence/cross-platform-smoke/v1/{linux-chrome,macos-chrome-default-dpi,macos-chrome-high-dpi}.json` documents are schema-valid, carry the recorded measurements, and whose `capture_config` fields match the actual `CaptureConfig` values used; `linux-chromium.json` is committed when Chromium evidence is available and otherwise noted as absent in the README.
