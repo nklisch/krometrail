@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cross-platform-capture-smoke-harness
 kind: story
-stage: review
+stage: done
 tags: [browser, testing, infra]
 parent: epic-rust-cdp-capture-foundation-cross-platform-capture-smoke
 depends_on: []
@@ -68,3 +68,19 @@ No production code, `src/cli.rs`, fixture content, final5 evidence, or `capture_
 
 - Effective worker: highest.
 - No depends_on; this is the root of the smoke subtree.
+
+## Implementation verification
+
+Normalized the legacy child-story `review` stage directly to `done`: child stories are checkpoints,
+not review boundaries. The implementation landed in `b8f7879` and was reverified from the current
+working tree on Linux with Chrome available.
+
+- `cargo fmt --all -- --check` — passed.
+- `cargo test -p krometrail-cdp --test cross_platform_smoke --locked` — passed, 12/12.
+- `cargo test -p krometrail-cdp --no-default-features --tests --locked` — passed; the cdpkit-gated
+  smoke and other cdpkit test targets compiled as zero tests.
+- `KROMETRAIL_REAL_CHROME_TESTS=1 cargo test -p krometrail-cdp --test capture_real --locked -- --nocapture`
+  — passed; all four opt-in real-Chrome scenarios and four shared support tests passed (8/8 total).
+
+The unrelated pre-existing `.work/bin/work-view` modification was preserved and excluded from this
+transition.
