@@ -36,7 +36,8 @@ pub struct CdpFaultProxy {
 
 struct ProxyControl {
     upstream_websocket_url: String,
-    proxy_websocket_url: String,
+    proxy_address: SocketAddr,
+    proxy_websocket_path: Mutex<String>,
     connection_count: AtomicUsize,
     version_request_count: AtomicUsize,
     connection_changed: Notify,
@@ -53,11 +54,11 @@ impl CdpFaultProxy {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
         let address = listener.local_addr()?;
         let upstream_websocket_url = upstream.browser_websocket_url().to_string();
-        let path = upstream.browser_websocket_url().path();
-        let proxy_websocket_url = format!("ws://{address}{path}");
+        let path = upstream.browser_websocket_url().path().to_owned();
         let control = Arc::new(ProxyControl {
             upstream_websocket_url,
-            proxy_websocket_url,
+            proxy_address: address,
+            proxy_websocket_path: Mutex::new(path),
             connection_count: AtomicUsize::new(0),
             version_request_count: AtomicUsize::new(0),
             connection_changed: Notify::new(),
@@ -78,8 +79,22 @@ impl CdpFaultProxy {
         format!("http://{}", self.address)
     }
 
-    pub fn websocket_url(&self) -> &str {
-        &self.control.proxy_websocket_url
+    pub fn websocket_url(&self) -> String {
+        let path = self
+            .control
+            .proxy_websocket_path
+            .lock()
+            .expect("proxy websocket path lock")
+            .clone();
+        format!("ws://{}{path}", self.address)
+    }
+
+    pub fn websocket_path(&self) -> String {
+        self.control
+            .proxy_websocket_path
+            .lock()
+            .expect("proxy websocket path lock")
+            .clone()
     }
 
     pub fn connection_count(&self) -> usize {
@@ -175,7 +190,7 @@ async fn run_proxy(
 }
 
 async fn handle_connection(mut stream: TcpStream, control: Arc<ProxyControl>) {
-    let mut prefix = [0_u8; 64];
+    let mut prefix = [0_u8; 4096];
     let Ok(count) = stream.peek(&mut prefix).await else {
         return;
     };
@@ -184,6 +199,19 @@ async fn handle_connection(mut stream: TcpStream, control: Arc<ProxyControl>) {
         return;
     }
 
+    let expected_path = control
+        .proxy_websocket_path
+        .lock()
+        .expect("proxy websocket path lock")
+        .clone();
+    let Some(requested_path) = websocket_request_path(&prefix[..count]) else {
+        return;
+    };
+    if requested_path != expected_path {
+        // A stale URL must not accidentally look like a successful reconnect. The caller must
+        // have used the path returned by the fresh /json/version response.
+        return;
+    }
     let Ok(client) = accept_async(stream).await else {
         return;
     };
@@ -238,6 +266,24 @@ where
     }
 }
 
+fn websocket_request_path(prefix: &[u8]) -> Option<String> {
+    let line = prefix
+        .split(|byte| *byte == b'\n')
+        .next()
+        .and_then(|line| line.strip_suffix(b"\r"))?;
+    let mut fields = line.split(|byte| *byte == b' ');
+    if fields.next()? != b"GET" {
+        return None;
+    }
+    let target = std::str::from_utf8(fields.next()?).ok()?;
+    Some(
+        target
+            .split_once('?')
+            .map_or(target, |(path, _)| path)
+            .to_owned(),
+    )
+}
+
 async fn serve_version(stream: &mut TcpStream, control: &ProxyControl) {
     let mut request = Vec::with_capacity(1024);
     let mut buffer = [0_u8; 1024];
@@ -261,13 +307,28 @@ async fn serve_version(stream: &mut TcpStream, control: &ProxyControl) {
             return;
         }
     }
-    control.version_request_count.fetch_add(1, Ordering::AcqRel);
+    let request_count = control.version_request_count.fetch_add(1, Ordering::AcqRel) + 1;
+    if request_count >= 2 {
+        let mut path = control
+            .proxy_websocket_path
+            .lock()
+            .expect("proxy websocket path lock");
+        if !path.ends_with("/rotated") {
+            path.push_str("/rotated");
+        }
+    }
+    let path = control
+        .proxy_websocket_path
+        .lock()
+        .expect("proxy websocket path lock")
+        .clone();
+    let websocket_url = format!("ws://{}{path}", control.proxy_address);
     let body = json!({
         "Browser": "Chrome/real-test-proxy",
         "Protocol-Version": "1.3",
         "User-Agent": "Chrome/real-test-proxy",
         "V8-Version": "real-test-proxy",
-        "webSocketDebuggerUrl": control.proxy_websocket_url,
+        "webSocketDebuggerUrl": websocket_url,
     })
     .to_string();
     let response = format!(

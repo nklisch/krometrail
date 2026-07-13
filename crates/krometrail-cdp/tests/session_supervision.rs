@@ -140,6 +140,7 @@ async fn opt_in_real_chrome_reconnects_through_a_new_physical_proxy_connection()
         .expect("production connector should attach through the proxy");
     assert!(proxy.version_request_count() >= 1);
     assert!(proxy.connection_count() >= 1);
+    let initial_proxy_path = proxy.websocket_path();
 
     let initial = session
         .targets()
@@ -206,6 +207,12 @@ async fn opt_in_real_chrome_reconnects_through_a_new_physical_proxy_connection()
         proxy.wait_for_connections(2, Duration::from_secs(2)).await,
         "supervision must establish a second physical proxy-to-Chrome connection"
     );
+    assert!(proxy.version_request_count() >= 2);
+    assert_ne!(
+        proxy.websocket_path(),
+        initial_proxy_path,
+        "HTTP reconnect must use the rotated WebSocket path"
+    );
     assert!(launched.process.is_alive());
 
     let restored = session
@@ -221,8 +228,9 @@ async fn opt_in_real_chrome_reconnects_through_a_new_physical_proxy_connection()
 
     // A fresh real cdpkit client exercises the rebuilt endpoint's post-reconnect browser command
     // and event path. The production supervisor is already subscribed before this target is made.
+    let post_rebuild_url = proxy.websocket_url();
     let post_rebuild = factory
-        .connect(proxy.websocket_url())
+        .connect(&post_rebuild_url)
         .await
         .expect("post-rebuild cdpkit connection");
     assert!(

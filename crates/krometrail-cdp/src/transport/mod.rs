@@ -7,6 +7,8 @@ use std::{future::Future, pin::Pin, sync::Arc};
 
 use krometrail_core::NonEmptyText;
 
+use crate::LocalCdpEndpoint;
+
 #[cfg(feature = "cdpkit-transport")]
 pub mod cdpkit;
 pub mod error;
@@ -91,4 +93,16 @@ pub trait CdpTransportFactory: Send + Sync {
         &self,
         browser_websocket_url: &str,
     ) -> TransportFuture<'_, Result<Arc<dyn CdpTransport>, TransportError>>;
+
+    /// Connect a validated endpoint using its pinned socket address.
+    ///
+    /// Keeping this as a default method preserves the narrow test/adapter contract: alternate
+    /// transports can continue to accept a protocol URL, while the production cdpkit adapter
+    /// overrides it to avoid resolving the endpoint hostname again.
+    fn connect_endpoint(
+        &self,
+        endpoint: &LocalCdpEndpoint,
+    ) -> TransportFuture<'_, Result<Arc<dyn CdpTransport>, TransportError>> {
+        self.connect(endpoint.browser_websocket_url().as_str())
+    }
 }

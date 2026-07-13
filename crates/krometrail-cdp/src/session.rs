@@ -137,9 +137,8 @@ impl BrowserConnector for ProductionBrowserConnector {
                     (endpoint, BrowserOwnership::Attached, None)
                 }
             };
-            let endpoint_url = endpoint.browser_websocket_url().to_string();
             let transport = transport_factory
-                .connect(&endpoint_url)
+                .connect_endpoint(&endpoint)
                 .await
                 .map_err(|error| transport_error_to_core(error, false))?;
             let setup = setup_connection(Arc::clone(&transport))
@@ -795,9 +794,17 @@ async fn reconnect_loop(
             "browser.session.reconnect_attempt"
         );
         let result = tokio::time::timeout(runtime.config.reconnect.attempt_timeout, async {
+            // HTTP attach endpoints are discovery origins, not immutable WebSocket URLs. Refresh
+            // them for every attempt so a browser may rotate its path, while direct WebSocket
+            // attaches remain direct and continue using their originally validated URI.
+            let endpoint = match runtime.endpoint.kind() {
+                crate::LocalCdpEndpointKind::Http => runtime.endpoint.refresh_http().await,
+                crate::LocalCdpEndpointKind::WebSocket => Ok(runtime.endpoint.as_ref().clone()),
+            }
+            .map_err(|_| ())?;
             let transport = runtime
                 .factory
-                .connect(runtime.endpoint.browser_websocket_url().as_str())
+                .connect_endpoint(&endpoint)
                 .await
                 .map_err(|_| ())?;
             setup_connection(transport).await.map_err(|_| ())

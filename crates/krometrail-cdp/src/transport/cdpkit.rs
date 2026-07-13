@@ -12,6 +12,7 @@ use super::{
     CdpTransport, CdpTransportFactory, CommandScope, NamedEvent, TransportClose, TransportEvents,
     TransportFuture, TransportSessionId,
 };
+use crate::LocalCdpEndpoint;
 use crate::transport::error::TransportError;
 
 type JsonStream = cdpkit::EventStream<serde_json::Value>;
@@ -37,7 +38,26 @@ impl CdpTransportFactory for CdpkitTransportFactory {
         &self,
         browser_websocket_url: &str,
     ) -> TransportFuture<'_, Result<Arc<dyn CdpTransport>, TransportError>> {
-        let url = browser_websocket_url.to_owned();
+        self.connect_url(browser_websocket_url.to_owned())
+    }
+
+    fn connect_endpoint(
+        &self,
+        endpoint: &LocalCdpEndpoint,
+    ) -> TransportFuture<'_, Result<Arc<dyn CdpTransport>, TransportError>> {
+        let url = match endpoint.websocket_dial_url() {
+            Ok(url) => url.to_string(),
+            Err(error) => return Box::pin(std::future::ready(Err(map_endpoint_error(error)))),
+        };
+        self.connect_url(url)
+    }
+}
+
+impl CdpkitTransportFactory {
+    fn connect_url(
+        &self,
+        url: String,
+    ) -> TransportFuture<'_, Result<Arc<dyn CdpTransport>, TransportError>> {
         let timeout = self.command_timeout;
         Box::pin(async move {
             let cdp = CDP::connect_ws(&url).await.map_err(|error| {
@@ -166,6 +186,11 @@ impl TransportEvents for CdpkitEvents {
             }
         })
     }
+}
+
+fn map_endpoint_error(error: crate::EndpointError) -> TransportError {
+    tracing::debug!(error = ?error, "validated CDP endpoint cannot be dialed");
+    TransportError::ConnectFailed
 }
 
 fn map_error(error: CdpError) -> TransportError {

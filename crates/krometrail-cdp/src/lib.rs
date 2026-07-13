@@ -28,7 +28,9 @@ pub use compatibility::{
     CompatibilityProbeError, EndpointKind, RENDERER_CAPABILITY_PROBES, RendererCapabilityProbe,
     probe_compatibility,
 };
-pub use endpoint::{EndpointError, LocalCdpEndpoint};
+pub use endpoint::{
+    EndpointError, EndpointResolver, LocalCdpEndpoint, LocalCdpEndpointKind, SystemEndpointResolver,
+};
 pub use launcher::{
     ChromeLauncher, DiscoveryCandidate, DiscoveryInputs, LaunchError, LaunchedChrome,
     LauncherConfig, ManagedChromeProcess, ProcessError, ProcessTermination, ProfileError,
