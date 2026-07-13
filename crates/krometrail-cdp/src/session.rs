@@ -10,17 +10,18 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use futures_util::{StreamExt, stream::FuturesUnordered};
 
 use krometrail_core::{
     AttachBrowser, BrowserCompatibility, BrowserConnectRequest, BrowserConnector,
-    BrowserInstallation, BrowserOwnership, BrowserSessionEvent, BrowserSessionEvents,
-    BrowserSessionPort, BrowserSessionState, BrowserStopOutcome, ErrorCode, IdSource,
-    KrometrailError, MonotonicClock, NonEmptyText, ObservedTime, PortFuture, ProfileRef, Result,
-    SessionId, SessionOrigin, SupervisedTarget, TargetCaptureStatus, TargetVisibility,
+    BrowserInstallation, BrowserOperationRequest, BrowserOperationResult, BrowserOwnership,
+    BrowserSessionEvent, BrowserSessionEvents, BrowserSessionPort, BrowserSessionState,
+    BrowserStopOutcome, ErrorCode, IdSource, KrometrailError, MonotonicClock, NonEmptyText,
+    PortFuture, ProfileRef, Result, SessionId, SessionOrigin, SupervisedTarget,
+    TargetCaptureStatus, TargetVisibility,
 };
 use serde_json::Value;
 use tokio::{
@@ -35,6 +36,7 @@ use crate::{
         CaptureTarget,
     },
     compatibility::{CompatibilityProbeError, probe_compatibility_with_target_limit},
+    control::{PageControl, operation_error},
     launcher::{
         ChromeLauncher, LaunchError, LauncherConfig, ManagedChromeProcess, ProfileLease,
         SystemChromeLauncher, attach_endpoint,
@@ -49,6 +51,18 @@ use crate::{
         TransportError, TransportEvents, TransportSessionId,
     },
 };
+
+struct AdapterMonotonicClock {
+    origin: Instant,
+}
+
+impl MonotonicClock for AdapterMonotonicClock {
+    fn now(&self) -> krometrail_core::ObservedTime {
+        krometrail_core::ObservedTime::from_nanos(
+            u64::try_from(self.origin.elapsed().as_nanos()).unwrap_or(u64::MAX),
+        )
+    }
+}
 
 const TARGET_EVENT_NAMES: &[(&str, TargetEventKind)] = &[
     ("Target.targetCreated", TargetEventKind::Created),
@@ -98,6 +112,7 @@ pub struct ProductionBrowserConnector {
     launcher: Arc<dyn ChromeLauncher>,
     transport_factory: Arc<dyn CdpTransportFactory>,
     config: SupervisorConfig,
+    clock: Arc<dyn MonotonicClock>,
     capture: Option<CaptureAssembly>,
 }
 
@@ -118,8 +133,16 @@ impl ProductionBrowserConnector {
             launcher,
             transport_factory,
             config: SupervisorConfig::default(),
+            clock: Arc::new(AdapterMonotonicClock {
+                origin: Instant::now(),
+            }),
             capture: None,
         }
+    }
+
+    pub fn with_clock(mut self, clock: Arc<dyn MonotonicClock>) -> Self {
+        self.clock = clock;
+        self
     }
 
     pub fn with_capture(
@@ -129,6 +152,7 @@ impl ProductionBrowserConnector {
         sink: Arc<dyn krometrail_core::RecordingSink>,
         config: CaptureConfig,
     ) -> Self {
+        self.clock = Arc::clone(&clock);
         self.capture = Some(CaptureAssembly {
             clock,
             ids,
@@ -180,6 +204,7 @@ impl BrowserConnector for ProductionBrowserConnector {
         let transport_factory = Arc::clone(&self.transport_factory);
         let config = self.config.clone();
         let capture_assembly = self.capture.clone();
+        let control_clock = Arc::clone(&self.clock);
         Box::pin(async move {
             // Keep a launched browser in its paired Drop guard until transport setup succeeds.
             // Splitting process/profile ownership before this point could release a temporary
@@ -222,16 +247,11 @@ impl BrowserConnector for ProductionBrowserConnector {
             };
             let subscribers = Arc::new(SubscriberRegistry::new(config.subscriber_capacity));
             let (command_tx, command_rx) = mpsc::channel(64);
-            let (session_id, session_origin) = if let Some(assembly) = &capture_assembly {
-                let session_id = SessionId::from_uuid(*assembly.ids.next().as_uuid());
-                let origin = SessionOrigin::new(assembly.clock.now());
-                (session_id, origin)
-            } else {
-                (
-                    SessionId::from_uuid(Uuid::new_v4()),
-                    SessionOrigin::new(ObservedTime::from_nanos(0)),
-                )
-            };
+            let session_id = capture_assembly.as_ref().map_or_else(
+                || SessionId::from_uuid(Uuid::new_v4()),
+                |assembly| SessionId::from_uuid(*assembly.ids.next().as_uuid()),
+            );
+            let session_origin = SessionOrigin::new(control_clock.now());
             let capture = capture_assembly
                 .map(|assembly| {
                     let observer: Arc<dyn CaptureObserver> = Arc::new(SessionCaptureObserver {
@@ -305,10 +325,12 @@ impl BrowserConnector for ProductionBrowserConnector {
             });
             let task_shared = Arc::clone(&shared);
             let endpoint = Arc::new(endpoint);
+            let page_control = PageControl::new(control_clock, session_id, session_origin);
             let task = tokio::spawn(run_supervisor(
                 task_shared,
                 state,
                 Some(connection),
+                page_control,
                 SupervisorRuntime {
                     endpoint,
                     factory: transport_factory,
@@ -385,6 +407,10 @@ struct SessionShared {
 #[derive(Debug)]
 enum SupervisorCommand {
     Input(SupervisorInput),
+    Execute(
+        BrowserOperationRequest,
+        oneshot::Sender<Result<BrowserOperationResult>>,
+    ),
     Stop(oneshot::Sender<Result<BrowserStopOutcome>>),
 }
 
@@ -444,6 +470,35 @@ impl BrowserSessionPort for ProductionSession {
             .as_ref()
             .map_or_else(Vec::new, |capture| capture.coordinator.statuses());
         Box::pin(std::future::ready(Ok(statuses)))
+    }
+
+    fn execute(
+        &self,
+        request: BrowserOperationRequest,
+    ) -> PortFuture<'_, Result<BrowserOperationResult>> {
+        let shared = Arc::clone(&self.shared);
+        Box::pin(async move {
+            let target_id = request.target_id();
+            let (sender, receiver) = oneshot::channel();
+            shared
+                .command_tx
+                .send(SupervisorCommand::Execute(request, sender))
+                .await
+                .map_err(|_| {
+                    operation_error(
+                        ErrorCode::Cancelled,
+                        target_id,
+                        "browser supervision task ended",
+                    )
+                })?;
+            receiver.await.map_err(|_| {
+                operation_error(
+                    ErrorCode::Cancelled,
+                    target_id,
+                    "browser operation ended without a result",
+                )
+            })?
+        })
     }
 
     fn stop(&self) -> PortFuture<'_, Result<BrowserStopOutcome>> {
@@ -803,6 +858,7 @@ async fn run_supervisor(
     shared: Arc<SessionShared>,
     mut state: SupervisorState,
     mut connection: Option<ConnectionResources>,
+    mut page_control: PageControl,
     runtime: SupervisorRuntime,
     mut commands: mpsc::Receiver<SupervisorCommand>,
 ) {
@@ -894,6 +950,22 @@ async fn run_supervisor(
                         state = previous;
                     }
                 }
+            }
+            SupervisorCommand::Execute(request, sender) => {
+                let target_id = request.target_id();
+                let result = match connection.as_ref() {
+                    Some(connection) => {
+                        page_control
+                            .execute(connection.transport.as_ref(), &state, request)
+                            .await
+                    }
+                    None => Err(operation_error(
+                        ErrorCode::BrowserDisconnected,
+                        target_id,
+                        "browser transport is unavailable",
+                    )),
+                };
+                let _ = sender.send(result);
             }
             SupervisorCommand::Stop(sender) => {
                 let reduction = reduce(
@@ -1410,6 +1482,13 @@ async fn reconnect_loop_transactional(
                             let _ = finish_interrupted_reconnect(shared, state, connection, runtime, SupervisorInput::StopRequested, Some(sender)).await;
                             return true;
                         }
+                        Some(SupervisorCommand::Execute(request, sender)) => {
+                            let _ = sender.send(Err(operation_error(
+                                ErrorCode::BrowserDisconnected,
+                                request.target_id(),
+                                "browser is reconnecting; operation was not replayed",
+                            )));
+                        }
                         Some(SupervisorCommand::Input(input)) => {
                             let input = match input {
                                 SupervisorInput::ForConnectionGeneration { input, .. } => *input,
@@ -1485,6 +1564,14 @@ async fn reconnect_loop_transactional(
                 command = commands.recv() => {
                     let interrupt = match command {
                         Some(SupervisorCommand::Stop(sender)) => Some(ReconnectInterrupt::Stop(sender)),
+                        Some(SupervisorCommand::Execute(request, sender)) => {
+                            let _ = sender.send(Err(operation_error(
+                                ErrorCode::BrowserDisconnected,
+                                request.target_id(),
+                                "browser is reconnecting; operation was not replayed",
+                            )));
+                            None
+                        }
                         Some(SupervisorCommand::Input(input)) => {
                             let input = match input {
                                 SupervisorInput::ForConnectionGeneration { input, .. } => *input,
@@ -2230,7 +2317,7 @@ mod tests {
             subscribers: Arc::new(SubscriberRegistry::new(4)),
             command_tx,
             session_id: SessionId::from_uuid(Uuid::new_v4()),
-            session_origin: SessionOrigin::new(ObservedTime::from_nanos(0)),
+            session_origin: SessionOrigin::new(krometrail_core::ObservedTime::from_nanos(0)),
             capture: None,
             stop_result: Mutex::new(None),
         });

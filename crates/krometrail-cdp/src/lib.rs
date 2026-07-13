@@ -23,6 +23,8 @@ pub use targets::{
 pub mod capture;
 #[cfg(feature = "cdpkit-transport")]
 pub mod compatibility;
+#[cfg(feature = "cdpkit-transport")]
+mod control;
 pub mod transport;
 
 #[cfg(feature = "cdp-spike")]

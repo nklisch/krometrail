@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-operation-page-observation-operation-executor
 kind: story
-stage: implementing
+stage: done
 tags: [browser, agent-ux]
 parent: epic-agent-browser-operation-page-observation
 depends_on: [epic-agent-browser-operation-page-observation-core-contracts]
@@ -42,3 +42,16 @@ Use the root-injected monotonic clock and existing session origin even without a
 ## Ordering
 
 Depends on `epic-agent-browser-operation-page-observation-core-contracts`. It establishes the actor seam used by snapshot and screenshot checkpoints.
+
+## Implementation notes
+
+- Added a session-scoped `PageControl` endpoint and routed `BrowserSessionPort::execute` through an explicit supervisor command and oneshot response. The actor binds each request to the exact current `TargetId`, attachment generation, and flat transport session.
+- Added a connector-owned monotonic clock for sessions without capture; `with_capture` deliberately installs the same injected clock for recording and control. Session origins are now sampled from that clock in both modes.
+- Reconnect backoff and in-flight reconstruction branches answer operations immediately with `browser_disconnected`; operations are never queued for replay on a rebuilt attachment. Stop, ended actor, missing target, missing session, and closed queue paths also resolve explicitly.
+- Implemented fresh page inspection from Runtime, layout metrics, and navigation history with strict response/finite-value validation and operation timing provenance.
+- Implemented by-value, side-effect-refusing evaluation with adapter timeout, undefined/null distinction, exception and remote-object refusal, source-safe errors, and a 1 MiB serialized result bound.
+
+## Verification
+
+- `cargo check -p krometrail-cdp --all-targets --locked` passed after removing the only unused import.
+- `cargo test -p krometrail-cdp --lib --locked` — 70 tests passed.
