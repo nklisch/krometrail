@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-bounded-screencast-ingestion-supervised-wiring
 kind: story
-stage: review
+stage: implementing
 tags: [browser]
 parent: epic-rust-cdp-capture-foundation-bounded-screencast-ingestion
 depends_on: [epic-rust-cdp-capture-foundation-bounded-screencast-ingestion-engine]
@@ -101,3 +101,12 @@ These files are exclusive to this story's implementation wave. This story delibe
 - Simplification: reused the existing `RecordingSink`, `MonotonicClock`, `IdSource`, coordinator, subscriber registry, and transport seam; added no store, analysis, command, or fake-success adapter. Shutdown phases now share one named absolute `ShutdownDeadline` and an ownership-safe process fallback.
 - Discrepancies from design: Added an adapter-local `CaptureVisibilityChanged` input so capture visibility signals update the existing target reducer without a second reconciliation loop; added `CaptureStartFailed` as the reducer input for target-local start failures. Both remain outside the core public event contract.
 - Adjacent issues parked: none.
+
+## Review findings (2026-07-13)
+
+Fresh-context review approved the overall architecture but proposed two important findings that the receiver confirms as material acceptance gaps:
+
+1. `CaptureStartFailed` clears the target's transport session without emitting `Detach`, leaking the flat CDP session until connection teardown (readily reached above `max_active_streams`). Preserve the session long enough to emit and execute a detach effect, while keeping the target-local failure isolated.
+2. The required one-absolute-deadline contract lacks its specified consuming fake clock/deadline integration test. Add deterministic proof that capture stop/drain/flush, detach, Browser.close, and process termination receive monotonically decreasing remaining budget and no phase resets its own deadline.
+
+The reviewer also noted unused private stop-reason variants; this is cleanup, not a blocker, and should be simplified if the repair makes them unnecessary rather than expanding behavior.
