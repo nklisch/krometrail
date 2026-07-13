@@ -86,6 +86,26 @@ jobs:
           echo "RUSTUP_TOOLCHAIN=stable" >> "$GITHUB_ENV"
           rustup run stable rustc --version
 
+      - name: Run decisive cross-platform capture smoke
+        shell: bash
+        env:
+          KROMETRAIL_REAL_CHROME_TESTS: "1"
+          KROMETRAIL_SMOKE_EVIDENCE_DIR: target/cross-platform-smoke
+        run: |
+          set -euo pipefail
+          cargo test -p krometrail-cdp --test cross_platform_smoke --locked -- --nocapture
+          test -s target/cross-platform-smoke/macos-chrome-default-dpi.json
+          test -s target/cross-platform-smoke/macos-chrome-high-dpi.json
+
+      - name: Upload cross-platform smoke evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: cross-platform-smoke-macos-${{ steps.resolve-sha.outputs.resolved_sha }}
+          path: target/cross-platform-smoke/*.json
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Verify shared-target cached binary after build worktree removal
         shell: bash
         run: |
