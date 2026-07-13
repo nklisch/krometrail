@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cross-platform-capture-smoke
 kind: feature
-stage: implementing
+stage: review
 tags: [browser, testing, infra]
 parent: epic-rust-cdp-capture-foundation
 depends_on: [epic-rust-cdp-capture-foundation-bounded-screencast-ingestion]
@@ -449,3 +449,23 @@ The chain is serialized because the real-evidence story imports the harness’s 
 - **CaptureConfig drift between schema and runtime.** Mitigation: the fidelity session pins `CaptureConfig::default()` verbatim and the schema’s `capture_config` fields are derived from its actual values; the loss session records only the `queue_capacity: 1` override; the deterministic test asserts the serialized config equals the real `CaptureConfig` snapshot.
 - **CI lane ambiguity (which platform runs which config).** Mitigation: configurations are `cfg`-gated; a Linux lane cannot run the macOS high-DPI config and vice versa; the wrong-platform case skips with a printed reason.
 - **Least certain — whether real Chrome on the macOS lane emits any visibility transition.** The smoke records the count and infers no silence gap; if a transition appears, the existing conditional visibility assertion applies. This matches the limitation `capture_real.rs` already records honestly.
+
+## Implementation summary
+
+Both child checkpoints are complete. The test-only implementation adds deterministic schema and
+wrapper coverage plus production-path fidelity and capacity-one loss sessions. Linux Chrome and
+hosted macOS default-DPI runs produced canonical evidence with clean managed shutdown and real
+process/profile reference scans. Workspace format, check, test, Clippy, no-default-feature,
+documentation, deterministic smoke, Linux real-Chrome, and hosted macOS default-DPI verification
+all passed.
+
+Hosted runs `29288505121` and `29288634536` also proved that Chrome 149 on the available macOS
+runner reports `deviceScaleFactor == 1.0` despite the exact high-DPI wrapper flags. The `>= 1.5`
+assertion was preserved and no high-DPI evidence was fabricated. On 2026-07-13 the operator
+explicitly authorized deferring this evidence so downstream work can continue. The missing
+`macos-chrome-high-dpi.json` is therefore an accepted, documented limitation for this cycle rather
+than a passing result; recovery requires a runner/browser configuration that exposes scale through
+production screencast metadata or a separately designed metadata-boundary change.
+
+Implementation commits: `595f079`, `048b36a`, and child-transition commits `c306fd9` / `7740c9c`.
+The feature is ready for standard integrated review.
