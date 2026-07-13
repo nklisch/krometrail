@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-operation-page-observation
 kind: feature
-stage: implementing
+stage: review
 tags: [browser, agent-ux]
 parent: epic-agent-browser-operation
 depends_on: []
@@ -673,3 +673,42 @@ The reviewer also proposed an O(n²) bounded snapshot-depth lookup, conservative
 classification, and constructor-description drift. These are non-blocking nits at the current
 5,000-node bound and explicit-failure posture. A workspace failure observed during review belonged
 to concurrent segment-format work and is not a page-observation finding.
+
+## Review remediation (2026-07-13)
+
+The receiver-confirmed blocker is resolved:
+
+- Split the live DOM check into `connected`, `visuallyHidden`, and `interactionBlocked` facts. HTML
+  `inert` and disabled/`aria-disabled` state affect focus and interaction, not whether pixels are
+  painted; real Chrome confirmed that visible disabled and inert controls retain screenshotable
+  geometry. `visuallyHidden` is limited to actual rendering suppression (`hidden`, `display:none`,
+  hidden/collapsed visibility, and hidden content visibility).
+- Both reference and selector element screenshots now request `VisibleGeometry`. A reference minted
+  while actionable can therefore still capture the same connected visible node after it becomes
+  disabled or inert. The resolver continues to reject stale/disconnected identities, visually
+  hidden nodes, malformed state, and missing/non-finite/zero-area geometry for both requirements.
+- `Actionable` remains strict: native disabled state, `aria-disabled`, and inherited light-DOM
+  `inert` return `reference_not_actionable`. The adapter-owned parent walk detects inert ancestors
+  without asking Chrome's side-effect analyzer to approve a selector query.
+- Focused unit coverage applies the same blocked-but-visible state to both requirements and proves
+  only `Actionable` fails; both still reject hidden and disconnected nodes. Scripted production-port
+  coverage proves disabled visible reference and selector screenshots return validated images, and
+  the real fixture proves actual Chrome screenshot capture for `#disabled-action` and an inert
+  descendant.
+
+### Remediation verification
+
+- `rustfmt --edition 2024 --check` on the owned control and qualification files passed.
+- `cargo fmt --all -- --check` passed without editing concurrent files.
+- `cargo test -p krometrail-cdp --lib --locked` passed: 74 tests.
+- `cargo test -p krometrail-cdp --test page_observation --locked` passed: 8 tests.
+- `KROMETRAIL_REAL_CHROME_TESTS=1 cargo test -p krometrail-cdp --test page_observation opt_in_real_chrome_observes_fixture_and_all_screenshot_target_families --locked -- --nocapture` passed against real Linux Chrome, including disabled and inert selector screenshots.
+- `cargo check -p krometrail-cdp --all-targets --locked` passed.
+- `cargo clippy -p krometrail-cdp --all-targets --locked -- -D warnings` passed.
+- `cargo check --workspace --all-targets --locked` and `cargo test --workspace --all-targets --locked` passed; the latter ran 246 tests across 24 suites against the concurrent segment-format tree.
+
+A transient `--locked` mismatch occurred while the separate segment-format owner changed root Cargo
+metadata ahead of its lockfile update. The same focused command passed once that external update
+settled. No segment-format, temporal-vision, composition-root, Cargo, or work-view file was edited
+or staged by this remediation. The feature is returned to `review` for independent approval; it is
+not self-approved.

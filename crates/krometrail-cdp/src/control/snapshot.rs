@@ -311,7 +311,7 @@ async fn resolve_backend_node(
     scope: &CommandScope,
     target_id: TargetId,
     backend_node_id: i64,
-    _requirement: ReferenceRequirement,
+    requirement: ReferenceRequirement,
 ) -> Result<ResolvedNode> {
     let described = transport
         .send_raw(
@@ -344,7 +344,11 @@ async fn resolve_backend_node(
         .ok_or_else(|| stale(target_id, "backing node has no live runtime object"))?;
     let check = transport.send_raw(scope, "Runtime.callFunctionOn", json!({
         "objectId": object_id,
-        "functionDeclaration": "function(){const s=getComputedStyle(this);return {connected:this.isConnected,hidden:this.hidden||this.inert||this.disabled||this.getAttribute('aria-disabled')==='true'||s.display==='none'||s.visibility==='hidden'||s.visibility==='collapse'};}",
+        // `inert`, native disabled state, and `aria-disabled` suppress interaction, not painting.
+        // Keep them separate from actual visibility so screenshot-only resolution can still crop
+        // a visible control. The parent walk captures inherited light-DOM inertness without a
+        // selector query that Chrome's side-effect analysis may conservatively refuse.
+        "functionDeclaration": "function(){const s=getComputedStyle(this);let n=this,inert=false;while(n&&!inert){inert=n.inert===true;n=n.parentElement;}return {connected:this.isConnected,visuallyHidden:this.hidden||s.display==='none'||s.visibility==='hidden'||s.visibility==='collapse'||s.contentVisibility==='hidden',interactionBlocked:inert||this.disabled||this.getAttribute('aria-disabled')==='true'};}",
         "returnByValue": true,
         "throwOnSideEffect": true,
         "silent": true,
@@ -353,15 +357,7 @@ async fn resolve_backend_node(
         .pointer("/result/value")
         .or_else(|| check.pointer("/result/result/value"))
         .ok_or_else(|| not_actionable(target_id, "node actionability response is malformed"))?;
-    if state.get("connected").and_then(Value::as_bool) != Some(true) {
-        return Err(stale(target_id, "backing node is detached"));
-    }
-    if state.get("hidden").and_then(Value::as_bool) != Some(false) {
-        return Err(not_actionable(
-            target_id,
-            "backing node is hidden, inert, or disabled",
-        ));
-    }
+    validate_node_state(state, requirement, target_id)?;
     let box_model = transport
         .send_raw(
             scope,
@@ -396,6 +392,28 @@ async fn resolve_backend_node(
         ));
     }
     Ok(ResolvedNode { document_quad })
+}
+
+fn validate_node_state(
+    state: &Value,
+    requirement: ReferenceRequirement,
+    target_id: TargetId,
+) -> Result<()> {
+    if state.get("connected").and_then(Value::as_bool) != Some(true) {
+        return Err(stale(target_id, "backing node is detached"));
+    }
+    if state.get("visuallyHidden").and_then(Value::as_bool) != Some(false) {
+        return Err(not_actionable(target_id, "backing node is hidden"));
+    }
+    if requirement == ReferenceRequirement::Actionable
+        && state.get("interactionBlocked").and_then(Value::as_bool) != Some(false)
+    {
+        return Err(not_actionable(
+            target_id,
+            "backing node is inert, disabled, or aria-disabled",
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn quad_bounds(quad: &[f64; 8]) -> (f64, f64, f64, f64) {
@@ -642,6 +660,64 @@ mod tests {
         assert_eq!(bindings.len(), 1);
         assert_eq!(omitted, 0);
         assert_eq!(nodes[1].properties.len(), 1);
+    }
+
+    #[test]
+    fn visible_geometry_ignores_interaction_only_inert_and_disabled_state() {
+        let blocked_but_visible = json!({
+            "connected": true,
+            "visuallyHidden": false,
+            "interactionBlocked": true,
+        });
+        assert!(
+            validate_node_state(
+                &blocked_but_visible,
+                ReferenceRequirement::VisibleGeometry,
+                target(),
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            validate_node_state(
+                &blocked_but_visible,
+                ReferenceRequirement::Actionable,
+                target(),
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::ReferenceNotActionable
+        );
+    }
+
+    #[test]
+    fn every_requirement_rejects_hidden_or_disconnected_nodes() {
+        for requirement in [
+            ReferenceRequirement::VisibleGeometry,
+            ReferenceRequirement::Actionable,
+        ] {
+            let hidden = json!({
+                "connected": true,
+                "visuallyHidden": true,
+                "interactionBlocked": false,
+            });
+            assert_eq!(
+                validate_node_state(&hidden, requirement, target())
+                    .unwrap_err()
+                    .code,
+                ErrorCode::ReferenceNotActionable
+            );
+            let disconnected = json!({
+                "connected": false,
+                "visuallyHidden": false,
+                "interactionBlocked": false,
+            });
+            assert_eq!(
+                validate_node_state(&disconnected, requirement, target())
+                    .unwrap_err()
+                    .code,
+                ErrorCode::StaleReference
+            );
+        }
     }
 
     #[test]

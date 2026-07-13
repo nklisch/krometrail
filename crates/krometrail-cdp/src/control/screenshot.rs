@@ -138,7 +138,7 @@ impl PageControl {
                         transport,
                         bound,
                         *reference,
-                        ReferenceRequirement::Actionable,
+                        ReferenceRequirement::VisibleGeometry,
                     )
                     .await?;
                 let (min_x, max_x, min_y, max_y) = quad_bounds(&resolved.document_quad);

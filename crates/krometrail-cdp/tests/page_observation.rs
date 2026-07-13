@@ -203,7 +203,7 @@ async fn production_operation_port_routes_snapshot_screenshot_and_partial_live_e
     );
     transport.push_response(
         "Runtime.callFunctionOn",
-        json!({"result":{"type":"object","value":{"connected":true,"hidden":false}}}),
+        json!({"result":{"type":"object","value":{"connected":true,"visuallyHidden":false,"interactionBlocked":true}}}),
     );
     transport.push_response(
         "DOM.getBoxModel",
@@ -270,7 +270,49 @@ async fn production_operation_port_routes_snapshot_screenshot_and_partial_live_e
         CssPoint::new(15.0, 27.0).unwrap()
     );
 
+    // Disabled and inert state is interaction-only: a visible selector remains screenshotable.
+    transport.push_response(
+        "Runtime.evaluate",
+        json!({"result":{"type":"number","value":1.0}}),
+    );
+    transport.push_response("DOM.getDocument", json!({"root":{"nodeId":1}}));
+    transport.push_response("DOM.querySelector", json!({"nodeId":2}));
+    transport.push_response("DOM.describeNode", json!({"node":{"backendNodeId":43}}));
+    transport.push_response("DOM.describeNode", json!({"node":{"backendNodeId":43}}));
+    transport.push_response(
+        "DOM.resolveNode",
+        json!({"object":{"objectId":"disabled-visible"}}),
+    );
+    transport.push_response(
+        "Runtime.callFunctionOn",
+        json!({"result":{"type":"object","value":{"connected":true,"visuallyHidden":false,"interactionBlocked":true}}}),
+    );
+    transport.push_response(
+        "DOM.getBoxModel",
+        json!({"model":{"border":[300.0,200.0,380.0,200.0,380.0,240.0,300.0,240.0]}}),
+    );
+    transport.push_response("Page.captureScreenshot", json!({"data":png_base64(80, 40)}));
+    let disabled = session
+        .execute(BrowserOperationRequest::TakeScreenshot(
+            ScreenshotRequest::new(
+                target_id,
+                ScreenshotTarget::Element(ElementLocator::CssSelector(
+                    krometrail_core::NonEmptyText::new("#disabled-action").unwrap(),
+                )),
+                ImageFormat::Png,
+                None,
+            )
+            .unwrap(),
+        ))
+        .await
+        .expect("disabled visible selector screenshot");
+    let BrowserOperationResult::TakeScreenshot(disabled) = disabled else {
+        panic!("disabled selector screenshot")
+    };
+    assert_eq!(disabled.metadata().image.width(), 80);
+
     // A loader change invalidates an otherwise current generation before backing-node lookup.
+    transport.push_response("Page.getLayoutMetrics", layout());
     transport.push_response(
         "Runtime.evaluate",
         json!({"result":{"type":"number","value":1.0}}),
@@ -315,7 +357,7 @@ async fn production_operation_port_routes_snapshot_screenshot_and_partial_live_e
     );
     transport.push_response(
         "Runtime.callFunctionOn",
-        json!({"result":{"type":"object","value":{"connected":true,"hidden":true}}}),
+        json!({"result":{"type":"object","value":{"connected":true,"visuallyHidden":true,"interactionBlocked":false}}}),
     );
     let hidden = session
         .execute(BrowserOperationRequest::TakeScreenshot(
@@ -642,6 +684,12 @@ async fn opt_in_real_chrome_observes_fixture_and_all_screenshot_target_families(
         ScreenshotTarget::Element(ElementLocator::Reference(reference)),
         ScreenshotTarget::Element(ElementLocator::CssSelector(
             krometrail_core::NonEmptyText::new("#replace-me").unwrap(),
+        )),
+        ScreenshotTarget::Element(ElementLocator::CssSelector(
+            krometrail_core::NonEmptyText::new("#disabled-action").unwrap(),
+        )),
+        ScreenshotTarget::Element(ElementLocator::CssSelector(
+            krometrail_core::NonEmptyText::new("#inert-action").unwrap(),
         )),
         ScreenshotTarget::Region {
             rect: CssRect::new(
