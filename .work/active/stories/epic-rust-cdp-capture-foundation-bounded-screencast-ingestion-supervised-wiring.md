@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-bounded-screencast-ingestion-supervised-wiring
 kind: story
-stage: review
+stage: done
 tags: [browser]
 parent: epic-rust-cdp-capture-foundation-bounded-screencast-ingestion
 depends_on: [epic-rust-cdp-capture-foundation-bounded-screencast-ingestion-engine]
@@ -116,3 +116,13 @@ Fresh-context review approved the overall architecture but proposed two importan
 2. The required one-absolute-deadline contract lacks its specified consuming fake clock/deadline integration test. Add deterministic proof that capture stop/drain/flush, detach, Browser.close, and process termination receive monotonically decreasing remaining budget and no phase resets its own deadline.
 
 The reviewer also noted unused private stop-reason variants; this is cleanup, not a blocker, and should be simplified if the repair makes them unnecessary rather than expanding behavior.
+
+## Final review (2026-07-13)
+
+**Verdict:** Approve
+
+**Blockers:** none
+**Important:** none
+**Nits:** none
+
+**Notes:** Fresh-context re-review verified exact failed-start flat-session detach with target isolation and a consuming fake deadline showing one absolute strictly decreasing budget across capture stop/drain/flush, detach, Browser.close, process termination, and exhaustion fallback. All 12 acceptance criteria and 145 workspace tests pass; no material finding remains.
