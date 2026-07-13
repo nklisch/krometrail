@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-vision-toolkit-storyboard
 kind: feature
-stage: implementing
+stage: review
 tags: [visual]
 parent: epic-temporal-vision-toolkit
 depends_on: [epic-temporal-vision-toolkit-normalization-and-measurements]
@@ -347,3 +347,25 @@ The feature remains one cohesive owner and feature-review bundle. Stories are du
 ## Blockers
 
 None. `epic-temporal-vision-toolkit-normalization-and-measurements` has completed verified implementation and is at feature review, so its `NormalizedSequence`, exact measurement, threshold, gap, and provenance contracts satisfy this feature dependency.
+
+## Implementation notes
+
+- Execution capability: raised/high (autopilot caller), because deterministic evidence selection, bounded image generation, and machine/visible provenance agreement form a public crate contract consumed by every temporal bundle.
+- Review weight: standard (caller/autopilot); implementation stops at `stage: review` without self-approval.
+- Dispatch: one cohesive owner implemented all three ordered checkpoints—selection, rendering, and public contract evidence—to keep scoring, visible labels, and manifests on one authority.
+- Files changed: workspace and crate manifests/lock; `crates/temporal-vision/src/{artifact,encode,lib,normalize,render,select}.rs`; `src/render/{canvas,font}.rs`; and `tests/storyboard.rs`.
+- Public contracts delivered: deterministic 3–12/default-8 representative selection with exact role/omission/tie/gap rules; shared storyboard/orientation generation; bounded RGB8 raster and PNG; embedded host-independent text; visible time/marker/gap semantics; and source-projected manifests with exact hashes.
+- Tests added: 11 focused selection/render/encoding/font/layout tests plus four browser-free public tests covering anchor pressure, tied timestamps, both continuity segments, every score family, marker buckets, orientation fallback, decoded source colors, semantic raster regions, manifest round trip, fixed PNG hash, and tiny resource ceilings. The package now passes 33 tests across four suites.
+- Simplification: one algorithm/version, one selection plan, one private canvas, one embedded font, and one pinned codec adapter; no strategy/renderer/font/codec registry, UI engine, filesystem, browser, Krometrail, async runtime, GPU, diagnosis, inference, or retained raster cache was added.
+- Discrepancies from design: none. The 5×7 glyph marks occupy fixed 6×10 cells, matching the designed tiny deterministic 6×10 text raster while leaving stable spacing.
+- Foundation alignment: existing visual-evidence, architecture, and evaluation assertions remain current; no foundation edit was required.
+- Adjacent issues parked: none.
+
+## Integrated verification
+
+- `cargo fmt -p temporal-vision -- --check` — passed (through the package formatting stride).
+- `cargo check -p temporal-vision --all-targets --locked` — passed.
+- `cargo test -p temporal-vision --all-targets --locked` — passed, 33 tests.
+- `cargo clippy -p temporal-vision --all-targets --locked -- -D warnings` — passed.
+- `cargo tree -p temporal-vision --edges normal --locked` — only Serde/thiserror plus pinned `png = 0.17.16`, SHA-256, and their computation-only transitive dependencies; no Krometrail/browser/runtime/UI/font/filesystem/GPU dependency.
+- Workspace format/check/test/clippy were each attempted. They were externally blocked by concurrently owned, unformatted and API-incomplete browser lifecycle/control changes in `krometrail-core`/`krometrail-cdp` (including page request field and `BrowserSessionPort` migration errors) plus one concurrent Clippy finding. No unowned file was edited; the locked temporal-vision package remained fully green.

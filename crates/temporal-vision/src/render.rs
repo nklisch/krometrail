@@ -602,6 +602,21 @@ fn draw_story_annotation<F: Display + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
     let max_cells = usize::try_from(tile_width / CELL_WIDTH)
         .unwrap_or(0)
         .saturating_sub(1);
+    let marker_text = if marker_indices.is_empty() {
+        "MARKERS NONE".to_owned()
+    } else {
+        format!(
+            "MARKERS {}",
+            marker_indices
+                .iter()
+                .map(|index| {
+                    let marker = &source.markers()[*index];
+                    format!("{}: {}", marker.kind(), marker.label())
+                })
+                .collect::<Vec<_>>()
+                .join(" | ")
+        )
+    };
     let lines = [
         time_and_offset(selected.timestamp(), anchor),
         format!("FRAME {}", selected.frame_id()),
@@ -614,18 +629,8 @@ fn draw_story_annotation<F: Display + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
                 .collect::<Vec<_>>()
                 .join(" + ")
         ),
-        marker_indices.first().map_or_else(
-            || "MARKERS NONE".to_owned(),
-            |index| {
-                let marker = &source.markers()[*index];
-                format!("MARKER {}: {}", marker.kind(), marker.label())
-            },
-        ),
-        if marker_indices.len() > 1 {
-            format!("+ {} MORE MARKERS; SEE MANIFEST", marker_indices.len() - 1)
-        } else {
-            "SOURCE FRAME - AUTHORITATIVE".to_owned()
-        },
+        marker_text,
+        "SOURCE FRAME - AUTHORITATIVE".to_owned(),
     ];
     for (line, text) in lines.iter().enumerate() {
         draw_text(
@@ -789,10 +794,7 @@ where
         .iter()
         .map(|frame| {
             object([
-                (
-                    "frame_index",
-                    ParameterValue::Unsigned(frame.frame_index() as u64),
-                ),
+                ("frame_index", unsigned_usize(frame.frame_index())?),
                 (
                     "frame_label",
                     ParameterValue::Text(frame.frame_id().to_string().into()),
@@ -819,10 +821,7 @@ where
         .iter()
         .map(|anchor| {
             object([
-                (
-                    "frame_index",
-                    ParameterValue::Unsigned(anchor.frame_index() as u64),
-                ),
+                ("frame_index", unsigned_usize(anchor.frame_index())?),
                 (
                     "reason",
                     ParameterValue::Text(anchor.reason().as_str().into()),
@@ -835,14 +834,14 @@ where
         .enumerate()
         .map(|(tile, markers)| {
             object([
-                ("tile_index", ParameterValue::Unsigned(tile as u64)),
+                ("tile_index", unsigned_usize(tile)?),
                 (
                     "marker_declaration_indices",
                     ParameterValue::List(
                         markers
                             .iter()
-                            .map(|index| ParameterValue::Unsigned(*index as u64))
-                            .collect(),
+                            .map(|index| unsigned_usize(*index))
+                            .collect::<Result<Vec<_>>>()?,
                     ),
                 ),
             ])
@@ -851,15 +850,15 @@ where
     let roles = object([
         (
             "before_source_index",
-            ParameterValue::Unsigned(selection.before_index() as u64),
+            unsigned_usize(selection.before_index())?,
         ),
         (
             "during_source_index",
-            ParameterValue::Unsigned(selection.during_index() as u64),
+            unsigned_usize(selection.during_index())?,
         ),
         (
             "after_source_index",
-            ParameterValue::Unsigned(selection.after_index() as u64),
+            unsigned_usize(selection.after_index())?,
         ),
         (
             "during_rule",
@@ -896,8 +895,28 @@ where
             ParameterValue::Unsigned(u64::from(image_height)),
         ),
         (
+            "preferred_tile_width",
+            ParameterValue::Unsigned(u64::from(PREFERRED_TILE_WIDTH)),
+        ),
+        (
             "minimum_tile_width",
             ParameterValue::Unsigned(u64::from(MINIMUM_TILE_WIDTH)),
+        ),
+        (
+            "max_output_width",
+            ParameterValue::Unsigned(u64::from(request.limits.max_width())),
+        ),
+        (
+            "max_output_height",
+            ParameterValue::Unsigned(u64::from(request.limits.max_height())),
+        ),
+        (
+            "max_canvas_bytes",
+            unsigned_usize(request.limits.max_canvas_bytes())?,
+        ),
+        (
+            "max_encoded_bytes",
+            unsigned_usize(request.limits.max_encoded_bytes())?,
         ),
         (
             "scale_kernel",
@@ -921,7 +940,7 @@ where
         ),
         (
             "continuity_segments",
-            ParameterValue::Unsigned(selection.continuity_segment_count() as u64),
+            unsigned_usize(selection.continuity_segment_count())?,
         ),
         ("selected", ParameterValue::List(selected)),
         ("omitted_anchors", ParameterValue::List(omitted)),
@@ -931,6 +950,12 @@ where
         values.insert(key.into(), value);
     }
     Parameters::new(values)
+}
+
+fn unsigned_usize(value: usize) -> Result<ParameterValue> {
+    Ok(ParameterValue::Unsigned(
+        u64::try_from(value).map_err(|_| canvas_limit_error())?,
+    ))
 }
 
 fn object<const N: usize>(entries: [(&'static str, ParameterValue); N]) -> Result<ParameterValue> {

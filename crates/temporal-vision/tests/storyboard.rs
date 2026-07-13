@@ -331,7 +331,7 @@ fn public_generator_returns_traceable_deterministic_pngs_and_manifests() {
 
     assert_eq!(
         first.storyboard().manifest().output_hash().to_string(),
-        "dc67e345aa78f25d7343a78fbdf7b88f09beef81fa308b4e88606b49b528fc27"
+        "b606148fe214fd4d68545e1ad3379299f427a8c75e1797f7f7dd34358b1d2417"
     );
 }
 
