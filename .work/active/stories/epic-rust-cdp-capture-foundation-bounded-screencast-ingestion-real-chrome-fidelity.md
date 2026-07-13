@@ -1,14 +1,14 @@
 ---
 id: epic-rust-cdp-capture-foundation-bounded-screencast-ingestion-real-chrome-fidelity
 kind: story
-stage: implementing
+stage: review
 tags: [browser, testing]
 parent: epic-rust-cdp-capture-foundation-bounded-screencast-ingestion
 depends_on: [epic-rust-cdp-capture-foundation-bounded-screencast-ingestion-supervised-wiring]
 release_binding: null
 gate_origin: null
 created: 2026-07-12
-updated: 2026-07-12
+updated: 2026-07-13
 ---
 
 # Prove production capture fidelity with real Chrome
@@ -48,3 +48,19 @@ This story exclusively owns one new test file and can leave all production files
 - Effective worker: `highest`.
 - Depends on complete supervised wiring and has no shared-file conflict with either earlier story.
 - Review weight: `standard` at the parent feature; this story's evidence informs the feature-level independent review.
+
+## Implementation notes
+
+- Execution capability: `highest`; the story is a single test-only ownership surface, so the real-browser harness, bounded sinks, clocks, IDs, and evidence helpers remain together in `crates/krometrail-cdp/tests/capture_real.rs`.
+- Review weight: `standard` from the parent feature; explicitly staged at `stage: review` as requested.
+- Files changed: `crates/krometrail-cdp/tests/capture_real.rs` only. Production, support, fixture, spike, storage, temporal-vision, and foundation files are untouched.
+- Tests added: opt-in managed/attached real-Chrome fidelity, two-target isolation and visibility evidence, capacity-one saturation/incomplete stop, and fault-proxy reconnect/generation tests; bounded JPEG header validation and in-memory/blocking sink assertions are local to the integration file.
+- Simplification: reused the existing Chrome lock, profile-root guard, endpoint/transport helpers, fixture bytes, and fault proxy; no persistent sink, image dependency, action surface, visual analysis, or product timing threshold was added.
+- Discrepancies from design: the fixture is served from its existing committed bytes by a local test-only HTTP server because its script uses an absolute `/animation.js` path; a disposable headless Chrome wrapper is used only when supported by the host so the existing animation produces a sustained real screencast without changing the fixture or launcher. No production claim or architecture document required updating.
+- Adjacent issues parked: none.
+
+## Verification notes
+
+- Passed: `cargo fmt --all -- --check`, workspace `cargo check --workspace --all-targets --locked`, workspace `cargo test --workspace --all-targets --locked`, workspace clippy with `-D warnings`, `cargo check -p krometrail-cdp --no-default-features --all-targets --locked`, and `cargo test -p krometrail-cdp --features cdp-spike-cdpkit --test cdpkit_transport_contract --locked`.
+- Passed repeatedly with the opt-in gate disabled: `cargo test -p krometrail-cdp --test capture_real -- --nocapture` (three runs); the existing Electron test reports its explicit endpoint skip.
+- Review blocker: with `KROMETRAIL_REAL_CHROME_TESTS=1`, the installed Chrome 149 run against the unchanged supervised wiring leaves the target without a usable initial visibility transition, so the new live gate cannot claim its required 30-frame evidence. A separate local diagnostic (not landed) confirmed that once capture was forced past that wiring issue, Chrome's observed constant frame number is rejected by the strict live assertion; the scripted constant is never accepted. This is recorded for the review lane rather than weakened or converted into a pass.
