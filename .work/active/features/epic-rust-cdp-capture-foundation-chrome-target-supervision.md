@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-chrome-target-supervision
 kind: feature
-stage: implementing
+stage: review
 tags: [browser]
 parent: epic-rust-cdp-capture-foundation
 depends_on: [epic-rust-cdp-capture-foundation-cdp-transport-gate]
@@ -484,7 +484,9 @@ The receiver accepted four lower-risk robustness proposals—structured subscrib
 
 The real-reconnect follow-up now physically severs a real cdpkit connection through an owned loopback fault proxy while Chrome remains alive, verifies a new connection and exact target identity/generation restoration, exercises post-rebuild commands/events, and leaves zero resources. It also fixed a verified late-event reducer rejection that could otherwise discard committed target state.
 
-Adversarial review confirmed four material current-cycle blockers: HTTP reconnect did not refresh rotated browser WebSocket paths; localhost resolution permitted mixed/public TOCTOU; reconstruction work escaped the attempt deadline/cancellation path; event receivers retained their own senders and never closed; and Architecture retained a stale final5 qualification assertion. Four dependency-ordered follow-ups own those repairs. Previously parked lower-risk findings remain backlog-only and were not re-elevated.
+Adversarial review confirmed four material current-cycle blockers: HTTP reconnect did not refresh rotated browser WebSocket paths; localhost resolution permitted mixed/public TOCTOU; reconstruction work escaped the attempt deadline/cancellation path; event receivers retained their own senders and never closed; and Architecture retained a stale final5 qualification assertion.
+
+Four dependency-ordered follow-ups repaired those defects. Endpoint resolution is pinned and rejects mixed sets; HTTP reconnect refreshes rotated paths. Reconstruction is one bounded cancellable transaction with atomic state commit. Event streams deliver one `Ended` then close. Architecture consistently names current final5 evidence. All nine children are `stage: done`; parked lower-risk findings remain backlog-only. The feature returns to `stage: review` for final closure.
 
 ## Testing strategy
 
