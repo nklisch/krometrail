@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-bounded-screencast-ingestion
 kind: feature
-stage: implementing
+stage: review
 tags: [browser]
 parent: epic-rust-cdp-capture-foundation
 depends_on: [epic-rust-cdp-capture-foundation-chrome-target-supervision]
@@ -157,12 +157,12 @@ The coordinator obtains one shared checked ordinal allocator for each `TargetId`
 
 **Acceptance criteria:**
 
-- [ ] No production/core/test symbol or serialized field named `source_sequence` or `SourceSequenceDiscontinuity` remains in this feature's surfaces.
-- [ ] The ack token appears only in validation and `Page.screencastFrameAck` parameters; it is not persisted, logged, compared, exposed, or copied into `RawFrame`.
-- [ ] `CaptureOrdinal` is non-zero, serde-validating, strictly allocated per `(SessionId, TargetId)` after ack, continuous across attachment generations, and deterministic when clock values are equal.
-- [ ] Ack failure emits `AcknowledgementFailed`, hands off nothing, assigns no ordinal, and fails only that stream.
-- [ ] Saturation/rejection/persistence/stop gaps remain explicit and bounded; no ordinal gap is inferred and no missing-browser-frame estimate is fabricated.
-- [ ] Existing ack-first barriers, queue/ledger/histogram bounds, image-header handling, three clocks, visibility handling, status invariants, and no-default build remain green.
+- [x] No production/core/test symbol or serialized field named `source_sequence` or `SourceSequenceDiscontinuity` remains in this feature's surfaces.
+- [x] The ack token appears only in validation and `Page.screencastFrameAck` parameters; it is not persisted, logged, compared, exposed, or copied into `RawFrame`.
+- [x] `CaptureOrdinal` is non-zero, serde-validating, strictly allocated per `(SessionId, TargetId)` after ack, continuous across attachment generations, and deterministic when clock values are equal.
+- [x] Ack failure emits `AcknowledgementFailed`, hands off nothing, assigns no ordinal, and fails only that stream.
+- [x] Saturation/rejection/persistence/stop gaps remain explicit and bounded; no ordinal gap is inferred and no missing-browser-frame estimate is fabricated.
+- [x] Existing ack-first barriers, queue/ledger/histogram bounds, image-header handling, three clocks, visibility handling, status invariants, and no-default build remain green.
 
 ### Unit 2: Repair visibility reconciliation before Ready
 
@@ -188,11 +188,11 @@ Use the parser in initial and reconnect flows. Initial `ProbeInitialVisibility` 
 
 **Acceptance criteria:**
 
-- [ ] Both cdpkit raw result shapes (`/result/result/value` and `/result/value`) produce observed `Visible`/`Hidden` state before initial `Ready`.
-- [ ] Command failure, malformed shape, or unsupported value cannot silently leave an attached target `Unknown`; it produces target-local failure and exact-session detach.
-- [ ] `InitialReconciliationCompleted` cannot transition to `Ready` while a nonterminal recordable target has unresolved initial visibility.
-- [ ] Reconnect uses the same parser and preserves its existing transactional, bounded behavior.
-- [ ] Existing reducer-owned capture effects, target isolation, generation fencing, visibility gaps, and aggregate shutdown/lifecycle tests remain unchanged and green.
+- [x] Both cdpkit raw result shapes (`/result/result/value` and `/result/value`) produce observed `Visible`/`Hidden` state before initial `Ready`.
+- [x] Command failure, malformed shape, or unsupported value cannot silently leave an attached target `Unknown`; it produces target-local failure and exact-session detach.
+- [x] `InitialReconciliationCompleted` cannot transition to `Ready` while a nonterminal recordable target has unresolved initial visibility.
+- [x] Reconnect uses the same parser and preserves its existing transactional, bounded behavior.
+- [x] Existing reducer-owned capture effects, target isolation, generation fencing, visibility gaps, and aggregate shutdown/lifecycle tests remain unchanged and green.
 
 ### Unit 3: Real-Chrome fidelity and shutdown evidence
 
@@ -206,11 +206,11 @@ Replace strict Chrome-token assertions with `CaptureOrdinal` assertions. Keep th
 
 **Acceptance criteria:**
 
-- [ ] Managed Chrome reaches Ready only after initial visibility resolves and yields at least 30 non-empty JPEG frames under bounded timeout.
-- [ ] Frames have unique `FrameId`, expected session/target identity, strict per-target `CaptureOrdinal`, nondecreasing observed/session times, optional source time, coherent dimensions/scale, and unchanged compressed bytes.
-- [ ] Two targets have independent ordinals/status/gaps; a reconnect preserves `TargetId`, advances attachment generation, continues that target's ordinal, and records `BrowserDisconnected` without a Chrome-sequence claim.
-- [ ] Saturation proves ack-first bounded loss accounting; visibility and shutdown/lifecycle assertions remain as previously designed.
-- [ ] The opt-in Chrome command and all workspace/default/no-default/spike gates pass without altering final5 evidence or thresholds.
+- [x] Managed Chrome reaches Ready only after initial visibility resolves and yields at least 30 non-empty JPEG frames under bounded timeout.
+- [x] Frames have unique `FrameId`, expected session/target identity, strict per-target `CaptureOrdinal`, nondecreasing observed/session times, optional source time, coherent dimensions/scale, and unchanged compressed bytes.
+- [x] Two targets have independent ordinals/status/gaps; a reconnect preserves `TargetId`, advances attachment generation, continues that target's ordinal, and records `BrowserDisconnected` without a Chrome-sequence claim.
+- [x] Saturation proves ack-first bounded loss accounting; visibility and shutdown/lifecycle assertions remain as previously designed.
+- [x] The opt-in Chrome command and all workspace/default/no-default/spike gates pass without altering final5 evidence or thresholds.
 
 ## Child-story correction policy
 
@@ -261,13 +261,13 @@ A single remediation story is intentionally minimal. Splitting metadata and visi
 
 ## Feature acceptance
 
-- [ ] `Page.screencastFrame.params.sessionId` is ack-only everywhere; canonical final5 and production Chrome are described honestly, and corrected B1 adjudication is recorded.
-- [ ] Core frames expose Krometrail `CaptureOrdinal` rather than a fabricated Chrome source sequence; attachment generation stays in adapter lifecycle/status, not frame metadata.
-- [ ] Impossible source-sequence warning/gap variants and logic are removed; all known local loss and lifecycle interruptions remain explicit without inferring unknown Chrome loss.
-- [ ] Initial visibility handles both cdpkit raw result shapes and cannot enter Ready unresolved.
-- [ ] Ack-first ordering, bounded queue/ledger/histograms/memory, three clocks, target isolation, reconnect fencing, visibility, privacy, and one-deadline shutdown remain intact.
-- [ ] Done child stories clearly identify superseded acceptance; remediation is tracked as implementing and real fidelity depends on it.
-- [ ] Real Chrome yields truthful frame/loss/lifecycle evidence, and all default/no-default/spike/workspace gates pass in the owning implementation stories.
+- [x] `Page.screencastFrame.params.sessionId` is ack-only everywhere; canonical final5 and production Chrome are described honestly, and corrected B1 adjudication is recorded.
+- [x] Core frames expose Krometrail `CaptureOrdinal` rather than a fabricated Chrome source sequence; attachment generation stays in adapter lifecycle/status, not frame metadata.
+- [x] Impossible source-sequence warning/gap variants and logic are removed; all known local loss and lifecycle interruptions remain explicit without inferring unknown Chrome loss.
+- [x] Initial visibility handles both cdpkit raw result shapes and cannot enter Ready unresolved.
+- [x] Ack-first ordering, bounded queue/ledger/histograms/memory, three clocks, target isolation, reconnect fencing, visibility, privacy, and one-deadline shutdown remain intact.
+- [x] Done child stories clearly identify superseded acceptance; remediation is tracked as implementing and real fidelity depends on it.
+- [x] Real Chrome yields truthful frame/loss/lifecycle evidence, and all default/no-default/spike/workspace gates pass in the owning implementation stories.
 
 ## Risks and pre-mortem
 
@@ -278,3 +278,12 @@ A single remediation story is intentionally minimal. Splitting metadata and visi
 - **Gap persistence can fail.** Existing status/events report the gap before sink persistence and shutdown remains bounded; durable recovery belongs to storage.
 - **cdpkit's subscriber remains unbounded.** The ack reader stays minimal and final5 saturation remains the qualification evidence. Demonstrated accumulation reopens the selected transport under existing fallback rules.
 - **Least certain:** Chrome visibility behavior across headed/headless macOS high-DPI. The dependent cross-platform smoke remains the authority; this feature only requires truthful observed visibility and no inferred silence gap.
+
+## Implementation summary (2026-07-13)
+
+- Landed a bounded per-target capture engine with acknowledgement completion before metadata parsing or non-blocking handoff, fixed-capacity queues/ledgers/histograms, worker-only decode/header parsing, three-clock normalization, explicit known-loss gaps, and aggregate memory validation.
+- Integrated capture through the target reducer/effect executor as the lifecycle source of truth, with exact attachment contexts, initial visibility gating, target-local failure isolation, reconnect fencing, and one absolute stop deadline through capture drain/flush, detach, browser close, and process cleanup.
+- Corrected a live-evidence design error: Chrome's signed screencast `sessionId` is an opaque acknowledgement token, not a frame sequence. Core evidence now uses validating per-session/target `CaptureOrdinal` continuous across attachment generations; impossible source-sequence continuity claims and gaps were removed.
+- Repaired both cdpkit visibility result shapes and unresolved-visibility Ready guarding.
+- Proved production behavior through repeated real Chrome 149 runs: 30-frame managed fidelity, three-target isolation, exact bounded saturation accounting, generation 1→2 reconnect with continuous ordinals, ownership-correct managed/attached stop, and no process/profile references.
+- Workspace/default/no-default/spike/clippy/doc gates pass. Four child stories are `done`; lower-risk capture-engine and test-root hygiene proposals are parked.
