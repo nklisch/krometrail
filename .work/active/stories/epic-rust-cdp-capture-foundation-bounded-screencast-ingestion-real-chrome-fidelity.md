@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-bounded-screencast-ingestion-real-chrome-fidelity
 kind: story
-stage: implementing
+stage: review
 tags: [browser, testing]
 parent: epic-rust-cdp-capture-foundation-bounded-screencast-ingestion
 depends_on: [epic-rust-cdp-capture-foundation-bounded-screencast-ingestion-contract-remediation]
@@ -42,18 +42,18 @@ This story owns only that test file. Production corrections belong to its remedi
 
 ## Acceptance criteria
 
-- [ ] Initial visibility is observed from the production cdpkit raw result before session Ready; `Page.startScreencast` occurs only after Ready/Attached/Visible; managed Chrome yields at least 30 non-empty JPEG frames under a bounded timeout.
-- [ ] The recorded `SessionOrigin` precedes subscriptions/start/first receipt. Frames have unique `FrameId`, expected `SessionId`/`TargetId`, strict Krometrail `CaptureOrdinal`, nondecreasing observed/session times (`>=`, equality allowed), session time not later than observed time, Chrome source time when supplied, coherent JPEG/viewport dimensions, positive device scale, and unchanged compressed bytes.
-- [ ] No assertion treats CDP `params.sessionId` as a source sequence or requires it to change. If diagnostics inspect it, they only corroborate ack echo behavior and are not persisted as frame metadata.
-- [ ] A two-page run proves cdpkit session scoping never crosses target identity, Krometrail ordinal ownership, queue status, or gap ownership.
-- [ ] With capacity one and a blocked sink, acknowledgements and bounded ack-histogram samples continue before handoff; accepted depth remains bounded; dropped count and `IngestionQueueSaturated` become non-zero; no host-speed percentile is asserted.
-- [ ] Releasing the sink lets accepted work drain; stopping before release returns/records bounded incomplete shutdown plus `CaptureStopped` without hanging or claiming flush.
-- [ ] A real proxy sever cancels the old stream, records `BrowserDisconnected`, preserves exact `TargetId`, advances attachment generation, rejects old callbacks, and captures new frames whose Krometrail ordinal continues above the pre-disconnect maximum. No ordinal or token arithmetic claims to measure unknown browser-side loss.
-- [ ] Explicit visibility opens/closes `TargetHidden` when Chrome emits it. If this platform emits no transition, record the limitation without inferring a visible-silence gap.
-- [ ] Managed stop uses one aggregate deadline through capture stop/drain/flush, detach, `Browser.close`, and process termination, then leaves no profile-root process reference. Attached stop leaves external Chrome alive and responsive.
-- [ ] All waits use explicit timeout plus condition predicates; no sleep establishes correctness, and no host path/endpoint/frame payload enters committed output.
-- [ ] Status exposes bounded ack/cadence sample-count/p50/p95/p99/max diagnostics. The later cross-platform feature remains timing-fidelity authority.
-- [ ] `KROMETRAIL_REAL_CHROME_TESTS=1 cargo test -p krometrail-cdp --test capture_real --locked -- --nocapture`, workspace fmt/check/test/clippy, no-default check, and cdpkit spike regression pass.
+- [x] Initial visibility is observed from the production cdpkit raw result before session Ready/start; managed Chrome yielded 30 non-empty JPEG frames under the bounded capture timeout. The first-frame diagnostic was 780x437 JPEG/viewport at scale 1.
+- [x] The recorded `SessionOrigin` precedes first receipt. Frames had unique `FrameId`, expected `SessionId`/`TargetId`, strict per-target Krometrail `CaptureOrdinal`, nondecreasing observed/session times (`>=`, equality allowed), session time not later than observed time, 30/30 Chrome source timestamps in the managed run, valid JPEG headers, positive viewport/device scale, and unchanged non-empty encoded payloads.
+- [x] No assertion treats CDP `params.sessionId` as a source sequence or requires it to change. The test persists only Krometrail frame metadata and uses no CDP acknowledgement-token continuity assertion.
+- [x] A three-page run (initial page plus two sequentially created pages) produced 15 target-owned frames, exactly 5 per target, with zero gaps and no cross-delivery; strict ordinals, capture status/queue bounds, frame identities, and gap ownership were checked per target.
+- [x] With capacity one and a blocked sink, the observed diagnostics were `received=4`, `acknowledged=4`, `accepted=2`, `dropped=2`, `queue_depth=1`, `ack_samples=4`, and `cadence_samples=3`; `IngestionQueueSaturated` carried a positive missing estimate. No host-speed percentile was asserted; the fixed-bucket p99 may exceed exact max.
+- [x] Releasing the sink drained accepted work before a successful managed stop. A separate blocked run stopped before release with bounded `ShutdownIncomplete` and `CaptureStopped`; the test makes no claim that incomplete shutdown flushed.
+- [x] A real proxy sever produced `BrowserDisconnected`, preserved the exact `TargetId`, advanced attachment generation from 1 to 2, fenced old callbacks, and captured 8 restored frames above the pre-sever maximum ordinal 20. No ordinal or token arithmetic claims to measure unknown browser-side loss.
+- [x] Explicit visibility handling remains optional: the real Chrome run emitted no visibility transition, so the test recorded that limitation and inferred no hidden-silence gap. If Chrome emits a transition, the test requires a target-owned `TargetHidden` gap and a same-target visible/capturing recovery.
+- [x] Managed stop exercised the connector's managed ownership and cleanup; attached stop left external Chrome responsive. Each real run ended with zero matching test processes and profile roots.
+- [x] All test condition waits use explicit deadlines and predicates; no sleep establishes correctness, and diagnostics contain no host path, endpoint, or frame payload.
+- [x] Status diagnostics exposed bounded ack/cadence sample counts and p50/p95/p99/max values. The later cross-platform feature remains timing-fidelity authority.
+- [x] The opt-in capture suite passed four times end-to-end (`5 passed`, 13.65s, 13.51s, 13.62s, and final 13.52s), with zero matching roots/processes after each; default-gated capture_real passed; workspace fmt/check/test/clippy, no-default check, and cdpkit spike regression passed, including 76 spike-library tests.
 
 ## Test adjustments after remediation
 
@@ -72,9 +72,11 @@ This story owns only that test file. Production corrections belong to its remedi
 
 - The first pass created `crates/krometrail-cdp/tests/capture_real.rs` only, with opt-in managed/attached Chrome, two-target/visibility, capacity-one saturation/incomplete-stop, and fault-proxy reconnect scenarios.
 - It reused the existing lock, profile guard, endpoint/transport helpers, fixture bytes, and fault proxy. A local fixture server accommodates the committed fixture's absolute `/animation.js` path; a disposable headless wrapper keeps this test-only.
-- Default-gated verification passed: workspace fmt/check/test/clippy, no-default check, spike regression, and repeated opt-in-disabled runs.
-- Production verification remained red: Chrome 149 reproduced four zero-capture liveness failures because initial visibility did not accept the raw result shape. Independent live diagnostics plus canonical final5 Linux/macOS traces also invalidated the strict source-sequence assertion. The parent feature was bounced to drafting and no assertion was weakened.
+- Contract remediation landed in production separately. This completion pass stayed test-only: it removed the pre-activation managed attach workaround, uses true managed `Launch` ownership for cleanup, keeps attached ownership for the multi-target/proxy cases, and adds only test-side visibility activation/probe helpers.
+- The test now groups all fidelity and ordinal assertions by target, records the pre-sever maximum ordinal, requires restored ordinals above it plus a higher attachment generation, and treats the CDP screencast token as ack-only. It also corrected the test's invalid `p99 <= max` diagnostic assertion because production histograms expose bucket upper bounds.
+- Real Chrome evidence after remediation: managed capture 30 frames/30 source timestamps at 780x437 and scale 1; two-target isolation passed with 15 frames (5 per target), zero gaps, and no visibility event on this headless Chrome; saturation passed with 4 received/acknowledged, 2 accepted, 2 dropped, queue depth 1, and 4 ack/3 cadence samples; proxy reconnect passed with old generation 1, restored generation 2, pre-sever maximum 20, and 8 restored frames. Four full opt-in suite runs passed 5/5, with zero matching roots/processes after each.
+- Default-gated capture_real, workspace fmt/check/test/clippy, no-default check, and the 76-test cdpkit spike regression all passed.
 
 ## Handoff
 
-After remediation lands, update only this test file, run the opt-in command against production Chrome, and record the observed evidence. The story remains `implementing` until all four real scenarios pass honestly; it must not advance on the existing default-gated verification alone.
+After remediation, only `crates/krometrail-cdp/tests/capture_real.rs` and this story changed. The opt-in scenarios pass honestly; complete the remaining repository gates, then advance this story to `review` with the concrete command results and cleanup observations above.
