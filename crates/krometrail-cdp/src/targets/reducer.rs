@@ -691,6 +691,10 @@ fn capture_start_failed(
     }
     if let Some(session) = target.transport_session.take() {
         state.target_key_by_session.remove(&session);
+        // A failed start can happen after flat-session attachment (for example when the
+        // coordinator's active-stream cap rejects this target). The reducer owns the mapping,
+        // but the adapter still has to release the exact session before it is forgotten.
+        effects.push(SupervisorEffect::Detach { session });
     }
     target.target.lifecycle = target
         .target

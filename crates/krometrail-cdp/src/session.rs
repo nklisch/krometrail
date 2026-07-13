@@ -689,7 +689,8 @@ async fn apply_effects(
                         transport_session: context.transport_session,
                     };
                     let deadline = shutdown_deadline
-                        .unwrap_or_else(|| ShutdownDeadline::new(capture.shutdown_timeout))
+                        .as_ref()
+                        .map_or_else(|| ShutdownDeadline::new(capture.shutdown_timeout), Clone::clone)
                         .instant();
                     let reason = state
                         .targets_by_key
@@ -803,7 +804,7 @@ async fn run_supervisor(
                                 Arc::clone(&connection.transport),
                                 Arc::clone(&shared.subscribers),
                                 shared.capture.clone(),
-                                shutdown_deadline,
+                                shutdown_deadline.clone(),
                             )
                             .await;
                         }
@@ -869,7 +870,7 @@ async fn run_supervisor(
                                 Arc::clone(&connection.transport),
                                 Arc::clone(&shared.subscribers),
                                 shared.capture.clone(),
-                                Some(shutdown_deadline),
+                                Some(shutdown_deadline.clone()),
                             )
                             .await;
                         }
@@ -940,7 +941,7 @@ async fn finish_interrupted_reconnect(
             Arc::clone(&current.transport),
             Arc::clone(&shared.subscribers),
             shared.capture.clone(),
-            Some(deadline),
+            Some(deadline.clone()),
         )
         .await;
     }
@@ -1537,7 +1538,7 @@ async fn reconnect_loop_transactional(
                 Arc::clone(&current.transport),
                 Arc::clone(&shared.subscribers),
                 shared.capture.clone(),
-                Some(deadline),
+                Some(deadline.clone()),
             )
             .await;
         }
@@ -1560,16 +1561,56 @@ async fn reconnect_loop_transactional(
     true
 }
 
-#[derive(Clone, Copy)]
-struct ShutdownDeadline(tokio::time::Instant);
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ShutdownPhase {
+    Origin,
+    CaptureStopDrainFlush,
+    TargetDetach,
+    BrowserClose,
+    ProcessTerminate,
+    Complete,
+}
+
+trait ShutdownBudgetSource: Send + Sync {
+    fn now(&self, phase: ShutdownPhase) -> tokio::time::Instant;
+}
+
+struct TokioShutdownBudgetSource;
+
+impl ShutdownBudgetSource for TokioShutdownBudgetSource {
+    fn now(&self, _phase: ShutdownPhase) -> tokio::time::Instant {
+        tokio::time::Instant::now()
+    }
+}
+
+#[derive(Clone)]
+struct ShutdownDeadline {
+    origin: tokio::time::Instant,
+    timeout: Duration,
+    source: Arc<dyn ShutdownBudgetSource>,
+}
 
 impl ShutdownDeadline {
     fn new(timeout: Duration) -> Self {
-        Self(tokio::time::Instant::now() + timeout)
+        Self::with_source(timeout, Arc::new(TokioShutdownBudgetSource))
     }
 
-    fn instant(self) -> tokio::time::Instant {
-        self.0
+    fn with_source(timeout: Duration, source: Arc<dyn ShutdownBudgetSource>) -> Self {
+        let origin = source.now(ShutdownPhase::Origin);
+        Self {
+            origin,
+            timeout,
+            source,
+        }
+    }
+
+    fn instant(&self) -> tokio::time::Instant {
+        self.origin + self.timeout
+    }
+
+    fn remaining(&self, phase: ShutdownPhase) -> Duration {
+        self.instant()
+            .saturating_duration_since(self.source.now(phase))
     }
 }
 
@@ -1593,14 +1634,23 @@ async fn perform_shutdown(
     let mut failed = false;
 
     // Capture closes acceptance and drains before transport resources are detached. The same
-    // absolute deadline is passed to every phase; no target or phase gets a fresh timeout.
+    // absolute deadline is passed to every phase; the source samples only expose the budget at
+    // each boundary and never create a phase-local deadline.
     if plan.flush_capture {
         if let Some(capture) = plan.capture.as_ref() {
-            let outcome = capture
-                .coordinator
-                .shutdown(capture.session_id, deadline)
-                .await;
-            failed |= !outcome.complete;
+            if !plan
+                .deadline
+                .remaining(ShutdownPhase::CaptureStopDrainFlush)
+                .is_zero()
+            {
+                let outcome = capture
+                    .coordinator
+                    .shutdown(capture.session_id, deadline)
+                    .await;
+                failed |= !outcome.complete;
+            } else {
+                failed = true;
+            }
         }
     }
 
@@ -1613,7 +1663,11 @@ async fn perform_shutdown(
             .collect::<Vec<_>>();
         sessions.sort_by(|left, right| left.as_str().cmp(right.as_str()));
         for session in sessions {
-            if tokio::time::Instant::now() >= deadline {
+            if plan
+                .deadline
+                .remaining(ShutdownPhase::TargetDetach)
+                .is_zero()
+            {
                 failed = true;
                 break;
             }
@@ -1638,7 +1692,10 @@ async fn perform_shutdown(
                     | crate::targets::ShutdownCause::ReconnectExhausted
                     | crate::targets::ShutdownCause::Cancelled
             )
-            && tokio::time::Instant::now() < deadline
+            && !plan
+                .deadline
+                .remaining(ShutdownPhase::BrowserClose)
+                .is_zero()
         {
             let result = tokio::time::timeout_at(
                 deadline,
@@ -1660,8 +1717,8 @@ async fn perform_shutdown(
     if let Some(process) = process {
         let owned = process.lock().expect("process lock").take();
         if let Some(mut owned) = owned {
-            if tokio::time::Instant::now() < deadline {
-                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let remaining = plan.deadline.remaining(ShutdownPhase::ProcessTerminate);
+            if !remaining.is_zero() {
                 match tokio::time::timeout_at(deadline, owned.terminate(remaining)).await {
                     Ok(Ok(_)) => {}
                     Ok(Err(_)) | Err(_) => {
@@ -1679,7 +1736,8 @@ async fn perform_shutdown(
         profile.lock().expect("profile lock").take();
     }
     *connection = None;
-    if failed || tokio::time::Instant::now() >= deadline {
+    let exhausted = plan.deadline.remaining(ShutdownPhase::Complete).is_zero();
+    if failed || exhausted {
         tracing::warn!(
             elapsed_ms = started.elapsed().as_millis() as u64,
             forced_termination = true,
@@ -1918,13 +1976,15 @@ mod tests {
         EndpointResolveFuture, EndpointResolver, LocalCdpEndpoint, transport::TransportFuture,
     };
     use krometrail_core::{
-        BrowserProduct, BrowserProductVersion, BrowserVersion, CapabilitySupport,
-        RendererCapability,
+        BrowserProduct, BrowserProductVersion, BrowserVersion, CapabilitySupport, CaptureGap,
+        EncodedFrame, IdValue, MonotonicClock, PortFuture, RecordingSink, RendererCapability,
+        SessionOrigin,
     };
     use std::{
         net::{IpAddr, Ipv4Addr, SocketAddr},
         process::Command,
         sync::atomic::AtomicUsize,
+        sync::{Arc, Mutex},
     };
 
     #[test]
@@ -2356,5 +2416,314 @@ mod tests {
         fn is_closed(&self) -> bool {
             false
         }
+    }
+
+    struct ShutdownTestEvents;
+
+    impl TransportEvents for ShutdownTestEvents {
+        fn next(&mut self) -> TransportFuture<'_, Result<Option<NamedEvent>, TransportError>> {
+            Box::pin(async { std::future::pending().await })
+        }
+    }
+
+    struct ShutdownTestTransport {
+        log: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl CdpTransport for ShutdownTestTransport {
+        fn send_raw(
+            &self,
+            _scope: &CommandScope,
+            method: &str,
+            _params: Value,
+        ) -> TransportFuture<'_, std::result::Result<Value, TransportError>> {
+            self.log
+                .lock()
+                .expect("shutdown log lock")
+                .push(method.into());
+            Box::pin(std::future::ready(Ok(Value::Object(Default::default()))))
+        }
+
+        fn subscribe_named(
+            &self,
+            _scope: &CommandScope,
+            _method: &str,
+        ) -> TransportFuture<'_, std::result::Result<Box<dyn TransportEvents>, TransportError>>
+        {
+            Box::pin(std::future::ready(Ok(
+                Box::new(ShutdownTestEvents) as Box<dyn TransportEvents>
+            )))
+        }
+
+        fn close_reason(&self) -> Option<TransportClose> {
+            None
+        }
+
+        fn is_closed(&self) -> bool {
+            false
+        }
+    }
+
+    struct ShutdownTestObserver;
+
+    impl CaptureObserver for ShutdownTestObserver {
+        fn status_changed(&self, _status: krometrail_core::TargetCaptureStatus) {}
+
+        fn gap_declared(&self, _gap: CaptureGap) {}
+    }
+
+    struct ShutdownTestClock;
+
+    impl MonotonicClock for ShutdownTestClock {
+        fn now(&self) -> krometrail_core::ObservedTime {
+            krometrail_core::ObservedTime::from_nanos(1)
+        }
+    }
+
+    struct ShutdownTestIds;
+
+    impl krometrail_core::IdSource for ShutdownTestIds {
+        fn next(&self) -> IdValue {
+            IdValue::from_uuid(Uuid::from_u128(42))
+        }
+    }
+
+    struct ShutdownTestSink {
+        log: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl RecordingSink for ShutdownTestSink {
+        fn append_frame(
+            &self,
+            _frame: EncodedFrame,
+        ) -> PortFuture<'_, krometrail_core::Result<()>> {
+            Box::pin(std::future::ready(Ok(())))
+        }
+
+        fn append_gap(&self, _gap: CaptureGap) -> PortFuture<'_, krometrail_core::Result<()>> {
+            Box::pin(std::future::ready(Ok(())))
+        }
+
+        fn flush(&self, _session_id: SessionId) -> PortFuture<'_, krometrail_core::Result<()>> {
+            self.log
+                .lock()
+                .expect("shutdown log lock")
+                .push("flush".into());
+            Box::pin(std::future::ready(Ok(())))
+        }
+    }
+
+    struct ConsumingShutdownClock {
+        current: Mutex<tokio::time::Instant>,
+        step: Duration,
+        samples: Mutex<Vec<(ShutdownPhase, tokio::time::Instant)>>,
+    }
+
+    impl ConsumingShutdownClock {
+        fn new(step: Duration) -> Arc<Self> {
+            Arc::new(Self {
+                current: Mutex::new(tokio::time::Instant::now()),
+                step,
+                samples: Mutex::new(Vec::new()),
+            })
+        }
+
+        fn samples(&self) -> Vec<(ShutdownPhase, tokio::time::Instant)> {
+            self.samples.lock().expect("deadline samples lock").clone()
+        }
+    }
+
+    impl ShutdownBudgetSource for ConsumingShutdownClock {
+        fn now(&self, phase: ShutdownPhase) -> tokio::time::Instant {
+            let mut current = self.current.lock().expect("deadline clock lock");
+            let now = *current;
+            self.samples
+                .lock()
+                .expect("deadline samples lock")
+                .push((phase, now));
+            *current = now + self.step;
+            now
+        }
+    }
+
+    async fn run_shutdown_fixture(
+        timeout: Duration,
+        step: Duration,
+    ) -> (
+        Result<()>,
+        Arc<ConsumingShutdownClock>,
+        ShutdownDeadline,
+        Arc<Mutex<Vec<String>>>,
+    ) {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let transport = Arc::new(ShutdownTestTransport {
+            log: Arc::clone(&log),
+        });
+        let sink = Arc::new(ShutdownTestSink {
+            log: Arc::clone(&log),
+        });
+        let coordinator = Arc::new(
+            CaptureCoordinator::new(
+                CaptureConfig::default(),
+                CaptureDependencies {
+                    clock: Arc::new(ShutdownTestClock),
+                    ids: Arc::new(ShutdownTestIds),
+                    sink,
+                },
+                Arc::new(ShutdownTestObserver),
+            )
+            .expect("shutdown capture configuration"),
+        );
+        let session_id = SessionId::from_uuid(Uuid::from_u128(10));
+        let target_id = krometrail_core::TargetId::from_uuid(Uuid::from_u128(11));
+        let capture_target = CaptureTarget {
+            session_id,
+            session_origin: SessionOrigin::new(krometrail_core::ObservedTime::from_nanos(0)),
+            target_id,
+            connection_generation: 1,
+            attachment_generation: 1,
+            transport_session: TransportSessionId::new("transport-session").unwrap(),
+        };
+        coordinator
+            .start_target(
+                capture_target,
+                Arc::clone(&transport) as Arc<dyn CdpTransport>,
+            )
+            .await
+            .expect("start capture fixture");
+
+        let state = reduce(
+            SupervisorState::new(test_compatibility()),
+            SupervisorInput::InitialTargets(vec![page_info("target")]),
+        )
+        .unwrap()
+        .state;
+        let state = reduce(
+            state,
+            SupervisorInput::Attached {
+                target_key: "target".into(),
+                session: TransportSessionId::new("transport-session").unwrap(),
+            },
+        )
+        .unwrap()
+        .state;
+        let connection = ConnectionResources {
+            transport,
+            subscriptions: Vec::new(),
+            targets: Vec::new(),
+            compatibility: test_compatibility(),
+            pump_handles: Vec::new(),
+        };
+        let process = ManagedChromeProcess::from_child(
+            Command::new("sleep")
+                .arg("60")
+                .spawn()
+                .expect("shutdown fixture process"),
+        );
+        let process = Some(Arc::new(Mutex::new(Some(process))));
+        let source = ConsumingShutdownClock::new(step);
+        let deadline = ShutdownDeadline::with_source(
+            timeout,
+            Arc::clone(&source) as Arc<dyn ShutdownBudgetSource>,
+        );
+        let capture = Arc::new(CaptureRuntime {
+            coordinator,
+            clock: Arc::new(ShutdownTestClock),
+            session_id,
+            session_origin: SessionOrigin::new(krometrail_core::ObservedTime::from_nanos(0)),
+            shutdown_timeout: timeout,
+        });
+        let mut connection = Some(connection);
+        let result = perform_shutdown(
+            &mut connection,
+            &process,
+            &None,
+            &state,
+            ShutdownPlan {
+                cause: crate::targets::ShutdownCause::StopRequested,
+                ownership: BrowserOwnership::Managed,
+                capture: Some(capture),
+                deadline: deadline.clone(),
+                flush_capture: true,
+            },
+        )
+        .await;
+        (result, source, deadline, log)
+    }
+
+    #[tokio::test]
+    async fn shutdown_deadline_is_consumed_once_across_capture_and_browser_cleanup() {
+        let (result, source, deadline, log) =
+            run_shutdown_fixture(Duration::from_millis(100), Duration::from_millis(10)).await;
+        assert!(result.is_ok(), "shutdown fixture failed: {result:?}");
+        let samples = source.samples();
+        assert_eq!(
+            samples.first().map(|sample| sample.0),
+            Some(ShutdownPhase::Origin)
+        );
+        assert_eq!(
+            samples.last().map(|sample| sample.0),
+            Some(ShutdownPhase::Complete)
+        );
+        assert_eq!(
+            samples.iter().map(|sample| sample.0).collect::<Vec<_>>(),
+            vec![
+                ShutdownPhase::Origin,
+                ShutdownPhase::CaptureStopDrainFlush,
+                ShutdownPhase::TargetDetach,
+                ShutdownPhase::BrowserClose,
+                ShutdownPhase::ProcessTerminate,
+                ShutdownPhase::Complete,
+            ]
+        );
+        let budgets = samples
+            .iter()
+            .skip(1)
+            .map(|(_, now)| deadline.instant().saturating_duration_since(*now))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            budgets,
+            vec![
+                Duration::from_millis(90),
+                Duration::from_millis(80),
+                Duration::from_millis(70),
+                Duration::from_millis(60),
+                Duration::from_millis(50),
+            ]
+        );
+        assert!(budgets.windows(2).all(|pair| pair[0] > pair[1]));
+        assert_eq!(
+            deadline.instant(),
+            samples[0].1 + Duration::from_millis(100)
+        );
+        assert_eq!(
+            log.lock().expect("shutdown log lock").as_slice(),
+            [
+                "Page.startScreencast",
+                "Page.stopScreencast",
+                "flush",
+                "Target.detachFromTarget",
+                "Browser.close",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_deadline_exhaustion_uses_process_force_cleanup() {
+        let (result, source, deadline, log) =
+            run_shutdown_fixture(Duration::from_millis(100), Duration::from_millis(30)).await;
+        assert_eq!(result.unwrap_err().code, ErrorCode::ShutdownIncomplete);
+        let samples = source.samples();
+        assert_eq!(samples[4].0, ShutdownPhase::ProcessTerminate);
+        assert_eq!(
+            deadline.instant().saturating_duration_since(samples[4].1),
+            Duration::ZERO
+        );
+        assert!(samples[5].1 >= samples[4].1);
+        assert!(
+            log.lock()
+                .expect("shutdown log lock")
+                .contains(&"Browser.close".into())
+        );
     }
 }

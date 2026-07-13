@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-bounded-screencast-ingestion-supervised-wiring
 kind: story
-stage: implementing
+stage: review
 tags: [browser]
 parent: epic-rust-cdp-capture-foundation-bounded-screencast-ingestion
 depends_on: [epic-rust-cdp-capture-foundation-bounded-screencast-ingestion-engine]
@@ -72,19 +72,19 @@ These files are exclusive to this story's implementation wave. This story delibe
 
 ## Acceptance criteria
 
-- [ ] Browser-session core fakes implement and verify unique session identity, fixed origin sampled before subscriptions/start/first frame, object-safe sorted capture status snapshots (including bounded ack/cadence summaries), capture state events, and explicit gap events without runtime/transport types entering core.
-- [ ] `InitialReconciliationCompleted` replaces direct Ready mutation. Reducer tests cover the single `reconcile_capture_bindings` helper, every Start/Stop/Suspend/Resume emission, and idempotent no-op. Effects carry exact target ID, connection generation, attachment generation, and transport session; suspend/stop preserve old context before clearing it. `targets/reducer.rs` exhaustively handles the new `BrowserSessionEvent` variants in its logging match, `apply_effects` exhaustively handles the new effect variants, and no second reconciliation mechanism exists.
-- [ ] No `Page.startScreencast` occurs in Connecting/Reconnecting, for Discovered/Suspended/Unknown targets, or before the exact target's flat session exists; each Ready/Attached generation starts exactly once.
-- [ ] Subscriptions are established before start, and initial session Ready is truthful: capture reconciliation has either started every eligible stream or published a target-local capture failure.
-- [ ] Two scripted targets use isolated session scopes, queues, sequence trackers, status, and gaps; blocking/failing one leaves the other accepting and persisting frames.
-- [ ] Dynamic attach/close affects only that exact key. Connection loss cancels old acceptance before resource replacement, opens `BrowserDisconnected`, rejects late old-generation callbacks, and closes the interruption on the first valid restored frame.
-- [ ] A restored exact key keeps `TargetId` and advances generation; a missing/new key closes/creates rather than URL/title matching; official frame-number comparison never crosses generations.
-- [ ] Visibility events feed both capture status and the existing target visibility reducer without starting a second screencast or producing duplicate hidden gaps.
-- [ ] Explicit stop prevents new acceptance first and uses one absolute deadline whose remaining budget covers capture stop/drain, one session flush, all target detaches, `Browser.close`, and managed-process termination. Tests use a consuming fake clock/deadline to prove later phases receive less budget and no per-phase reset occurs. Reconnect does not flush; target close does not flush the whole session.
-- [ ] Deadline exhaustion/flush/worker blockage emits observable `CaptureStopped`, leaves statistics truthful, returns/records `ShutdownIncomplete`, skips unbudgeted graceful waits, performs last-resort process cleanup, and never blocks browser cleanup indefinitely.
-- [ ] `capture_statuses()` is sorted by `TargetId`; state events are transition-only; bounded acknowledgement/cadence sample-count/p50/p95/p99/max summaries flow through unchanged; gap/status logs and events follow the parent privacy allowlist.
-- [ ] Root uses the shared clock/IDs/sink, preserves explicit unavailable persistence, and adds no user-visible command or fake success.
-- [ ] Existing target reducer, reconnect, process/profile, doctor, runtime smoke, default/no-default, and spike tests stay green; workspace format/check/test/clippy pass independently.
+- [x] Browser-session core fakes implement and verify unique session identity, fixed origin sampled before subscriptions/start/first frame, object-safe sorted capture status snapshots (including bounded ack/cadence summaries), capture state events, and explicit gap events without runtime/transport types entering core.
+- [x] `InitialReconciliationCompleted` replaces direct Ready mutation. Reducer tests cover the single `reconcile_capture_bindings` helper, every Start/Stop/Suspend/Resume emission, and idempotent no-op. Effects carry exact target ID, connection generation, attachment generation, and transport session; suspend/stop preserve old context before clearing it. `targets/reducer.rs` exhaustively handles the new `BrowserSessionEvent` variants in its logging match, `apply_effects` exhaustively handles the new effect variants, and no second reconciliation mechanism exists.
+- [x] No `Page.startScreencast` occurs in Connecting/Reconnecting, for Discovered/Suspended/Unknown targets, or before the exact target's flat session exists; each Ready/Attached generation starts exactly once.
+- [x] Subscriptions are established before start, and initial session Ready is truthful: capture reconciliation has either started every eligible stream or published a target-local capture failure.
+- [x] Two scripted targets use isolated session scopes, queues, sequence trackers, status, and gaps; blocking/failing one leaves the other accepting and persisting frames.
+- [x] Dynamic attach/close affects only that exact key. Connection loss cancels old acceptance before resource replacement, opens `BrowserDisconnected`, rejects late old-generation callbacks, and closes the interruption on the first valid restored frame.
+- [x] A restored exact key keeps `TargetId` and advances generation; a missing/new key closes/creates rather than URL/title matching; official frame-number comparison never crosses generations.
+- [x] Visibility events feed both capture status and the existing target visibility reducer without starting a second screencast or producing duplicate hidden gaps.
+- [x] Explicit stop prevents new acceptance first and uses one absolute deadline whose remaining budget covers capture stop/drain, one session flush, all target detaches, `Browser.close`, and managed-process termination. Tests use a consuming fake clock/deadline to prove later phases receive less budget and no per-phase reset occurs. Reconnect does not flush; target close does not flush the whole session.
+- [x] Deadline exhaustion/flush/worker blockage emits observable `CaptureStopped`, leaves statistics truthful, returns/records `ShutdownIncomplete`, skips unbudgeted graceful waits, performs last-resort process cleanup, and never blocks browser cleanup indefinitely.
+- [x] `capture_statuses()` is sorted by `TargetId`; state events are transition-only; bounded acknowledgement/cadence sample-count/p50/p95/p99/max summaries flow through unchanged; gap/status logs and events follow the parent privacy allowlist.
+- [x] Root uses the shared clock/IDs/sink, preserves explicit unavailable persistence, and adds no user-visible command or fake success.
+- [x] Existing target reducer, reconnect, process/profile, doctor, runtime smoke, default/no-default, and spike tests stay green; workspace format/check/test/clippy pass independently.
 
 ## Execution
 
@@ -101,6 +101,12 @@ These files are exclusive to this story's implementation wave. This story delibe
 - Simplification: reused the existing `RecordingSink`, `MonotonicClock`, `IdSource`, coordinator, subscriber registry, and transport seam; added no store, analysis, command, or fake-success adapter. Shutdown phases now share one named absolute `ShutdownDeadline` and an ownership-safe process fallback.
 - Discrepancies from design: Added an adapter-local `CaptureVisibilityChanged` input so capture visibility signals update the existing target reducer without a second reconciliation loop; added `CaptureStartFailed` as the reducer input for target-local start failures. Both remain outside the core public event contract.
 - Adjacent issues parked: none.
+
+## Repair notes (2026-07-13)
+
+- `CaptureStartFailed` now emits the exact flat-session `Detach` before the reducer forgets the session mapping. The capture integration regression keeps an unrelated target's active binding and transport mapping intact while proving the rejected surplus session is detached.
+- `ShutdownDeadline` now accepts a narrow injectable monotonic budget source. The consuming-clock shutdown fixture exercises capture stop/drain/flush, target detach, `Browser.close`, and managed-process termination, records phase budgets, proves one absolute origin and strict decrease, and covers exhausted-budget force cleanup.
+- Removed the unused private `ReconnectExhausted` capture stop-reason variant without changing the stop contract.
 
 ## Review findings (2026-07-13)
 

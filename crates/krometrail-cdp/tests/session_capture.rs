@@ -119,6 +119,91 @@ fn capture_effects_are_reducer_owned_and_exactly_scoped() {
 }
 
 #[test]
+fn stream_cap_start_failure_detaches_only_the_surplus_flat_session() {
+    let state = reduce(
+        SupervisorState::new(compatibility()),
+        SupervisorInput::InitialTargets(vec![target("page-a"), target("page-b")]),
+    )
+    .unwrap()
+    .state;
+    let state = reduce(
+        state,
+        SupervisorInput::Attached {
+            target_key: "page-a".into(),
+            session: TransportSessionId::new("transport-a").unwrap(),
+        },
+    )
+    .unwrap()
+    .state;
+    let state = reduce(
+        state,
+        SupervisorInput::Attached {
+            target_key: "page-b".into(),
+            session: TransportSessionId::new("transport-b").unwrap(),
+        },
+    )
+    .unwrap()
+    .state;
+    let state = reduce(
+        state,
+        SupervisorInput::VisibilityChanged {
+            target_key: "page-a".into(),
+            visibility: TargetVisibility::Visible,
+        },
+    )
+    .unwrap()
+    .state;
+    let state = reduce(
+        state,
+        SupervisorInput::VisibilityChanged {
+            target_key: "page-b".into(),
+            visibility: TargetVisibility::Visible,
+        },
+    )
+    .unwrap()
+    .state;
+    let state = reduce(state, SupervisorInput::InitialReconciliationCompleted)
+        .unwrap()
+        .state;
+
+    // The coordinator rejects page-b after the active-stream cap is reached. The reducer must
+    // release that exact flat session without disturbing the still-live page-a stream.
+    let failed = reduce(
+        state,
+        SupervisorInput::CaptureStartFailed {
+            target_key: "page-b".into(),
+        },
+    )
+    .unwrap();
+    assert!(failed.effects.iter().any(|effect| matches!(
+        effect,
+        SupervisorEffect::Detach { session }
+            if session.as_str() == "transport-b"
+    )));
+    assert!(
+        !failed
+            .state
+            .target_key_by_session
+            .contains_key(&TransportSessionId::new("transport-b").unwrap())
+    );
+    assert_eq!(
+        failed
+            .state
+            .target_key_by_session
+            .get(&TransportSessionId::new("transport-a").unwrap()),
+        Some(&"page-a".to_owned())
+    );
+    assert!(matches!(
+        failed.state.targets_by_key["page-a"].capture_binding,
+        krometrail_cdp::CaptureBinding::Active(_)
+    ));
+    assert_eq!(
+        failed.state.targets_by_key["page-b"].target.lifecycle,
+        TargetLifecycle::Failed
+    );
+}
+
+#[test]
 fn visibility_and_target_failure_are_local_reducer_inputs() {
     let state = attached_visible_state();
     let target_id = state.targets_by_key["page-a"].target.target.id();

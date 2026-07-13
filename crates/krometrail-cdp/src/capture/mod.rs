@@ -170,7 +170,6 @@ pub(crate) enum CaptureStopReason {
     TargetDetached,
     TargetFailed,
     SessionStopping,
-    ReconnectExhausted,
     Cancelled,
 }
 
