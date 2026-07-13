@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-chrome-target-supervision
 kind: feature
-stage: implementing
+stage: review
 tags: [browser]
 parent: epic-rust-cdp-capture-foundation
 depends_on: [epic-rust-cdp-capture-foundation-cdp-transport-gate]
@@ -469,6 +469,12 @@ Acceptance:
 | Managed temporary | Krometrail temporary guard; delete after process ends | Krometrail process group | same, then delete owned temp path | reconnect transport only while child lives |
 | Attach Chrome/Chromium | reported as external; never mutated | external | cancel/drop transport only | reconnect same explicit endpoint |
 | Attach Electron renderer | reported as external; never mutated | external Electron app | cancel/drop renderer transport only | reconnect same endpoint; never inspect/kill main process |
+
+## Implementation summary
+
+All four dependency-ordered child stories are `stage: done`. The implementation introduced infrastructure-free browser/session contracts, exact cdpkit 0.4.0 behind a replaceable production transport seam, strict local endpoints and capability-based renderer probing, managed Chrome discovery/profile/process ownership, and a deterministic single-writer target/session supervisor with finite reconnect and bounded event fan-out.
+
+Production composition now uses `ProductionBrowserConnector`; `doctor` performs discovery only. Managed sessions own and clean process groups/profiles, attached sessions leave external resources alive, and descendant-reaping regressions plus repeated real Chrome runs leave zero process/profile/test-root leaks. The implementation deliberately contains no production screencast start, frame ingestion, persistence, actions, or snapshots. Workspace default/no-default tests, spike regression, real Chrome opt-in tests, formatting, and denied-warning clippy pass.
 
 ## Testing strategy
 
