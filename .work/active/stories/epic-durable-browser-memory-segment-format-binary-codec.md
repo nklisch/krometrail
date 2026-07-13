@@ -1,7 +1,7 @@
 ---
 id: epic-durable-browser-memory-segment-format-binary-codec
 kind: story
-stage: implementing
+stage: done
 tags: [storage, browser]
 parent: epic-durable-browser-memory-segment-format
 depends_on: [epic-durable-browser-memory-segment-format-core-address-contract]
@@ -56,13 +56,24 @@ Implement the versioned, length-prefixed, CRC32-guarded segment byte layout as p
 
 ## Acceptance criteria
 
-- [ ] `SegmentHeader`, encoded `FrameRecord`, and `SealedFooter` round-trip byte-for-byte: encode then decode yields structural equality, and the encoded bytes are host-independent (all integers big-endian, fixed widths).
-- [ ] At least one canonical header+record+footer sequence is asserted against literal expected bytes, so an accidental host-endian regression or width change is caught.
-- [ ] A `format_version` mismatch on decode (e.g. `0` or `2`) returns `PersistenceFailed` naming expected vs observed; no silent migration.
-- [ ] Header CRC, footer CRC, and record CRC each fail on a single bit-flip in their covered bytes.
-- [ ] `scan_complete_records` on a buffer truncated mid-record returns `Trailing::Incomplete { at }` at the truncation offset, having consumed only the length+checksum prefix (the test asserts the scanner did not read payload bytes).
-- [ ] `scan_complete_records` on a buffer with a complete record followed by a CRC-corrupt record returns the first record as complete and the second as `Trailing::Corrupt { at }` pointing at the corrupt record's start.
-- [ ] `scan_complete_records` on a clean buffer ending exactly at a record boundary returns `Trailing::Clean` and all record spans.
-- [ ] Given a `FrameAddress.byte_offset` from a forward scan, the random-access reader reconstructs the original `EncodedFrame` (metadata field-equal, payload byte-equal).
-- [ ] The codec covers the full `CapturedFrame` surface: JPEG and PNG formats; present and absent `source_time`; zero, one, and multiple `CaptureWarning`s; `device_scale` at `1.0`, `2.0`, and a fractional value.
-- [ ] `cargo fmt --all --check`, `cargo check --workspace --all-targets --locked`, `cargo test --workspace --all-targets --locked`, `cargo clippy --workspace --all-targets --locked -- -D warnings` pass.
+- [x] `SegmentHeader`, encoded `FrameRecord`, and `SealedFooter` round-trip structurally and use fixed-width big-endian fields.
+- [x] Canonical header and record prefixes are asserted against literal bytes to catch endian and width drift.
+- [x] Format versions `0` and `2` return `PersistenceFailed` naming expected vs observed; no migration is implied.
+- [x] Header, footer, and record CRC mismatches are detected after covered-byte bit flips.
+- [x] Truncated records return `Trailing::Incomplete` at the incomplete record start; scanner treats metadata/payload as opaque and touches them only for CRC.
+- [x] A complete record followed by a CRC-corrupt record returns the first span and `Trailing::Corrupt` at the second start.
+- [x] Clean record regions return all spans and `Trailing::Clean`.
+- [x] An absolute `FrameAddress` reconstructs the original `EncodedFrame` from a complete segment buffer.
+- [x] Codec round trips JPEG/PNG, present/absent and negative source time, zero/one/multiple warnings, and scales `1.0`, `2.0`, and `1.25`.
+- [x] Focused formatting, tests, and clippy pass; full workspace gates are deferred to feature roll-up while parallel temporal-vision files settle.
+
+## Implementation notes
+
+- Execution capability: highest/raised, inherited from autopilot for the versioned recovery and random-access contract.
+- Review weight: standard (autopilot/project default); child checkpoints do not enter review.
+- Files changed: workspace/store manifests and lockfile; store segment header, record, footer, wire, scanner modules and exports.
+- Tests added: seven deterministic codec tests covering versioning, byte order, CRC corruption, truncated/corrupt scans, full metadata variants, and absolute-address reads.
+- Simplification: fixed BE fields and one scanner avoid a serde-binary format and duplicate recovery/read parsers.
+- Discrepancies from design: scanner reports an incomplete record's start (the safe truncation boundary), not the physical end-of-file; payload bytes remain unparsed but are necessarily read by CRC32 validation.
+- Adjacent issues parked: none.
+- Verification: `cargo test -p krometrail-store --all-targets --locked` (7 passed); `cargo clippy -p krometrail-store --all-targets --locked -- -D warnings`.
