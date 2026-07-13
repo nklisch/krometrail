@@ -42,6 +42,7 @@ schemars = "1"
 sha2 = "0.10"
 libc = "0.2"
 tokio-tungstenite = "=0.30.0"
+url = "2"
 
 [dependencies]
 clap.workspace = true

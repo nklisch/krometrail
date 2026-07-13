@@ -7,7 +7,14 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = []
+default = ["cdpkit-transport"]
+cdpkit-transport = [
+	"dep:cdpkit",
+	"dep:futures-util",
+	"dep:serde_json",
+	"tokio/sync",
+	"tokio/time",
+]
 cdp-spike = [
 	"dep:futures-util",
 	"dep:schemars",
@@ -18,7 +25,7 @@ cdp-spike = [
 	"tokio/time",
 	"tokio/test-util",
 ]
-cdp-spike-cdpkit = ["cdp-spike", "dep:cdpkit", "dep:libc"]
+cdp-spike-cdpkit = ["cdp-spike", "cdpkit-transport", "dep:libc"]
 
 [dependencies]
 krometrail-core.workspace = true
@@ -33,3 +40,4 @@ serde_json = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 libc = { workspace = true, optional = true }
 tokio-tungstenite = { workspace = true, optional = true }
+url.workspace = true
