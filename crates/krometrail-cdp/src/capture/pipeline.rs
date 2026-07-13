@@ -106,6 +106,28 @@ impl OrdinalRegistry {
         state.last = next;
         OrdinalAllocation::Allocated(ordinal)
     }
+
+    /// Remove per-target ordinal state only for the exact terminal generation. A newer generation
+    /// (for example, a concurrent reconnect replacement) must retain its continuity.
+    pub(super) fn end_generation(&self, target: &CaptureTarget) {
+        let key = OrdinalKey {
+            session_id: target.session_id,
+            target_id: target.target_id,
+        };
+        let mut states = self.states.lock().expect("ordinal registry lock poisoned");
+        if let Some(state) = states.get(&key) {
+            if state.attachment_generation <= target.attachment_generation {
+                states.remove(&key);
+            }
+        }
+    }
+
+    pub(super) fn clear(&self) {
+        self.states
+            .lock()
+            .expect("ordinal registry lock poisoned")
+            .clear();
+    }
 }
 
 pub(super) struct StreamRuntime {
@@ -654,6 +676,9 @@ async fn frame_reader(
                 break;
             }
         };
+        // The receipt sample marks the end of frame wait. Acknowledgement latency is measured
+        // from this sample through successful ack completion; it includes token extraction but
+        // excludes the preceding wait on the event stream and any downstream parse/handoff work.
         let observed = runtime.dependencies.clock.now();
         runtime.record_received();
         let Some(ack_token) = event.params.get("sessionId").and_then(Value::as_i64) else {
@@ -666,7 +691,6 @@ async fn frame_reader(
             runtime.fail();
             break;
         };
-        let ack_started = runtime.dependencies.clock.now();
         let ack = time::timeout(
             runtime.config.ack_timeout,
             transport.send_raw(
@@ -694,9 +718,7 @@ async fn frame_reader(
             runtime.fail();
             break;
         }
-        let latency = ack_completed
-            .as_nanos()
-            .saturating_sub(ack_started.as_nanos());
+        let latency = ack_completed.as_nanos().saturating_sub(observed.as_nanos());
         let (observed_time, session_time) = runtime.record_ack(latency, observed);
         let ordinal = match runtime.ordinals.allocate(&runtime.target) {
             OrdinalAllocation::Allocated(ordinal) => ordinal,
@@ -935,6 +957,28 @@ pub(super) async fn stop_target(
         Transition::Deadline
     });
     let after_gaps = runtime.status().statistics().gap_count();
+    // Remove only the exact stopped runtime. The StreamKey includes attachment_generation, so a
+    // newer replacement has a different key and cannot be erased by this stop.
+    {
+        let mut streams = coordinator
+            .streams
+            .lock()
+            .expect("capture registry lock poisoned");
+        if let Some(existing) = streams.get(&key) {
+            if Arc::ptr_eq(existing, &runtime) {
+                streams.remove(&key);
+            }
+        }
+    }
+    // Terminal close/failure releases ordinal state; suspend, detach, and reconnect preserve it.
+    match reason {
+        CaptureStopReason::TargetClosed | CaptureStopReason::TargetFailed => {
+            coordinator.ordinals.end_generation(target);
+        }
+        CaptureStopReason::TargetDetached
+        | CaptureStopReason::SessionStopping
+        | CaptureStopReason::Cancelled => {}
+    }
     CaptureStopOutcome {
         reason,
         complete,
@@ -973,14 +1017,28 @@ pub(super) async fn suspend_target(
 }
 
 pub(super) fn statuses(coordinator: &CaptureCoordinator) -> Vec<TargetCaptureStatus> {
-    let mut statuses: Vec<_> = coordinator
+    let statuses: Vec<_> = coordinator
         .streams
         .lock()
         .expect("capture registry lock poisoned")
         .values()
         .map(|runtime| runtime.status())
         .collect();
-    statuses.sort_by_key(TargetCaptureStatus::target_id);
+    // During generation replacement both the previous attachment and its replacement can briefly
+    // coexist in the registry. Expose only the highest attachment generation per target.
+    let mut best: std::collections::HashMap<krometrail_core::TargetId, TargetCaptureStatus> =
+        std::collections::HashMap::new();
+    for status in statuses {
+        match best.get(&status.target_id()) {
+            Some(existing)
+                if existing.attachment_generation() >= status.attachment_generation() => {}
+            _ => {
+                best.insert(status.target_id(), status);
+            }
+        }
+    }
+    let mut statuses: Vec<_> = best.into_values().collect();
+    statuses.sort_by_key(|status| status.target_id());
     statuses
 }
 
@@ -1014,6 +1072,7 @@ pub(super) async fn shutdown(
         time::timeout_at(deadline, coordinator.dependencies.sink.flush(session_id))
             .await
             .is_ok_and(|result| result.is_ok());
+    coordinator.ordinals.clear();
     let complete = flush_succeeded && outcomes.iter().all(|outcome| outcome.complete);
     super::CaptureShutdownOutcome {
         targets: outcomes,

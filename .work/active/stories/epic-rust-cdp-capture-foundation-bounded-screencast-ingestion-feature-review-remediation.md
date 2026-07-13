@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-bounded-screencast-ingestion-feature-review-remediation
 kind: story
-stage: implementing
+stage: review
 tags: [browser]
 parent: epic-rust-cdp-capture-foundation-bounded-screencast-ingestion
 depends_on: [epic-rust-cdp-capture-foundation-bounded-screencast-ingestion-real-chrome-fidelity]
@@ -32,12 +32,12 @@ A lower-risk transient duplicate-status window during generation replacement sho
 
 ## Acceptance criteria
 
-- [ ] Deterministic clocks prove ack latency includes token-extraction interval from the receipt sample and excludes frame wait and post-ack work.
-- [ ] Repeated target create/start/stop churn keeps the stream registry/status cardinality bounded by live/current targets; stopped entries are absent.
-- [ ] Exact-key removal cannot erase a concurrently installed newer generation.
-- [ ] Status snapshots contain one highest-generation record per target and remain sorted.
-- [ ] Suspend/reconnect and nonterminal detach/rebind continue ordinals; terminal close/failure and whole-session teardown release ordinal registry state.
-- [ ] Full workspace, no-default, spike, clippy, and opt-in real-Chrome capture gates pass with zero process/profile references.
+- [x] Deterministic clocks prove ack latency includes token-extraction interval from the receipt sample and excludes frame wait and post-ack work.
+- [x] Repeated target create/start/stop churn keeps the stream registry/status cardinality bounded by live/current targets; stopped entries are absent.
+- [x] Exact-key removal cannot erase a concurrently installed newer generation.
+- [x] Status snapshots contain one highest-generation record per target and remain sorted.
+- [x] Suspend/reconnect and nonterminal detach/rebind continue ordinals; terminal close/failure and whole-session teardown release ordinal registry state.
+- [x] Full workspace, no-default, spike, clippy, and opt-in real-Chrome capture gates pass with zero process/profile references.
 
 ## Review weight
 

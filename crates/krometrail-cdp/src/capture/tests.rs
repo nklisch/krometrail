@@ -5,6 +5,7 @@ use krometrail_core::{
     ObservedTime, PortFuture, RecordingSink, SessionId, SessionOrigin, TargetId,
 };
 use std::{
+    collections::HashMap,
     num::NonZeroUsize,
     sync::{
         Arc, Mutex,
@@ -122,19 +123,32 @@ fn image_header_parser_is_local_and_bounded() {
 #[derive(Debug)]
 struct TestClock {
     next: AtomicU64,
+    stride: u64,
+    calls: AtomicU64,
 }
 
 impl TestClock {
     fn new() -> Self {
+        Self::with_stride(1)
+    }
+
+    fn with_stride(stride: u64) -> Self {
         Self {
             next: AtomicU64::new(1),
+            stride,
+            calls: AtomicU64::new(0),
         }
+    }
+
+    fn calls(&self) -> u64 {
+        self.calls.load(Ordering::Relaxed)
     }
 }
 
 impl MonotonicClock for TestClock {
     fn now(&self) -> ObservedTime {
-        ObservedTime::from_nanos(self.next.fetch_add(1, Ordering::Relaxed))
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        ObservedTime::from_nanos(self.next.fetch_add(self.stride, Ordering::Relaxed))
     }
 }
 
@@ -246,10 +260,11 @@ impl TransportEvents for TestEvents {
 
 #[derive(Debug)]
 struct TestTransport {
-    frame_sender: mpsc::Sender<NamedEvent>,
-    visibility_sender: mpsc::Sender<NamedEvent>,
-    frame_receiver: Mutex<Option<mpsc::Receiver<NamedEvent>>>,
-    visibility_receiver: Mutex<Option<mpsc::Receiver<NamedEvent>>>,
+    default_session: TransportSessionId,
+    frame_senders: Mutex<HashMap<TransportSessionId, mpsc::Sender<NamedEvent>>>,
+    visibility_senders: Mutex<HashMap<TransportSessionId, mpsc::Sender<NamedEvent>>>,
+    frame_receivers: Mutex<HashMap<TransportSessionId, mpsc::Receiver<NamedEvent>>>,
+    visibility_receivers: Mutex<HashMap<TransportSessionId, mpsc::Receiver<NamedEvent>>>,
     calls: Mutex<Vec<String>>,
     ack_watch: watch::Sender<usize>,
     ack_count: AtomicU64,
@@ -261,14 +276,24 @@ struct TestTransport {
 
 impl TestTransport {
     fn new(ack_completed: Arc<AtomicBool>, order: Arc<Mutex<Vec<&'static str>>>) -> Arc<Self> {
+        let default_session = TransportSessionId::new("transport-session").unwrap();
         let (frame_sender, frame_receiver) = mpsc::channel(16);
         let (visibility_sender, visibility_receiver) = mpsc::channel(16);
+        let mut frame_senders = HashMap::new();
+        let mut frame_receivers = HashMap::new();
+        frame_senders.insert(default_session.clone(), frame_sender);
+        frame_receivers.insert(default_session.clone(), frame_receiver);
+        let mut visibility_senders = HashMap::new();
+        let mut visibility_receivers = HashMap::new();
+        visibility_senders.insert(default_session.clone(), visibility_sender);
+        visibility_receivers.insert(default_session.clone(), visibility_receiver);
         let (ack_watch, _) = watch::channel(0);
         Arc::new(Self {
-            frame_sender,
-            visibility_sender,
-            frame_receiver: Mutex::new(Some(frame_receiver)),
-            visibility_receiver: Mutex::new(Some(visibility_receiver)),
+            default_session,
+            frame_senders: Mutex::new(frame_senders),
+            visibility_senders: Mutex::new(visibility_senders),
+            frame_receivers: Mutex::new(frame_receivers),
+            visibility_receivers: Mutex::new(visibility_receivers),
             calls: Mutex::new(Vec::new()),
             ack_watch,
             ack_count: AtomicU64::new(0),
@@ -279,8 +304,46 @@ impl TestTransport {
         })
     }
 
+    fn ensure_session(&self, session: &TransportSessionId) {
+        {
+            let senders = self.frame_senders.lock().unwrap();
+            if senders.contains_key(session) {
+                return;
+            }
+        }
+        let (frame_sender, frame_receiver) = mpsc::channel(16);
+        let (visibility_sender, visibility_receiver) = mpsc::channel(16);
+        self.frame_senders
+            .lock()
+            .unwrap()
+            .insert(session.clone(), frame_sender);
+        self.frame_receivers
+            .lock()
+            .unwrap()
+            .insert(session.clone(), frame_receiver);
+        self.visibility_senders
+            .lock()
+            .unwrap()
+            .insert(session.clone(), visibility_sender);
+        self.visibility_receivers
+            .lock()
+            .unwrap()
+            .insert(session.clone(), visibility_receiver);
+    }
+
     async fn frame(&self, ack_token: i64) {
-        self.frame_sender
+        self.frame_for(&self.default_session, ack_token).await;
+    }
+
+    async fn frame_for(&self, session: &TransportSessionId, ack_token: i64) {
+        let sender = self
+            .frame_senders
+            .lock()
+            .unwrap()
+            .get(session)
+            .cloned()
+            .unwrap_or_else(|| panic!("frame session {session:?} not registered"));
+        sender
             .send(NamedEvent {
                 method: "Page.screencastFrame".into(),
                 params: frame_params(ack_token),
@@ -290,7 +353,18 @@ impl TestTransport {
     }
 
     async fn visibility(&self, visible: bool) {
-        self.visibility_sender
+        self.visibility_for(&self.default_session, visible).await;
+    }
+
+    async fn visibility_for(&self, session: &TransportSessionId, visible: bool) {
+        let sender = self
+            .visibility_senders
+            .lock()
+            .unwrap()
+            .get(session)
+            .cloned()
+            .unwrap_or_else(|| panic!("visibility session {session:?} not registered"));
+        sender
             .send(NamedEvent {
                 method: "Page.screencastVisibilityChanged".into(),
                 params: serde_json::json!({"visible": visible}),
@@ -332,12 +406,18 @@ impl CdpTransport for TestTransport {
 
     fn subscribe_named(
         &self,
-        _scope: &CommandScope,
+        scope: &CommandScope,
         method: &str,
     ) -> TransportFuture<'_, Result<Box<dyn TransportEvents>, TransportError>> {
+        let CommandScope::Session(session) = scope else {
+            return Box::pin(async move { Err(TransportError::InvalidInput) });
+        };
+        let session = session.clone();
         let receiver = match method {
-            "Page.screencastFrame" => self.frame_receiver.lock().unwrap().take(),
-            "Page.screencastVisibilityChanged" => self.visibility_receiver.lock().unwrap().take(),
+            "Page.screencastFrame" => self.frame_receivers.lock().unwrap().remove(&session),
+            "Page.screencastVisibilityChanged" => {
+                self.visibility_receivers.lock().unwrap().remove(&session)
+            }
             _ => None,
         };
         Box::pin(async move {
@@ -376,13 +456,21 @@ fn jpeg_bytes() -> Vec<u8> {
 }
 
 fn target() -> CaptureTarget {
+    target_with(2, "transport-session", 1)
+}
+
+fn target_with(
+    target_value: u128,
+    transport_session: &str,
+    attachment_generation: u64,
+) -> CaptureTarget {
     CaptureTarget {
         session_id: SessionId::from_uuid(uuid::Uuid::from_u128(1)),
         session_origin: SessionOrigin::new(ObservedTime::from_nanos(0)),
-        target_id: TargetId::from_uuid(uuid::Uuid::from_u128(2)),
+        target_id: TargetId::from_uuid(uuid::Uuid::from_u128(target_value)),
         connection_generation: 1,
-        attachment_generation: 1,
-        transport_session: TransportSessionId::new("transport-session").unwrap(),
+        attachment_generation,
+        transport_session: TransportSessionId::new(transport_session).unwrap(),
     }
 }
 
@@ -870,4 +958,420 @@ fn gap_ledger_coalesces_without_growing_with_loss_count() {
         .map(|gap| gap.estimated_missing_frames().unwrap().get())
         .sum();
     assert_eq!(total, 3);
+}
+
+#[tokio::test]
+async fn ack_latency_uses_receipt_sample_and_excludes_wait_and_post_ack_work() {
+    let ack_completed = Arc::new(AtomicBool::new(false));
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let transport = TestTransport::new(Arc::clone(&ack_completed), Arc::clone(&order));
+    let sink = Arc::new(TestSink::new(ack_completed, Arc::clone(&order)));
+    let clock = Arc::new(TestClock::with_stride(10));
+    let observer = Arc::new(TestObserver::default());
+    let coordinator = coordinator(
+        CaptureConfig {
+            queue_capacity: NonZeroUsize::new(4).unwrap(),
+            ..CaptureConfig::default()
+        },
+        Arc::clone(&clock),
+        Arc::new(TestIds::new()),
+        Arc::clone(&sink),
+        Arc::clone(&observer),
+    );
+    let capture_target = target();
+    coordinator
+        .start_target(
+            capture_target.clone(),
+            Arc::clone(&transport) as Arc<dyn CdpTransport>,
+        )
+        .await
+        .unwrap();
+    let base_calls = clock.calls();
+    for token in 1..=3 {
+        transport.frame(token).await;
+    }
+    transport.wait_for_acks(3).await;
+    // Two deterministic clock samples per acknowledged frame: the receipt sample and the
+    // ack-completion sample. There is no intermediate sample after token extraction.
+    assert_eq!(clock.calls(), base_calls + 6);
+    let status = coordinator.statuses().pop().unwrap();
+    assert_eq!(status.statistics().acknowledged_frames(), 3);
+    assert_eq!(status.ack_latency().sample_count(), 3);
+    assert_eq!(status.ack_latency().max_nanos(), Some(10));
+    sink.release_first_frame.notify_one();
+    coordinator
+        .stop_target(
+            &capture_target,
+            CaptureStopReason::TargetClosed,
+            tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+        )
+        .await;
+}
+
+#[tokio::test]
+async fn repeated_target_churn_keeps_registry_and_statuses_bounded() {
+    let ack_completed = Arc::new(AtomicBool::new(false));
+    let transport =
+        TestTransport::new(Arc::clone(&ack_completed), Arc::new(Mutex::new(Vec::new())));
+    let sink = Arc::new(TestSink::new(
+        ack_completed,
+        Arc::new(Mutex::new(Vec::new())),
+    ));
+    let clock = Arc::new(TestClock::new());
+    let observer = Arc::new(TestObserver::default());
+    let coordinator = coordinator(
+        CaptureConfig::default(),
+        clock,
+        Arc::new(TestIds::new()),
+        Arc::clone(&sink),
+        Arc::clone(&observer),
+    );
+    let target_id = TargetId::from_uuid(uuid::Uuid::from_u128(42));
+    sink.release_first_frame.notify_one();
+    for generation in 1..=10 {
+        let session = format!("churn-session-{generation}");
+        let transport_session = TransportSessionId::new(&session).unwrap();
+        transport.ensure_session(&transport_session);
+        let target = CaptureTarget {
+            session_id: SessionId::from_uuid(uuid::Uuid::from_u128(1)),
+            session_origin: SessionOrigin::new(ObservedTime::from_nanos(0)),
+            target_id,
+            connection_generation: 1,
+            attachment_generation: generation,
+            transport_session,
+        };
+        coordinator
+            .start_target(
+                target.clone(),
+                Arc::clone(&transport) as Arc<dyn CdpTransport>,
+            )
+            .await
+            .unwrap();
+        transport.frame_for(&target.transport_session, 1).await;
+        transport.wait_for_acks(generation as usize).await;
+        let statuses = coordinator.statuses();
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].attachment_generation(), generation);
+        coordinator
+            .stop_target(
+                &target,
+                CaptureStopReason::TargetClosed,
+                tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+            )
+            .await;
+        assert!(coordinator.statuses().is_empty());
+    }
+    let ordinals: Vec<_> = sink
+        .frames
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|frame| frame.metadata().capture_ordinal().get())
+        .collect();
+    assert_eq!(ordinals, vec![1; 10]);
+}
+
+#[tokio::test]
+async fn target_detach_preserves_ordinal_continuity() {
+    let ack_completed = Arc::new(AtomicBool::new(false));
+    let transport =
+        TestTransport::new(Arc::clone(&ack_completed), Arc::new(Mutex::new(Vec::new())));
+    let sink = Arc::new(TestSink::new(
+        ack_completed,
+        Arc::new(Mutex::new(Vec::new())),
+    ));
+    let clock = Arc::new(TestClock::new());
+    let observer = Arc::new(TestObserver::default());
+    let coordinator = coordinator(
+        CaptureConfig::default(),
+        clock,
+        Arc::new(TestIds::new()),
+        Arc::clone(&sink),
+        Arc::clone(&observer),
+    );
+    let target = target();
+    coordinator
+        .start_target(
+            target.clone(),
+            Arc::clone(&transport) as Arc<dyn CdpTransport>,
+        )
+        .await
+        .unwrap();
+    sink.release_first_frame.notify_one();
+    transport.frame(1).await;
+    transport.frame(2).await;
+    transport.wait_for_acks(2).await;
+    coordinator
+        .stop_target(
+            &target,
+            CaptureStopReason::TargetDetached,
+            tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+        )
+        .await;
+
+    let resumed = target_with(2, "transport-session-resume", 2);
+    transport.ensure_session(&resumed.transport_session);
+    coordinator
+        .start_target(
+            resumed.clone(),
+            Arc::clone(&transport) as Arc<dyn CdpTransport>,
+        )
+        .await
+        .unwrap();
+    transport.frame_for(&resumed.transport_session, 3).await;
+    transport.wait_for_acks(3).await;
+    let ordinals: Vec<_> = sink
+        .frames
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|frame| frame.metadata().capture_ordinal().get())
+        .collect();
+    assert_eq!(ordinals, vec![1, 2, 3]);
+    coordinator
+        .stop_target(
+            &resumed,
+            CaptureStopReason::TargetClosed,
+            tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+        )
+        .await;
+}
+
+#[tokio::test]
+async fn statuses_expose_highest_generation_per_target_sorted() {
+    let ack_completed = Arc::new(AtomicBool::new(false));
+    let transport =
+        TestTransport::new(Arc::clone(&ack_completed), Arc::new(Mutex::new(Vec::new())));
+    let sink = Arc::new(TestSink::new(
+        ack_completed,
+        Arc::new(Mutex::new(Vec::new())),
+    ));
+    let clock = Arc::new(TestClock::new());
+    let observer = Arc::new(TestObserver::default());
+    let coordinator = coordinator(
+        CaptureConfig::default(),
+        clock,
+        Arc::new(TestIds::new()),
+        Arc::clone(&sink),
+        Arc::clone(&observer),
+    );
+    let target_a = target_with(10, "session-a", 1);
+    let target_b = target_with(20, "session-b", 1);
+    transport.ensure_session(&target_a.transport_session);
+    transport.ensure_session(&target_b.transport_session);
+    coordinator
+        .start_target(
+            target_a.clone(),
+            Arc::clone(&transport) as Arc<dyn CdpTransport>,
+        )
+        .await
+        .unwrap();
+    coordinator
+        .start_target(
+            target_b.clone(),
+            Arc::clone(&transport) as Arc<dyn CdpTransport>,
+        )
+        .await
+        .unwrap();
+
+    let target_a2 = target_with(10, "session-a-2", 2);
+    transport.ensure_session(&target_a2.transport_session);
+    coordinator
+        .start_target(
+            target_a2.clone(),
+            Arc::clone(&transport) as Arc<dyn CdpTransport>,
+        )
+        .await
+        .unwrap();
+
+    let statuses = coordinator.statuses();
+    assert_eq!(statuses.len(), 2);
+    assert_eq!(statuses[0].target_id(), target_a.target_id);
+    assert_eq!(statuses[0].attachment_generation(), 2);
+    assert_eq!(statuses[1].target_id(), target_b.target_id);
+    assert_eq!(statuses[1].attachment_generation(), 1);
+
+    coordinator
+        .stop_target(
+            &target_a2,
+            CaptureStopReason::TargetClosed,
+            tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+        )
+        .await;
+    coordinator
+        .stop_target(
+            &target_a,
+            CaptureStopReason::TargetClosed,
+            tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+        )
+        .await;
+    coordinator
+        .stop_target(
+            &target_b,
+            CaptureStopReason::TargetClosed,
+            tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+        )
+        .await;
+    assert!(coordinator.statuses().is_empty());
+}
+
+#[tokio::test]
+async fn stop_removes_exact_runtime_without_erasing_newer_generation() {
+    let ack_completed = Arc::new(AtomicBool::new(false));
+    let transport =
+        TestTransport::new(Arc::clone(&ack_completed), Arc::new(Mutex::new(Vec::new())));
+    let sink = Arc::new(TestSink::new(
+        ack_completed,
+        Arc::new(Mutex::new(Vec::new())),
+    ));
+    let clock = Arc::new(TestClock::new());
+    let observer = Arc::new(TestObserver::default());
+    let coordinator = coordinator(
+        CaptureConfig::default(),
+        clock,
+        Arc::new(TestIds::new()),
+        Arc::clone(&sink),
+        Arc::clone(&observer),
+    );
+    let gen1 = target_with(5, "session-gen1", 1);
+    let gen2 = target_with(5, "session-gen2", 2);
+    transport.ensure_session(&gen1.transport_session);
+    transport.ensure_session(&gen2.transport_session);
+    coordinator
+        .start_target(
+            gen1.clone(),
+            Arc::clone(&transport) as Arc<dyn CdpTransport>,
+        )
+        .await
+        .unwrap();
+    coordinator
+        .start_target(
+            gen2.clone(),
+            Arc::clone(&transport) as Arc<dyn CdpTransport>,
+        )
+        .await
+        .unwrap();
+    sink.release_first_frame.notify_one();
+
+    coordinator
+        .stop_target(
+            &gen1,
+            CaptureStopReason::TargetClosed,
+            tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+        )
+        .await;
+    let statuses = coordinator.statuses();
+    assert_eq!(statuses.len(), 1);
+    assert_eq!(statuses[0].attachment_generation(), 2);
+
+    transport.frame_for(&gen2.transport_session, 1).await;
+    transport.wait_for_acks(1).await;
+    let ordinals: Vec<_> = sink
+        .frames
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|frame| frame.metadata().capture_ordinal().get())
+        .collect();
+    assert_eq!(ordinals, vec![1]);
+    coordinator
+        .stop_target(
+            &gen2,
+            CaptureStopReason::TargetClosed,
+            tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+        )
+        .await;
+
+    let gen3 = target_with(5, "session-gen3", 3);
+    transport.ensure_session(&gen3.transport_session);
+    coordinator
+        .start_target(
+            gen3.clone(),
+            Arc::clone(&transport) as Arc<dyn CdpTransport>,
+        )
+        .await
+        .unwrap();
+    transport.frame_for(&gen3.transport_session, 1).await;
+    transport.wait_for_acks(2).await;
+    let ordinals: Vec<_> = sink
+        .frames
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|frame| frame.metadata().capture_ordinal().get())
+        .collect();
+    assert_eq!(ordinals, vec![1, 1]);
+    coordinator
+        .stop_target(
+            &gen3,
+            CaptureStopReason::TargetClosed,
+            tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+        )
+        .await;
+}
+
+#[tokio::test]
+async fn session_shutdown_clears_ordinal_registry() {
+    let ack_completed = Arc::new(AtomicBool::new(false));
+    let transport =
+        TestTransport::new(Arc::clone(&ack_completed), Arc::new(Mutex::new(Vec::new())));
+    let sink = Arc::new(TestSink::new(
+        ack_completed,
+        Arc::new(Mutex::new(Vec::new())),
+    ));
+    let clock = Arc::new(TestClock::new());
+    let observer = Arc::new(TestObserver::default());
+    let coordinator = coordinator(
+        CaptureConfig::default(),
+        clock,
+        Arc::new(TestIds::new()),
+        Arc::clone(&sink),
+        Arc::clone(&observer),
+    );
+    let target = target();
+    coordinator
+        .start_target(
+            target.clone(),
+            Arc::clone(&transport) as Arc<dyn CdpTransport>,
+        )
+        .await
+        .unwrap();
+    sink.release_first_frame.notify_one();
+    transport.frame(1).await;
+    transport.wait_for_acks(1).await;
+    let outcome = coordinator
+        .shutdown(
+            SessionId::from_uuid(uuid::Uuid::from_u128(1)),
+            tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+        )
+        .await;
+    assert!(outcome.complete);
+    assert!(coordinator.statuses().is_empty());
+
+    let restarted = target_with(2, "transport-session-restart", 2);
+    transport.ensure_session(&restarted.transport_session);
+    coordinator
+        .start_target(
+            restarted.clone(),
+            Arc::clone(&transport) as Arc<dyn CdpTransport>,
+        )
+        .await
+        .unwrap();
+    transport.frame_for(&restarted.transport_session, 1).await;
+    transport.wait_for_acks(2).await;
+    let ordinals: Vec<_> = sink
+        .frames
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|frame| frame.metadata().capture_ordinal().get())
+        .collect();
+    assert_eq!(ordinals, vec![1, 1]);
+    coordinator
+        .stop_target(
+            &restarted,
+            CaptureStopReason::TargetClosed,
+            tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+        )
+        .await;
 }
