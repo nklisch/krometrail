@@ -9,8 +9,8 @@ use krometrail_cdp::{
 use serde_json::json;
 use support::scripted_cdp::ScriptedCdp;
 
-#[test]
-fn malformed_and_non_loopback_endpoints_fail_before_side_effects() {
+#[tokio::test]
+async fn malformed_and_non_loopback_endpoints_fail_before_side_effects() {
     for input in [
         "https://127.0.0.1:9222",
         "wss://127.0.0.1:9222/devtools/browser/id",
@@ -20,12 +20,13 @@ fn malformed_and_non_loopback_endpoints_fail_before_side_effects() {
         "not a URL",
     ] {
         assert!(
-            LocalCdpEndpoint::from_websocket_url(input).is_err(),
+            LocalCdpEndpoint::from_websocket_url(input).await.is_err(),
             "accepted {input}"
         );
     }
-    let endpoint =
-        LocalCdpEndpoint::from_websocket_url("ws://localhost:9222/devtools/browser/id").unwrap();
+    let endpoint = LocalCdpEndpoint::from_websocket_url("ws://localhost:9222/devtools/browser/id")
+        .await
+        .unwrap();
     assert_eq!(endpoint.redacted_label(), "localhost:9222");
 }
 

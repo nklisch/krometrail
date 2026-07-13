@@ -4,11 +4,7 @@
 //! malformed or remote endpoint from reaching a socket operation, and gives launch/supervision a
 //! value that carries no credentials or mutable process state.
 
-use std::{
-    fmt,
-    net::{SocketAddr, ToSocketAddrs},
-    sync::Arc,
-};
+use std::{fmt, future::Future, net::SocketAddr, pin::Pin, sync::Arc};
 
 use krometrail_core::NonEmptyText;
 use thiserror::Error;
@@ -50,21 +46,26 @@ pub enum LocalCdpEndpointKind {
     WebSocket,
 }
 
+/// The boxed future returned by [`EndpointResolver`].
+pub type EndpointResolveFuture<'a> =
+    Pin<Box<dyn Future<Output = std::io::Result<Vec<SocketAddr>>> + Send + 'a>>;
+
 /// Resolves one endpoint hostname to its candidate socket addresses.
 ///
-/// The resolver is deliberately a small synchronous port: endpoint construction is the only place
-/// where name resolution is allowed, and deterministic tests can supply a fixed result without
-/// changing the network code. Implementations must return all candidates observed for the name;
-/// [`LocalCdpEndpoint`] rejects an empty set and every set containing a non-loopback address.
+/// This is an object-safe asynchronous port so reconnect supervision can poll resolution together
+/// with its deadline and cancellation signals. Implementations must return all candidates observed
+/// for the name; [`LocalCdpEndpoint`] rejects an empty set and every set containing a non-loopback
+/// address. Deterministic tests can return `Box::pin(std::future::ready(Ok(addresses)))` without
+/// changing the network code.
 pub trait EndpointResolver: Send + Sync {
-    fn resolve(&self, host: &str, port: u16) -> std::io::Result<Vec<SocketAddr>>;
+    fn resolve<'a>(&'a self, host: &'a str, port: u16) -> EndpointResolveFuture<'a>;
 }
 
 impl<F> EndpointResolver for F
 where
-    F: Fn(&str, u16) -> std::io::Result<Vec<SocketAddr>> + Send + Sync,
+    F: for<'a> Fn(&'a str, u16) -> EndpointResolveFuture<'a> + Send + Sync,
 {
-    fn resolve(&self, host: &str, port: u16) -> std::io::Result<Vec<SocketAddr>> {
+    fn resolve<'a>(&'a self, host: &'a str, port: u16) -> EndpointResolveFuture<'a> {
         self(host, port)
     }
 }
@@ -73,8 +74,12 @@ where
 pub struct SystemEndpointResolver;
 
 impl EndpointResolver for SystemEndpointResolver {
-    fn resolve(&self, host: &str, port: u16) -> std::io::Result<Vec<SocketAddr>> {
-        (host, port).to_socket_addrs().map(Iterator::collect)
+    fn resolve<'a>(&'a self, host: &'a str, port: u16) -> EndpointResolveFuture<'a> {
+        Box::pin(async move {
+            tokio::net::lookup_host((host, port))
+                .await
+                .map(Iterator::collect)
+        })
     }
 }
 
@@ -137,7 +142,7 @@ impl LocalCdpEndpoint {
     ) -> Result<Self, EndpointError> {
         let url = parse_and_validate(input.as_ref())?;
         match url.scheme() {
-            "ws" => Self::from_validated_websocket(url, resolver),
+            "ws" => Self::from_validated_websocket(url, resolver).await,
             "http" => Self::resolve_http(url, resolver).await,
             _ => Err(EndpointError::UnsupportedScheme),
         }
@@ -152,12 +157,12 @@ impl LocalCdpEndpoint {
     }
 
     /// Validate a direct WebSocket endpoint without opening a connection.
-    pub fn from_websocket_url(input: impl AsRef<str>) -> Result<Self, EndpointError> {
-        Self::from_websocket_url_with_resolver(input, Arc::new(SystemEndpointResolver))
+    pub async fn from_websocket_url(input: impl AsRef<str>) -> Result<Self, EndpointError> {
+        Self::from_websocket_url_with_resolver(input, Arc::new(SystemEndpointResolver)).await
     }
 
     /// Validate a direct WebSocket endpoint with an injectable hostname resolver.
-    pub fn from_websocket_url_with_resolver(
+    pub async fn from_websocket_url_with_resolver(
         input: impl AsRef<str>,
         resolver: Arc<dyn EndpointResolver>,
     ) -> Result<Self, EndpointError> {
@@ -165,23 +170,23 @@ impl LocalCdpEndpoint {
         if url.scheme() != "ws" {
             return Err(EndpointError::UnsupportedScheme);
         }
-        Self::from_validated_websocket(url, resolver)
+        Self::from_validated_websocket(url, resolver).await
     }
 
     /// Generic convenience form of [`Self::from_websocket_url_with_resolver`].
-    pub fn from_websocket_url_with<R>(
+    pub async fn from_websocket_url_with<R>(
         input: impl AsRef<str>,
         resolver: R,
     ) -> Result<Self, EndpointError>
     where
         R: EndpointResolver + 'static,
     {
-        Self::from_websocket_url_with_resolver(input, Arc::new(resolver))
+        Self::from_websocket_url_with_resolver(input, Arc::new(resolver)).await
     }
 
     /// Alias emphasizing that this constructor performs no readiness probe.
-    pub fn validate_websocket(input: impl AsRef<str>) -> Result<Self, EndpointError> {
-        Self::from_websocket_url(input)
+    pub async fn validate_websocket(input: impl AsRef<str>) -> Result<Self, EndpointError> {
+        Self::from_websocket_url(input).await
     }
 
     pub fn kind(&self) -> LocalCdpEndpointKind {
@@ -211,14 +216,14 @@ impl LocalCdpEndpoint {
             return Err(EndpointError::NotHttpOrigin);
         }
         let response = fetch_version(&self.http_origin, self.http_address).await?;
-        self.with_discovered_websocket(response)
+        self.with_discovered_websocket(response).await
     }
 
-    fn from_validated_websocket(
+    async fn from_validated_websocket(
         url: Url,
         resolver: Arc<dyn EndpointResolver>,
     ) -> Result<Self, EndpointError> {
-        let websocket_address = pin_loopback(&url, resolver.as_ref())?;
+        let websocket_address = pin_loopback(&url, resolver.as_ref()).await?;
         let http_origin = origin_for(&url, "http")?;
         let redacted_label = label_for(&url)?;
         Ok(Self {
@@ -236,10 +241,17 @@ impl LocalCdpEndpoint {
         url: Url,
         resolver: Arc<dyn EndpointResolver>,
     ) -> Result<Self, EndpointError> {
-        let http_address = pin_loopback(&url, resolver.as_ref())?;
+        let http_address = pin_loopback(&url, resolver.as_ref()).await?;
         let response = fetch_version(&url, http_address).await?;
         let websocket = discovered_websocket(&response)?;
-        let websocket_address = pin_loopback(&websocket, resolver.as_ref())?;
+        let websocket_address = if same_authority(&url, &websocket) {
+            // `/json/version` can return a hostname alias for the HTTP origin. Reuse the exact
+            // address that was validated for the request rather than resolving the authority a
+            // second time and permitting a rebinding to replace the pin.
+            http_address
+        } else {
+            pin_loopback(&websocket, resolver.as_ref()).await?
+        };
         let redacted_label = label_for(&url)?;
         Ok(Self {
             kind: LocalCdpEndpointKind::Http,
@@ -252,15 +264,20 @@ impl LocalCdpEndpoint {
         })
     }
 
-    fn with_discovered_websocket(
+    async fn with_discovered_websocket(
         &self,
         response: serde_json::Value,
     ) -> Result<Self, EndpointError> {
         let websocket = discovered_websocket(&response)?;
-        let websocket_address = if same_authority(&self.browser_websocket_url, &websocket) {
+        let websocket_address = if same_authority(&self.http_origin, &websocket) {
+            // The HTTP discovery socket is the authority pin for this origin. It remains the
+            // authoritative address even when the browser rotates the WebSocket path or hostname
+            // spelling in `/json/version`.
+            self.http_address
+        } else if same_authority(&self.browser_websocket_url, &websocket) {
             self.websocket_address
         } else {
-            pin_loopback(&websocket, self.resolver.as_ref())?
+            pin_loopback(&websocket, self.resolver.as_ref()).await?
         };
         Ok(Self {
             kind: self.kind,
@@ -307,11 +324,15 @@ fn parse_and_validate(input: &str) -> Result<Url, EndpointError> {
     Ok(url)
 }
 
-fn pin_loopback(url: &Url, resolver: &dyn EndpointResolver) -> Result<SocketAddr, EndpointError> {
+async fn pin_loopback(
+    url: &Url,
+    resolver: &dyn EndpointResolver,
+) -> Result<SocketAddr, EndpointError> {
     let host = url.host_str().ok_or(EndpointError::InvalidUrl)?;
     let port = url.port().ok_or(EndpointError::MissingPort)?;
     let addresses = resolver
         .resolve(host, port)
+        .await
         .map_err(|_| EndpointError::NotLoopback)?;
     let Some(address) = addresses.first().copied() else {
         return Err(EndpointError::NotLoopback);
@@ -448,30 +469,63 @@ mod tests {
         sync::atomic::{AtomicUsize, Ordering},
     };
 
-    #[test]
-    fn validates_only_loopback_websocket_origins() {
+    type StaticResolve = dyn Fn(&str, u16) -> std::io::Result<Vec<SocketAddr>> + Send + Sync;
+
+    struct StaticResolver {
+        resolve: Arc<StaticResolve>,
+    }
+
+    impl EndpointResolver for StaticResolver {
+        fn resolve<'a>(&'a self, host: &'a str, port: u16) -> EndpointResolveFuture<'a> {
+            Box::pin(std::future::ready((self.resolve)(host, port)))
+        }
+    }
+
+    fn static_resolver<F>(resolve: F) -> Arc<dyn EndpointResolver>
+    where
+        F: Fn(&str, u16) -> std::io::Result<Vec<SocketAddr>> + Send + Sync + 'static,
+    {
+        Arc::new(StaticResolver {
+            resolve: Arc::new(resolve),
+        })
+    }
+
+    #[tokio::test]
+    async fn validates_only_loopback_websocket_origins() {
         let endpoint =
             LocalCdpEndpoint::from_websocket_url("ws://127.0.0.1:9222/devtools/browser/id")
+                .await
                 .unwrap();
         assert_eq!(endpoint.redacted_label(), "127.0.0.1:9222");
         assert_eq!(endpoint.kind(), LocalCdpEndpointKind::WebSocket);
-        assert!(LocalCdpEndpoint::from_websocket_url("ws://8.8.8.8:9222/id").is_err());
-        assert!(LocalCdpEndpoint::from_websocket_url("wss://127.0.0.1:9222/id").is_err());
         assert!(
-            LocalCdpEndpoint::from_websocket_url("ws://user:secret@127.0.0.1:9222/id").is_err()
+            LocalCdpEndpoint::from_websocket_url("ws://8.8.8.8:9222/id")
+                .await
+                .is_err()
+        );
+        assert!(
+            LocalCdpEndpoint::from_websocket_url("wss://127.0.0.1:9222/id")
+                .await
+                .is_err()
+        );
+        assert!(
+            LocalCdpEndpoint::from_websocket_url("ws://user:secret@127.0.0.1:9222/id")
+                .await
+                .is_err()
         );
     }
 
-    #[test]
-    fn rejects_empty_and_mixed_resolver_results_before_network_use() {
-        let empty = Arc::new(|_: &str, _: u16| Ok(Vec::new()));
+    #[tokio::test]
+    async fn rejects_empty_and_mixed_resolver_results_before_network_use() {
+        let empty = static_resolver(|_, _| Ok(Vec::new()));
         assert_eq!(
             LocalCdpEndpoint::from_websocket_url_with_resolver("ws://test.invalid:9222/id", empty,)
+                .await
                 .unwrap_err(),
             EndpointError::NotLoopback
         );
 
-        let mixed = Arc::new(|_: &str, _: u16| {
+        let mixed = static_resolver(|_, _| {
             Ok(vec![
                 SocketAddr::from(([127, 0, 0, 1], 9222)),
                 SocketAddr::from(([8, 8, 8, 8], 9222)),
@@ -479,23 +533,25 @@ mod tests {
         });
         assert_eq!(
             LocalCdpEndpoint::from_websocket_url_with_resolver("ws://test.invalid:9222/id", mixed,)
+                .await
                 .unwrap_err(),
             EndpointError::NotLoopback
         );
     }
 
-    #[test]
-    fn pins_the_first_validated_address_without_re_resolving_for_dial() {
+    #[tokio::test]
+    async fn pins_the_first_validated_address_without_re_resolving_for_dial() {
         let calls = Arc::new(AtomicUsize::new(0));
         let calls_for_resolver = Arc::clone(&calls);
-        let resolver = move |_: &str, port: u16| {
+        let resolver = static_resolver(move |_, port: u16| {
             calls_for_resolver.fetch_add(1, Ordering::AcqRel);
             Ok(vec![SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)])
-        };
-        let endpoint = LocalCdpEndpoint::from_websocket_url_with(
+        });
+        let endpoint = LocalCdpEndpoint::from_websocket_url_with_resolver(
             "ws://rebinding.invalid:9222/devtools/browser/id",
             resolver,
         )
+        .await
         .unwrap();
         assert_eq!(calls.load(Ordering::Acquire), 1);
         assert_eq!(
@@ -522,14 +578,17 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let resolver_calls = Arc::new(AtomicUsize::new(0));
         let resolver_calls_for_resolver = Arc::clone(&resolver_calls);
-        let resolver = move |host: &str, port: u16| {
-            resolver_calls_for_resolver.fetch_add(1, Ordering::AcqRel);
+        let resolver = static_resolver(move |host: &str, port: u16| {
+            let call = resolver_calls_for_resolver.fetch_add(1, Ordering::AcqRel);
+            assert_eq!(host, "origin.invalid");
             assert_eq!(port, address.port());
-            match host {
-                "origin.invalid" | "ws.invalid" => Ok(vec![address]),
-                _ => panic!("unexpected host {host}"),
-            }
-        };
+            let ip = if call == 0 {
+                Ipv4Addr::LOCALHOST
+            } else {
+                Ipv4Addr::new(127, 0, 0, 2)
+            };
+            Ok(vec![SocketAddr::new(IpAddr::V4(ip), port)])
+        });
         let server = tokio::spawn(async move {
             for path in ["/devtools/browser/initial", "/devtools/browser/rotated"] {
                 let (mut stream, _) = listener.accept().await.unwrap();
@@ -545,7 +604,7 @@ mod tests {
                 let request = String::from_utf8(request).unwrap();
                 assert!(request.contains(&format!("Host: origin.invalid:{}", address.port())));
                 let body = serde_json::json!({
-                    "webSocketDebuggerUrl": format!("ws://ws.invalid:{}{path}", address.port()),
+                    "webSocketDebuggerUrl": format!("ws://origin.invalid:{}{path}", address.port()),
                 })
                 .to_string();
                 let response = format!(
@@ -557,7 +616,7 @@ mod tests {
             }
         });
 
-        let endpoint = LocalCdpEndpoint::resolve_with(
+        let endpoint = LocalCdpEndpoint::resolve_with_resolver(
             format!("http://origin.invalid:{}", address.port()),
             resolver,
         )
@@ -567,20 +626,28 @@ mod tests {
         assert_eq!(endpoint.http_origin().host_str(), Some("origin.invalid"));
         assert_eq!(
             endpoint.browser_websocket_url().host_str(),
-            Some("ws.invalid")
+            Some("origin.invalid")
         );
         assert_eq!(
             endpoint.browser_websocket_url().path(),
             "/devtools/browser/initial"
         );
-        assert_eq!(resolver_calls.load(Ordering::Acquire), 2);
+        assert_eq!(resolver_calls.load(Ordering::Acquire), 1);
+        assert_eq!(
+            endpoint.websocket_dial_url().unwrap().host_str(),
+            Some("127.0.0.1")
+        );
 
         let refreshed = endpoint.refresh_http().await.unwrap();
         assert_eq!(
             refreshed.browser_websocket_url().path(),
             "/devtools/browser/rotated"
         );
-        assert_eq!(resolver_calls.load(Ordering::Acquire), 2);
+        assert_eq!(
+            refreshed.websocket_dial_url().unwrap().host_str(),
+            Some("127.0.0.1")
+        );
+        assert_eq!(resolver_calls.load(Ordering::Acquire), 1);
         server.await.unwrap();
     }
 

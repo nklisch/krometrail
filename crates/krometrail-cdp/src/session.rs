@@ -1576,8 +1576,18 @@ fn stable_error(code: ErrorCode, message: &'static str) -> KrometrailError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transport::TransportFuture;
-    use std::sync::atomic::AtomicUsize;
+    use crate::{
+        EndpointResolveFuture, EndpointResolver, LocalCdpEndpoint, transport::TransportFuture,
+    };
+    use krometrail_core::{
+        BrowserProduct, BrowserProductVersion, BrowserVersion, CapabilitySupport,
+        RendererCapability,
+    };
+    use std::{
+        net::{IpAddr, Ipv4Addr, SocketAddr},
+        process::Command,
+        sync::atomic::AtomicUsize,
+    };
 
     #[test]
     fn target_event_parsing_uses_opaque_keys_and_ignores_page_content() {
@@ -1594,6 +1604,214 @@ mod tests {
     fn page_info(key: &str) -> TransportTargetInfo {
         TransportTargetInfo::new(key, "page", format!("https://{key}.test"), key, false, None)
             .unwrap()
+    }
+
+    struct DelayedChangedAuthorityResolver {
+        address: SocketAddr,
+        calls: AtomicUsize,
+        started: Arc<Notify>,
+    }
+
+    impl EndpointResolver for DelayedChangedAuthorityResolver {
+        fn resolve<'a>(&'a self, _host: &'a str, _port: u16) -> EndpointResolveFuture<'a> {
+            let call = self.calls.fetch_add(1, Ordering::AcqRel);
+            if call < 2 {
+                let address = self.address;
+                Box::pin(std::future::ready(Ok(vec![address])))
+            } else {
+                let started = Arc::clone(&self.started);
+                Box::pin(async move {
+                    started.notify_waiters();
+                    std::future::pending::<std::io::Result<Vec<SocketAddr>>>().await
+                })
+            }
+        }
+    }
+
+    async fn endpoint_with_delayed_changed_authority() -> (
+        LocalCdpEndpoint,
+        Arc<DelayedChangedAuthorityResolver>,
+        JoinHandle<()>,
+    ) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for host in ["initial.invalid", "changed.invalid"] {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                loop {
+                    let mut chunk = [0_u8; 512];
+                    let count = stream.read(&mut chunk).await.unwrap();
+                    request.extend_from_slice(&chunk[..count]);
+                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let body = serde_json::json!({
+                    "webSocketDebuggerUrl": format!(
+                        "ws://{host}:{}/devtools/browser/{}",
+                        address.port(),
+                        if host == "initial.invalid" { "initial" } else { "changed" }
+                    ),
+                })
+                .to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let resolver = Arc::new(DelayedChangedAuthorityResolver {
+            address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), address.port()),
+            calls: AtomicUsize::new(0),
+            started: Arc::new(Notify::new()),
+        });
+        let endpoint = LocalCdpEndpoint::resolve_with_resolver(
+            format!("http://origin.invalid:{}", address.port()),
+            Arc::clone(&resolver) as Arc<dyn EndpointResolver>,
+        )
+        .await
+        .unwrap();
+        assert_eq!(resolver.calls.load(Ordering::Acquire), 2);
+        (endpoint, resolver, server)
+    }
+
+    fn test_compatibility() -> BrowserCompatibility {
+        BrowserCompatibility::new(
+            BrowserVersion::new(
+                BrowserProduct::Chrome,
+                BrowserProductVersion::new("128").unwrap(),
+                "revision",
+                "1.3",
+                "user-agent",
+                "js",
+            )
+            .unwrap(),
+            RendererCapability::ALL
+                .iter()
+                .map(|capability| CapabilitySupport::new(*capability, true, true, None).unwrap())
+                .collect(),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn changed_authority_resolution_loses_to_the_twenty_millisecond_attempt_deadline() {
+        let (endpoint, resolver, server) = endpoint_with_delayed_changed_authority().await;
+        let attempt = AttemptControl {
+            cancellation: AttemptCancellation::new(),
+            deadline: tokio::time::Instant::now() + Duration::from_millis(20),
+        };
+        let result = attempt.race(endpoint.refresh_http()).await;
+        assert_eq!(result, Err(AttemptFailure::TimedOut));
+        assert_eq!(resolver.calls.load(Ordering::Acquire), 3);
+        assert_eq!(
+            endpoint.browser_websocket_url().path(),
+            "/devtools/browser/initial"
+        );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn changed_authority_resolution_loses_to_attempt_cancellation() {
+        let (endpoint, resolver, server) = endpoint_with_delayed_changed_authority().await;
+        let cancellation = AttemptCancellation::new();
+        let attempt = AttemptControl {
+            cancellation: cancellation.clone(),
+            deadline: tokio::time::Instant::now() + Duration::from_secs(1),
+        };
+        let task = tokio::spawn(async move { attempt.race(endpoint.refresh_http()).await });
+        tokio::time::timeout(Duration::from_millis(100), resolver.started.notified())
+            .await
+            .unwrap();
+        cancellation.cancel();
+        assert_eq!(task.await.unwrap(), Err(AttemptFailure::Cancelled));
+        server.await.unwrap();
+    }
+
+    struct NeverConnectFactory {
+        calls: AtomicUsize,
+    }
+
+    impl CdpTransportFactory for NeverConnectFactory {
+        fn connect(
+            &self,
+            _browser_websocket_url: &str,
+        ) -> TransportFuture<'_, std::result::Result<Arc<dyn CdpTransport>, TransportError>>
+        {
+            self.calls.fetch_add(1, Ordering::AcqRel);
+            Box::pin(async { Err(TransportError::ConnectFailed) })
+        }
+    }
+
+    #[tokio::test]
+    async fn process_death_abandons_changed_authority_resolution_before_connection_commit() {
+        let (endpoint, resolver, server) = endpoint_with_delayed_changed_authority().await;
+        let process =
+            ManagedChromeProcess::from_child(Command::new("sleep").arg("60").spawn().unwrap());
+        let process = Arc::new(Mutex::new(Some(process)));
+        let process_death = Arc::new(ProcessDeathSignal::default());
+        let factory = Arc::new(NeverConnectFactory {
+            calls: AtomicUsize::new(0),
+        });
+        let compatibility = test_compatibility();
+        let (command_tx, mut commands) = mpsc::channel(4);
+        let shared = Arc::new(SessionShared {
+            compatibility: compatibility.clone(),
+            ownership: BrowserOwnership::Managed,
+            profile: ProfileRef::External,
+            state: Mutex::new(SupervisorState::new(compatibility.clone())),
+            subscribers: Arc::new(SubscriberRegistry::new(4)),
+            command_tx,
+            stop_result: Mutex::new(None),
+        });
+        let runtime = SupervisorRuntime {
+            endpoint: Arc::new(endpoint),
+            factory: factory.clone(),
+            process: Some(process),
+            profile: None,
+            config: SupervisorConfig {
+                reconnect: crate::ReconnectPolicy {
+                    delays: vec![Duration::ZERO].into_boxed_slice(),
+                    attempt_timeout: Duration::from_secs(1),
+                },
+                subscriber_capacity: 4,
+                reconnect_target_limit: 4,
+                reconnect_attach_concurrency: 1,
+            },
+            process_death: Arc::clone(&process_death),
+        };
+        let task = tokio::spawn(async move {
+            let mut state = SupervisorState::new(compatibility);
+            let mut connection = None;
+            let ended = reconnect_loop_transactional(
+                &shared,
+                &mut state,
+                &mut connection,
+                &runtime,
+                &mut commands,
+            )
+            .await;
+            (ended, state, connection)
+        });
+        tokio::time::timeout(Duration::from_millis(100), resolver.started.notified())
+            .await
+            .unwrap();
+        process_death.record(crate::launcher::SanitizedProcessExit::Signaled);
+        let (ended, state, connection) = tokio::time::timeout(Duration::from_millis(100), task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(ended);
+        assert_eq!(state.session_state, BrowserSessionState::Ended);
+        assert!(connection.is_none());
+        assert_eq!(factory.calls.load(Ordering::Acquire), 0);
+        server.await.unwrap();
     }
 
     #[test]

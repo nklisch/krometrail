@@ -32,7 +32,8 @@ pub use compatibility::{
     probe_compatibility,
 };
 pub use endpoint::{
-    EndpointError, EndpointResolver, LocalCdpEndpoint, LocalCdpEndpointKind, SystemEndpointResolver,
+    EndpointError, EndpointResolveFuture, EndpointResolver, LocalCdpEndpoint, LocalCdpEndpointKind,
+    SystemEndpointResolver,
 };
 pub use launcher::{
     ChromeLauncher, DiscoveryCandidate, DiscoveryInputs, LaunchError, LaunchedChrome,
