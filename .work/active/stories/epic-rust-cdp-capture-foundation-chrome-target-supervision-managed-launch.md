@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-chrome-target-supervision-managed-launch
 kind: story
-stage: review
+stage: done
 tags: [browser]
 parent: epic-rust-cdp-capture-foundation-chrome-target-supervision
 depends_on: [epic-rust-cdp-capture-foundation-chrome-target-supervision-transport-adapter]
@@ -57,3 +57,13 @@ Do not supervise targets, auto-relaunch Chrome, touch attached profiles/processe
 - `ProfileLease` owns a canonical managed path, exclusive lock, managed `ProfileRef`, and temporary-only cleanup. `ManagedChromeProcess` owns the child/process group and sanitizes exit status; `LaunchedChrome` explicitly kills the process before its profile guard can drop. Attach only uses `LocalCdpEndpoint::resolve`.
 - Launch selects an OS ephemeral loopback port, starts the isolated process group before awaiting readiness, resolves `/json/version` into the existing `LocalCdpEndpoint`, and applies bounded startup/shutdown timeouts. No session supervision, reconnect, target reduction, or screencast code was added.
 - Added integration coverage in `tests/profile_ownership.rs` and `tests/process_ownership.rs`, plus focused launcher unit coverage. Workspace default/no-default checks and tests, the cdpkit spike regression, and default/no-default clippy all pass.
+
+## Review (2026-07-13)
+
+**Verdict:** Approve
+
+**Blockers:** none
+**Important:** none
+**Nits:** none
+
+**Notes:** Fast-lane launcher review reran the full workspace and denied-warning clippy; verified deterministic discovery, profile exclusivity/cleanup, managed process-group ownership, bounded endpoint readiness, sanitized child death, ownership-correct attach, zero leaked profiles, and no supervisor/capture leakage. Verdict: Approve - story verified by implement; fast-lane advance.
