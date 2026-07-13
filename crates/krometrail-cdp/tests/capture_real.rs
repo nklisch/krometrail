@@ -99,6 +99,11 @@ async fn opt_in_real_chrome_capture_records_fidelity_and_managed_cleanup() {
         status.ack_latency().max_nanos(),
     );
 
+    let mut events = session
+        .subscribe()
+        .await
+        .expect("capture event subscription");
+
     let outcome = tokio::time::timeout(STOP_TIMEOUT, session.stop())
         .await
         .expect("managed capture stop must be bounded")
@@ -111,8 +116,18 @@ async fn opt_in_real_chrome_capture_records_fidelity_and_managed_cleanup() {
             .all(|gap| gap.session_id() == session.session_id())
     );
 
-    let stopped = status_for(&session, target_id).await;
+    let stopped = terminal_capture_status(&mut events, target_id, STOP_TIMEOUT)
+        .await
+        .expect("target-owned CaptureStateChanged must reach Stopped after stop");
     assert_eq!(stopped.state(), CaptureStreamState::Stopped);
+    let stats = stopped.statistics();
+    assert!(stats.received_frames() >= 30);
+    assert_eq!(stats.received_frames(), stats.acknowledged_frames());
+    assert_eq!(
+        stats.acknowledged_frames(),
+        stats.accepted_frames() + stats.dropped_frames()
+    );
+    assert_capture_diagnostics(&stopped, 30);
     drop(session);
     assert_profile_unreferenced(root.path());
     drop(root);
@@ -1037,6 +1052,30 @@ async fn wait_for_gap(
                     if gap.target_id() == target_id && *gap.reason() == reason =>
                 {
                     return Some(gap);
+                }
+                Ok(Some(_)) => {}
+                Ok(None) | Err(_) => return None,
+            }
+        }
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+async fn terminal_capture_status(
+    events: &mut Box<dyn BrowserSessionEvents>,
+    target_id: TargetId,
+    timeout: Duration,
+) -> Option<TargetCaptureStatus> {
+    tokio::time::timeout(timeout, async {
+        loop {
+            match events.next().await {
+                Ok(Some(BrowserSessionEvent::CaptureStateChanged { status }))
+                    if status.target_id() == target_id
+                        && status.state() == CaptureStreamState::Stopped =>
+                {
+                    return Some(status);
                 }
                 Ok(Some(_)) => {}
                 Ok(None) | Err(_) => return None,

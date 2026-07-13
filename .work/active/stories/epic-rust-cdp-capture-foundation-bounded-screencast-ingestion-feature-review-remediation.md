@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-bounded-screencast-ingestion-feature-review-remediation
 kind: story
-stage: implementing
+stage: review
 tags: [browser]
 parent: epic-rust-cdp-capture-foundation-bounded-screencast-ingestion
 depends_on: [epic-rust-cdp-capture-foundation-bounded-screencast-ingestion-real-chrome-fidelity]
@@ -43,6 +43,15 @@ A lower-risk transient duplicate-status window during generation replacement sho
 
 Standard: this repairs a timing metric and the feature's bounded-resource claim.
 
+## Implementation notes (2026-07-13)
+
+- Preserved terminal runtime removal in `crates/krometrail-cdp/src/capture/pipeline.rs`; the stop path still emits the final `CaptureStateChanged` before removing the exact `(TargetId, attachment_generation)` runtime entry.
+- Updated the managed real-Chrome fidelity test (`crates/krometrail-cdp/tests/capture_real.rs`) to subscribe to session events before `stop`, then assert the buffered target-owned `CaptureStateChanged` reaches `Stopped` with truthful final statistics. Removed the stale `capture_statuses()` query after terminal removal.
+- Added deterministic non-real coverage (`terminal_stop_publishes_final_status_before_runtime_removal` in `crates/krometrail-cdp/src/capture/tests.rs`) proving the final status event is observed before the runtime is removed from the registry.
+- Verified the fix and the unchanged bounded-capture contract with: `cargo fmt --all -- --check`, `cargo check --workspace --all-targets --locked`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --all-targets --locked`, `cargo test --workspace --all-targets --locked --no-default-features`, `cargo test -p krometrail-cdp --all-targets --locked --features cdp-spike`, and the opt-in real-Chrome gate `KROMETRAIL_REAL_CHROME_TESTS=1 cargo test -p krometrail-cdp --test capture_real --features cdpkit-transport --locked` run twice. All passed with zero leaked Chrome processes or referenced profiles.
+
 ## Review finding (2026-07-13)
 
 The implementation fixed both production findings, but independently running the required opt-in Chrome gate exposed a stale test contract: terminal runtimes are intentionally removed after publishing their final `CaptureStateChanged`, while the managed fidelity test still queried `capture_statuses()` after stop and expected the removed entry. Update the test to subscribe before stop and assert the buffered final `Stopped` status event (including truthful final statistics) instead of requiring stale registry retention. Keep the registry cleanup behavior; rerun the full opt-in suite and correct the falsely completed gate evidence before review resumes.
+
+**Status:** resolved by the implementation notes above; the story is staged for review.

@@ -1009,6 +1009,60 @@ async fn ack_latency_uses_receipt_sample_and_excludes_wait_and_post_ack_work() {
 }
 
 #[tokio::test]
+async fn terminal_stop_publishes_final_status_before_runtime_removal() {
+    let ack_completed = Arc::new(AtomicBool::new(false));
+    let transport =
+        TestTransport::new(Arc::clone(&ack_completed), Arc::new(Mutex::new(Vec::new())));
+    let sink = Arc::new(TestSink::new(
+        ack_completed,
+        Arc::new(Mutex::new(Vec::new())),
+    ));
+    let observer = Arc::new(TestObserver::default());
+    let coordinator = coordinator(
+        CaptureConfig::default(),
+        Arc::new(TestClock::new()),
+        Arc::new(TestIds::new()),
+        Arc::clone(&sink),
+        Arc::clone(&observer),
+    );
+    let capture_target = target();
+    coordinator
+        .start_target(
+            capture_target.clone(),
+            Arc::clone(&transport) as Arc<dyn CdpTransport>,
+        )
+        .await
+        .unwrap();
+    sink.release_first_frame.notify_one();
+    transport.frame(1).await;
+    transport.frame(2).await;
+    transport.wait_for_acks(2).await;
+
+    coordinator
+        .stop_target(
+            &capture_target,
+            CaptureStopReason::TargetClosed,
+            tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+        )
+        .await;
+
+    let statuses = observer.statuses.lock().unwrap();
+    let final_status = statuses
+        .iter()
+        .rev()
+        .find(|status| status.target_id() == capture_target.target_id)
+        .expect("terminal stop must publish a final status event");
+    assert_eq!(final_status.state(), CaptureStreamState::Stopped);
+    assert_eq!(final_status.statistics().received_frames(), 2);
+    assert_eq!(final_status.statistics().acknowledged_frames(), 2);
+    drop(statuses);
+    assert!(
+        coordinator.statuses().is_empty(),
+        "stopped runtime must be removed from the registry"
+    );
+}
+
+#[tokio::test]
 async fn repeated_target_churn_keeps_registry_and_statuses_bounded() {
     let ack_completed = Arc::new(AtomicBool::new(false));
     let transport =
