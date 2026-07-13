@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-vision-toolkit-normalization-and-measurements-normalized-sequence
 kind: story
-stage: implementing
+stage: done
 tags: [visual]
 parent: epic-temporal-vision-toolkit-normalization-and-measurements
 depends_on: []
@@ -36,3 +36,14 @@ Retain the source dimensions/crop, gap ranges, transformed mask, and ordered `No
 ## Ordering
 
 This is the first checkpoint. It establishes the prepared pixels and analysis domain consumed by the direct measurement kernel.
+
+## Implementation notes
+
+- Execution capability: raised/high, selected by the autopilot caller because every downstream artifact consumes these deterministic pixels.
+- Review weight: standard (caller); child stories close on verification and the parent feature remains the review boundary.
+- Files changed: `crates/temporal-vision/src/normalize.rs`, `src/error.rs`, and `src/lib.rs`.
+- Tests added: exact LUT sentinels/checksum, alpha composition, crop/upscale, conservative downscale-domain, scale overflow, and retained-byte bounds.
+- Verification: focused library and existing public-contract tests pass; normalization remains browser-free and uses only existing dependencies.
+- Simplification: one fixed transform order and one owned RGB16 representation; no configurable pipeline, codec, async, GPU, plugin, registration, or inferred-analysis layer.
+- Discrepancies from design: none.
+- Adjacent issues parked: none.
