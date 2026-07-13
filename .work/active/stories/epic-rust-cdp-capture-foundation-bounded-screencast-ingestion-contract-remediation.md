@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-bounded-screencast-ingestion-contract-remediation
 kind: story
-stage: implementing
+stage: review
 tags: [browser]
 parent: epic-rust-cdp-capture-foundation-bounded-screencast-ingestion
 depends_on: [epic-rust-cdp-capture-foundation-bounded-screencast-ingestion-supervised-wiring]
@@ -81,17 +81,27 @@ fn parse_visibility_result(
 
 ## Acceptance criteria
 
-- [ ] No production/core/test symbol or serialized field named `source_sequence` or `SourceSequenceDiscontinuity` remains in the bounded-ingestion surface.
-- [ ] The CDP `sessionId` value is used only as `ack_token` for frame acknowledgement and is absent from `RawFrame`, `CapturedFrame`, status, gaps, logs, and persistence calls.
-- [ ] `CaptureOrdinal` validates non-zero construction/deserialization, is assigned strictly after ack completion, increases by one per acknowledged observation for one `(SessionId, TargetId)`, and continues across higher attachment generations.
-- [ ] Constant-token fake events produce strict ordinals without warning/gap; equal clock readings remain valid and ordinal provides deterministic per-target tie-breaking.
-- [ ] Ack failure assigns no ordinal, hands off nothing, emits `AcknowledgementFailed`, and leaves unrelated streams live.
-- [ ] Queue saturation, malformed/oversized frame rejection, persistence rejection, visibility, browser disconnect, and bounded shutdown abandonment retain explicit truthful gaps and bounded accounting. No inferred upstream-loss path exists.
-- [ ] Both observed cdpkit `Runtime.evaluate` result shapes resolve `Visible`/`Hidden` before Ready through one shared parser.
-- [ ] Initial visibility command/shape/value failure detaches the exact flat session and marks only that target failed; it cannot silently leave an attached `Unknown` target.
-- [ ] `InitialReconciliationCompleted` rejects unresolved initial visibility on nonterminal recordable targets; capture still starts exactly once only for Ready/Attached/Visible exact generations.
-- [ ] Existing acknowledgement barriers, queue/ledger/histogram bounds, three clocks, image-header behavior, target isolation, generation fencing, reconnect restoration, privacy, and one-absolute-deadline shutdown tests remain green.
-- [ ] Core serde/registry tests, capture fake tests, supervised-session integration tests, workspace fmt/check/test/clippy, no-default check, and cdpkit spike regression pass.
+- [x] No production/core/test symbol or serialized field named `source_sequence` or `SourceSequenceDiscontinuity` remains in the bounded-ingestion surface.
+- [x] The CDP `sessionId` value is used only as `ack_token` for frame acknowledgement and is absent from `RawFrame`, `CapturedFrame`, status, gaps, logs, and persistence calls.
+- [x] `CaptureOrdinal` validates non-zero construction/deserialization, is assigned strictly after ack completion, increases by one per acknowledged observation for one `(SessionId, TargetId)`, and continues across higher attachment generations.
+- [x] Constant-token fake events produce strict ordinals without warning/gap; equal clock readings remain valid and ordinal provides deterministic per-target tie-breaking.
+- [x] Ack failure assigns no ordinal, hands off nothing, emits `AcknowledgementFailed`, and leaves unrelated streams live.
+- [x] Queue saturation, malformed/oversized frame rejection, persistence rejection, visibility, browser disconnect, and bounded shutdown abandonment retain explicit truthful gaps and bounded accounting. No inferred upstream-loss path exists.
+- [x] Both observed cdpkit `Runtime.evaluate` result shapes resolve `Visible`/`Hidden` before Ready through one shared parser.
+- [x] Initial visibility command/shape/value failure detaches the exact flat session and marks only that target failed; it cannot silently leave an attached `Unknown` target.
+- [x] `InitialReconciliationCompleted` rejects unresolved initial visibility on nonterminal recordable targets; capture still starts exactly once only for Ready/Attached/Visible exact generations.
+- [x] Existing acknowledgement barriers, queue/ledger/histogram bounds, three clocks, image-header behavior, target isolation, generation fencing, reconnect restoration, privacy, and one-absolute-deadline shutdown tests remain green.
+- [x] Core serde/registry tests, capture fake tests, supervised-session integration tests, workspace fmt/check/test/clippy, no-default check, and cdpkit spike regression pass.
+
+## Implementation notes
+
+- Replaced the public frame field and serde wire with validating transparent `CaptureOrdinal`; the coordinator owns a checked `(SessionId, TargetId)` registry that fences old attachment generations before allocating the next ordinal. Equal clock samples remain valid and ordinals provide the local deterministic tie-breaker.
+- Kept the CDP `sessionId` as a signed `i64` acknowledgement token only. The receive path echoes it exactly, emits an exact one-frame `AcknowledgementFailed` gap on invalid/failed/timed-out acknowledgement, and never copies it into raw or persisted frame metadata.
+- Removed source-sequence discontinuity state, warning, gap, inference, and tests. Constant-token scripted events now produce strict local ordinals, including continuation through a fenced higher attachment generation.
+- Unified initial and reconnect visibility decoding through the strict two-envelope parser. Initial probe failures reduce to target-local failure plus exact-session detach, and Ready rejects unresolved nonterminal visibility.
+- Post-completion traceability: the engine and supervised-wiring stories remain historically `done` with their affected claims marked superseded; this remediation is the authoritative correction for their frame-order and initial-visibility contracts.
+- Verification: `cargo fmt --all -- --check`; full workspace check/test; no-default check; cdpkit spike check; workspace clippy with `-D warnings`; documentation build. The opt-in real-Chrome fidelity run remains owned by the dependent story.
+- Discrepancy from required files: the already-compiled dependent `capture_real.rs` needed a two-line getter rename from `source_sequence()` to `capture_ordinal()` so workspace gates remained compile-real. Its live assertions, lifecycle behavior, and final evidence remain owned by the dependent story.
 
 ## Dependencies and handoff
 

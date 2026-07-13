@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -8,9 +8,10 @@ use std::{
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use krometrail_core::{
-    CaptureGap, CaptureGapReason, CaptureStatistics, CaptureStreamState, CaptureTimingSummary,
-    CaptureWarning, CapturedFrame, DeviceScaleFactor, EncodedFrame, FrameId, GapId, ImageFormat,
-    PixelDimensions, SessionRange, SessionTime, SourceTime, TargetCaptureStatus,
+    CaptureGap, CaptureGapReason, CaptureOrdinal, CaptureStatistics, CaptureStreamState,
+    CaptureTimingSummary, CaptureWarning, CapturedFrame, DeviceScaleFactor, EncodedFrame, FrameId,
+    GapId, ImageFormat, PixelDimensions, SessionRange, SessionTime, SourceTime,
+    TargetCaptureStatus,
 };
 use serde_json::{Value, json};
 use tokio::{
@@ -31,8 +32,85 @@ const START_METHOD: &str = "Page.startScreencast";
 const STOP_METHOD: &str = "Page.stopScreencast";
 const ACK_METHOD: &str = "Page.screencastFrameAck";
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct OrdinalKey {
+    session_id: krometrail_core::SessionId,
+    target_id: krometrail_core::TargetId,
+}
+
+#[derive(Debug)]
+struct OrdinalState {
+    attachment_generation: u64,
+    last: u64,
+}
+
+#[derive(Debug, Default)]
+pub(super) struct OrdinalRegistry {
+    states: Mutex<HashMap<OrdinalKey, OrdinalState>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum OrdinalAllocation {
+    Allocated(CaptureOrdinal),
+    StaleGeneration,
+    Exhausted,
+}
+
+impl OrdinalRegistry {
+    pub(super) fn begin_generation(&self, target: &CaptureTarget) -> bool {
+        let key = OrdinalKey {
+            session_id: target.session_id,
+            target_id: target.target_id,
+        };
+        let mut states = self.states.lock().expect("ordinal registry lock poisoned");
+        match states.get_mut(&key) {
+            Some(state) if target.attachment_generation <= state.attachment_generation => false,
+            Some(state) => {
+                state.attachment_generation = target.attachment_generation;
+                true
+            }
+            None => {
+                states.insert(
+                    key,
+                    OrdinalState {
+                        attachment_generation: target.attachment_generation,
+                        last: 0,
+                    },
+                );
+                true
+            }
+        }
+    }
+
+    pub(super) fn allocate(&self, target: &CaptureTarget) -> OrdinalAllocation {
+        let key = OrdinalKey {
+            session_id: target.session_id,
+            target_id: target.target_id,
+        };
+        let mut states = self.states.lock().expect("ordinal registry lock poisoned");
+        let Some(state) = states.get_mut(&key) else {
+            return OrdinalAllocation::StaleGeneration;
+        };
+        // Check the attachment fence while holding the same lock as the increment. An old reader
+        // may finish acknowledging a frame during reconnect, but it cannot allocate after a newer
+        // generation has been installed or race the new generation's ordinal.
+        if state.attachment_generation != target.attachment_generation {
+            return OrdinalAllocation::StaleGeneration;
+        }
+        let Some(next) = state.last.checked_add(1) else {
+            return OrdinalAllocation::Exhausted;
+        };
+        let Ok(ordinal) = CaptureOrdinal::new(next) else {
+            return OrdinalAllocation::Exhausted;
+        };
+        state.last = next;
+        OrdinalAllocation::Allocated(ordinal)
+    }
+}
+
 pub(super) struct StreamRuntime {
     target: CaptureTarget,
+    ordinals: Arc<OrdinalRegistry>,
     config: super::CaptureConfig,
     dependencies: CaptureDependencies,
     observer: Arc<dyn CaptureObserver>,
@@ -57,7 +135,6 @@ struct RuntimeState {
     in_flight: usize,
     last_frame_session_time: Option<SessionTime>,
     previous_observed: Option<krometrail_core::ObservedTime>,
-    previous_sequence: Option<u64>,
     ack_latency: Histogram,
     frame_cadence: Histogram,
     gaps: GapLedger,
@@ -65,7 +142,7 @@ struct RuntimeState {
 
 #[derive(Clone, Debug)]
 struct RawFrame {
-    source_sequence: u64,
+    capture_ordinal: CaptureOrdinal,
     data: String,
     source_time: Option<SourceTime>,
     observed_time: krometrail_core::ObservedTime,
@@ -112,9 +189,11 @@ impl StreamRuntime {
         dependencies: CaptureDependencies,
         observer: Arc<dyn CaptureObserver>,
         transport: Arc<dyn CdpTransport>,
+        ordinals: Arc<OrdinalRegistry>,
     ) -> Self {
         Self {
             target,
+            ordinals,
             config: config.clone(),
             dependencies,
             observer,
@@ -128,7 +207,6 @@ impl StreamRuntime {
                 in_flight: 0,
                 last_frame_session_time: None,
                 previous_observed: None,
-                previous_sequence: None,
                 ack_latency: Histogram::default(),
                 frame_cadence: Histogram::default(),
                 gaps: GapLedger::new(config.gap_ledger_capacity.get()),
@@ -230,6 +308,19 @@ impl StreamRuntime {
         state.statistics = statistics;
     }
 
+    fn session_time_for(&self, observed: krometrail_core::ObservedTime) -> SessionTime {
+        let normalized = self
+            .target
+            .session_origin
+            .normalize(observed)
+            .unwrap_or(SessionTime::ZERO);
+        self.state
+            .lock()
+            .expect("capture state lock poisoned")
+            .last_frame_session_time
+            .map_or(normalized, |previous| previous.max(normalized))
+    }
+
     pub(super) fn record_ack(
         &self,
         latency_nanos: u64,
@@ -266,18 +357,6 @@ impl StreamRuntime {
         )
         .expect("capture counters cannot overflow in a bounded process");
         (observed, session)
-    }
-
-    pub(super) fn sequence_gap(&self, sequence: u64) -> Option<u64> {
-        let mut state = self.state.lock().expect("capture state lock poisoned");
-        let missing = state.previous_sequence.and_then(|previous| {
-            sequence
-                .checked_sub(previous)
-                .and_then(|distance| distance.checked_sub(1))
-                .filter(|missing| *missing > 0)
-        });
-        state.previous_sequence = Some(sequence);
-        missing
     }
 
     fn handoff(&self, raw: RawFrame) {
@@ -492,6 +571,14 @@ pub(super) async fn start_target(
             return Err(CaptureError::InvalidConfig("active stream limit reached"));
         }
     }
+    // Install the new generation fence before subscriptions or task creation. A late callback
+    // from the old attachment may still complete its acknowledgement, but it cannot allocate an
+    // ordinal once this generation is accepted.
+    if !coordinator.ordinals.begin_generation(&target) {
+        return Err(CaptureError::InvalidConfig(
+            "capture attachment generation is older than the active ordinal fence",
+        ));
+    }
 
     let scope = CommandScope::Session(target.transport_session.clone());
     let mut frames = transport.subscribe_named(&scope, FRAME_EVENT).await?;
@@ -502,6 +589,7 @@ pub(super) async fn start_target(
         coordinator.dependencies.clone(),
         Arc::clone(&coordinator.observer),
         Arc::clone(&transport),
+        Arc::clone(&coordinator.ordinals),
     ));
     let (sender, receiver) = mpsc::channel(coordinator.config.queue_capacity.get());
     runtime.set_sender(sender.clone());
@@ -568,7 +656,13 @@ async fn frame_reader(
         };
         let observed = runtime.dependencies.clock.now();
         runtime.record_received();
-        let Some(source_sequence) = event.params.get("sessionId").and_then(Value::as_u64) else {
+        let Some(ack_token) = event.params.get("sessionId").and_then(Value::as_i64) else {
+            runtime.declare_gap(
+                CaptureGapReason::AcknowledgementFailed,
+                runtime.session_time_for(observed),
+                Some(1),
+                Some("screencast frame acknowledgement token was invalid"),
+            );
             runtime.fail();
             break;
         };
@@ -578,24 +672,44 @@ async fn frame_reader(
             transport.send_raw(
                 &CommandScope::Session(runtime.target.transport_session.clone()),
                 ACK_METHOD,
-                json!({"sessionId": source_sequence}),
+                // The signed integer is an opaque CDP acknowledgement token. Keep it local and
+                // echo it exactly; it is not a source sequence or continuity signal.
+                json!({"sessionId": ack_token}),
             ),
         )
         .await;
         let ack_completed = runtime.dependencies.clock.now();
-        let Ok(Ok(_)) = ack else {
+        let ack_failure_detail = match ack {
+            Ok(Ok(_)) => None,
+            Ok(Err(_)) => Some("screencast frame acknowledgement failed"),
+            Err(_) => Some("screencast frame acknowledgement timed out"),
+        };
+        if let Some(detail) = ack_failure_detail {
+            runtime.declare_gap(
+                CaptureGapReason::AcknowledgementFailed,
+                runtime.session_time_for(observed),
+                Some(1),
+                Some(detail),
+            );
             runtime.fail();
             break;
-        };
+        }
         let latency = ack_completed
             .as_nanos()
             .saturating_sub(ack_started.as_nanos());
         let (observed_time, session_time) = runtime.record_ack(latency, observed);
+        let ordinal = match runtime.ordinals.allocate(&runtime.target) {
+            OrdinalAllocation::Allocated(ordinal) => ordinal,
+            OrdinalAllocation::StaleGeneration => continue,
+            OrdinalAllocation::Exhausted => {
+                runtime.fail();
+                break;
+            }
+        };
         runtime.transition(Transition::ActualFrame);
-        let sequence_gap = runtime.sequence_gap(source_sequence);
-        let mut raw = match RawFrame::after_ack(
+        let raw = match RawFrame::after_ack(
             event,
-            source_sequence,
+            ordinal,
             observed_time,
             session_time,
             runtime.config.format,
@@ -603,28 +717,10 @@ async fn frame_reader(
         ) {
             Ok(raw) => raw,
             Err(_) => {
-                if let Some(missing) = sequence_gap {
-                    runtime.declare_gap(
-                        CaptureGapReason::SourceSequenceDiscontinuity,
-                        session_time,
-                        Some(missing),
-                        Some("source frame number discontinuity"),
-                    );
-                }
                 runtime.dropped(CaptureGapReason::FrameRejected, session_time);
                 continue;
             }
         };
-        if let Some(missing) = sequence_gap {
-            raw.warnings
-                .push(CaptureWarning::SourceSequenceDiscontinuity);
-            runtime.declare_gap(
-                CaptureGapReason::SourceSequenceDiscontinuity,
-                session_time,
-                Some(missing),
-                Some("source frame number discontinuity"),
-            );
-        }
         runtime.handoff(raw);
     }
 }
@@ -744,7 +840,7 @@ fn decode_frame(runtime: &StreamRuntime, raw: RawFrame) -> Result<EncodedFrame, 
         frame_id,
         runtime.target.session_id,
         runtime.target.target_id,
-        raw.source_sequence,
+        raw.capture_ordinal,
         raw.source_time,
         raw.observed_time,
         raw.session_time,
@@ -1159,7 +1255,7 @@ fn merge_gaps(first: &CaptureGap, second: &CaptureGap) -> Option<CaptureGap> {
 impl RawFrame {
     fn after_ack(
         event: NamedEvent,
-        source_sequence: u64,
+        capture_ordinal: CaptureOrdinal,
         observed_time: krometrail_core::ObservedTime,
         session_time: SessionTime,
         format: ImageFormat,
@@ -1208,7 +1304,7 @@ impl RawFrame {
             }
         };
         Ok(Self {
-            source_sequence,
+            capture_ordinal,
             data,
             source_time,
             observed_time,

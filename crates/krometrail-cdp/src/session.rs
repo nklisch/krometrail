@@ -67,6 +67,31 @@ enum TargetEventKind {
     Detached,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub(crate) enum VisibilityProbeError {
+    #[error("visibility probe result did not contain a string value")]
+    MissingValue,
+    #[error("visibility probe returned an unsupported value")]
+    UnsupportedValue,
+}
+
+/// Decode only the two result envelopes emitted by the supported cdpkit paths. Do not default
+/// unknown values to visible: an unresolved initial probe must not allow a target into Ready.
+pub(crate) fn parse_visibility_result(
+    value: &Value,
+) -> std::result::Result<TargetVisibility, VisibilityProbeError> {
+    let raw = value
+        .pointer("/result/result/value")
+        .and_then(Value::as_str)
+        .or_else(|| value.pointer("/result/value").and_then(Value::as_str));
+    match raw {
+        Some("visible") => Ok(TargetVisibility::Visible),
+        Some("hidden") => Ok(TargetVisibility::Hidden),
+        Some(_) => Err(VisibilityProbeError::UnsupportedValue),
+        None => Err(VisibilityProbeError::MissingValue),
+    }
+}
+
 /// The production composition root for browser sessions. It deliberately accepts the two adapter
 /// seams so deterministic tests can replace launch and transport without changing supervision.
 pub struct ProductionBrowserConnector {
@@ -570,38 +595,49 @@ async fn apply_effects(
     let mut queue = VecDeque::from(effects);
     while let Some(effect) = queue.pop_front() {
         match effect {
-			SupervisorEffect::Publish(event) => subscribers.publish(event),
-			SupervisorEffect::Attach { target_key } => {
-				let result = transport
-					.send_raw(
-						&CommandScope::Browser,
-						"Target.attachToTarget",
-						serde_json::json!({"targetId": target_key, "flatten": true}),
-					)
-					.await;
-				let input = result
-					.ok()
-					.and_then(|value| value.get("sessionId").and_then(Value::as_str).map(str::to_owned))
-					.and_then(|session| TransportSessionId::new(session).ok())
-					.map(|session| SupervisorInput::Attached { target_key: target_key.clone(), session })
-				.unwrap_or(SupervisorInput::TargetAttachFailed { target_key });
-				let compatibility = state.compatibility.clone();
-				let previous = std::mem::replace(state, SupervisorState::new(compatibility));
-				let reduction = reduce(previous, input)?;
-				*state = reduction.state;
-				queue.extend(reduction.effects);
-			}
-			SupervisorEffect::Detach { session } => {
-				let _ = transport
-					.send_raw(
-						&CommandScope::Browser,
-						"Target.detachFromTarget",
-						serde_json::json!({"sessionId": session.as_str()}),
-					)
-					.await;
-			}
-			SupervisorEffect::ProbeInitialVisibility { target_key, session } => {
-				if let Ok(value) = transport
+            SupervisorEffect::Publish(event) => subscribers.publish(event),
+            SupervisorEffect::Attach { target_key } => {
+                let result = transport
+                    .send_raw(
+                        &CommandScope::Browser,
+                        "Target.attachToTarget",
+                        serde_json::json!({"targetId": target_key, "flatten": true}),
+                    )
+                    .await;
+                let input = result
+                    .ok()
+                    .and_then(|value| {
+                        value
+                            .get("sessionId")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned)
+                    })
+                    .and_then(|session| TransportSessionId::new(session).ok())
+                    .map(|session| SupervisorInput::Attached {
+                        target_key: target_key.clone(),
+                        session,
+                    })
+                    .unwrap_or(SupervisorInput::TargetAttachFailed { target_key });
+                let compatibility = state.compatibility.clone();
+                let previous = std::mem::replace(state, SupervisorState::new(compatibility));
+                let reduction = reduce(previous, input)?;
+                *state = reduction.state;
+                queue.extend(reduction.effects);
+            }
+            SupervisorEffect::Detach { session } => {
+                let _ = transport
+                    .send_raw(
+                        &CommandScope::Browser,
+                        "Target.detachFromTarget",
+                        serde_json::json!({"sessionId": session.as_str()}),
+                    )
+                    .await;
+            }
+            SupervisorEffect::ProbeInitialVisibility {
+                target_key,
+                session,
+            } => {
+                let input = match transport
 					.send_raw(
 						&CommandScope::Session(session),
 						"Runtime.evaluate",
@@ -609,22 +645,24 @@ async fn apply_effects(
 					)
 					.await
 				{
-					let visibility = value
-						.pointer("/result/result/value")
-						.and_then(Value::as_str)
-						.map(|value| if value == "hidden" { TargetVisibility::Hidden } else { TargetVisibility::Visible });
-					if let Some(visibility) = visibility {
-						let compatibility = state.compatibility.clone();
-						let previous = std::mem::replace(state, SupervisorState::new(compatibility));
-						let reduction = reduce(
-							previous,
-							SupervisorInput::VisibilityChanged { target_key, visibility },
-						)?;
-						*state = reduction.state;
-						queue.extend(reduction.effects);
-					}
-				}
-			}
+					Ok(value) => parse_visibility_result(&value)
+						.map(|visibility| SupervisorInput::VisibilityChanged {
+							target_key: target_key.clone(),
+							visibility,
+						})
+						.unwrap_or_else(|_| SupervisorInput::InitialVisibilityProbeFailed {
+							target_key: target_key.clone(),
+						}),
+					Err(_) => SupervisorInput::InitialVisibilityProbeFailed {
+						target_key: target_key.clone(),
+					},
+				};
+                let compatibility = state.compatibility.clone();
+                let previous = std::mem::replace(state, SupervisorState::new(compatibility));
+                let reduction = reduce(previous, input)?;
+                *state = reduction.state;
+                queue.extend(reduction.effects);
+            }
             SupervisorEffect::StartCapture { context }
             | SupervisorEffect::ResumeCapture { context } => {
                 if let Some(capture) = capture.as_ref() {
@@ -690,7 +728,10 @@ async fn apply_effects(
                     };
                     let deadline = shutdown_deadline
                         .as_ref()
-                        .map_or_else(|| ShutdownDeadline::new(capture.shutdown_timeout), Clone::clone)
+                        .map_or_else(
+                            || ShutdownDeadline::new(capture.shutdown_timeout),
+                            Clone::clone,
+                        )
                         .instant();
                     let reason = state
                         .targets_by_key
@@ -706,7 +747,10 @@ async fn apply_effects(
                             _ => CaptureStopReason::TargetDetached,
                         })
                         .unwrap_or(CaptureStopReason::TargetDetached);
-                    let _ = capture.coordinator.stop_target(&target, reason, deadline).await;
+                    let _ = capture
+                        .coordinator
+                        .stop_target(&target, reason, deadline)
+                        .await;
                 }
             }
             SupervisorEffect::BeginReconnect => {}
@@ -714,7 +758,7 @@ async fn apply_effects(
                 // The outer supervisor owns the aggregate shutdown sequencing. Capture effects
                 // above have already fenced acceptance before this marker is handled.
             }
-		}
+        }
     }
     Ok(())
 }
@@ -1160,15 +1204,8 @@ async fn restore_one_target(
             }),
         )
         .await?;
-    let visibility = match visibility_value
-        .pointer("/result/result/value")
-        .or_else(|| visibility_value.pointer("/result/value"))
-        .and_then(Value::as_str)
-    {
-        Some("hidden") => TargetVisibility::Hidden,
-        Some(_) => TargetVisibility::Visible,
-        None => return Err(AttemptFailure::Failed),
-    };
+    let visibility =
+        parse_visibility_result(&visibility_value).map_err(|_| AttemptFailure::Failed)?;
     Ok(ReconnectedTarget {
         info,
         session: Some(session),
@@ -1986,6 +2023,32 @@ mod tests {
         sync::atomic::AtomicUsize,
         sync::{Arc, Mutex},
     };
+
+    #[test]
+    fn initial_visibility_parser_accepts_only_supported_result_shapes_and_values() {
+        assert_eq!(
+            parse_visibility_result(&serde_json::json!({
+                "result": {"result": {"value": "visible"}}
+            })),
+            Ok(TargetVisibility::Visible)
+        );
+        assert_eq!(
+            parse_visibility_result(&serde_json::json!({
+                "result": {"value": "hidden"}
+            })),
+            Ok(TargetVisibility::Hidden)
+        );
+        assert_eq!(
+            parse_visibility_result(&serde_json::json!({
+                "result": {"value": "prerender"}
+            })),
+            Err(VisibilityProbeError::UnsupportedValue)
+        );
+        assert_eq!(
+            parse_visibility_result(&serde_json::json!({"result": {}})),
+            Err(VisibilityProbeError::MissingValue)
+        );
+    }
 
     #[test]
     fn target_event_parsing_uses_opaque_keys_and_ignores_page_content() {

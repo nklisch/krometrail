@@ -191,6 +191,9 @@ pub enum SupervisorInput {
         target_key: String,
         visibility: TargetVisibility,
     },
+    InitialVisibilityProbeFailed {
+        target_key: String,
+    },
     CaptureVisibilityChanged {
         target_id: TargetId,
         visibility: TargetVisibility,

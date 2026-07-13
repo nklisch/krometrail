@@ -13,7 +13,7 @@ define_stable_enum! {
     pub enum CaptureGapReason {
         IngestionQueueSaturated => "ingestion_queue_saturated",
         PersistenceRejected => "persistence_rejected",
-        SourceSequenceDiscontinuity => "source_sequence_discontinuity",
+        AcknowledgementFailed => "acknowledgement_failed",
         TargetHidden => "target_hidden",
         ScreencastPaused => "screencast_paused",
         BrowserDisconnected => "browser_disconnected",

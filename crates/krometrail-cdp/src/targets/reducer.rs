@@ -60,6 +60,16 @@ pub fn reduce(mut state: SupervisorState, input: SupervisorInput) -> Result<Redu
             reconcile_initial(&mut state, infos, &mut effects)?
         }
         SupervisorInput::InitialReconciliationCompleted => {
+            if state.targets_by_key.values().any(|target| {
+                !matches!(
+                    target.target.lifecycle,
+                    TargetLifecycle::Closed | TargetLifecycle::Failed
+                ) && target.target.visibility == TargetVisibility::Unknown
+            }) {
+                return Err(invalid_state(
+                    "initial reconciliation cannot become ready with unresolved target visibility",
+                ));
+            }
             set_session_state(&mut state, BrowserSessionState::Ready, &mut effects)?;
         }
         SupervisorInput::TargetCreated(info) => {
@@ -113,6 +123,9 @@ pub fn reduce(mut state: SupervisorState, input: SupervisorInput) -> Result<Redu
             target_key,
             visibility,
         } => visibility_changed(&mut state, &target_key, visibility, &mut effects)?,
+        SupervisorInput::InitialVisibilityProbeFailed { target_key } => {
+            initial_visibility_probe_failed(&mut state, &target_key, &mut effects)?;
+        }
         SupervisorInput::CaptureVisibilityChanged {
             target_id,
             visibility,
@@ -373,6 +386,48 @@ fn detach_failed(
             .transition(TargetLifecycle::Failed)?;
         target.target.target.id()
     };
+    publish(
+        state,
+        BrowserSessionEvent::TargetFailed {
+            target_id,
+            error: target_error(),
+        },
+        effects,
+    );
+    Ok(())
+}
+
+fn initial_visibility_probe_failed(
+    state: &mut SupervisorState,
+    key: &str,
+    effects: &mut Vec<SupervisorEffect>,
+) -> Result<()> {
+    let (session, target_id) = {
+        let Some(target) = state.targets_by_key.get_mut(key) else {
+            return Ok(());
+        };
+        if matches!(
+            target.target.lifecycle,
+            TargetLifecycle::Closed | TargetLifecycle::Failed
+        ) {
+            return Ok(());
+        }
+        let session = target.transport_session.take();
+        if let Some(session) = session.as_ref() {
+            state.target_key_by_session.remove(session);
+        }
+        target.prior_to_suspension = None;
+        target.target.lifecycle = target
+            .target
+            .lifecycle
+            .transition(TargetLifecycle::Failed)?;
+        target.capture_binding = CaptureBinding::Terminal;
+        (session, target.target.target.id())
+    };
+    if let Some(session) = session {
+        // Keep the exact flat session in the effect until apply_effects performs the detach.
+        effects.push(SupervisorEffect::Detach { session });
+    }
     publish(
         state,
         BrowserSessionEvent::TargetFailed {
@@ -1033,6 +1088,58 @@ mod tests {
             effect,
             SupervisorEffect::Attach { target_key } if target_key == "a"
         )));
+    }
+
+    #[test]
+    fn initial_ready_rejects_unresolved_visibility() {
+        let state = reduce(
+            SupervisorState::new(compatibility()),
+            SupervisorInput::InitialTargets(vec![info("a", "https://a")]),
+        )
+        .unwrap()
+        .state;
+        let error = reduce(state, SupervisorInput::InitialReconciliationCompleted).unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidLifecycleTransition);
+    }
+
+    #[test]
+    fn failed_initial_visibility_probe_detaches_and_fails_only_that_target() {
+        let state = reduce(
+            SupervisorState::new(compatibility()),
+            SupervisorInput::InitialTargets(vec![info("a", "https://a")]),
+        )
+        .unwrap()
+        .state;
+        let state = reduce(
+            state,
+            SupervisorInput::Attached {
+                target_key: "a".into(),
+                session: crate::transport::TransportSessionId::new("session-a").unwrap(),
+            },
+        )
+        .unwrap()
+        .state;
+        let failed = reduce(
+            state,
+            SupervisorInput::InitialVisibilityProbeFailed {
+                target_key: "a".into(),
+            },
+        )
+        .unwrap();
+        assert!(failed.effects.iter().any(|effect| matches!(
+            effect,
+            SupervisorEffect::Detach { session } if session.as_str() == "session-a"
+        )));
+        assert_eq!(
+            failed.state.targets_by_key["a"].target.lifecycle,
+            TargetLifecycle::Failed
+        );
+        assert!(
+            !failed
+                .state
+                .target_key_by_session
+                .contains_key(&crate::transport::TransportSessionId::new("session-a").unwrap())
+        );
     }
 
     #[test]

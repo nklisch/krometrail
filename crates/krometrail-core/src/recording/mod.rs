@@ -5,7 +5,8 @@ mod gap;
 mod session;
 
 pub use frame::{
-    CaptureWarning, CapturedFrame, DeviceScaleFactor, EncodedFrame, ImageFormat, PixelDimensions,
+    CaptureOrdinal, CaptureWarning, CapturedFrame, DeviceScaleFactor, EncodedFrame, ImageFormat,
+    PixelDimensions,
 };
 pub use gap::{CaptureGap, CaptureGapReason};
 pub use session::{

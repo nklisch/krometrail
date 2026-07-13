@@ -9,8 +9,8 @@ use krometrail_cdp::{
 use krometrail_core::{
     BrowserCompatibility, BrowserProduct, BrowserProductVersion, BrowserSessionEvent,
     BrowserSessionState, CapabilitySupport, CaptureGap, CaptureGapReason, CaptureStatistics,
-    CaptureStreamState, CaptureTimingSummary, GapId, RendererCapability, SessionId, SessionRange,
-    SessionTime, TargetCaptureStatus, TargetId, TargetLifecycle, TargetVisibility,
+    CaptureStreamState, CaptureTimingSummary, ErrorCode, GapId, RendererCapability, SessionId,
+    SessionRange, SessionTime, TargetCaptureStatus, TargetId, TargetLifecycle, TargetVisibility,
 };
 
 const SESSION_UUID: &str = "123e4567-e89b-12d3-a456-426614174000";
@@ -235,6 +235,72 @@ fn visibility_and_target_failure_are_local_reducer_inputs() {
         effect,
         SupervisorEffect::Publish(BrowserSessionEvent::TargetFailed { .. })
     )));
+}
+
+#[test]
+fn initial_visibility_failure_is_target_local_and_ready_rejects_unknown_visibility() {
+    let unknown = reduce(
+        SupervisorState::new(compatibility()),
+        SupervisorInput::InitialTargets(vec![target("page-a")]),
+    )
+    .unwrap()
+    .state;
+    assert_eq!(
+        reduce(unknown, SupervisorInput::InitialReconciliationCompleted)
+            .unwrap_err()
+            .code,
+        ErrorCode::InvalidLifecycleTransition
+    );
+
+    let state = reduce(
+        SupervisorState::new(compatibility()),
+        SupervisorInput::InitialTargets(vec![target("page-a"), target("page-b")]),
+    )
+    .unwrap()
+    .state;
+    let state = reduce(
+        state,
+        SupervisorInput::Attached {
+            target_key: "page-a".into(),
+            session: TransportSessionId::new("session-a").unwrap(),
+        },
+    )
+    .unwrap()
+    .state;
+    let state = reduce(
+        state,
+        SupervisorInput::Attached {
+            target_key: "page-b".into(),
+            session: TransportSessionId::new("session-b").unwrap(),
+        },
+    )
+    .unwrap()
+    .state;
+    let failed = reduce(
+        state,
+        SupervisorInput::InitialVisibilityProbeFailed {
+            target_key: "page-a".into(),
+        },
+    )
+    .unwrap();
+    assert!(failed.effects.iter().any(|effect| matches!(
+        effect,
+        SupervisorEffect::Detach { session } if session.as_str() == "session-a"
+    )));
+    assert_eq!(
+        failed.state.targets_by_key["page-a"].target.lifecycle,
+        TargetLifecycle::Failed
+    );
+    assert_eq!(
+        failed.state.targets_by_key["page-b"].target.lifecycle,
+        TargetLifecycle::Attached
+    );
+    assert!(
+        failed
+            .state
+            .target_key_by_session
+            .contains_key(&TransportSessionId::new("session-b").unwrap())
+    );
 }
 
 #[test]

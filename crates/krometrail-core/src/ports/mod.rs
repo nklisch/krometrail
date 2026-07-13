@@ -357,7 +357,7 @@ mod tests {
             crate::FrameId::from_uuid(UUID.parse().unwrap()),
             SessionId::from_uuid(UUID.parse().unwrap()),
             TargetId::from_uuid(UUID.parse().unwrap()),
-            1,
+            crate::CaptureOrdinal::new(1).unwrap(),
             Some(SourceTime::from_nanos(2)),
             ObservedTime::from_nanos(3),
             SessionTime::from_nanos(1),

@@ -162,6 +162,7 @@ pub(crate) struct CaptureCoordinator {
     dependencies: CaptureDependencies,
     observer: Arc<dyn CaptureObserver>,
     streams: Mutex<std::collections::HashMap<StreamKey, Arc<pipeline::StreamRuntime>>>,
+    ordinals: Arc<pipeline::OrdinalRegistry>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -201,6 +202,7 @@ impl CaptureCoordinator {
             dependencies,
             observer,
             streams: Mutex::new(std::collections::HashMap::new()),
+            ordinals: Arc::new(pipeline::OrdinalRegistry::default()),
         })
     }
 

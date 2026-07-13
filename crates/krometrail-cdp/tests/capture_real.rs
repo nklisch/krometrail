@@ -635,8 +635,8 @@ fn assert_frame_fidelity(frames: &[EncodedFrame], origin: u64, session_id: Sessi
 fn assert_strict_sequence(frames: &[EncodedFrame]) {
     for pair in frames.windows(2) {
         assert!(
-            pair[1].metadata().source_sequence() > pair[0].metadata().source_sequence(),
-            "real Chrome frame numbers must strictly increase within one attachment generation"
+            pair[1].metadata().capture_ordinal() > pair[0].metadata().capture_ordinal(),
+            "Krometrail capture ordinals must strictly increase within one target stream"
         );
     }
 }

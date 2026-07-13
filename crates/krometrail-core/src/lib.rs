@@ -65,9 +65,9 @@ pub use ports::{
     MonotonicClock, PortFuture, RecordingSink, TimelineStore, WallClock,
 };
 pub use recording::{
-    CaptureGap, CaptureGapReason, CaptureStatistics, CaptureStreamState, CaptureTimingSummary,
-    CaptureWarning, CapturedFrame, DeviceScaleFactor, DiskBudgetBytes, EncodedFrame, ImageFormat,
-    PixelDimensions, RecordingSession, TargetCaptureStatus,
+    CaptureGap, CaptureGapReason, CaptureOrdinal, CaptureStatistics, CaptureStreamState,
+    CaptureTimingSummary, CaptureWarning, CapturedFrame, DeviceScaleFactor, DiskBudgetBytes,
+    EncodedFrame, ImageFormat, PixelDimensions, RecordingSession, TargetCaptureStatus,
 };
 pub use time::{ObservedTime, SessionOrigin, SessionRange, SessionTime, SourceTime};
 pub use timeline::{ObservationKind, ObservationPayloadRef, TimelineObservation};

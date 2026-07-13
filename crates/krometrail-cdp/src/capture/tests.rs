@@ -253,6 +253,7 @@ struct TestTransport {
     calls: Mutex<Vec<String>>,
     ack_watch: watch::Sender<usize>,
     ack_count: AtomicU64,
+    ack_tokens: Mutex<Vec<i64>>,
     ack_completed: Arc<AtomicBool>,
     order: Arc<Mutex<Vec<&'static str>>>,
     fail_ack: AtomicBool,
@@ -271,17 +272,18 @@ impl TestTransport {
             calls: Mutex::new(Vec::new()),
             ack_watch,
             ack_count: AtomicU64::new(0),
+            ack_tokens: Mutex::new(Vec::new()),
             ack_completed,
             order,
             fail_ack: AtomicBool::new(false),
         })
     }
 
-    async fn frame(&self, sequence: u64) {
+    async fn frame(&self, ack_token: i64) {
         self.frame_sender
             .send(NamedEvent {
                 method: "Page.screencastFrame".into(),
-                params: frame_params(sequence),
+                params: frame_params(ack_token),
             })
             .await
             .unwrap();
@@ -310,10 +312,13 @@ impl CdpTransport for TestTransport {
         &self,
         _scope: &CommandScope,
         method: &str,
-        _params: serde_json::Value,
+        params: serde_json::Value,
     ) -> TransportFuture<'_, Result<serde_json::Value, TransportError>> {
         self.calls.lock().unwrap().push(method.to_owned());
         if method == "Page.screencastFrameAck" {
+            if let Some(token) = params.get("sessionId").and_then(serde_json::Value::as_i64) {
+                self.ack_tokens.lock().unwrap().push(token);
+            }
             if self.fail_ack.load(Ordering::Acquire) {
                 return Box::pin(std::future::ready(Err(TransportError::CommandFailed)));
             }
@@ -351,7 +356,7 @@ impl CdpTransport for TestTransport {
     }
 }
 
-fn frame_params(sequence: u64) -> serde_json::Value {
+fn frame_params(ack_token: i64) -> serde_json::Value {
     serde_json::json!({
         "data": STANDARD.encode(jpeg_bytes()),
         "metadata": {
@@ -360,7 +365,7 @@ fn frame_params(sequence: u64) -> serde_json::Value {
             "pageScaleFactor": 1.0,
             "timestamp": 1.25
         },
-        "sessionId": sequence
+        "sessionId": ack_token
     })
 }
 
@@ -416,7 +421,7 @@ async fn ack_completion_and_histogram_precede_parse_queue_and_sink() {
         )
         .await
         .unwrap();
-    transport.frame(7).await;
+    transport.frame(-7).await;
     transport.wait_for_acks(1).await;
     tokio::time::timeout(
         std::time::Duration::from_secs(1),
@@ -429,7 +434,76 @@ async fn ack_completion_and_histogram_precede_parse_queue_and_sink() {
     let status = coordinator.statuses().pop().unwrap();
     assert_eq!(status.statistics().acknowledged_frames(), 1);
     assert_eq!(status.ack_latency().sample_count(), 1);
+    assert_eq!(*transport.ack_tokens.lock().unwrap(), vec![-7]);
     sink.release_first_frame.notify_one();
+    coordinator
+        .stop_target(
+            &capture_target,
+            CaptureStopReason::TargetClosed,
+            tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+        )
+        .await;
+}
+
+#[tokio::test]
+async fn constant_ack_tokens_produce_local_ordinals_without_discontinuity_gaps() {
+    let ack_completed = Arc::new(AtomicBool::new(false));
+    let transport =
+        TestTransport::new(Arc::clone(&ack_completed), Arc::new(Mutex::new(Vec::new())));
+    let sink = Arc::new(TestSink::new(
+        ack_completed,
+        Arc::new(Mutex::new(Vec::new())),
+    ));
+    let observer = Arc::new(TestObserver::default());
+    let coordinator = coordinator(
+        CaptureConfig {
+            queue_capacity: NonZeroUsize::new(4).unwrap(),
+            ..CaptureConfig::default()
+        },
+        Arc::new(TestClock::new()),
+        Arc::new(TestIds::new()),
+        Arc::clone(&sink),
+        Arc::clone(&observer),
+    );
+    let capture_target = target();
+    coordinator
+        .start_target(
+            capture_target.clone(),
+            Arc::clone(&transport) as Arc<dyn CdpTransport>,
+        )
+        .await
+        .unwrap();
+    for _ in 0..3 {
+        transport.frame(1).await;
+    }
+    transport.wait_for_acks(3).await;
+    sink.release_first_frame.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            if sink.frames.lock().unwrap().len() == 3 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let (ordinals, warnings_empty) = {
+        let frames = sink.frames.lock().unwrap();
+        (
+            frames
+                .iter()
+                .map(|frame| frame.metadata().capture_ordinal().get())
+                .collect::<Vec<_>>(),
+            frames
+                .iter()
+                .all(|frame| frame.metadata().warnings().is_empty()),
+        )
+    };
+    assert_eq!(ordinals, vec![1, 2, 3]);
+    assert!(warnings_empty);
+    assert_eq!(transport.ack_tokens.lock().unwrap().as_slice(), &[1, 1, 1]);
+    assert!(observer.gaps.lock().unwrap().is_empty());
     coordinator
         .stop_target(
             &capture_target,
@@ -513,7 +587,7 @@ async fn failed_ack_never_enters_accepted_or_dropped_accounting() {
         Arc::new(TestClock::new()),
         Arc::new(TestIds::new()),
         sink,
-        observer,
+        Arc::clone(&observer),
     );
     let capture_target = target();
     coordinator
@@ -539,6 +613,18 @@ async fn failed_ack_never_enters_accepted_or_dropped_accounting() {
     assert_eq!(status.statistics().acknowledged_frames(), 0);
     assert_eq!(status.statistics().accepted_frames(), 0);
     assert_eq!(status.statistics().dropped_frames(), 0);
+    let gaps = observer.gaps.lock().unwrap();
+    let acknowledgement_gap = gaps
+        .iter()
+        .find(|gap| gap.reason() == &CaptureGapReason::AcknowledgementFailed)
+        .expect("acknowledgement failure must declare a gap");
+    assert_eq!(
+        acknowledgement_gap
+            .estimated_missing_frames()
+            .unwrap()
+            .get(),
+        1
+    );
 }
 
 #[tokio::test]
@@ -619,6 +705,7 @@ fn equal_or_backwards_clock_samples_are_clamped_without_reordering() {
         },
         observer,
         transport,
+        Arc::new(pipeline::OrdinalRegistry::default()),
     );
     runtime.record_received();
     let (first_observed, first_session) = runtime.record_ack(0, ObservedTime::from_nanos(10));
@@ -631,39 +718,30 @@ fn equal_or_backwards_clock_samples_are_clamped_without_reordering() {
 }
 
 #[test]
-fn sequence_comparison_is_fenced_by_attachment_runtime() {
-    let ack_completed = Arc::new(AtomicBool::new(false));
-    let transport =
-        TestTransport::new(Arc::clone(&ack_completed), Arc::new(Mutex::new(Vec::new())));
-    let sink = Arc::new(TestSink::new(
-        ack_completed,
-        Arc::new(Mutex::new(Vec::new())),
-    ));
-    let observer = Arc::new(TestObserver::default());
-    let dependencies = CaptureDependencies {
-        clock: Arc::new(TestClock::new()),
-        ids: Arc::new(TestIds::new()),
-        sink,
-    };
-    let first = pipeline::StreamRuntime::new(
-        target(),
-        CaptureConfig::default(),
-        dependencies.clone(),
-        observer.clone(),
-        Arc::clone(&transport) as Arc<dyn CdpTransport>,
+fn ordinal_allocation_is_strict_and_fenced_across_attachment_generations() {
+    let registry = pipeline::OrdinalRegistry::default();
+    let first_target = target();
+    assert!(registry.begin_generation(&first_target));
+    assert_eq!(
+        registry.allocate(&first_target),
+        pipeline::OrdinalAllocation::Allocated(krometrail_core::CaptureOrdinal::new(1).unwrap())
     );
-    assert_eq!(first.sequence_gap(10), None);
-    assert_eq!(first.sequence_gap(12), Some(1));
-    let mut next_target = target();
-    next_target.attachment_generation = 2;
-    let second = pipeline::StreamRuntime::new(
-        next_target,
-        CaptureConfig::default(),
-        dependencies,
-        observer,
-        transport,
+    assert_eq!(
+        registry.allocate(&first_target),
+        pipeline::OrdinalAllocation::Allocated(krometrail_core::CaptureOrdinal::new(2).unwrap())
     );
-    assert_eq!(second.sequence_gap(1), None);
+
+    let mut restored_target = first_target.clone();
+    restored_target.attachment_generation = 2;
+    assert!(registry.begin_generation(&restored_target));
+    assert_eq!(
+        registry.allocate(&first_target),
+        pipeline::OrdinalAllocation::StaleGeneration
+    );
+    assert_eq!(
+        registry.allocate(&restored_target),
+        pipeline::OrdinalAllocation::Allocated(krometrail_core::CaptureOrdinal::new(3).unwrap())
+    );
 }
 
 #[tokio::test]

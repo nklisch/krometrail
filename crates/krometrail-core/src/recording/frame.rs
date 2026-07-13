@@ -88,12 +88,36 @@ impl<'de> Deserialize<'de> for DeviceScaleFactor {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(transparent)]
+pub struct CaptureOrdinal(NonZeroU64);
+
+impl CaptureOrdinal {
+    pub fn new(value: u64) -> Result<Self> {
+        NonZeroU64::new(value)
+            .map(Self)
+            .ok_or_else(|| invalid("capture ordinal must be non-zero"))
+    }
+
+    pub const fn get(self) -> u64 {
+        self.0.get()
+    }
+}
+
+impl<'de> Deserialize<'de> for CaptureOrdinal {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserialize_validated(deserializer, |value: u64| Self::new(value))
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CaptureWarning {
     MissingSourceTime,
     SourceTimestampRounded,
-    SourceSequenceDiscontinuity,
     ViewportMetadataIncomplete,
 }
 
@@ -102,7 +126,7 @@ pub struct CapturedFrame {
     id: FrameId,
     session_id: SessionId,
     target_id: TargetId,
-    source_sequence: u64,
+    capture_ordinal: CaptureOrdinal,
     source_time: Option<SourceTime>,
     observed_time: ObservedTime,
     session_time: SessionTime,
@@ -118,7 +142,7 @@ struct CapturedFrameWire {
     id: FrameId,
     session_id: SessionId,
     target_id: TargetId,
-    source_sequence: u64,
+    capture_ordinal: CaptureOrdinal,
     source_time: Option<SourceTime>,
     observed_time: ObservedTime,
     session_time: SessionTime,
@@ -135,7 +159,7 @@ impl CapturedFrame {
         id: FrameId,
         session_id: SessionId,
         target_id: TargetId,
-        source_sequence: u64,
+        capture_ordinal: CaptureOrdinal,
         source_time: Option<SourceTime>,
         observed_time: ObservedTime,
         session_time: SessionTime,
@@ -149,7 +173,7 @@ impl CapturedFrame {
             id,
             session_id,
             target_id,
-            source_sequence,
+            capture_ordinal,
             source_time,
             observed_time,
             session_time,
@@ -172,8 +196,8 @@ impl CapturedFrame {
     pub const fn target_id(&self) -> TargetId {
         self.target_id
     }
-    pub const fn source_sequence(&self) -> u64 {
-        self.source_sequence
+    pub const fn capture_ordinal(&self) -> CaptureOrdinal {
+        self.capture_ordinal
     }
     pub const fn source_time(&self) -> Option<SourceTime> {
         self.source_time
@@ -220,7 +244,7 @@ impl<'de> Deserialize<'de> for CapturedFrame {
                 wire.id,
                 wire.session_id,
                 wire.target_id,
-                wire.source_sequence,
+                wire.capture_ordinal,
                 wire.source_time,
                 wire.observed_time,
                 wire.session_time,
@@ -273,7 +297,7 @@ mod tests {
             FrameId::from_uuid(UUID.parse().unwrap()),
             SessionId::from_uuid(UUID.parse().unwrap()),
             TargetId::from_uuid(UUID.parse().unwrap()),
-            1,
+            CaptureOrdinal::new(1).unwrap(),
             Some(SourceTime::from_nanos(20)),
             ObservedTime::from_nanos(30),
             SessionTime::from_nanos(10),
@@ -284,6 +308,21 @@ mod tests {
             vec![],
         )
         .unwrap()
+    }
+
+    #[test]
+    fn capture_ordinals_are_non_zero_and_round_trip_as_transparent_wire_values() {
+        assert!(CaptureOrdinal::new(0).is_err());
+        assert_eq!(CaptureOrdinal::new(7).unwrap().get(), 7);
+        assert_eq!(
+            serde_json::to_string(&CaptureOrdinal::new(7).unwrap()).unwrap(),
+            "7"
+        );
+        assert_eq!(
+            serde_json::from_str::<CaptureOrdinal>("7").unwrap(),
+            CaptureOrdinal::new(7).unwrap()
+        );
+        assert!(serde_json::from_str::<CaptureOrdinal>("0").is_err());
     }
 
     #[test]
@@ -309,7 +348,7 @@ mod tests {
                 FrameId::from_uuid(UUID.parse().unwrap()),
                 SessionId::from_uuid(UUID.parse().unwrap()),
                 TargetId::from_uuid(UUID.parse().unwrap()),
-                1,
+                CaptureOrdinal::new(1).unwrap(),
                 None,
                 ObservedTime::from_nanos(2),
                 SessionTime::from_nanos(3),
