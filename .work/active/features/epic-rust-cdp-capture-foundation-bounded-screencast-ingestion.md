@@ -1,17 +1,28 @@
 ---
 id: epic-rust-cdp-capture-foundation-bounded-screencast-ingestion
 kind: feature
-stage: implementing
+stage: drafting
 tags: [browser]
 parent: epic-rust-cdp-capture-foundation
 depends_on: [epic-rust-cdp-capture-foundation-chrome-target-supervision]
 release_binding: null
 gate_origin: null
 created: 2026-07-12
-updated: 2026-07-12
+updated: 2026-07-13
 ---
 
 # Bounded Screencast Ingestion
+
+## Implementation discovery (2026-07-13)
+
+The opt-in production test invalidated a load-bearing design premise and bounced this feature to drafting rather than weakening evidence:
+
+- Chrome 149 does not expose a per-frame increasing number in `Page.screencastFrame.params.sessionId`; it exposes the acknowledgement token used by `Page.screencastFrameAck`, observed as constant `1` across a live stream. This is corroborated by the already-committed canonical final5 Linux trace, where all 101 sampled real screencast events have `sessionId: 1`, and by its macOS counterpart. The design review's B1 rejection incorrectly dismissed canonical real-browser evidence as scripted.
+- Therefore the current `source_sequence`, `SourceSequenceDiscontinuity` gap/warning, and strict-increase acceptance claims fabricate continuity semantics Chrome does not supply. Redesign must preserve the opaque acknowledgement token only long enough to acknowledge, introduce an honestly named Krometrail-owned ordering value if needed, and rely on explicit known loss/lifecycle gaps rather than inferred browser sequence gaps.
+- Initial capture also failed live because `ProbeInitialVisibility` accepts only one raw-result shape while reconnect already supports both cdpkit shapes. The initial probe must establish observed Visible/Hidden state before Ready reconciliation without waiting for a later visibility event.
+- `KROMETRAIL_REAL_CHROME_TESTS=1 cargo test -p krometrail-cdp --test capture_real --locked -- --nocapture` reproduced four bounded liveness failures (zero captures), so the real-fidelity story remains unfinished.
+
+Revise this feature's design, parent/child acceptance criteria, core metadata vocabulary, capture engine behavior/tests, rust-CDP reference skill, and real-Chrome evidence together. Preserve acknowledgement-before-handoff, boundedness, three clocks, explicit known gaps, and all already-approved lifecycle/shutdown behavior.
 
 ## Brief
 

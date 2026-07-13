@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-bounded-screencast-ingestion-real-chrome-fidelity
 kind: story
-stage: review
+stage: implementing
 tags: [browser, testing]
 parent: epic-rust-cdp-capture-foundation-bounded-screencast-ingestion
 depends_on: [epic-rust-cdp-capture-foundation-bounded-screencast-ingestion-supervised-wiring]
@@ -63,4 +63,4 @@ This story exclusively owns one new test file and can leave all production files
 
 - Passed: `cargo fmt --all -- --check`, workspace `cargo check --workspace --all-targets --locked`, workspace `cargo test --workspace --all-targets --locked`, workspace clippy with `-D warnings`, `cargo check -p krometrail-cdp --no-default-features --all-targets --locked`, and `cargo test -p krometrail-cdp --features cdp-spike-cdpkit --test cdpkit_transport_contract --locked`.
 - Passed repeatedly with the opt-in gate disabled: `cargo test -p krometrail-cdp --test capture_real -- --nocapture` (three runs); the existing Electron test reports its explicit endpoint skip.
-- Review blocker: with `KROMETRAIL_REAL_CHROME_TESTS=1`, the installed Chrome 149 run against the unchanged supervised wiring leaves the target without a usable initial visibility transition, so the new live gate cannot claim its required 30-frame evidence. A separate local diagnostic (not landed) confirmed that once capture was forced past that wiring issue, Chrome's observed constant frame number is rejected by the strict live assertion; the scripted constant is never accepted. This is recorded for the review lane rather than weakened or converted into a pass.
+- Design blocker: `KROMETRAIL_REAL_CHROME_TESTS=1` on installed Chrome 149 reproduces zero-capture liveness failures because the initial visibility probe does not accept the raw result shape returned by this path. Independently, both live Chrome diagnostics and committed canonical final5 Linux/macOS traces show the acknowledgement `sessionId` remains constant within a screencast; it is not truthful per-frame sequence evidence. The parent feature has been bounced to drafting to remove the fabricated source-sequence contract and repair initial visibility before this story resumes. No assertion is weakened or converted into a pass.
