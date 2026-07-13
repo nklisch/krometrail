@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-vision-toolkit-frame-sequence-contracts
 kind: feature
-stage: review
+stage: done
 tags: [visual]
 parent: epic-temporal-vision-toolkit
 depends_on: []
@@ -503,3 +503,23 @@ None. The implemented crate remains an immutable browser-agnostic batch boundary
 - Focused verification: `cargo fmt -p temporal-vision -- --check`, locked package check/test/clippy, and dependency-tree inspection all passed; 12 tests passed.
 - Workspace verification: locked workspace check passed and 213 workspace tests passed. Workspace formatting and clippy were temporarily blocked only by concurrent unowned browser-operation work (`crates/krometrail-cdp/src/control/**` formatting; a `krometrail-core/src/browser/operation.rs` large-enum lint). No failing result originated in `temporal-vision`, and no unowned file was changed or staged for this feature.
 - Adjacent issues parked: none.
+
+## Review (2026-07-13)
+
+**Verdict**: Approve with comments
+
+**Blockers**: none
+**Important**: none
+**Nits**: Two additional JSON-rejection cases for RGBA length and binary-mask padding could make
+the validated-deserialization routing more explicit, but constructors, round trips, and the shared
+`Self::new` paths already protect the contract; no follow-up item is warranted.
+**Rejected**: Requiring constructors for every public `ParameterValue` variant. Invalid values
+cannot enter a manifest except through validating `Parameters`, and the extra ceremony would not
+improve the supported API.
+
+**Notes**: Standard-weight cross-model review by GLM 5.2. Package format, check, 12 tests, Clippy,
+dependency independence, constructor/deserializer routing, deterministic ordering, geometry,
+annotations, gaps, parameters, hashes, and manifest projection all passed. The reviewer did not
+repeat the full workspace run while unrelated core/CDP work was in flight; the implementation's
+workspace check and 213-test run were green, and later browser-operation integration gates also
+passed.
