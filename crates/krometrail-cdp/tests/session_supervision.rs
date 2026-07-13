@@ -95,6 +95,22 @@ async fn production_supervisor_rebuilds_after_a_transport_event_stream_closes() 
     assert!(saw_ready, "reconnect did not publish Ready");
     assert_eq!(session.targets().await.unwrap().len(), 1);
     assert_eq!(session.stop().await.unwrap(), BrowserStopOutcome::Detached);
+
+    let terminal_count = tokio::time::timeout(Duration::from_secs(1), async {
+        let mut terminal_count = 0;
+        loop {
+            match events.next().await.unwrap() {
+                Some(BrowserSessionEvent::SessionStateChanged {
+                    state: BrowserSessionState::Ended,
+                }) => terminal_count += 1,
+                Some(_) => {}
+                None => break terminal_count,
+            }
+        }
+    })
+    .await
+    .expect("stop must close the session event stream");
+    assert_eq!(terminal_count, 1, "stop publishes exactly one Ended event");
 }
 
 #[tokio::test]

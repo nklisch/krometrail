@@ -1364,6 +1364,11 @@ async fn perform_shutdown(
 }
 
 fn finish_state(shared: &Arc<SessionShared>, state: &mut SupervisorState) {
+    // Several shutdown inputs can race with transport/process teardown. The first terminal
+    // transition owns the single Ended publication and channel closure; later inputs are no-ops.
+    if state.session_state == BrowserSessionState::Ended {
+        return;
+    }
     let previous = state.session_state;
     state.session_state = BrowserSessionState::Ended;
     state.revision = state.revision.saturating_add(1);

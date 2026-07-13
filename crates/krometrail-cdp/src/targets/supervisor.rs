@@ -95,9 +95,19 @@ impl SubscriberLag {
 }
 
 struct Subscriber {
+    // The registry is the sole owner of senders. Receivers retain only state, so a dropped or
+    // terminal registry can release every channel without a receiver keeping a sender alive.
     sender: mpsc::Sender<RevisionedEvent>,
+    state: Arc<SubscriberState>,
+}
+
+#[derive(Default)]
+struct SubscriberState {
     lag: Mutex<Option<SubscriberLag>>,
     last_delivered_revision: Mutex<u64>,
+    // A terminal event is kept out-of-band so it cannot be lost when a slow subscriber's bounded
+    // queue is full. It is delivered only after the queued non-terminal events have drained.
+    terminal: Mutex<Option<RevisionedEvent>>,
 }
 
 #[derive(Clone, Debug)]
@@ -106,58 +116,91 @@ struct RevisionedEvent {
     event: BrowserSessionEvent,
 }
 
+struct SubscriberRegistryState {
+    subscribers: Vec<Subscriber>,
+    terminal: bool,
+    next_revision: u64,
+}
+
 pub(crate) struct SubscriberRegistry {
-    subscribers: Mutex<Vec<Arc<Subscriber>>>,
+    state: Mutex<SubscriberRegistryState>,
     capacity: usize,
-    next_revision: std::sync::atomic::AtomicU64,
     lagged: std::sync::atomic::AtomicU64,
 }
 
 impl SubscriberRegistry {
     pub(crate) fn new(capacity: usize) -> Self {
         Self {
-            subscribers: Mutex::new(Vec::new()),
+            state: Mutex::new(SubscriberRegistryState {
+                subscribers: Vec::new(),
+                terminal: false,
+                next_revision: 0,
+            }),
             capacity: capacity.max(1),
-            next_revision: std::sync::atomic::AtomicU64::new(0),
             lagged: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
     pub(crate) fn subscribe(&self) -> Box<dyn BrowserSessionEvents> {
         let (sender, receiver) = mpsc::channel(self.capacity);
-        let subscriber = Arc::new(Subscriber {
-            sender,
-            lag: Mutex::new(None),
-            last_delivered_revision: Mutex::new(
-                self.next_revision
-                    .load(std::sync::atomic::Ordering::Acquire),
-            ),
-        });
-        self.subscribers
+        let mut registry = self.state.lock().expect("subscriber registry lock");
+        let state = Arc::new(SubscriberState::default());
+        *state
+            .last_delivered_revision
             .lock()
-            .expect("subscriber registry lock")
-            .push(Arc::clone(&subscriber));
-        Box::new(BoundedSessionEvents {
-            receiver,
-            subscriber,
-        })
+            .expect("subscriber revision lock") = registry.next_revision;
+        if registry.terminal {
+            // There is no terminal event for a post-terminal subscriber to receive. Dropping this
+            // local sender makes its stream close immediately and consistently.
+            drop(sender);
+        } else {
+            registry.subscribers.push(Subscriber {
+                sender,
+                state: Arc::clone(&state),
+            });
+        }
+        Box::new(BoundedSessionEvents { receiver, state })
     }
 
     pub(crate) fn publish(&self, event: BrowserSessionEvent) {
-        let revision = self
-            .next_revision
-            .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
-            .saturating_add(1);
-        let item = RevisionedEvent { revision, event };
+        let mut registry = self.state.lock().expect("subscriber registry lock");
+        if registry.terminal {
+            return;
+        }
+        registry.next_revision = registry.next_revision.saturating_add(1);
+        let item = RevisionedEvent {
+            revision: registry.next_revision,
+            event,
+        };
+        if matches!(
+            item.event,
+            BrowserSessionEvent::SessionStateChanged {
+                state: krometrail_core::BrowserSessionState::Ended
+            }
+        ) {
+            // Store Ended before dropping senders. Receivers first drain their bounded queues,
+            // then take this item, which makes terminal ordering deterministic even when Full.
+            for subscriber in &registry.subscribers {
+                *subscriber
+                    .state
+                    .terminal
+                    .lock()
+                    .expect("subscriber terminal lock") = Some(item.clone());
+            }
+            registry.terminal = true;
+            registry.subscribers.clear();
+            return;
+        }
+
         let mut closed = Vec::new();
-        let mut subscribers = self.subscribers.lock().expect("subscriber registry lock");
-        for (index, subscriber) in subscribers.iter().enumerate() {
+        for (index, subscriber) in registry.subscribers.iter().enumerate() {
             match subscriber.sender.try_send(item.clone()) {
                 Ok(()) => {
                     *subscriber
+                        .state
                         .last_delivered_revision
                         .lock()
-                        .expect("subscriber revision lock") = revision;
+                        .expect("subscriber revision lock") = registry.next_revision;
                 }
                 Err(mpsc::error::TrySendError::Full(_)) => {
                     let lagged_count = self
@@ -166,25 +209,26 @@ impl SubscriberRegistry {
                         .saturating_add(1);
                     tracing::debug!(
                         lagged_count,
-                        current_revision = revision,
+                        current_revision = registry.next_revision,
                         "browser.session.subscriber_lagged"
                     );
-                    let mut lag = subscriber.lag.lock().expect("subscriber lag lock");
+                    let mut lag = subscriber.state.lag.lock().expect("subscriber lag lock");
                     let from = subscriber
+                        .state
                         .last_delivered_revision
                         .lock()
                         .expect("subscriber revision lock")
                         .saturating_add(1);
                     match &mut *lag {
                         Some(existing) => {
-                            existing.missed_to_revision = revision;
-                            existing.current_revision = revision;
+                            existing.missed_to_revision = registry.next_revision;
+                            existing.current_revision = registry.next_revision;
                         }
                         None => {
                             *lag = Some(SubscriberLag {
                                 missed_from_revision: from,
-                                missed_to_revision: revision,
-                                current_revision: revision,
+                                missed_to_revision: registry.next_revision,
+                                current_revision: registry.next_revision,
                             });
                         }
                     }
@@ -193,26 +237,20 @@ impl SubscriberRegistry {
             }
         }
         for index in closed.into_iter().rev() {
-            subscribers.remove(index);
+            registry.subscribers.remove(index);
         }
     }
 }
 
 struct BoundedSessionEvents {
     receiver: mpsc::Receiver<RevisionedEvent>,
-    subscriber: Arc<Subscriber>,
+    state: Arc<SubscriberState>,
 }
 
 impl BrowserSessionEvents for BoundedSessionEvents {
     fn next(&mut self) -> PortFuture<'_, Result<Option<BrowserSessionEvent>>> {
         Box::pin(async move {
-            if let Some(lag) = self
-                .subscriber
-                .lag
-                .lock()
-                .expect("subscriber lag lock")
-                .take()
-            {
+            if let Some(lag) = self.state.lag.lock().expect("subscriber lag lock").take() {
                 tracing::info!(
                     missed_from_revision = lag.missed_from_revision,
                     missed_to_revision = lag.missed_to_revision,
@@ -224,13 +262,29 @@ impl BrowserSessionEvents for BoundedSessionEvents {
             match self.receiver.recv().await {
                 Some(item) => {
                     *self
-                        .subscriber
+                        .state
                         .last_delivered_revision
                         .lock()
                         .expect("subscriber revision lock") = item.revision;
                     Ok(Some(item.event))
                 }
-                None => Ok(None),
+                None => match self
+                    .state
+                    .terminal
+                    .lock()
+                    .expect("subscriber terminal lock")
+                    .take()
+                {
+                    Some(item) => {
+                        *self
+                            .state
+                            .last_delivered_revision
+                            .lock()
+                            .expect("subscriber revision lock") = item.revision;
+                        Ok(Some(item.event))
+                    }
+                    None => Ok(None),
+                },
             }
         })
     }
@@ -240,21 +294,97 @@ impl BrowserSessionEvents for BoundedSessionEvents {
 mod tests {
     use super::*;
 
+    fn state(state: krometrail_core::BrowserSessionState) -> BrowserSessionEvent {
+        BrowserSessionEvent::SessionStateChanged { state }
+    }
+
     #[tokio::test]
-    async fn bounded_subscribers_report_revision_ranges_without_backpressure() {
+    async fn bounded_subscribers_report_revision_ranges_before_terminal_closure() {
         let registry = SubscriberRegistry::new(1);
         let mut events = registry.subscribe();
-        registry.publish(BrowserSessionEvent::SessionStateChanged {
-            state: krometrail_core::BrowserSessionState::Connecting,
-        });
-        registry.publish(BrowserSessionEvent::SessionStateChanged {
-            state: krometrail_core::BrowserSessionState::Ready,
-        });
-        registry.publish(BrowserSessionEvent::SessionStateChanged {
-            state: krometrail_core::BrowserSessionState::Ended,
-        });
+        registry.publish(state(krometrail_core::BrowserSessionState::Connecting));
+        registry.publish(state(krometrail_core::BrowserSessionState::Ready));
+        registry.publish(state(krometrail_core::BrowserSessionState::Ended));
         let error = events.next().await.unwrap_err();
-        assert!(error.message.as_str().contains("missed revisions 2..=3"));
-        assert!(error.message.as_str().contains("current revision 3"));
+        assert!(error.message.as_str().contains("missed revisions 2..=2"));
+        assert!(error.message.as_str().contains("current revision 2"));
+
+        let first = events.next().await.unwrap().unwrap();
+        assert_eq!(
+            first,
+            state(krometrail_core::BrowserSessionState::Connecting)
+        );
+        let ended = events.next().await.unwrap().unwrap();
+        assert_eq!(ended, state(krometrail_core::BrowserSessionState::Ended));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), events.next())
+                .await
+                .expect("terminal stream must close")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_event_is_delivered_once_and_post_terminal_subscriptions_close() {
+        let registry = SubscriberRegistry::new(4);
+        let mut events = registry.subscribe();
+        registry.publish(state(krometrail_core::BrowserSessionState::Connecting));
+        registry.publish(state(krometrail_core::BrowserSessionState::Ended));
+        registry.publish(state(krometrail_core::BrowserSessionState::Ended));
+        assert!(
+            registry
+                .state
+                .lock()
+                .expect("subscriber registry lock")
+                .subscribers
+                .is_empty()
+        );
+
+        assert_eq!(
+            events.next().await.unwrap().unwrap(),
+            state(krometrail_core::BrowserSessionState::Connecting)
+        );
+        assert_eq!(
+            events.next().await.unwrap().unwrap(),
+            state(krometrail_core::BrowserSessionState::Ended)
+        );
+        assert!(events.next().await.unwrap().is_none());
+
+        let mut late = registry.subscribe();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), late.next())
+                .await
+                .expect("post-terminal subscription must close")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn full_slow_subscriber_still_receives_ended_without_blocking() {
+        let registry = SubscriberRegistry::new(1);
+        let mut events = registry.subscribe();
+        registry.publish(state(krometrail_core::BrowserSessionState::Connecting));
+        registry.publish(state(krometrail_core::BrowserSessionState::Ready));
+        registry.publish(state(krometrail_core::BrowserSessionState::Ended));
+
+        let error = events.next().await.unwrap_err();
+        assert!(error.message.as_str().contains("missed revisions 2..=2"));
+        assert_eq!(
+            events.next().await.unwrap().unwrap(),
+            state(krometrail_core::BrowserSessionState::Connecting)
+        );
+        assert_eq!(
+            events.next().await.unwrap().unwrap(),
+            state(krometrail_core::BrowserSessionState::Ended)
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), events.next())
+                .await
+                .expect("full subscriber must close after terminal")
+                .unwrap()
+                .is_none()
+        );
     }
 }
