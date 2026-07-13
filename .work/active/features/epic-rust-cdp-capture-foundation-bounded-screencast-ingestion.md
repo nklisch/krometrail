@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-bounded-screencast-ingestion
 kind: feature
-stage: review
+stage: done
 tags: [browser]
 parent: epic-rust-cdp-capture-foundation
 depends_on: [epic-rust-cdp-capture-foundation-chrome-target-supervision]
@@ -290,4 +290,14 @@ A single remediation story is intentionally minimal. Splitting metadata and visi
 
 ## Feature review findings (2026-07-13)
 
-GLM completeness review approved. A second cross-model seam review found two receiver-confirmed material gaps: acknowledgement latency starts after token extraction rather than at frame return, and stopped target runtimes remain in the coordinator map, violating the stated O(active streams) memory/status bound under target churn. The parent returned to implementing for `...-feature-review-remediation`; that story now measures receipt-to-ack completion exactly, evicts terminal runtimes safely, exposes only highest-generation sorted statuses, preserves/reclaims ordinal state by lifecycle, and proves final status publication before removal. Exact opt-in Chrome passed twice after repair, so the parent resumes review.
+GLM completeness review approved. A second cross-model seam review found two receiver-confirmed material gaps: acknowledgement latency starts after token extraction rather than at frame return, and stopped target runtimes remain in the coordinator map, violating the stated O(active streams) memory/status bound under target churn. The parent returned to implementing for `...-feature-review-remediation`; that story now measures receipt-to-ack completion exactly, evicts terminal runtimes safely, exposes only highest-generation sorted statuses, preserves/reclaims ordinal state by lifecycle, and proves final status publication before removal. Exact opt-in Chrome passed twice after repair.
+
+## Final feature review (2026-07-13)
+
+**Verdict:** Approve
+
+**Blockers:** none
+**Important:** none
+**Nits:** lower-risk engine and test-harness hardening is parked in the backlog.
+
+**Notes:** Independent GLM completeness and Kimi adversarial reviews covered the feature as a whole. The adversarial findings were repaired and re-reviewed: receipt-to-ack timing now matches the documented metric, target churn cannot retain terminal runtime/status state, final stopped status remains observable before removal, ordinal continuity survives nonterminal replacement, and terminal/session cleanup is bounded. Current gates pass with 163 workspace tests and repeated 5/5 real-Chrome runs; no material finding remains.
