@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-chrome-target-supervision
 kind: feature
-stage: review
+stage: implementing
 tags: [browser]
 parent: epic-rust-cdp-capture-foundation
 depends_on: [epic-rust-cdp-capture-foundation-cdp-transport-gate]
@@ -475,6 +475,12 @@ Acceptance:
 All four dependency-ordered child stories are `stage: done`. The implementation introduced infrastructure-free browser/session contracts, exact cdpkit 0.4.0 behind a replaceable production transport seam, strict local endpoints and capability-based renderer probing, managed Chrome discovery/profile/process ownership, and a deterministic single-writer target/session supervisor with finite reconnect and bounded event fan-out.
 
 Production composition now uses `ProductionBrowserConnector`; `doctor` performs discovery only. Managed sessions own and clean process groups/profiles, attached sessions leave external resources alive, and descendant-reaping regressions plus repeated real Chrome runs leave zero process/profile/test-root leaks. The implementation deliberately contains no production screencast start, frame ingestion, persistence, actions, or snapshots. Workspace default/no-default tests, spike regression, real Chrome opt-in tests, formatting, and denied-warning clippy pass.
+
+## Review findings and disposition (2026-07-13)
+
+GLM completeness review found one receiver-confirmed material gap: the parent acceptance contract requires real Chrome disconnect/rebuild, while implementation proved reconnect only through the deterministic transport factory. A new child story, `...-real-reconnect`, owns a real-browser transport-sever/rebuild test without changing the production contract.
+
+The receiver accepted four lower-risk robustness proposals—structured subscriber-lag recovery, graceful cancellation close, late-stop idempotency, and stale reusable-profile lease metadata—and parked them together as unbound backlog item `idea-harden-session-edge-semantics`. Dead no-op code is a nit; polling and approximate lag bookkeeping are proportionate to this local supervisor. The feature returns to `stage: implementing` only for the confirmed real-reconnect acceptance gap.
 
 ## Testing strategy
 
