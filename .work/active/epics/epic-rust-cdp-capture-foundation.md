@@ -1,14 +1,14 @@
 ---
 id: epic-rust-cdp-capture-foundation
 kind: epic
-stage: implementing
+stage: review
 tags: [browser, infra]
 parent: null
 depends_on: []
 release_binding: null
 gate_origin: null
 created: 2026-07-11
-updated: 2026-07-12
+updated: 2026-07-13
 ---
 
 # Rust CDP Capture Foundation
@@ -59,3 +59,19 @@ The epic is split into five end-to-end capabilities along the evidence path: est
 - The runtime cutover removes the convenient local legacy reference. The remote `v0.2.20` tag was verified at commit `3fa4ffa16659648c6f4e229c2f7ae14d2fbc6558`; the cutover must preserve that reference and avoid compatibility shims or dual runtimes.
 - Screencast acknowledgement can appear healthy while clocks, queue loss, or visibility pauses misrepresent continuity. The ingestion capability must preserve source, observed, and normalized session times separately and classify every known gap.
 - The final smoke could grow into the evaluation epic and lengthen this foundation's critical path. Limit it to transport, scaling, timing, loss-reporting, and shutdown confidence on the two supported platforms.
+
+## Child features reviewed and complete
+
+All five child features reached `done` with green integrated verification and feature-level review:
+
+- `epic-rust-cdp-capture-foundation-rust-runtime-contracts`
+- `epic-rust-cdp-capture-foundation-cdp-transport-gate`
+- `epic-rust-cdp-capture-foundation-chrome-target-supervision`
+- `epic-rust-cdp-capture-foundation-bounded-screencast-ingestion`
+- `epic-rust-cdp-capture-foundation-cross-platform-capture-smoke`
+
+The final smoke produced decisive Linux Chrome and macOS default-DPI evidence. Two hosted runs
+honestly demonstrated that available headless macOS Chrome reports scale `1.0` despite the forced
+high-DPI flags; on 2026-07-13 the operator authorized deferring that evidence so the foundation and
+its dependents can continue without weakening the assertion or fabricating a pass. The epic is
+ready for deeper aggregate review of the Rust/CDP capture capability.
