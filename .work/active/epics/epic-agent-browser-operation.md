@@ -1,14 +1,14 @@
 ---
 id: epic-agent-browser-operation
 kind: epic
-stage: drafting
+stage: implementing
 tags: [browser, agent-ux]
 parent: null
 depends_on: [epic-rust-cdp-capture-foundation]
 release_binding: null
 gate_origin: null
 created: 2026-07-11
-updated: 2026-07-12
+updated: 2026-07-13
 ---
 
 # Agent Browser Operation
@@ -34,16 +34,38 @@ This epic does not provide historical temporal bundles or derived visual artifac
 - **Element targeting:** Treat snapshot-scoped accessibility references as the primary target form. Explicit CSS selectors and declared coordinate-space targets remain escape hatches for debugging and DOM-opaque surfaces, and responses identify their weaker validation guarantees.
 - **Browser start default:** Launch an isolated reusable Krometrail-managed profile by default. Attaching to an existing debug-enabled Chrome, selecting another named profile, or requesting a temporary profile remains explicit.
 - **Electron boundary:** Support explicit attachment to Electron renderer targets through a local remote-debugging endpoint using the same capability-probed CDP control surface. Electron's Node main process and Electron-specific native APIs remain out of scope.
+- **Foundation reuse:** Treat launch/attach ownership, managed-profile defaults, renderer capability probing, Electron renderer classification, target supervision, and reconnect as completed inputs from `epic-rust-cdp-capture-foundation`. This epic extends that one browser session boundary instead of creating a second browser manager or Electron-specific control stack.
+- **Control contract ownership:** Establish live observations, target selection, operation identities, and interaction records in the infrastructure-free core. CDP implements those ports, and MCP translates them; adapter types and protocol envelopes do not become public control contracts.
+- **Current-state evidence:** Every state-changing standalone operation returns one explicit post-action live observation and interaction anchor. Observation or verification failure is a structured degraded result, never a guessed success; read-only inspection remains screenshot-free unless requested.
+- **Persistence boundary:** This epic creates complete interaction records and emits timeline anchors through core ports. Durable indexing and retention remain owned by `epic-durable-browser-memory`, so browser control does not introduce a private in-memory or duplicate store.
+- **Dispatch:** Direct local probes only. The caller prohibited subagents and peer review, and the foundation docs, completed CDP foundation, current core/CDP seams, and empty MCP adapter resolved the decomposition without another discovery path.
+- **UI surface:** There is no traditional human screen or journey to mock. The agent experience is the typed MCP/browser-control API, so visual mockups are intentionally skipped.
 
-## Anticipated child features
+## Decomposition
 
-- Accessibility snapshots and generation-scoped actionable references
-- Page and history navigation plus target selection and lifecycle actions
-- Electron renderer attachment and compatibility validation
-- Pointer, keyboard, form, scroll, drag, dialog, and upload interactions
-- Action-specific completion and wait semantics
-- Post-action screenshots and structured live observations
-- Ordered action batches and interaction anchors
-- Capability-driven Rust MCP tools, resources, and generated schemas
+The epic is split by agent capability rather than implementation layer: first make the current page observable and references safely actionable, then build page lifecycle/navigation and rich interaction as sibling consumers of that shared observation boundary. Explicit waiting and batching compose both operation families, and the MCP feature exposes the integrated capability through generated contracts. Existing Chrome/Electron connection supervision is reused rather than re-scoped here.
 
-<!-- The design pass on each child feature will fill in real specifics. -->
+### Child features
+
+- `epic-agent-browser-operation-page-observation` — deliver structured snapshots, generation-scoped references, current-state inspection, screenshots, and the shared live-observation boundary — depends on: `[]`
+- `epic-agent-browser-operation-browser-page-lifecycle` — expose browser start/attach/stop/status and page creation, selection, closure, navigation, reload, and history with post-operation evidence — depends on: `[epic-agent-browser-operation-page-observation]`
+- `epic-agent-browser-operation-verified-interactions` — execute reference-first pointer, keyboard, form, scroll, drag, dialog, upload, and coordinate-fallback actions with explicit verification and interaction records — depends on: `[epic-agent-browser-operation-page-observation]`
+- `epic-agent-browser-operation-waits-and-batches` — add explicit wait conditions and ordered batches that reuse standalone operation semantics, per-step outcomes, anchors, and final live observation — depends on: `[epic-agent-browser-operation-browser-page-lifecycle, epic-agent-browser-operation-verified-interactions]`
+- `epic-agent-browser-operation-mcp-control-surface` — expose the complete control capability through capability-driven MCP tools, generated schemas, resources, and stable error responses — depends on: `[epic-agent-browser-operation-waits-and-batches]`
+
+### Simplification arcs
+
+- `epic-agent-browser-operation-page-observation` — replace the deferred snapshot/reference placeholders with one core-owned generation model and one resolver; do not retain parallel accessibility, DOM, and selector identity systems.
+- `epic-agent-browser-operation-browser-page-lifecycle` — extend the existing supervised `BrowserSessionPort` and production connector instead of adding another browser process, target, reconnect, profile, or Electron adapter.
+- `epic-agent-browser-operation-verified-interactions` — derive action variants, validation, execution routing, and interaction display from one registry rather than one bespoke handler contract per action.
+- `epic-agent-browser-operation-waits-and-batches` — compose the standalone executor and completion policies; do not duplicate action implementations for batching or make network-idle waiting an implicit global policy.
+- `epic-agent-browser-operation-mcp-control-surface` — grow the reserved MCP crate into a thin adapter and generate schemas from shared Rust contracts, eliminating handwritten schema mirrors and any alternate runtime surface.
+
+### Decomposition risks
+
+- Snapshot generations and backing-node validity are the least forgiving boundary: dynamic replacement, navigation, iframes, shadow DOM, overlays, and scrolling can make a visually plausible target stale. The observation feature must own invalidation and explicit refresh guidance before input work begins.
+- Live observation couples screenshots, structured snapshots, action timing, and target continuity. Feature design must define honest partial-failure behavior without letting screenshot latency block the continuous recorder or allowing missing evidence to become success.
+- Page lifecycle and interaction can proceed in parallel after observation, but both will extend shared operation/interaction contracts. Their feature designs must preserve one registry and avoid incompatible duplicate envelopes; the waits-and-batches dependency is the integration checkpoint.
+- The interaction capability is broad enough to invite per-action architecture. Keep one executor shape with action-specific completion policies and split implementation into stories only when CDP mechanics differ materially.
+- Browser control creates interaction records that durable memory later persists. Keep emission behind core ports and test with in-memory adapters so this epic neither blocks on storage nor invents a temporary production store.
+- MCP lands last and can expose contract inconsistencies late. Generated schemas and thin handlers limit that risk; feature-level design must verify standalone and batch tools derive from the same registry rather than repairing divergence at the adapter.
