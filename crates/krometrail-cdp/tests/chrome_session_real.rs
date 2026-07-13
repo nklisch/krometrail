@@ -19,8 +19,8 @@ async fn opt_in_managed_session_stops_without_retaining_temporary_profile() {
         return;
     }
     let _browser_lock = support::chrome::real_browser_lock().await;
-    let root = support::chrome::temporary_profile_root("managed");
-    let _ = fs::remove_dir_all(&root);
+    let root_guard = support::chrome::temporary_profile_root("managed");
+    let root = root_guard.path().to_path_buf();
     let launcher_config = LauncherConfig {
         profile_root: root.clone(),
         startup_timeout: Duration::from_secs(45),
@@ -58,8 +58,8 @@ async fn opt_in_managed_launch_attach_targets_and_external_survival() {
         return;
     }
     let _browser_lock = support::chrome::real_browser_lock().await;
-    let root = support::chrome::temporary_profile_root("targets");
-    let _ = fs::remove_dir_all(&root);
+    let root_guard = support::chrome::temporary_profile_root("targets");
+    let root = root_guard.path().to_path_buf();
     let launcher = SystemChromeLauncher::new(LauncherConfig {
         profile_root: root.clone(),
         startup_timeout: Duration::from_secs(45),
