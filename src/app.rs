@@ -4,9 +4,9 @@ use std::{
 };
 
 use krometrail_core::{
-    BrowserConnector, CaptureGap, EncodedFrame, ErrorCode, FrameAddress, IdSource, IdValue,
-    KrometrailError, MonotonicClock, NonEmptyText, PortFuture, RecordingSink, Result, SessionId,
-    SessionRange, TimelineObservation, TimelineStore, WallClock,
+    BrowserConnector, ErrorCode, IdSource, IdValue, KrometrailError, MonotonicClock, NonEmptyText,
+    PortFuture, RecordingSink, Result, SessionId, SessionRange, TimelineObservation, TimelineStore,
+    WallClock,
 };
 use uuid::Uuid;
 
@@ -15,7 +15,7 @@ use uuid::Uuid;
 // remains the only place allowed to choose and connect them.
 use krometrail_cdp::{CaptureConfig, ProductionBrowserConnector};
 use krometrail_mcp as _;
-use krometrail_store as _;
+use krometrail_store::{RotationConfig, SegmentStoreConfig, SegmentWriter};
 use temporal_vision as _;
 
 use crate::cli::Command;
@@ -60,12 +60,15 @@ impl Runtime {
     }
 }
 
-pub(crate) fn build_runtime() -> Runtime {
+pub(crate) fn build_runtime() -> Result<Runtime> {
     let clock: Arc<dyn MonotonicClock> = Arc::new(ProcessMonotonicClock {
         origin: Instant::now(),
     });
     let ids: Arc<dyn IdSource> = Arc::new(ProcessIdSource);
-    let recording: Arc<dyn RecordingSink> = Arc::new(UnavailableRecordingSink);
+    let recording: Arc<dyn RecordingSink> = Arc::new(SegmentWriter::open(SegmentStoreConfig {
+        directory: data_directory().join("segments"),
+        rotation: RotationConfig::suggested(),
+    })?);
     let browser: Arc<dyn BrowserConnector> =
         Arc::new(ProductionBrowserConnector::default().with_capture(
             Arc::clone(&clock),
@@ -73,14 +76,40 @@ pub(crate) fn build_runtime() -> Runtime {
             Arc::clone(&recording),
             CaptureConfig::default(),
         ));
-    Runtime::new(RuntimeDependencies {
+    Ok(Runtime::new(RuntimeDependencies {
         clock,
         wall_clock: Arc::new(SystemWallClock),
         ids,
         browser,
         recording,
         timeline: Arc::new(UnavailableTimelineStore),
-    })
+    }))
+}
+
+fn data_directory() -> std::path::PathBuf {
+    if let Some(configured) =
+        std::env::var_os("KROMETRAIL_DATA_DIR").filter(|value| !value.is_empty())
+    {
+        return configured.into();
+    }
+    if cfg!(target_os = "macos") {
+        if let Some(home) = std::env::var_os("HOME") {
+            return std::path::PathBuf::from(home)
+                .join("Library")
+                .join("Application Support")
+                .join("krometrail");
+        }
+    } else if let Some(data_home) = std::env::var_os("XDG_DATA_HOME") {
+        return std::path::PathBuf::from(data_home).join("krometrail");
+    } else if let Some(home) = std::env::var_os("HOME") {
+        return std::path::PathBuf::from(home)
+            .join(".local")
+            .join("share")
+            .join("krometrail");
+    }
+
+    tracing::warn!("platform data directory unavailable; using ./krometrail-data");
+    std::path::PathBuf::from("krometrail-data")
 }
 
 struct ProcessMonotonicClock {
@@ -110,28 +139,6 @@ impl IdSource for ProcessIdSource {
         // UUID v4 randomness keeps persisted identities distinct across
         // independently started processes; core only sees the IdSource port.
         IdValue::from_uuid(Uuid::new_v4())
-    }
-}
-
-struct UnavailableRecordingSink;
-
-impl RecordingSink for UnavailableRecordingSink {
-    fn append_frame(&self, _frame: EncodedFrame) -> PortFuture<'_, Result<FrameAddress>> {
-        Box::pin(std::future::ready(Err(unavailable(
-            "recording storage is not available in this build",
-        ))))
-    }
-
-    fn append_gap(&self, _gap: CaptureGap) -> PortFuture<'_, Result<()>> {
-        Box::pin(std::future::ready(Err(unavailable(
-            "recording storage is not available in this build",
-        ))))
-    }
-
-    fn flush(&self, _session_id: SessionId) -> PortFuture<'_, Result<()>> {
-        Box::pin(std::future::ready(Err(unavailable(
-            "recording storage is not available in this build",
-        ))))
     }
 }
 
@@ -213,6 +220,8 @@ mod tests {
         let browser = Arc::new(DiscoveryOnlyFake {
             installations_calls: AtomicUsize::new(0),
         });
+        let recording_directory =
+            std::env::temp_dir().join(format!("krometrail-doctor-test-{}", Uuid::new_v4()));
         let runtime = Runtime::new(RuntimeDependencies {
             clock: Arc::new(ProcessMonotonicClock {
                 origin: Instant::now(),
@@ -220,12 +229,19 @@ mod tests {
             wall_clock: Arc::new(SystemWallClock),
             ids: Arc::new(ProcessIdSource),
             browser: Arc::clone(&browser) as Arc<dyn BrowserConnector>,
-            recording: Arc::new(UnavailableRecordingSink),
+            recording: Arc::new(
+                SegmentWriter::open(SegmentStoreConfig {
+                    directory: recording_directory.clone(),
+                    rotation: RotationConfig::suggested(),
+                })
+                .unwrap(),
+            ),
             timeline: Arc::new(UnavailableTimelineStore),
         });
         let error = runtime.run(Command::Doctor).await.unwrap_err();
         assert_eq!(error.code, ErrorCode::BrowserNotFound);
         assert_eq!(browser.installations_calls.load(Ordering::SeqCst), 1);
+        std::fs::remove_dir(recording_directory).unwrap();
     }
 
     #[test]

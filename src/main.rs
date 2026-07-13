@@ -38,7 +38,12 @@ fn main() -> ExitCode {
         }
     };
 
-    match executor.block_on(build_runtime().run(command)) {
+    let runtime = match build_runtime() {
+        Ok(runtime) => runtime,
+        Err(error) => return report_error(&error),
+    };
+
+    match executor.block_on(runtime.run(command)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => report_error(&error),
     }

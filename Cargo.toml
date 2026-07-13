@@ -54,4 +54,5 @@ krometrail-store.workspace = true
 krometrail-mcp.workspace = true
 temporal-vision.workspace = true
 tokio.workspace = true
+tracing.workspace = true
 uuid.workspace = true

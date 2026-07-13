@@ -1,7 +1,7 @@
 ---
 id: epic-durable-browser-memory-segment-format-writer-and-wiring
 kind: story
-stage: implementing
+stage: done
 tags: [storage, browser]
 parent: epic-durable-browser-memory-segment-format
 depends_on:
@@ -55,15 +55,27 @@ Deliver the live frame-write path: a `SegmentWriter` adapter that implements `Re
 
 ## Acceptance criteria
 
-- [ ] `SegmentWriter::open` creates the segments directory if absent and returns `PersistenceFailed` for a non-writable path.
-- [ ] `append_frame` writes a frame record and returns a `FrameAddress` whose `segment_id` matches the open segment and whose `byte_offset` points at the record-kind byte (verifiable by seeking to that offset and decoding the record back to the original `EncodedFrame`).
-- [ ] Rotation fires when **either** `max_duration` or `max_size` is crossed: the crossed segment is sealed (valid `SealedFooter`) and a new segment with a fresh `SegmentId` is opened; the triggering frame lands in the **new** segment.
-- [ ] `flush(session_id)` seals every open segment of that session: each sealed file ends with a valid `SealedFooter` whose `record_count`, `total_payload`, and `first/last_session_t` match the appended frames.
-- [ ] `append_gap` returns `Unsupported` with the documented message and writes zero bytes (file sizes invariant across the call).
-- [ ] Two target streams writing to the same `SegmentWriter` produce two disjoint segment files; per-target frame order is preserved within each file.
-- [ ] Real-write smoke test: write N frames across two targets to a `tempfile::TempDir`, flush, then re-open each sealed file and decode every frame by its `FrameAddress` back to the original `EncodedFrame` (metadata field-equal, payload byte-equal).
-- [ ] `build_runtime()` in `src/app.rs` constructs and injects `SegmentWriter` as `RecordingSink`; `cargo run -- doctor` still works (it touches the sink but does not append); `UnavailableRecordingSink` is removed.
-- [ ] `cargo fmt --all --check`, `cargo check --workspace --all-targets --locked`, `cargo test --workspace --all-targets --locked`, `cargo clippy --workspace --all-targets --locked -- -D warnings` pass.
+- [x] `SegmentWriter::open` creates the segments directory and returns `PersistenceFailed` when the configured path cannot be used as a writable directory.
+- [x] `append_frame` writes a frame record and returns a `FrameAddress` that random-access decodes to the original frame.
+- [x] Duration and size bounds both rotate before the triggering frame; the previous segment has a valid sealed footer and the trigger receives a fresh segment ID.
+- [x] `flush(session_id)` seals every target segment with accurate record count, payload total, and first/last session times.
+- [x] `append_gap` returns the documented `Unsupported` error and leaves file sizes unchanged.
+- [x] Two concurrent target tasks produce disjoint segments; returned offsets increase in per-target append order.
+- [x] Real-write smoke coverage round trips four JPEG/PNG frames across two targets using only their addresses.
+- [x] `build_runtime()` injects `SegmentWriter`, resolves an env-or-platform data directory, propagates startup persistence errors, and removes `UnavailableRecordingSink`; isolated `doctor` succeeds.
+- [x] Locked workspace fmt/check/test/clippy gates pass.
+
+## Implementation notes
+
+- Execution capability: highest/raised (autopilot caller), appropriate for filesystem durability, rotation, and root composition wiring.
+- Review weight: standard (autopilot/project default); this child checkpoint advances directly to done.
+- Files changed: `Cargo.toml`, `Cargo.lock`, `crates/krometrail-store/src/{lib.rs,segments/mod.rs,segments/writer.rs}`, `crates/krometrail-store/tests/segment_writer_smoke.rs`, `src/{app.rs,main.rs}`.
+- Tests added: five filesystem integration tests covering directory creation/failure, absolute address reads, both rotation triggers, multi-target flushing/order, footer summaries, and gap write invariance.
+- Simplification: removed the production unavailable recording placeholder; one writer and one frame-only codec now serve the capture path.
+- Discrepancies from design: because the designed constructor has no monotonic-clock dependency, `sealed_observed` records the last accepted frame's observed time, the latest session-clock evidence available to the writer, rather than inventing an unrelated clock value at seal. A future clock-bearing store composition can tighten that field without changing the v1 layout. Size rotation follows the designed pre-append current-length check, so one record can cross the bound and the next frame triggers rotation.
+- Honest partial integration: capture gaps remain metadata-only and return `Unsupported` until the SQLite index feature wires their persistence; no gap persistence success is claimed. Metadata indexing and the power-loss index-commit ordering remain downstream work.
+- Adjacent issues parked: none.
+- Verification: `cargo fmt --all -- --check`; locked workspace check; 246 workspace tests across 24 suites; locked workspace clippy with warnings denied; isolated `KROMETRAIL_DATA_DIR=<temp> cargo run --locked -- doctor` reported one available browser and created `<temp>/segments`.
 
 ## Notes
 

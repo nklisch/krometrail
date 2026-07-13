@@ -584,6 +584,7 @@ dependencies = [
  "krometrail-store",
  "temporal-vision",
  "tokio",
+ "tracing",
  "uuid",
 ]
 
