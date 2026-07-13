@@ -40,7 +40,7 @@ impl MeasurementParameters {
                 ),
                 (
                     "comparison",
-                    ParameterValue::Text("weighted_square_strictly_greater_than_floor".into()),
+                    ParameterValue::Text("weighted_square > noise_floor^2 * weight_sum".into()),
                 ),
                 (
                     "weights",

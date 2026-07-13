@@ -4,8 +4,9 @@ use serde::{Deserialize, Serialize};
 use temporal_vision::{
     BinaryMask, ChangedPixelProportion, ComparisonOutcome, DeclaredGap, ErrorCode, Frame,
     FrameRegion, FrameSequence, IntegerScale, Marker, MeasurementParameters, NormalizationKind,
-    NormalizationParameters, PixelDimensions, PixelFormat, PixelRect, ProcessingLimits, Rgb8,
-    TimeRange, Timestamp, measure_adjacent, measure_pair, normalize_sequence,
+    NormalizationParameters, ParameterValue, PixelDimensions, PixelFormat, PixelRect,
+    ProcessingLimits, Rgb8, TimeRange, Timestamp, measure_adjacent, measure_pair,
+    normalize_sequence,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -252,9 +253,17 @@ fn exact_measurements_and_gap_boundaries_share_one_public_kernel() {
 
     let mut all_steps = normalized.normalization_steps().to_vec();
     all_steps.push(parameters.provenance_step().unwrap());
+    let threshold_step = all_steps.last().unwrap();
+    assert_eq!(threshold_step.kind(), NormalizationKind::Thresholding);
     assert_eq!(
-        all_steps.last().unwrap().kind(),
-        NormalizationKind::Thresholding
+        threshold_step.parameters().get("noise_floor"),
+        Some(&ParameterValue::Unsigned(0))
+    );
+    assert_eq!(
+        threshold_step.parameters().get("comparison"),
+        Some(&ParameterValue::Text(
+            "weighted_square > noise_floor^2 * weight_sum".into()
+        ))
     );
     let first_json = serde_json::to_vec(&all_steps).unwrap();
     let second_json = serde_json::to_vec(&all_steps).unwrap();

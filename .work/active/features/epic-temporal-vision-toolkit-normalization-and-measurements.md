@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-vision-toolkit-normalization-and-measurements
 kind: feature
-stage: implementing
+stage: review
 tags: [visual]
 parent: epic-temporal-vision-toolkit
 depends_on: [epic-temporal-vision-toolkit-frame-sequence-contracts]
@@ -342,3 +342,26 @@ The feature remains one cohesive implementation and feature-review bundle. Stori
 ## Blockers
 
 None. The frame-sequence feature is implemented and review-ready, and its validated RGBA8, geometry, gap, and provenance contracts provide the required foundation.
+
+## Implementation notes
+
+- Execution capability: raised/high (autopilot caller), because all downstream artifact algorithms consume these deterministic pixels and exact metrics.
+- Review weight: standard (caller); implementation stops at `stage: review` for independent feature review.
+- Dispatch: one cohesive owner implemented the three ordered child checkpoints; story boundaries remained acceptance and commit checkpoints rather than separate workers.
+- Files changed: `crates/temporal-vision/src/normalize.rs`, `src/measure.rs`, `src/error.rs`, `src/lib.rs`, and `tests/analysis.rs`.
+- Tests added: 11 focused unit/integration tests protecting LUT identity, linear-light alpha composition, crop/integer scaling, conservative transformed domains, checked limits/overflow, exact thresholded metrics, gap boundaries, deterministic provenance, and the browser-free public seam. The package now passes 22 tests across four suites.
+- Simplification: one immutable RGB16 sequence and one checked integer measurement kernel; no codec, image framework, async/streaming, plugin, GPU, registration, inference, diagnostic label, or floating metric was introduced.
+- Discrepancies from design: none.
+- Foundation alignment: existing `VISUAL-EVIDENCE.md`, `ARCHITECTURE.md`, and `EVALUATION.md` assertions remain current; no rolling-foundation edit was required.
+- Adjacent issues parked: none.
+
+## Integrated verification
+
+- `cargo fmt -p temporal-vision -- --check` — passed. The initial workspace format check passed; a final rerun was externally blocked by concurrently authored, unformatted `krometrail-store/tests/segment_writer_smoke.rs`.
+- `cargo check -p temporal-vision --all-targets --locked` — passed.
+- `cargo test -p temporal-vision --locked` — passed (22 tests, including doc tests with zero examples).
+- `cargo clippy -p temporal-vision --all-targets --locked -- -D warnings` — passed.
+- `cargo tree -p temporal-vision --edges normal --locked` — only existing Serde/thiserror dependencies and their derive machinery.
+- `cargo check --workspace --all-targets --locked` — passed.
+- `cargo clippy --workspace --all-targets --locked -- -D warnings` — passed.
+- `cargo test --workspace --all-targets --locked` — external concurrent interference: one `krometrail-cdp` page-observation test failed while that feature was actively bounced and its screenshot/snapshot/test/fixture files were dirty. The temporal-vision package remained fully green and no unowned file was edited.
