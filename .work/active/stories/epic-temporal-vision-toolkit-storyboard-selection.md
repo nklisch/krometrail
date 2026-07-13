@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-vision-toolkit-storyboard-selection
 kind: story
-stage: implementing
+stage: done
 tags: [visual]
 parent: epic-temporal-vision-toolkit-storyboard
 depends_on: []
@@ -35,3 +35,11 @@ Resolve orientation from the same plan: before is the strict pre-anchor baseline
 ## Ordering
 
 First checkpoint. It consumes the implemented normalization/measurement contract and provides the sole selection plan used by both renderers.
+
+## Implementation notes
+
+- Added the versioned public selection plan and one stable reason registry in `crates/temporal-vision/src/select.rs`.
+- Exact core-anchor priority, hard-limit omissions, marker/gap boundary admission, gap-partitioned cumulative scoring, and earlier-index tie-breaking are integer-only and deterministic.
+- Source and normalized sequence identity/time/geometry alignment is validated before selection; orientation roles retain exact source indices and use the declared baseline/peak/post/final fallbacks.
+- Focused selection tests cover 3-tile anchor pressure, invalid limits, stable reason serialization, and repeated output determinism.
+- Verification: package formatting, locked all-target check, and focused selection tests passed.

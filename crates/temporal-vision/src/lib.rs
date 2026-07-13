@@ -62,6 +62,7 @@ mod geometry;
 mod measure;
 mod normalize;
 mod provenance;
+mod select;
 mod sequence;
 
 pub use error::{ErrorCode, Result, VisionError};
@@ -78,6 +79,10 @@ pub use normalize::{
 pub use provenance::{
     AlgorithmDescriptor, ArtifactKind, ArtifactManifest, EvidenceClass, FiniteNumber,
     NormalizationKind, NormalizationStep, OutputHash, ParameterValue, Parameters,
+};
+pub use select::{
+    OmittedAnchor, SelectedFrame, SelectionReason, StoryboardSelection, StoryboardTileLimit,
+    select_storyboard_frames,
 };
 pub use sequence::{
     BorrowedFrameSequence, DeclaredGap, FrameSequence, Marker, OwnedFrameSequence, TimeRange,
