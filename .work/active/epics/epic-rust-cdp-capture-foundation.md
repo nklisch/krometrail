@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation
 kind: epic
-stage: review
+stage: done
 tags: [browser, infra]
 parent: null
 depends_on: []
@@ -75,3 +75,21 @@ honestly demonstrated that available headless macOS Chrome reports scale `1.0` d
 high-DPI flags; on 2026-07-13 the operator authorized deferring that evidence so the foundation and
 its dependents can continue without weakening the assertion or fabricating a pass. The epic is
 ready for deeper aggregate review of the Rust/CDP capture capability.
+
+## Review (2026-07-13)
+
+**Verdict**: Approve
+
+**Blockers**: none
+**Important**: none
+**Nits**: The high-DPI deferral remains debt for a future capable lane; superseded
+`source_sequence` prose is explicitly corrected at the top of its historical feature body; and
+`FrameRejected` is a documented registry expansion rather than drift.
+**Rejected**: none
+
+**Notes**: Standard-weight cross-model aggregate review by GLM 5.2. The reviewer traced the full
+Rust runtime → cdpkit qualification → Chrome/target supervision → bounded ingestion → platform
+smoke chain and verified contract consistency for acknowledgment tokens, capture ordinals, clocks,
+gaps, lifecycle ownership, bounded queues, and evidence digests. The review did not repeat the
+already-green full test suite or macOS run; it focused on cross-feature integration and foundation
+alignment. No material current-cycle risk survived adjudication.
