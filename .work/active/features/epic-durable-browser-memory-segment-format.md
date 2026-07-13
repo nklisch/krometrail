@@ -1,7 +1,7 @@
 ---
 id: epic-durable-browser-memory-segment-format
 kind: feature
-stage: implementing
+stage: review
 tags: [storage, browser]
 parent: epic-durable-browser-memory
 depends_on: []
@@ -484,3 +484,66 @@ Standard fresh-context review identified three receiver-confirmed current-cycle 
 
 The feature remains `implementing` until these format, runtime-isolation, and durability contracts
 are corrected and reverified. Gap persistence remains an honest downstream SQLite responsibility.
+
+## Review remediation (2026-07-13)
+
+All three receiver-confirmed blockers are corrected. The feature returns to `stage: review`; this
+implementation pass does not self-approve it.
+
+### Design adjustments
+
+- **Scanner basis is now absolute and validated.** `scan_complete_records` accepts a full segment,
+  validates the v1 header before trusting lengths, starts at `SEGMENT_HEADER_LEN`, recognizes a
+  valid sealed footer, and returns absolute file offsets. A checked
+  `scan_complete_records_from(segment, base_offset)` resume form rejects bases inside the header or
+  beyond the supplied segment. Scanner spans now copy directly into `FrameAddress` and
+  `read_frame_at` against the same full segment.
+- **Filesystem work moved behind one bounded worker.** `SegmentWriter` now owns a Tokio bounded
+  command sender (capacity 64) backed by a named dedicated blocking thread. `append_frame` and
+  `flush` asynchronously await queue capacity and a one-shot result; neither polls filesystem work
+  on the current-thread runtime. FIFO command processing makes flush follow accepted appends.
+  Cancellation before handoff removes the pending command; cancellation after handoff drops only
+  the response while the worker completes the accepted write. A filesystem error becomes terminal
+  for the worker and is propagated to the triggering and later commands rather than risking writes
+  against uncertain segment state. Explicit `RecordingSink::flush` remains the reportable sealing
+  boundary; dropping the sink leaves open files for recovery instead of hiding best-effort errors.
+- **Directory entries join the durability boundary.** Initial publication writes and flushes the
+  header, `sync_data`s the file, then syncs the segment directory. Sealing writes the footer,
+  flushes and `sync_data`s the file, renames `.open` to `.kts`, then syncs the directory. Linux and
+  macOS use a real directory handle plus `sync_all`; platforms where std cannot support directory
+  handles retain file-sync/rename behavior without claiming directory-fsync durability. Directory
+  sync failures propagate as `PersistenceFailed`, including the post-rename case.
+- **Composition remains minimal.** No root or core change was needed: the existing composition
+  already injects `SegmentWriter` through `Arc<dyn RecordingSink>`, so replacing its internals with
+  the asynchronous bounded adapter removes synchronous capture-path I/O without widening the core
+  port or touching CDP acknowledgement ordering.
+
+### Files and tests
+
+- Files changed: `crates/krometrail-store/Cargo.toml`,
+  `crates/krometrail-store/src/segments/{mod.rs,scanner.rs,writer.rs}`, and this feature item.
+- Scanner regressions cover full sealed-segment scan → address → read, absolute offsets across
+  multiple records, corrupt/incomplete trailing records at absolute positions, short/corrupt
+  headers, invalid resume bases, and invalid random-access addresses.
+- Worker regressions use a blocking directory-sync seam and manual future polling to prove the
+  first append poll is pending while filesystem work executes on a different thread; a capacity-1
+  queue proves bounded backpressure, cancellation before acceptance, and completion after response
+  cancellation. The sealed footer proves exactly the two accepted frames were written.
+- Directory durability seam tests require one sync after initial open publication and one after
+  sealed rename, and inject each failure independently to prove honest propagation. They do not
+  simulate or claim power-loss survival.
+- Verification: focused store check and 16 tests pass; store clippy passes with warnings denied.
+  A clean detached worktree at `7529147` plus this scoped patch passed locked workspace format,
+  check, 261 tests, clippy with warnings denied, and isolated doctor (`browser available: 1
+  installation(s)` with the configured segments directory created). The primary working tree had
+  unrelated concurrent browser-lifecycle edits, so the full gate was intentionally isolated rather
+  than staging or depending on those files.
+- Execution capability: highest (caller-selected) for async runtime isolation and filesystem
+  durability correction.
+- Review weight: standard (caller-selected); independent feature review remains the next lifecycle
+  step.
+- Simplification: one worker owns all mutable segment state, eliminating the cross-thread mutex;
+  one full-segment scanner now serves recovery and random access with one absolute offset basis.
+- Deferred behavior unchanged: segments remain frame-only and capture-gap metadata remains owned by
+  the SQLite feature.
+- Adjacent issues parked: none.
