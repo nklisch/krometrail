@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-vision-toolkit-normalization-and-measurements-public-contract-tests
 kind: story
-stage: implementing
+stage: done
 tags: [visual, testing]
 parent: epic-temporal-vision-toolkit-normalization-and-measurements
 depends_on: [epic-temporal-vision-toolkit-normalization-and-measurements-direct-measurements]
@@ -33,3 +33,14 @@ Use focused colocated tests only for private mechanics that the public fixture c
 ## Ordering
 
 Depends on `epic-temporal-vision-toolkit-normalization-and-measurements-direct-measurements`. This is the final checkpoint and validates normalization plus measurement as one downstream public seam.
+
+## Implementation notes
+
+- Execution capability: raised/high, selected by the autopilot caller because this public seam is the regression boundary for all downstream artifact algorithms.
+- Review weight: standard (caller); child stories close on verification and the parent feature remains the review boundary.
+- Files changed: `crates/temporal-vision/tests/analysis.rs`.
+- Tests added: borrowed RGBA8 ownership, exact alpha/crop/upscale provenance, box downscale, transformed region/mask policy, hand-computed metrics, threshold equality/one-over, arbitrary/adjacent gap comparisons, invalid indices, and tiny processing limits.
+- Verification: all 22 package tests and package clippy pass; normal dependencies remain only Serde and thiserror plus their derive machinery.
+- Simplification: exact tiny values replace image fixtures and large snapshots; no getter/derive matrix or duplicate constructor coverage was added.
+- Discrepancies from design: none.
+- Adjacent issues parked: none.
