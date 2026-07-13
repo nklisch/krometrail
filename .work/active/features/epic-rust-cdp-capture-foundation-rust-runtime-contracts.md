@@ -8,10 +8,14 @@ depends_on: []
 release_binding: null
 gate_origin: null
 created: 2026-07-12
-updated: 2026-07-12
+updated: 2026-07-13
 ---
 
 # Rust Capture Runtime Foundation
+
+## Post-completion contract correction (2026-07-13)
+
+Production Chrome 149 and canonical final5 Linux/macOS traces proved that the core's implemented `source_sequence` contract was based on a transport assumption that Chrome does not satisfy: `Page.screencastFrame.params.sessionId` is ack-only and was constant `1` in every sampled event. The bounded-ingestion remediation replaces it with Krometrail-owned `CaptureOrdinal`, removes `SourceSequenceDiscontinuity`, and adds explicit acknowledgement-failure loss. This completed foundation item remains the audit record for the original implementation, but the corrected code contract below is authoritative and the old sequence acceptance is not valid completion evidence.
 
 ## Brief
 
@@ -84,7 +88,7 @@ Comprehensive ports could make later stories appear more concrete, but they woul
 
 ## Tricky unit first: stable domain time and loss semantics with provisional infrastructure
 
-The highest-risk design problem is distinguishing what must be stable now from what real CDP evidence may invalidate. IDs, three-clock separation, monotonic ordering, explicit gaps, lifecycle transitions, and structured failures are product invariants and belong in core now. Exact CDP command envelopes, sequence interpretation, reconnect mechanics, and screencast acknowledgement APIs are adapter findings and must not leak into core. Ports therefore exchange domain-owned requests and observations, return runtime-neutral futures, and are labeled provisional where the next gate has authority to revise them.
+The highest-risk design problem is distinguishing what must be stable now from what real CDP evidence may invalidate. IDs, three-clock separation, monotonic ordering, explicit gaps, lifecycle transitions, and structured failures are product invariants and belong in core now. Exact CDP command envelopes, acknowledgement-token interpretation, reconnect mechanics, and screencast acknowledgement APIs are adapter findings and must not leak into core. Ports therefore exchange domain-owned requests and observations, return runtime-neutral futures, and are labeled provisional where the next gate has authority to revise them.
 
 ## Implementation units
 
@@ -298,12 +302,19 @@ impl PixelDimensions {
 pub struct DeviceScaleFactor(f64);
 impl DeviceScaleFactor { pub fn new(value: f64) -> Result<Self>; pub const fn get(self) -> f64; }
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct CaptureOrdinal(std::num::NonZeroU64);
+impl CaptureOrdinal {
+    pub fn new(value: u64) -> Result<Self>;
+    pub const fn get(self) -> u64;
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CaptureWarning {
     MissingSourceTime,
     SourceTimestampRounded,
-    SourceSequenceDiscontinuity,
     ViewportMetadataIncomplete,
 }
 
@@ -312,7 +323,7 @@ pub struct CapturedFrame {
     pub id: FrameId,
     pub session_id: SessionId,
     pub target_id: TargetId,
-    pub source_sequence: u64,
+    pub capture_ordinal: CaptureOrdinal,
     pub source_time: Option<SourceTime>,
     pub observed_time: ObservedTime,
     pub session_time: SessionTime,
@@ -332,7 +343,7 @@ impl EncodedFrame { pub fn new(metadata: CapturedFrame, bytes: impl Into<std::sy
 pub enum CaptureGapReason {
     IngestionQueueSaturated,
     PersistenceRejected,
-    SourceSequenceDiscontinuity,
+    AcknowledgementFailed,
     TargetHidden,
     ScreencastPaused,
     BrowserDisconnected,

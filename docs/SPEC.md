@@ -63,7 +63,7 @@ Each captured frame records:
 
 - frame identifier;
 - target identifier;
-- Chrome screencast sequence identifier;
+- a Krometrail-owned per-target capture ordinal for deterministic ordering;
 - Chrome-provided timestamp when available;
 - daemon receive time on the session clock;
 - encoded image format;
@@ -73,9 +73,11 @@ Each captured frame records:
 - storage segment and byte offset;
 - capture warnings associated with the frame.
 
-Krometrail acknowledges each received CDP screencast frame immediately, before attempting bounded handoff. Ack latency covers only the interval from frame receipt to acknowledgement completion; disk writes and image analysis do not block CDP acknowledgement.
+Krometrail acknowledges each received CDP screencast frame immediately, before attempting bounded handoff. The CDP frame event's `sessionId` integer is retained only long enough to acknowledge that event; Krometrail does not treat it as frame ordering or continuity evidence. Ack latency covers only the interval from frame receipt to acknowledgement completion; disk writes and image analysis do not block CDP acknowledgement.
 
-If bounded handoff fails because the ingestion queue cannot accept the frame, Krometrail records an explicit capture-gap event after acknowledgement. It does not silently imply that adjacent stored frames form a complete sequence. A later persistence failure is likewise represented as a capture gap.
+After acknowledgement, Krometrail assigns a non-zero capture ordinal that increases for every acknowledged frame event observed for that session and target, including events later rejected or dropped. The ordinal supplies deterministic local order, including when monotonic clock readings are equal. It does not prove that Chrome emitted every rendered frame or that every Chrome event reached Krometrail, and ordinal arithmetic does not create inferred gaps.
+
+If bounded handoff fails because the ingestion queue cannot accept the frame, Krometrail records an explicit capture-gap event after acknowledgement. It does not silently imply that adjacent stored frames form a complete sequence. A later rejection or persistence failure is likewise represented as a capture gap.
 
 The source frame stream is authoritative. Generated artifacts are derived views.
 

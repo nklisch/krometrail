@@ -169,8 +169,8 @@ A final-state screenshot alone cannot satisfy this criterion.
 Capture timing passes when:
 
 - source and observed times are preserved separately;
-- frame ordering is deterministic;
-- sequence discontinuities are visible;
+- frame ordering is deterministic through session time and Krometrail capture ordinals;
+- every known ingestion or lifecycle loss is visible as an explicit gap, without inferring unknown loss from Chrome acknowledgement tokens or ordinal arithmetic;
 - wall-clock changes do not reorder session observations;
 - action anchors resolve to the same normalized range across repeated queries;
 - no artifact crosses a declared gap without displaying it.

@@ -177,7 +177,7 @@ Every externally sourced observation also retains its native timestamp when one 
 CapturedFrame
   source_time          # Chrome screencast timestamp
   observed_time        # daemon monotonic receipt time
-  sequence             # CDP frame sequence
+  capture_ordinal      # Krometrail-observed order for this session and target
   session_time         # normalized timeline position
 ```
 
@@ -247,7 +247,7 @@ segment writer
 
 The event-reading task never performs image decoding, artifact generation, or synchronous disk I/O.
 
-The ingestion queue is bounded. On receiving a frame, Krometrail immediately starts and completes the CDP acknowledgement before decoding and attempting bounded handoff. Ack latency therefore measures only the interval from returned frame to acknowledgement completion, not frame receive wait or a wire-enqueue timestamp. When enqueue fails because the queue is saturated, Krometrail records an explicit capture gap after acknowledgement rather than stalling the browser connection or growing memory without limit.
+The ingestion queue is bounded. On receiving a frame, Krometrail immediately starts and completes the CDP acknowledgement before decoding and attempting bounded handoff. The event's `sessionId` integer is an opaque acknowledgement token in this boundary: it is echoed to `Page.screencastFrameAck` and is not persisted or compared. After acknowledgement, Krometrail assigns a per-target `CaptureOrdinal` that continues across attachment generations within the recording session. It deterministically orders observations but does not detect Chrome-side or transport-side loss; only explicit known loss and lifecycle events create gaps. Ack latency therefore measures only the interval from returned frame to acknowledgement completion, not frame receive wait or a wire-enqueue timestamp. When enqueue fails because the queue is saturated, Krometrail records an explicit capture gap after acknowledgement rather than stalling the browser connection or growing memory without limit.
 
 Compressed image bytes are stored without transcoding during ingestion.
 

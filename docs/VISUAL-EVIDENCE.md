@@ -376,8 +376,7 @@ ArtifactManifest
   evidence_class
   algorithm
   algorithm_version
-  source_sequence
-  source_frame_ids
+  source_frame_ids        # ordered source-frame identifiers
   selected_frame_ids
   omitted_frame_count
   range
