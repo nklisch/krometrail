@@ -4,16 +4,16 @@ use std::{
 };
 
 use krometrail_core::{
-    BrowserConnector, BrowserInstallation, BrowserSessionPort, CaptureGap, EncodedFrame, ErrorCode,
-    IdSource, IdValue, KrometrailError, MonotonicClock, NonEmptyText, PortFuture, RecordingSink,
-    Result, SessionId, SessionRange, TimelineObservation, TimelineStore, WallClock,
+    BrowserConnector, CaptureGap, EncodedFrame, ErrorCode, IdSource, IdValue, KrometrailError,
+    MonotonicClock, NonEmptyText, PortFuture, RecordingSink, Result, SessionId, SessionRange,
+    TimelineObservation, TimelineStore, WallClock,
 };
 use uuid::Uuid;
 
 // These imports make the root's assembly boundary explicit. Implementations will
 // move into these inward-dependent crates as their capabilities land; this root
 // remains the only place allowed to choose and connect them.
-use krometrail_cdp as _;
+use krometrail_cdp::ProductionBrowserConnector;
 use krometrail_mcp as _;
 use krometrail_store as _;
 use temporal_vision as _;
@@ -53,6 +53,7 @@ impl Runtime {
                 if installations.is_empty() {
                     return Err(browser_not_found());
                 }
+                println!("browser available: {} installation(s)", installations.len());
                 Ok(())
             }
         }
@@ -66,9 +67,7 @@ pub(crate) fn build_runtime() -> Runtime {
         }),
         wall_clock: Arc::new(SystemWallClock),
         ids: Arc::new(ProcessIdSource),
-        // Do not select a fake-success adapter. This explicit unavailable
-        // implementation makes the pre-CDP state observable at the boundary.
-        browser: Arc::new(UnavailableBrowserConnector),
+        browser: Arc::new(ProductionBrowserConnector::default()),
         recording: Arc::new(UnavailableRecordingSink),
         timeline: Arc::new(UnavailableTimelineStore),
     })
@@ -101,21 +100,6 @@ impl IdSource for ProcessIdSource {
         // UUID v4 randomness keeps persisted identities distinct across
         // independently started processes; core only sees the IdSource port.
         IdValue::from_uuid(Uuid::new_v4())
-    }
-}
-
-struct UnavailableBrowserConnector;
-
-impl BrowserConnector for UnavailableBrowserConnector {
-    fn installations(&self) -> PortFuture<'_, Result<Vec<BrowserInstallation>>> {
-        Box::pin(std::future::ready(Ok(Vec::new())))
-    }
-
-    fn connect(
-        &self,
-        _request: krometrail_core::BrowserConnectRequest,
-    ) -> PortFuture<'_, Result<Arc<dyn BrowserSessionPort>>> {
-        Box::pin(std::future::ready(Err(browser_not_found())))
     }
 }
 
@@ -189,7 +173,50 @@ fn browser_not_found() -> KrometrailError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
+    use std::{
+        collections::HashSet,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
+
+    struct DiscoveryOnlyFake {
+        installations_calls: AtomicUsize,
+    }
+
+    impl BrowserConnector for DiscoveryOnlyFake {
+        fn installations(
+            &self,
+        ) -> PortFuture<'_, Result<Vec<krometrail_core::BrowserInstallation>>> {
+            self.installations_calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(std::future::ready(Ok(Vec::new())))
+        }
+
+        fn connect(
+            &self,
+            _request: krometrail_core::BrowserConnectRequest,
+        ) -> PortFuture<'_, Result<Arc<dyn krometrail_core::BrowserSessionPort>>> {
+            panic!("doctor must not connect to a browser");
+        }
+    }
+
+    #[tokio::test]
+    async fn doctor_is_discovery_only() {
+        let browser = Arc::new(DiscoveryOnlyFake {
+            installations_calls: AtomicUsize::new(0),
+        });
+        let runtime = Runtime::new(RuntimeDependencies {
+            clock: Arc::new(ProcessMonotonicClock {
+                origin: Instant::now(),
+            }),
+            wall_clock: Arc::new(SystemWallClock),
+            ids: Arc::new(ProcessIdSource),
+            browser: Arc::clone(&browser) as Arc<dyn BrowserConnector>,
+            recording: Arc::new(UnavailableRecordingSink),
+            timeline: Arc::new(UnavailableTimelineStore),
+        });
+        let error = runtime.run(Command::Doctor).await.unwrap_err();
+        assert_eq!(error.code, ErrorCode::BrowserNotFound);
+        assert_eq!(browser.installations_calls.load(Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn independently_constructed_sources_do_not_repeat_sequences() {

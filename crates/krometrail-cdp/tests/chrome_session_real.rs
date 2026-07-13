@@ -1,0 +1,222 @@
+#![cfg(feature = "cdpkit-transport")]
+
+mod support;
+
+use std::{fs, sync::Arc, time::Duration};
+
+use krometrail_cdp::{
+    CdpTransport, CdpTransportFactory, CommandScope, LauncherConfig, ProductionBrowserConnector,
+    SystemChromeLauncher,
+};
+use krometrail_core::{
+    BrowserConnectRequest, BrowserConnector, BrowserStopOutcome, LaunchBrowser, ManagedProfile,
+};
+
+#[tokio::test]
+async fn opt_in_managed_session_stops_without_retaining_temporary_profile() {
+    if !support::chrome::real_browser_tests_enabled() {
+        eprintln!("skipping real Chrome test; set KROMETRAIL_REAL_CHROME_TESTS=1");
+        return;
+    }
+    let _browser_lock = support::chrome::real_browser_lock().await;
+    let root = support::chrome::temporary_profile_root("managed");
+    let _ = fs::remove_dir_all(&root);
+    let launcher_config = LauncherConfig {
+        profile_root: root.clone(),
+        startup_timeout: Duration::from_secs(45),
+        shutdown_timeout: Duration::from_secs(3),
+    };
+    let connector = ProductionBrowserConnector::new(
+        Arc::new(SystemChromeLauncher::new(launcher_config)),
+        Arc::new(
+            krometrail_cdp::transport::CdpkitTransportFactory::new()
+                .with_command_timeout(Duration::from_secs(3)),
+        ),
+    );
+    let request = LaunchBrowser {
+        executable: None,
+        profile: ManagedProfile::Temporary,
+        initial_url: Some(support::chrome::fixture_url()),
+    };
+    let session = connector
+        .connect(BrowserConnectRequest::Launch(request))
+        .await
+        .expect("opt-in Chrome should launch and pass compatibility");
+    assert_eq!(
+        session.ownership(),
+        krometrail_core::BrowserOwnership::Managed
+    );
+    let outcome = session.stop().await.expect("managed stop");
+    assert_eq!(outcome, BrowserStopOutcome::ManagedBrowserClosed);
+    assert!(!root.join("tmp").exists() || fs::read_dir(root.join("tmp")).unwrap().next().is_none());
+}
+
+#[tokio::test]
+async fn opt_in_managed_launch_attach_targets_and_external_survival() {
+    if !support::chrome::real_browser_tests_enabled() {
+        eprintln!("skipping real Chrome test; set KROMETRAIL_REAL_CHROME_TESTS=1");
+        return;
+    }
+    let _browser_lock = support::chrome::real_browser_lock().await;
+    let root = support::chrome::temporary_profile_root("targets");
+    let _ = fs::remove_dir_all(&root);
+    let launcher = SystemChromeLauncher::new(LauncherConfig {
+        profile_root: root.clone(),
+        startup_timeout: Duration::from_secs(45),
+        shutdown_timeout: Duration::from_secs(3),
+    });
+    let request = LaunchBrowser {
+        executable: None,
+        profile: ManagedProfile::Temporary,
+        initial_url: Some(support::chrome::fixture_url()),
+    };
+    let mut launched = launcher
+        .launch_owned(&request)
+        .await
+        .expect("Chrome should launch for target supervision");
+    let factory = krometrail_cdp::transport::CdpkitTransportFactory::new()
+        .with_command_timeout(Duration::from_secs(3));
+    let raw = factory
+        .connect(launched.endpoint.browser_websocket_url().as_str())
+        .await
+        .expect("raw browser connection");
+    let target_keys = [
+        create_target(raw.as_ref()).await,
+        create_target(raw.as_ref()).await,
+    ];
+    wait_for_page_targets(raw.as_ref(), 3).await;
+    let connector = ProductionBrowserConnector::new(Arc::new(launcher), Arc::new(factory));
+    let session = connector
+        .connect(BrowserConnectRequest::Attach(
+            krometrail_core::AttachBrowser::new(launched.endpoint.browser_websocket_url().as_str())
+                .unwrap(),
+        ))
+        .await
+        .expect("attached supervision session");
+    let targets = session.targets().await.unwrap();
+    assert!(targets.len() >= 3, "expected initial plus two page targets");
+    assert!(target_keys.iter().all(|key| {
+        targets
+            .iter()
+            .any(|target| target.target.browser_target_key() == key)
+    }));
+
+    let mut events = session.subscribe().await.unwrap();
+    let created_key = create_target(raw.as_ref()).await;
+    let mut observed = false;
+    for _ in 0..40 {
+        if session
+            .targets()
+            .await
+            .unwrap()
+            .iter()
+            .any(|target| target.target.browser_target_key() == created_key)
+        {
+            observed = true;
+            break;
+        }
+        let _ = tokio::time::timeout(Duration::from_millis(25), events.next()).await;
+    }
+    assert!(observed, "target creation was not reconciled");
+    assert!(matches!(
+        session.stop().await.unwrap(),
+        BrowserStopOutcome::Detached
+    ));
+    raw.send_raw(
+        &CommandScope::Browser,
+        "Browser.getVersion",
+        serde_json::json!({}),
+    )
+    .await
+    .expect("attached stop must leave external browser alive");
+    drop(raw);
+    launched.shutdown().await.expect("owned browser shutdown");
+    drop(launched);
+    assert!(!root.join("tmp").exists() || root.join("tmp").read_dir().unwrap().next().is_none());
+}
+
+async fn wait_for_page_targets(transport: &dyn CdpTransport, minimum: usize) {
+    for _ in 0..40 {
+        let count = transport
+            .send_raw(
+                &CommandScope::Browser,
+                "Target.getTargets",
+                serde_json::json!({}),
+            )
+            .await
+            .expect("target snapshot")
+            .get("targetInfos")
+            .and_then(serde_json::Value::as_array)
+            .map(|targets| {
+                targets
+                    .iter()
+                    .filter(|target| {
+                        target.get("type").and_then(serde_json::Value::as_str) == Some("page")
+                            && target
+                                .get("url")
+                                .and_then(serde_json::Value::as_str)
+                                .is_some_and(|url| !url.is_empty())
+                    })
+                    .count()
+            })
+            .unwrap_or_default();
+        if count >= minimum {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("page targets did not become ready");
+}
+
+async fn create_target(transport: &dyn CdpTransport) -> String {
+    transport
+        .send_raw(
+            &CommandScope::Browser,
+            "Target.createTarget",
+            serde_json::json!({"url": support::chrome::fixture_url()}),
+        )
+        .await
+        .expect("create target")
+        .get("targetId")
+        .and_then(serde_json::Value::as_str)
+        .expect("target id")
+        .to_owned()
+}
+
+#[tokio::test]
+async fn opt_in_electron_renderer_endpoint_uses_capability_probe() {
+    let Some(endpoint) = std::env::var("KROMETRAIL_ELECTRON_ENDPOINT").ok() else {
+        eprintln!("skipping Electron test; set KROMETRAIL_ELECTRON_ENDPOINT");
+        return;
+    };
+    let _browser_lock = support::chrome::real_browser_lock().await;
+    let connector = ProductionBrowserConnector::default();
+    let session = connector
+        .connect(BrowserConnectRequest::Attach(
+            krometrail_core::AttachBrowser::new(endpoint).unwrap(),
+        ))
+        .await
+        .expect("explicit Electron renderer endpoint should be compatible");
+    assert_eq!(
+        session.compatibility().version.product,
+        krometrail_core::BrowserProduct::ElectronRenderer
+    );
+    assert_eq!(session.stop().await.unwrap(), BrowserStopOutcome::Detached);
+}
+
+#[tokio::test]
+async fn opt_in_attach_stop_does_not_close_external_browser() {
+    let Some(endpoint) = std::env::var("KROMETRAIL_REAL_ATTACH_ENDPOINT").ok() else {
+        eprintln!("skipping attach test; set KROMETRAIL_REAL_ATTACH_ENDPOINT");
+        return;
+    };
+    let _browser_lock = support::chrome::real_browser_lock().await;
+    let connector = ProductionBrowserConnector::default();
+    let session = connector
+        .connect(BrowserConnectRequest::Attach(
+            krometrail_core::AttachBrowser::new(endpoint).unwrap(),
+        ))
+        .await
+        .expect("explicit external endpoint should be compatible");
+    assert_eq!(session.stop().await.unwrap(), BrowserStopOutcome::Detached);
+}

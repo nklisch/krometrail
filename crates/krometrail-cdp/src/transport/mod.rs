@@ -7,9 +7,11 @@ use std::{future::Future, pin::Pin, sync::Arc};
 
 use krometrail_core::NonEmptyText;
 
+#[cfg(feature = "cdpkit-transport")]
 pub mod cdpkit;
 pub mod error;
 
+#[cfg(feature = "cdpkit-transport")]
 pub use cdpkit::CdpkitTransportFactory;
 pub use error::TransportError;
 
@@ -56,6 +58,7 @@ pub struct TransportClose {
 }
 
 impl TransportClose {
+    #[cfg(feature = "cdpkit-transport")]
     fn new(reason: impl Into<String>) -> Self {
         Self {
             reason: NonEmptyText::new(reason).expect("adapter close reasons are non-empty"),

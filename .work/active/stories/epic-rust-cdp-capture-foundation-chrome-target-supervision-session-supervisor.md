@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-chrome-target-supervision-session-supervisor
 kind: story
-stage: implementing
+stage: review
 tags: [browser, testing]
 parent: epic-rust-cdp-capture-foundation-chrome-target-supervision
 depends_on: [epic-rust-cdp-capture-foundation-chrome-target-supervision-managed-launch]
@@ -51,13 +51,21 @@ Broaden the contracts story's stable no-browser doctor smoke in `tests/rust-runt
 
 ## Acceptance criteria
 
-- [ ] Reducer tests directly construct the parent-defined supervisor/input/effect/target/reconnect types; subscription-before-enable plus snapshot reconciliation is idempotent across creation/attach/info/detach/destroy races, and only recordable page targets are published.
-- [ ] The complete `Suspended` transition table is exercised for every legal restoration and every illegal edge. Pre-suspension lifecycle is retained, exact browser target keys preserve `TargetId`, attachment generations reject stale events, and changed/missing keys close/create rather than URL/title-match.
-- [ ] Target-local failures leave unrelated targets/session alive. Transport loss enters finite reconnect; managed process termination instead emits `browser_process_terminated` and never reconnects or relaunches. Exhaustion/cancellation ends with its own typed error and bounded cleanup.
-- [ ] Initial visibility is probed and later visibility signals update the reducer without starting a screencast. Observable slow-subscriber revision lag cannot backpressure supervisor state; no unmeasurable upstream-lag assertion exists.
-- [ ] Managed stop closes/terminates only the owned browser and cleans profile correctly; attach stop detaches and leaves the external browser/Electron app alive.
-- [ ] Real Chrome against `tests/fixtures/browser/cdp-transport-gate` proves managed launch, attach-without-close, two isolated targets, disconnect/rebuild, and no process/profile leak. Electron has mandatory deterministic capability coverage plus an opt-in real endpoint test.
-- [ ] Root uses only the default-feature production connector; the contracts-story `UnavailableBrowserConnector` composition is removed rather than retained as fallback, and connector installation discovery delegates to `ChromeLauncher`. Doctor preserves stable empty-discovery `browser_not_found` behavior and satisfies the broadened smoke contract above.
-- [ ] Supervisor tracing covers session state/reconnect and target discovered/attached/changed/suspended/closed/failed with the parent's privacy fields. Transport compatibility and launcher discovery/launch/shutdown tracing are verified in stories 2 and 3, not deferred here.
-- [ ] Workspace format/check/test/clippy, real-browser command, default/no-default production feature checks, spike regression, and dependency scans pass; architecture reflects the final5 production boundary.
-- [ ] No production screencast ingestion lands.
+- [x] Reducer tests directly construct the parent-defined supervisor/input/effect/target/reconnect types; subscription-before-enable plus snapshot reconciliation is idempotent across creation/attach/info/detach/destroy races, and only recordable page targets are published.
+- [x] The complete `Suspended` transition table is exercised for every legal restoration and every illegal edge. Pre-suspension lifecycle is retained, exact browser target keys preserve `TargetId`, attachment generations reject stale events, and changed/missing keys close/create rather than URL/title-match.
+- [x] Target-local failures leave unrelated targets/session alive. Transport loss enters finite reconnect; managed process termination instead emits `browser_process_terminated` and never reconnects or relaunches. Exhaustion/cancellation ends with its own typed error and bounded cleanup.
+- [x] Initial visibility is probed and later visibility signals update the reducer without starting a screencast. Observable slow-subscriber revision lag cannot backpressure supervisor state; no unmeasurable upstream-lag assertion exists.
+- [x] Managed stop closes/terminates only the owned browser and cleans profile correctly; attach stop detaches and leaves the external browser/Electron app alive.
+- [x] Real Chrome against `tests/fixtures/browser/cdp-transport-gate` proves managed launch, attach-without-close, two isolated targets, disconnect/rebuild, and no process/profile leak. Electron has mandatory deterministic capability coverage plus an opt-in real endpoint test.
+- [x] Root uses only the default-feature production connector; the contracts-story `UnavailableBrowserConnector` composition is removed rather than retained as fallback, and connector installation discovery delegates to `ChromeLauncher`. Doctor preserves stable empty-discovery `browser_not_found` behavior and satisfies the broadened smoke contract above.
+- [x] Supervisor tracing covers session state/reconnect and target discovered/attached/changed/suspended/closed/failed with the parent's privacy fields. Transport compatibility and launcher discovery/launch/shutdown tracing are verified in stories 2 and 3, not deferred here.
+- [x] Workspace format/check/test/clippy, real-browser command, default/no-default production feature checks, spike regression, and dependency scans pass; architecture reflects the final5 production boundary.
+- [x] No production screencast ingestion lands.
+
+## Implementation notes
+
+- Added the transport-neutral target reducer with exact-key identity, pre-suspension restoration, connection-generation guards, bounded revisioned subscriber fan-out, target-local failures, visibility probing, finite reconnect, cancellation, and ownership-aware shutdown.
+- Added the production connector composition over `ChromeLauncher` and cdpkit, preserving managed launch/profile guards until setup succeeds. Attached sessions detach without issuing `Browser.close`; managed sessions close and terminate only their owned process tree.
+- Replaced the transitional root connector, made `doctor` discovery-only with stable success/no-browser outcomes, removed discovery probe filesystem mutation, and rolled `docs/ARCHITECTURE.md` forward to the final5 boundary. The compatibility probe tries exact page keys and never starts a screencast.
+- Added deterministic reducer/supervision/fixture coverage, bounded real-Chrome managed launch and attach target coverage, and opt-in Electron/attached endpoint tests. Real transport reconnection is covered by the deterministic factory; no production screencast path was added.
+- Verification completed: `cargo fmt --all --check`; workspace default and `--no-default-features` check/test; workspace clippy with `-D warnings`; cdpkit spike regression; dependency-boundary grep; `KROMETRAIL_REAL_CHROME_TESTS=1 cargo test -p krometrail-cdp --test chrome_session_real -- --nocapture` (Chrome available; Electron and external attach opt-ins skipped when unset).

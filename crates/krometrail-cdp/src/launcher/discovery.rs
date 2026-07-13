@@ -5,12 +5,11 @@ use krometrail_core::{
 };
 use std::{
     env,
-    fs::{self, File, Metadata, OpenOptions},
+    fs::{self, Metadata},
     io::Read,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::atomic::{AtomicU64, Ordering},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 /// A candidate with its policy source. Keeping this separate from the public installation lets
@@ -185,62 +184,46 @@ fn is_regular_executable(metadata: &Metadata) -> bool {
 }
 
 fn probe_version(path: &Path) -> Option<(BrowserProduct, BrowserProductVersion)> {
-    static PROBE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-    let suffix = PROBE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()?
-        .as_nanos();
-    let output_path = env::temp_dir().join(format!(
-        "krometrail-browser-probe-{}-{suffix}-{timestamp}.out",
-        std::process::id()
-    ));
-    let output = OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(&output_path)
-        .ok()?;
     let mut child = match Command::new(path)
         .arg("--version")
         .stdin(Stdio::null())
-        .stdout(Stdio::from(output))
+        .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
     {
         Ok(child) => child,
-        Err(_) => {
-            let _ = fs::remove_file(&output_path);
-            return None;
-        }
+        Err(_) => return None,
     };
-    // A version probe is an untrusted executable boundary. Poll the child with a hard deadline
-    // and redirect output to a bounded file so a candidate cannot hang discovery or fill a pipe.
+    // A version probe is an untrusted executable boundary. Read at most 4096 bytes on a helper
+    // thread while the caller enforces a hard child deadline. Unlike a temporary capture file,
+    // this keeps doctor discovery free of filesystem mutation; a noisy candidate is killed after
+    // the bounded wait and cannot grow an in-memory result beyond the cap.
+    let stdout = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout
+            .take(4096)
+            .read_to_end(&mut bytes)
+            .ok()
+            .map(|_| bytes)
+    });
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    loop {
+    let status = loop {
         match child.try_wait() {
-            Ok(Some(_)) => break,
+            Ok(Some(status)) => break status,
             Ok(None) if std::time::Instant::now() < deadline => {
                 std::thread::sleep(Duration::from_millis(5))
             }
             _ => {
                 let _ = child.kill();
                 let _ = child.wait();
-                let _ = fs::remove_file(&output_path);
+                let _ = reader.join();
                 return None;
             }
         }
-    }
-    let file = match File::open(&output_path) {
-        Ok(file) => file,
-        Err(_) => {
-            let _ = fs::remove_file(&output_path);
-            return None;
-        }
     };
-    let mut bytes = Vec::new();
-    let read = file.take(4096).read_to_end(&mut bytes).is_ok();
-    let _ = fs::remove_file(&output_path);
-    if !read {
+    let bytes = reader.join().ok().flatten()?;
+    if !status.success() {
         return None;
     }
     let text = String::from_utf8_lossy(&bytes);

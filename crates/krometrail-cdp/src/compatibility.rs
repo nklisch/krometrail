@@ -176,19 +176,10 @@ pub async fn probe_compatibility(
         return Err(CompatibilityProbeError::NodeInspectorOnly);
     }
 
-    // cdpkit subscriptions are installed before discovery is enabled. They expose named params,
-    // not wildcard envelopes, which is the honest boundary this probe relies on.
-    let subscriptions = ["Target.targetCreated", "Target.attachedToTarget"];
-    let subscriptions_ok = futures_util::future::try_join_all(
-        subscriptions
-            .iter()
-            .map(|name| transport.subscribe_named(&CommandScope::Browser, name)),
-    )
-    .await
-    .is_ok();
-    if !subscriptions_ok {
-        availability.insert(RendererCapability::TargetDiscovery, false);
-    }
+    // The session composition installs all target subscriptions before calling this probe. The
+    // probe deliberately does not create throwaway subscriptions: cdpkit's event channels are
+    // unbounded and named subscriptions have no unsubscribe handle, so a compatibility check must
+    // never leave an unconsumed stream behind.
 
     let discovery = command(
         transport,
@@ -217,35 +208,37 @@ pub async fn probe_compatibility(
         .filter(|value| target_list_response(value));
     availability.insert(
         RendererCapability::TargetDiscovery,
-        subscriptions_ok && discovery.is_ok() && target_value.is_some(),
+        discovery.is_ok() && target_value.is_some(),
     );
-    availability.insert(
-        RendererCapability::FlatTargetSessions,
-        subscriptions_ok && auto_attach.is_ok(),
-    );
+    availability.insert(RendererCapability::FlatTargetSessions, auto_attach.is_ok());
 
-    let page_target = target_value.and_then(|value| {
-        value
-            .get("targetInfos")
-            .and_then(Value::as_array)
-            .and_then(|targets| {
-                targets.iter().find(|target| {
-                    target.get("type").and_then(Value::as_str) == Some("page")
-                        && target
-                            .get("url")
-                            .and_then(Value::as_str)
-                            .is_some_and(|url| !url.is_empty())
-                        && !target
-                            .get("url")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .starts_with("devtools://")
-                })
-            })
-            .and_then(|target| target.get("targetId").and_then(Value::as_str))
-    });
-    let session_id = if let Some(target_id) = page_target {
-        match command(
+    let page_targets = target_value
+        .and_then(|value| value.get("targetInfos"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|target| {
+            let target_type = target.get("type").and_then(Value::as_str)?;
+            let url = target
+                .get("url")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            (target_type == "page" && !url.is_empty() && !url.starts_with("devtools://"))
+                .then(|| target.get("targetId").and_then(Value::as_str))
+                .flatten()
+                .map(str::to_owned)
+        })
+        .collect::<Vec<_>>();
+    let has_recordable_page = !page_targets.is_empty();
+    let mut best_renderer_support = [false; 4];
+    let mut best_support_count = 0;
+    let mut session_id = None;
+    let mut flat_session_found = false;
+    // A browser can report a page while it is still loading or closing. Try every exact page key
+    // rather than declaring the whole renderer incompatible because the first candidate was in a
+    // transient state; URL/title matching is never used to restore target identity.
+    for target_id in &page_targets {
+        let candidate_session = match command(
             transport,
             &CommandScope::Browser,
             "Target.attachToTarget",
@@ -258,21 +251,13 @@ pub async fn probe_compatibility(
                 .and_then(Value::as_str)
                 .and_then(|value| TransportSessionId::new(value.to_owned()).ok()),
             Err(_) => None,
-        }
-    } else {
-        None
-    };
-    availability.insert(
-        RendererCapability::FlatTargetSessions,
-        availability[&RendererCapability::FlatTargetSessions] && session_id.is_some(),
-    );
-
-    let session = session_id
-        .as_ref()
-        .map(|session| CommandScope::Session(session.clone()));
-    if let Some(session) = session {
-        availability.insert(
-            RendererCapability::Page,
+        };
+        let Some(candidate_session) = candidate_session else {
+            continue;
+        };
+        flat_session_found = true;
+        let session = CommandScope::Session(candidate_session.clone());
+        let support = [
             probe_command(
                 transport,
                 &session,
@@ -281,9 +266,6 @@ pub async fn probe_compatibility(
                 any_response,
             )
             .await,
-        );
-        availability.insert(
-            RendererCapability::Runtime,
             probe_command(
                 transport,
                 &session,
@@ -292,9 +274,6 @@ pub async fn probe_compatibility(
                 object_response,
             )
             .await,
-        );
-        availability.insert(
-            RendererCapability::Accessibility,
             probe_command(
                 transport,
                 &session,
@@ -311,9 +290,6 @@ pub async fn probe_compatibility(
                     any_response,
                 )
                 .await,
-        );
-        availability.insert(
-            RendererCapability::Input,
             probe_command(
                 transport,
                 &session,
@@ -322,28 +298,76 @@ pub async fn probe_compatibility(
                 any_response,
             )
             .await,
-        );
-    } else {
-        for capability in [
-            RendererCapability::Page,
-            RendererCapability::Runtime,
-            RendererCapability::Accessibility,
-            RendererCapability::Input,
-        ] {
-            availability.insert(capability, false);
+        ];
+        let support_count = support.iter().filter(|available| **available).count();
+        if support_count > best_support_count {
+            best_renderer_support = support;
+            best_support_count = support_count;
         }
+        if support.iter().all(|available| *available) {
+            session_id = Some(candidate_session);
+            break;
+        }
+        let _ = transport
+            .send_raw(
+                &CommandScope::Browser,
+                "Target.detachFromTarget",
+                serde_json::json!({"sessionId": candidate_session.as_str()}),
+            )
+            .await;
     }
-    let schema = command(
-        transport,
-        &CommandScope::Browser,
-        "Schema.getDomains",
-        Value::Object(Default::default()),
-    )
-    .await;
+    availability.insert(
+        RendererCapability::FlatTargetSessions,
+        availability[&RendererCapability::FlatTargetSessions] && flat_session_found,
+    );
+    for (capability, available) in [
+        (RendererCapability::Page, best_renderer_support[0]),
+        (RendererCapability::Runtime, best_renderer_support[1]),
+        (RendererCapability::Accessibility, best_renderer_support[2]),
+        (RendererCapability::Input, best_renderer_support[3]),
+    ] {
+        availability.insert(capability, available);
+    }
+    let browser_schema = transport
+        .send_raw(
+            &CommandScope::Browser,
+            "Schema.getDomains",
+            Value::Object(Default::default()),
+        )
+        .await;
+    let schema = if browser_schema
+        .as_ref()
+        .is_ok_and(screencast_schema_response)
+    {
+        browser_schema
+    } else if let Some(session_id) = session_id.as_ref() {
+        transport
+            .send_raw(
+                &CommandScope::Session(session_id.clone()),
+                "Schema.getDomains",
+                Value::Object(Default::default()),
+            )
+            .await
+    } else {
+        browser_schema
+    };
     availability.insert(
         RendererCapability::Screencast,
         schema.as_ref().is_ok_and(screencast_schema_response),
     );
+
+    // The probe creates a disposable renderer session only to verify the required domains. Do not
+    // leave that attachment in the production supervisor's target map; the supervisor performs a
+    // fresh exact-key attachment after compatibility succeeds.
+    if let Some(session) = session_id.as_ref() {
+        let _ = transport
+            .send_raw(
+                &CommandScope::Browser,
+                "Target.detachFromTarget",
+                serde_json::json!({"sessionId": session.as_str()}),
+            )
+            .await;
+    }
 
     let missing = RENDERER_CAPABILITY_PROBES
         .iter()
@@ -358,7 +382,7 @@ pub async fn probe_compatibility(
         .collect::<Vec<_>>();
     trace_probe(&identity, endpoint_kind, &availability, &missing);
     if !missing.is_empty() {
-        if page_target.is_none() {
+        if !has_recordable_page {
             return Err(CompatibilityProbeError::NoRecordablePage);
         }
         return Err(CompatibilityProbeError::MissingCapabilities(missing));
@@ -493,16 +517,22 @@ fn screencast_schema_response(value: &Value) -> bool {
         .and_then(Value::as_array)
         .is_some_and(|domains| {
             domains.iter().any(|domain| {
-                domain.get("name").and_then(Value::as_str) == Some("Page")
-                    && domain
-                        .get("commands")
-                        .and_then(Value::as_array)
-                        .is_some_and(|commands| {
-                            commands.iter().any(|command| {
-                                command.get("name").and_then(Value::as_str)
-                                    == Some("startScreencast")
-                            })
+                if domain.get("name").and_then(Value::as_str) != Some("Page") {
+                    return false;
+                }
+                // Chrome's live Schema.getDomains response exposes domain names but omits the
+                // command list. A detailed scripted/schema response still gets the stricter
+                // command check; a live Page domain is the compatibility boundary we can verify
+                // without starting a screencast.
+                domain
+                    .get("commands")
+                    .and_then(Value::as_array)
+                    .map(|commands| {
+                        commands.iter().any(|command| {
+                            command.get("name").and_then(Value::as_str) == Some("startScreencast")
                         })
+                    })
+                    .unwrap_or(true)
             })
         })
 }

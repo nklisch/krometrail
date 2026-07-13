@@ -61,6 +61,21 @@ impl ManagedChromeProcess {
             .is_some_and(|child| child.try_wait().ok().flatten().is_none())
     }
 
+    /// Takes an already-observed child exit without awaiting or exposing the platform status.
+    #[cfg(feature = "cdpkit-transport")]
+    pub(crate) fn termination_if_exited(&mut self) -> Option<ProcessTermination> {
+        let child = self.child.as_mut()?;
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                self.child.take();
+                Some(ProcessTermination {
+                    exit: sanitize_exit(status),
+                })
+            }
+            _ => None,
+        }
+    }
+
     /// Waits for the managed child without exposing raw ExitStatus or source details.
     pub async fn wait_for_termination(&mut self) -> Result<ProcessTermination, ProcessError> {
         loop {

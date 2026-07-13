@@ -7,10 +7,16 @@
 
 pub mod endpoint;
 pub mod launcher;
+pub mod targets;
+#[cfg(feature = "cdpkit-transport")]
+pub use targets::{ReconnectPolicy, SubscriberLag, SupervisorConfig};
+pub use targets::{
+    ReconnectedSnapshot, ReconnectedTarget, Reduction, ShutdownCause, SupervisorEffect,
+    SupervisorInput, SupervisorState, SupervisorTargetState, TransportTargetInfo, reduce,
+};
 
 #[cfg(feature = "cdpkit-transport")]
 pub mod compatibility;
-#[cfg(feature = "cdpkit-transport")]
 pub mod transport;
 
 #[cfg(feature = "cdp-spike")]
@@ -30,6 +36,10 @@ pub use launcher::{
     discover_installations, discover_installations_with,
 };
 #[cfg(feature = "cdpkit-transport")]
+pub mod session;
+#[cfg(feature = "cdpkit-transport")]
+pub use session::ProductionBrowserConnector;
+
 pub use transport::{
     CdpTransport, CdpTransportFactory, CommandScope, NamedEvent, TransportClose, TransportError,
     TransportEvents, TransportFuture, TransportSessionId,

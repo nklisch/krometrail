@@ -99,6 +99,20 @@ pub struct LaunchedChrome {
 }
 
 impl LaunchedChrome {
+    /// Transfers the three owned resources to a session supervisor without running the launch
+    /// guard's emergency Drop cleanup. The caller becomes responsible for their shutdown order.
+    pub fn into_parts(self) -> (LocalCdpEndpoint, ProfileLease, ManagedChromeProcess) {
+        let this = std::mem::ManuallyDrop::new(self);
+        // SAFETY: `this` is never dropped after the fields are moved, and each field is read once.
+        unsafe {
+            (
+                std::ptr::read(&this.endpoint),
+                std::ptr::read(&this.profile),
+                std::ptr::read(&this.process),
+            )
+        }
+    }
+
     pub fn profile_kind(&self) -> ProfileLeaseKind {
         self.profile.kind()
     }
@@ -300,8 +314,11 @@ async fn wait_for_endpoint(
         if !process.is_alive() {
             return Err(LaunchError::ProcessTerminated);
         }
-        if let Ok(endpoint) = LocalCdpEndpoint::resolve(&input).await {
-            return Ok(endpoint);
+        match LocalCdpEndpoint::resolve(&input).await {
+            Ok(endpoint) => return Ok(endpoint),
+            Err(error) => {
+                tracing::debug!(?error, port, "browser endpoint probe not ready");
+            }
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }

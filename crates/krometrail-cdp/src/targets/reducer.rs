@@ -1,0 +1,862 @@
+//! Deterministic, single-writer target/session reducer.
+//!
+//! No async work, clocks, random sources, or transport handles appear here. Effects are a
+//! complete description of the adapter work that may happen after a reduction commits.
+
+use std::collections::HashSet;
+
+use krometrail_core::{
+    BrowserSessionEvent, BrowserSessionState, ErrorCode, KrometrailError, NonEmptyText, Result,
+    TargetLifecycle, TargetVisibility,
+};
+
+use super::model::{
+    ReconnectedSnapshot, ReconnectedTarget, Reduction, ShutdownCause, SupervisorEffect,
+    SupervisorInput, SupervisorState, SupervisorTargetState, TransportTargetInfo, cancelled_error,
+    close_event, close_reason, make_target, process_error, reconnect_error, target_changed_event,
+    target_discovered_event, target_error,
+};
+
+/// Apply one serialized input. Callers must execute this function from one task/owner; sharing the
+/// state between multiple writers would invalidate revision ordering and target identity.
+pub fn reduce(mut state: SupervisorState, input: SupervisorInput) -> Result<Reduction> {
+    if let SupervisorInput::ForConnectionGeneration { generation, input } = input {
+        // A transport task can finish an event read just as its connection is being replaced.
+        // Generation is the only reliable discriminator: target URLs and titles are not identity.
+        if generation != state.connection_generation {
+            return Ok(Reduction {
+                state,
+                effects: Vec::new(),
+            });
+        }
+        return reduce(state, *input);
+    }
+
+    if state.session_state == BrowserSessionState::Reconnecting
+        && matches!(
+            input,
+            SupervisorInput::InitialTargets(_)
+                | SupervisorInput::TargetCreated(_)
+                | SupervisorInput::TargetInfoChanged(_)
+                | SupervisorInput::Attached { .. }
+                | SupervisorInput::TargetAttachFailed { .. }
+                | SupervisorInput::Detached { .. }
+                | SupervisorInput::TargetDestroyed { .. }
+                | SupervisorInput::VisibilityChanged { .. }
+        )
+    {
+        // Events from the disconnected transport can still be queued in another task. They are
+        // not part of the new connection's snapshot and must not mutate suspended state.
+        return Ok(Reduction {
+            state,
+            effects: Vec::new(),
+        });
+    }
+
+    let mut effects = Vec::new();
+    match input {
+        SupervisorInput::InitialTargets(infos) => {
+            reconcile_initial(&mut state, infos, &mut effects)?
+        }
+        SupervisorInput::TargetCreated(info) => {
+            reconcile_one(&mut state, info, true, &mut effects)?
+        }
+        SupervisorInput::TargetInfoChanged(info) => {
+            reconcile_one(&mut state, info, false, &mut effects)?
+        }
+        SupervisorInput::Attached {
+            target_key,
+            session,
+        } => attach(&mut state, target_key, session, &mut effects)?,
+        SupervisorInput::TargetAttachFailed { target_key } => {
+            let failed_target_id = if let Some(target) = state.targets_by_key.get_mut(&target_key) {
+                if !matches!(
+                    target.target.lifecycle,
+                    TargetLifecycle::Closed | TargetLifecycle::Failed
+                ) {
+                    target.target.lifecycle = target
+                        .target
+                        .lifecycle
+                        .transition(TargetLifecycle::Failed)?;
+                    Some(target.target.target.id())
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            if let Some(target_id) = failed_target_id {
+                publish(
+                    &mut state,
+                    BrowserSessionEvent::TargetFailed {
+                        target_id,
+                        error: target_error(),
+                    },
+                    &mut effects,
+                );
+            }
+        }
+        SupervisorInput::Detached { session, reason: _ } => {
+            detach_failed(&mut state, session, &mut effects)?
+        }
+        SupervisorInput::TargetDestroyed { target_key } => {
+            destroy(&mut state, &target_key, &mut effects)?
+        }
+        SupervisorInput::VisibilityChanged {
+            target_key,
+            visibility,
+        } => visibility_changed(&mut state, &target_key, visibility, &mut effects)?,
+        SupervisorInput::ConnectionLost(close) => {
+            if matches!(
+                state.session_state,
+                BrowserSessionState::Ended | BrowserSessionState::Stopping
+            ) {
+                return Ok(Reduction { state, effects });
+            }
+            set_session_state(&mut state, BrowserSessionState::Reconnecting, &mut effects)?;
+            for target in state.targets_by_key.values_mut() {
+                if matches!(
+                    target.target.lifecycle,
+                    TargetLifecycle::Closed | TargetLifecycle::Failed
+                ) {
+                    continue;
+                }
+                if target.target.lifecycle != TargetLifecycle::Suspended {
+                    target.prior_to_suspension = Some(target.target.lifecycle);
+                    target.target.lifecycle = target
+                        .target
+                        .lifecycle
+                        .transition(TargetLifecycle::Suspended)?;
+                    effects.push(SupervisorEffect::Publish(
+                        BrowserSessionEvent::TargetChanged {
+                            target: target.target.clone(),
+                        },
+                    ));
+                }
+                target.transport_session = None;
+            }
+            state.target_key_by_session.clear();
+            effects.push(SupervisorEffect::BeginReconnect);
+            tracing::debug!(
+                reason = close_reason(&close),
+                connection_generation = state.connection_generation,
+                "browser.session.connection_lost"
+            );
+        }
+        SupervisorInput::BrowserProcessTerminated { exit: _ } => {
+            if state.session_state == BrowserSessionState::Ended {
+                return Ok(Reduction { state, effects });
+            }
+            let error = process_error();
+            publish(
+                &mut state,
+                BrowserSessionEvent::SessionFailed { error },
+                &mut effects,
+            );
+            begin_shutdown(
+                &mut state,
+                ShutdownCause::BrowserProcessTerminated,
+                &mut effects,
+            )?;
+        }
+        SupervisorInput::Reconnected(snapshot) => reconnect(&mut state, snapshot, &mut effects)?,
+        SupervisorInput::ReconnectExhausted => {
+            let error = reconnect_error();
+            publish(
+                &mut state,
+                BrowserSessionEvent::SessionFailed { error },
+                &mut effects,
+            );
+            begin_shutdown(&mut state, ShutdownCause::ReconnectExhausted, &mut effects)?;
+        }
+        SupervisorInput::StopRequested => {
+            begin_shutdown(&mut state, ShutdownCause::StopRequested, &mut effects)?;
+        }
+        SupervisorInput::Cancelled => {
+            let error = cancelled_error();
+            publish(
+                &mut state,
+                BrowserSessionEvent::SessionFailed { error },
+                &mut effects,
+            );
+            begin_shutdown(&mut state, ShutdownCause::Cancelled, &mut effects)?;
+        }
+        SupervisorInput::ForConnectionGeneration { .. } => {
+            unreachable!("generation-guarded input is handled before reduction")
+        }
+    }
+    Ok(Reduction { state, effects })
+}
+
+fn reconcile_initial(
+    state: &mut SupervisorState,
+    infos: Vec<TransportTargetInfo>,
+    effects: &mut Vec<SupervisorEffect>,
+) -> Result<()> {
+    let recordable = infos
+        .into_iter()
+        .filter(TransportTargetInfo::is_recordable)
+        .collect::<Vec<_>>();
+    let keys = recordable
+        .iter()
+        .map(|info| info.target_key.as_str())
+        .collect::<HashSet<_>>();
+    let old_keys = state.targets_by_key.keys().cloned().collect::<Vec<_>>();
+    for key in old_keys {
+        if !keys.contains(key.as_str()) {
+            destroy(state, &key, effects)?;
+        }
+    }
+    for info in recordable {
+        reconcile_one(state, info, true, effects)?;
+    }
+    Ok(())
+}
+
+fn reconcile_one(
+    state: &mut SupervisorState,
+    info: TransportTargetInfo,
+    creation_event: bool,
+    effects: &mut Vec<SupervisorEffect>,
+) -> Result<()> {
+    if !info.is_recordable() {
+        if state.targets_by_key.contains_key(&info.target_key) {
+            destroy(state, &info.target_key, effects)?;
+        }
+        return Ok(());
+    }
+    let key = info.target_key.clone();
+    if let Some(existing) = state.targets_by_key.get_mut(&key) {
+        if matches!(
+            existing.target.lifecycle,
+            TargetLifecycle::Closed | TargetLifecycle::Failed
+        ) {
+            // Terminal targets never transition back. A late info/detach race must not resurrect
+            // them; only a fresh creation/snapshot observation can establish a new logical target.
+            if !creation_event {
+                return Ok(());
+            }
+            state.targets_by_key.remove(&key);
+        } else {
+            let changed = existing.target.target.url() != info.url
+                || existing.target.target.title() != info.title;
+            if changed {
+                existing.target.target = krometrail_core::PageTarget::new(
+                    existing.target.target.id(),
+                    key.clone(),
+                    info.url,
+                    info.title,
+                )?;
+                effects.push(target_changed_event(existing));
+            }
+            return Ok(());
+        }
+    }
+    let id = allocate_target_id(state, &key);
+    let target = make_target(
+        id,
+        &info,
+        TargetLifecycle::Discovered,
+        TargetVisibility::Unknown,
+        0,
+    )?;
+    let target_state = SupervisorTargetState {
+        target,
+        transport_session: None,
+        prior_to_suspension: None,
+    };
+    if creation_event {
+        effects.push(target_discovered_event(&target_state));
+    }
+    state.targets_by_key.insert(key.clone(), target_state);
+    effects.push(SupervisorEffect::Attach { target_key: key });
+    Ok(())
+}
+
+fn attach(
+    state: &mut SupervisorState,
+    key: String,
+    session: crate::transport::TransportSessionId,
+    effects: &mut Vec<SupervisorEffect>,
+) -> Result<()> {
+    let Some(target) = state.targets_by_key.get_mut(&key) else {
+        return Ok(());
+    };
+    if matches!(
+        target.target.lifecycle,
+        TargetLifecycle::Closed | TargetLifecycle::Failed
+    ) {
+        return Ok(());
+    }
+    if target.transport_session.as_ref() == Some(&session) {
+        return Ok(());
+    }
+    if let Some(previous) = target.transport_session.replace(session.clone()) {
+        state.target_key_by_session.remove(&previous);
+        effects.push(SupervisorEffect::Detach { session: previous });
+    }
+    state
+        .target_key_by_session
+        .insert(session.clone(), key.clone());
+    target.target.attachment_generation = target
+        .target
+        .attachment_generation
+        .checked_add(1)
+        .ok_or_else(|| invalid_state("target attachment generation overflow"))?;
+    let next = target
+        .prior_to_suspension
+        .take()
+        .unwrap_or(TargetLifecycle::Attached);
+    target.target.lifecycle = target.target.lifecycle.transition(next)?;
+    if target.target.lifecycle == TargetLifecycle::Discovered {
+        target.target.lifecycle = target
+            .target
+            .lifecycle
+            .transition(TargetLifecycle::Attached)?;
+    }
+    effects.push(target_changed_event(target));
+    effects.push(SupervisorEffect::ProbeInitialVisibility {
+        target_key: key,
+        session,
+    });
+    Ok(())
+}
+
+fn detach_failed(
+    state: &mut SupervisorState,
+    session: crate::transport::TransportSessionId,
+    effects: &mut Vec<SupervisorEffect>,
+) -> Result<()> {
+    let Some(key) = state.target_key_by_session.remove(&session) else {
+        return Ok(());
+    };
+    let target_id = {
+        let Some(target) = state.targets_by_key.get_mut(&key) else {
+            return Ok(());
+        };
+        target.transport_session = None;
+        if matches!(
+            target.target.lifecycle,
+            TargetLifecycle::Closed | TargetLifecycle::Failed
+        ) {
+            return Ok(());
+        }
+        target.prior_to_suspension = None;
+        target.target.lifecycle = target
+            .target
+            .lifecycle
+            .transition(TargetLifecycle::Failed)?;
+        target.target.target.id()
+    };
+    publish(
+        state,
+        BrowserSessionEvent::TargetFailed {
+            target_id,
+            error: target_error(),
+        },
+        effects,
+    );
+    Ok(())
+}
+
+fn destroy(
+    state: &mut SupervisorState,
+    key: &str,
+    effects: &mut Vec<SupervisorEffect>,
+) -> Result<()> {
+    let Some(target) = state.targets_by_key.get_mut(key) else {
+        return Ok(());
+    };
+    if target.target.lifecycle == TargetLifecycle::Closed {
+        return Ok(());
+    }
+    if let Some(session) = target.transport_session.take() {
+        state.target_key_by_session.remove(&session);
+        effects.push(SupervisorEffect::Detach { session });
+    }
+    if target.target.lifecycle != TargetLifecycle::Failed {
+        target.target.lifecycle = target
+            .target
+            .lifecycle
+            .transition(TargetLifecycle::Closed)?;
+    }
+    effects.push(close_event(target));
+    Ok(())
+}
+
+fn visibility_changed(
+    state: &mut SupervisorState,
+    key: &str,
+    visibility: TargetVisibility,
+    effects: &mut Vec<SupervisorEffect>,
+) -> Result<()> {
+    let Some(target) = state.targets_by_key.get_mut(key) else {
+        return Ok(());
+    };
+    if matches!(
+        target.target.lifecycle,
+        TargetLifecycle::Closed | TargetLifecycle::Failed
+    ) {
+        return Ok(());
+    }
+    if target.target.visibility == visibility {
+        return Ok(());
+    }
+    let next_lifecycle = match (target.target.lifecycle, visibility) {
+        (TargetLifecycle::Attached, TargetVisibility::Hidden)
+        | (TargetLifecycle::Recording, TargetVisibility::Hidden) => TargetLifecycle::Hidden,
+        (TargetLifecycle::Hidden, TargetVisibility::Visible) => TargetLifecycle::Recording,
+        (lifecycle, _) => lifecycle,
+    };
+    if next_lifecycle != target.target.lifecycle {
+        target.target.lifecycle = target.target.lifecycle.transition(next_lifecycle)?;
+    }
+    target.target.visibility = visibility;
+    effects.push(target_changed_event(target));
+    Ok(())
+}
+
+fn reconnect(
+    state: &mut SupervisorState,
+    snapshot: ReconnectedSnapshot,
+    effects: &mut Vec<SupervisorEffect>,
+) -> Result<()> {
+    if matches!(
+        state.session_state,
+        BrowserSessionState::Stopping | BrowserSessionState::Ended
+    ) {
+        return Ok(());
+    }
+    if snapshot.connection_generation <= state.connection_generation {
+        return Ok(());
+    }
+    state.connection_generation = snapshot.connection_generation;
+    state.compatibility = snapshot.compatibility;
+    let recordable = snapshot
+        .targets
+        .into_iter()
+        .filter(|target| target.info.is_recordable())
+        .collect::<Vec<_>>();
+    let seen = recordable
+        .iter()
+        .map(|target| target.info.target_key.as_str())
+        .collect::<HashSet<_>>();
+    let old_keys = state.targets_by_key.keys().cloned().collect::<Vec<_>>();
+    for key in old_keys {
+        if !seen.contains(key.as_str()) {
+            destroy(state, &key, effects)?;
+        }
+    }
+    state.target_key_by_session.clear();
+    for restored in recordable {
+        reconcile_restored(state, restored, effects)?;
+    }
+    set_session_state(state, BrowserSessionState::Ready, effects)?;
+    Ok(())
+}
+
+fn reconcile_restored(
+    state: &mut SupervisorState,
+    reconnected: ReconnectedTarget,
+    effects: &mut Vec<SupervisorEffect>,
+) -> Result<()> {
+    let key = reconnected.info.target_key.clone();
+    if !state.targets_by_key.contains_key(&key) {
+        let id = allocate_target_id(state, &key);
+        let target = make_target(
+            id,
+            &reconnected.info,
+            TargetLifecycle::Discovered,
+            reconnected.visibility,
+            0,
+        )?;
+        state.targets_by_key.insert(
+            key.clone(),
+            SupervisorTargetState {
+                target,
+                transport_session: None,
+                prior_to_suspension: None,
+            },
+        );
+        if let Some(session) = reconnected.session {
+            attach(state, key, session, effects)?;
+        } else {
+            effects.push(SupervisorEffect::Attach { target_key: key });
+        }
+        return Ok(());
+    }
+    let (changed, needs_attachment) = {
+        let target = state.targets_by_key.get_mut(&key).expect("key checked");
+        let changed = target.target.target.url() != reconnected.info.url
+            || target.target.target.title() != reconnected.info.title;
+        if changed {
+            target.target.target = krometrail_core::PageTarget::new(
+                target.target.target.id(),
+                key.clone(),
+                reconnected.info.url.clone(),
+                reconnected.info.title.clone(),
+            )?;
+        }
+        target.target.visibility = reconnected.visibility;
+        let needs_attachment = target.transport_session.is_none();
+        (changed, needs_attachment)
+    };
+    if let Some(session) = reconnected.session {
+        attach(state, key, session, effects)?;
+    } else if needs_attachment {
+        // A snapshot may omit the flat session when auto-attach raced discovery. Re-requesting the
+        // exact target key is idempotent and is safer than treating a missing session as closure.
+        if changed {
+            let target = state.targets_by_key.get(&key).expect("key remains");
+            effects.push(target_changed_event(target));
+        }
+        effects.push(SupervisorEffect::Attach { target_key: key });
+    } else if changed {
+        let target = state.targets_by_key.get(&key).expect("key remains");
+        effects.push(target_changed_event(target));
+    }
+    Ok(())
+}
+
+fn begin_shutdown(
+    state: &mut SupervisorState,
+    cause: ShutdownCause,
+    effects: &mut Vec<SupervisorEffect>,
+) -> Result<()> {
+    if state.session_state == BrowserSessionState::Ended {
+        return Ok(());
+    }
+    if state.session_state != BrowserSessionState::Stopping {
+        set_session_state(state, BrowserSessionState::Stopping, effects)?;
+        effects.push(SupervisorEffect::Shutdown { cause });
+    }
+    Ok(())
+}
+
+fn set_session_state(
+    state: &mut SupervisorState,
+    next: BrowserSessionState,
+    effects: &mut Vec<SupervisorEffect>,
+) -> Result<()> {
+    if state.session_state == next {
+        return Ok(());
+    }
+    let allowed = matches!(
+        (state.session_state, next),
+        (BrowserSessionState::Connecting, BrowserSessionState::Ready)
+            | (
+                BrowserSessionState::Connecting,
+                BrowserSessionState::Reconnecting
+            )
+            | (
+                BrowserSessionState::Connecting,
+                BrowserSessionState::Stopping
+            )
+            | (
+                BrowserSessionState::Ready,
+                BrowserSessionState::Reconnecting
+            )
+            | (BrowserSessionState::Ready, BrowserSessionState::Stopping)
+            | (
+                BrowserSessionState::Reconnecting,
+                BrowserSessionState::Ready
+            )
+            | (
+                BrowserSessionState::Reconnecting,
+                BrowserSessionState::Stopping
+            )
+            | (BrowserSessionState::Stopping, BrowserSessionState::Ended)
+            | (BrowserSessionState::Connecting, BrowserSessionState::Ended)
+    );
+    if !allowed {
+        return Err(invalid_state("invalid browser session state transition"));
+    }
+    let previous = state.session_state;
+    state.session_state = next;
+    tracing::info!(
+        previous_state = previous.as_str(),
+        next_state = next.as_str(),
+        connection_generation = state.connection_generation,
+        "browser.session.state_changed"
+    );
+    publish(
+        state,
+        BrowserSessionEvent::SessionStateChanged { state: next },
+        effects,
+    );
+    Ok(())
+}
+
+fn publish(
+    state: &mut SupervisorState,
+    event: BrowserSessionEvent,
+    effects: &mut Vec<SupervisorEffect>,
+) {
+    state.revision = state.revision.saturating_add(1);
+    match &event {
+        BrowserSessionEvent::SessionFailed { error } => {
+            tracing::warn!(code = error.code.as_str(), "browser.session.failed")
+        }
+        BrowserSessionEvent::TargetFailed { target_id, error } => tracing::warn!(
+            target_id = %target_id,
+            code = error.code.as_str(),
+            "browser.target.failed"
+        ),
+        BrowserSessionEvent::SessionStateChanged { .. }
+        | BrowserSessionEvent::TargetDiscovered { .. }
+        | BrowserSessionEvent::TargetChanged { .. }
+        | BrowserSessionEvent::TargetClosed { .. } => {}
+    }
+    effects.push(SupervisorEffect::Publish(event));
+}
+
+fn allocate_target_id(state: &mut SupervisorState, key: &str) -> krometrail_core::TargetId {
+    state.revision = state.revision.saturating_add(1);
+    let mut bytes = [0_u8; 16];
+    let mut first = 0xcbf29ce484222325_u64 ^ state.revision;
+    let mut second = 0x9e3779b185ebca87_u64 ^ state.connection_generation;
+    for (index, byte) in key.bytes().enumerate() {
+        first ^= u64::from(byte);
+        first = first.wrapping_mul(0x100000001b3);
+        second ^= first.rotate_left((index % 63) as u32);
+        second = second.wrapping_mul(0x100000001b3);
+    }
+    bytes[..8].copy_from_slice(&first.to_be_bytes());
+    bytes[8..].copy_from_slice(&second.to_be_bytes());
+    // Keep generated IDs in the same UUID-shaped space as all other core identities.
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    krometrail_core::TargetId::from_uuid(uuid::Uuid::from_bytes(bytes))
+}
+
+fn invalid_state(message: &'static str) -> KrometrailError {
+    KrometrailError::new(
+        ErrorCode::InvalidLifecycleTransition,
+        NonEmptyText::new(message).unwrap(),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use krometrail_core::{
+        BrowserCompatibility, BrowserProduct, BrowserProductVersion, BrowserVersion,
+        CapabilitySupport, RendererCapability, TargetLifecycle,
+    };
+
+    fn compatibility() -> BrowserCompatibility {
+        BrowserCompatibility::new(
+            BrowserVersion::new(
+                BrowserProduct::Chrome,
+                BrowserProductVersion::new("128").unwrap(),
+                "revision",
+                "1.3",
+                "Chrome/128",
+                "12",
+            )
+            .unwrap(),
+            RendererCapability::ALL
+                .iter()
+                .map(|capability| CapabilitySupport::new(*capability, true, true, None).unwrap())
+                .collect(),
+        )
+        .unwrap()
+    }
+
+    fn info(key: &str, url: &str) -> TransportTargetInfo {
+        TransportTargetInfo::new(key, "page", url, key, false, None).unwrap()
+    }
+
+    #[test]
+    fn initial_snapshot_and_duplicates_are_idempotent() {
+        let state = SupervisorState::new(compatibility());
+        let first = reduce(
+            state,
+            SupervisorInput::InitialTargets(vec![info("a", "https://a")]),
+        )
+        .unwrap();
+        let second = reduce(
+            first.state.clone(),
+            SupervisorInput::InitialTargets(vec![info("a", "https://a")]),
+        )
+        .unwrap();
+        assert_eq!(second.state.targets_by_key.len(), 1);
+        assert!(second.effects.is_empty());
+        assert_eq!(
+            first.state.targets_by_key["a"].target.target.id(),
+            second.state.targets_by_key["a"].target.target.id()
+        );
+    }
+
+    #[test]
+    fn unsupported_and_internal_targets_are_ignored() {
+        let result = reduce(
+            SupervisorState::new(compatibility()),
+            SupervisorInput::InitialTargets(vec![
+                TransportTargetInfo::new("worker", "worker", "https://a", "", false, None).unwrap(),
+                info("devtools", "devtools://devtools/bundled/inspector.html"),
+            ]),
+        )
+        .unwrap();
+        assert!(result.state.targets_by_key.is_empty());
+    }
+
+    #[test]
+    fn disconnect_suspends_targets_and_reconnect_restores_exact_keys() {
+        let state = reduce(
+            SupervisorState::new(compatibility()),
+            SupervisorInput::InitialTargets(vec![info("a", "https://old")]),
+        )
+        .unwrap()
+        .state;
+        let state = reduce(
+            state,
+            SupervisorInput::Attached {
+                target_key: "a".into(),
+                session: crate::transport::TransportSessionId::new("s1").unwrap(),
+            },
+        )
+        .unwrap()
+        .state;
+        let state = reduce(
+            state,
+            SupervisorInput::ConnectionLost(crate::transport::TransportClose {
+                reason: krometrail_core::NonEmptyText::new("remote").unwrap(),
+            }),
+        )
+        .unwrap()
+        .state;
+        assert_eq!(
+            state.targets_by_key["a"].target.lifecycle,
+            TargetLifecycle::Suspended
+        );
+        let old_id = state.targets_by_key["a"].target.target.id();
+        let restored = reduce(
+            state,
+            SupervisorInput::Reconnected(ReconnectedSnapshot {
+                connection_generation: 1,
+                compatibility: compatibility(),
+                targets: vec![ReconnectedTarget {
+                    info: info("a", "https://new"),
+                    session: Some(crate::transport::TransportSessionId::new("s2").unwrap()),
+                    visibility: TargetVisibility::Visible,
+                }],
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            restored.state.targets_by_key["a"].target.target.id(),
+            old_id
+        );
+        assert_eq!(
+            restored.state.targets_by_key["a"].target.target.url(),
+            "https://new"
+        );
+        assert_eq!(
+            restored.state.targets_by_key["a"].target.lifecycle,
+            TargetLifecycle::Attached
+        );
+    }
+
+    #[test]
+    fn stale_generation_events_are_ignored_after_reconnect() {
+        let state = reduce(
+            SupervisorState::new(compatibility()),
+            SupervisorInput::InitialTargets(vec![info("a", "https://a")]),
+        )
+        .unwrap()
+        .state;
+        let state = reduce(
+            state,
+            SupervisorInput::ConnectionLost(crate::transport::TransportClose {
+                reason: krometrail_core::NonEmptyText::new("remote").unwrap(),
+            }),
+        )
+        .unwrap()
+        .state;
+        let state = reduce(
+            state,
+            SupervisorInput::Reconnected(ReconnectedSnapshot {
+                connection_generation: 1,
+                compatibility: compatibility(),
+                targets: vec![ReconnectedTarget {
+                    info: info("a", "https://a"),
+                    session: Some(crate::transport::TransportSessionId::new("new").unwrap()),
+                    visibility: TargetVisibility::Visible,
+                }],
+            }),
+        )
+        .unwrap()
+        .state;
+        let reduction = reduce(
+            state.clone(),
+            SupervisorInput::ForConnectionGeneration {
+                generation: 0,
+                input: Box::new(SupervisorInput::Detached {
+                    session: crate::transport::TransportSessionId::new("new").unwrap(),
+                    reason: None,
+                }),
+            },
+        )
+        .unwrap();
+        assert_eq!(reduction.state, state);
+        assert!(reduction.effects.is_empty());
+    }
+
+    #[test]
+    fn reconnect_snapshot_without_session_retries_exact_key_attachment() {
+        let state = reduce(
+            SupervisorState::new(compatibility()),
+            SupervisorInput::InitialTargets(vec![info("a", "https://a")]),
+        )
+        .unwrap()
+        .state;
+        let state = reduce(
+            state,
+            SupervisorInput::ConnectionLost(crate::transport::TransportClose {
+                reason: krometrail_core::NonEmptyText::new("remote").unwrap(),
+            }),
+        )
+        .unwrap()
+        .state;
+        let reduction = reduce(
+            state,
+            SupervisorInput::Reconnected(ReconnectedSnapshot {
+                connection_generation: 1,
+                compatibility: compatibility(),
+                targets: vec![ReconnectedTarget {
+                    info: info("a", "https://a"),
+                    session: None,
+                    visibility: TargetVisibility::Unknown,
+                }],
+            }),
+        )
+        .unwrap();
+        assert!(reduction.effects.iter().any(|effect| matches!(
+            effect,
+            SupervisorEffect::Attach { target_key } if target_key == "a"
+        )));
+    }
+
+    #[test]
+    fn process_death_does_not_emit_reconnect() {
+        let result = reduce(
+            SupervisorState::new(compatibility()),
+            SupervisorInput::BrowserProcessTerminated {
+                exit: crate::launcher::SanitizedProcessExit::Code(1),
+            },
+        )
+        .unwrap();
+        assert!(result.effects.iter().any(|effect| matches!(
+            effect,
+            SupervisorEffect::Publish(BrowserSessionEvent::SessionFailed { error })
+            if error.code == ErrorCode::BrowserProcessTerminated
+        )));
+        assert!(
+            !result
+                .effects
+                .iter()
+                .any(|effect| matches!(effect, SupervisorEffect::BeginReconnect))
+        );
+    }
+}

@@ -203,9 +203,9 @@ The CDP adapter owns:
 
 The adapter exposes typed domain operations through ports defined by `krometrail-core`.
 
-The current schema-v2 Linux/macOS reports and generated decision in `docs/evidence/cdp-transport/v2/` are final5 qualification artifacts from exact revision `a0e98ad6bd9c53d10385020bc43629f7ac246173`; they were independently normalized, redaction-checked, decisively validated, and recomputed from bounded canonical fixture, wire-observation, runtime, canonical configuration, and clean source-attestation material. The superseded reports and decision from exact revision `07b0990c0d9e4fea9057fcab5c35e56691ff69eb` remain byte-for-byte preserved under `docs/evidence/cdp-transport/v2/historical/final-v2-07b0990/`. The contract names observed `capture_elapsed_seconds` and `handoff_elapsed_seconds` measurements, keeps the configured 120-second global hard stop authoritative when frame minima are unmet, and measures acknowledgement only from returned frame to ack completion. Post-receive ack p99/max are Linux `0.214389/0.889178 ms` and macOS `0.582458/12.67025 ms`; handoff follows acknowledgement. The adapter must preserve cdpkit's named-event-params-only escape hatch: it is not wildcard or full-envelope receive, and its subscriber queue depth is not inspectable. Krometrail therefore owns prompt acknowledgement before bounded handoff, backpressure and capture-gap policy, reconnect/session restoration, cancellation, and flush behavior. A cdpkit routing, decoder, lifecycle patch, or fork would invalidate the selection and trigger the documented fallback rules. The final decision selects exact cdpkit 0.4.0 without a waiver.
+The current schema-v2 Linux/macOS reports and generated decision in `docs/evidence/cdp-transport/v2/` are final5 qualification artifacts from exact revision `a0e98ad6bd9c53d10385020bc43629f7ac246173`; they were independently normalized, redaction-checked, decisively validated, and recomputed from bounded canonical fixture, wire-observation, runtime, canonical configuration, and clean source-attestation material. The superseded reports and decision from exact revision `07b0990c0d9e4fea9057fcab5c35e56691ff69eb` remain byte-for-byte preserved under `docs/evidence/cdp-transport/v2/historical/final-v2-07b0990/`. The contract names observed `capture_elapsed_seconds` and `handoff_elapsed_seconds` measurements, keeps the configured 120-second global hard stop authoritative when frame minima are unmet, and measures acknowledgement only from returned frame to ack completion. Post-receive ack p99/max are Linux `0.214389/0.889178 ms` and macOS `0.582458/12.67025 ms`; handoff follows acknowledgement. The adapter preserves cdpkit's named-event-params-only escape hatch: it is not wildcard or full-envelope receive, and its subscriber queue depth is not inspectable. Krometrail therefore owns reconnect/session restoration, cancellation, target rebuild, and later bounded frame handoff. A cdpkit routing, decoder, lifecycle patch, or fork would invalidate the selection and trigger the documented fallback rules. The final decision selects exact cdpkit 0.4.0 without a waiver.
 
-A compatibility probe runs when connecting. It reports browser and protocol versions, identifies Electron renderer endpoints when detectable, and verifies the required domains before recording begins. Renderer support is decided from the observed protocol capabilities rather than the host application's brand. The production adapter implementation remains downstream of this qualification; spike features are non-default and are not root-wired.
+A compatibility probe runs when connecting. It reports browser and protocol versions, identifies Electron renderer endpoints when detectable, and verifies the required domains before recording begins. Renderer support is decided from observed protocol capabilities rather than the host application's brand. The production `krometrail-cdp` adapter composes that probe with `ChromeLauncher`, a cdpkit transport seam, and a single-writer target/session supervisor. The supervisor subscribes to target events before enabling discovery and auto-attach, reconciles an initial snapshot, and rebuilds exact-key flat sessions after reconnect. Spike features remain non-default and are not root-wired.
 
 ## Target Lifecycle
 
@@ -213,16 +213,13 @@ A target supervisor tracks every recordable page target.
 
 For each target it owns:
 
-- CDP session attachment;
-- enabled domains;
-- screencast state;
-- future snapshot generation (deferred to browser-control work);
-- current navigation identity;
-- current viewport metadata;
-- visibility;
-- capture statistics.
+- exact browser target key and Krometrail `TargetId`;
+- flat CDP session attachment and attachment generation;
+- target lifecycle, including pre-suspension lifecycle during reconnect;
+- current URL/title projection and visibility;
+- future snapshot generation (deferred to browser-control work).
 
-Target creation and closure do not affect unrelated target streams. A target-level failure is reported without terminating the browser session unless the browser connection itself is lost.
+Target creation and closure do not affect unrelated target streams. A target-level failure is reported without terminating the browser session unless the browser connection itself is lost. Target state is reduced by one serialized state machine; asynchronous transport and process tasks only submit inputs or execute emitted effects. Outbound session events use bounded subscriber channels with revision-gap recovery through `targets()`; cdpkit's private upstream queue is not represented as a measurable product metric.
 
 ## Frame Ingestion
 
@@ -575,7 +572,10 @@ All long-running tasks participate in structured cancellation. Process shutdown 
 Krometrail emits local structured logs for:
 
 - process and browser lifecycle;
-- target attachment;
+- compatibility probe results;
+- target discovery, attachment, visibility, suspension, closure, and local failure;
+- reconnect attempts and session state transitions;
+- bounded outbound subscriber lag;
 - capture start and stop;
 - frame cadence and gaps;
 - queue saturation;
@@ -585,7 +585,7 @@ Krometrail emits local structured logs for:
 - artifact cache behavior;
 - errors and recovery.
 
-Logs do not include page text, screenshot contents, credentials, or sensitive network values by default.
+Target logs use Krometrail target IDs and hashed or opaque browser keys. They do not include page text, titles, full URLs, query values, screenshot contents, credentials, event parameters, executable/profile paths, or sensitive network values by default. Adapter source errors remain debug-only and are mapped to stable core errors.
 
 Session status exposes operational measurements needed to assess whether the recorder itself affected the observed application.
 

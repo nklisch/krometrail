@@ -11,6 +11,7 @@ use thiserror::Error;
 use url::Url;
 
 const MAX_DISCOVERY_BYTES: usize = 256 * 1024;
+const DISCOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
 
 #[derive(Clone, Debug, Eq, PartialEq, Error)]
 pub enum EndpointError {
@@ -192,28 +193,22 @@ async fn fetch_version(url: &Url) -> Result<serde_json::Value, EndpointError> {
 
     let host = url.host_str().ok_or(EndpointError::InvalidUrl)?;
     let port = url.port().ok_or(EndpointError::MissingPort)?;
-    let mut stream = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        TcpStream::connect((host, port)),
-    )
-    .await
-    .map_err(|_| EndpointError::DiscoveryFailed)?
-    .map_err(|_| EndpointError::DiscoveryFailed)?;
+    let mut stream = tokio::time::timeout(DISCOVERY_TIMEOUT, TcpStream::connect((host, port)))
+        .await
+        .map_err(|_| EndpointError::DiscoveryFailed)?
+        .map_err(|_| EndpointError::DiscoveryFailed)?;
     let authority = match url.host() {
         Some(url::Host::Ipv6(_)) => format!("[{host}]:{port}"),
         _ => format!("{host}:{port}"),
     };
     let request =
         format!("GET /json/version HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n");
-    tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        stream.write_all(request.as_bytes()),
-    )
-    .await
-    .map_err(|_| EndpointError::DiscoveryFailed)?
-    .map_err(|_| EndpointError::DiscoveryFailed)?;
+    tokio::time::timeout(DISCOVERY_TIMEOUT, stream.write_all(request.as_bytes()))
+        .await
+        .map_err(|_| EndpointError::DiscoveryFailed)?
+        .map_err(|_| EndpointError::DiscoveryFailed)?;
     let mut bytes = Vec::new();
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    tokio::time::timeout(DISCOVERY_TIMEOUT, async {
         loop {
             let mut buffer = [0_u8; 8192];
             let count = stream.read(&mut buffer).await?;
@@ -223,6 +218,9 @@ async fn fetch_version(url: &Url) -> Result<serde_json::Value, EndpointError> {
             bytes.extend_from_slice(&buffer[..count]);
             if bytes.len() > MAX_DISCOVERY_BYTES {
                 break Err(std::io::Error::other("response too large"));
+            }
+            if response_body_complete(&bytes) {
+                break Ok(());
             }
         }
     })
@@ -241,6 +239,22 @@ async fn fetch_version(url: &Url) -> Result<serde_json::Value, EndpointError> {
     serde_json::from_slice(&bytes[split + 4..]).map_err(|_| EndpointError::InvalidDiscovery)
 }
 
+fn response_body_complete(bytes: &[u8]) -> bool {
+    let Some(split) = bytes.windows(4).position(|window| window == b"\r\n\r\n") else {
+        return false;
+    };
+    let headers = String::from_utf8_lossy(&bytes[..split]);
+    let Some(length) = headers.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("content-length")
+            .then(|| value.trim().parse::<usize>().ok())
+            .flatten()
+    }) else {
+        return false;
+    };
+    bytes.len() >= split + 4 + length
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,5 +270,16 @@ mod tests {
         assert!(
             LocalCdpEndpoint::from_websocket_url("ws://user:secret@127.0.0.1:9222/id").is_err()
         );
+    }
+
+    #[test]
+    fn content_length_ends_discovery_without_waiting_for_connection_close() {
+        let body = br#"{"ok":true}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            String::from_utf8_lossy(body)
+        );
+        assert!(response_body_complete(response.as_bytes()));
     }
 }

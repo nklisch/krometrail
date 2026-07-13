@@ -1,12 +1,8 @@
 use clap::{Parser, Subcommand};
 
-/// The intentionally small command surface while browser transport is being built.
+/// The intentionally small command surface while the browser-control commands are assembled.
 #[derive(Debug, Parser)]
-#[command(
-    name = "krometrail",
-    version,
-    about = "Rust browser capture runtime (browser transport is not yet available)"
-)]
+#[command(name = "krometrail", version, about = "Rust browser capture runtime")]
 pub(crate) struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,
