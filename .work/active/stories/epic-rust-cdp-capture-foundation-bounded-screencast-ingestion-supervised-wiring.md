@@ -44,11 +44,13 @@ impl ProductionBrowserConnector {
 }
 ```
 
-Allocate one `SessionId` and `SessionOrigin` at connection establishment. Initial capture starts only after the browser session is `Ready`, a target is `Attached`, its exact flat `TransportSessionId` is known, and initial visibility is not `Unknown`. Dynamic attachment and reconnect use the same reconciliation path; do not hide `Page.startScreencast` inside target attach/domain restore effects.
+Allocate one `SessionId` at connection establishment and sample its fixed `SessionOrigin` before the first capture subscription, `Page.startScreencast`, or frame can occur. Initial capture starts only after the browser session is `Ready`, a target is `Attached`, its exact flat `TransportSessionId` is known, and initial visibility is not `Unknown`. Dynamic attachment and reconnect use reducer-owned capture effects; do not hide `Page.startScreencast` inside target attach/domain restore code or add an event-observer/polling reconciliation loop.
 
-Before replacing/dropping connection resources, stop old readers and call `suspend_for_disconnect`. A reconnected exact browser target key preserves `TargetId`, advances attachment generation, resets source-sequence comparison, and closes `BrowserDisconnected` on its first new-generation frame. Ignore every late callback whose generation no longer matches. Missing, detached, closed, or failed targets stop only their own stream.
+Add `SupervisorInput::InitialReconciliationCompleted` and route the initial Connecting → Ready transition through `reduce` instead of mutating state in `session.rs`. Extend `SupervisorTargetState` with `CaptureBinding::{Inactive, Active(context), Suspended(context), Terminal}` and define `CaptureEffectContext` with `TargetId`, `connection_generation`, `attachment_generation`, and exact `TransportSessionId`. At the end of each successful reduction, one `reconcile_capture_bindings` helper atomically updates the binding and emits exhaustive `StartCapture`, `StopCapture`, `SuspendCapture`, or `ResumeCapture` effects. Suspend/stop retain the old context before reducer transport state is cleared. Start applies to a newly eligible generation, suspend fences connection loss, resume applies only to the same exact target key restored at a higher attachment generation, and stop covers detach/close/target failure/shutdown. `session.rs::apply_effects` is the sole executor and exhaustively matches all variants.
 
-Explicit stop/cancellation first prevents acceptance, then best-effort stops live matching screencasts, drains accepted queues and gap ledgers under one shared deadline, emits `CaptureStopped` for accepted unfinished work, and calls `RecordingSink::flush(session_id)` once before browser detach/close. Reconnect never session-flushes. A failed/blocked sink reports incomplete shutdown rather than fake success.
+Before replacing/dropping connection resources, execute `SuspendCapture` and stop old readers. A reconnected exact browser target key preserves `TargetId`, advances attachment generation, resets frame-number comparison, and closes `BrowserDisconnected` on its first new-generation frame. Ignore every late callback whose generation no longer matches. Missing, detached, closed, or failed targets stop only their own stream.
+
+Explicit stop/cancellation constructs one absolute `ShutdownDeadline` from `CaptureConfig::shutdown_timeout` (5-second default). It first prevents acceptance, then threads only the remaining budget through matching `Page.stopScreencast`, all accepted queue/gap-ledger drains, one `RecordingSink::flush(session_id)`, every target detach, `Browser.close`, and managed-process termination. No target or phase starts another timeout. Deadline exhaustion emits `CaptureStopped`, marks `ShutdownIncomplete`, skips later graceful waits, and invokes last-resort cleanup without fake success. Reconnect never session-flushes.
 
 Implement a `CaptureObserver` in `session.rs` that publishes transition-driven `CaptureStateChanged` and explicit `CaptureGapDeclared` through the existing bounded subscriber registry. Per-frame counters remain queryable status, not event spam. Extend subscriber logging matches without exposing browser keys, URLs, titles, raw params, payloads, or source errors.
 
@@ -59,24 +61,28 @@ Root composition shares the existing `MonotonicClock`, `IdSource`, and explicit 
 - `crates/krometrail-core/src/browser/session.rs`
 - `crates/krometrail-core/src/ports/browser.rs`
 - `crates/krometrail-core/src/ports/mod.rs`
+- `crates/krometrail-cdp/src/targets/model.rs`
+- `crates/krometrail-cdp/src/targets/reducer.rs`
+- `crates/krometrail-cdp/src/targets/mod.rs`
 - `crates/krometrail-cdp/src/session.rs`
 - `crates/krometrail-cdp/tests/session_capture.rs` (new)
 - `src/app.rs`
 
-These files are exclusive to this story's implementation wave. Do not edit the engine files or the later real-Chrome test.
+These files are exclusive to this story's implementation wave. This story deliberately owns `targets/reducer.rs` because adding capture event/effect variants requires its exhaustive matches to change in the same compile-real stride. Do not edit the engine files or the later real-Chrome test.
 
 ## Acceptance criteria
 
-- [ ] Browser-session core fakes implement and verify unique session identity, fixed origin, object-safe sorted capture status snapshots, capture state events, and explicit gap events without runtime/transport types entering core.
+- [ ] Browser-session core fakes implement and verify unique session identity, fixed origin sampled before subscriptions/start/first frame, object-safe sorted capture status snapshots (including bounded ack/cadence summaries), capture state events, and explicit gap events without runtime/transport types entering core.
+- [ ] `InitialReconciliationCompleted` replaces direct Ready mutation. Reducer tests cover the single `reconcile_capture_bindings` helper, every Start/Stop/Suspend/Resume emission, and idempotent no-op. Effects carry exact target ID, connection generation, attachment generation, and transport session; suspend/stop preserve old context before clearing it. `targets/reducer.rs` exhaustively handles the new `BrowserSessionEvent` variants in its logging match, `apply_effects` exhaustively handles the new effect variants, and no second reconciliation mechanism exists.
 - [ ] No `Page.startScreencast` occurs in Connecting/Reconnecting, for Discovered/Suspended/Unknown targets, or before the exact target's flat session exists; each Ready/Attached generation starts exactly once.
 - [ ] Subscriptions are established before start, and initial session Ready is truthful: capture reconciliation has either started every eligible stream or published a target-local capture failure.
 - [ ] Two scripted targets use isolated session scopes, queues, sequence trackers, status, and gaps; blocking/failing one leaves the other accepting and persisting frames.
 - [ ] Dynamic attach/close affects only that exact key. Connection loss cancels old acceptance before resource replacement, opens `BrowserDisconnected`, rejects late old-generation callbacks, and closes the interruption on the first valid restored frame.
-- [ ] A restored exact key keeps `TargetId` and advances generation; a missing/new key closes/creates rather than URL/title matching; sequence comparison never crosses generations.
+- [ ] A restored exact key keeps `TargetId` and advances generation; a missing/new key closes/creates rather than URL/title matching; official frame-number comparison never crosses generations.
 - [ ] Visibility events feed both capture status and the existing target visibility reducer without starting a second screencast or producing duplicate hidden gaps.
-- [ ] Explicit stop prevents new acceptance first, drains or reports all accepted work under one deadline, invokes one session flush, then detaches/closes Chrome. Reconnect does not flush; target close does not flush the whole session.
-- [ ] Flush/worker timeout emits observable `CaptureStopped`, leaves statistics truthful, returns/records `ShutdownIncomplete`, and never blocks browser cleanup indefinitely.
-- [ ] `capture_statuses()` is sorted by `TargetId`; state events are transition-only; gap/status logs and events follow the parent privacy allowlist.
+- [ ] Explicit stop prevents new acceptance first and uses one absolute deadline whose remaining budget covers capture stop/drain, one session flush, all target detaches, `Browser.close`, and managed-process termination. Tests use a consuming fake clock/deadline to prove later phases receive less budget and no per-phase reset occurs. Reconnect does not flush; target close does not flush the whole session.
+- [ ] Deadline exhaustion/flush/worker blockage emits observable `CaptureStopped`, leaves statistics truthful, returns/records `ShutdownIncomplete`, skips unbudgeted graceful waits, performs last-resort process cleanup, and never blocks browser cleanup indefinitely.
+- [ ] `capture_statuses()` is sorted by `TargetId`; state events are transition-only; bounded acknowledgement/cadence sample-count/p50/p95/p99/max summaries flow through unchanged; gap/status logs and events follow the parent privacy allowlist.
 - [ ] Root uses the shared clock/IDs/sink, preserves explicit unavailable persistence, and adds no user-visible command or fake success.
 - [ ] Existing target reducer, reconnect, process/profile, doctor, runtime smoke, default/no-default, and spike tests stay green; workspace format/check/test/clippy pass independently.
 

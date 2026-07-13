@@ -34,15 +34,15 @@ Normalize every observation onto a monotonic session clock while preserving Chro
 
 ## Scope
 
-- Allocate one recording identity and monotonic `SessionOrigin` per production browser session and expose them through the browser-session port.
+- Allocate one recording identity per production browser session and sample its fixed monotonic `SessionOrigin` before any capture subscription, `Page.startScreencast`, or first frame; expose both through the browser-session port.
 - Start one screencast only for an exact supervised target attachment after the browser session is `Ready`, the target is `Attached`, its flat transport session is known, and initial visibility has been observed.
 - Subscribe to `Page.screencastFrame` and `Page.screencastVisibilityChanged` before `Page.startScreencast`; request every frame (`everyNthFrame: 1`).
-- On each frame, timestamp receipt, extract only the acknowledgement token, await successful `Page.screencastFrameAck`, and only then parse metadata or attempt bounded handoff.
-- Keep one bounded queue, one drop ledger, one worker, sequence state, and status snapshot per target attachment. A slow or failed downstream target never stalls another target or the CDP event reader.
+- On each frame, timestamp receipt, extract only `params.sessionId`—the integer frame number defined by the official `Page.screencastFrame`/`Page.screencastFrameAck` contract—await successful acknowledgement, and only then parse metadata or attempt bounded handoff.
+- Keep one bounded queue, one bounded drop ledger, one worker, frame-number state, fixed-size timing histograms, and one status snapshot per target attachment. Enforce an aggregate configured memory ceiling across active streams. A slow or failed downstream target never stalls another target or the CDP event reader.
 - Preserve globally unique `FrameId`, `SessionId`, `TargetId`, Chrome screencast sequence, optional Chrome source timestamp, daemon observed time, normalized session time, format, encoded-image dimensions, viewport dimensions, device scale, and capture warnings.
 - Emit explicit `CaptureGap` values for queue saturation, malformed/oversized frame rejection, source-sequence discontinuity, hidden-target intervals, browser disconnection, downstream rejection, and bounded shutdown abandonment.
-- Stop acceptance before cancellation, best-effort `Page.stopScreencast` only on a live matching generation, drain accepted work under one deadline, and report any abandoned accepted range before the session-level `RecordingSink::flush` attempt.
-- Expose per-target generation, state, queue depth/capacity, receipt/ack/accept/drop/persist/gap counters, last-frame time, and acknowledgement timing through `BrowserSessionPort::capture_statuses()` and typed session events.
+- Stop acceptance before cancellation, best-effort `Page.stopScreencast` only on a live matching generation, drain accepted work, flush once, detach targets, close a managed browser, and terminate its process under one aggregate shutdown deadline whose remaining budget is threaded through every step.
+- Expose per-target generation, state, queue depth/capacity, receipt/ack/accept/drop/persist/gap counters, last-frame time, and bounded acknowledgement-latency/frame-cadence p50/p95/p99/max summaries through `BrowserSessionPort::capture_statuses()` and typed session events.
 - Add deterministic fake-transport coverage and opt-in real-Chrome fidelity coverage against the retained browser fixture.
 
 ## Non-goals
@@ -65,18 +65,42 @@ Normalize every observation onto a monotonic session clock while preserving Chro
 ## Design decisions
 
 - **Acceptance point:** “accepted” means the acknowledged raw frame was successfully placed into that target generation's bounded in-memory queue. Acknowledgement is not acceptance or retention. `received >= acknowledged >= accepted + dropped`; persistence remains a later counter and may fail independently.
-- **Ack ordering:** parse only the integer `sessionId` required by `Page.screencastFrameAck`, timestamp the return, complete the ack, then parse source metadata, inspect payload length, or call `try_send`. Ack latency is return-to-completion only, matching final5; no receive wait or handoff time is included.
-- **Boundedness:** use a Tokio bounded channel per target generation plus a bounded in-memory gap ledger. Never await channel capacity. Saturation records an explicit `IngestionQueueSaturated` span after acknowledgement; a full queue cannot erase its own loss evidence.
+- **Ack ordering and frame-number provenance:** parse only the integer `params.sessionId` required by `Page.screencastFrameAck`, timestamp the return, complete the ack, then parse source metadata, inspect payload length, or call `try_send`. The official CDP Page domain describes that field as the screencast frame number; Krometrail preserves it as `source_sequence` and uses increasing values within one real attachment generation as continuity evidence. Scripted candidate traces are not protocol evidence—the retained scripted fixture happens to use a constant value—so they must not invalidate this contract. The opt-in production test must establish increasing values from real Chrome before sequence-discontinuity behavior is accepted. Ack latency is return-to-completion only, matching final5; no receive wait or handoff time is included.
+- **Boundedness and aggregate memory:** use a Tokio bounded channel per target generation plus a bounded in-memory gap ledger. Never await channel capacity. Defaults are at most 8 active streams, 4 queued events per stream, and 8 MiB of base64 payload text per event, yielding a 256 MiB aggregate queued-payload ceiling plus fixed per-slot metadata. Hard per-field caps are 32 streams, 16 slots, and 16 MiB, but constructor validation rejects every combination whose checked product exceeds 256 MiB. The fixed ledgers and histograms are budgeted separately and remain O(active streams), and cdpkit's private upstream subscriber queue is explicitly outside this measurable Krometrail bound. Saturation records an explicit `IngestionQueueSaturated` span after acknowledgement; a full queue cannot erase its own loss evidence.
 - **Gap ledger:** keep the current saturation span plus a small bounded deque of closed spans. A successful enqueue closes the current saturation span. If the ledger itself reaches its fixed bound, conservatively coalesce adjacent pending spans into a broader range while retaining the exact estimated drop count; this may overstate the uncertain interval but never implies continuity or grows without bound.
 - **Target isolation:** a frame queue, worker, acknowledgement loop, sequence tracker, visibility interval, and cancellation token belong to one `(TargetId, attachment_generation)`. Shared sink calls can run concurrently; target ordering is preserved by each target's single worker.
 - **Reconnect generation:** connection loss stops all old readers and opens a `BrowserDisconnected` interval per active target. Old-generation callbacks are ignored. The same exact browser target key keeps its `TargetId`; a successfully reconciled attachment gets a higher generation, resets Chrome sequence comparison, starts a new stream only after `Ready`, and closes the interruption at its first observed frame. Missing keys close their interruption at reconciliation/termination.
 - **Visibility:** subscribe to `Page.screencastVisibilityChanged` before start. `visible: false` opens `TargetHidden`; `true` or an actually received frame closes it. Repeated signals coalesce. Lack of frames on an otherwise visible static page is not inferred as a gap.
-- **Frame metadata:** globally allocated `FrameId` is authoritative identity. The tuple `(SessionId, TargetId, source_sequence, session_time)` remains queryable evidence, while status carries the current attachment generation. Base64 decoding and JPEG/PNG header inspection occur in the target worker after handoff; malformed, unsupported, empty, or over-limit payloads produce `FrameRejected`, not a fabricated frame.
-- **Clocks:** call injected `MonotonicClock::now()` at frame return to obtain `ObservedTime`, then normalize with that session's fixed `SessionOrigin`. Chrome's optional floating-point seconds become `SourceTime` by checked rounded nanoseconds and receive `MissingSourceTime` or `SourceTimestampRounded` warnings as applicable. Source time is never compared to daemon clocks.
+- **Frame metadata:** globally allocated `FrameId` is authoritative identity. The tuple `(SessionId, TargetId, source_sequence, session_time)` remains queryable evidence, while status carries the current attachment generation. Base64 decoding and bounded JPEG/PNG header inspection occur in the target worker after handoff; no general image dependency is added. PNG parsing validates the signature and fixed IHDR dimensions. JPEG parsing walks checked marker lengths only up to a 64 KiB header-scan ceiling and accepts a declared SOF marker; it never decodes pixels. Malformed, unsupported, empty, over-limit, missing-IHDR, or missing-SOF payloads produce `FrameRejected`, not a fabricated frame.
+- **Clocks:** sample the session's fixed `SessionOrigin` before capture subscriptions/start and therefore before the first frame. Call injected `MonotonicClock::now()` at each frame return to obtain `ObservedTime`, then normalize against that origin. Observed and normalized session times are nondecreasing (`next >= previous`); equal readings are valid for a coarse or deterministic monotonic clock. Chrome's optional floating-point seconds become `SourceTime` by checked rounded nanoseconds and receive `MissingSourceTime` or `SourceTimestampRounded` warnings as applicable. Source time is never compared to daemon clocks.
 - **Downstream seam:** retain the existing infrastructure-free `RecordingSink`; do not invent a second persistence-like port. Workers call `append_frame`/`append_gap`; `BrowserSessionEvent::CaptureGapDeclared` and status snapshots make loss observable independently of future durable implementation.
-- **Shutdown:** cancellation first closes acceptance, then sends a bounded best-effort `Page.stopScreencast`, closes queues, drains workers and ledgers within the remaining shared deadline, emits `CaptureStopped` for accepted-but-unfinished work, attempts one session `flush`, and only then lets browser detach/close proceed. Drop remains a last-resort abort that updates status but cannot claim a flush.
+- **Reducer/effect reconciliation:** the target reducer remains the sole lifecycle writer. Add `SupervisorInput::InitialReconciliationCompleted` so `session.rs` no longer mutates Connecting → Ready by hand. `SupervisorTargetState` stores `CaptureBinding::{Inactive, Active(context), Suspended(context), Terminal}`. After each successful reduction, one `reconcile_capture_bindings` helper compares eligibility/binding and emits exhaustive `StartCapture`, `StopCapture`, `SuspendCapture`, or `ResumeCapture` effects while atomically updating the binding. `CaptureEffectContext` carries `TargetId`, `connection_generation`, `attachment_generation`, and the exact `TransportSessionId`; stop/suspend retain the old context before target transport state is cleared. `StartCapture` is emitted only for a newly eligible Ready/Attached/non-Unknown target, `SuspendCapture` on connection loss, `ResumeCapture` for the same exact key after a higher-generation restored attachment, and `StopCapture` on detach/close/failure/shutdown. `session.rs::apply_effects` executes these effects and does not independently infer capture lifecycle from published events, preventing two competing reconciliation mechanisms.
+- **Shutdown:** `session.rs` creates one absolute `ShutdownDeadline` from the configured 5-second default aggregate budget. Cancellation first closes acceptance; capture stop, `Page.stopScreencast`, queue/ledger drain, the one session `flush`, target detaches, `Browser.close`, and managed-process termination each receive only the remaining budget through `timeout_at`/equivalent. Exhaustion skips later graceful waits, performs last-resort process cleanup, emits/returns `ShutdownIncomplete`, and never resets a per-target or per-phase timeout. Drop remains a last-resort abort and cannot claim a flush.
+- **Timing status:** each target owns fixed 64-bucket logarithmic histograms for receive-to-ack-completion latency and nonnegative inter-frame observed cadence. Status returns sample count plus nearest-rank p50/p95/p99 bucket upper bounds and exact observed max; no raw sample vector grows with session duration. Deterministic tests check bucket/percentile math, while real-Chrome tests report values without making a cross-platform performance claim.
+- **Feature topology and visibility:** `capture` and its Tokio/base64 requirements compile only behind the default `cdpkit-transport` feature. `CaptureConfig` is public because the root crate composes it; the coordinator, dependencies, target context, observer, deadline bridge, errors, stop reasons, and stop/shutdown outcomes are `pub(crate)` and are not re-exported from `krometrail-cdp`. Internal pipeline tests therefore live under `src/capture/`, while the public real-Chrome integration test uses the production connector/port.
 - **Privacy:** info logs and status/events contain Krometrail session/target IDs, generation, stable reason/state names, counters, queue measurements, and durations only. Never log frame bytes/base64, event params, Chrome session IDs, browser target keys, titles, URLs, source timestamps, executable/profile paths, or downstream source errors at info level.
-- **Configuration:** keep capture configuration adapter-local until a configuration feature owns the external schema. Default to JPEG quality 80, `everyNthFrame = 1`, queue capacity 8, maximum encoded payload 16 MiB, 250 ms ack timeout, and 2 s shutdown/flush budget. Constructors validate all non-zero bounds and JPEG/PNG option compatibility.
+- **Configuration:** keep capture configuration adapter-local until a configuration feature owns the external schema. Default to JPEG quality 80, `everyNthFrame = 1`, 8 active streams, queue capacity 4, maximum base64 payload text 8 MiB, gap-ledger capacity 64, 250 ms ack timeout, and one 5-second aggregate shutdown budget. Constructors validate non-zero values, the hard caps and checked aggregate memory product, and JPEG/PNG option compatibility.
+
+## Capture stream state machine
+
+`CaptureStreamState` is one stable registry-backed core enum. The adapter applies only these transitions; status changes are emitted once per actual transition.
+
+| Current state | Input/effect result | Next state | Required evidence/action |
+|---|---|---|---|
+| `Starting` | start succeeds, visibility visible | `Capturing` | Exact session/generation binding is active. |
+| `Starting` | start succeeds, visibility hidden | `Hidden` | Open/coalesce `TargetHidden`. |
+| `Starting` | disconnect/suspend | `Suspended` | Fence the generation and open `BrowserDisconnected`. |
+| `Starting` | stop/close | `Draining` | Refuse new acceptance and begin bounded drain. |
+| `Starting` | ack/start/protocol failure | `Failed` | Publish target-local failure; no handoff after failed ack. |
+| `Capturing` | explicit hidden | `Hidden` | Open one hidden interval. |
+| `Hidden` | explicit visible or actual frame | `Capturing` | Close the hidden interval. |
+| `Capturing` / `Hidden` | disconnect/suspend | `Suspended` | Fence old callbacks before transport replacement. |
+| `Suspended` | reducer emits `ResumeCapture` for a higher exact generation | `Starting` | Bind the new transport session; close disconnect only on its first frame. |
+| `Capturing` / `Hidden` / `Suspended` | stop/close/failure requiring teardown | `Draining` | Stop acceptance; stop/drain under aggregate deadline. |
+| `Draining` | queue and ledger complete | `Stopped` | Outcome reports complete. |
+| `Draining` | aggregate deadline expires | `Stopped` | Emit `CaptureStopped`; outcome reports incomplete. |
+| Any nonterminal | unrecoverable stream-local error | `Failed` | Preserve truthful counters/gaps; unrelated streams continue. |
+| `Stopped` / `Failed` | any late input | unchanged | Ignore by exact generation; terminal states do not restart. |
 
 ## Architectural choice
 
@@ -107,56 +131,106 @@ pub struct CaptureConfig {
     pub format: ImageFormat,
     pub jpeg_quality: Option<u8>,
     pub max_dimensions: Option<PixelDimensions>,
+    pub max_active_streams: NonZeroUsize,
     pub queue_capacity: NonZeroUsize,
-    pub max_encoded_payload_bytes: NonZeroUsize,
+    pub max_base64_payload_bytes: NonZeroUsize,
+    pub gap_ledger_capacity: NonZeroUsize,
     pub ack_timeout: Duration,
     pub shutdown_timeout: Duration,
 }
 
-pub struct CaptureDependencies {
+pub(crate) struct CaptureDependencies {
     pub clock: Arc<dyn MonotonicClock>,
     pub ids: Arc<dyn IdSource>,
     pub sink: Arc<dyn RecordingSink>,
 }
 
 #[derive(Clone)]
-pub struct CaptureTarget {
+pub(crate) struct CaptureTarget {
     pub session_id: SessionId,
     pub session_origin: SessionOrigin,
     pub target_id: TargetId,
+    pub connection_generation: u64,
     pub attachment_generation: u64,
-    pub scope: CommandScope,
+    pub transport_session: TransportSessionId,
 }
 
-pub trait CaptureObserver: Send + Sync {
+pub(crate) trait CaptureObserver: Send + Sync {
     fn status_changed(&self, status: TargetCaptureStatus);
     fn gap_declared(&self, gap: CaptureGap);
 }
 
-pub struct CaptureCoordinator { /* bounded target registry and interruption ledger */ }
+pub(crate) struct CaptureCoordinator { /* bounded target registry and interruption ledger */ }
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum CaptureError {
+    #[error("invalid capture configuration: {0}")]
+    InvalidConfig(&'static str),
+    #[error("capture transport operation failed")]
+    Transport(#[from] TransportError),
+    #[error("invalid screencast frame: {0}")]
+    InvalidFrame(&'static str),
+    #[error("capture task ended")]
+    TaskClosed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CaptureStopReason {
+    TargetClosed,
+    TargetDetached,
+    TargetFailed,
+    SessionStopping,
+    ReconnectExhausted,
+    Cancelled,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CaptureStopOutcome {
+    pub reason: CaptureStopReason,
+    pub complete: bool,
+    pub abandoned_accepted_frames: u64,
+    pub emitted_gap_count: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CaptureShutdownOutcome {
+    pub targets: Vec<CaptureStopOutcome>,
+    pub flush_attempted: bool,
+    pub flush_succeeded: bool,
+    pub complete: bool,
+}
 
 impl CaptureCoordinator {
-    pub fn new(
+    pub(crate) fn new(
         config: CaptureConfig,
         dependencies: CaptureDependencies,
         observer: Arc<dyn CaptureObserver>,
     ) -> Result<Self, CaptureError>;
 
-    pub async fn start_target(
+    pub(crate) async fn start_target(
         &self,
         target: CaptureTarget,
         transport: Arc<dyn CdpTransport>,
     ) -> Result<(), CaptureError>;
 
-    pub async fn stop_target(
+    pub(crate) async fn stop_target(
         &self,
-        target_id: TargetId,
+        target: &CaptureTarget,
         reason: CaptureStopReason,
+        deadline: tokio::time::Instant,
     ) -> CaptureStopOutcome;
 
-    pub async fn suspend_for_disconnect(&self, at: SessionTime);
-    pub fn statuses(&self) -> Vec<TargetCaptureStatus>;
-    pub async fn shutdown(&self, session_id: SessionId) -> CaptureShutdownOutcome;
+    pub(crate) async fn suspend_target(
+        &self,
+        target: &CaptureTarget,
+        at: SessionTime,
+    );
+    pub(crate) fn statuses(&self) -> Vec<TargetCaptureStatus>;
+    pub(crate) async fn shutdown(
+        &self,
+        session_id: SessionId,
+        deadline: tokio::time::Instant,
+    ) -> CaptureShutdownOutcome;
 }
 ```
 
@@ -165,7 +239,7 @@ impl CaptureCoordinator {
 ```rust
 let ack_started = clock.now();
 transport.send_raw(
-    &target.scope,
+    &CommandScope::Session(target.transport_session.clone()),
     "Page.screencastFrameAck",
     json!({ "sessionId": source_sequence }),
 ).await?;
@@ -200,7 +274,8 @@ The worker drains pending gap spans before later frames, base64-decodes accepted
 - `crates/krometrail-cdp/src/lib.rs`
 - `crates/krometrail-cdp/src/capture/mod.rs` (new)
 - `crates/krometrail-cdp/src/capture/pipeline.rs` (new)
-- `crates/krometrail-cdp/tests/capture_pipeline.rs` (new)
+- `crates/krometrail-cdp/src/capture/image_header.rs` (new)
+- `crates/krometrail-cdp/src/capture/tests.rs` (new, crate-internal tests)
 
 Core contract additions:
 
@@ -226,6 +301,14 @@ pub struct CaptureStatistics {
     gap_count: u64,
 }
 
+pub struct CaptureTimingSummary {
+    sample_count: u64,
+    p50_nanos: Option<u64>,
+    p95_nanos: Option<u64>,
+    p99_nanos: Option<u64>,
+    max_nanos: Option<u64>,
+}
+
 pub struct TargetCaptureStatus {
     target_id: TargetId,
     attachment_generation: u64,
@@ -234,26 +317,30 @@ pub struct TargetCaptureStatus {
     queue_capacity: usize,
     queue_depth: usize,
     last_frame_session_time: Option<SessionTime>,
-    last_ack_latency_nanos: Option<u64>,
-    max_ack_latency_nanos: Option<u64>,
+    ack_latency: CaptureTimingSummary,
+    frame_cadence: CaptureTimingSummary,
 }
 ```
 
 `CaptureStatistics::new/update` enforce `acknowledged <= received`, `accepted + dropped <= acknowledged`, and `persisted <= accepted` with checked arithmetic. `TargetCaptureStatus::new` rejects zero capacity, depth above capacity, or frame time without a received frame. Extend the single `CaptureGapReason` registry with `FrameRejected`; retain all current distinct reasons.
 
-Add workspace `base64` and `image` dependencies, with `image` default features disabled and only JPEG/PNG header support enabled. These run only after bounded handoff. Do not add a pixel buffer, image worker pool, or temporal-vision dependency.
+Add only the workspace `base64` dependency. Gate `pub mod capture` and all capture-only Tokio/base64 dependency activation behind the default `cdpkit-transport` feature so `cargo check -p krometrail-cdp --no-default-features --all-targets` remains compile-real. Implement the bounded JPEG SOF/PNG IHDR parser locally; do not add `image`, a pixel buffer, an image worker pool, or a temporal-vision dependency.
 
 **Acceptance criteria:**
 
-- [ ] Deterministic fake transport proves subscription → start → receive → ack completion → parse/`try_send`; a sink that blocks forever cannot delay ack or grow the target queue beyond capacity.
+- [ ] Deterministic fake transport proves subscription → start → receive → ack completion → parse/`try_send`; under a full queue and forever-blocked sink, ack completion and ack-histogram recording remain structurally before and independent of payload parsing, queue occupancy, gap-ledger work, and sink progress.
 - [ ] Every returned frame that completes ack increments exactly one accepted/dropped path; ack failure hands nothing off and marks only that stream failed.
 - [ ] Saturation produces a bounded, explicit `IngestionQueueSaturated` gap with exact estimated count even when the frame channel and sink are blocked; no unbounded side queue exists.
-- [ ] Source sequence discontinuities reset at attachment generation boundaries and produce `SourceSequenceDiscontinuity` only within one generation.
-- [ ] Source, observed, and session clocks remain distinct; wall-clock changes are irrelevant; malformed/missing source timestamps cannot reorder frames.
-- [ ] Base64 and JPEG/PNG dimensions are processed only by the worker after acceptance. Empty, malformed, unsupported, or over-limit payloads produce `FrameRejected`; no pixels are decoded or transcoded.
+- [ ] The protocol-defined integer frame number is preserved as `source_sequence`; sequence comparison resets at attachment generation boundaries and produces `SourceSequenceDiscontinuity` only within one generation. Scripted fixtures do not claim to prove real Chrome numbering behavior.
+- [ ] `SessionOrigin` is sampled before subscriptions/start/first frame. Source, observed, and session clocks remain distinct; observed/session times permit equality and are nondecreasing (`>=`); wall-clock changes are irrelevant; malformed/missing source timestamps cannot reorder frames.
+- [ ] Base64 and bounded JPEG SOF/PNG IHDR dimensions are processed only by the worker after acceptance. Empty, malformed, unsupported, over-limit, missing-IHDR, or no-SOF-within-64-KiB payloads produce `FrameRejected`; no pixels are decoded or transcoded and no general image dependency exists.
 - [ ] Visibility false/true and first-frame recovery open/close one `TargetHidden` interval without treating visible quiet time as loss.
+- [ ] The documented `CaptureStreamState` transition table is exhaustive: invalid and terminal-state transitions are rejected/ignored deterministically, and status events occur once per real transition.
+- [ ] Fixed-size ack-latency and frame-cadence histograms produce deterministic sample-count/p50/p95/p99/max summaries and remain constant-memory for arbitrarily long synthetic streams.
+- [ ] Config validation enforces per-field caps and a checked aggregate queued-payload ceiling of 256 MiB; boundary tests cover overflow, maximum valid combinations, and over-budget combinations.
+- [ ] Only `CaptureConfig` is exported for root composition. Engine/coordinator/dependency/target/observer/error/stop/outcome types remain crate-private and are tested from `src/capture/tests.rs`.
 - [ ] Status invariants, stable state/gap names, bounded queue depth, ack timing, and privacy-safe logs have focused tests.
-- [ ] Workspace format/check/test/clippy and `--no-default-features` checks pass independently before supervised-session wiring.
+- [ ] Workspace format/check/test/clippy and `cargo check -p krometrail-cdp --no-default-features --all-targets --locked` pass independently before supervised-session wiring.
 
 ### Unit 2: Supervised lifecycle, generation, and root composition
 
@@ -265,6 +352,9 @@ Add workspace `base64` and `image` dependencies, with `image` default features d
 - `crates/krometrail-core/src/browser/session.rs`
 - `crates/krometrail-core/src/ports/browser.rs`
 - `crates/krometrail-core/src/ports/mod.rs`
+- `crates/krometrail-cdp/src/targets/model.rs`
+- `crates/krometrail-cdp/src/targets/reducer.rs`
+- `crates/krometrail-cdp/src/targets/mod.rs`
 - `crates/krometrail-cdp/src/session.rs`
 - `crates/krometrail-cdp/tests/session_capture.rs` (new)
 - `src/app.rs`
@@ -296,17 +386,18 @@ impl ProductionBrowserConnector {
 }
 ```
 
-The connector allocates `SessionId` and `SessionOrigin` once per successful connection. Supervision-only construction remains available for deterministic launcher/transport tests; the root production composition always calls `with_capture` using the same clock, IDs, and recording sink already held in `RuntimeDependencies`.
+The connector allocates `SessionId` once per successful connection and samples `SessionOrigin` before any capture subscription/start can occur. Supervision-only construction remains available for deterministic launcher/transport tests; the root production composition always calls `with_capture` using the same clock, IDs, and recording sink already held in `RuntimeDependencies`.
 
-After initial reconciliation sets the session `Ready`, and after each successful reconnect transaction commits `Ready`, reconcile capture against exact target keys, transport sessions, and attachment generations. Dynamic target attach/probe completion performs the same reconciliation. Connection loss calls `suspend_for_disconnect` before old connection resources are dropped. Target close/detach cancels only its matching stream. Stop/cancellation drains capture before transport detach/browser close; reconnect does not session-flush.
+Capture reconciliation is reducer-owned rather than a second observer loop. Add `InitialReconciliationCompleted` to replace the direct Ready mutation in `session.rs`, add `CaptureBinding`/`CaptureEffectContext` in `targets/model.rs`, and call one `reconcile_capture_bindings` helper at the end of each successful reduction. The helper emits `StartCapture`, `StopCapture`, `SuspendCapture`, or `ResumeCapture`, each carrying exact target ID, connection generation, attachment generation, and transport session, while updating the binding idempotently. `session.rs::apply_effects` exhaustively executes those variants alongside existing effects. It samples session time only while executing an effect; it does not independently scan/poll published target state to infer capture work. Initial Ready, dynamic attach/probe, reconnect, disconnect, close/detach, and shutdown all flow through that one mechanism. Stop/cancellation drains capture before transport detach/browser close; reconnect does not session-flush.
 
 **Acceptance criteria:**
 
+- [ ] `InitialReconciliationCompleted` replaces the direct Ready mutation; reducer tests exhaustively cover the one `reconcile_capture_bindings` helper and `StartCapture`/`StopCapture`/`SuspendCapture`/`ResumeCapture`. Every effect carries the exact `TargetId`, connection generation, attachment generation, and `TransportSessionId`; `targets/reducer.rs` extends its exhaustive `BrowserSessionEvent` logging match for both capture variants; `session.rs` has an exhaustive effect match with no event-driven/polling reconciliation path.
 - [ ] No `Page.startScreencast` occurs while the session is Connecting/Reconnecting or the target is Discovered/Suspended/Unknown; it occurs once after a matching Attached/Ready generation.
 - [ ] Two targets start independent scoped subscriptions and commands; saturating/failing one preserves the other's frames, status, and ordering.
 - [ ] Disconnect cancels old acceptance, opens `BrowserDisconnected`, rejects late old-generation callbacks, rebuilds the same exact-key target with a higher generation, resets source sequence, and closes the gap on the first new-generation frame.
 - [ ] Target closure, visibility intervals, ack failure, persistence rejection, reconnect exhaustion, explicit stop, and dropped `ProductionSession` each have deterministic bounded outcomes without duplicate terminal events.
-- [ ] Explicit stop first prevents new acceptance, then drains accepted queues/ledgers and calls `RecordingSink::flush(session_id)` once within the shared deadline; timeout emits `CaptureStopped` covering accepted unfinished work and returns/records incomplete shutdown rather than claiming success.
+- [ ] Explicit stop creates one absolute aggregate deadline, first prevents new acceptance, then threads remaining budget through capture stop, all queue/ledger drains, one `RecordingSink::flush(session_id)`, target detaches, `Browser.close`, and process termination. No target or phase resets the timeout; exhaustion emits `CaptureStopped`, returns/records `ShutdownIncomplete`, and falls through to last-resort cleanup rather than hanging or claiming success.
 - [ ] `capture_statuses()` is deterministically sorted by `TargetId`; `CaptureStateChanged` is transition-driven rather than per-frame spam; `CaptureGapDeclared` carries no browser key, URL/title, raw params, or payload.
 - [ ] Root shares one injected monotonic clock/ID source/sink with the connector, retains the explicit unavailable storage adapter, and does not add a capture command or fake-success store.
 - [ ] Existing target/reconnect/doctor tests remain green, core remains runtime/transport-free, and workspace format/check/test/clippy pass independently.
@@ -324,7 +415,7 @@ Use the existing `tests/fixtures/browser/cdp-transport-gate`, Chrome helpers, op
 
 **Acceptance criteria:**
 
-- [ ] A managed real Chrome target reaches Ready before the first `Page.startScreencast`, yields at least 30 non-empty JPEG frames under a bounded timeout, and each sink call observes unique `FrameId`, one session/target identity, increasing session/observed times, Chrome source time when supplied, increasing source sequence within generation, correct JPEG header dimensions, viewport metadata, and positive scale.
+- [ ] A managed real Chrome target proves the sampled `SessionOrigin` precedes frame subscriptions/start/first receipt, reaches Ready before `Page.startScreencast`, and yields at least 30 non-empty JPEG frames under a bounded timeout. Sink observations have unique `FrameId`, one session/target identity, nondecreasing (`>=`) session/observed times, Chrome source time when supplied, and strictly increasing protocol frame numbers preserved as `source_sequence` within the generation. This real-browser evidence—not the constant scripted candidate trace—grounds sequence-discontinuity handling. Header dimensions, viewport metadata, and positive scale are coherent.
 - [ ] A two-page run proves session-scoped frame delivery does not cross `TargetId`, source sequence state, queue status, or gap ownership.
 - [ ] Capacity-one with a deliberately blocked sink keeps all received frames promptly acknowledged, bounds accepted depth, reports non-zero drops plus `IngestionQueueSaturated`, then drains or reports unfinished accepted work on stop.
 - [ ] One proxy-sever/reconnect cycle rejects the old stream, records `BrowserDisconnected`, restores the same `TargetId` with a higher generation, and captures new frames without comparing source sequence across generations.
@@ -332,13 +423,44 @@ Use the existing `tests/fixtures/browser/cdp-transport-gate`, Chrome helpers, op
 - [ ] The existing final5 gate remains unchanged and independently buildable; this test verifies production wiring rather than copying or weakening its thresholds.
 - [ ] Opt-in real-Chrome test, workspace format/check/test/clippy, no-default production check, and cdpkit spike regression pass.
 
+## Design review ledger
+
+Updated recipient adjudication of the GLM review:
+
+| Finding | Disposition | Design response |
+|---|---|---|
+| B1 — reject frame-number/sequence contract | **Rejected (unsupported)** | Official CDP defines `Page.screencastFrame.params.sessionId` / Ack `sessionId` as integer “Frame number.” GLM inspected a scripted candidate trace whose fixture value is constant, not real Chrome. Keep `source_sequence` as the protocol frame number, record that provenance explicitly, and require real-Chrome strictly increasing evidence within a generation. No foundation assertion became false, so no drift item is created. |
+| B2 — origin/order semantics | **Accepted** | Sample `SessionOrigin` before subscribe/start/first frame; define monotonic ordering as nondecreasing (`>=`), not strictly increasing. |
+| C1 — exhaustive reducer event match | **Accepted** | Wiring story exclusively owns `targets/reducer.rs` with the core event additions, keeping every story compile-real. |
+| C2 — no-default topology | **Accepted** | Gate the full capture module and capture-only dependencies behind default `cdpkit-transport`; verify `krometrail-cdp --no-default-features --all-targets`. |
+| C3 — shutdown deadline | **Accepted** | One absolute deadline covers capture stop/drain/flush, detaches, `Browser.close`, and process termination using remaining budget only. |
+| C4 — lifecycle reconciliation | **Accepted** | Reducer-owned capture binding emits explicit Start/Stop/Suspend/Resume effects with exact transport session and both generations; `session.rs` is the sole effect executor. |
+| M1 — ack independence | **Accepted** | Saturation tests prove ack completion and histogram recording structurally precede queue/ledger/sink work, without a timing-threshold claim. |
+| M2 — image dependency | **Accepted** | Remove `image`; use checked, bounded PNG IHDR and JPEG SOF parsing after handoff. |
+| M3 — timing status | **Accepted** | Add fixed-size ack/cadence histograms and sample-count/p50/p95/p99/max status summaries. |
+| M4 — stream transitions | **Accepted** | Add the exhaustive `CaptureStreamState` transition table above and test it. |
+| M5 — memory defaults/caps | **Accepted** | Defaults yield a 256 MiB queued-payload ceiling; checked hard caps reject larger aggregate combinations. |
+| M6 — private types | **Accepted** | Export only root-required `CaptureConfig`; keep coordinator/error/stop/outcome and related engine types crate-private with internal tests. |
+
+The later cross-platform capture-smoke feature remains responsible for Linux/macOS/high-DPI timing-fidelity qualification. This feature records honest real-browser distributions and proves structural ordering/boundedness only; it does not promote local p50/p95/p99 values into cross-platform guarantees.
+
+## Feature acceptance
+
+- [ ] The three serial stories remain at `stage: implementing`, have disjoint file ownership, and each leaves its declared default/no-default build boundary compiling before the next begins.
+- [ ] Official frame-number provenance is preserved, scripted evidence is labeled non-authoritative for numbering, and opt-in real Chrome supplies strictly increasing within-generation evidence before discontinuity claims pass.
+- [ ] Ack completion is structurally independent of saturated handoff; capture queues, ledgers, histograms, parser work, and aggregate queued payload remain bounded.
+- [ ] Session origin/order, state transitions, reducer effects, generation fencing, private/public visibility, and aggregate shutdown deadline match the contracts above.
+- [ ] Status exposes truthful counters plus bounded ack/cadence p50/p95/p99/max summaries; gaps remain explicit for every known post-ack loss/rejection/abandonment path.
+- [ ] No `image` dependency, foundation drift item, user-visible command, fake-success store, or cross-platform timing claim is introduced.
+- [ ] Default workspace fmt/check/test/clippy, `krometrail-cdp --no-default-features --all-targets`, cdpkit spike regression, and opt-in real-Chrome contract pass in their owning stories.
+
 ## Implementation order
 
 1. `...-engine` — land domain status/gap invariants and the transport-neutral per-target pipeline with deterministic tests.
 2. `...-supervised-wiring` — integrate only the proven engine with session readiness, target generations, reconnect, stop, events, and root dependencies.
 3. `...-real-chrome-fidelity` — validate production behavior against Chrome and the final5-selected adapter without changing production files.
 
-The chain is intentionally serial. Story 1 owns capture/core engine files; story 2 owns session/port/composition files; story 3 owns only its new real-browser test. No stories can write the same file concurrently, and every story includes its own compile-real verification so the workspace remains green at each boundary.
+The chain is intentionally serial. Story 1 owns capture/core engine files and gates the entire capture module behind `cdpkit-transport`; it adds no `BrowserSessionEvent` variants, so existing reducer matches continue compiling. Story 2 owns session/port/composition plus `targets/model.rs`, `targets/reducer.rs`, and `targets/mod.rs`, adding capture event variants and the exhaustive reducer/effect handling in the same compile-real stride. Story 3 owns only its new real-browser test. No stories write the same file, and every story includes its own compile-real verification.
 
 ## Simplification and elimination pass
 
@@ -363,12 +485,12 @@ The chain is intentionally serial. Story 1 owns capture/core engine files; story
 - A blocked sink and tiny queue prove bounded memory, explicit capacity loss, target isolation, and exact counter invariants.
 - Deterministic clocks prove source/observed/session separation and ack measurement; no wall-clock API appears in capture.
 - Reconnect scripts prove generation fencing, exact target identity, disconnect gap closure, and sequence reset.
-- Cancellation scripts prove acceptance stops first and that one shared deadline bounds drain plus flush.
+- Cancellation scripts prove acceptance stops first and one absolute deadline's remaining budget bounds capture stop/drain/flush, target detach, browser close, and process termination without per-phase resets.
 
 ### Real-browser tests
 
-- Opt-in Chrome coverage protects assumptions the fake transport cannot: actual event metadata, image dimensions/device scale, visibility events, cdpkit session filtering, frame cadence under saturation, reconnect rebuilding, and process/profile cleanup.
-- The next cross-platform feature owns Linux/macOS/high-DPI CI qualification. This feature runs the production real-Chrome contract locally/opt-in without duplicating that downstream matrix.
+- Opt-in Chrome coverage protects assumptions the fake transport cannot: official frame numbers actually increase within a generation, event metadata is coherent, image dimensions/device scale are valid, visibility events and cdpkit session filtering hold, acknowledgement continues under saturation, reconnect rebuilds, and process/profile cleanup completes.
+- The test records bounded ack/cadence histogram summaries as diagnostic evidence but has only generous liveness bounds. The next cross-platform feature owns Linux/macOS/high-DPI timing-fidelity CI qualification; this feature does not duplicate or pre-claim that downstream matrix.
 
 ### Tests deliberately not added
 
