@@ -512,59 +512,66 @@ async fn run_supervisor(
     while let Some(command) = commands.recv().await {
         match command {
             SupervisorCommand::Input(input) => {
-                if let Ok(reduction) = reduce(
-                    std::mem::replace(
-                        &mut state,
-                        SupervisorState::new(shared.compatibility.clone()),
-                    ),
-                    input,
-                ) {
-                    state = reduction.state;
-                    *shared.state.lock().expect("session state lock") = state.clone();
-                    let should_reconnect = reduction
-                        .effects
-                        .iter()
-                        .any(|effect| matches!(effect, SupervisorEffect::BeginReconnect));
-                    let shutdown = reduction.effects.iter().find_map(|effect| match effect {
-                        SupervisorEffect::Shutdown { cause } => Some(*cause),
-                        _ => None,
-                    });
-                    if let Some(connection) = connection.as_ref() {
-                        let _ = apply_effects(
-                            &mut state,
-                            reduction.effects,
-                            Arc::clone(&connection.transport),
-                            Arc::clone(&shared.subscribers),
-                            false,
-                        )
-                        .await;
-                    }
-                    *shared.state.lock().expect("session state lock") = state.clone();
-                    if should_reconnect {
-                        let outcome = reconnect_loop(
-                            &shared,
-                            &mut state,
-                            &mut connection,
-                            &runtime,
-                            &mut commands,
-                        )
-                        .await;
-                        if outcome {
+                // Keep the last committed state if a late transport event violates a lifecycle
+                // invariant; dropping it here would erase every target before reconnect can restore
+                // the exact browser keys.
+                let previous = std::mem::replace(
+                    &mut state,
+                    SupervisorState::new(shared.compatibility.clone()),
+                );
+                match reduce(previous.clone(), input) {
+                    Ok(reduction) => {
+                        state = reduction.state;
+                        *shared.state.lock().expect("session state lock") = state.clone();
+                        let should_reconnect = reduction
+                            .effects
+                            .iter()
+                            .any(|effect| matches!(effect, SupervisorEffect::BeginReconnect));
+                        let shutdown = reduction.effects.iter().find_map(|effect| match effect {
+                            SupervisorEffect::Shutdown { cause } => Some(*cause),
+                            _ => None,
+                        });
+                        if let Some(connection) = connection.as_ref() {
+                            let _ = apply_effects(
+                                &mut state,
+                                reduction.effects,
+                                Arc::clone(&connection.transport),
+                                Arc::clone(&shared.subscribers),
+                                false,
+                            )
+                            .await;
+                        }
+                        *shared.state.lock().expect("session state lock") = state.clone();
+                        if should_reconnect {
+                            let outcome = reconnect_loop(
+                                &shared,
+                                &mut state,
+                                &mut connection,
+                                &runtime,
+                                &mut commands,
+                            )
+                            .await;
+                            if outcome {
+                                break;
+                            }
+                        }
+                        if let Some(cause) = shutdown {
+                            let _ = perform_shutdown(
+                                &mut connection,
+                                &runtime.process,
+                                &runtime.profile,
+                                &state,
+                                cause,
+                                shared.ownership,
+                            )
+                            .await;
+                            finish_state(&shared, &mut state);
                             break;
                         }
                     }
-                    if let Some(cause) = shutdown {
-                        let _ = perform_shutdown(
-                            &mut connection,
-                            &runtime.process,
-                            &runtime.profile,
-                            &state,
-                            cause,
-                            shared.ownership,
-                        )
-                        .await;
-                        finish_state(&shared, &mut state);
-                        break;
+                    Err(error) => {
+                        tracing::debug!(error = ?error, "browser supervisor input rejected");
+                        state = previous;
                     }
                 }
             }

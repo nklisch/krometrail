@@ -77,7 +77,8 @@ pub fn cleanup_real_browser_roots() {
             continue;
         };
         if (name.starts_with("krometrail-real-managed-")
-            || name.starts_with("krometrail-real-targets-"))
+            || name.starts_with("krometrail-real-targets-")
+            || name.starts_with("krometrail-real-reconnect-"))
             && path.is_dir()
         {
             let _ = remove_empty_root_if_unreferenced(&path);

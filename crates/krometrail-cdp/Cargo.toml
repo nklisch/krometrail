@@ -25,6 +25,10 @@ cdp-spike = [
 ]
 cdp-spike-cdpkit = ["cdp-spike", "cdpkit-transport"]
 
+[dev-dependencies]
+futures-util.workspace = true
+tokio-tungstenite.workspace = true
+
 [dependencies]
 krometrail-core.workspace = true
 serde.workspace = true
