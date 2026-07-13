@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-vision-toolkit-frame-sequence-contracts-sequence-and-annotations
 kind: story
-stage: implementing
+stage: done
 tags: [visual]
 parent: epic-temporal-vision-toolkit-frame-sequence-contracts
 depends_on: [epic-temporal-vision-toolkit-frame-sequence-contracts-frame-and-geometry]
@@ -32,3 +32,14 @@ The optional `FrameRegion` must match the common geometry and the optional `Bina
 ## Ordering
 
 Depends on `epic-temporal-vision-toolkit-frame-sequence-contracts-frame-and-geometry`. The authoritative sequence projection must exist before provenance can be built without duplicated caller metadata.
+
+## Implementation notes
+
+- Execution capability: highest/raised (caller-selected) for the authoritative ordering and annotation aggregate.
+- Review weight: standard (caller/autopilot).
+- Files changed: `crates/temporal-vision/src/sequence.rs` and `crates/temporal-vision/src/lib.rs`.
+- Tests added: tied-order preservation, duplicate/out-of-order rejection, touching-gap acceptance, and sequence-region compatibility.
+- Simplification: linear equality checks avoid extra ID trait bounds; sequence conversion owns pixels only when explicitly requested.
+- Discrepancies from design: added `Timestamp`-consistent `pixel_format()` and explicit `FrameSequence::to_owned()` accessors to satisfy the stated consumer contract; no semantic deviation.
+- Adjacent issues parked: none.
+- Verification: `cargo test -p temporal-vision --lib --locked` passed (6 tests).
