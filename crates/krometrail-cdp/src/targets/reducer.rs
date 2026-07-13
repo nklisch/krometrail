@@ -67,7 +67,7 @@ pub fn reduce(mut state: SupervisorState, input: SupervisorInput) -> Result<Redu
         SupervisorInput::Attached {
             target_key,
             session,
-        } => attach(&mut state, target_key, session, &mut effects)?,
+        } => attach(&mut state, target_key, session, &mut effects, true)?,
         SupervisorInput::TargetAttachFailed { target_key } => {
             let failed_target_id = if let Some(target) = state.targets_by_key.get_mut(&target_key) {
                 if !matches!(
@@ -278,6 +278,7 @@ fn attach(
     key: String,
     session: crate::transport::TransportSessionId,
     effects: &mut Vec<SupervisorEffect>,
+    probe_visibility: bool,
 ) -> Result<()> {
     let Some(target) = state.targets_by_key.get_mut(&key) else {
         return Ok(());
@@ -315,10 +316,12 @@ fn attach(
             .transition(TargetLifecycle::Attached)?;
     }
     effects.push(target_changed_event(target));
-    effects.push(SupervisorEffect::ProbeInitialVisibility {
-        target_key: key,
-        session,
-    });
+    if probe_visibility {
+        effects.push(SupervisorEffect::ProbeInitialVisibility {
+            target_key: key,
+            session,
+        });
+    }
     Ok(())
 }
 
@@ -479,7 +482,7 @@ fn reconcile_restored(
             },
         );
         if let Some(session) = reconnected.session {
-            attach(state, key, session, effects)?;
+            attach(state, key, session, effects, false)?;
         } else {
             effects.push(SupervisorEffect::Attach { target_key: key });
         }
@@ -502,7 +505,7 @@ fn reconcile_restored(
         (changed, needs_attachment)
     };
     if let Some(session) = reconnected.session {
-        attach(state, key, session, effects)?;
+        attach(state, key, session, effects, false)?;
     } else if needs_attachment {
         // A snapshot may omit the flat session when auto-attach raced discovery. Re-requesting the
         // exact target key is idempotent and is safer than treating a missing session as closure.

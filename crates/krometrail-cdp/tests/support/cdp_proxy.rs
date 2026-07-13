@@ -308,20 +308,20 @@ async fn serve_version(stream: &mut TcpStream, control: &ProxyControl) {
         }
     }
     let request_count = control.version_request_count.fetch_add(1, Ordering::AcqRel) + 1;
-    if request_count >= 2 {
+    let path = {
         let mut path = control
             .proxy_websocket_path
             .lock()
             .expect("proxy websocket path lock");
-        if !path.ends_with("/rotated") {
-            path.push_str("/rotated");
+        if request_count >= 2 {
+            let base = path
+                .split_once("/rotated-")
+                .map_or(path.as_str(), |(base, _)| base)
+                .to_owned();
+            *path = format!("{base}/rotated-{request_count}");
         }
-    }
-    let path = control
-        .proxy_websocket_path
-        .lock()
-        .expect("proxy websocket path lock")
-        .clone();
+        path.clone()
+    };
     let websocket_url = format!("ws://{}{path}", control.proxy_address);
     let body = json!({
         "Browser": "Chrome/real-test-proxy",

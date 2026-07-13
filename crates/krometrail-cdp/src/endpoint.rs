@@ -275,6 +275,7 @@ impl LocalCdpEndpoint {
 
     // These are crate-private because the public endpoint contract intentionally exposes the
     // original protocol URLs, not a second caller-manufacturable URL representation.
+    #[cfg(any(feature = "cdpkit-transport", test))]
     pub(crate) fn websocket_dial_url(&self) -> Result<Url, EndpointError> {
         dial_url(&self.browser_websocket_url, self.websocket_address)
     }
@@ -341,6 +342,7 @@ fn same_authority(left: &Url, right: &Url) -> bool {
         })
 }
 
+#[cfg(any(feature = "cdpkit-transport", test))]
 fn dial_url(url: &Url, address: SocketAddr) -> Result<Url, EndpointError> {
     let mut dial = url.clone();
     let host = address.ip().to_string();

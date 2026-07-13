@@ -13,4 +13,7 @@ pub use model::{
 pub use reducer::reduce;
 
 #[cfg(feature = "cdpkit-transport")]
-pub use supervisor::{ReconnectPolicy, SubscriberLag, SupervisorConfig};
+pub use supervisor::{
+    DEFAULT_RECONNECT_ATTACH_CONCURRENCY, DEFAULT_RECONNECT_TARGET_LIMIT, ReconnectPolicy,
+    SubscriberLag, SupervisorConfig,
+};

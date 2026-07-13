@@ -9,7 +9,10 @@ pub mod endpoint;
 pub mod launcher;
 pub mod targets;
 #[cfg(feature = "cdpkit-transport")]
-pub use targets::{ReconnectPolicy, SubscriberLag, SupervisorConfig};
+pub use targets::{
+    DEFAULT_RECONNECT_ATTACH_CONCURRENCY, DEFAULT_RECONNECT_TARGET_LIMIT, ReconnectPolicy,
+    SubscriberLag, SupervisorConfig,
+};
 pub use targets::{
     ReconnectedSnapshot, ReconnectedTarget, Reduction, ShutdownCause, SupervisorEffect,
     SupervisorInput, SupervisorState, SupervisorTargetState, TransportTargetInfo, reduce,

@@ -31,6 +31,8 @@ fn reconnect_policy_is_finite_and_fixture_is_static() {
     let config = SupervisorConfig {
         reconnect: policy,
         subscriber_capacity: 2,
+        reconnect_target_limit: 8,
+        reconnect_attach_concurrency: 2,
     };
     assert_eq!(config.subscriber_capacity, 2);
 }
@@ -50,6 +52,8 @@ async fn production_supervisor_rebuilds_after_a_transport_event_stream_closes() 
             attempt_timeout: Duration::from_millis(100),
         },
         subscriber_capacity: 16,
+        reconnect_target_limit: 8,
+        reconnect_attach_concurrency: 2,
     });
     let session = connector
         .connect(BrowserConnectRequest::Attach(
@@ -128,9 +132,11 @@ async fn opt_in_real_chrome_reconnects_through_a_new_physical_proxy_connection()
         .with_config(SupervisorConfig {
             reconnect: ReconnectPolicy {
                 delays: vec![Duration::from_millis(1), Duration::from_millis(5)].into_boxed_slice(),
-                attempt_timeout: Duration::from_secs(1),
+                attempt_timeout: Duration::from_secs(5),
             },
             subscriber_capacity: 32,
+            reconnect_target_limit: 64,
+            reconnect_attach_concurrency: 4,
         });
     let session = connector
         .connect(BrowserConnectRequest::Attach(
@@ -163,7 +169,7 @@ async fn opt_in_real_chrome_reconnects_through_a_new_physical_proxy_connection()
         "severing the transport must not terminate externally owned Chrome"
     );
 
-    let restored_generation = tokio::time::timeout(Duration::from_secs(10), async {
+    let mut restored_generation = tokio::time::timeout(Duration::from_secs(10), async {
         let mut saw_reconnecting = false;
         let mut saw_suspended = false;
         let mut restored = None;
@@ -226,6 +232,45 @@ async fn opt_in_real_chrome_reconnects_through_a_new_physical_proxy_connection()
     assert_eq!(restored.attachment_generation, restored_generation);
     assert_eq!(restored.lifecycle, TargetLifecycle::Attached);
 
+    // Repeat the same fault through several rotating HTTP discovery paths. Each cycle must rebuild
+    // the exact target key without leaking a transport or publishing a half-restored generation.
+    for _ in 0..2 {
+        let previous_path = proxy.websocket_path();
+        assert!(proxy.sever_active_transport());
+        let previous_generation = restored_generation;
+        restored_generation = tokio::time::timeout(Duration::from_secs(10), async {
+            let mut candidate = None;
+            loop {
+                let event = events
+                    .next()
+                    .await
+                    .expect("session event stream should remain open during repeated reconnect")
+                    .expect("session event stream should not end during repeated reconnect");
+                match event {
+                    BrowserSessionEvent::TargetChanged { target }
+                        if target.target.browser_target_key() == initial_key
+                            && target.lifecycle == TargetLifecycle::Attached
+                            && target.attachment_generation > previous_generation =>
+                    {
+                        assert_eq!(target.target.id(), initial_target_id);
+                        candidate = Some(target.attachment_generation);
+                    }
+                    BrowserSessionEvent::SessionStateChanged {
+                        state: BrowserSessionState::Ready,
+                    } if candidate.is_some() => break candidate.unwrap(),
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("repeated real Chrome reconnect should be bounded");
+        assert!(restored_generation > previous_generation);
+        assert_ne!(proxy.websocket_path(), previous_path);
+        assert!(launched.process.is_alive());
+    }
+    assert!(proxy.wait_for_connections(4, Duration::from_secs(3)).await);
+    assert!(proxy.version_request_count() >= 4);
+
     // A fresh real cdpkit client exercises the rebuilt endpoint's post-reconnect browser command
     // and event path. The production supervisor is already subscribed before this target is made.
     let post_rebuild_url = proxy.websocket_url();
@@ -234,7 +279,7 @@ async fn opt_in_real_chrome_reconnects_through_a_new_physical_proxy_connection()
         .await
         .expect("post-rebuild cdpkit connection");
     assert!(
-        proxy.wait_for_connections(3, Duration::from_secs(1)).await,
+        proxy.wait_for_connections(5, Duration::from_secs(1)).await,
         "post-rebuild command client must use a new physical connection"
     );
     let browser = CommandScope::Browser;

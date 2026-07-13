@@ -5,10 +5,15 @@
 //! only translate transport/process observations into inputs and execute its effects.
 
 use std::{
-    collections::VecDeque,
-    sync::{Arc, Mutex},
+    collections::{BTreeSet, VecDeque},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
+
+use futures_util::{StreamExt, stream::FuturesUnordered};
 
 use krometrail_core::{
     AttachBrowser, BrowserCompatibility, BrowserConnectRequest, BrowserConnector,
@@ -18,12 +23,12 @@ use krometrail_core::{
 };
 use serde_json::Value;
 use tokio::{
-    sync::{mpsc, oneshot},
+    sync::{Notify, mpsc, oneshot},
     task::JoinHandle,
 };
 
 use crate::{
-    compatibility::{CompatibilityProbeError, probe_compatibility},
+    compatibility::{CompatibilityProbeError, probe_compatibility_with_target_limit},
     launcher::{
         ChromeLauncher, LaunchError, LauncherConfig, ManagedChromeProcess, ProfileLease,
         SystemChromeLauncher, attach_endpoint,
@@ -190,6 +195,7 @@ impl BrowserConnector for ProductionBrowserConnector {
                 state: BrowserSessionState::Ready,
             });
             let (command_tx, command_rx) = mpsc::channel(64);
+            let process_death = Arc::new(ProcessDeathSignal::default());
             let shared = Arc::new(SessionShared {
                 compatibility,
                 ownership,
@@ -211,6 +217,7 @@ impl BrowserConnector for ProductionBrowserConnector {
                     process,
                     profile: profile_lease,
                     config,
+                    process_death,
                 },
                 command_rx,
             ));
@@ -363,6 +370,13 @@ impl Drop for ConnectionResources {
 async fn setup_connection(
     transport: Arc<dyn CdpTransport>,
 ) -> std::result::Result<ConnectionResources, CompatibilityProbeError> {
+    setup_connection_with_target_limit(transport, usize::MAX).await
+}
+
+async fn setup_connection_with_target_limit(
+    transport: Arc<dyn CdpTransport>,
+    target_limit: usize,
+) -> std::result::Result<ConnectionResources, CompatibilityProbeError> {
     let mut subscriptions = Vec::with_capacity(TARGET_EVENT_NAMES.len());
     // This happens before any discovery/auto-attach command. Event channels can therefore buffer
     // creation and attachment races while the initial snapshot is being fetched.
@@ -373,7 +387,8 @@ async fn setup_connection(
             .map_err(CompatibilityProbeError::Transport)?;
         subscriptions.push((*kind, events));
     }
-    let compatibility = probe_compatibility(transport.as_ref()).await?;
+    let compatibility =
+        probe_compatibility_with_target_limit(transport.as_ref(), target_limit).await?;
     transport
         .send_raw(
             &CommandScope::Browser,
@@ -492,6 +507,33 @@ struct SupervisorRuntime {
     process: Option<Arc<Mutex<Option<ManagedChromeProcess>>>>,
     profile: Option<Arc<Mutex<Option<ProfileLease>>>>,
     config: SupervisorConfig,
+    process_death: Arc<ProcessDeathSignal>,
+}
+
+#[derive(Default)]
+struct ProcessDeathSignal {
+    exit: Mutex<Option<crate::launcher::SanitizedProcessExit>>,
+    notify: Notify,
+}
+
+impl ProcessDeathSignal {
+    fn record(&self, exit: crate::launcher::SanitizedProcessExit) {
+        *self.exit.lock().expect("process death lock") = Some(exit);
+        self.notify.notify_waiters();
+    }
+
+    async fn wait(&self) -> crate::launcher::SanitizedProcessExit {
+        loop {
+            if let Some(exit) = self.exit.lock().expect("process death lock").take() {
+                return exit;
+            }
+            let notified = self.notify.notified();
+            if let Some(exit) = self.exit.lock().expect("process death lock").take() {
+                return exit;
+            }
+            notified.await;
+        }
+    }
 }
 
 async fn run_supervisor(
@@ -506,7 +548,11 @@ async fn run_supervisor(
         connection.restart_pumps(sender, state.connection_generation);
     }
     if let Some(process) = runtime.process.clone() {
-        tokio::spawn(watch_process(process, shared.command_tx.clone()));
+        tokio::spawn(watch_process(
+            process,
+            shared.command_tx.clone(),
+            Arc::clone(&runtime.process_death),
+        ));
     }
     while let Some(command) = commands.recv().await {
         match command {
@@ -542,7 +588,7 @@ async fn run_supervisor(
                         }
                         *shared.state.lock().expect("session state lock") = state.clone();
                         if should_reconnect {
-                            let outcome = reconnect_loop(
+                            let outcome = reconnect_loop_transactional(
                                 &shared,
                                 &mut state,
                                 &mut connection,
@@ -684,7 +730,361 @@ async fn finish_interrupted_reconnect(
     result
 }
 
-async fn reconnect_loop(
+#[derive(Clone)]
+struct AttemptCancellation {
+    cancelled: Arc<AtomicBool>,
+    notify: Arc<Notify>,
+}
+
+impl AttemptCancellation {
+    fn new() -> Self {
+        Self {
+            cancelled: Arc::new(AtomicBool::new(false)),
+            notify: Arc::new(Notify::new()),
+        }
+    }
+
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+        self.notify.notify_waiters();
+    }
+
+    async fn cancelled(&self) {
+        if self.cancelled.load(Ordering::Acquire) {
+            return;
+        }
+        let notified = self.notify.notified();
+        if self.cancelled.load(Ordering::Acquire) {
+            return;
+        }
+        notified.await;
+    }
+}
+
+#[derive(Clone)]
+struct AttemptControl {
+    cancellation: AttemptCancellation,
+    deadline: tokio::time::Instant,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AttemptFailure {
+    Failed,
+    TimedOut,
+    Cancelled,
+}
+
+impl AttemptControl {
+    async fn race<F, T>(&self, future: F) -> std::result::Result<T, AttemptFailure>
+    where
+        F: std::future::Future<Output = T>,
+    {
+        let mut future = Box::pin(future);
+        let mut deadline = Box::pin(tokio::time::sleep_until(self.deadline));
+        tokio::select! {
+            biased;
+            _ = self.cancellation.cancelled() => Err(AttemptFailure::Cancelled),
+            _ = &mut deadline => Err(AttemptFailure::TimedOut),
+            value = &mut future => Ok(value),
+        }
+    }
+
+    async fn command(
+        &self,
+        transport: &Arc<dyn CdpTransport>,
+        scope: &CommandScope,
+        method: &str,
+        params: Value,
+    ) -> std::result::Result<Value, AttemptFailure> {
+        self.race(transport.send_raw(scope, method, params))
+            .await?
+            .map_err(|_| AttemptFailure::Failed)
+    }
+}
+
+#[derive(Default)]
+struct PartialSessionTracker {
+    sessions: Mutex<Vec<TransportSessionId>>,
+}
+
+impl PartialSessionTracker {
+    fn insert(&self, session: TransportSessionId) {
+        let mut sessions = self.sessions.lock().expect("partial session lock");
+        if !sessions.iter().any(|existing| existing == &session) {
+            sessions.push(session);
+        }
+    }
+
+    fn take(&self) -> Vec<TransportSessionId> {
+        std::mem::take(&mut *self.sessions.lock().expect("partial session lock"))
+    }
+}
+
+struct PreparedReconnection {
+    connection: ConnectionResources,
+    state: SupervisorState,
+    events: Vec<BrowserSessionEvent>,
+}
+
+enum ReconnectInterrupt {
+    Stop(oneshot::Sender<Result<BrowserStopOutcome>>),
+    Input(SupervisorInput),
+}
+
+async fn discard_partial_connection(
+    connection: &mut ConnectionResources,
+    sessions: &PartialSessionTracker,
+) {
+    connection.abort_pumps();
+    // Cleanup has one small global budget, not one budget per target. If the transport itself is
+    // wedged, dropping it after this bound closes every remaining temporary flat session.
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(50);
+    for session in sessions.take() {
+        let _ = tokio::time::timeout_at(
+            deadline,
+            connection.transport.send_raw(
+                &CommandScope::Browser,
+                "Target.detachFromTarget",
+                serde_json::json!({"sessionId": session.as_str()}),
+            ),
+        )
+        .await;
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+    }
+}
+
+fn recordable_reconnect_targets(
+    infos: &[TransportTargetInfo],
+    limit: usize,
+) -> std::result::Result<Vec<TransportTargetInfo>, AttemptFailure> {
+    let mut keys = BTreeSet::new();
+    let mut recordable = Vec::new();
+    for info in infos.iter().filter(|info| info.is_recordable()) {
+        if !keys.insert(info.target_key.clone()) || recordable.len() >= limit {
+            return Err(AttemptFailure::Failed);
+        }
+        recordable.push(info.clone());
+    }
+    recordable.sort_by(|left, right| left.target_key.cmp(&right.target_key));
+    Ok(recordable)
+}
+
+async fn restore_one_target(
+    attempt: AttemptControl,
+    transport: Arc<dyn CdpTransport>,
+    info: TransportTargetInfo,
+    sessions: Arc<PartialSessionTracker>,
+) -> std::result::Result<ReconnectedTarget, AttemptFailure> {
+    let value = attempt
+        .command(
+            &transport,
+            &CommandScope::Browser,
+            "Target.attachToTarget",
+            serde_json::json!({"targetId": info.target_key, "flatten": true}),
+        )
+        .await?;
+    let session = value
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .and_then(|value| TransportSessionId::new(value.to_owned()).ok())
+        .ok_or(AttemptFailure::Failed)?;
+    sessions.insert(session.clone());
+    let scope = CommandScope::Session(session.clone());
+    // Restore the control/recording domains without starting a screencast. Capture is a separate,
+    // later effect and must not become an implicit side effect of reconnect supervision.
+    for method in ["Page.enable", "Runtime.enable", "Accessibility.enable"] {
+        attempt
+            .command(
+                &transport,
+                &scope,
+                method,
+                Value::Object(Default::default()),
+            )
+            .await?;
+    }
+    let visibility_value = attempt
+        .command(
+            &transport,
+            &scope,
+            "Runtime.evaluate",
+            serde_json::json!({
+                "expression": "document.visibilityState",
+                "returnByValue": true
+            }),
+        )
+        .await?;
+    let visibility = match visibility_value
+        .pointer("/result/result/value")
+        .or_else(|| visibility_value.pointer("/result/value"))
+        .and_then(Value::as_str)
+    {
+        Some("hidden") => TargetVisibility::Hidden,
+        Some(_) => TargetVisibility::Visible,
+        None => return Err(AttemptFailure::Failed),
+    };
+    Ok(ReconnectedTarget {
+        info,
+        session: Some(session),
+        visibility,
+    })
+}
+
+async fn restore_targets(
+    attempt: AttemptControl,
+    transport: Arc<dyn CdpTransport>,
+    infos: Vec<TransportTargetInfo>,
+    concurrency: usize,
+    sessions: Arc<PartialSessionTracker>,
+) -> std::result::Result<Vec<ReconnectedTarget>, AttemptFailure> {
+    let mut pending = FuturesUnordered::new();
+    let mut restored = Vec::with_capacity(infos.len());
+    for info in infos {
+        while pending.len() >= concurrency {
+            let result = match pending.next().await {
+                Some(result) => result?,
+                None => return Err(AttemptFailure::Failed),
+            };
+            restored.push(result);
+        }
+        pending.push(restore_one_target(
+            attempt.clone(),
+            Arc::clone(&transport),
+            info,
+            Arc::clone(&sessions),
+        ));
+    }
+    while let Some(result) = pending.next().await {
+        restored.push(result?);
+    }
+    restored.sort_by(|left, right| left.info.target_key.cmp(&right.info.target_key));
+    Ok(restored)
+}
+
+async fn stage_reconnection_effects(
+    attempt: &AttemptControl,
+    transport: &Arc<dyn CdpTransport>,
+    effects: &[SupervisorEffect],
+) -> std::result::Result<Vec<BrowserSessionEvent>, AttemptFailure> {
+    let mut events = Vec::new();
+    for effect in effects {
+        match effect {
+            SupervisorEffect::Publish(event) => events.push(event.clone()),
+            SupervisorEffect::Detach { session } => {
+                attempt
+                    .command(
+                        transport,
+                        &CommandScope::Browser,
+                        "Target.detachFromTarget",
+                        serde_json::json!({"sessionId": session.as_str()}),
+                    )
+                    .await?;
+            }
+            // A successful reconstruction has already attached every bounded target, restored
+            // domains, and observed visibility. Any follow-up attach/probe would violate the
+            // transaction boundary and make publication depend on an unbounded effect chain.
+            SupervisorEffect::Attach { .. }
+            | SupervisorEffect::ProbeInitialVisibility { .. }
+            | SupervisorEffect::BeginReconnect
+            | SupervisorEffect::Shutdown { .. } => return Err(AttemptFailure::Failed),
+        }
+    }
+    Ok(events)
+}
+
+async fn reconstruct_connection(
+    runtime: &SupervisorRuntime,
+    current_state: &SupervisorState,
+    attempt: AttemptControl,
+) -> std::result::Result<PreparedReconnection, AttemptFailure> {
+    let (target_limit, attach_concurrency) = runtime.config.normalized_reconnect_bounds();
+    if target_limit == 0 {
+        return Err(AttemptFailure::Failed);
+    }
+    // HTTP endpoints are discovery origins, not immutable WebSocket URLs. Refresh each attempt so
+    // a browser may rotate its path; direct WebSocket attaches remain direct.
+    let endpoint = attempt
+        .race(async {
+            match runtime.endpoint.kind() {
+                crate::LocalCdpEndpointKind::Http => runtime.endpoint.refresh_http().await,
+                crate::LocalCdpEndpointKind::WebSocket => Ok(runtime.endpoint.as_ref().clone()),
+            }
+        })
+        .await?
+        .map_err(|_| AttemptFailure::Failed)?;
+    let transport = attempt
+        .race(runtime.factory.connect_endpoint(&endpoint))
+        .await?
+        .map_err(|_| AttemptFailure::Failed)?;
+    let setup = attempt
+        .race(setup_connection_with_target_limit(
+            Arc::clone(&transport),
+            target_limit,
+        ))
+        .await?;
+    let mut connection = match setup {
+        Ok(connection) => connection,
+        Err(_) => return Err(AttemptFailure::Failed),
+    };
+    let infos = match recordable_reconnect_targets(&connection.targets, target_limit) {
+        Ok(infos) => infos,
+        Err(error) => {
+            drop(connection);
+            return Err(error);
+        }
+    };
+    let sessions = Arc::new(PartialSessionTracker::default());
+    let restored = match restore_targets(
+        attempt.clone(),
+        Arc::clone(&connection.transport),
+        infos,
+        attach_concurrency,
+        Arc::clone(&sessions),
+    )
+    .await
+    {
+        Ok(restored) => restored,
+        Err(error) => {
+            discard_partial_connection(&mut connection, &sessions).await;
+            drop(connection);
+            return Err(error);
+        }
+    };
+    let snapshot = ReconnectedSnapshot {
+        connection_generation: current_state.connection_generation.saturating_add(1),
+        compatibility: connection.compatibility.clone(),
+        targets: restored,
+    };
+    let reduction = match reduce(
+        current_state.clone(),
+        SupervisorInput::Reconnected(snapshot),
+    ) {
+        Ok(reduction) => reduction,
+        Err(_) => {
+            discard_partial_connection(&mut connection, &sessions).await;
+            drop(connection);
+            return Err(AttemptFailure::Failed);
+        }
+    };
+    let events =
+        match stage_reconnection_effects(&attempt, &connection.transport, &reduction.effects).await
+        {
+            Ok(events) => events,
+            Err(error) => {
+                discard_partial_connection(&mut connection, &sessions).await;
+                drop(connection);
+                return Err(error);
+            }
+        };
+    Ok(PreparedReconnection {
+        connection,
+        state: reduction.state,
+        events,
+    })
+}
+
+async fn reconnect_loop_transactional(
     shared: &Arc<SessionShared>,
     state: &mut SupervisorState,
     connection: &mut Option<ConnectionResources>,
@@ -694,58 +1094,46 @@ async fn reconnect_loop(
     if let Some(old) = connection.as_mut() {
         old.abort_pumps();
     }
-    for (attempt, delay) in runtime.config.reconnect.delays.iter().copied().enumerate() {
-        let mut sleep = Box::pin(tokio::time::sleep(delay));
-        tokio::select! {
-            _ = &mut sleep => {},
-            command = commands.recv() => {
-                let Some(command) = command else {
+    for (attempt_number, delay) in runtime.config.reconnect.delays.iter().copied().enumerate() {
+        let backoff_deadline = tokio::time::Instant::now() + delay;
+        loop {
+            let mut sleep = Box::pin(tokio::time::sleep_until(backoff_deadline));
+            tokio::select! {
+                _ = &mut sleep => break,
+                command = commands.recv() => {
+                    match command {
+                        Some(SupervisorCommand::Stop(sender)) => {
+                            let _ = finish_interrupted_reconnect(shared, state, connection, runtime, SupervisorInput::StopRequested, Some(sender)).await;
+                            return true;
+                        }
+                        Some(SupervisorCommand::Input(input)) => {
+                            let input = match input {
+                                SupervisorInput::ForConnectionGeneration { input, .. } => *input,
+                                input => input,
+                            };
+                            if matches!(input, SupervisorInput::Cancelled | SupervisorInput::BrowserProcessTerminated { .. }) {
+                                let _ = finish_interrupted_reconnect(shared, state, connection, runtime, input, None).await;
+                                return true;
+                            }
+                            // Old-generation target events are harmless; keep the same absolute
+                            // backoff deadline rather than resetting it or consuming an attempt.
+                        }
+                        None => {
+                            let _ = finish_interrupted_reconnect(shared, state, connection, runtime, SupervisorInput::Cancelled, None).await;
+                            return true;
+                        }
+                    }
+                }
+                exit = runtime.process_death.wait(), if runtime.process.is_some() => {
                     let _ = finish_interrupted_reconnect(
                         shared,
                         state,
                         connection,
                         runtime,
-                        SupervisorInput::Cancelled,
+                        SupervisorInput::BrowserProcessTerminated { exit },
                         None,
                     ).await;
                     return true;
-                };
-                match command {
-                    SupervisorCommand::Stop(sender) => {
-                        let _ = finish_interrupted_reconnect(
-                            shared,
-                            state,
-                            connection,
-                            runtime,
-                            SupervisorInput::StopRequested,
-                            Some(sender),
-                        ).await;
-                        return true;
-                    }
-                    SupervisorCommand::Input(input) => {
-                        let input = match input {
-                            SupervisorInput::ForConnectionGeneration { input, .. } => *input,
-                            input => input,
-                        };
-                        if matches!(
-                            input,
-                            SupervisorInput::Cancelled
-                                | SupervisorInput::BrowserProcessTerminated { .. }
-                        ) {
-                            let _ = finish_interrupted_reconnect(
-                                shared,
-                                state,
-                                connection,
-                                runtime,
-                                input,
-                                None,
-                            ).await;
-                            return true;
-                        }
-                        // Late target events and duplicate connection-loss notifications from the
-                        // old generation are expected while the bounded retry is in flight. Ignore
-                        // them without consuming another retry attempt.
-                    }
                 }
             }
         }
@@ -756,121 +1144,111 @@ async fn reconnect_loop(
                 .as_mut()
                 .is_some_and(ManagedChromeProcess::is_alive);
             if !alive {
-                if let Ok(reduction) = reduce(
-                    std::mem::replace(state, SupervisorState::new(shared.compatibility.clone())),
+                let _ = finish_interrupted_reconnect(
+                    shared,
+                    state,
+                    connection,
+                    runtime,
                     SupervisorInput::BrowserProcessTerminated {
                         exit: crate::launcher::SanitizedProcessExit::Unknown,
                     },
-                ) {
-                    *state = reduction.state;
-                    if let Some(current) = connection.as_ref() {
-                        let _ = apply_effects(
-                            state,
-                            reduction.effects,
-                            Arc::clone(&current.transport),
-                            Arc::clone(&shared.subscribers),
-                            false,
-                        )
-                        .await;
-                    }
-                    let process_resource = Some(Arc::clone(process));
-                    let _ = perform_shutdown(
-                        connection,
-                        &process_resource,
-                        &runtime.profile,
-                        state,
-                        crate::targets::ShutdownCause::BrowserProcessTerminated,
-                        shared.ownership,
-                    )
-                    .await;
-                    finish_state(shared, state);
-                }
+                    None,
+                )
+                .await;
                 return true;
             }
         }
         tracing::info!(
-            reconnect_attempt = attempt + 1,
+            reconnect_attempt = attempt_number + 1,
             connection_generation = state.connection_generation,
+            target_limit = runtime.config.reconnect_target_limit,
+            attach_concurrency = runtime.config.reconnect_attach_concurrency,
             "browser.session.reconnect_attempt"
         );
-        let result = tokio::time::timeout(runtime.config.reconnect.attempt_timeout, async {
-            // HTTP attach endpoints are discovery origins, not immutable WebSocket URLs. Refresh
-            // them for every attempt so a browser may rotate its path, while direct WebSocket
-            // attaches remain direct and continue using their originally validated URI.
-            let endpoint = match runtime.endpoint.kind() {
-                crate::LocalCdpEndpointKind::Http => runtime.endpoint.refresh_http().await,
-                crate::LocalCdpEndpointKind::WebSocket => Ok(runtime.endpoint.as_ref().clone()),
+        let cancellation = AttemptCancellation::new();
+        let attempt_control = AttemptControl {
+            cancellation: cancellation.clone(),
+            deadline: tokio::time::Instant::now() + runtime.config.reconnect.attempt_timeout,
+        };
+        let reconnect_state = state.clone();
+        let mut transaction = Box::pin(reconstruct_connection(
+            runtime,
+            &reconnect_state,
+            attempt_control,
+        ));
+        let outcome = loop {
+            tokio::select! {
+                command = commands.recv() => {
+                    let interrupt = match command {
+                        Some(SupervisorCommand::Stop(sender)) => Some(ReconnectInterrupt::Stop(sender)),
+                        Some(SupervisorCommand::Input(input)) => {
+                            let input = match input {
+                                SupervisorInput::ForConnectionGeneration { input, .. } => *input,
+                                input => input,
+                            };
+                            if matches!(input, SupervisorInput::Cancelled | SupervisorInput::BrowserProcessTerminated { .. }) {
+                                Some(ReconnectInterrupt::Input(input))
+                            } else {
+                                None
+                            }
+                        }
+                        None => Some(ReconnectInterrupt::Input(SupervisorInput::Cancelled)),
+                    };
+                    if let Some(interrupt) = interrupt {
+                        cancellation.cancel();
+                        let _ = (&mut transaction).await;
+                        break Err(interrupt);
+                    }
+                }
+                exit = runtime.process_death.wait(), if runtime.process.is_some() => {
+                    cancellation.cancel();
+                    let _ = (&mut transaction).await;
+                    break Err(ReconnectInterrupt::Input(
+                        SupervisorInput::BrowserProcessTerminated { exit }
+                    ));
+                }
+                result = &mut transaction => break Ok(result),
             }
-            .map_err(|_| ())?;
-            let transport = runtime
-                .factory
-                .connect_endpoint(&endpoint)
-                .await
-                .map_err(|_| ())?;
-            setup_connection(transport).await.map_err(|_| ())
-        })
-        .await;
-        let Ok(Ok(mut next)) = result else {
-            continue;
         };
-        let mut restored = Vec::new();
-        for info in next
-            .targets
-            .iter()
-            .filter(|info| info.is_recordable())
-            .cloned()
-        {
-            let session = next
-                .transport
-                .send_raw(
-                    &CommandScope::Browser,
-                    "Target.attachToTarget",
-                    serde_json::json!({"targetId": info.target_key, "flatten": true}),
+        match outcome {
+            Err(ReconnectInterrupt::Stop(sender)) => {
+                let _ = finish_interrupted_reconnect(
+                    shared,
+                    state,
+                    connection,
+                    runtime,
+                    SupervisorInput::StopRequested,
+                    Some(sender),
                 )
-                .await
-                .ok()
-                .and_then(|value| {
-                    value
-                        .get("sessionId")
-                        .and_then(Value::as_str)
-                        .and_then(|value| TransportSessionId::new(value.to_owned()).ok())
-                });
-            restored.push(ReconnectedTarget {
-                info,
-                session,
-                visibility: TargetVisibility::Unknown,
-            });
+                .await;
+                return true;
+            }
+            Err(ReconnectInterrupt::Input(input)) => {
+                let _ =
+                    finish_interrupted_reconnect(shared, state, connection, runtime, input, None)
+                        .await;
+                return true;
+            }
+            Ok(Err(_)) => continue,
+            Ok(Ok(mut prepared)) => {
+                prepared.connection.restart_pumps(
+                    shared.command_tx.clone(),
+                    prepared.state.connection_generation,
+                );
+                *state = prepared.state;
+                *connection = Some(prepared.connection);
+                *shared.state.lock().expect("session state lock") = state.clone();
+                for event in prepared.events.drain(..) {
+                    shared.subscribers.publish(event);
+                }
+                tracing::info!(
+                    reconnect_attempt = attempt_number + 1,
+                    connection_generation = state.connection_generation,
+                    "browser.session.reconnected"
+                );
+                return false;
+            }
         }
-        let snapshot = ReconnectedSnapshot {
-            connection_generation: state.connection_generation.saturating_add(1),
-            compatibility: next.compatibility.clone(),
-            targets: restored,
-        };
-        let Ok(reduction) = reduce(
-            std::mem::replace(state, SupervisorState::new(shared.compatibility.clone())),
-            SupervisorInput::Reconnected(snapshot),
-        ) else {
-            continue;
-        };
-        *state = reduction.state;
-        let transport = Arc::clone(&next.transport);
-        let _ = apply_effects(
-            state,
-            reduction.effects,
-            transport,
-            Arc::clone(&shared.subscribers),
-            false,
-        )
-        .await;
-        next.restart_pumps(shared.command_tx.clone(), state.connection_generation);
-        *connection = Some(next);
-        *shared.state.lock().expect("session state lock") = state.clone();
-        tracing::info!(
-            reconnect_attempt = attempt + 1,
-            connection_generation = state.connection_generation,
-            "browser.session.reconnected"
-        );
-        return false;
     }
     if let Ok(reduction) = reduce(
         std::mem::replace(state, SupervisorState::new(shared.compatibility.clone())),
@@ -1006,6 +1384,7 @@ fn finish_state(shared: &Arc<SessionShared>, state: &mut SupervisorState) {
 async fn watch_process(
     process: Arc<Mutex<Option<ManagedChromeProcess>>>,
     sender: mpsc::Sender<SupervisorCommand>,
+    death: Arc<ProcessDeathSignal>,
 ) {
     loop {
         tokio::time::sleep(Duration::from_millis(25)).await;
@@ -1026,6 +1405,7 @@ async fn watch_process(
             }
         };
         if let Some(exit) = exit {
+            death.record(exit);
             let _ = sender
                 .send(SupervisorCommand::Input(
                     SupervisorInput::BrowserProcessTerminated { exit },
@@ -1191,6 +1571,8 @@ fn stable_error(code: ErrorCode, message: &'static str) -> KrometrailError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transport::TransportFuture;
+    use std::sync::atomic::AtomicUsize;
 
     #[test]
     fn target_event_parsing_uses_opaque_keys_and_ignores_page_content() {
@@ -1202,5 +1584,212 @@ mod tests {
             },
         );
         assert!(matches!(input, Some(SupervisorInput::TargetCreated(_))));
+    }
+
+    fn page_info(key: &str) -> TransportTargetInfo {
+        TransportTargetInfo::new(key, "page", format!("https://{key}.test"), key, false, None)
+            .unwrap()
+    }
+
+    #[test]
+    fn reconnect_target_cap_rejects_extra_recordable_targets_before_attachment() {
+        let infos = vec![page_info("one"), page_info("two"), page_info("three")];
+        assert_eq!(recordable_reconnect_targets(&infos, 3).unwrap().len(), 3);
+        assert_eq!(
+            recordable_reconnect_targets(&infos, 2),
+            Err(AttemptFailure::Failed)
+        );
+    }
+
+    #[tokio::test]
+    async fn many_target_restore_never_exceeds_configured_concurrency() {
+        let transport = Arc::new(ControlledTransport::paced());
+        let infos = (0..9)
+            .map(|index| page_info(&format!("target-{index}")))
+            .collect();
+        let attempt = AttemptControl {
+            cancellation: AttemptCancellation::new(),
+            deadline: tokio::time::Instant::now() + Duration::from_secs(1),
+        };
+        let restored = restore_targets(
+            attempt,
+            transport.clone(),
+            infos,
+            2,
+            Arc::new(PartialSessionTracker::default()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(restored.len(), 9);
+        assert!(transport.maximum_active() <= 2);
+        assert!(transport.maximum_active() >= 2);
+    }
+
+    #[tokio::test]
+    async fn stalled_restore_command_is_cut_off_by_attempt_deadline() {
+        let transport = Arc::new(ControlledTransport::stalled("Runtime.enable"));
+        let started = transport.started();
+        let attempt = AttemptControl {
+            cancellation: AttemptCancellation::new(),
+            deadline: tokio::time::Instant::now() + Duration::from_millis(20),
+        };
+        let task = tokio::spawn(restore_one_target(
+            attempt,
+            transport,
+            page_info("stalled"),
+            Arc::new(PartialSessionTracker::default()),
+        ));
+        tokio::time::timeout(Duration::from_millis(100), started.notified())
+            .await
+            .unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_millis(100), task)
+                .await
+                .unwrap()
+                .unwrap(),
+            Err(AttemptFailure::TimedOut)
+        );
+    }
+
+    #[tokio::test]
+    async fn cancellation_interrupts_a_stalled_restore_immediately() {
+        let transport = Arc::new(ControlledTransport::stalled("Runtime.enable"));
+        let started = transport.started();
+        let cancellation = AttemptCancellation::new();
+        let attempt = AttemptControl {
+            cancellation: cancellation.clone(),
+            deadline: tokio::time::Instant::now() + Duration::from_secs(1),
+        };
+        let task = tokio::spawn(restore_one_target(
+            attempt,
+            transport,
+            page_info("cancelled"),
+            Arc::new(PartialSessionTracker::default()),
+        ));
+        tokio::time::timeout(Duration::from_millis(100), started.notified())
+            .await
+            .unwrap();
+        cancellation.cancel();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_millis(100), task)
+                .await
+                .unwrap()
+                .unwrap(),
+            Err(AttemptFailure::Cancelled)
+        );
+    }
+
+    #[tokio::test]
+    async fn managed_process_death_signal_is_observed_without_polling_the_attempt() {
+        let signal = Arc::new(ProcessDeathSignal::default());
+        let waiter = {
+            let signal = Arc::clone(&signal);
+            tokio::spawn(async move { signal.wait().await })
+        };
+        signal.record(crate::launcher::SanitizedProcessExit::Signaled);
+        assert_eq!(
+            waiter.await.unwrap(),
+            crate::launcher::SanitizedProcessExit::Signaled
+        );
+    }
+
+    #[derive(Clone)]
+    struct ControlledTransport {
+        state: Arc<ControlledTransportState>,
+    }
+
+    struct ControlledTransportState {
+        stall_method: Mutex<Option<String>>,
+        next_session: AtomicUsize,
+        active: AtomicUsize,
+        maximum_active: AtomicUsize,
+        started: Arc<Notify>,
+    }
+
+    impl ControlledTransport {
+        fn paced() -> Self {
+            Self {
+                state: Arc::new(ControlledTransportState {
+                    stall_method: Mutex::new(None),
+                    next_session: AtomicUsize::new(0),
+                    active: AtomicUsize::new(0),
+                    maximum_active: AtomicUsize::new(0),
+                    started: Arc::new(Notify::new()),
+                }),
+            }
+        }
+
+        fn stalled(method: &str) -> Self {
+            let transport = Self::paced();
+            *transport
+                .state
+                .stall_method
+                .lock()
+                .expect("stall method lock") = Some(method.to_owned());
+            transport
+        }
+
+        fn started(&self) -> Arc<Notify> {
+            Arc::clone(&self.state.started)
+        }
+
+        fn maximum_active(&self) -> usize {
+            self.state.maximum_active.load(Ordering::Acquire)
+        }
+    }
+
+    impl CdpTransport for ControlledTransport {
+        fn send_raw(
+            &self,
+            _scope: &CommandScope,
+            method: &str,
+            _params: Value,
+        ) -> TransportFuture<'_, std::result::Result<Value, TransportError>> {
+            let stalled = self
+                .state
+                .stall_method
+                .lock()
+                .expect("stall method lock")
+                .as_deref()
+                == Some(method);
+            let response = if method == "Target.attachToTarget" {
+                let session = self.state.next_session.fetch_add(1, Ordering::Relaxed);
+                serde_json::json!({"sessionId": format!("session-{session}")})
+            } else if method == "Runtime.evaluate" {
+                serde_json::json!({"result": {"result": {"type": "string", "value": "visible"}}})
+            } else {
+                Value::Object(Default::default())
+            };
+            let state = Arc::clone(&self.state);
+            Box::pin(async move {
+                state.started.notify_waiters();
+                if stalled {
+                    std::future::pending::<std::result::Result<Value, TransportError>>().await
+                } else {
+                    let active = state.active.fetch_add(1, Ordering::AcqRel) + 1;
+                    state.maximum_active.fetch_max(active, Ordering::AcqRel);
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                    state.active.fetch_sub(1, Ordering::AcqRel);
+                    Ok(response)
+                }
+            })
+        }
+
+        fn subscribe_named(
+            &self,
+            _scope: &CommandScope,
+            _method: &str,
+        ) -> TransportFuture<'_, std::result::Result<Box<dyn TransportEvents>, TransportError>>
+        {
+            Box::pin(async { Err(TransportError::SubscriptionClosed) })
+        }
+
+        fn close_reason(&self) -> Option<TransportClose> {
+            None
+        }
+
+        fn is_closed(&self) -> bool {
+            false
+        }
     }
 }

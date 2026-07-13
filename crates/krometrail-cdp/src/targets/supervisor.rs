@@ -5,6 +5,9 @@ use std::{
     time::Duration,
 };
 
+pub const DEFAULT_RECONNECT_TARGET_LIMIT: usize = 64;
+pub const DEFAULT_RECONNECT_ATTACH_CONCURRENCY: usize = 4;
+
 use krometrail_core::{
     BrowserSessionEvent, BrowserSessionEvents, ErrorCode, KrometrailError, NonEmptyText,
     PortFuture, Result,
@@ -37,6 +40,10 @@ impl Default for ReconnectPolicy {
 pub struct SupervisorConfig {
     pub reconnect: ReconnectPolicy,
     pub subscriber_capacity: usize,
+    /// Maximum number of recordable targets a reconnect attempt may rebuild.
+    pub reconnect_target_limit: usize,
+    /// Maximum number of target attachment/domain-restore transactions in flight.
+    pub reconnect_attach_concurrency: usize,
 }
 
 impl Default for SupervisorConfig {
@@ -44,7 +51,24 @@ impl Default for SupervisorConfig {
         Self {
             reconnect: ReconnectPolicy::default(),
             subscriber_capacity: 64,
+            reconnect_target_limit: DEFAULT_RECONNECT_TARGET_LIMIT,
+            reconnect_attach_concurrency: DEFAULT_RECONNECT_ATTACH_CONCURRENCY,
         }
+    }
+}
+
+impl SupervisorConfig {
+    pub fn with_reconnect_bounds(mut self, target_limit: usize, attach_concurrency: usize) -> Self {
+        self.reconnect_target_limit = target_limit;
+        self.reconnect_attach_concurrency = attach_concurrency;
+        self
+    }
+
+    pub(crate) fn normalized_reconnect_bounds(&self) -> (usize, usize) {
+        (
+            self.reconnect_target_limit,
+            self.reconnect_attach_concurrency.max(1),
+        )
     }
 }
 

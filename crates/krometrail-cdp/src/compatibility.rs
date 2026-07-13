@@ -154,6 +154,16 @@ impl CompatibilityProbeError {
 pub async fn probe_compatibility(
     transport: &dyn CdpTransport,
 ) -> Result<BrowserCompatibility, CompatibilityProbeError> {
+    probe_compatibility_with_target_limit(transport, usize::MAX).await
+}
+
+/// Probe a connection while bounding the number of page candidates that the probe may attach.
+/// Reconnect reconstruction supplies its configured limit here so a hostile or unexpectedly large
+/// target snapshot cannot turn compatibility probing into an unbounded serial preflight.
+pub async fn probe_compatibility_with_target_limit(
+    transport: &dyn CdpTransport,
+    target_limit: usize,
+) -> Result<BrowserCompatibility, CompatibilityProbeError> {
     let version_value = command(
         transport,
         &CommandScope::Browser,
@@ -228,6 +238,7 @@ pub async fn probe_compatibility(
                 .flatten()
                 .map(str::to_owned)
         })
+        .take(target_limit)
         .collect::<Vec<_>>();
     let has_recordable_page = !page_targets.is_empty();
     let mut best_renderer_support = [false; 4];
