@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-vision-toolkit-frame-sequence-contracts-frame-and-geometry
 kind: story
-stage: implementing
+stage: done
 tags: [visual]
 parent: epic-temporal-vision-toolkit-frame-sequence-contracts
 depends_on: []
@@ -34,3 +34,14 @@ Add the stable `VisionError`/`ErrorCode` boundary and the crate-local enum regis
 ## Ordering
 
 This is the first checkpoint. It establishes the types required by ordered sequences and provenance.
+
+## Implementation notes
+
+- Execution capability: highest/raised (caller-selected) because this public generic contract anchors every temporal artifact feature.
+- Review weight: standard (caller/autopilot).
+- Files changed: `crates/temporal-vision/src/{lib,error,frame,geometry}.rs`, `crates/temporal-vision/Cargo.toml`, and `Cargo.lock`.
+- Tests added: focused registry, constructor, malformed-deserialization, checked-geometry, and mask-padding unit tests.
+- Simplification: one generic frame serves borrowed and owned pixels; one registry macro owns stable enum wire behavior; no codec or infrastructure abstraction was introduced.
+- Discrepancies from design: `Timestamp` also exposes `from_nanos`, `as_nanos`, and `ZERO`, required for external callers to construct and inspect the otherwise opaque value. `FrameRegion` deserialization validates its retained `PixelRect`; sequence construction revalidates containment because frame dimensions are intentionally not duplicated in the region value.
+- Adjacent issues parked: none.
+- Verification: `cargo test -p temporal-vision --lib` passed (4 tests); formatting was applied workspace-wide without staging unrelated files.

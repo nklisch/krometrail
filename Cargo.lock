@@ -980,6 +980,7 @@ name = "temporal-vision"
 version = "0.2.20"
 dependencies = [
  "serde",
+ "serde_json",
  "thiserror",
 ]
 
