@@ -254,8 +254,8 @@ pub fn select_storyboard_frames<F: Clone + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
 
     // Supplementary anchors are admitted in source declaration order. Repeated
     // boundaries on one source frame merge into one panel and one visible reason.
-    for index in 0..frame_count {
-        for reason in boundary_roles[index].iter().copied() {
+    for (index, boundary_reasons) in boundary_roles.iter().enumerate() {
+        for reason in boundary_reasons.iter().copied() {
             admit_anchor(
                 index,
                 reason,
@@ -668,7 +668,9 @@ mod tests {
         PixelFormat, ProcessingLimits, Rgb8, normalize_sequence,
     };
 
-    fn sequence() -> (FrameSequence<u8, u8, u8, Box<[u8]>>, NormalizedSequence<u8>) {
+    type TestSequence = FrameSequence<u8, u8, u8, Box<[u8]>>;
+
+    fn sequence() -> (TestSequence, NormalizedSequence<u8>) {
         let dimensions = PixelDimensions::new(1, 1).unwrap();
         let frames = [0_u8, 0, 255, 64, 255, 0]
             .into_iter()

@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-vision-toolkit-storyboard-rendering
 kind: story
-stage: implementing
+stage: done
 tags: [visual]
 parent: epic-temporal-vision-toolkit-storyboard
 depends_on: [epic-temporal-vision-toolkit-storyboard-selection]
@@ -37,3 +37,11 @@ Construct manifests after encoding from the source sequence and the exact render
 ## Ordering
 
 Depends on `epic-temporal-vision-toolkit-storyboard-selection`. The render consumes its exact plan and must not reselect or reinterpret frames.
+
+## Implementation notes
+
+- Added one checked RGB8 canvas, embedded deterministic 5×7-in-6×10 ASCII raster, bounded PNG 0.17.16 encoder, and exact SHA-256 hashing without a renderer/plugin/UI/filesystem abstraction.
+- `generate_storyboard` renders the chronological storyboard and optional before/during/after composite from one selection plan; annotations stay outside source pixels and show title/context, time/offset, frame IDs, reasons, markers, time direction, and textual/patterned gap warnings.
+- Layout preserves aspect ratio through integer contain-fit and center-mapped nearest-neighbor scaling. Width, height, minimum 160 px panel width, RGB canvas bytes, and encoded bytes fail with `ResourceLimitExceeded` before a partial result escapes.
+- Both manifests are built after encoding from authoritative sequence metadata and record algorithm `temporal-storyboard` `1.0.0`, selection/role/omission data, marker buckets, normalization and display conversion, text/layout/font/PNG choices, dimensions, and exact output hash.
+- Verification: package formatting, locked all-target tests (29 passed), and locked package Clippy with warnings denied passed.

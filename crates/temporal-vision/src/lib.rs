@@ -56,15 +56,19 @@ macro_rules! stable_registry {
     };
 }
 
+mod artifact;
+mod encode;
 mod error;
 mod frame;
 mod geometry;
 mod measure;
 mod normalize;
 mod provenance;
+mod render;
 mod select;
 mod sequence;
 
+pub use artifact::{EncodedImage, GeneratedArtifact};
 pub use error::{ErrorCode, Result, VisionError};
 pub use frame::{BorrowedFrame, Frame, OwnedFrame, PixelDimensions, PixelFormat, Timestamp};
 pub use geometry::{BinaryMask, FrameRegion, PixelRect};
@@ -79,6 +83,9 @@ pub use normalize::{
 pub use provenance::{
     AlgorithmDescriptor, ArtifactKind, ArtifactManifest, EvidenceClass, FiniteNumber,
     NormalizationKind, NormalizationStep, OutputHash, ParameterValue, Parameters,
+};
+pub use render::{
+    ArtifactLabels, RenderLimits, StoryboardArtifacts, StoryboardParameters, generate_storyboard,
 };
 pub use select::{
     OmittedAnchor, SelectedFrame, SelectionReason, StoryboardSelection, StoryboardTileLimit,

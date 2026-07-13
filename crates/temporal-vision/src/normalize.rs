@@ -688,6 +688,26 @@ const fn linear_channel(value: u8) -> u16 {
     SRGB8_TO_LINEAR16[value as usize]
 }
 
+/// Deterministic inverse of the checked-in transfer table. Values between table
+/// entries select the nearest encoded channel; exact ties select the lower byte.
+pub(crate) fn linear16_to_srgb8(value: u16) -> u8 {
+    match SRGB8_TO_LINEAR16.binary_search(&value) {
+        Ok(index) => index as u8,
+        Err(0) => 0,
+        Err(256) => 255,
+        Err(upper) => {
+            let lower = upper - 1;
+            let lower_distance = value - SRGB8_TO_LINEAR16[lower];
+            let upper_distance = SRGB8_TO_LINEAR16[upper] - value;
+            if lower_distance <= upper_distance {
+                lower as u8
+            } else {
+                upper as u8
+            }
+        }
+    }
+}
+
 // IEC 61966-2-1 sRGB EOTF values mapped to 0..=65535 with round-half-up.
 const SRGB8_TO_LINEAR16: [u16; 256] = [
     0, 20, 40, 60, 80, 99, 119, 139, 159, 179, 199, 219, 241, 264, 288, 313, 340, 367, 396, 427,
@@ -739,6 +759,10 @@ mod tests {
                 .sum::<u64>(),
             5_217_863
         );
+        assert_eq!(linear16_to_srgb8(0), 0);
+        assert_eq!(linear16_to_srgb8(65_535), 255);
+        let midpoint = (SRGB8_TO_LINEAR16[100] + SRGB8_TO_LINEAR16[101]) / 2;
+        assert_eq!(linear16_to_srgb8(midpoint), 100);
     }
 
     #[test]
