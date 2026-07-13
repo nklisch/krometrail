@@ -10,7 +10,6 @@ use krometrail_core::NonEmptyText;
 use thiserror::Error;
 use url::Url;
 
-#[cfg(feature = "cdpkit-transport")]
 const MAX_DISCOVERY_BYTES: usize = 256 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq, Error)]
@@ -50,7 +49,6 @@ pub struct LocalCdpEndpoint {
 impl LocalCdpEndpoint {
     /// Resolve an HTTP debugging endpoint through `/json/version`, or validate a direct WebSocket
     /// endpoint. All URL checks happen before the first network operation.
-    #[cfg(feature = "cdpkit-transport")]
     pub async fn resolve(input: impl AsRef<str>) -> Result<Self, EndpointError> {
         let url = parse_and_validate(input.as_ref())?;
         match url.scheme() {
@@ -97,7 +95,6 @@ impl LocalCdpEndpoint {
         })
     }
 
-    #[cfg(feature = "cdpkit-transport")]
     async fn resolve_http(url: Url) -> Result<Self, EndpointError> {
         ensure_loopback_resolves(&url)?;
         let response = fetch_version(&url).await?;
@@ -189,7 +186,6 @@ fn label_for(url: &Url) -> Result<NonEmptyText, EndpointError> {
     NonEmptyText::new(label).map_err(|_| EndpointError::InvalidLabel)
 }
 
-#[cfg(feature = "cdpkit-transport")]
 async fn fetch_version(url: &Url) -> Result<serde_json::Value, EndpointError> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;

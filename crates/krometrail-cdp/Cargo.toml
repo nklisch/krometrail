@@ -11,21 +11,19 @@ default = ["cdpkit-transport"]
 cdpkit-transport = [
 	"dep:cdpkit",
 	"dep:futures-util",
-	"dep:serde_json",
 	"tokio/sync",
 	"tokio/time",
 ]
 cdp-spike = [
 	"dep:futures-util",
 	"dep:schemars",
-	"dep:serde_json",
 	"dep:sha2",
 	"dep:tokio-tungstenite",
 	"tokio/sync",
 	"tokio/time",
 	"tokio/test-util",
 ]
-cdp-spike-cdpkit = ["cdp-spike", "cdpkit-transport", "dep:libc"]
+cdp-spike-cdpkit = ["cdp-spike", "cdpkit-transport"]
 
 [dependencies]
 krometrail-core.workspace = true
@@ -36,8 +34,8 @@ tracing.workspace = true
 cdpkit = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 schemars = { workspace = true, optional = true }
-serde_json = { workspace = true, optional = true }
+serde_json.workspace = true
 sha2 = { workspace = true, optional = true }
-libc = { workspace = true, optional = true }
+libc.workspace = true
 tokio-tungstenite = { workspace = true, optional = true }
 url.workspace = true

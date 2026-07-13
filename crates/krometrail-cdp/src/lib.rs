@@ -6,6 +6,7 @@
 //! code remains disposable and is only compiled when an explicit spike feature is requested.
 
 pub mod endpoint;
+pub mod launcher;
 
 #[cfg(feature = "cdpkit-transport")]
 pub mod compatibility;
@@ -22,6 +23,12 @@ pub use compatibility::{
     probe_compatibility,
 };
 pub use endpoint::{EndpointError, LocalCdpEndpoint};
+pub use launcher::{
+    ChromeLauncher, DiscoveryCandidate, DiscoveryInputs, LaunchError, LaunchedChrome,
+    LauncherConfig, ManagedChromeProcess, ProcessError, ProcessTermination, ProfileError,
+    ProfileLease, ProfileLeaseKind, SanitizedProcessExit, SystemChromeLauncher,
+    discover_installations, discover_installations_with,
+};
 #[cfg(feature = "cdpkit-transport")]
 pub use transport::{
     CdpTransport, CdpTransportFactory, CommandScope, NamedEvent, TransportClose, TransportError,
