@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cross-platform-capture-smoke-real-evidence
 kind: story
-stage: implementing
+stage: done
 tags: [browser, testing, infra]
 parent: epic-rust-cdp-capture-foundation-cross-platform-capture-smoke
 depends_on: [epic-rust-cdp-capture-foundation-cross-platform-capture-smoke-harness]
@@ -88,3 +88,63 @@ Linux produces `linux-chrome.json` always and `linux-chromium.json` when Chromiu
 
 - Effective worker: highest.
 - Depends on `...-smoke-harness` for the shared wrapper, serializer, schema, `BrowserVersion` accessor test, macOS reference scan, and canonical-bytes layout.
+
+## Implementation notes
+
+Implemented the opt-in production-path smoke in
+`crates/krometrail-cdp/tests/cross_platform_smoke.rs` as one feature-owned bundle. It now:
+
+- selects installations explicitly by `BrowserProduct`;
+- runs a default-config fidelity session and a capacity-one blocked-sink loss session;
+- checks JPEG dimensions, identities, strict capture ordinals, three-clock ordering, diagnostic
+  timing summaries, counter invariants, managed stop/flush, and live process/profile references;
+- writes canonical schema-validated evidence to a repository-relative or absolute operator path;
+- preserves completed per-configuration evidence when a later decisive configuration fails;
+- validates every committed runtime evidence JSON against both Rust invariants and `schema.json`.
+
+The implementation landed in `595f079ce9772e3974f65bdc62ad70b01c17dbce`; completed-evidence
+retention landed in `048b36a` on `main` (from temporary evidence commit
+`4dfc78b2a6e91c3404fc58c3c8b98c5b6d662fdc`). No production behavior, CLI surface, fixture,
+or final5 evidence changed.
+
+## Real-platform evidence and operator-authorized disposition
+
+- Linux Chrome passed at revision `595f079ce9772e3974f65bdc62ad70b01c17dbce`, producing
+  `docs/evidence/cross-platform-smoke/v1/linux-chrome.json`. Chrome 149.0.7827.155 produced 30
+  fidelity frames with no declared gaps and a loss session with four explicitly declared
+  `ingestion_queue_saturated` gaps. Chromium was not installed and remains an allowed best-effort
+  absence.
+- Hosted macOS default DPI passed at revision
+  `4dfc78b2a6e91c3404fc58c3c8b98c5b6d662fdc`, producing
+  `macos-chrome-default-dpi.json`. Chrome 149.0.7827.201 on arm64 produced 30 fidelity frames,
+  explicit loss reporting, bounded managed shutdown, and clean `ps`-based reference scans.
+- Hosted macOS high DPI did **not** pass. Runs `29288505121` and `29288634536` both observed
+  `deviceScaleFactor == 1.0` even though the exact wrapper contained
+  `--high-dpi-support=1 --force-device-scale-factor=2`. The decisive `>= 1.5` assertion remained
+  intact; no `macos-chrome-high-dpi.json` was emitted or fabricated.
+- On 2026-07-13 the operator explicitly authorized deferring that materially blocked high-DPI
+  evidence so the feature and parent epic can continue. This authorization supersedes the original
+  parent-approval requirement for this cycle; it does not convert the failed gate into a pass.
+  Exact recovery is to demonstrate a Chrome/runner configuration that exposes scale >= 1.5 through
+  production screencast metadata, or redesign that metadata boundary, then add the missing canonical
+  document.
+
+Temporary publication was limited to branch `tmp/cross-platform-smoke-macos-595f079` and workflow
+`CDP transport macOS gate`; no force-push or release occurred. Workflow patch commit:
+`a99d18e1c0bb8e07fed80c278cc05e59494bb21a`. Evidence commit:
+`4dfc78b2a6e91c3404fc58c3c8b98c5b6d662fdc`.
+
+## Verification
+
+- `KROMETRAIL_REAL_CHROME_TESTS=1 KROMETRAIL_SMOKE_EVIDENCE_DIR=docs/evidence/cross-platform-smoke/v1 cargo test -p krometrail-cdp --test cross_platform_smoke --locked -- --nocapture` — Linux passed, 13/13 before the committed-evidence validation test was added; the final deterministic suite passes 14/14.
+- Hosted macOS deterministic and default-DPI real smoke checks passed; high DPI failed honestly as
+  recorded above. Run `29288634536` uploaded the valid default-DPI artifact before failing.
+- `cargo fmt --all -- --check` — passed.
+- `cargo check --workspace --all-targets --locked` — passed.
+- `cargo test --workspace --all-targets --locked` — passed.
+- `cargo clippy --workspace --all-targets --locked -- -D warnings` — passed.
+- `cargo test -p krometrail-cdp --no-default-features --tests --locked` — passed during harness
+  verification; the gated smoke target contained zero tests.
+
+The unrelated pre-existing `.work/bin/work-view` modification was preserved and excluded from every
+commit.

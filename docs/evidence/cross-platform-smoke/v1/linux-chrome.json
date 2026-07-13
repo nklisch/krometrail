@@ -1,0 +1,163 @@
+{
+  "kind": "cross_platform_capture_smoke",
+  "non_claims": [
+    "no transport requalification (final5 owns cdpkit selection)",
+    "no host-speed percentile threshold (ack/cadence are diagnostics)",
+    "no product-thesis capture-probability threshold",
+    "no duration sweep, defect corpus, artifact comparison, or storage validation",
+    "no chrome-acknowledgement-token continuity claim"
+  ],
+  "provenance": {
+    "architecture": "x86_64",
+    "browser_installation": {
+      "discovered_version": "149.0.7827.155",
+      "executable_source": "platform_default",
+      "product": "chrome"
+    },
+    "capture_config": {
+      "ack_timeout_ms": 250,
+      "format": "jpeg",
+      "gap_ledger_capacity": 64,
+      "jpeg_quality": 80,
+      "max_active_streams": 8,
+      "max_base64_payload_bytes": 8388608,
+      "max_dimensions": null,
+      "queue_capacity": 4,
+      "shutdown_timeout_ms": 5000
+    },
+    "cdpkit_version": "0.4.0",
+    "configuration_name": "linux-chrome",
+    "fixture": {
+      "animation_js_sha256": "sha256:84ba666539a996012a781637c1a894d8c7a4789cfca84661bd7cf8b79efa2e13",
+      "index_html_sha256": "sha256:9b42ae730d12a95772a946bf55e4838a5443b6cb4c536424570219041b6e2a68",
+      "name": "cdp-transport-gate",
+      "path": "tests/fixtures/browser/cdp-transport-gate"
+    },
+    "krometrail_revision": "595f079ce9772e3974f65bdc62ad70b01c17dbce",
+    "launch": {
+      "endpoint": "loopback",
+      "force_device_scale_factor": 1.0,
+      "ownership": "managed",
+      "profile_kind": "temporary",
+      "wrapper_variant": "default_dpi"
+    },
+    "platform": "linux",
+    "runtime_version": {
+      "js_version": "14.9.207.29",
+      "product": "chrome",
+      "product_version": "149.0.7827.155",
+      "protocol_version": "1.3",
+      "revision": "@07b52360cc15066f987c910ab34dfbcd4a8778d2",
+      "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/149.0.0.0 Safari/537.36"
+    },
+    "rust_version": "rustc 1.95.0 (59807616e 2026-04-14) (Fedora 1.95.0-1.fc43)"
+  },
+  "schema_version": 1,
+  "sessions": [
+    {
+      "ack_latency_nanos": {
+        "max": 176880,
+        "p50": 131071,
+        "p95": 262143,
+        "p99": 262143,
+        "samples": 30
+      },
+      "capture_config": {
+        "ack_timeout_ms": 250,
+        "format": "jpeg",
+        "gap_ledger_capacity": 64,
+        "jpeg_quality": 80,
+        "max_active_streams": 8,
+        "max_base64_payload_bytes": 8388608,
+        "max_dimensions": null,
+        "queue_capacity": 4,
+        "shutdown_timeout_ms": 5000
+      },
+      "capture_ordinal_range": {
+        "max": 30,
+        "min": 1
+      },
+      "declared_gaps": [],
+      "device_scale_factor": 1.0,
+      "frame_cadence_nanos": {
+        "max": 17079108,
+        "p50": 16777215,
+        "p95": 33554431,
+        "p99": 33554431,
+        "samples": 29
+      },
+      "frame_count": 30,
+      "image_dimensions": {
+        "height": 437,
+        "width": 780
+      },
+      "name": "fidelity",
+      "observed_clock_span_nanos": 481215985,
+      "session_clock_span_nanos": 481215985,
+      "source_time_samples": 30,
+      "viewport": {
+        "height": 437,
+        "width": 780
+      },
+      "visibility_events": 0
+    },
+    {
+      "ack_latency_nanos": {
+        "max": 237479,
+        "p50": 131071,
+        "p95": 262143,
+        "p99": 262143,
+        "samples": 6
+      },
+      "capture_config": {
+        "ack_timeout_ms": 250,
+        "format": "jpeg",
+        "gap_ledger_capacity": 64,
+        "jpeg_quality": 80,
+        "max_active_streams": 8,
+        "max_base64_payload_bytes": 8388608,
+        "max_dimensions": null,
+        "queue_capacity": 1,
+        "shutdown_timeout_ms": 5000
+      },
+      "capture_ordinal_range": {
+        "max": 2,
+        "min": 1
+      },
+      "declared_gaps": [
+        {
+          "count": 4,
+          "reason": "ingestion_queue_saturated"
+        }
+      ],
+      "device_scale_factor": 1.0,
+      "frame_cadence_nanos": {
+        "max": 16628289,
+        "p50": 16777215,
+        "p95": 16777215,
+        "p99": 16777215,
+        "samples": 5
+      },
+      "frame_count": 2,
+      "image_dimensions": {
+        "height": 437,
+        "width": 780
+      },
+      "name": "loss_reporting",
+      "observed_clock_span_nanos": 16257730,
+      "session_clock_span_nanos": 16257730,
+      "source_time_samples": 2,
+      "viewport": {
+        "height": 437,
+        "width": 780
+      },
+      "visibility_events": 0
+    }
+  ],
+  "shutdown": {
+    "flush_count": 1,
+    "outcome": "managed_browser_closed",
+    "process_references_after": [],
+    "profile_references_after": []
+  }
+}

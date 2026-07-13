@@ -275,6 +275,10 @@ combinations.
 - `sample.json` — Hand-authored, schema-valid canonical example pinned to the serializer's
   canonical byte layout. The deterministic round-trip test asserts that
   `serde_json::to_vec_pretty(&CrossPlatformSmokeEvidence::sample())` equals this file byte-for-byte.
+- `linux-chrome.json` — Decisive Linux Chrome evidence from revision
+  `595f079ce9772e3974f65bdc62ad70b01c17dbce`.
+- `macos-chrome-default-dpi.json` — Decisive macOS default-DPI evidence from revision
+  `4dfc78b2a6e91c3404fc58c3c8b98c5b6d662fdc` and hosted run `29288634536`.
 - `README.md` — This file: provenance, measurements, honest non-claims, lane/convention notes,
   exact manual commands, and the decisive/skip policy.
 
@@ -370,11 +374,27 @@ This writes both `macos-chrome-default-dpi.json` and `macos-chrome-high-dpi.json
 
 ## Evidence that exists vs. honestly absent
 
-- Linux Chrome evidence is decisive and required.
-- macOS default-DPI and high-DPI evidence are decisive and required.
-- Linux Chromium evidence is recorded when installed and honestly absent otherwise; its absence is
-  noted in this README and in the `non_claims` of the Linux Chrome evidence if a combined run is
-  produced.
+- `linux-chrome.json` is present and passed both fidelity and capacity-one loss-reporting sessions
+  against Chrome 149.0.7827.155 on Linux x86_64.
+- `macos-chrome-default-dpi.json` is present and passed both sessions against Chrome 149.0.7827.201
+  on hosted macOS 14 arm64. Its process/profile cleanup result used the real `ps`-based reference
+  scan.
+- `macos-chrome-high-dpi.json` is intentionally absent. Hosted runs `29288505121` and `29288634536`
+  both observed `deviceScaleFactor == 1.0` under
+  `--high-dpi-support=1 --force-device-scale-factor=2`; the decisive `>= 1.5` assertion failed, so
+  the harness emitted no passing document. The operator explicitly authorized deferring this
+  evidence on 2026-07-13 so the foundation implementation can continue without weakening the gate
+  or fabricating a pass. A future lane must either demonstrate a Chrome configuration that exposes
+  high DPI through the production capture metadata or redesign that capture boundary before this
+  evidence can be added.
+- `linux-chromium.json` is honestly absent because no `BrowserProduct::Chromium` installation was
+  available on the Linux lane; this configuration remains best-effort.
+- The temporary publication used branch `tmp/cross-platform-smoke-macos-595f079`, workflow
+  `CDP transport macOS gate`, workflow patch commit
+  `a99d18e1c0bb8e07fed80c278cc05e59494bb21a`, and evidence commit
+  `4dfc78b2a6e91c3404fc58c3c8b98c5b6d662fdc`. Run `29288505121` first exposed the high-DPI
+  failure; run `29288634536` retained and uploaded the valid default-DPI document before the same
+  decisive high-DPI failure.
 - Real visibility transitions and `Page.screencastVisibilityChanged` events are observed and counted,
   not assumed.
 

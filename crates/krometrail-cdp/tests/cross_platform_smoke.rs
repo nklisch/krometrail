@@ -212,6 +212,42 @@ fn deterministic_schema_validates_sample_and_serializer_output() {
 }
 
 #[test]
+fn deterministic_committed_runtime_evidence_is_canonical_and_schema_valid() {
+    let directory = schema_path().parent().expect("schema directory").to_owned();
+    let mut paths = fs::read_dir(directory)
+        .expect("evidence directory")
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension().and_then(|extension| extension.to_str()) == Some("json")
+                && !matches!(
+                    path.file_name().and_then(|name| name.to_str()),
+                    Some("schema.json" | "sample.json")
+                )
+        })
+        .collect::<Vec<_>>();
+    paths.sort();
+    let schema = load_schema();
+    for path in paths {
+        let bytes = fs::read(&path).expect("committed runtime evidence");
+        let document: CrossPlatformSmokeEvidence =
+            serde_json::from_slice(&bytes).expect("runtime evidence shape");
+        document.validate().expect("runtime evidence invariants");
+        validate_against_schema(
+            &serde_json::to_value(&document).expect("runtime evidence encodes"),
+            &schema,
+        )
+        .expect("runtime evidence schema");
+        assert_eq!(
+            document.to_canonical_bytes().expect("canonical evidence"),
+            bytes,
+            "{} is not canonical",
+            path.display()
+        );
+    }
+}
+
+#[test]
 fn deterministic_evidence_invariants_reject_invalid_variants_and_private_data() {
     let mut evidence = CrossPlatformSmokeEvidence::sample();
     evidence.validate().expect("canonical sample validates");
