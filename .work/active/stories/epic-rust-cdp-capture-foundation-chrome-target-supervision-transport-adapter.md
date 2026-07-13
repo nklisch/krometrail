@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-chrome-target-supervision-transport-adapter
 kind: story
-stage: review
+stage: done
 tags: [browser]
 parent: epic-rust-cdp-capture-foundation-chrome-target-supervision
 depends_on: [epic-rust-cdp-capture-foundation-chrome-target-supervision-contracts]
@@ -58,3 +58,13 @@ No reconnect, launcher/profile ownership, target state machine, fallback transpo
 ## Verification
 
 `cargo fmt --all -- --check`, workspace check/test, no-default feature check, workspace clippy with denied warnings, and the opt-in cdpkit spike regression all pass. The work-view binary was restored after verification.
+
+## Review (2026-07-13)
+
+**Verdict:** Approve
+
+**Blockers:** none
+**Important:** none
+**Nits:** none
+
+**Notes:** Fast-lane adapter review reran 62 workspace and 59 candidate-feature tests plus denied-warning clippy; verified strict loopback endpoints, flat/raw/named-event transport, registry-derived Chrome/Chromium/Electron compatibility, Node-only rejection, no reconnect/screencast start, and no cdpkit type leakage. Verdict: Approve - story verified by implement; fast-lane advance.
