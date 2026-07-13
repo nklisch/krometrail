@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-operation-page-observation
 kind: feature
-stage: implementing
+stage: review
 tags: [browser, agent-ux]
 parent: epic-agent-browser-operation
 depends_on: []
@@ -625,3 +625,35 @@ One feature owner should normally carry all five checkpoints. The dependencies e
 ## Pre-mortem
 
 The riskiest assumption is that one renderer session can map useful AX nodes to live backend DOM nodes across ordinary shadow/iframe structures. Failure would show up as snapshots that look correct but references that consistently fail or, worse, resolve in the wrong document. The design prevents the dangerous form by binding target, generation, attachment, main-frame loader, and backend node and by refusing replacement guesses. If real-browser qualification shows OOPIF resolution is not sound, the fallback is to omit those actionable references while retaining screenshot/coordinate evidence and record the supported boundary; cross-frame session ownership becomes explicit later work. The area of least certainty is Chrome's side-effect-analysis behavior for awaited expressions, so evaluation remains intentionally narrow and has direct snapshot/inspection fallbacks.
+
+## Implementation summary
+
+One feature owner completed the five dependency-ordered checkpoints without splitting the shared control/reference context:
+
+- `epic-agent-browser-operation-page-observation-core-contracts` — added validated infrastructure-free page/snapshot/reference/screenshot/evaluation/live-observation values, the macro-backed five-operation registry, required `BrowserSessionPort::execute`, and stable observation error semantics.
+- `epic-agent-browser-operation-page-observation-operation-executor` — routed operations through the existing single-writer production supervisor, exact current flat-session binding, one injected monotonic clock/session origin, fresh inspection, and bounded side-effect-free evaluation. Reconnect paths answer without replay.
+- `epic-agent-browser-operation-page-observation-snapshot-references` — added deterministic bounded AX compaction, checked per-target generations, atomic refresh, document/attachment/backing-node invalidation, and one shared live resolver plus weaker selector lookup.
+- `epic-agent-browser-operation-page-observation-screenshots-live-observation` — added every declared screenshot target with exact CSS clip conversion, bounded base64/header validation, measured device scale, and reusable honest partial live observation independent of continuous capture.
+- `epic-agent-browser-operation-page-observation-qualification` — extended the shared scripted transport, added a standalone fixture and deterministic production-port coverage, and proved the supported AX/DOM/screenshot/live path against real Linux Chrome including forced-scale measurement.
+
+The implementation stayed inside core/CDP and target-fixture boundaries. It did not register MCP tools, add navigation/input/wait/batch operations, touch storage or temporal vision, or create another browser/session manager. Infrastructure and CDP identities remain private to the adapter.
+
+### Implementation discoveries and deviations
+
+- Generated operation result payloads are uniformly boxed. Clippy exposed a large inline enum layout once `LiveObservation` joined the registry; boxing preserves the single generated association surface while avoiding every dispatch value reserving the largest payload.
+- Snapshot target pruning occurs at operation dispatch, while attachment generation and document fingerprint are synchronously rechecked during resolution. This gives the required stale behavior without another target-event subscriber or control-state writer.
+- Real Chrome occasionally returned one retry-safe screenshot failure while rapidly switching surface dimensions across viewport/full-page/element/region variants. Qualification allows exactly one retry only for `screenshot_failed` and still requires a valid payload/provenance; persistent failure remains red.
+- Linux forced-scale qualification measured device scale `2`. macOS/high-DPI hosted evidence was unavailable in this endpoint and remains explicitly unclaimed rather than inferred.
+
+## Integrated verification
+
+- `cargo fmt --all -- --check` passed.
+- `cargo check --workspace --all-targets --locked` passed.
+- `cargo test --workspace --all-targets --locked` passed: 221 tests across 22 suites.
+- `cargo clippy --workspace --all-targets --locked -- -D warnings` passed.
+- `cargo check -p krometrail-cdp --no-default-features --all-targets --locked` passed.
+- `cargo test -p krometrail-cdp --all-targets --locked` passed: 153 tests across 15 suites.
+- `cargo test -p krometrail-cdp --test page_observation --locked -- --nocapture` passed: 8 deterministic/default tests.
+- `KROMETRAIL_REAL_CHROME_TESTS=1 cargo test -p krometrail-cdp --test page_observation --locked -- --nocapture` passed: all 8 tests, including default and forced-scale real Chrome qualification on Linux.
+
+All five child stories are `done`; integrated implementation is complete and this feature is ready for the caller's standard independent review. It is not self-approved here.
