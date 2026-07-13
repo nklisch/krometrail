@@ -2,8 +2,9 @@ use std::{path::PathBuf, sync::Arc};
 
 use crate::{
     browser::{
-        BrowserCompatibility, BrowserInstallation, BrowserOwnership, BrowserSessionEvent,
-        BrowserSessionState, BrowserStopOutcome, PageTarget, ProfileRef, SupervisedTarget,
+        BrowserCompatibility, BrowserInstallation, BrowserOperationRequest, BrowserOperationResult,
+        BrowserOwnership, BrowserSessionEvent, BrowserSessionState, BrowserStopOutcome, PageTarget,
+        ProfileRef, SupervisedTarget,
     },
     error::{Result, invalid},
     ids::SessionId,
@@ -127,6 +128,10 @@ pub trait BrowserSessionPort: Send + Sync {
     fn targets(&self) -> PortFuture<'_, Result<Vec<SupervisedTarget>>>;
     fn subscribe(&self) -> PortFuture<'_, Result<Box<dyn BrowserSessionEvents>>>;
     fn capture_statuses(&self) -> PortFuture<'_, Result<Vec<TargetCaptureStatus>>>;
+    fn execute(
+        &self,
+        request: BrowserOperationRequest,
+    ) -> PortFuture<'_, Result<BrowserOperationResult>>;
     fn stop(&self) -> PortFuture<'_, Result<BrowserStopOutcome>>;
 }
 

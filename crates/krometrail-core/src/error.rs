@@ -28,6 +28,11 @@ define_stable_enum! {
         BrowserCompatibilityFailed => "browser_compatibility_failed",
         ProfileInUse => "profile_in_use",
         TargetFailed => "target_failed",
+        StaleReference => "stale_reference",
+        ReferenceNotActionable => "reference_not_actionable",
+        PageObservationFailed => "page_observation_failed",
+        ScreenshotFailed => "screenshot_failed",
+        EvaluationFailed => "evaluation_failed",
         ReconnectExhausted => "reconnect_exhausted",
         Cancelled => "cancelled",
         ShutdownIncomplete => "shutdown_incomplete",
@@ -154,7 +159,10 @@ impl ErrorCode {
             | Self::BrowserCompatibilityFailed
             | Self::ProfileInUse
             | Self::ReconnectExhausted => RetryAdvice::AfterRecovery,
-            Self::TargetFailed => RetryAdvice::Safe,
+            Self::TargetFailed | Self::PageObservationFailed | Self::ScreenshotFailed => {
+                RetryAdvice::Safe
+            }
+            Self::StaleReference | Self::ReferenceNotActionable => RetryAdvice::AfterRecovery,
             _ => RetryAdvice::Never,
         }
     }
@@ -169,6 +177,19 @@ impl ErrorCode {
             Self::BrowserCompatibilityFailed => Some("use a compatible Chrome renderer and retry"),
             Self::ProfileInUse => Some("close the other session using this profile, then retry"),
             Self::TargetFailed => Some("refresh the target or choose another page"),
+            Self::StaleReference => {
+                Some("request a new structured snapshot and retry with its reference")
+            }
+            Self::ReferenceNotActionable => Some("refresh the snapshot or choose another target"),
+            Self::PageObservationFailed => {
+                Some("retry once; if it fails again, inspect browser compatibility and status")
+            }
+            Self::ScreenshotFailed => {
+                Some("retry once; if it fails again, inspect browser compatibility and status")
+            }
+            Self::EvaluationFailed => {
+                Some("use a bounded side-effect-free expression returning a JSON value")
+            }
             Self::ReconnectExhausted => Some("check the browser and start a new session"),
             Self::Cancelled => Some("start the operation again if it is still needed"),
             Self::ShutdownIncomplete => {

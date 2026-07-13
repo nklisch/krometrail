@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-operation-page-observation-core-contracts
 kind: story
-stage: implementing
+stage: done
 tags: [browser, agent-ux]
 parent: epic-agent-browser-operation-page-observation
 depends_on: []
@@ -46,3 +46,16 @@ Add stable, target-contextual `stale_reference`, `reference_not_actionable`, `pa
 ## Ordering
 
 This is the first checkpoint. It creates the contracts consumed by every later checkpoint; it is not a standalone worker split from the feature.
+
+## Implementation notes
+
+- Added the infrastructure-free observation contract in `browser/observation.rs`, including validated generations, node ids, geometry, viewport/navigation state, compact snapshot topology, screenshot payload/metadata, bounded evaluation values, and explicit partial live-observation parts.
+- Added one macro-backed operation declaration in `browser/operation.rs`; request/result variants, stable names, kind mapping, mutability, evidence policy, and registry entries derive from it.
+- Extended `BrowserSessionPort` with a required object-safe `execute` method. Existing fakes now implement it deliberately rather than inheriting an unavailable default.
+- Added the five stable page-observation error codes and centralized retry/recovery defaults.
+- Promoted workspace `serde_json` to a normal core dependency solely for explicit by-value evaluation results. No runtime or infrastructure dependency entered core.
+
+## Verification
+
+- `cargo test -p krometrail-core --locked` — 50 tests passed.
+- Workspace formatting was temporarily blocked by a concurrently incomplete `temporal-vision` module; all owned Rust files were formatted directly with Rust 2024 `rustfmt` instead. The final integrated gate will run after the parallel module becomes complete.

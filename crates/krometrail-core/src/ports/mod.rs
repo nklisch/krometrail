@@ -171,6 +171,16 @@ mod tests {
             Box::pin(std::future::ready(Ok(Vec::new())))
         }
 
+        fn execute(
+            &self,
+            _request: crate::BrowserOperationRequest,
+        ) -> PortFuture<'_, crate::Result<crate::BrowserOperationResult>> {
+            Box::pin(std::future::ready(Err(crate::KrometrailError::new(
+                ErrorCode::Unsupported,
+                crate::NonEmptyText::new("fake browser operation is not configured").unwrap(),
+            ))))
+        }
+
         fn stop(&self) -> PortFuture<'_, crate::Result<BrowserStopOutcome>> {
             let result = if self.fail {
                 Err(crate::KrometrailError::new(

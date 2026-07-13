@@ -42,10 +42,18 @@ pub mod timeline;
 mod validation;
 
 pub use browser::{
-    BrowserCompatibility, BrowserInstallation, BrowserInstallationSource, BrowserOwnership,
+    AccessibleProperty, AccessibleValue, BROWSER_OPERATION_REGISTRY, BrowserCompatibility,
+    BrowserInstallation, BrowserInstallationSource, BrowserOperationDefinition,
+    BrowserOperationKind, BrowserOperationRequest, BrowserOperationResult, BrowserOwnership,
     BrowserProduct, BrowserProductVersion, BrowserSessionEvent, BrowserSessionState,
-    BrowserStopOutcome, BrowserVersion, CapabilitySupport, PageTarget, ProfileIdentity, ProfileRef,
-    REQUIRED_RENDERER_CAPABILITIES, RendererCapability, SupervisedTarget, TargetVisibility,
+    BrowserStopOutcome, BrowserVersion, CapabilitySupport, CoordinateSpace, CssPoint, CssRect,
+    CssSize, DocumentReadiness, ElementLocator, EncodedScreenshot, EvaluationResult,
+    EvaluationValue, InspectPageRequest, LiveObservation, LiveObservationRequest, NavigationState,
+    NodeReference, ObservationContext, ObservationPart, OperationEvidence, OperationMutability,
+    PageSnapshot, PageState, PageTarget, ProfileIdentity, ProfileRef,
+    REQUIRED_RENDERER_CAPABILITIES, ReadOnlyEvaluationRequest, RendererCapability,
+    ScreenshotMetadata, ScreenshotRequest, ScreenshotTarget, SnapshotGeneration, SnapshotNode,
+    SnapshotNodeId, SnapshotPageRequest, SupervisedTarget, TargetVisibility, ViewportState,
 };
 pub use capabilities::{
     CAPABILITY_REGISTRY, CapabilityDefault, CapabilityDefinition, CapabilityId, RecordingSubsystem,
