@@ -1,78 +1,140 @@
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    error::{Result, invalid},
+    error::{NonEmptyText, Result, invalid},
     ids::TargetId,
     validation::deserialize_validated,
 };
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct BrowserVersion {
-    product: String,
-    revision: String,
-    protocol: String,
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserInstallationSource {
+    ExplicitRequest,
+    EnvironmentOverride,
+    PlatformDefault,
+    PathLookup,
 }
 
-#[derive(Deserialize)]
-struct BrowserVersionWire {
-    product: String,
-    revision: String,
-    protocol: String,
-}
+impl BrowserInstallationSource {
+    pub const ALL: &'static [Self] = &[
+        Self::ExplicitRequest,
+        Self::EnvironmentOverride,
+        Self::PlatformDefault,
+        Self::PathLookup,
+    ];
 
-impl BrowserVersion {
-    pub fn new(
-        product: impl Into<String>,
-        revision: impl Into<String>,
-        protocol: impl Into<String>,
-    ) -> Result<Self> {
-        let version = Self {
-            product: product.into(),
-            revision: revision.into(),
-            protocol: protocol.into(),
-        };
-        version.validate()?;
-        Ok(version)
-    }
-
-    pub fn product(&self) -> &str {
-        &self.product
-    }
-
-    pub fn revision(&self) -> &str {
-        &self.revision
-    }
-
-    pub fn protocol(&self) -> &str {
-        &self.protocol
-    }
-
-    pub(crate) fn validate(&self) -> Result<()> {
-        for (field, value) in [
-            ("product", &self.product),
-            ("revision", &self.revision),
-            ("protocol", &self.protocol),
-        ] {
-            if value.trim().is_empty() {
-                return Err(invalid(format!("browser {field} must not be empty")));
-            }
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ExplicitRequest => "explicit_request",
+            Self::EnvironmentOverride => "environment_override",
+            Self::PlatformDefault => "platform_default",
+            Self::PathLookup => "path_lookup",
         }
-        Ok(())
     }
 }
 
-impl<'de> Deserialize<'de> for BrowserVersion {
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserProduct {
+    Chrome,
+    Chromium,
+    ElectronRenderer,
+    OtherChromium,
+}
+
+impl BrowserProduct {
+    pub const ALL: &'static [Self] = &[
+        Self::Chrome,
+        Self::Chromium,
+        Self::ElectronRenderer,
+        Self::OtherChromium,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Chrome => "chrome",
+            Self::Chromium => "chromium",
+            Self::ElectronRenderer => "electron_renderer",
+            Self::OtherChromium => "other_chromium",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct BrowserProductVersion(NonEmptyText);
+
+impl BrowserProductVersion {
+    pub fn new(value: impl Into<String>) -> Result<Self> {
+        NonEmptyText::new(value)
+            .map(Self)
+            .map_err(|_| invalid("browser product version must not be empty"))
+    }
+
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl<'de> Deserialize<'de> for BrowserProductVersion {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        deserialize_validated(deserializer, |wire: BrowserVersionWire| {
-            Self::new(wire.product, wire.revision, wire.protocol)
-        })
+        deserialize_validated(deserializer, |value: String| Self::new(value))
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct BrowserInstallation {
+    pub executable: PathBuf,
+    pub source: BrowserInstallationSource,
+    pub product: BrowserProduct,
+    pub version: BrowserProductVersion,
+}
+
+#[derive(Deserialize)]
+struct BrowserInstallationWire {
+    executable: PathBuf,
+    source: BrowserInstallationSource,
+    product: BrowserProduct,
+    version: BrowserProductVersion,
+}
+
+impl BrowserInstallation {
+    pub fn new(
+        executable: impl Into<PathBuf>,
+        source: BrowserInstallationSource,
+        product: BrowserProduct,
+        version: BrowserProductVersion,
+    ) -> Result<Self> {
+        let executable = executable.into();
+        if executable.as_os_str().is_empty() {
+            return Err(invalid("browser executable must not be empty"));
+        }
+        Ok(Self {
+            executable,
+            source,
+            product,
+            version,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for BrowserInstallation {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserialize_validated(deserializer, |wire: BrowserInstallationWire| {
+            Self::new(wire.executable, wire.source, wire.product, wire.version)
+        })
+    }
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
 #[serde(transparent)]
 pub struct ProfileIdentity(String);
 
@@ -97,6 +159,133 @@ impl<'de> Deserialize<'de> for ProfileIdentity {
     {
         deserialize_validated(deserializer, |value: String| Self::new(value))
     }
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfileRef {
+    Managed(ProfileIdentity),
+    External,
+}
+
+impl ProfileRef {
+    pub const fn external() -> Self {
+        Self::External
+    }
+
+    pub fn managed(identity: ProfileIdentity) -> Self {
+        Self::Managed(identity)
+    }
+}
+
+impl<'de> Deserialize<'de> for ProfileRef {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        enum Wire {
+            Managed(ProfileIdentity),
+            External,
+        }
+        match Wire::deserialize(deserializer)? {
+            Wire::Managed(identity) => Ok(Self::Managed(identity)),
+            Wire::External => Ok(Self::External),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct BrowserVersion {
+    pub product: BrowserProduct,
+    pub product_version: BrowserProductVersion,
+    pub revision: NonEmptyText,
+    pub protocol_version: NonEmptyText,
+    pub user_agent: NonEmptyText,
+    pub js_version: NonEmptyText,
+}
+
+#[derive(Deserialize)]
+struct BrowserVersionWire {
+    product: BrowserProduct,
+    product_version: BrowserProductVersion,
+    revision: NonEmptyText,
+    protocol_version: NonEmptyText,
+    user_agent: NonEmptyText,
+    js_version: NonEmptyText,
+}
+
+impl BrowserVersion {
+    pub fn new(
+        product: BrowserProduct,
+        product_version: BrowserProductVersion,
+        revision: impl Into<String>,
+        protocol_version: impl Into<String>,
+        user_agent: impl Into<String>,
+        js_version: impl Into<String>,
+    ) -> Result<Self> {
+        let version = Self {
+            product,
+            product_version,
+            revision: non_empty("browser revision", revision)?,
+            protocol_version: non_empty("browser protocol version", protocol_version)?,
+            user_agent: non_empty("browser user agent", user_agent)?,
+            js_version: non_empty("browser JavaScript version", js_version)?,
+        };
+        version.validate()?;
+        Ok(version)
+    }
+
+    pub fn product(&self) -> BrowserProduct {
+        self.product
+    }
+
+    pub fn product_version(&self) -> &BrowserProductVersion {
+        &self.product_version
+    }
+
+    pub fn revision(&self) -> &str {
+        self.revision.as_str()
+    }
+
+    pub fn protocol_version(&self) -> &str {
+        self.protocol_version.as_str()
+    }
+
+    pub fn user_agent(&self) -> &str {
+        self.user_agent.as_str()
+    }
+
+    pub fn js_version(&self) -> &str {
+        self.js_version.as_str()
+    }
+
+    pub(crate) fn validate(&self) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl<'de> Deserialize<'de> for BrowserVersion {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserialize_validated(deserializer, |wire: BrowserVersionWire| {
+            Self::new(
+                wire.product,
+                wire.product_version,
+                wire.revision.as_str(),
+                wire.protocol_version.as_str(),
+                wire.user_agent.as_str(),
+                wire.js_version.as_str(),
+            )
+        })
+    }
+}
+
+fn non_empty(name: &str, value: impl Into<String>) -> Result<NonEmptyText> {
+    NonEmptyText::new(value).map_err(|_| invalid(format!("{name} must not be empty")))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -173,13 +362,46 @@ impl<'de> Deserialize<'de> for PageTarget {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ids::TargetId;
 
     const UUID: &str = "123e4567-e89b-12d3-a456-426614174000";
 
+    fn version() -> BrowserVersion {
+        BrowserVersion::new(
+            BrowserProduct::Chrome,
+            BrowserProductVersion::new("128.0.1").unwrap(),
+            "revision",
+            "1.3",
+            "Chrome/128",
+            "12.8",
+        )
+        .unwrap()
+    }
+
     #[test]
-    fn validates_browser_profile_and_target_boundaries() {
-        assert!(BrowserVersion::new("", "revision", "protocol").is_err());
+    fn validates_browser_identity_installation_profile_and_target_boundaries() {
+        assert!(BrowserProductVersion::new(" ").is_err());
+        assert!(
+            BrowserInstallation::new(
+                "",
+                BrowserInstallationSource::PathLookup,
+                BrowserProduct::Chrome,
+                BrowserProductVersion::new("128").unwrap()
+            )
+            .is_err()
+        );
         assert!(ProfileIdentity::new(" ").is_err());
+        assert!(
+            BrowserVersion::new(
+                BrowserProduct::Chrome,
+                BrowserProductVersion::new("128").unwrap(),
+                "",
+                "1.3",
+                "ua",
+                "js"
+            )
+            .is_err()
+        );
         assert!(
             PageTarget::new(
                 TargetId::from_uuid(UUID.parse().unwrap()),
@@ -189,20 +411,36 @@ mod tests {
             )
             .is_err()
         );
-        assert!(
-            PageTarget::new(TargetId::from_uuid(UUID.parse().unwrap()), "target", "", "").is_err()
+    }
+
+    #[test]
+    fn managed_and_external_profiles_have_distinct_wire_values() {
+        let managed = ProfileRef::managed(ProfileIdentity::new("profile").unwrap());
+        let managed_json = serde_json::to_string(&managed).unwrap();
+        assert_eq!(managed_json, r#"{"managed":"profile"}"#);
+        assert_eq!(
+            serde_json::from_str::<ProfileRef>(&managed_json).unwrap(),
+            managed
+        );
+        let external = serde_json::to_string(&ProfileRef::External).unwrap();
+        assert_eq!(external, r#""external""#);
+        assert_eq!(
+            serde_json::from_str::<ProfileRef>(&external).unwrap(),
+            ProfileRef::External
         );
     }
 
     #[test]
-    fn rejects_malformed_serialized_validated_browser_values() {
-        assert!(
-            serde_json::from_str::<BrowserVersion>(
-                r#"{"product":"","revision":"r","protocol":"p"}"#
-            )
-            .is_err()
+    fn complete_browser_version_round_trips_and_rejects_missing_values() {
+        let value = version();
+        let encoded = serde_json::to_string(&value).unwrap();
+        assert_eq!(
+            serde_json::from_str::<BrowserVersion>(&encoded).unwrap(),
+            value
         );
-        assert!(serde_json::from_str::<ProfileIdentity>(r#""  "#).is_err());
-        assert!(serde_json::from_str::<PageTarget>(&format!(r#"{{"id":"{UUID}","browser_target_key":"","url":"https://example.test","title":""}}"#)).is_err());
+        assert!(serde_json::from_str::<BrowserVersion>(
+			r#"{"product":"chrome","product_version":"128","revision":"r","protocol_version":"1.3","user_agent":"","js_version":"js"}"#
+		)
+		.is_err());
     }
 }

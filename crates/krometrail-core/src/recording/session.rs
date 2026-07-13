@@ -3,7 +3,7 @@ use std::{num::NonZeroU64, time::SystemTime};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    browser::{BrowserVersion, ProfileIdentity},
+    browser::{BrowserVersion, ProfileRef},
     capabilities::{CapabilityId, validate_capability_selection},
     error::{Result, invalid},
     ids::SessionId,
@@ -153,7 +153,7 @@ pub struct RecordingSession {
     started_at: SystemTime,
     ended_at: Option<SystemTime>,
     browser: BrowserVersion,
-    profile: ProfileIdentity,
+    profile: ProfileRef,
     lifecycle: SessionLifecycle,
     disk_budget: DiskBudgetBytes,
     capabilities: Vec<CapabilityId>,
@@ -167,7 +167,7 @@ struct RecordingSessionWire {
     started_at: SystemTime,
     ended_at: Option<SystemTime>,
     browser: BrowserVersion,
-    profile: ProfileIdentity,
+    profile: ProfileRef,
     lifecycle: SessionLifecycle,
     disk_budget: DiskBudgetBytes,
     capabilities: Vec<CapabilityId>,
@@ -180,7 +180,7 @@ impl RecordingSession {
         origin: ObservedTime,
         started_at: SystemTime,
         browser: BrowserVersion,
-        profile: ProfileIdentity,
+        profile: ProfileRef,
         disk_budget: DiskBudgetBytes,
         capabilities: Vec<CapabilityId>,
     ) -> Result<Self> {
@@ -205,7 +205,7 @@ impl RecordingSession {
         started_at: SystemTime,
         ended_at: Option<SystemTime>,
         browser: BrowserVersion,
-        profile: ProfileIdentity,
+        profile: ProfileRef,
         lifecycle: SessionLifecycle,
         disk_budget: DiskBudgetBytes,
         capabilities: Vec<CapabilityId>,
@@ -270,7 +270,7 @@ impl RecordingSession {
         &self.browser
     }
 
-    pub fn profile(&self) -> &ProfileIdentity {
+    pub fn profile(&self) -> &ProfileRef {
         &self.profile
     }
 
@@ -346,12 +346,46 @@ mod tests {
             SessionId::from_uuid(UUID.parse().unwrap()),
             ObservedTime::from_nanos(1),
             SystemTime::UNIX_EPOCH,
-            BrowserVersion::new("Chrome", "revision", "1").unwrap(),
-            ProfileIdentity::new("profile").unwrap(),
+            BrowserVersion::new(
+                crate::BrowserProduct::Chrome,
+                crate::BrowserProductVersion::new("128").unwrap(),
+                "revision",
+                "1.3",
+                "Chrome/128",
+                "12",
+            )
+            .unwrap(),
+            ProfileRef::Managed(crate::ProfileIdentity::new("profile").unwrap()),
             DiskBudgetBytes::new(1024).unwrap(),
             vec![CapabilityId::Control],
         )
         .unwrap()
+    }
+
+    #[test]
+    fn managed_and_external_profiles_round_trip_in_recording_sessions() {
+        let attached = RecordingSession::new(
+            SessionId::from_uuid(UUID.parse().unwrap()),
+            ObservedTime::from_nanos(1),
+            SystemTime::UNIX_EPOCH,
+            BrowserVersion::new(
+                crate::BrowserProduct::Chromium,
+                crate::BrowserProductVersion::new("128").unwrap(),
+                "revision",
+                "1.3",
+                "Chromium/128",
+                "12",
+            )
+            .unwrap(),
+            ProfileRef::External,
+            DiskBudgetBytes::new(1024).unwrap(),
+            vec![CapabilityId::Control],
+        )
+        .unwrap();
+        let encoded = serde_json::to_string(&attached).unwrap();
+        let decoded = serde_json::from_str::<RecordingSession>(&encoded).unwrap();
+        assert_eq!(decoded.profile(), &ProfileRef::External);
+        assert_eq!(decoded, attached);
     }
 
     #[test]
@@ -409,7 +443,7 @@ mod tests {
         let malformed_statistics = r#"{"received_frames":1,"accepted_frames":1,"dropped_frames":1,"persisted_frames":0,"gap_count":0}"#;
         assert!(serde_json::from_str::<CaptureStatistics>(malformed_statistics).is_err());
         let malformed_session = format!(
-            r#"{{"id":"{UUID}","origin":1,"started_at":{{"secs_since_epoch":0,"nanos_since_epoch":0}},"ended_at":null,"browser":{{"product":"Chrome","revision":"r","protocol":"p"}},"profile":"profile","lifecycle":"ended","disk_budget":1024,"capabilities":["control"],"statistics":{{"received_frames":0,"accepted_frames":0,"dropped_frames":0,"persisted_frames":0,"gap_count":0}}}}"#
+            r#"{{"id":"{UUID}","origin":1,"started_at":{{"secs_since_epoch":0,"nanos_since_epoch":0}},"ended_at":null,"browser":{{"product":"Chrome","product_version":"128","revision":"r","protocol_version":"1.3","user_agent":"Chrome/128","js_version":"12"}},"profile":"profile","lifecycle":"ended","disk_budget":1024,"capabilities":["control"],"statistics":{{"received_frames":0,"accepted_frames":0,"dropped_frames":0,"persisted_frames":0,"gap_count":0}}}}"#
         );
         assert!(serde_json::from_str::<RecordingSession>(&malformed_session).is_err());
         let valid = session();

@@ -29,14 +29,22 @@ fn help_is_truthful_and_succeeds() {
 }
 
 #[test]
-fn doctor_reports_unavailable_browser_transport() {
+fn doctor_reports_missing_browser_installation() {
     let output = run(&["doctor"]);
     let stderr = text(&output.stderr);
     assert!(!output.status.success());
     assert_eq!(output.status.code(), Some(1));
-    assert!(stderr.contains("error[unsupported]"), "stderr: {stderr}");
     assert!(
-        stderr.contains("browser transport is not available"),
+        stderr.contains("error[browser_not_found]"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("no supported browser installation was found"),
+        "stderr: {stderr}"
+    );
+    assert!(!stderr.contains("error[unsupported]"), "stderr: {stderr}");
+    assert!(
+        !stderr.contains("browser transport is not available"),
         "stderr: {stderr}"
     );
     assert!(stderr.contains("recovery:"), "stderr: {stderr}");

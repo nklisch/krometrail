@@ -15,8 +15,8 @@ pub mod timeline;
 pub type PortFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
 
 pub use browser::{
-    AttachBrowser, BrowserCompatibility, BrowserConnectRequest, BrowserConnector,
-    BrowserSessionPort, DomainSupport, LaunchBrowser,
+    AttachBrowser, BrowserConnectRequest, BrowserConnector, BrowserFailureKind, BrowserPageTargets,
+    BrowserSessionEvents, BrowserSessionPort, LaunchBrowser, ManagedProfile,
 };
 pub use clock::{MonotonicClock, WallClock};
 pub use ids::IdSource;
@@ -27,10 +27,13 @@ pub use timeline::TimelineStore;
 mod tests {
     use super::*;
     use crate::{
-        BrowserVersion, CaptureGap, CaptureGapReason, CapturedFrame, DeviceScaleFactor,
-        EncodedFrame, ErrorCode, ImageFormat, ObservationKind, ObservationPayloadRef, ObservedTime,
-        PageTarget, PixelDimensions, ProfileIdentity, SessionId, SessionRange, SessionTime,
-        SourceTime, TargetId, TimelineObservation,
+        BrowserCompatibility, BrowserOwnership, BrowserProduct, BrowserProductVersion,
+        BrowserSessionEvent, BrowserSessionState, BrowserStopOutcome, BrowserVersion, CaptureGap,
+        CaptureGapReason, CapturedFrame, DeviceScaleFactor, EncodedFrame, ErrorCode, ImageFormat,
+        ObservationKind, ObservationPayloadRef, ObservedTime, PageTarget, PixelDimensions,
+        ProfileIdentity, ProfileRef, RendererCapability, SessionId, SessionRange, SessionTime,
+        SourceTime, SupervisedTarget, TargetId, TargetLifecycle, TargetVisibility,
+        TimelineObservation,
     };
     use std::{
         collections::VecDeque,
@@ -94,9 +97,19 @@ mod tests {
     }
 
     #[derive(Debug)]
+    struct ClosedEvents;
+
+    impl BrowserSessionEvents for ClosedEvents {
+        fn next(&mut self) -> PortFuture<'_, crate::Result<Option<BrowserSessionEvent>>> {
+            Box::pin(std::future::ready(Ok(None)))
+        }
+    }
+
+    #[derive(Debug)]
     struct FakeBrowserSession {
         compatibility: BrowserCompatibility,
-        targets: Vec<PageTarget>,
+        profile: ProfileRef,
+        targets: Vec<SupervisedTarget>,
         fail: bool,
     }
 
@@ -105,28 +118,56 @@ mod tests {
             &self.compatibility
         }
 
-        fn page_targets(&self) -> PortFuture<'_, crate::Result<Vec<PageTarget>>> {
+        fn ownership(&self) -> BrowserOwnership {
+            match self.profile {
+                ProfileRef::Managed(_) => BrowserOwnership::Managed,
+                ProfileRef::External => BrowserOwnership::Attached,
+            }
+        }
+
+        fn profile(&self) -> &ProfileRef {
+            &self.profile
+        }
+
+        fn state(&self) -> BrowserSessionState {
+            if self.fail {
+                BrowserSessionState::Ended
+            } else {
+                BrowserSessionState::Ready
+            }
+        }
+
+        fn targets(&self) -> PortFuture<'_, crate::Result<Vec<SupervisedTarget>>> {
             let result = if self.fail {
                 Err(crate::KrometrailError::new(
-                    ErrorCode::BrowserDisconnected,
+                    ErrorCode::BrowserNotFound,
                     crate::NonEmptyText::new("browser session is unavailable").unwrap(),
                 ))
             } else {
                 Ok(self.targets.clone())
             };
-            Box::pin(async move { result })
+            Box::pin(std::future::ready(result))
         }
 
-        fn close(&self) -> PortFuture<'_, crate::Result<()>> {
+        fn subscribe(&self) -> PortFuture<'_, crate::Result<Box<dyn BrowserSessionEvents>>> {
+            Box::pin(std::future::ready(Ok(
+                Box::new(ClosedEvents) as Box<dyn BrowserSessionEvents>
+            )))
+        }
+
+        fn stop(&self) -> PortFuture<'_, crate::Result<BrowserStopOutcome>> {
             let result = if self.fail {
                 Err(crate::KrometrailError::new(
-                    ErrorCode::BrowserDisconnected,
-                    crate::NonEmptyText::new("browser session is unavailable").unwrap(),
+                    ErrorCode::ShutdownIncomplete,
+                    crate::NonEmptyText::new("browser shutdown was incomplete").unwrap(),
                 ))
             } else {
-                Ok(())
+                Ok(match self.profile {
+                    ProfileRef::Managed(_) => BrowserStopOutcome::ManagedBrowserClosed,
+                    ProfileRef::External => BrowserStopOutcome::Detached,
+                })
             };
-            Box::pin(async move { result })
+            Box::pin(std::future::ready(result))
         }
     }
 
@@ -136,19 +177,23 @@ mod tests {
     }
 
     impl BrowserConnector for FakeBrowserConnector {
+        fn installations(&self) -> PortFuture<'_, crate::Result<Vec<crate::BrowserInstallation>>> {
+            Box::pin(std::future::ready(Ok(Vec::new())))
+        }
+
         fn connect(
             &self,
             _request: BrowserConnectRequest,
         ) -> PortFuture<'_, crate::Result<Arc<dyn BrowserSessionPort>>> {
             let result = if self.fail {
                 Err(crate::KrometrailError::new(
-                    ErrorCode::BrowserDisconnected,
+                    ErrorCode::BrowserNotFound,
                     crate::NonEmptyText::new("browser connection is unavailable").unwrap(),
                 ))
             } else {
                 Ok(Arc::clone(&self.session))
             };
-            Box::pin(async move { result })
+            Box::pin(std::future::ready(result))
         }
     }
 
@@ -250,25 +295,41 @@ mod tests {
         }
     }
 
-    fn browser_session(fail: bool) -> Arc<dyn BrowserSessionPort> {
+    fn browser_session(fail: bool, profile: ProfileRef) -> Arc<dyn BrowserSessionPort> {
+        let target = PageTarget::new(
+            TargetId::from_uuid(UUID.parse().unwrap()),
+            "page-1",
+            "https://example.test",
+            "Example",
+        )
+        .unwrap();
         Arc::new(FakeBrowserSession {
-            compatibility: BrowserCompatibility {
-                version: BrowserVersion::new("Chrome", "revision", "1").unwrap(),
-                required_domains: vec![DomainSupport {
-                    domain: "page".into(),
-                    available: true,
-                    detail: None,
-                }],
-            },
-            targets: vec![
-                PageTarget::new(
-                    TargetId::from_uuid(UUID.parse().unwrap()),
-                    "page-1",
-                    "https://example.test",
-                    "Example",
+            compatibility: BrowserCompatibility::new(
+                BrowserVersion::new(
+                    BrowserProduct::Chrome,
+                    BrowserProductVersion::new("128").unwrap(),
+                    "revision",
+                    "1.3",
+                    "Chrome/128",
+                    "12",
                 )
                 .unwrap(),
-            ],
+                RendererCapability::ALL
+                    .iter()
+                    .copied()
+                    .map(|capability| {
+                        crate::CapabilitySupport::new(capability, true, true, None).unwrap()
+                    })
+                    .collect(),
+            )
+            .unwrap(),
+            profile,
+            targets: vec![SupervisedTarget {
+                target,
+                lifecycle: TargetLifecycle::Discovered,
+                visibility: TargetVisibility::Unknown,
+                attachment_generation: 0,
+            }],
             fail,
         })
     }
@@ -319,32 +380,73 @@ mod tests {
     }
 
     #[test]
-    fn browser_port_supports_object_safe_success_and_failure() {
+    fn browser_failure_kind_maps_exhaustively_to_safe_core_errors() {
+        assert_eq!(
+            BrowserFailureKind::ALL.len(),
+            ErrorCode::BROWSER_SESSION_CODES.len()
+        );
+        for (kind, code) in BrowserFailureKind::ALL
+            .iter()
+            .zip(ErrorCode::BROWSER_SESSION_CODES)
+        {
+            assert_eq!(kind.error_code(), *code);
+            let error = kind.into_error(crate::NonEmptyText::new("adapter failure").unwrap());
+            assert_eq!(error.code, *code);
+            assert!(error.recovery.is_some());
+        }
+    }
+
+    #[test]
+    fn browser_port_supports_object_safe_lifecycle_and_event_closure() {
+        let managed_profile = ProfileRef::Managed(ProfileIdentity::new("profile").unwrap());
         let connector: Arc<dyn BrowserConnector> = Arc::new(FakeBrowserConnector {
-            session: browser_session(false),
+            session: browser_session(false, managed_profile.clone()),
             fail: false,
         });
-        let session = block_on(
-            connector.connect(BrowserConnectRequest::Attach(AttachBrowser {
-                endpoint: "local".into(),
-            })),
-        )
+        assert!(block_on(connector.installations()).unwrap().is_empty());
+        let session = block_on(connector.connect(BrowserConnectRequest::Attach(
+            AttachBrowser::new("local").unwrap(),
+        )))
         .unwrap();
-        assert_eq!(session.compatibility().version.product(), "Chrome");
-        assert_eq!(block_on(session.page_targets()).unwrap().len(), 1);
-        assert!(block_on(session.close()).is_ok());
+        assert_eq!(
+            session.compatibility().version.product(),
+            BrowserProduct::Chrome
+        );
+        assert_eq!(session.profile(), &managed_profile);
+        assert_eq!(block_on(session.targets()).unwrap().len(), 1);
+        let mut events = block_on(session.subscribe()).unwrap();
+        assert!(block_on(events.next()).unwrap().is_none());
+        assert_eq!(
+            block_on(session.stop()).unwrap(),
+            BrowserStopOutcome::ManagedBrowserClosed
+        );
+
+        let external = ProfileRef::External;
+        let attached: Arc<dyn BrowserConnector> = Arc::new(FakeBrowserConnector {
+            session: browser_session(false, external),
+            fail: false,
+        });
+        let session = block_on(attached.connect(BrowserConnectRequest::Attach(
+            AttachBrowser::new("local").unwrap(),
+        )))
+        .unwrap();
+        assert_eq!(
+            block_on(session.stop()).unwrap(),
+            BrowserStopOutcome::Detached
+        );
 
         let failing: Arc<dyn BrowserConnector> = Arc::new(FakeBrowserConnector {
-            session: browser_session(true),
+            session: browser_session(true, ProfileRef::External),
             fail: true,
         });
         let result = block_on(
             failing.connect(BrowserConnectRequest::Launch(LaunchBrowser {
-                profile: ProfileIdentity::new("profile").unwrap(),
+                executable: None,
+                profile: ManagedProfile::Temporary,
                 initial_url: None,
             })),
         );
-        assert_eq!(result.err().unwrap().code, ErrorCode::BrowserDisconnected);
+        assert_eq!(result.err().unwrap().code, ErrorCode::BrowserNotFound);
     }
 
     #[test]

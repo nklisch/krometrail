@@ -41,7 +41,12 @@ pub mod timeline;
 
 mod validation;
 
-pub use browser::{BrowserVersion, PageTarget, ProfileIdentity};
+pub use browser::{
+    BrowserCompatibility, BrowserInstallation, BrowserInstallationSource, BrowserOwnership,
+    BrowserProduct, BrowserProductVersion, BrowserSessionEvent, BrowserSessionState,
+    BrowserStopOutcome, BrowserVersion, CapabilitySupport, PageTarget, ProfileIdentity, ProfileRef,
+    REQUIRED_RENDERER_CAPABILITIES, RendererCapability, SupervisedTarget, TargetVisibility,
+};
 pub use capabilities::{
     CAPABILITY_REGISTRY, CapabilityDefault, CapabilityDefinition, CapabilityId, RecordingSubsystem,
     capability, validate_capability_selection,
@@ -55,9 +60,9 @@ pub use ids::{
 };
 pub use lifecycle::{SessionLifecycle, TargetLifecycle};
 pub use ports::{
-    AttachBrowser, BrowserCompatibility, BrowserConnectRequest, BrowserConnector,
-    BrowserSessionPort, DomainSupport, IdSource, LaunchBrowser, MonotonicClock, PortFuture,
-    RecordingSink, TimelineStore, WallClock,
+    AttachBrowser, BrowserConnectRequest, BrowserConnector, BrowserFailureKind, BrowserPageTargets,
+    BrowserSessionEvents, BrowserSessionPort, IdSource, LaunchBrowser, ManagedProfile,
+    MonotonicClock, PortFuture, RecordingSink, TimelineStore, WallClock,
 };
 pub use recording::{
     CaptureGap, CaptureGapReason, CaptureStatistics, CaptureWarning, CapturedFrame,

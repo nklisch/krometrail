@@ -68,10 +68,11 @@ define_lifecycle! {
 
 define_lifecycle! {
     pub enum TargetLifecycle {
-        Discovered => "discovered": [Attached, Closed, Failed],
-        Attached => "attached": [Recording, Hidden, Closed, Failed],
-        Recording => "recording": [Hidden, Closed, Failed],
-        Hidden => "hidden": [Recording, Closed, Failed],
+        Discovered => "discovered": [Attached, Suspended, Closed, Failed],
+        Attached => "attached": [Recording, Hidden, Suspended, Closed, Failed],
+        Recording => "recording": [Hidden, Suspended, Closed, Failed],
+        Hidden => "hidden": [Recording, Suspended, Closed, Failed],
+        Suspended => "suspended": [Discovered, Attached, Recording, Hidden, Closed, Failed],
         Closed => "closed": [],
         Failed => "failed": [],
     }

@@ -4,10 +4,9 @@ use std::{
 };
 
 use krometrail_core::{
-    AttachBrowser, BrowserConnectRequest, BrowserConnector, BrowserSessionPort, CaptureGap,
-    EncodedFrame, ErrorCode, IdSource, IdValue, KrometrailError, MonotonicClock, NonEmptyText,
-    PortFuture, RecordingSink, Result, SessionId, SessionRange, TimelineObservation, TimelineStore,
-    WallClock,
+    BrowserConnector, BrowserInstallation, BrowserSessionPort, CaptureGap, EncodedFrame, ErrorCode,
+    IdSource, IdValue, KrometrailError, MonotonicClock, NonEmptyText, PortFuture, RecordingSink,
+    Result, SessionId, SessionRange, TimelineObservation, TimelineStore, WallClock,
 };
 use uuid::Uuid;
 
@@ -50,12 +49,10 @@ impl Runtime {
                 let _ = self.dependencies.wall_clock.now();
                 let _ = self.dependencies.ids.next();
                 let _ = (&self.dependencies.recording, &self.dependencies.timeline);
-                self.dependencies
-                    .browser
-                    .connect(BrowserConnectRequest::Attach(AttachBrowser {
-                        endpoint: "unconfigured".to_owned(),
-                    }))
-                    .await?;
+                let installations = self.dependencies.browser.installations().await?;
+                if installations.is_empty() {
+                    return Err(browser_not_found());
+                }
                 Ok(())
             }
         }
@@ -110,13 +107,15 @@ impl IdSource for ProcessIdSource {
 struct UnavailableBrowserConnector;
 
 impl BrowserConnector for UnavailableBrowserConnector {
+    fn installations(&self) -> PortFuture<'_, Result<Vec<BrowserInstallation>>> {
+        Box::pin(std::future::ready(Ok(Vec::new())))
+    }
+
     fn connect(
         &self,
-        _request: BrowserConnectRequest,
+        _request: krometrail_core::BrowserConnectRequest,
     ) -> PortFuture<'_, Result<Arc<dyn BrowserSessionPort>>> {
-        Box::pin(std::future::ready(Err(unavailable(
-            "browser transport is not available in this build",
-        ))))
+        Box::pin(std::future::ready(Err(browser_not_found())))
     }
 }
 
@@ -171,6 +170,19 @@ fn unavailable(message: &'static str) -> KrometrailError {
     .with_recovery(
         NonEmptyText::new("wait for the corresponding Rust infrastructure adapter")
             .expect("static recovery message is non-empty"),
+    )
+}
+
+fn browser_not_found() -> KrometrailError {
+    KrometrailError::new(
+        ErrorCode::BrowserNotFound,
+        NonEmptyText::new("no supported browser installation was found")
+            .expect("static browser error message is non-empty"),
+    )
+    .with_retry(krometrail_core::RetryAdvice::AfterRecovery)
+    .with_recovery(
+        NonEmptyText::new("install Chrome or Chromium, then run doctor again")
+            .expect("static browser recovery message is non-empty"),
     )
 }
 

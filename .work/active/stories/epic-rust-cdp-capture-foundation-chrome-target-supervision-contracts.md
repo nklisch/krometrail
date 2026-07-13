@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-chrome-target-supervision-contracts
 kind: story
-stage: implementing
+stage: review
 tags: [browser]
 parent: epic-rust-cdp-capture-foundation-chrome-target-supervision
 depends_on: []
@@ -44,15 +44,23 @@ Do not implement cdpkit, filesystem/process behavior, reconnect tasks, productio
 - `src/app.rs`
 - `tests/rust-runtime-smoke.rs`
 
+## Implementation notes
+
+- Added the infrastructure-free browser domain contracts, including validated installation/product/version/profile values, renderer capability support, session state/events, ownership, stop outcomes, and object-safe event/session/connector ports.
+- Migrated `RecordingSession` to `ProfileRef` and the complete runtime `BrowserVersion`, including managed/external serde fixtures.
+- Made `TargetLifecycle` exhaustive with `Suspended` restoration edges and terminal-state closure; added the nine browser failure codes with stable display/serde names, safe guidance, and exhaustive adapter-kind mapping.
+- Atomically updated the transitional root connector and discovery-only `doctor`; `UnavailableBrowserConnector` returns no installations and stable `browser_not_found` recovery without being called by `doctor`.
+- Verification passed independently: `cargo fmt --all -- --check`, `cargo check --workspace --all-targets --locked`, `cargo test --workspace --all-targets --locked` (48 tests), and `cargo clippy --workspace --all-targets --locked -- -D warnings`.
+
 ## Acceptance criteria
 
-- [ ] Parent Unit 1 signatures and complete installation/product/version/profile types are implemented, validated, and exported; no provisional string-only domain support remains.
-- [ ] `RecordingSession` serializes and validates `ProfileRef`, with managed and external fixtures, and uses the complete runtime `BrowserVersion` without conflating `BrowserSessionState` and `SessionLifecycle`.
-- [ ] The lifecycle registry exhaustively enforces: `Discovered -> Attached | Suspended | Closed | Failed`; `Attached -> Recording | Hidden | Suspended | Closed | Failed`; `Recording -> Hidden | Suspended | Closed | Failed`; `Hidden -> Recording | Suspended | Closed | Failed`; `Suspended -> Discovered | Attached | Recording | Hidden | Closed | Failed`; terminal states have no exits. Every unlisted pair is rejected by tests.
-- [ ] Stable variant registries/serde names, invalid values, duplicate capability entries, managed/attach stop outcomes, session failure events, and event-stream closure have exhaustive tests.
-- [ ] Adapter errors map to safe structured core errors with retry/recovery guidance; the registry, serde/display, and exhaustive mapping tests cover all nine codes: `browser_not_found`, `browser_launch_failed`, `browser_process_terminated`, `browser_compatibility_failed`, `profile_in_use`, `target_failed`, `reconnect_exhausted`, `cancelled`, and `shutdown_incomplete`. Source/debug strings cannot serialize.
-- [ ] `UnavailableBrowserConnector` implements the changed traits with empty `installations()` and stable `browser_not_found` from `connect()`; `doctor` calls `installations()` exactly once and never `connect()`.
-- [ ] The runtime smoke is green in the transitional state: exit 1 with `error[browser_not_found]` and recovery, with no provisional `unsupported`/`browser transport is not available` text.
-- [ ] `krometrail-core` remains free of cdpkit, CDP, WebSocket, Tokio, URL-parser, filesystem adapter, and process types. `PathBuf` is permitted only as the validated installation executable value.
-- [ ] Workspace check/tests remain green after this story lands independently; no production connector from later stories is required to compile the changed contracts.
-- [ ] No capture or screencast contract is added.
+- [x] Parent Unit 1 signatures and complete installation/product/version/profile types are implemented, validated, and exported; no provisional string-only domain support remains.
+- [x] `RecordingSession` serializes and validates `ProfileRef`, with managed and external fixtures, and uses the complete runtime `BrowserVersion` without conflating `BrowserSessionState` and `SessionLifecycle`.
+- [x] The lifecycle registry exhaustively enforces: `Discovered -> Attached | Suspended | Closed | Failed`; `Attached -> Recording | Hidden | Suspended | Closed | Failed`; `Recording -> Hidden | Suspended | Closed | Failed`; `Hidden -> Recording | Suspended | Closed | Failed`; `Suspended -> Discovered | Attached | Recording | Hidden | Closed | Failed`; terminal states have no exits. Every unlisted pair is rejected by tests.
+- [x] Stable variant registries/serde names, invalid values, duplicate capability entries, managed/attach stop outcomes, session failure events, and event-stream closure have exhaustive tests.
+- [x] Adapter errors map to safe structured core errors with retry/recovery guidance; the registry, serde/display, and exhaustive mapping tests cover all nine codes: `browser_not_found`, `browser_launch_failed`, `browser_process_terminated`, `browser_compatibility_failed`, `profile_in_use`, `target_failed`, `reconnect_exhausted`, `cancelled`, and `shutdown_incomplete`. Source/debug strings cannot serialize.
+- [x] `UnavailableBrowserConnector` implements the changed traits with empty `installations()` and stable `browser_not_found` from `connect()`; `doctor` calls `installations()` exactly once and never `connect()`.
+- [x] The runtime smoke is green in the transitional state: exit 1 with `error[browser_not_found]` and recovery, with no provisional `unsupported`/`browser transport is not available` text.
+- [x] `krometrail-core` remains free of cdpkit, CDP, WebSocket, Tokio, URL-parser, filesystem adapter, and process types. `PathBuf` is permitted only as the validated installation executable value.
+- [x] Workspace check/tests remain green after this story lands independently; no production connector from later stories is required to compile the changed contracts.
+- [x] No capture or screencast contract is added.

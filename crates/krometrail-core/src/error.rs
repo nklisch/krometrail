@@ -22,6 +22,15 @@ define_stable_enum! {
         NotFound => "not_found",
         Unsupported => "unsupported",
         BrowserDisconnected => "browser_disconnected",
+        BrowserNotFound => "browser_not_found",
+        BrowserLaunchFailed => "browser_launch_failed",
+        BrowserProcessTerminated => "browser_process_terminated",
+        BrowserCompatibilityFailed => "browser_compatibility_failed",
+        ProfileInUse => "profile_in_use",
+        TargetFailed => "target_failed",
+        ReconnectExhausted => "reconnect_exhausted",
+        Cancelled => "cancelled",
+        ShutdownIncomplete => "shutdown_incomplete",
         CaptureRejected => "capture_rejected",
         PersistenceFailed => "persistence_failed",
         BudgetExhausted => "budget_exhausted",
@@ -92,7 +101,7 @@ impl fmt::Display for NonEmptyText {
 /// adapters can retain their private cause in local logs, but cannot accidentally
 /// serialize arbitrary implementation details to callers.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error, Serialize, Deserialize)]
-#[error("{code:?}: {message}")]
+#[error("{code}: {message}")]
 pub struct KrometrailError {
     pub code: ErrorCode,
     pub message: NonEmptyText,
@@ -104,6 +113,72 @@ pub struct KrometrailError {
     pub recovery: Option<NonEmptyText>,
 }
 
+impl fmt::Display for ErrorCode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl ErrorCode {
+    pub const BROWSER_SESSION_CODES: &'static [Self] = &[
+        Self::BrowserNotFound,
+        Self::BrowserLaunchFailed,
+        Self::BrowserProcessTerminated,
+        Self::BrowserCompatibilityFailed,
+        Self::ProfileInUse,
+        Self::TargetFailed,
+        Self::ReconnectExhausted,
+        Self::Cancelled,
+        Self::ShutdownIncomplete,
+    ];
+
+    pub const fn is_browser_session_failure(self) -> bool {
+        matches!(
+            self,
+            Self::BrowserNotFound
+                | Self::BrowserLaunchFailed
+                | Self::BrowserProcessTerminated
+                | Self::BrowserCompatibilityFailed
+                | Self::ProfileInUse
+                | Self::TargetFailed
+                | Self::ReconnectExhausted
+                | Self::Cancelled
+                | Self::ShutdownIncomplete
+        )
+    }
+
+    pub const fn default_retry(self) -> RetryAdvice {
+        match self {
+            Self::BrowserNotFound
+            | Self::BrowserLaunchFailed
+            | Self::BrowserCompatibilityFailed
+            | Self::ProfileInUse
+            | Self::ReconnectExhausted => RetryAdvice::AfterRecovery,
+            Self::TargetFailed => RetryAdvice::Safe,
+            _ => RetryAdvice::Never,
+        }
+    }
+
+    pub const fn default_recovery(self) -> Option<&'static str> {
+        match self {
+            Self::BrowserNotFound => Some("install Chrome or Chromium, then retry"),
+            Self::BrowserLaunchFailed => {
+                Some("check the browser installation and profile, then retry")
+            }
+            Self::BrowserProcessTerminated => Some("start a new browser session"),
+            Self::BrowserCompatibilityFailed => Some("use a compatible Chrome renderer and retry"),
+            Self::ProfileInUse => Some("close the other session using this profile, then retry"),
+            Self::TargetFailed => Some("refresh the target or choose another page"),
+            Self::ReconnectExhausted => Some("check the browser and start a new session"),
+            Self::Cancelled => Some("start the operation again if it is still needed"),
+            Self::ShutdownIncomplete => {
+                Some("inspect the browser process before starting another session")
+            }
+            _ => None,
+        }
+    }
+}
+
 impl KrometrailError {
     pub fn new(code: ErrorCode, message: NonEmptyText) -> Self {
         Self {
@@ -113,6 +188,14 @@ impl KrometrailError {
             retry: RetryAdvice::Never,
             recovery: None,
         }
+    }
+
+    pub fn from_browser_failure(code: ErrorCode, message: NonEmptyText) -> Self {
+        let mut error = Self::new(code, message).with_retry(code.default_retry());
+        if let Some(recovery) = code.default_recovery() {
+            error = error.with_recovery(safe_text(recovery));
+        }
+        error
     }
 
     pub fn with_context(mut self, context: ErrorContext) -> Self {
@@ -208,6 +291,23 @@ mod tests {
                 serde_json::from_str::<KrometrailError>(&error_json).unwrap(),
                 error
             );
+        }
+    }
+
+    #[test]
+    fn browser_error_registry_maps_every_stable_code_with_guidance() {
+        assert_eq!(ErrorCode::BROWSER_SESSION_CODES.len(), 9);
+        for code in ErrorCode::BROWSER_SESSION_CODES {
+            assert!(code.is_browser_session_failure());
+            let error = KrometrailError::from_browser_failure(
+                *code,
+                NonEmptyText::new("safe adapter summary").unwrap(),
+            );
+            assert_eq!(error.code, *code);
+            assert!(error.recovery.is_some());
+            let json = serde_json::to_string(&error).unwrap();
+            assert!(json.contains(code.as_str()));
+            assert!(!json.contains("source"));
         }
     }
 
