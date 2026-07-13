@@ -376,7 +376,7 @@ where
     }
 }
 
-fn validate_markers<M: Eq>(markers: &[Marker<M>], range: TimeRange) -> Result<()> {
+pub(crate) fn validate_markers<M: Eq>(markers: &[Marker<M>], range: TimeRange) -> Result<()> {
     for (index, marker) in markers.iter().enumerate() {
         if markers[..index]
             .iter()
@@ -406,7 +406,7 @@ fn validate_markers<M: Eq>(markers: &[Marker<M>], range: TimeRange) -> Result<()
     Ok(())
 }
 
-fn validate_gaps<G: Eq>(gaps: &[DeclaredGap<G>], range: TimeRange) -> Result<()> {
+pub(crate) fn validate_gaps<G: Eq>(gaps: &[DeclaredGap<G>], range: TimeRange) -> Result<()> {
     for (index, gap) in gaps.iter().enumerate() {
         if gaps[..index].iter().any(|prior| prior.id() == gap.id()) {
             return Err(VisionError::at(

@@ -59,11 +59,16 @@ macro_rules! stable_registry {
 mod error;
 mod frame;
 mod geometry;
+mod provenance;
 mod sequence;
 
 pub use error::{ErrorCode, Result, VisionError};
 pub use frame::{BorrowedFrame, Frame, OwnedFrame, PixelDimensions, PixelFormat, Timestamp};
 pub use geometry::{BinaryMask, FrameRegion, PixelRect};
+pub use provenance::{
+    AlgorithmDescriptor, ArtifactKind, ArtifactManifest, EvidenceClass, FiniteNumber,
+    NormalizationKind, NormalizationStep, OutputHash, ParameterValue, Parameters,
+};
 pub use sequence::{
     BorrowedFrameSequence, DeclaredGap, FrameSequence, Marker, OwnedFrameSequence, TimeRange,
 };

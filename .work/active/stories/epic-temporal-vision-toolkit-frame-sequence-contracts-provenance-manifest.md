@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-vision-toolkit-frame-sequence-contracts-provenance-manifest
 kind: story
-stage: implementing
+stage: done
 tags: [visual]
 parent: epic-temporal-vision-toolkit-frame-sequence-contracts
 depends_on: [epic-temporal-vision-toolkit-frame-sequence-contracts-sequence-and-annotations]
@@ -39,3 +39,14 @@ The one registry declarations publish these stable wire sets:
 ## Ordering
 
 Depends on `epic-temporal-vision-toolkit-frame-sequence-contracts-sequence-and-annotations`, whose aggregate is the provenance source of truth.
+
+## Implementation notes
+
+- Execution capability: highest/raised (caller-selected) because persisted provenance is the durable reproducibility boundary.
+- Review weight: standard (caller/autopilot).
+- Files changed: `crates/temporal-vision/src/provenance.rs`, `crates/temporal-vision/src/sequence.rs`, and `crates/temporal-vision/src/lib.rs`.
+- Tests added: generated registry-table coverage, recursive deterministic-parameter validation, finite/negative-zero handling, and canonical SHA-256 text round trips.
+- Simplification: manifests project sequence-owned fields instead of accepting duplicate metadata; output hash parsing uses a fixed 32-byte value with no hashing/codec dependency.
+- Discrepancies from design: manifest marker/gap type parameters also require `Eq` because validated persisted manifests must recheck annotation uniqueness; the narrow extra bound preserves the designed invariant without requiring `Hash`, `Ord`, or `Debug`.
+- Adjacent issues parked: none.
+- Verification: `cargo test -p temporal-vision --lib --locked` passed (9 tests).
