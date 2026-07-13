@@ -1,7 +1,7 @@
 ---
 id: epic-durable-browser-memory-segment-format
 kind: feature
-stage: review
+stage: implementing
 tags: [storage, browser]
 parent: epic-durable-browser-memory
 depends_on: []
@@ -462,3 +462,25 @@ Linear chain. Unit 1 is the cross-crate contract evolution (core + cdp fakes/pip
 - Discrepancies from design: `sealed_observed` uses the last accepted frame's observed time because the settled `SegmentWriter::open(config)` contract carries no monotonic clock; the writer does not fabricate a timestamp from an unrelated clock. Size rotation follows the specified pre-append current-length rule, allowing one frame record past the threshold before the next append rotates.
 - Simplification: the production unavailable recording placeholder is removed; consumers share one core address type, one codec/scanner, and one frame-only writer.
 - Adjacent issues parked: none.
+
+## Review findings (2026-07-13)
+
+Standard fresh-context review identified three receiver-confirmed current-cycle blockers:
+
+1. **Absolute scanner addresses.** `scan_complete_records` currently returns offsets relative to a
+   record-region slice, while `FrameAddress` and `read_frame_at` require full-segment absolute
+   offsets. Make the scan basis explicit (full segment or checked base offset) and prove a
+   scanner-produced span can be converted directly into a `FrameAddress` and read from the full
+   segment.
+2. **Async runtime isolation.** `RecordingSink::append_frame` performs synchronous write/flush/
+   rotate/`sync_data` before returning a ready future. The root uses a current-thread Tokio runtime,
+   so store I/O can starve CDP frame receipt and acknowledgement. Move segment writes behind a
+   dedicated blocking worker/task with bounded handoff/backpressure semantics and tests proving the
+   async caller yields rather than running filesystem work inline.
+3. **Directory durability.** File `sync_data` before rename does not make the `.open` → `.kts`
+   directory entry durable. Sync the parent directory after publishing a sealed segment (and after
+   initial open-file creation when recovery depends on discovery), with platform-appropriate error
+   propagation and focused tests/seam evidence.
+
+The feature remains `implementing` until these format, runtime-isolation, and durability contracts
+are corrected and reverified. Gap persistence remains an honest downstream SQLite responsibility.
