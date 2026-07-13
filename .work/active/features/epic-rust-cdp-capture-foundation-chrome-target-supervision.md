@@ -234,17 +234,22 @@ The workspace adds `url = "2"`, used non-optionally by `krometrail-cdp` endpoint
 - `crates/krometrail-core/src/error.rs`
 - `crates/krometrail-core/src/lib.rs`
 - `crates/krometrail-core/src/ports/mod.rs`
+- `src/app.rs`
+- `tests/rust-runtime-smoke.rs`
 
 Implementation notes:
 - Preserve UUID-backed `TargetId`; CDP target/session keys remain validated opaque adapter-origin strings.
 - Generate stable enum names and exhaustive round-trip coverage from existing registry macros.
 - `BrowserSessionEvents` is runtime-neutral like existing ports; Tokio channels remain adapter-private.
 - Migrate `RecordingSession`'s profile field/constructor/accessor/wire form from `ProfileIdentity` to `ProfileRef` and update its complete `BrowserVersion` fixtures; do not add capture behavior.
+- This story owns the compile-real application transition required by the changed traits. Update `UnavailableBrowserConnector` to implement the complete new `BrowserConnector`: `installations()` returns an empty list, while `connect()` returns stable `browser_not_found` with browser-installation recovery. Change `doctor` to call `installations()` exactly once and report that same stable no-browser error when the list is empty. Update the runtime smoke from provisional `unsupported` text to `error[browser_not_found]` plus recovery. This adapter is deliberately transitional—not fake success—and keeps the workspace and tests green until Unit 4 replaces root composition.
 
 Acceptance:
 - Core has no cdpkit, CDP, WebSocket, Tokio, URL-parser, or filesystem adapter type.
 - All state transitions, malformed serialized states, duplicate capabilities, and safe error mappings have exhaustive tests.
 - Existing browser-port fakes are updated to prove managed/attach stop outcomes and event-stream closure.
+- The stable error registry and exhaustive serde/display/mapping tests contain all nine designed codes: `browser_not_found`, `browser_launch_failed`, `browser_process_terminated`, `browser_compatibility_failed`, `profile_in_use`, `target_failed`, `reconnect_exhausted`, `cancelled`, and `shutdown_incomplete`.
+- `src/app.rs` compiles against the changed traits with transitional `UnavailableBrowserConnector::installations() == []`; `doctor` never calls `connect()` and exits 1 with stable `error[browser_not_found]` plus recovery. `tests/rust-runtime-smoke.rs` rejects the old provisional `unsupported`/`browser transport is not available` behavior.
 
 ### Unit 2: Production transport and capability probe
 
@@ -348,9 +353,9 @@ Acceptance:
 - `crates/krometrail-cdp/src/targets/supervisor.rs` (new)
 - `crates/krometrail-cdp/src/session.rs` (new)
 - `crates/krometrail-cdp/src/lib.rs`
-- `src/app.rs`
+- `src/app.rs` (sequential edit after Unit 1; replace the transitional connector with production composition)
 - `src/cli.rs`
-- `tests/rust-runtime-smoke.rs`
+- `tests/rust-runtime-smoke.rs` (sequential edit after Unit 1; broaden the stable no-browser smoke to the environment-dependent production outcome)
 - `crates/krometrail-cdp/tests/support/chrome.rs` (new)
 - `crates/krometrail-cdp/tests/support/static_fixture.rs` (new)
 - `crates/krometrail-cdp/tests/target_reducer.rs` (new)
@@ -433,8 +438,8 @@ Implementation notes:
 - Reconnect delays come from configuration and a `RetrySleeper` adapter so deterministic tests advance attempts without wall-clock sleeps. Each successful reconnect repeats compatibility, subscriptions, discovery, flat auto-attach, and reconciliation before `Ready`.
 - Local target decode/domain failure emits `TargetFailed` and detaches that target only. Browser transport loss moves the session to `Reconnecting`. Exhaustion emits `reconnect_exhausted`, cancels target tasks, performs ownership-correct shutdown, and ends the session.
 - Event fan-out is bounded. Each subscriber tracks the supervisor `revision`; overflow yields a typed lag/refresh-required error containing only the missed revision range, increments a measurable outbound-subscriber lag counter, and requires recovery through `targets()`. Supervisor state cannot be backpressured by observers. No acceptance or telemetry claim is made about cdpkit's private upstream queue depth because that depth is not observable through its API.
-- `ProductionBrowserConnector::installations()` delegates directly to `ChromeLauncher::installations()`; discovery policy and precedence exist only in `launcher/discovery.rs`. `src/app.rs` constructs that production connector. `doctor` calls `installations()` exactly once and never calls `connect`: nonempty results print a stable availability summary and exit 0; empty results return the stable no-browser error and recovery text. It does not launch, attach, allocate a port, acquire a profile, or mutate the filesystem.
-- Replace `doctor_reports_unavailable_browser_transport` in `tests/rust-runtime-smoke.rs`. The new smoke accepts exactly the environment-dependent production outcomes: success with `browser available:` or exit 1 with `error[browser_not_found]` plus recovery; it rejects the provisional `unsupported`/`browser transport is not available` text. An `src/app.rs` fake asserts one `installations()` call and panics if `connect()` is called.
+- `ProductionBrowserConnector::installations()` delegates directly to `ChromeLauncher::installations()`; discovery policy and precedence exist only in `launcher/discovery.rs`. Unit 1 already made `doctor` discovery-only and installed the compile-real unavailable transition. This story explicitly edits `src/app.rs` second to replace `UnavailableBrowserConnector` with the production connector—never retaining both or layering a stale compatibility path. `doctor` continues to call `installations()` exactly once and never calls `connect`: nonempty results print a stable availability summary and exit 0; empty results retain the exact stable `browser_not_found` error and recovery established by Unit 1. It does not launch, attach, allocate a port, acquire a profile, or mutate the filesystem.
+- Edit the Unit 1 smoke sequentially rather than replacing an unrelated test: broaden its accepted outcomes to the environment-dependent production contract—success with `browser available:` or exit 1 with `error[browser_not_found]` plus recovery—while continuing to reject provisional `unsupported`/`browser transport is not available` text. An `src/app.rs` fake asserts one `installations()` call and panics if `connect()` is called.
 
 Acceptance:
 - Reducer table tests construct the defined `SupervisorState`, `SupervisorInput`, `SupervisorEffect`, `TransportTargetInfo`, and `ReconnectedSnapshot` values directly and cover initial snapshot/event races, duplicate attach, every legal and illegal `Suspended` transition, two flat sessions with no cross-delivery, navigation/title mutation, initial visibility, target-local detach during a pending operation, unrelated target survival, reconnect success, stale-generation rejection, changed target ids, retry exhaustion, explicit cancellation/stop, and slow-subscriber revision lag.
@@ -506,12 +511,12 @@ Private source errors may be attached to local debug spans but never copied into
 
 ## Implementation order
 
-1. `epic-rust-cdp-capture-foundation-chrome-target-supervision-contracts`
+1. `epic-rust-cdp-capture-foundation-chrome-target-supervision-contracts` — land contracts atomically with the transitional root connector and stable doctor smoke so the whole workspace compiles and tests green.
 2. `epic-rust-cdp-capture-foundation-chrome-target-supervision-transport-adapter`
 3. `epic-rust-cdp-capture-foundation-chrome-target-supervision-managed-launch`
-4. `epic-rust-cdp-capture-foundation-chrome-target-supervision-session-supervisor`
+4. `epic-rust-cdp-capture-foundation-chrome-target-supervision-session-supervisor` — sequentially replace the Unit 1 transition in `src/app.rs` and broaden its smoke; do not preserve stale unavailable composition.
 
-The chain is intentionally serialized. Managed launch consumes transport-owned `LocalCdpEndpoint`, and stories 2–4 each append exports to `crates/krometrail-cdp/src/lib.rs`; their `depends_on` edges make those shared-file edits compile-real rather than pretending the adapters can land concurrently. The split still preserves cohesive verification surfaces: core contract, transport/probe, managed resources, then integrated supervision.
+The chain is intentionally serialized. Unit 1 atomically owns the changed core traits plus their immediate root/test consumers; Unit 4 later owns an explicit second edit of those consumers to replace the transition. Managed launch consumes transport-owned `LocalCdpEndpoint`, and stories 2–4 each append exports to `crates/krometrail-cdp/src/lib.rs`; their `depends_on` edges make every shared-file edit compile-real rather than pretending the adapters can land concurrently. The split still preserves cohesive verification surfaces: compiling core contract/transition, transport/probe, managed resources, then integrated supervision/production composition.
 
 ## Risks and pre-mortem
 
@@ -543,7 +548,8 @@ The chain is intentionally serialized. Managed launch consumes transport-owned `
 
 - **B1 — profile semantics:** `ProfileRef` now distinguishes managed identity from externally owned/unknown attach profiles, `BrowserSessionPort` returns it, and Unit 1 explicitly migrates the downstream `RecordingSession` field, wire form, constructor, accessor, fixtures, and tests.
 - **B2 — browser identity contracts:** `BrowserInstallation`, `BrowserInstallationSource`, `BrowserProduct`, `BrowserProductVersion`, and the full runtime `BrowserVersion` are defined with their fields and discovery/runtime roles.
-- **B3 — compile-real ownership/dependencies:** stories are serialized contracts → transport → managed launch → supervisor. `LocalCdpEndpoint` is defined in Unit 2 and consumed in Unit 3; sequential `src/lib.rs` ownership is explicit in required files and dependency edges.
+- **B3 — compile-real ownership/dependencies:** stories are serialized contracts → transport → managed launch → supervisor. The contracts story atomically owns `src/app.rs` and `tests/rust-runtime-smoke.rs` with the changed traits, an empty-installations `UnavailableBrowserConnector`, and stable discovery-only `browser_not_found` doctor behavior. The supervisor story explicitly edits those files later to replace—not coexist with—the transition and broaden the smoke to production discovery outcomes. `LocalCdpEndpoint` is defined in Unit 2 and consumed in Unit 3; sequential `src/lib.rs` ownership is explicit in required files and dependency edges.
+- **Error contract completeness:** Unit 1 acceptance now names all nine designed stable codes, preventing the earlier partial `browser_not_found`/`browser_process_terminated` allocation from silently omitting launch, compatibility, profile, target, reconnect, cancellation, or shutdown failures.
 - **Supervisor contract gap:** `SupervisorState`, target state, input, effect, transport target info, reconnect snapshot, shutdown cause, and sanitized process exit are concrete. `browser_process_terminated` has a separate watcher input, event error, and no-reconnect path.
 - **Resource ownership gap:** endpoint, profile lease, managed process, and `LaunchedChrome` transfer/drop responsibilities are explicit; attach constructs no ownership guards.
 - **Acceptance allocation:** compatibility tracing is owned by story 2; discovery/launch/shutdown tracing by story 3; story 4 owns supervisor/target tracing and the exact doctor smoke replacement.

@@ -17,7 +17,7 @@ updated: 2026-07-12
 
 Implement Unit 4 of the parent design: the fully defined `SupervisorState`/`SupervisorInput`/`SupervisorEffect` reducer and `TransportTargetInfo`/`ReconnectedSnapshot` boundary, flat discovery/auto-attach reconciliation, session event publication, target-local failure isolation, finite reconnect/rebuild, explicit cancellation and ownership-correct shutdown, root connector wiring, truthful discovery-only `doctor`, architecture roll-forward, and real-browser integration evidence.
 
-Consume the serialized contracts, transport, and launcher stories. `ProductionBrowserConnector::installations()` delegates directly to `ChromeLauncher::installations()`; only `launcher/discovery.rs` owns discovery precedence. `BrowserSessionState` describes browser connectivity and is not the persisted recording `SessionLifecycle`; any orchestration mapping between them is explicit rather than type reuse.
+Consume the serialized contracts, transport, and launcher stories. The contracts story already owns a compile-real edit of `src/app.rs` and `tests/rust-runtime-smoke.rs`: an empty-installations transitional `UnavailableBrowserConnector` and stable discovery-only `browser_not_found` behavior. This story edits those files sequentially after that dependency, replacing the unavailable root composition with `ProductionBrowserConnector` and broadening the same smoke to production discovery outcomes. Remove the transitional connector/composition rather than retaining it as a stale fallback or compatibility path. `ProductionBrowserConnector::installations()` delegates directly to `ChromeLauncher::installations()`; only `launcher/discovery.rs` owns discovery precedence. `BrowserSessionState` describes browser connectivity and is not the persisted recording `SessionLifecycle`; any orchestration mapping between them is explicit rather than type reuse.
 
 Managed `BrowserProcessTerminated` publishes `SessionFailed(browser_process_terminated)`, skips reconnect/relaunch, and performs bounded owned cleanup. `ConnectionLost` enters reconnect only while a managed child is alive or an attached endpoint remains eligible.
 
@@ -33,9 +33,9 @@ Do not implement production screencast start/events/acknowledgement, frame queue
 - `crates/krometrail-cdp/src/targets/supervisor.rs` (new)
 - `crates/krometrail-cdp/src/session.rs` (new)
 - `crates/krometrail-cdp/src/lib.rs`
-- `src/app.rs`
+- `src/app.rs` (sequential replacement of the contracts-story transition)
 - `src/cli.rs`
-- `tests/rust-runtime-smoke.rs`
+- `tests/rust-runtime-smoke.rs` (sequential broadening of the contracts-story smoke)
 - `crates/krometrail-cdp/tests/support/chrome.rs` (new)
 - `crates/krometrail-cdp/tests/support/static_fixture.rs` (new)
 - `crates/krometrail-cdp/tests/target_reducer.rs` (new)
@@ -43,11 +43,11 @@ Do not implement production screencast start/events/acknowledgement, frame queue
 - `crates/krometrail-cdp/tests/chrome_session_real.rs` (new)
 - `docs/ARCHITECTURE.md`
 
-`crates/krometrail-cdp/src/lib.rs` is intentionally a third serialized edit to export session/targets; no story sharing it can run concurrently.
+`crates/krometrail-cdp/src/lib.rs` is intentionally a third serialized edit to export session/targets; no story sharing it can run concurrently. Likewise, this story's dependency makes its `src/app.rs` and `tests/rust-runtime-smoke.rs` edits explicitly follow the contracts story's atomic transition; those files are shared sequentially, not concurrently.
 
 ## Doctor smoke contract
 
-Replace `doctor_reports_unavailable_browser_transport` in `tests/rust-runtime-smoke.rs`. The new smoke accepts exactly two environment-dependent production outcomes: success with a stable `browser available:` summary for one or more discovered installations, or exit 1 with stable `browser_not_found` and recovery text when discovery is empty. It rejects the provisional `unsupported`/`browser transport is not available` message. An `src/app.rs` unit fake records one `installations()` call and makes `connect()` panic, proving doctor performs discovery only and does not launch, attach, allocate a port, or acquire a profile.
+Broaden the contracts story's stable no-browser doctor smoke in `tests/rust-runtime-smoke.rs`; do not assume the old provisional test still exists. The resulting smoke accepts exactly two environment-dependent production outcomes: success with a stable `browser available:` summary for one or more discovered installations, or exit 1 with the same stable `browser_not_found` and recovery text when discovery is empty. It continues to reject provisional `unsupported`/`browser transport is not available` text. An `src/app.rs` unit fake records one `installations()` call and makes `connect()` panic, proving doctor performs discovery only and does not launch, attach, allocate a port, or acquire a profile.
 
 ## Acceptance criteria
 
@@ -57,7 +57,7 @@ Replace `doctor_reports_unavailable_browser_transport` in `tests/rust-runtime-sm
 - [ ] Initial visibility is probed and later visibility signals update the reducer without starting a screencast. Observable slow-subscriber revision lag cannot backpressure supervisor state; no unmeasurable upstream-lag assertion exists.
 - [ ] Managed stop closes/terminates only the owned browser and cleans profile correctly; attach stop detaches and leaves the external browser/Electron app alive.
 - [ ] Real Chrome against `tests/fixtures/browser/cdp-transport-gate` proves managed launch, attach-without-close, two isolated targets, disconnect/rebuild, and no process/profile leak. Electron has mandatory deterministic capability coverage plus an opt-in real endpoint test.
-- [ ] Root uses the default-feature production connector; connector installation discovery delegates to `ChromeLauncher`. Doctor satisfies the smoke contract above.
+- [ ] Root uses only the default-feature production connector; the contracts-story `UnavailableBrowserConnector` composition is removed rather than retained as fallback, and connector installation discovery delegates to `ChromeLauncher`. Doctor preserves stable empty-discovery `browser_not_found` behavior and satisfies the broadened smoke contract above.
 - [ ] Supervisor tracing covers session state/reconnect and target discovered/attached/changed/suspended/closed/failed with the parent's privacy fields. Transport compatibility and launcher discovery/launch/shutdown tracing are verified in stories 2 and 3, not deferred here.
 - [ ] Workspace format/check/test/clippy, real-browser command, default/no-default production feature checks, spike regression, and dependency scans pass; architecture reflects the final5 production boundary.
 - [ ] No production screencast ingestion lands.

@@ -22,11 +22,13 @@ The public shape is the parent design's complete contract, including:
 - `ProfileRef::Managed(ProfileIdentity) | External`; `BrowserSessionPort::profile()` returns `&ProfileRef`.
 - `BrowserInstallation { executable, source, product, version }`, `BrowserInstallationSource`, `BrowserProduct`, `BrowserProductVersion`, and the complete runtime `BrowserVersion { product, product_version, revision, protocol_version, user_agent, js_version }`.
 - `BrowserSessionState` for connector/supervisor connectivity, distinct from recording `SessionLifecycle`.
-- `BrowserSessionEvent::SessionFailed` plus stable `browser_not_found` and `browser_process_terminated`; process termination remains distinct from transport closure/reconnect exhaustion.
+- `BrowserSessionEvent::SessionFailed` plus all nine stable errors: `browser_not_found`, `browser_launch_failed`, `browser_process_terminated`, `browser_compatibility_failed`, `profile_in_use`, `target_failed`, `reconnect_exhausted`, `cancelled`, and `shutdown_incomplete`; process termination remains distinct from transport closure/reconnect exhaustion.
 
 Migrate `RecordingSession`'s field, constructor, wire representation, accessor, and tests from `ProfileIdentity` to `ProfileRef`, and migrate its browser fixtures to the complete `BrowserVersion`. This is a downstream contract migration required now so the richer profile/version values compile through existing consumers; it adds no capture behavior.
 
-Do not implement cdpkit, filesystem/process behavior, reconnect tasks, or screencast behavior.
+Own the compile-real root transition atomically with the trait change. Update `UnavailableBrowserConnector` in `src/app.rs` to implement the changed connector, with `installations()` returning an empty list and `connect()` returning stable `browser_not_found` plus browser-installation recovery. Make `doctor` call `installations()` exactly once, never `connect()`, and preserve that stable error when empty. Update `tests/rust-runtime-smoke.rs` to require exit 1, `error[browser_not_found]`, and recovery while rejecting provisional `unsupported`/`browser transport is not available` text. This is a transitional unavailable adapter, not fake success; story 4 replaces its composition in an explicit later edit.
+
+Do not implement cdpkit, filesystem/process behavior, reconnect tasks, production composition, or screencast behavior.
 
 ## Required files
 
@@ -39,6 +41,8 @@ Do not implement cdpkit, filesystem/process behavior, reconnect tasks, or screen
 - `crates/krometrail-core/src/lifecycle.rs`
 - `crates/krometrail-core/src/error.rs`
 - `crates/krometrail-core/src/lib.rs`
+- `src/app.rs`
+- `tests/rust-runtime-smoke.rs`
 
 ## Acceptance criteria
 
@@ -46,6 +50,9 @@ Do not implement cdpkit, filesystem/process behavior, reconnect tasks, or screen
 - [ ] `RecordingSession` serializes and validates `ProfileRef`, with managed and external fixtures, and uses the complete runtime `BrowserVersion` without conflating `BrowserSessionState` and `SessionLifecycle`.
 - [ ] The lifecycle registry exhaustively enforces: `Discovered -> Attached | Suspended | Closed | Failed`; `Attached -> Recording | Hidden | Suspended | Closed | Failed`; `Recording -> Hidden | Suspended | Closed | Failed`; `Hidden -> Recording | Suspended | Closed | Failed`; `Suspended -> Discovered | Attached | Recording | Hidden | Closed | Failed`; terminal states have no exits. Every unlisted pair is rejected by tests.
 - [ ] Stable variant registries/serde names, invalid values, duplicate capability entries, managed/attach stop outcomes, session failure events, and event-stream closure have exhaustive tests.
-- [ ] Adapter errors map to safe structured core errors with retry/recovery guidance; `browser_not_found` supports discovery-only doctor, `browser_process_terminated` is distinct from `reconnect_exhausted`, and source/debug strings cannot serialize.
+- [ ] Adapter errors map to safe structured core errors with retry/recovery guidance; the registry, serde/display, and exhaustive mapping tests cover all nine codes: `browser_not_found`, `browser_launch_failed`, `browser_process_terminated`, `browser_compatibility_failed`, `profile_in_use`, `target_failed`, `reconnect_exhausted`, `cancelled`, and `shutdown_incomplete`. Source/debug strings cannot serialize.
+- [ ] `UnavailableBrowserConnector` implements the changed traits with empty `installations()` and stable `browser_not_found` from `connect()`; `doctor` calls `installations()` exactly once and never `connect()`.
+- [ ] The runtime smoke is green in the transitional state: exit 1 with `error[browser_not_found]` and recovery, with no provisional `unsupported`/`browser transport is not available` text.
 - [ ] `krometrail-core` remains free of cdpkit, CDP, WebSocket, Tokio, URL-parser, filesystem adapter, and process types. `PathBuf` is permitted only as the validated installation executable value.
+- [ ] Workspace check/tests remain green after this story lands independently; no production connector from later stories is required to compile the changed contracts.
 - [ ] No capture or screencast contract is added.
