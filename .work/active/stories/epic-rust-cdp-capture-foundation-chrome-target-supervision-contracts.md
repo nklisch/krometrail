@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-chrome-target-supervision-contracts
 kind: story
-stage: review
+stage: done
 tags: [browser]
 parent: epic-rust-cdp-capture-foundation-chrome-target-supervision
 depends_on: []
@@ -64,3 +64,13 @@ Do not implement cdpkit, filesystem/process behavior, reconnect tasks, productio
 - [x] `krometrail-core` remains free of cdpkit, CDP, WebSocket, Tokio, URL-parser, filesystem adapter, and process types. `PathBuf` is permitted only as the validated installation executable value.
 - [x] Workspace check/tests remain green after this story lands independently; no production connector from later stories is required to compile the changed contracts.
 - [x] No capture or screencast contract is added.
+
+## Review (2026-07-13)
+
+**Verdict:** Approve
+
+**Blockers:** none
+**Important:** none
+**Nits:** none
+
+**Notes:** Fast-lane contract review reran 48 workspace tests and denied-warning clippy; verified ProfileRef, complete browser identities, object-safe ports, exhaustive lifecycle/errors/capabilities, compile-real transitional doctor behavior, and no infrastructure/capture leakage. Verdict: Approve - story verified by implement; fast-lane advance.
