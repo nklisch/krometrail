@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-bounded-screencast-ingestion-contract-remediation
 kind: story
-stage: review
+stage: done
 tags: [browser]
 parent: epic-rust-cdp-capture-foundation-bounded-screencast-ingestion
 depends_on: [epic-rust-cdp-capture-foundation-bounded-screencast-ingestion-supervised-wiring]
@@ -112,3 +112,13 @@ Depends on the completed supervised-wiring story, which itself depends on the co
 - Effective worker: highest.
 - Review weight: standard at the parent feature; this correction changes a core serialized contract and production readiness, so it should receive fresh-context feature review through the normal lane.
 - One story is intentional: the corrected production metadata cannot be validated until initial visibility allows capture, and splitting these tightly coupled regressions would leave a misleading green intermediate state.
+
+## Review (2026-07-13)
+
+**Verdict:** Approve
+
+**Blockers:** none
+**Important:** none
+**Nits:** ordinal exhaustion has no explicit gap at the practically unreachable `u64::MAX` boundary; an acknowledged stale-generation callback truthfully increments only the dying runtime's transient stats; reconnect visibility parsing is intentionally stricter than the superseded fallback-to-visible behavior.
+
+**Notes:** Fresh-context three-round review verified every acceptance criterion, signed opaque acknowledgement handling, coordinator-scoped ordinal fencing across generations and races, visibility failure isolation, Ready guarding, and all unaffected bounded/timing/shutdown/privacy contracts. Workspace gates passed with 156 tests. No material finding remains.
