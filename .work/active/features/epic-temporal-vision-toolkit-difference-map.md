@@ -60,11 +60,10 @@ This feature does not diagnose why a region changed, track logical elements, or 
 
 ### Chosen: one renderer module plus a shared rendering seam
 
-Add three new modules:
+Add one feature module and reuse the shared rendering seam:
 
-- `render.rs` — the shared rendering seam for every artifact renderer: the `ImageEncoding` registry, `RenderedArtifact` (encoded bytes + lazy SHA-256), a `Canvas` RGBA8 framebuffer with checked drawing primitives, a deterministic PNG encoder pinned to one filter/compression profile, and a minimal bitmap font for labels.
-- `font.rs` — a small fixed bitmap glyph set (uppercase letters, digits, punctuation, arrow) covering exactly the labels this and the other artifact renderers need.
 - `difference_map.rs` — the feature surface: `FrequencyMode`, `TimePalette`, `DifferenceMapParameters`, `DifferenceMapLimits`, the per-pixel accumulation kernel, `DifferenceMapData`, the fixed `DifferenceMapLayout`, the three-panel assembly, manifest construction, and the public `render_difference_map` entry point and `DifferenceMapArtifact` result.
+- `render.rs` (+ `render/font.rs`, `encode.rs`) — the **shared** rendering seam every artifact renderer consumes: the `ImageEncoding` registry, `RenderedArtifact` (encoded bytes + SHA-256 output hash), a checked `Canvas` framebuffer with drawing primitives, a deterministic PNG encoder pinned to one filter/compression profile, and a minimal checked-in bitmap font. The sibling `storyboard` design (commit `347a3ad`) already specifies this canonical layout; the `region-filmstrip` design likewise plans to reuse it. This feature therefore **defers** to that seam rather than introducing a parallel one — Unit 1 either reuses the already-landed modules or lands them in that canonical layout for all renderers to share. The illustrative signatures below assume the seam exists; the difference map adapts to the canvas channel format (RGB8 or RGBA8) the shared seam settles on.
 
 `measure.rs` gains two small `pub(crate)` helpers (`classify_pixel_change`, `intersecting_gap_count`) extracted verbatim from `measure_pixels`/`measure_pair`. The extraction is behavior-preserving; the existing measurement outputs and tests do not change.
 
@@ -96,14 +95,17 @@ If this kernel is correct and bounded, the panel rendering and manifest assembly
 
 ## Implementation units
 
-### Unit 1: Shared rendering foundation
+### Unit 1: Shared rendering foundation (land or reuse)
 
-**Files:**
-- `crates/temporal-vision/src/render.rs` (new)
-- `crates/temporal-vision/src/font.rs` (new)
+**Files (canonical shared-seam layout, matching the sibling `storyboard` design):**
+- `crates/temporal-vision/src/render.rs` (new — shared canvas + drawing primitives + `RenderedArtifact` + `ImageEncoding`)
+- `crates/temporal-vision/src/render/font.rs` (new — checked-in bitmap font)
+- `crates/temporal-vision/src/encode.rs` (new — deterministic PNG encoder + SHA-256 hashing)
 - `crates/temporal-vision/src/lib.rs` (add modules and explicit exports)
 - `crates/temporal-vision/Cargo.toml` (add `sha2` and `png`)
 - `Cargo.toml` (add `png` to `[workspace.dependencies]`)
+
+> **Parallel-feature policy:** If the sibling `storyboard` or `region-filmstrip` feature has already landed `render.rs` / `render/font.rs` / `encode.rs`, this story REUSES them verbatim and contributes nothing new to those files. If no renderer has landed yet, this story lands the canonical seam in the layout above for all four artifact features to share. The orchestrator sequences implementation so the seam lands exactly once.
 
 **Story:** `epic-temporal-vision-toolkit-difference-map-rendering-foundation`
 
@@ -483,7 +485,7 @@ The feature remains one cohesive implementation and feature-review bundle. Stori
 ## Risks
 
 - **Riskiest assumption — `measure.rs` edit window:** Story 2 extracts two `pub(crate)` helpers from `measure.rs`, which is owned by `epic-temporal-vision-toolkit-normalization-and-measurements` (currently at `stage: review`). The extraction is purely additive and behavior-preserving, but the implementer must sequence it after that feature reaches `done`, or the orchestrator must sequence the shared edit so the two features never hold conflicting `measure.rs` state. The existing `analysis.rs` suite is the regression guard.
-- **Parallel rendering-seam introduction:** The sibling artifact features (storyboard, region-filmstrip, motion-history) are being designed concurrently and all need an encoding/font seam. This feature establishes `render.rs` and `font.rs` as the canonical shared seam; if another feature lands first with a different seam, the orchestrator reconciles by adopting whichever lands first and updating the other designs. Design-time parallelism is preserved; the shared code lands once.
+- **Parallel rendering-seam reconciliation (RESOLVED at design time):** The sibling `storyboard` design (commit `347a3ad`) and the in-flight `region-filmstrip` design both target a shared seam at `src/render.rs` + `src/render/font.rs` + `src/encode.rs`. This feature's Unit 1 therefore defers to that canonical layout (land-or-reuse) rather than introducing `src/font.rs` as a parallel module. The remaining reconciliation point is the canvas channel format: storyboard's design references an RGB8 canvas while this design's panel signatures were drafted against RGBA8. The orchestrator resolves this when the first renderer implements — PNG and `OutputHash` are well-defined for either, and the difference-map renderer adapts to whichever the shared `Canvas` settles on. No correctness or determinism risk; purely a shared-module signature detail.
 - **PNG determinism across `png` crate versions:** A `png` crate upgrade could change byte output for identical RGBA. Mitigation: pin the `png` version in `Cargo.toml`, pin the encoder profile in code, and record the encoding format and profile in provenance so any change is a visible algorithm-version bump.
 - **Grayscale reference is lossy:** The reference panel loses color, which slightly weakens "identify the relevant page or region." The manifest's `source_frame_ids` always point to the full-color source frames; a true color reference via an integer inverse LUT is a deferred, separately versioned enhancement.
 - **Magnitude-weighted timing can mislead under bursts:** A pixel with one large-magnitude change and several small ones weights the average toward the large event. This is documented behavior, not a defect; the repeated-change indicator surfaces multi-burst pixels separately so the timing panel does not silently average them into one false timestamp.

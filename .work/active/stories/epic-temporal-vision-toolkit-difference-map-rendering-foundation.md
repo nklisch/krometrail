@@ -17,13 +17,16 @@ updated: 2026-07-13
 
 Establish the shared rendering seam every temporal-vision artifact renderer consumes: a deterministic PNG encoder with a pinned profile, a lazy SHA-256 output hash, a checked RGBA8 `Canvas` with drawing primitives, and a minimal hand-authored bitmap font for labels. This story introduces `png` and `sha2` as normal dependencies of `temporal-vision` and is the first code to land for the difference-map feature.
 
-## Files
+## Files (canonical shared-seam layout, matching the sibling `storyboard` design)
 
-- `crates/temporal-vision/src/render.rs` (new)
-- `crates/temporal-vision/src/font.rs` (new)
-- `crates/temporal-vision/src/lib.rs` (add `mod render; mod font;` and explicit exports for `ImageEncoding` and `RenderedArtifact`)
+- `crates/temporal-vision/src/render.rs` (new — shared `Canvas` + drawing primitives + `RenderedArtifact` + `ImageEncoding`)
+- `crates/temporal-vision/src/render/font.rs` (new — checked-in bitmap font)
+- `crates/temporal-vision/src/encode.rs` (new — deterministic PNG encoder + SHA-256 hashing)
+- `crates/temporal-vision/src/lib.rs` (add `mod render; mod encode;` and explicit exports for `ImageEncoding` and `RenderedArtifact`)
 - `crates/temporal-vision/Cargo.toml` (add `sha2.workspace = true` and `png.workspace = true`)
-- `Cargo.toml` (add `png = "0.17"` to `[workspace.dependencies]`; pin an exact patch in `Cargo.lock`)
+- `Cargo.toml` (add `png` to `[workspace.dependencies]`; pin an exact patch in `Cargo.lock`)
+
+> **Parallel-feature policy:** If the sibling `storyboard` or `region-filmstrip` feature has already landed `render.rs` / `render/font.rs` / `encode.rs`, this story REUSES them verbatim and contributes nothing new to those files. If no renderer has landed yet, this story lands the canonical seam in the layout above for all four artifact features to share. The orchestrator sequences implementation so the seam lands exactly once.
 
 ## Public surface (exact signatures)
 
@@ -53,9 +56,10 @@ impl Canvas {
     pub(crate) fn draw_gradient(&mut self, rect: PixelRect, start: [u8; 4], end: [u8; 4]) -> Result<()>;
 }
 
-// font.rs
+// render/font.rs (checked-in 6×N monochrome set; exact glyph dimensions match the
+// shared seam chosen by the first renderer to land — storyboard proposes 6×10)
 pub(crate) const GLYPH_WIDTH: u32 = 6;
-pub(crate) const GLYPH_HEIGHT: u32 = 8;
+pub(crate) const GLYPH_HEIGHT: u32 = 8; // reconcile to 10 if storyboard lands first
 pub(crate) const fn glyph(character: char) -> Option<&'static [&'static [u8; 8]]>;
 ```
 
@@ -75,4 +79,4 @@ pub(crate) const fn glyph(character: char) -> Option<&'static [&'static [u8; 8]]
 
 ## Ordering constraints
 
-No upstream story dependency. Downstream stories (`change-accumulation`, `panel-rendering`, `public-contract-tests`) build on this seam. The implementer may run this in parallel with the `change-accumulation` story except for the shared `lib.rs` module list, which one owner should land coherently.
+No upstream story dependency. Downstream stories (`change-accumulation`, `panel-rendering`, `public-contract-tests`) build on this seam. The implementer may run this in parallel with the `change-accumulation` story except for the shared `lib.rs` module list, which one owner should land coherently. Coordinate with the sibling `storyboard` / `region-filmstrip` features so the shared seam (`render.rs`, `render/font.rs`, `encode.rs`) lands exactly once in the canonical layout; reuse verbatim if another renderer lands it first.
