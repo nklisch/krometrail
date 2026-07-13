@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-vision-toolkit-difference-map-rendering-foundation
 kind: story
-stage: implementing
+stage: done
 tags: [visual]
 parent: epic-temporal-vision-toolkit-difference-map
 depends_on: []
@@ -80,3 +80,13 @@ pub(crate) const fn glyph(character: char) -> Option<&'static [&'static [u8; 8]]
 ## Ordering constraints
 
 No upstream story dependency. Downstream stories (`change-accumulation`, `panel-rendering`, `public-contract-tests`) build on this seam. The implementer may run this in parallel with the `change-accumulation` story except for the shared `lib.rs` module list, which one owner should land coherently. Coordinate with the sibling `storyboard` / `region-filmstrip` features so the shared seam (`render.rs`, `render/font.rs`, `encode.rs`) lands exactly once in the canonical layout; reuse verbatim if another renderer lands it first.
+
+## Implementation notes
+
+- Execution capability: raised/high; shared renderer integration affects deterministic public evidence.
+- Review weight: standard (autopilot caller).
+- Files changed: substrate checkpoint only; storyboard already landed `artifact.rs`, `render.rs`, `render/canvas.rs`, `render/font.rs`, and `encode.rs` in commits `d0b4185` and `5016d8d`.
+- Tests added/removed: none; the existing shared-seam tests and 33 package tests pass.
+- Simplification: reused the RGB8 `GeneratedArtifact`/`EncodedImage`/`Canvas` seam exactly once instead of adding the designed parallel RGBA8 `RenderedArtifact` abstraction.
+- Discrepancies from design: the landed seam is RGB8 rather than RGBA8 and exposes hashes through `ArtifactManifest`; difference-map rendering will adapt to it without changing storyboard.
+- Adjacent issues parked: none.
