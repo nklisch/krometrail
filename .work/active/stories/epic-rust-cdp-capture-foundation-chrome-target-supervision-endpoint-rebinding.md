@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-chrome-target-supervision-endpoint-rebinding
 kind: story
-stage: review
+stage: done
 tags: [browser, security, testing]
 parent: epic-rust-cdp-capture-foundation-chrome-target-supervision
 depends_on: [epic-rust-cdp-capture-foundation-chrome-target-supervision-real-reconnect]
@@ -36,3 +36,13 @@ Resolve endpoint hostnames exactly once through an injectable resolver, reject e
 - Added deterministic empty/mixed/rebinding/TOCTOU and HTTP Host/path-refresh coverage. No screencast behavior was added.
 - Verification: workspace tests, no-default-features check/tests, workspace clippy with and without defaults, and the opt-in cdpkit spike suite (101 tests) passed. Three repeated real-Chrome reconnect runs and the complete real-Chrome session suite (5 tests) passed with profile/process cleanup assertions.
 - Exact implementation commit: `43077740b9b66c372f4cf199858ac49efc967c71`.
+
+## Review (2026-07-13)
+
+**Verdict:** Approve
+
+**Blockers:** none
+**Important:** none
+**Nits:** none
+
+**Notes:** Fast-lane boundary review reran 56 focused tests and denied-warning clippy; verified all-address loopback validation, pinned socket dialing, HTTP refresh with rotated WebSocket path, direct-WS semantics, real physical reconnect, and zero resource/screencast leakage. Verdict: Approve - story verified by implement; fast-lane advance.
