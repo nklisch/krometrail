@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-vision-toolkit-normalization-and-measurements
 kind: feature
-stage: review
+stage: done
 tags: [visual]
 parent: epic-temporal-vision-toolkit
 depends_on: [epic-temporal-vision-toolkit-frame-sequence-contracts]
@@ -365,3 +365,20 @@ None. The frame-sequence feature is implemented and review-ready, and its valida
 - `cargo check --workspace --all-targets --locked` — passed.
 - `cargo clippy --workspace --all-targets --locked -- -D warnings` — passed.
 - `cargo test --workspace --all-targets --locked` — external concurrent interference: one `krometrail-cdp` page-observation test failed while that feature was actively bounced and its screenshot/snapshot/test/fixture files were dirty. The temporal-vision package remained fully green and no unowned file was edited.
+
+## Review (2026-07-13)
+
+**Verdict**: Approve with comments
+
+**Blockers**: none
+**Important**: none
+**Nits**: Stronger full-table LUT recomputation, measurement serde round-trip, checked multiplication
+style, and avoiding a redundant full-domain mask are optional hardening. Rounded luminance and
+threshold-coupled aggregate naming are documented semantics for downstream renderers.
+**Rejected**: none
+
+**Notes**: Standard-weight cross-model review by GLM 5.2. The reviewer independently recomputed the
+complete IEC transfer table, alpha composite, strict threshold boundary, integer square root, and
+hand-derived measurement vector; inspected every normalization/measurement line; and reran 22
+package tests, formatting, Clippy, and dependency independence. All acceptance contracts passed.
+Workspace-wide rerun was deferred during concurrent lockfile work, with no package-local failure.
