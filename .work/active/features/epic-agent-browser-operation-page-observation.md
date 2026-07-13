@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-operation-page-observation
 kind: feature
-stage: review
+stage: implementing
 tags: [browser, agent-ux]
 parent: epic-agent-browser-operation
 depends_on: []
@@ -657,3 +657,19 @@ The implementation stayed inside core/CDP and target-fixture boundaries. It did 
 - `KROMETRAIL_REAL_CHROME_TESTS=1 cargo test -p krometrail-cdp --test page_observation --locked -- --nocapture` passed: all 8 tests, including default and forced-scale real Chrome qualification on Linux.
 
 All five child stories are `done`; integrated implementation is complete and this feature is ready for the caller's standard independent review. It is not self-approved here.
+
+## Review findings (2026-07-13)
+
+Standard cross-model review found one receiver-confirmed current-cycle blocker:
+
+- **Honor screenshot-only `VisibleGeometry` resolution.** `ReferenceRequirement` is passed through
+  the shared resolver but ignored, so element and selector screenshots reject disabled yet visible
+  controls with `reference_not_actionable`. Screenshot capture needs connection, visibility, and
+  finite geometry, not interaction enablement. Make `VisibleGeometry` skip disabled/inert action
+  gating while keeping hidden/disconnected/geometry-less refusal; retain the strict `Actionable`
+  path for durable action references. Add focused scripted and/or real-fixture regression coverage.
+
+The reviewer also proposed an O(n²) bounded snapshot-depth lookup, conservative selector retry
+classification, and constructor-description drift. These are non-blocking nits at the current
+5,000-node bound and explicit-failure posture. A workspace failure observed during review belonged
+to concurrent segment-format work and is not a page-observation finding.
