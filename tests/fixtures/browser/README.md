@@ -4,6 +4,7 @@ These directories are standalone target applications for the Rust browser-contro
 
 | Fixture | Current use |
 | --- | --- |
+| `page-observation` | Dependency-free structured-snapshot and screenshot target with dynamic replacement, disabled/hidden/inert controls, scrolling, shadow DOM, same-origin iframe content, and known CSS geometry. |
 | `react-bugs` | Reproducible transient React-render and timer failures for screenshots, navigation, interaction, and temporal visual evidence. |
 | `react-counter` | Minimal dynamic DOM and state-change target for browser actions and before/during/after capture. |
 | `react-spa` | Multi-route target with forms, async data, dynamic lists, and transient visual defects for control and temporal-evaluation scenarios. |

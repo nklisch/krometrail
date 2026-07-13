@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     sync::{Arc, Mutex},
 };
 
@@ -15,6 +15,13 @@ pub struct ScriptedCdp {
     state: Arc<Mutex<State>>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct CommandCall {
+    pub method: String,
+    pub session: Option<String>,
+    pub params: Value,
+}
+
 #[derive(Debug)]
 struct State {
     product: String,
@@ -22,8 +29,11 @@ struct State {
     missing: HashSet<String>,
     malformed: HashSet<String>,
     commands: Vec<(String, Option<String>)>,
+    command_calls: Vec<CommandCall>,
     subscriptions: Vec<(String, Option<String>)>,
     events: HashMap<String, Vec<Value>>,
+    responses: HashMap<String, VecDeque<Result<Value, TransportError>>>,
+    hold_events_open: bool,
 }
 
 impl ScriptedCdp {
@@ -35,8 +45,11 @@ impl ScriptedCdp {
                 missing: HashSet::new(),
                 malformed: HashSet::new(),
                 commands: Vec::new(),
+                command_calls: Vec::new(),
                 subscriptions: Vec::new(),
                 events: HashMap::new(),
+                responses: HashMap::new(),
+                hold_events_open: false,
             })),
         }
     }
@@ -64,6 +77,38 @@ impl ScriptedCdp {
     }
 
     #[allow(dead_code)]
+    pub fn command_calls(&self) -> Vec<CommandCall> {
+        self.state.lock().unwrap().command_calls.clone()
+    }
+
+    #[allow(dead_code)]
+    pub fn push_response(&self, method: &str, response: Value) {
+        self.state
+            .lock()
+            .unwrap()
+            .responses
+            .entry(method.to_owned())
+            .or_default()
+            .push_back(Ok(response));
+    }
+
+    #[allow(dead_code)]
+    pub fn push_failure(&self, method: &str, error: TransportError) {
+        self.state
+            .lock()
+            .unwrap()
+            .responses
+            .entry(method.to_owned())
+            .or_default()
+            .push_back(Err(error));
+    }
+
+    #[allow(dead_code)]
+    pub fn hold_events_open(&self) {
+        self.state.lock().unwrap().hold_events_open = true;
+    }
+
+    #[allow(dead_code)]
     pub fn subscriptions(&self) -> Vec<(String, Option<String>)> {
         self.state.lock().unwrap().subscriptions.clone()
     }
@@ -79,18 +124,35 @@ impl ScriptedCdp {
             .push(params);
     }
 
-    fn response(&self, scope: &CommandScope, method: &str) -> Result<Value, TransportError> {
+    fn response(
+        &self,
+        scope: &CommandScope,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, TransportError> {
         let mut state = self.state.lock().unwrap();
         let session = match scope {
             CommandScope::Browser => None,
             CommandScope::Session(session) => Some(session.as_str().to_owned()),
         };
         state.commands.push((method.to_owned(), session.clone()));
+        state.command_calls.push(CommandCall {
+            method: method.to_owned(),
+            session: session.clone(),
+            params: params.clone(),
+        });
         if state.missing.contains(method) {
             return Err(TransportError::CommandFailed);
         }
         if state.malformed.contains(method) {
             return Ok(json!("malformed-response"));
+        }
+        if let Some(response) = state
+            .responses
+            .get_mut(method)
+            .and_then(VecDeque::pop_front)
+        {
+            return response;
         }
         Ok(match method {
             "Browser.getVersion" => json!({
@@ -104,6 +166,12 @@ impl ScriptedCdp {
                 json!({"targetInfos": [{"targetId":"target-a","type":"page","url":"http://fixture/","title":"fixture"}]})
             }
             "Target.attachToTarget" => json!({"sessionId":"session-a"}),
+            "Runtime.evaluate"
+                if params.get("expression").and_then(Value::as_str)
+                    == Some("document.visibilityState") =>
+            {
+                json!({"result":{"type":"string","value":"visible"}})
+            }
             "Schema.getDomains" => {
                 json!({"domains":[{"name":"Page","commands":[{"name":"startScreencast"}]}]})
             }
@@ -117,9 +185,9 @@ impl CdpTransport for ScriptedCdp {
         &self,
         scope: &CommandScope,
         method: &str,
-        _params: Value,
+        params: Value,
     ) -> TransportFuture<'_, Result<Value, TransportError>> {
-        let result = self.response(scope, method);
+        let result = self.response(scope, method, params);
         Box::pin(async move { result })
     }
 
@@ -140,17 +208,18 @@ impl CdpTransport for ScriptedCdp {
                 .unwrap()
                 .subscriptions
                 .push((method.to_owned(), session));
-            let params = self
-                .state
-                .lock()
-                .unwrap()
-                .events
-                .remove(method)
-                .unwrap_or_default();
+            let (params, hold_open) = {
+                let mut state = self.state.lock().unwrap();
+                (
+                    state.events.remove(method).unwrap_or_default(),
+                    state.hold_events_open,
+                )
+            };
             Ok(Box::new(ScriptedEvents {
                 method: method.to_owned(),
                 params,
                 index: 0,
+                hold_open,
             }) as Box<dyn TransportEvents>)
         };
         Box::pin(async move { result })
@@ -169,6 +238,7 @@ struct ScriptedEvents {
     method: String,
     params: Vec<Value>,
     index: usize,
+    hold_open: bool,
 }
 
 impl TransportEvents for ScriptedEvents {
@@ -176,6 +246,15 @@ impl TransportEvents for ScriptedEvents {
         let event = self.params.get(self.index).cloned();
         self.index += usize::from(event.is_some());
         let method = self.method.clone();
-        Box::pin(async move { Ok(event.map(|params| NamedEvent { method, params })) })
+        let hold_open = self.hold_open;
+        Box::pin(async move {
+            if let Some(params) = event {
+                return Ok(Some(NamedEvent { method, params }));
+            }
+            if hold_open {
+                std::future::pending::<()>().await;
+            }
+            Ok(None)
+        })
     }
 }

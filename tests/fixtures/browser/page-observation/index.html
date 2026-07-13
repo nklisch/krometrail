@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Observation fixture</title>
+  <style>
+    html, body { margin: 0; font-family: sans-serif; }
+    main { min-height: 1800px; padding: 24px; }
+    #replace-me { position: absolute; left: 100px; top: 200px; width: 100px; height: 50px; }
+    #known-region { position: absolute; left: 320px; top: 480px; width: 120px; height: 80px; background: #369; }
+    .hidden { display: none; }
+    iframe { position: absolute; left: 40px; top: 700px; width: 300px; height: 120px; }
+  </style>
+</head>
+<body>
+  <main aria-label="Page observation fixture">
+    <button id="replace-me">Replace me</button>
+    <button disabled>Disabled action</button>
+    <button class="hidden">Hidden action</button>
+    <section inert><button>Inert action</button></section>
+    <div id="known-region" aria-label="Known region"></div>
+    <div id="shadow-host"></div>
+    <iframe title="Same-origin frame" srcdoc="<!doctype html><button id='frame-action'>Frame action</button>"></iframe>
+  </main>
+  <script>
+    const root = document.querySelector('#shadow-host').attachShadow({ mode: 'open' });
+    root.innerHTML = '<button id="shadow-action">Shadow action</button>';
+    // Repeated replacement gives opt-in browser qualification a real transient backing-node
+    // boundary without exposing a mutation command through Krometrail's read-only evaluator.
+    setInterval(() => {
+      const current = document.querySelector('#replace-me');
+      const replacement = current.cloneNode(true);
+      current.replaceWith(replacement);
+    }, 5000);
+  </script>
+</body>
+</html>
