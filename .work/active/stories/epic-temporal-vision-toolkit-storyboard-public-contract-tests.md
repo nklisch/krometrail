@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-vision-toolkit-storyboard-public-contract-tests
 kind: story
-stage: implementing
+stage: done
 tags: [visual, testing]
 parent: epic-temporal-vision-toolkit-storyboard
 depends_on: [epic-temporal-vision-toolkit-storyboard-rendering]
@@ -34,3 +34,11 @@ Keep private tests focused on score tuple/tie order, inverse sRGB endpoint/tie b
 ## Ordering
 
 Depends on `epic-temporal-vision-toolkit-storyboard-rendering`. This final checkpoint verifies selection, rasterization, encoding, and provenance as one public artifact seam.
+
+## Implementation notes
+
+- Added `crates/temporal-vision/tests/storyboard.rs` as a browser-free typed-ID consumer covering a tied-timestamp sequence, distinct anchors, local/trend/region change signals, two marker buckets, and a declared gap dividing continuity segments.
+- Exact assertions protect three-tile anchor omissions, default-eight source order/reasons, orientation source-role fallbacks, gap-boundary measurement, marker assignment, deterministic selection serialization, and manifest role/provenance agreement.
+- One tiny fixed PNG hash protects byte determinism; decoded dimensions and selected panel colors prove source-derived pixels, while header glyph and warning-hatch color regions prove visible semantic bands without OCR or a large image fixture.
+- Tiny width, height, canvas, and encoded-byte limits all fail explicitly with no returned partial artifact. Normal dependency inspection shows only Serde/thiserror plus pinned PNG encoding and SHA-256, with no Krometrail/browser/runtime/UI/font/filesystem/GPU dependency.
+- Verification: locked package check, 33 package tests across four suites, Clippy with warnings denied, and dependency-tree inspection passed.

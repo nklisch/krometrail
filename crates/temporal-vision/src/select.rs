@@ -405,12 +405,11 @@ impl Ord for PeakMetrics {
     fn cmp(&self, other: &Self) -> Ordering {
         self.distance
             .cmp(&other.distance)
-            .then_with(|| {
-                u128::from(self.changed)
-                    .saturating_mul(u128::from(other.compared))
-                    .cmp(&u128::from(other.changed).saturating_mul(u128::from(self.compared)))
-            })
             .then(self.changed.cmp(&other.changed))
+            .then_with(|| {
+                (u128::from(self.changed) * u128::from(other.compared))
+                    .cmp(&(u128::from(other.changed) * u128::from(self.compared)))
+            })
             .then(self.absolute.cmp(&other.absolute))
             .then(self.reverse_index.cmp(&other.reverse_index))
     }
