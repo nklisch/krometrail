@@ -4,7 +4,6 @@ mod support;
 
 use std::{
     collections::{HashMap, HashSet},
-    fs,
     io::{Read, Write},
     net::TcpListener,
     num::NonZeroUsize,
@@ -22,12 +21,13 @@ use krometrail_cdp::{
     ProductionBrowserConnector, SystemChromeLauncher,
 };
 use krometrail_core::{
-    AttachBrowser, BrowserConnectRequest, BrowserConnector, BrowserSessionEvent,
+    AttachBrowser, BrowserConnectRequest, BrowserConnector, BrowserProduct, BrowserSessionEvent,
     BrowserSessionEvents, BrowserSessionPort, BrowserSessionState, BrowserStopOutcome,
     CaptureGapReason, CaptureStreamState, EncodedFrame, ErrorCode, IdSource, IdValue, ImageFormat,
     LaunchBrowser, ManagedProfile, MonotonicClock, ObservedTime, PortFuture, RecordingSink,
     SessionId, TargetCaptureStatus, TargetId,
 };
+use support::chrome::ChromeWrapperVariant;
 use uuid::Uuid;
 
 const CAPTURE_TIMEOUT: Duration = Duration::from_secs(45);
@@ -147,7 +147,10 @@ async fn opt_in_real_chrome_capture_isolates_two_targets_and_records_visibility_
         startup_timeout: CAPTURE_TIMEOUT,
         shutdown_timeout: Duration::from_secs(4),
     });
-    let chrome_wrapper = ChromeWrapper::new();
+    let chrome_wrapper = support::chrome::ChromeWrapper::for_product(
+        BrowserProduct::Chrome,
+        ChromeWrapperVariant::DefaultDpi,
+    );
     let request = LaunchBrowser {
         executable: chrome_wrapper.as_ref().map(|wrapper| wrapper.path.clone()),
         profile: ManagedProfile::Temporary,
@@ -462,7 +465,10 @@ async fn opt_in_real_chrome_capture_fences_one_disconnect_and_resets_generation_
         startup_timeout: CAPTURE_TIMEOUT,
         shutdown_timeout: Duration::from_secs(4),
     });
-    let chrome_wrapper = ChromeWrapper::new();
+    let chrome_wrapper = support::chrome::ChromeWrapper::for_product(
+        BrowserProduct::Chrome,
+        ChromeWrapperVariant::DefaultDpi,
+    );
     let request = LaunchBrowser {
         executable: chrome_wrapper.as_ref().map(|wrapper| wrapper.path.clone()),
         profile: ManagedProfile::Temporary,
@@ -637,7 +643,10 @@ async fn connect_managed(
         startup_timeout: CAPTURE_TIMEOUT,
         shutdown_timeout: Duration::from_secs(4),
     });
-    let chrome_wrapper = ChromeWrapper::new();
+    let chrome_wrapper = support::chrome::ChromeWrapper::for_product(
+        BrowserProduct::Chrome,
+        ChromeWrapperVariant::DefaultDpi,
+    );
     let request = LaunchBrowser {
         executable: chrome_wrapper.as_ref().map(|wrapper| wrapper.path.clone()),
         profile: ManagedProfile::Temporary,
@@ -1248,56 +1257,6 @@ fn assert_profile_unreferenced(path: &Path) {
         references.is_empty(),
         "managed Chrome still references its test profile"
     );
-}
-
-static WRAPPER_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
-struct ChromeWrapper {
-    path: std::path::PathBuf,
-}
-
-impl ChromeWrapper {
-    #[cfg(unix)]
-    fn new() -> Option<Self> {
-        use std::os::unix::fs::PermissionsExt;
-
-        let executable = krometrail_cdp::discover_installations(None)
-            .first()?
-            .executable
-            .clone();
-        let sequence = WRAPPER_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "krometrail-real-chrome-wrapper-{}-{sequence}",
-            std::process::id()
-        ));
-        let script = format!(
-            "#!/bin/sh\nexec {} --headless=new --disable-gpu --no-sandbox \"$@\"\n",
-            shell_quote(&executable)
-        );
-        fs::write(&path, script).expect("Chrome wrapper");
-        let mut permissions = fs::metadata(&path)
-            .expect("Chrome wrapper metadata")
-            .permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(&path, permissions).expect("Chrome wrapper permissions");
-        Some(Self { path })
-    }
-
-    #[cfg(not(unix))]
-    fn new() -> Option<Self> {
-        None
-    }
-}
-
-#[cfg(unix)]
-fn shell_quote(path: &Path) -> String {
-    format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
-}
-
-impl Drop for ChromeWrapper {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
-    }
 }
 
 const FIXTURE_INDEX: &[u8] =

@@ -1,0 +1,163 @@
+{
+  "kind": "cross_platform_capture_smoke",
+  "non_claims": [
+    "no transport requalification (final5 owns cdpkit selection)",
+    "no host-speed percentile threshold (ack/cadence are diagnostics)",
+    "no product-thesis capture-probability threshold",
+    "no duration sweep, defect corpus, artifact comparison, or storage validation",
+    "no chrome-acknowledgement-token continuity claim"
+  ],
+  "provenance": {
+    "architecture": "x86_64",
+    "browser_installation": {
+      "discovered_version": "Google Chrome 128.0.0.0",
+      "executable_source": "platform_default",
+      "product": "chrome"
+    },
+    "capture_config": {
+      "ack_timeout_ms": 250,
+      "format": "jpeg",
+      "gap_ledger_capacity": 64,
+      "jpeg_quality": 80,
+      "max_active_streams": 8,
+      "max_base64_payload_bytes": 8388608,
+      "max_dimensions": null,
+      "queue_capacity": 4,
+      "shutdown_timeout_ms": 5000
+    },
+    "cdpkit_version": "0.4.0",
+    "configuration_name": "linux-chrome",
+    "fixture": {
+      "animation_js_sha256": "sha256:84ba666539a996012a781637c1a894d8c7a4789cfca84661bd7cf8b79efa2e13",
+      "index_html_sha256": "sha256:9b42ae730d12a95772a946bf55e4838a5443b6cb4c536424570219041b6e2a68",
+      "name": "cdp-transport-gate",
+      "path": "tests/fixtures/browser/cdp-transport-gate"
+    },
+    "krometrail_revision": "0000000000000000000000000000000000000000",
+    "launch": {
+      "endpoint": "loopback",
+      "force_device_scale_factor": 1.0,
+      "ownership": "managed",
+      "profile_kind": "temporary",
+      "wrapper_variant": "default_dpi"
+    },
+    "platform": "linux",
+    "runtime_version": {
+      "js_version": "12.8",
+      "product": "chrome",
+      "product_version": "128.0.0.0",
+      "protocol_version": "1.3",
+      "revision": "@abcdef1234567890abcdef1234567890abcdef12",
+      "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
+    },
+    "rust_version": "1.85.0"
+  },
+  "schema_version": 1,
+  "sessions": [
+    {
+      "ack_latency_nanos": {
+        "max": 4500000,
+        "p50": 1500000,
+        "p95": 3000000,
+        "p99": 5000000,
+        "samples": 30
+      },
+      "capture_config": {
+        "ack_timeout_ms": 250,
+        "format": "jpeg",
+        "gap_ledger_capacity": 64,
+        "jpeg_quality": 80,
+        "max_active_streams": 8,
+        "max_base64_payload_bytes": 8388608,
+        "max_dimensions": null,
+        "queue_capacity": 4,
+        "shutdown_timeout_ms": 5000
+      },
+      "capture_ordinal_range": {
+        "max": 30,
+        "min": 1
+      },
+      "declared_gaps": [],
+      "device_scale_factor": 1.0,
+      "frame_cadence_nanos": {
+        "max": 36000000,
+        "p50": 33000000,
+        "p95": 34000000,
+        "p99": 35000000,
+        "samples": 29
+      },
+      "frame_count": 30,
+      "image_dimensions": {
+        "height": 437,
+        "width": 780
+      },
+      "name": "fidelity",
+      "observed_clock_span_nanos": 1234567890,
+      "session_clock_span_nanos": 1234567000,
+      "source_time_samples": 30,
+      "viewport": {
+        "height": 437,
+        "width": 780
+      },
+      "visibility_events": 0
+    },
+    {
+      "ack_latency_nanos": {
+        "max": 2500000,
+        "p50": 1000000,
+        "p95": 2000000,
+        "p99": 3000000,
+        "samples": 12
+      },
+      "capture_config": {
+        "ack_timeout_ms": 250,
+        "format": "jpeg",
+        "gap_ledger_capacity": 64,
+        "jpeg_quality": 80,
+        "max_active_streams": 8,
+        "max_base64_payload_bytes": 8388608,
+        "max_dimensions": null,
+        "queue_capacity": 1,
+        "shutdown_timeout_ms": 5000
+      },
+      "capture_ordinal_range": {
+        "max": 12,
+        "min": 1
+      },
+      "declared_gaps": [
+        {
+          "count": 1,
+          "reason": "ingestion_queue_saturated"
+        }
+      ],
+      "device_scale_factor": 1.0,
+      "frame_cadence_nanos": {
+        "max": 36000000,
+        "p50": 33000000,
+        "p95": 34000000,
+        "p99": 35000000,
+        "samples": 11
+      },
+      "frame_count": 12,
+      "image_dimensions": {
+        "height": 437,
+        "width": 780
+      },
+      "name": "loss_reporting",
+      "observed_clock_span_nanos": 500000000,
+      "session_clock_span_nanos": 499000000,
+      "source_time_samples": 12,
+      "viewport": {
+        "height": 437,
+        "width": 780
+      },
+      "visibility_events": 0
+    }
+  ],
+  "shutdown": {
+    "flush_count": 1,
+    "outcome": "managed_browser_closed",
+    "process_references_after": [],
+    "profile_references_after": []
+  }
+}

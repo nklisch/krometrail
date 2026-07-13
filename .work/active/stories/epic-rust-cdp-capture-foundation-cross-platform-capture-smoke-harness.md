@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cross-platform-capture-smoke-harness
 kind: story
-stage: implementing
+stage: review
 tags: [browser, testing, infra]
 parent: epic-rust-cdp-capture-foundation-cross-platform-capture-smoke
 depends_on: []
@@ -52,17 +52,17 @@ No production code, `src/cli.rs`, fixture content, final5 evidence, or `capture_
 
 ## Acceptance criteria
 
-- [ ] `ChromeWrapper` exists in `tests/support/chrome.rs` parameterized by explicit `executable: PathBuf`, `product: BrowserProduct`, and `variant: ChromeWrapperVariant`; a pure `script_bytes(executable, variant)` returns wrapper bytes without filesystem access; a `for_product(product, variant)` constructor filters `discover_installations(None)` by `BrowserInstallation::product`. `capture_real.rs` migrates to `for_product(BrowserProduct::Chrome, ChromeWrapperVariant::DefaultDpi)` and its enumerated opt-in suite (four `#[tokio::test]`s — see the feature's "capture_real test count" section) re-runs green when `KROMETRAIL_REAL_CHROME_TESTS=1`.
-- [ ] The `DefaultDpi` wrapper script contains `--headless=new`, `--disable-gpu`, `--no-sandbox`, and `--force-device-scale-factor=1`; the `HighDpi` script additionally contains `--high-dpi-support=1` and `--force-device-scale-factor=2` (asserted deterministically via `script_bytes` with a sentinel path — no Chrome, no temp dir).
-- [ ] `docs/evidence/cross-platform-smoke/v1/schema.json` validates the committed `sample.json` and every `CrossPlatformSmokeEvidence` produced by the serializer (deterministic round-trip test; `additionalProperties: false`); `provenance.capture_config.*` matches `CaptureConfig::default()` exactly and `force_device_scale_factor ∈ {1.0, 2.0}`.
-- [ ] The canonical-bytes test asserts `serde_json::to_vec_pretty(&CrossPlatformSmokeEvidence::sample())` equals the committed `sample.json` byte-for-byte (ordered structs, `BTreeMap`-sorted maps, canonical session order, recursive key sort).
-- [ ] The sanitizer guarantees no evidence field contains a host filesystem path outside the committed fixture path constant, an endpoint URL, a frame payload, a profile path, or a raw adapter error string (deterministic property test over the serializer outputs).
-- [ ] `kind`, `schema_version`, `provenance.configuration_name`, `provenance.platform`, `provenance.cdpkit_version`, `provenance.capture_config.*`, `provenance.launch.force_device_scale_factor`, `shutdown.outcome`, and `non_claims` are required and non-empty.
-- [ ] The runtime `BrowserVersion` accessor test confirms the evidence path uses `session.compatibility().version` (field) and reads `.product()`, `.product_version().as_str()`, `.revision()`, `.protocol_version()`, `.user_agent()`, `.js_version()` on a scripted session; discovered `BrowserInstallation::product` and runtime `BrowserVersion::product()` are the same enum.
-- [ ] `process_command_references` has a real `#[cfg(target_os = "macos")]` branch using `ps -ax -o pid= -o command=` (parity with the Linux `/proc` scan); the deterministic test proves a referenced root is reported and an unreferenced root is not, on both Linux and macOS builds.
-- [ ] No production code, no `src/cli.rs` change, no new fixture, and no final5 file is modified.
-- [ ] `cargo fmt --all --check`, `cargo check --workspace --all-targets --locked`, `cargo test --workspace --all-targets --locked`, and `cargo clippy --workspace --all-targets --locked -- -D warnings` pass; `capture_real.rs` opt-in suite remains green when Chrome is available.
-- [ ] **Feature boundary / no-default:** `crates/krometrail-cdp/tests/cross_platform_smoke.rs` opens with `#![cfg(feature = "cdpkit-transport")]`; `cargo test -p krometrail-cdp --no-default-features --tests --locked` succeeds and does not compile the smoke (verified by a deterministic boundary check confirming the test target is absent under `--no-default-features`).
+- [x] `ChromeWrapper` exists in `tests/support/chrome.rs` parameterized by explicit `executable: PathBuf`, `product: BrowserProduct`, and `variant: ChromeWrapperVariant`; a pure `script_bytes(executable, variant)` returns wrapper bytes without filesystem access; a `for_product(product, variant)` constructor filters `discover_installations(None)` by `BrowserInstallation::product`. `capture_real.rs` migrates to `for_product(BrowserProduct::Chrome, ChromeWrapperVariant::DefaultDpi)` and its enumerated opt-in suite (four `#[tokio::test]`s — see the feature's "capture_real test count" section) re-runs green when `KROMETRAIL_REAL_CHROME_TESTS=1`.
+- [x] The `DefaultDpi` wrapper script contains `--headless=new`, `--disable-gpu`, `--no-sandbox`, and `--force-device-scale-factor=1`; the `HighDpi` script additionally contains `--high-dpi-support=1` and `--force-device-scale-factor=2` (asserted deterministically via `script_bytes` with a sentinel path — no Chrome, no temp dir).
+- [x] `docs/evidence/cross-platform-smoke/v1/schema.json` validates the committed `sample.json` and every `CrossPlatformSmokeEvidence` produced by the serializer (deterministic round-trip test; `additionalProperties: false`); `provenance.capture_config.*` matches `CaptureConfig::default()` exactly and `force_device_scale_factor ∈ {1.0, 2.0}`.
+- [x] The canonical-bytes test asserts `serde_json::to_vec_pretty(&CrossPlatformSmokeEvidence::sample())` equals the committed `sample.json` byte-for-byte (ordered structs, `BTreeMap`-sorted maps, canonical session order, recursive key sort).
+- [x] The sanitizer guarantees no evidence field contains a host filesystem path outside the committed fixture path constant, an endpoint URL, a frame payload, a profile path, or a raw adapter error string (deterministic property test over the serializer outputs).
+- [x] `kind`, `schema_version`, `provenance.configuration_name`, `provenance.platform`, `provenance.cdpkit_version`, `provenance.capture_config.*`, `provenance.launch.force_device_scale_factor`, `shutdown.outcome`, and `non_claims` are required and non-empty.
+- [x] The runtime `BrowserVersion` accessor test confirms the evidence path uses `session.compatibility().version` (field) and reads `.product()`, `.product_version().as_str()`, `.revision()`, `.protocol_version()`, `.user_agent()`, `.js_version()` on a scripted session; discovered `BrowserInstallation::product` and runtime `BrowserVersion::product()` are the same enum.
+- [x] `process_command_references` has a real `#[cfg(target_os = "macos")]` branch using `ps -ax -o pid= -o command=` (parity with the Linux `/proc` scan); the deterministic test proves a referenced root is reported and an unreferenced root is not, on both Linux and macOS builds.
+- [x] No production code, no `src/cli.rs` change, no new fixture, and no final5 file is modified.
+- [x] `cargo fmt --all --check`, `cargo check --workspace --all-targets --locked`, `cargo test --workspace --all-targets --locked`, and `cargo clippy --workspace --all-targets --locked -- -D warnings` pass; `capture_real.rs` opt-in suite remains green when Chrome is available.
+- [x] **Feature boundary / no-default:** `crates/krometrail-cdp/tests/cross_platform_smoke.rs` opens with `#![cfg(feature = "cdpkit-transport")]`; `cargo test -p krometrail-cdp --no-default-features --tests --locked` succeeds and does not compile the smoke (verified by a deterministic boundary check confirming the test target is absent under `--no-default-features`).
 
 ## Execution
 

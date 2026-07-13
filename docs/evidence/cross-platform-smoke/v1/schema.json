@@ -1,0 +1,467 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://krometrail.dev/evidence/cross-platform-smoke/v1/schema.json",
+  "title": "CrossPlatformSmokeEvidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "provenance", "sessions", "shutdown", "non_claims"],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "kind": {
+      "type": "string",
+      "const": "cross_platform_capture_smoke"
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "krometrail_revision",
+        "rust_version",
+        "cdpkit_version",
+        "platform",
+        "architecture",
+        "configuration_name",
+        "browser_installation",
+        "runtime_version",
+        "launch",
+        "capture_config",
+        "fixture"
+      ],
+      "properties": {
+        "krometrail_revision": {
+          "type": "string",
+          "minLength": 1
+        },
+        "rust_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cdpkit_version": {
+          "type": "string",
+          "const": "0.4.0"
+        },
+        "platform": {
+          "type": "string",
+          "enum": ["linux", "macos"]
+        },
+        "architecture": {
+          "type": "string",
+          "enum": ["x86_64", "aarch64"]
+        },
+        "configuration_name": {
+          "type": "string",
+          "enum": [
+            "linux-chrome",
+            "linux-chromium",
+            "macos-chrome-default-dpi",
+            "macos-chrome-high-dpi"
+          ]
+        },
+        "browser_installation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["executable_source", "product", "discovered_version"],
+          "properties": {
+            "executable_source": {
+              "type": "string",
+              "enum": ["explicit_request", "environment_override", "platform_default", "path_lookup"]
+            },
+            "product": {
+              "type": "string",
+              "enum": ["chrome", "chromium", "electron_renderer", "other_chromium"]
+            },
+            "discovered_version": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "runtime_version": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["product", "product_version", "revision", "protocol_version", "user_agent", "js_version"],
+          "properties": {
+            "product": {
+              "type": "string",
+              "enum": ["chrome", "chromium", "electron_renderer", "other_chromium"]
+            },
+            "product_version": {
+              "type": "string",
+              "minLength": 1
+            },
+            "revision": {
+              "type": "string",
+              "minLength": 1
+            },
+            "protocol_version": {
+              "type": "string",
+              "minLength": 1
+            },
+            "user_agent": {
+              "type": "string",
+              "minLength": 1
+            },
+            "js_version": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "launch": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["ownership", "profile_kind", "endpoint", "wrapper_variant", "force_device_scale_factor"],
+          "properties": {
+            "ownership": {
+              "type": "string",
+              "const": "managed"
+            },
+            "profile_kind": {
+              "type": "string",
+              "const": "temporary"
+            },
+            "endpoint": {
+              "type": "string",
+              "const": "loopback"
+            },
+            "wrapper_variant": {
+              "type": "string",
+              "enum": ["default_dpi", "high_dpi"]
+            },
+            "force_device_scale_factor": {
+              "type": "number",
+              "enum": [1.0, 2.0]
+            }
+          }
+        },
+        "capture_config": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "format",
+            "jpeg_quality",
+            "max_dimensions",
+            "max_active_streams",
+            "queue_capacity",
+            "max_base64_payload_bytes",
+            "gap_ledger_capacity",
+            "ack_timeout_ms",
+            "shutdown_timeout_ms"
+          ],
+          "properties": {
+            "format": {
+              "type": "string",
+              "const": "jpeg"
+            },
+            "jpeg_quality": {
+              "type": "integer",
+              "const": 80
+            },
+            "max_dimensions": {
+              "type": "null"
+            },
+            "max_active_streams": {
+              "type": "integer",
+              "const": 8
+            },
+            "queue_capacity": {
+              "type": "integer",
+              "const": 4
+            },
+            "max_base64_payload_bytes": {
+              "type": "integer",
+              "const": 8388608
+            },
+            "gap_ledger_capacity": {
+              "type": "integer",
+              "const": 64
+            },
+            "ack_timeout_ms": {
+              "type": "integer",
+              "const": 250
+            },
+            "shutdown_timeout_ms": {
+              "type": "integer",
+              "const": 5000
+            }
+          }
+        },
+        "fixture": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "path", "index_html_sha256", "animation_js_sha256"],
+          "properties": {
+            "name": {
+              "type": "string",
+              "const": "cdp-transport-gate"
+            },
+            "path": {
+              "type": "string",
+              "const": "tests/fixtures/browser/cdp-transport-gate"
+            },
+            "index_html_sha256": {
+              "type": "string",
+              "minLength": 1
+            },
+            "animation_js_sha256": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "sessions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "capture_config",
+          "frame_count",
+          "source_time_samples",
+          "image_dimensions",
+          "viewport",
+          "device_scale_factor",
+          "capture_ordinal_range",
+          "observed_clock_span_nanos",
+          "session_clock_span_nanos",
+          "ack_latency_nanos",
+          "frame_cadence_nanos",
+          "declared_gaps",
+          "visibility_events"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": ["fidelity", "loss_reporting"]
+          },
+          "capture_config": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "format",
+              "jpeg_quality",
+              "max_dimensions",
+              "max_active_streams",
+              "queue_capacity",
+              "max_base64_payload_bytes",
+              "gap_ledger_capacity",
+              "ack_timeout_ms",
+              "shutdown_timeout_ms"
+            ],
+            "properties": {
+              "format": {
+                "type": "string",
+                "const": "jpeg"
+              },
+              "jpeg_quality": {
+                "type": "integer",
+                "const": 80
+              },
+              "max_dimensions": {
+                "type": "null"
+              },
+              "max_active_streams": {
+                "type": "integer",
+                "const": 8
+              },
+              "queue_capacity": {
+                "type": "integer",
+                "enum": [1, 4]
+              },
+              "max_base64_payload_bytes": {
+                "type": "integer",
+                "const": 8388608
+              },
+              "gap_ledger_capacity": {
+                "type": "integer",
+                "const": 64
+              },
+              "ack_timeout_ms": {
+                "type": "integer",
+                "const": 250
+              },
+              "shutdown_timeout_ms": {
+                "type": "integer",
+                "const": 5000
+              }
+            }
+          },
+          "frame_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "source_time_samples": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "image_dimensions": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["width", "height"],
+            "properties": {
+              "width": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "height": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          },
+          "viewport": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["width", "height"],
+            "properties": {
+              "width": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "height": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          },
+          "device_scale_factor": {
+            "type": "number"
+          },
+          "capture_ordinal_range": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["min", "max"],
+            "properties": {
+              "min": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "max": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          },
+          "observed_clock_span_nanos": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "session_clock_span_nanos": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "ack_latency_nanos": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["samples", "p50", "p95", "p99", "max"],
+            "properties": {
+              "samples": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "p50": {
+                "type": ["integer", "null"]
+              },
+              "p95": {
+                "type": ["integer", "null"]
+              },
+              "p99": {
+                "type": ["integer", "null"]
+              },
+              "max": {
+                "type": ["integer", "null"]
+              }
+            }
+          },
+          "frame_cadence_nanos": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["samples", "p50", "p95", "p99", "max"],
+            "properties": {
+              "samples": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "p50": {
+                "type": ["integer", "null"]
+              },
+              "p95": {
+                "type": ["integer", "null"]
+              },
+              "p99": {
+                "type": ["integer", "null"]
+              },
+              "max": {
+                "type": ["integer", "null"]
+              }
+            }
+          },
+          "declared_gaps": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["reason", "count"],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "count": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          },
+          "visibility_events": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "shutdown": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["outcome", "flush_count", "process_references_after", "profile_references_after"],
+      "properties": {
+        "outcome": {
+          "type": "string",
+          "enum": ["managed_browser_closed", "detached", "incomplete"]
+        },
+        "flush_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "process_references_after": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "profile_references_after": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "non_claims": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}
