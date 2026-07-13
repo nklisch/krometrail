@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-chrome-target-supervision-session-supervisor
 kind: story
-stage: review
+stage: done
 tags: [browser, testing]
 parent: epic-rust-cdp-capture-foundation-chrome-target-supervision
 depends_on: [epic-rust-cdp-capture-foundation-chrome-target-supervision-managed-launch]
@@ -69,6 +69,16 @@ Broaden the contracts story's stable no-browser doctor smoke in `tests/rust-runt
 - Replaced the transitional root connector, made `doctor` discovery-only with stable success/no-browser outcomes, removed discovery probe filesystem mutation, and rolled `docs/ARCHITECTURE.md` forward to the final5 boundary. The compatibility probe tries exact page keys and never starts a screencast.
 - Added deterministic reducer/supervision/fixture coverage, bounded real-Chrome managed launch and attach target coverage, and opt-in Electron/attached endpoint tests. Real transport reconnection is covered by the deterministic factory; no production screencast path was added.
 - Verification completed: `cargo fmt --all --check`; workspace default and `--no-default-features` check/test; workspace clippy with `-D warnings`; cdpkit spike regression; dependency-boundary grep; `KROMETRAIL_REAL_CHROME_TESTS=1 cargo test -p krometrail-cdp --test chrome_session_real -- --nocapture` (Chrome available; Electron and external attach opt-ins skipped when unset).
+
+## Review (2026-07-13)
+
+**Verdict:** Approve
+
+**Blockers:** none
+**Important:** none
+**Nits:** none
+
+**Notes:** Fast-lane supervision review reran 95 workspace tests, focused descendant lifecycle regressions, no-default check, and denied-warning clippy; verified reducer identity/generation semantics, reconnect/process-death/cancellation isolation, bounded fan-out, ownership-correct stop, root/doctor composition, real Chrome behavior, and zero process/profile/root leaks after the descendant-reaping fix. Verdict: Approve - story verified by implement; fast-lane advance.
 - Review fix: real-browser tests now own unique temporary roots with an RAII guard declared before browser/session guards. Drop prunes only empty known roots after checking Linux process command lines, preserving non-empty or actively referenced roots; startup cleanup handles stale empty roots and deterministic support coverage verifies the safety rule.
 
 ## Review fix (2026-07-12)
