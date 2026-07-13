@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-chrome-target-supervision
 kind: feature
-stage: implementing
+stage: review
 tags: [browser]
 parent: epic-rust-cdp-capture-foundation
 depends_on: [epic-rust-cdp-capture-foundation-cdp-transport-gate]
@@ -488,7 +488,7 @@ Adversarial review confirmed four material current-cycle blockers: HTTP reconnec
 
 Four dependency-ordered follow-ups repaired those defects. Endpoint resolution rejects mixed sets; HTTP reconnect refreshes rotated paths. Reconstruction is one bounded cancellable transaction with atomic state commit. Event streams deliver one `Ended` then close. Architecture consistently names current final5 evidence.
 
-Final closure review reproduced one remaining endpoint-boundary flaw in two forms: same-authority discovery performed a second resolver lookup that could select a different loopback debugger, and changed-authority synchronous resolution blocked reconnect deadline/cancellation polling. One focused follow-up owns exact pin reuse and asynchronous resolution. Parked lower-risk findings remain backlog-only.
+Final closure review reproduced one remaining endpoint-boundary flaw in two forms: same-authority discovery performed a second resolver lookup that could select a different loopback debugger, and changed-authority synchronous resolution blocked reconnect deadline/cancellation polling. The final follow-up now reuses the exact same-authority pin and uses Tokio asynchronous resolution for changed authorities entirely inside reconnect attempt control. Deterministic adversarial probes and repeated rotating-path real reconnects pass leak-free. All ten child stories are `stage: done`; parked lower-risk findings remain backlog-only. The feature returns to `stage: review`.
 
 ## Testing strategy
 
