@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-vision-toolkit-frame-sequence-contracts-public-contract-tests
 kind: story
-stage: implementing
+stage: done
 tags: [visual, testing]
 parent: epic-temporal-vision-toolkit-frame-sequence-contracts
 depends_on: [epic-temporal-vision-toolkit-frame-sequence-contracts-provenance-manifest]
@@ -30,3 +30,14 @@ Keep malformed cases focused on load-bearing risks: RGBA length, frame duplicati
 ## Ordering
 
 Depends on `epic-temporal-vision-toolkit-frame-sequence-contracts-provenance-manifest`. This is the final checkpoint and validates the complete feature as one public contract.
+
+## Implementation notes
+
+- Execution capability: highest/raised (caller-selected) for the stable downstream consumer seam.
+- Review weight: standard (caller/autopilot).
+- Files changed: `crates/temporal-vision/tests/contracts.rs`.
+- Tests added: browser-free typed-ID borrowed/owned sequence and complete manifest round trip; deterministic JSON; malformed frame, order, annotation, gap, geometry, mask, number, selected-subsequence, and persisted-count cases.
+- Simplification: one 2x2 synthetic fixture exercises the integrated contract without browser fixtures, image codecs, UUID libraries, or runtime support.
+- Discrepancies from design: none.
+- Adjacent issues parked: none.
+- Verification: focused check/test/clippy all passed locked (12 tests); normal dependency tree contains only Serde and thiserror.
