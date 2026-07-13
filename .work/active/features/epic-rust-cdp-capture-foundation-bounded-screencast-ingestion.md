@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-bounded-screencast-ingestion
 kind: feature
-stage: implementing
+stage: review
 tags: [browser]
 parent: epic-rust-cdp-capture-foundation
 depends_on: [epic-rust-cdp-capture-foundation-chrome-target-supervision]
@@ -290,4 +290,4 @@ A single remediation story is intentionally minimal. Splitting metadata and visi
 
 ## Feature review findings (2026-07-13)
 
-GLM completeness review approved. A second cross-model seam review found two receiver-confirmed material gaps: acknowledgement latency starts after token extraction rather than at frame return, and stopped target runtimes remain in the coordinator map, violating the stated O(active streams) memory/status bound under target churn. The parent returns to implementing for `...-feature-review-remediation`; approval resumes after that story closes both findings. A transient duplicate-status generation window is included in the same registry repair.
+GLM completeness review approved. A second cross-model seam review found two receiver-confirmed material gaps: acknowledgement latency starts after token extraction rather than at frame return, and stopped target runtimes remain in the coordinator map, violating the stated O(active streams) memory/status bound under target churn. The parent returned to implementing for `...-feature-review-remediation`; that story now measures receipt-to-ack completion exactly, evicts terminal runtimes safely, exposes only highest-generation sorted statuses, preserves/reclaims ordinal state by lifecycle, and proves final status publication before removal. Exact opt-in Chrome passed twice after repair, so the parent resumes review.
