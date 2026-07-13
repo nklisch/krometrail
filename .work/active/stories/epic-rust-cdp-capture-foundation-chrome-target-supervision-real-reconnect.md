@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-chrome-target-supervision-real-reconnect
 kind: story
-stage: review
+stage: done
 tags: [browser, testing]
 parent: epic-rust-cdp-capture-foundation-chrome-target-supervision
 depends_on: [epic-rust-cdp-capture-foundation-chrome-target-supervision-session-supervisor]
@@ -34,3 +34,13 @@ Add an opt-in real-Chrome integration path that keeps an externally owned Chrome
 - [x] Post-rebuild discovery/subscriptions/commands work and reconnect state/events are observable.
 - [x] Attached stop leaves Chrome alive; all test-owned proxy/process/profile/root resources are removed.
 - [x] Full workspace, real Chrome, spike regression, formatting, and denied-warning clippy pass; no screencast code lands.
+
+## Review (2026-07-13)
+
+**Verdict:** Approve
+
+**Blockers:** none
+**Important:** none
+**Nits:** none
+
+**Notes:** Fast-lane evidence review reran 102 workspace tests and denied-warning clippy; verified a physically severed real cdpkit transport, new physical connection, target/TargetId continuity, generation restoration, late-event state preservation, post-rebuild commands/events, external-browser survival, and zero proxy/process/profile/root leaks. Verdict: Approve - story verified by implement; fast-lane advance.
