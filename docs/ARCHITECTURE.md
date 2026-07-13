@@ -619,6 +619,6 @@ The composition root provides an adapter around `temporal-vision` for the artifa
 - SQLite provides the searchable metadata index.
 - Append-only files store compressed frame payloads.
 - The `image` ecosystem provides initial decoding and rendering.
-- The historical schema-v2 run selected exact cdpkit 0.4.0 behind a replaceable adapter; its named-event-params and unbounded-subscriber limitations remain explicit. That run is not current decisive evidence until requalified under the canonical-trace contract, and the adapter must pass the required-domain compatibility probe at runtime.
+- Current final5 schema-v2 evidence selects exact cdpkit 0.4.0 behind a replaceable adapter. Its named-event-params and unbounded-subscriber limitations remain explicit, and the adapter must pass the required-domain compatibility probe at runtime.
 
 OpenCV, FFmpeg, a browser extension, and framework-specific instrumentation are not architectural prerequisites.

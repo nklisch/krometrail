@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-chrome-target-supervision-architecture-final5
 kind: story
-stage: implementing
+stage: review
 tags: [browser, prose]
 parent: epic-rust-cdp-capture-foundation-chrome-target-supervision
 depends_on: [epic-rust-cdp-capture-foundation-chrome-target-supervision-event-stream-closure]
@@ -23,6 +23,16 @@ Replace the stale Technology Decisions assertion in place so it names the curren
 
 ## Acceptance criteria
 
-- [ ] Architecture consistently names final5 as current decisive evidence and retains replaceability/runtime probe/limitations.
-- [ ] No stale “until requalified” assertion remains in foundation docs.
-- [ ] Docs build passes and generated output is regenerated, not hand-edited.
+- [x] Architecture consistently names final5 as current decisive evidence and retains replaceability/runtime probe/limitations.
+- [x] No stale “until requalified” assertion remains in foundation docs.
+- [x] Docs build passes and generated output is regenerated, not hand-edited.
+
+## Implementation notes
+
+- Execution capability: inline prose mode; one current-state foundation assertion with no coordination surface.
+- Review weight: standard, from the project default; foundation-doc risk escalates the story to fresh-context review.
+- Files changed: `docs/ARCHITECTURE.md`, generated `docs/public/llms-full.txt`.
+- Tests added/removed: none; the stable check is the docs build plus contradiction grep.
+- Simplification: replaced the stale conditional/historical assertion in place rather than appending qualification history.
+- Discrepancies from design: none.
+- Adjacent issues parked: none.
