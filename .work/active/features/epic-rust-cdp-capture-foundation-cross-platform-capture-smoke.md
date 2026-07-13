@@ -1,7 +1,7 @@
 ---
 id: epic-rust-cdp-capture-foundation-cross-platform-capture-smoke
 kind: feature
-stage: review
+stage: done
 tags: [browser, testing, infra]
 parent: epic-rust-cdp-capture-foundation
 depends_on: [epic-rust-cdp-capture-foundation-bounded-screencast-ingestion]
@@ -469,3 +469,21 @@ production screencast metadata or a separately designed metadata-boundary change
 
 Implementation commits: `595f079`, `048b36a`, and child-transition commits `c306fd9` / `7740c9c`.
 The feature is ready for standard integrated review.
+
+## Review (2026-07-13)
+
+**Verdict**: Approve
+
+**Blockers**: none
+**Important**: none
+**Nits**: none
+**Rejected**: none; the reviewer examined and cleared theoretical macOS `ps` truncation, the
+currently unreachable scale-pair assertion after an honest high-DPI failure, status-counter gap
+backfill, and numeric enum validation.
+
+**Notes**: Standard-weight cross-model review by GLM 5.2. The reviewer independently reproduced
+Linux Chrome capture, the four pre-existing real-capture scenarios, deterministic and canonical
+evidence validation, no-default-feature exclusion, formatting, tests, and Clippy. The macOS default
+artifact was validated but not independently reproduced from the Linux review host. The
+operator-authorized high-DPI deferral remains explicit, the decisive assertion remains intact, and
+no passing artifact was fabricated.
