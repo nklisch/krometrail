@@ -8,14 +8,15 @@
 pub mod endpoint;
 pub mod launcher;
 pub mod targets;
+pub use targets::{
+    CaptureBinding, CaptureEffectContext, ReconnectedSnapshot, ReconnectedTarget, Reduction,
+    ShutdownCause, SupervisorEffect, SupervisorInput, SupervisorState, SupervisorTargetState,
+    TransportTargetInfo, reduce,
+};
 #[cfg(feature = "cdpkit-transport")]
 pub use targets::{
     DEFAULT_RECONNECT_ATTACH_CONCURRENCY, DEFAULT_RECONNECT_TARGET_LIMIT, ReconnectPolicy,
     SubscriberLag, SupervisorConfig,
-};
-pub use targets::{
-    ReconnectedSnapshot, ReconnectedTarget, Reduction, ShutdownCause, SupervisorEffect,
-    SupervisorInput, SupervisorState, SupervisorTargetState, TransportTargetInfo, reduce,
 };
 
 #[cfg(feature = "cdpkit-transport")]

@@ -13,7 +13,7 @@ use uuid::Uuid;
 // These imports make the root's assembly boundary explicit. Implementations will
 // move into these inward-dependent crates as their capabilities land; this root
 // remains the only place allowed to choose and connect them.
-use krometrail_cdp::ProductionBrowserConnector;
+use krometrail_cdp::{CaptureConfig, ProductionBrowserConnector};
 use krometrail_mcp as _;
 use krometrail_store as _;
 use temporal_vision as _;
@@ -61,14 +61,24 @@ impl Runtime {
 }
 
 pub(crate) fn build_runtime() -> Runtime {
+    let clock: Arc<dyn MonotonicClock> = Arc::new(ProcessMonotonicClock {
+        origin: Instant::now(),
+    });
+    let ids: Arc<dyn IdSource> = Arc::new(ProcessIdSource);
+    let recording: Arc<dyn RecordingSink> = Arc::new(UnavailableRecordingSink);
+    let browser: Arc<dyn BrowserConnector> =
+        Arc::new(ProductionBrowserConnector::default().with_capture(
+            Arc::clone(&clock),
+            Arc::clone(&ids),
+            Arc::clone(&recording),
+            CaptureConfig::default(),
+        ));
     Runtime::new(RuntimeDependencies {
-        clock: Arc::new(ProcessMonotonicClock {
-            origin: Instant::now(),
-        }),
+        clock,
         wall_clock: Arc::new(SystemWallClock),
-        ids: Arc::new(ProcessIdSource),
-        browser: Arc::new(ProductionBrowserConnector::default()),
-        recording: Arc::new(UnavailableRecordingSink),
+        ids,
+        browser,
+        recording,
         timeline: Arc::new(UnavailableTimelineStore),
     })
 }

@@ -31,8 +31,8 @@ mod tests {
         BrowserSessionEvent, BrowserSessionState, BrowserStopOutcome, BrowserVersion, CaptureGap,
         CaptureGapReason, CapturedFrame, DeviceScaleFactor, EncodedFrame, ErrorCode, ImageFormat,
         ObservationKind, ObservationPayloadRef, ObservedTime, PageTarget, PixelDimensions,
-        ProfileIdentity, ProfileRef, RendererCapability, SessionId, SessionRange, SessionTime,
-        SourceTime, SupervisedTarget, TargetId, TargetLifecycle, TargetVisibility,
+        ProfileIdentity, ProfileRef, RendererCapability, SessionId, SessionOrigin, SessionRange,
+        SessionTime, SourceTime, SupervisedTarget, TargetId, TargetLifecycle, TargetVisibility,
         TimelineObservation,
     };
     use std::{
@@ -110,10 +110,20 @@ mod tests {
         compatibility: BrowserCompatibility,
         profile: ProfileRef,
         targets: Vec<SupervisedTarget>,
+        session_id: SessionId,
+        session_origin: SessionOrigin,
         fail: bool,
     }
 
     impl BrowserSessionPort for FakeBrowserSession {
+        fn session_id(&self) -> SessionId {
+            self.session_id
+        }
+
+        fn session_origin(&self) -> SessionOrigin {
+            self.session_origin
+        }
+
         fn compatibility(&self) -> &BrowserCompatibility {
             &self.compatibility
         }
@@ -153,6 +163,12 @@ mod tests {
             Box::pin(std::future::ready(Ok(
                 Box::new(ClosedEvents) as Box<dyn BrowserSessionEvents>
             )))
+        }
+
+        fn capture_statuses(
+            &self,
+        ) -> PortFuture<'_, crate::Result<Vec<crate::TargetCaptureStatus>>> {
+            Box::pin(std::future::ready(Ok(Vec::new())))
         }
 
         fn stop(&self) -> PortFuture<'_, crate::Result<BrowserStopOutcome>> {
@@ -324,6 +340,8 @@ mod tests {
             )
             .unwrap(),
             profile,
+            session_id: SessionId::from_uuid(UUID.parse().unwrap()),
+            session_origin: SessionOrigin::new(crate::ObservedTime::from_nanos(0)),
             targets: vec![SupervisedTarget {
                 target,
                 lifecycle: TargetLifecycle::Discovered,

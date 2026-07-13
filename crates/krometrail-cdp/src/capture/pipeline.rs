@@ -209,7 +209,7 @@ impl StreamRuntime {
         true
     }
 
-    fn state(&self) -> CaptureStreamState {
+    pub(super) fn state(&self) -> CaptureStreamState {
         self.state
             .lock()
             .expect("capture state lock poisoned")
@@ -484,7 +484,6 @@ pub(super) async fn start_target(
                     CaptureStreamState::Starting
                         | CaptureStreamState::Capturing
                         | CaptureStreamState::Hidden
-                        | CaptureStreamState::Suspended
                         | CaptureStreamState::Draining
                 )
             })
@@ -642,6 +641,10 @@ async fn visibility_reader(runtime: Arc<StreamRuntime>, events: &mut Box<dyn Tra
         let visible = event.params.get("visible").and_then(Value::as_bool);
         match visible {
             Some(false) => {
+                runtime.observer.visibility_changed(
+                    runtime.target.target_id,
+                    krometrail_core::TargetVisibility::Hidden,
+                );
                 if !runtime.transition(Transition::Hide) {
                     continue;
                 }
@@ -657,6 +660,10 @@ async fn visibility_reader(runtime: Arc<StreamRuntime>, events: &mut Box<dyn Tra
                 );
             }
             Some(true) => {
+                runtime.observer.visibility_changed(
+                    runtime.target.target_id,
+                    krometrail_core::TargetVisibility::Visible,
+                );
                 runtime.transition(Transition::Show);
             }
             None => runtime.fail(),
@@ -775,9 +782,17 @@ pub(super) async fn stop_target(
             emitted_gap_count: 0,
         };
     };
+    if runtime.state() == CaptureStreamState::Stopped {
+        return CaptureStopOutcome {
+            reason,
+            complete: true,
+            abandoned_accepted_frames: 0,
+            emitted_gap_count: 0,
+        };
+    }
     let before_gaps = runtime.status().statistics().gap_count();
-    runtime.transition(Transition::Stop);
     runtime.close_acceptance();
+    runtime.transition(Transition::Stop);
     runtime.abort_readers();
     let scope = CommandScope::Session(runtime.target.transport_session.clone());
     let stop_succeeded = time::timeout_at(
@@ -804,17 +819,19 @@ pub(super) async fn stop_target(
     }
     if !complete {
         abandoned = abandoned.max(runtime.abandon_queue());
-        if abandoned > 0 {
-            runtime.declare_gap(
-                CaptureGapReason::CaptureStopped,
-                runtime
-                    .status()
-                    .last_frame_session_time()
-                    .unwrap_or(SessionTime::ZERO),
-                Some(abandoned),
-                Some("accepted frames abandoned at stop"),
-            );
-        }
+        runtime.declare_gap(
+            CaptureGapReason::CaptureStopped,
+            runtime
+                .status()
+                .last_frame_session_time()
+                .unwrap_or(SessionTime::ZERO),
+            (abandoned > 0).then_some(abandoned),
+            Some(if abandoned > 0 {
+                "accepted frames abandoned at stop"
+            } else {
+                "capture stop deadline exhausted"
+            }),
+        );
     }
     runtime.transition(if complete {
         Transition::Drained
@@ -876,13 +893,14 @@ pub(super) async fn shutdown(
     session_id: krometrail_core::SessionId,
     deadline: Instant,
 ) -> super::CaptureShutdownOutcome {
-    let targets: Vec<_> = coordinator
+    let mut targets: Vec<_> = coordinator
         .streams
         .lock()
         .expect("capture registry lock poisoned")
         .values()
         .map(|runtime| runtime.target.clone())
         .collect();
+    targets.sort_by_key(|target| (target.target_id, target.attachment_generation));
     let mut outcomes = Vec::with_capacity(targets.len());
     for target in targets {
         outcomes.push(

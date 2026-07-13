@@ -142,6 +142,13 @@ pub(crate) struct CaptureTarget {
 pub(crate) trait CaptureObserver: Send + Sync {
     fn status_changed(&self, status: krometrail_core::TargetCaptureStatus);
     fn gap_declared(&self, gap: krometrail_core::CaptureGap);
+
+    fn visibility_changed(
+        &self,
+        _target_id: TargetId,
+        _visibility: krometrail_core::TargetVisibility,
+    ) {
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -203,7 +210,18 @@ impl CaptureCoordinator {
         target: CaptureTarget,
         transport: Arc<dyn CdpTransport>,
     ) -> Result<(), CaptureError> {
-        pipeline::start_target(self, target, transport).await
+        let result = pipeline::start_target(self, target.clone(), transport).await;
+        if result.is_ok() {
+            self.streams
+                .lock()
+                .expect("capture registry lock poisoned")
+                .retain(|key, runtime| {
+                    key.target_id != target.target_id
+                        || key.attachment_generation >= target.attachment_generation
+                        || runtime.state() == krometrail_core::CaptureStreamState::Capturing
+                });
+        }
+        result
     }
 
     pub(crate) async fn stop_target(

@@ -18,16 +18,22 @@ use futures_util::{StreamExt, stream::FuturesUnordered};
 use krometrail_core::{
     AttachBrowser, BrowserCompatibility, BrowserConnectRequest, BrowserConnector,
     BrowserInstallation, BrowserOwnership, BrowserSessionEvent, BrowserSessionEvents,
-    BrowserSessionPort, BrowserSessionState, BrowserStopOutcome, ErrorCode, KrometrailError,
-    NonEmptyText, PortFuture, ProfileRef, Result, SupervisedTarget, TargetVisibility,
+    BrowserSessionPort, BrowserSessionState, BrowserStopOutcome, ErrorCode, IdSource,
+    KrometrailError, MonotonicClock, NonEmptyText, ObservedTime, PortFuture, ProfileRef, Result,
+    SessionId, SessionOrigin, SupervisedTarget, TargetCaptureStatus, TargetVisibility,
 };
 use serde_json::Value;
 use tokio::{
     sync::{Notify, mpsc, oneshot},
     task::JoinHandle,
 };
+use uuid::Uuid;
 
 use crate::{
+    capture::{
+        CaptureConfig, CaptureCoordinator, CaptureDependencies, CaptureObserver, CaptureStopReason,
+        CaptureTarget,
+    },
     compatibility::{CompatibilityProbeError, probe_compatibility_with_target_limit},
     launcher::{
         ChromeLauncher, LaunchError, LauncherConfig, ManagedChromeProcess, ProfileLease,
@@ -67,6 +73,15 @@ pub struct ProductionBrowserConnector {
     launcher: Arc<dyn ChromeLauncher>,
     transport_factory: Arc<dyn CdpTransportFactory>,
     config: SupervisorConfig,
+    capture: Option<CaptureAssembly>,
+}
+
+#[derive(Clone)]
+struct CaptureAssembly {
+    clock: Arc<dyn MonotonicClock>,
+    ids: Arc<dyn IdSource>,
+    sink: Arc<dyn krometrail_core::RecordingSink>,
+    config: CaptureConfig,
 }
 
 impl ProductionBrowserConnector {
@@ -78,7 +93,24 @@ impl ProductionBrowserConnector {
             launcher,
             transport_factory,
             config: SupervisorConfig::default(),
+            capture: None,
         }
+    }
+
+    pub fn with_capture(
+        mut self,
+        clock: Arc<dyn MonotonicClock>,
+        ids: Arc<dyn IdSource>,
+        sink: Arc<dyn krometrail_core::RecordingSink>,
+        config: CaptureConfig,
+    ) -> Self {
+        self.capture = Some(CaptureAssembly {
+            clock,
+            ids,
+            sink,
+            config,
+        });
+        self
     }
 
     pub fn with_config(mut self, config: SupervisorConfig) -> Self {
@@ -122,6 +154,7 @@ impl BrowserConnector for ProductionBrowserConnector {
         let launcher = Arc::clone(&self.launcher);
         let transport_factory = Arc::clone(&self.transport_factory);
         let config = self.config.clone();
+        let capture_assembly = self.capture.clone();
         Box::pin(async move {
             // Keep a launched browser in its paired Drop guard until transport setup succeeds.
             // Splitting process/profile ownership before this point could release a temporary
@@ -163,6 +196,44 @@ impl BrowserConnector for ProductionBrowserConnector {
                 (Some(ProfileRef::External), None, None)
             };
             let subscribers = Arc::new(SubscriberRegistry::new(config.subscriber_capacity));
+            let (command_tx, command_rx) = mpsc::channel(64);
+            let (session_id, session_origin) = if let Some(assembly) = &capture_assembly {
+                let session_id = SessionId::from_uuid(*assembly.ids.next().as_uuid());
+                let origin = SessionOrigin::new(assembly.clock.now());
+                (session_id, origin)
+            } else {
+                (
+                    SessionId::from_uuid(Uuid::new_v4()),
+                    SessionOrigin::new(ObservedTime::from_nanos(0)),
+                )
+            };
+            let capture = capture_assembly
+                .map(|assembly| {
+                    let observer: Arc<dyn CaptureObserver> = Arc::new(SessionCaptureObserver {
+                        subscribers: Arc::clone(&subscribers),
+                        command_tx: command_tx.clone(),
+                    });
+                    let coordinator = CaptureCoordinator::new(
+                        assembly.config.clone(),
+                        CaptureDependencies {
+                            clock: Arc::clone(&assembly.clock),
+                            ids: Arc::clone(&assembly.ids),
+                            sink: Arc::clone(&assembly.sink),
+                        },
+                        observer,
+                    )
+                    .map_err(|_| {
+                        stable_error(ErrorCode::InvalidInput, "capture configuration is invalid")
+                    })?;
+                    Ok::<_, KrometrailError>(Arc::new(CaptureRuntime {
+                        coordinator: Arc::new(coordinator),
+                        clock: assembly.clock,
+                        session_id,
+                        session_origin,
+                        shutdown_timeout: assembly.config.shutdown_timeout,
+                    }))
+                })
+                .transpose()?;
             let compatibility = setup.compatibility.clone();
             let mut state = SupervisorState::new(compatibility.clone());
             let initial = reduce(
@@ -176,25 +247,24 @@ impl BrowserConnector for ProductionBrowserConnector {
                 initial.effects,
                 Arc::clone(&connection.transport),
                 Arc::clone(&subscribers),
-                false,
+                capture.clone(),
+                None,
             )
             .await?;
             // Initial reconciliation is complete only after all attach effects and visibility probes.
-            // Publishing Ready here keeps the returned port truthful: callers cannot observe a session
-            // that claims readiness while discovery is still being rebuilt.
-            let previous_state = state.session_state;
-            state.session_state = BrowserSessionState::Ready;
-            state.revision = state.revision.saturating_add(1);
-            tracing::info!(
-                previous_state = previous_state.as_str(),
-                next_state = BrowserSessionState::Ready.as_str(),
-                connection_generation = state.connection_generation,
-                "browser.session.state_changed"
-            );
-            subscribers.publish(BrowserSessionEvent::SessionStateChanged {
-                state: BrowserSessionState::Ready,
-            });
-            let (command_tx, command_rx) = mpsc::channel(64);
+            // Ready is reduced like every later lifecycle transition, so capture can only start from
+            // the committed Ready state and the exact attached/visible target generation.
+            let ready = reduce(state, SupervisorInput::InitialReconciliationCompleted)?;
+            state = ready.state;
+            apply_effects(
+                &mut state,
+                ready.effects,
+                Arc::clone(&connection.transport),
+                Arc::clone(&subscribers),
+                capture.clone(),
+                None,
+            )
+            .await?;
             let process_death = Arc::new(ProcessDeathSignal::default());
             let shared = Arc::new(SessionShared {
                 compatibility,
@@ -203,6 +273,9 @@ impl BrowserConnector for ProductionBrowserConnector {
                 state: Mutex::new(state.clone()),
                 subscribers,
                 command_tx,
+                session_id,
+                session_origin,
+                capture: capture.clone(),
                 stop_result: Mutex::new(None),
             });
             let task_shared = Arc::clone(&shared);
@@ -218,6 +291,9 @@ impl BrowserConnector for ProductionBrowserConnector {
                     profile: profile_lease,
                     config,
                     process_death,
+                    capture_timeout: capture
+                        .as_ref()
+                        .map_or(Duration::from_secs(5), |runtime| runtime.shutdown_timeout),
                 },
                 command_rx,
             ));
@@ -230,6 +306,44 @@ impl BrowserConnector for ProductionBrowserConnector {
     }
 }
 
+struct CaptureRuntime {
+    coordinator: Arc<CaptureCoordinator>,
+    clock: Arc<dyn MonotonicClock>,
+    session_id: SessionId,
+    session_origin: SessionOrigin,
+    shutdown_timeout: Duration,
+}
+
+struct SessionCaptureObserver {
+    subscribers: Arc<SubscriberRegistry>,
+    command_tx: mpsc::Sender<SupervisorCommand>,
+}
+
+impl CaptureObserver for SessionCaptureObserver {
+    fn status_changed(&self, status: TargetCaptureStatus) {
+        self.subscribers
+            .publish(BrowserSessionEvent::CaptureStateChanged { status });
+    }
+
+    fn gap_declared(&self, gap: krometrail_core::CaptureGap) {
+        self.subscribers
+            .publish(BrowserSessionEvent::CaptureGapDeclared { gap });
+    }
+
+    fn visibility_changed(
+        &self,
+        target_id: krometrail_core::TargetId,
+        visibility: TargetVisibility,
+    ) {
+        let _ = self.command_tx.try_send(SupervisorCommand::Input(
+            SupervisorInput::CaptureVisibilityChanged {
+                target_id,
+                visibility,
+            },
+        ));
+    }
+}
+
 struct SessionShared {
     compatibility: BrowserCompatibility,
     ownership: BrowserOwnership,
@@ -237,6 +351,9 @@ struct SessionShared {
     state: Mutex<SupervisorState>,
     subscribers: Arc<SubscriberRegistry>,
     command_tx: mpsc::Sender<SupervisorCommand>,
+    session_id: SessionId,
+    session_origin: SessionOrigin,
+    capture: Option<Arc<CaptureRuntime>>,
     stop_result: Mutex<Option<Result<BrowserStopOutcome>>>,
 }
 
@@ -252,6 +369,14 @@ struct ProductionSession {
 }
 
 impl BrowserSessionPort for ProductionSession {
+    fn session_id(&self) -> SessionId {
+        self.shared.session_id
+    }
+
+    fn session_origin(&self) -> SessionOrigin {
+        self.shared.session_origin
+    }
+
     fn compatibility(&self) -> &BrowserCompatibility {
         &self.shared.compatibility
     }
@@ -285,6 +410,15 @@ impl BrowserSessionPort for ProductionSession {
     fn subscribe(&self) -> PortFuture<'_, Result<Box<dyn BrowserSessionEvents>>> {
         let events = self.shared.subscribers.subscribe();
         Box::pin(std::future::ready(Ok(events)))
+    }
+
+    fn capture_statuses(&self) -> PortFuture<'_, Result<Vec<TargetCaptureStatus>>> {
+        let statuses = self
+            .shared
+            .capture
+            .as_ref()
+            .map_or_else(Vec::new, |capture| capture.coordinator.statuses());
+        Box::pin(std::future::ready(Ok(statuses)))
     }
 
     fn stop(&self) -> PortFuture<'_, Result<BrowserStopOutcome>> {
@@ -430,7 +564,8 @@ async fn apply_effects(
     effects: Vec<SupervisorEffect>,
     transport: Arc<dyn CdpTransport>,
     subscribers: Arc<SubscriberRegistry>,
-    allow_shutdown: bool,
+    capture: Option<Arc<CaptureRuntime>>,
+    shutdown_deadline: Option<ShutdownDeadline>,
 ) -> Result<()> {
     let mut queue = VecDeque::from(effects);
     while let Some(effect) = queue.pop_front() {
@@ -490,12 +625,94 @@ async fn apply_effects(
 					}
 				}
 			}
-			SupervisorEffect::BeginReconnect => {}
-			SupervisorEffect::Shutdown { cause: _ } if allow_shutdown => {
-				// The outer supervisor owns shutdown sequencing. The flag prevents an initial
-				// reconciliation failure from trying to close a resource it has not returned yet.
-			}
-			SupervisorEffect::Shutdown { cause: _ } => {}
+            SupervisorEffect::StartCapture { context }
+            | SupervisorEffect::ResumeCapture { context } => {
+                if let Some(capture) = capture.as_ref() {
+                    let target = CaptureTarget {
+                        session_id: capture.session_id,
+                        session_origin: capture.session_origin,
+                        target_id: context.target_id,
+                        connection_generation: context.connection_generation,
+                        attachment_generation: context.attachment_generation,
+                        transport_session: context.transport_session,
+                    };
+                    if capture
+                        .coordinator
+                        .start_target(target, Arc::clone(&transport))
+                        .await
+                        .is_err()
+                    {
+                        let target_key = state
+                            .targets_by_key
+                            .iter()
+                            .find(|(_, target)| target.target.target.id() == context.target_id)
+                            .map(|(target_key, _)| target_key.clone());
+                        if let Some(target_key) = target_key {
+                            let compatibility = state.compatibility.clone();
+                            let previous =
+                                std::mem::replace(state, SupervisorState::new(compatibility));
+                            let reduction = reduce(
+                                previous,
+                                SupervisorInput::CaptureStartFailed { target_key },
+                            )?;
+                            *state = reduction.state;
+                            queue.extend(reduction.effects);
+                        }
+                    }
+                }
+            }
+            SupervisorEffect::SuspendCapture { context } => {
+                if let Some(capture) = capture.as_ref() {
+                    let target = CaptureTarget {
+                        session_id: capture.session_id,
+                        session_origin: capture.session_origin,
+                        target_id: context.target_id,
+                        connection_generation: context.connection_generation,
+                        attachment_generation: context.attachment_generation,
+                        transport_session: context.transport_session,
+                    };
+                    let at = capture
+                        .session_origin
+                        .normalize(capture.clock.now())
+                        .unwrap_or(krometrail_core::SessionTime::ZERO);
+                    capture.coordinator.suspend_target(&target, at).await;
+                }
+            }
+            SupervisorEffect::StopCapture { context } => {
+                if let Some(capture) = capture.as_ref() {
+                    let target = CaptureTarget {
+                        session_id: capture.session_id,
+                        session_origin: capture.session_origin,
+                        target_id: context.target_id,
+                        connection_generation: context.connection_generation,
+                        attachment_generation: context.attachment_generation,
+                        transport_session: context.transport_session,
+                    };
+                    let deadline = shutdown_deadline
+                        .unwrap_or_else(|| ShutdownDeadline::new(capture.shutdown_timeout))
+                        .instant();
+                    let reason = state
+                        .targets_by_key
+                        .values()
+                        .find(|target| target.target.target.id() == context.target_id)
+                        .map(|target| match target.target.lifecycle {
+                            krometrail_core::TargetLifecycle::Closed => {
+                                CaptureStopReason::TargetClosed
+                            }
+                            krometrail_core::TargetLifecycle::Failed => {
+                                CaptureStopReason::TargetFailed
+                            }
+                            _ => CaptureStopReason::TargetDetached,
+                        })
+                        .unwrap_or(CaptureStopReason::TargetDetached);
+                    let _ = capture.coordinator.stop_target(&target, reason, deadline).await;
+                }
+            }
+            SupervisorEffect::BeginReconnect => {}
+            SupervisorEffect::Shutdown { cause: _ } => {
+                // The outer supervisor owns the aggregate shutdown sequencing. Capture effects
+                // above have already fenced acceptance before this marker is handled.
+            }
 		}
     }
     Ok(())
@@ -508,6 +725,7 @@ struct SupervisorRuntime {
     profile: Option<Arc<Mutex<Option<ProfileLease>>>>,
     config: SupervisorConfig,
     process_death: Arc<ProcessDeathSignal>,
+    capture_timeout: Duration,
 }
 
 #[derive(Default)]
@@ -576,13 +794,16 @@ async fn run_supervisor(
                             SupervisorEffect::Shutdown { cause } => Some(*cause),
                             _ => None,
                         });
+                        let shutdown_deadline =
+                            shutdown.map(|_| ShutdownDeadline::new(runtime.capture_timeout));
                         if let Some(connection) = connection.as_ref() {
                             let _ = apply_effects(
                                 &mut state,
                                 reduction.effects,
                                 Arc::clone(&connection.transport),
                                 Arc::clone(&shared.subscribers),
-                                false,
+                                shared.capture.clone(),
+                                shutdown_deadline,
                             )
                             .await;
                         }
@@ -606,8 +827,17 @@ async fn run_supervisor(
                                 &runtime.process,
                                 &runtime.profile,
                                 &state,
-                                cause,
-                                shared.ownership,
+                                ShutdownPlan {
+                                    cause,
+                                    ownership: shared.ownership,
+                                    capture: shared.capture.clone(),
+                                    deadline: shutdown_deadline
+                                        .expect("shutdown cause has an aggregate deadline"),
+                                    flush_capture: !matches!(
+                                        cause,
+                                        crate::targets::ShutdownCause::ReconnectExhausted
+                                    ),
+                                },
                             )
                             .await;
                             finish_state(&shared, &mut state);
@@ -631,13 +861,15 @@ async fn run_supervisor(
                 match reduction {
                     Ok(reduction) => {
                         state = reduction.state;
+                        let shutdown_deadline = ShutdownDeadline::new(runtime.capture_timeout);
                         if let Some(connection) = connection.as_ref() {
                             let _ = apply_effects(
                                 &mut state,
                                 reduction.effects,
                                 Arc::clone(&connection.transport),
                                 Arc::clone(&shared.subscribers),
-                                false,
+                                shared.capture.clone(),
+                                Some(shutdown_deadline),
                             )
                             .await;
                         }
@@ -646,8 +878,13 @@ async fn run_supervisor(
                             &runtime.process,
                             &runtime.profile,
                             &state,
-                            crate::targets::ShutdownCause::StopRequested,
-                            shared.ownership,
+                            ShutdownPlan {
+                                cause: crate::targets::ShutdownCause::StopRequested,
+                                ownership: shared.ownership,
+                                capture: shared.capture.clone(),
+                                deadline: shutdown_deadline,
+                                flush_capture: true,
+                            },
                         )
                         .await;
                         let outcome = result.map(|_| {
@@ -695,13 +932,15 @@ async fn finish_interrupted_reconnect(
         input,
     )?;
     *state = reduction.state;
+    let deadline = ShutdownDeadline::new(runtime.capture_timeout);
     if let Some(current) = connection.as_ref() {
         let _ = apply_effects(
             state,
             reduction.effects,
             Arc::clone(&current.transport),
             Arc::clone(&shared.subscribers),
-            false,
+            shared.capture.clone(),
+            Some(deadline),
         )
         .await;
     }
@@ -710,8 +949,13 @@ async fn finish_interrupted_reconnect(
         &runtime.process,
         &runtime.profile,
         state,
-        cause,
-        shared.ownership,
+        ShutdownPlan {
+            cause,
+            ownership: shared.ownership,
+            capture: shared.capture.clone(),
+            deadline,
+            flush_capture: !matches!(cause, crate::targets::ShutdownCause::ReconnectExhausted),
+        },
     )
     .await;
     let outcome: Result<BrowserStopOutcome> = match &result {
@@ -823,7 +1067,7 @@ impl PartialSessionTracker {
 struct PreparedReconnection {
     connection: ConnectionResources,
     state: SupervisorState,
-    events: Vec<BrowserSessionEvent>,
+    effects: Vec<SupervisorEffect>,
 }
 
 enum ReconnectInterrupt {
@@ -966,11 +1210,13 @@ async fn stage_reconnection_effects(
     attempt: &AttemptControl,
     transport: &Arc<dyn CdpTransport>,
     effects: &[SupervisorEffect],
-) -> std::result::Result<Vec<BrowserSessionEvent>, AttemptFailure> {
-    let mut events = Vec::new();
+) -> std::result::Result<Vec<SupervisorEffect>, AttemptFailure> {
+    let mut staged = Vec::new();
     for effect in effects {
         match effect {
-            SupervisorEffect::Publish(event) => events.push(event.clone()),
+            SupervisorEffect::Publish(event) => {
+                staged.push(SupervisorEffect::Publish(event.clone()));
+            }
             SupervisorEffect::Detach { session } => {
                 attempt
                     .command(
@@ -984,13 +1230,33 @@ async fn stage_reconnection_effects(
             // A successful reconstruction has already attached every bounded target, restored
             // domains, and observed visibility. Any follow-up attach/probe would violate the
             // transaction boundary and make publication depend on an unbounded effect chain.
+            SupervisorEffect::StartCapture { context } => {
+                staged.push(SupervisorEffect::StartCapture {
+                    context: context.clone(),
+                });
+            }
+            SupervisorEffect::ResumeCapture { context } => {
+                staged.push(SupervisorEffect::ResumeCapture {
+                    context: context.clone(),
+                });
+            }
+            SupervisorEffect::StopCapture { context } => {
+                staged.push(SupervisorEffect::StopCapture {
+                    context: context.clone(),
+                });
+            }
+            SupervisorEffect::SuspendCapture { context } => {
+                staged.push(SupervisorEffect::SuspendCapture {
+                    context: context.clone(),
+                });
+            }
             SupervisorEffect::Attach { .. }
             | SupervisorEffect::ProbeInitialVisibility { .. }
             | SupervisorEffect::BeginReconnect
             | SupervisorEffect::Shutdown { .. } => return Err(AttemptFailure::Failed),
         }
     }
-    Ok(events)
+    Ok(staged)
 }
 
 async fn reconstruct_connection(
@@ -1067,10 +1333,10 @@ async fn reconstruct_connection(
             return Err(AttemptFailure::Failed);
         }
     };
-    let events =
+    let effects =
         match stage_reconnection_effects(&attempt, &connection.transport, &reduction.effects).await
         {
-            Ok(events) => events,
+            Ok(effects) => effects,
             Err(error) => {
                 discard_partial_connection(&mut connection, &sessions).await;
                 drop(connection);
@@ -1080,7 +1346,7 @@ async fn reconstruct_connection(
     Ok(PreparedReconnection {
         connection,
         state: reduction.state,
-        events,
+        effects,
     })
 }
 
@@ -1236,11 +1502,19 @@ async fn reconnect_loop_transactional(
                     prepared.state.connection_generation,
                 );
                 *state = prepared.state;
+                let new_transport = Arc::clone(&prepared.connection.transport);
+                let effects = std::mem::take(&mut prepared.effects);
                 *connection = Some(prepared.connection);
+                let _ = apply_effects(
+                    state,
+                    effects,
+                    new_transport,
+                    Arc::clone(&shared.subscribers),
+                    shared.capture.clone(),
+                    None,
+                )
+                .await;
                 *shared.state.lock().expect("session state lock") = state.clone();
-                for event in prepared.events.drain(..) {
-                    shared.subscribers.publish(event);
-                }
                 tracing::info!(
                     reconnect_attempt = attempt_number + 1,
                     connection_generation = state.connection_generation,
@@ -1255,13 +1529,15 @@ async fn reconnect_loop_transactional(
         SupervisorInput::ReconnectExhausted,
     ) {
         *state = reduction.state;
+        let deadline = ShutdownDeadline::new(runtime.capture_timeout);
         if let Some(current) = connection.as_ref() {
             let _ = apply_effects(
                 state,
                 reduction.effects,
                 Arc::clone(&current.transport),
                 Arc::clone(&shared.subscribers),
-                false,
+                shared.capture.clone(),
+                Some(deadline),
             )
             .await;
         }
@@ -1270,8 +1546,13 @@ async fn reconnect_loop_transactional(
             &runtime.process,
             &runtime.profile,
             state,
-            crate::targets::ShutdownCause::ReconnectExhausted,
-            shared.ownership,
+            ShutdownPlan {
+                cause: crate::targets::ShutdownCause::ReconnectExhausted,
+                ownership: shared.ownership,
+                capture: shared.capture.clone(),
+                deadline,
+                flush_capture: false,
+            },
         )
         .await;
         finish_state(shared, state);
@@ -1279,61 +1560,118 @@ async fn reconnect_loop_transactional(
     true
 }
 
+#[derive(Clone, Copy)]
+struct ShutdownDeadline(tokio::time::Instant);
+
+impl ShutdownDeadline {
+    fn new(timeout: Duration) -> Self {
+        Self(tokio::time::Instant::now() + timeout)
+    }
+
+    fn instant(self) -> tokio::time::Instant {
+        self.0
+    }
+}
+
+struct ShutdownPlan {
+    cause: crate::targets::ShutdownCause,
+    ownership: BrowserOwnership,
+    capture: Option<Arc<CaptureRuntime>>,
+    deadline: ShutdownDeadline,
+    flush_capture: bool,
+}
+
 async fn perform_shutdown(
     connection: &mut Option<ConnectionResources>,
     process: &Option<Arc<Mutex<Option<ManagedChromeProcess>>>>,
     profile: &Option<Arc<Mutex<Option<ProfileLease>>>>,
     state: &SupervisorState,
-    cause: crate::targets::ShutdownCause,
-    ownership: BrowserOwnership,
+    plan: ShutdownPlan,
 ) -> Result<()> {
     let started = std::time::Instant::now();
+    let deadline = plan.deadline.instant();
     let mut failed = false;
+
+    // Capture closes acceptance and drains before transport resources are detached. The same
+    // absolute deadline is passed to every phase; no target or phase gets a fresh timeout.
+    if plan.flush_capture {
+        if let Some(capture) = plan.capture.as_ref() {
+            let outcome = capture
+                .coordinator
+                .shutdown(capture.session_id, deadline)
+                .await;
+            failed |= !outcome.complete;
+        }
+    }
+
     if let Some(connection) = connection.as_mut() {
         connection.abort_pumps();
-        for session in state.target_key_by_session.keys() {
-            if connection
-                .transport
-                .send_raw(
+        let mut sessions = state
+            .target_key_by_session
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        sessions.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+        for session in sessions {
+            if tokio::time::Instant::now() >= deadline {
+                failed = true;
+                break;
+            }
+            let result = tokio::time::timeout_at(
+                deadline,
+                connection.transport.send_raw(
                     &CommandScope::Browser,
                     "Target.detachFromTarget",
                     serde_json::json!({"sessionId": session.as_str()}),
-                )
-                .await
-                .is_err()
-            {
+                ),
+            )
+            .await;
+            if !result.is_ok_and(|result| result.is_ok()) {
                 failed = true;
             }
         }
-        if ownership == BrowserOwnership::Managed
+        if plan.ownership == BrowserOwnership::Managed
             && matches!(
-                cause,
+                plan.cause,
                 crate::targets::ShutdownCause::StopRequested
                     | crate::targets::ShutdownCause::BrowserProcessTerminated
                     | crate::targets::ShutdownCause::ReconnectExhausted
+                    | crate::targets::ShutdownCause::Cancelled
             )
-            && connection
-                .transport
-                .send_raw(
+            && tokio::time::Instant::now() < deadline
+        {
+            let result = tokio::time::timeout_at(
+                deadline,
+                connection.transport.send_raw(
                     &CommandScope::Browser,
                     "Browser.close",
                     Value::Object(Default::default()),
-                )
-                .await
-                .is_err()
-            && !matches!(
-                cause,
-                crate::targets::ShutdownCause::BrowserProcessTerminated
+                ),
             )
-        {
+            .await;
+            if !result.is_ok_and(|result| result.is_ok()) {
+                failed = true;
+            }
+        } else if plan.ownership == BrowserOwnership::Managed {
             failed = true;
         }
     }
+
     if let Some(process) = process {
         let owned = process.lock().expect("process lock").take();
         if let Some(mut owned) = owned {
-            if owned.terminate(Duration::from_secs(3)).await.is_err() {
+            if tokio::time::Instant::now() < deadline {
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                match tokio::time::timeout_at(deadline, owned.terminate(remaining)).await {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(_)) | Err(_) => {
+                        failed = true;
+                        owned.force_kill_now();
+                    }
+                }
+            } else {
                 failed = true;
+                owned.force_kill_now();
             }
         }
     }
@@ -1341,7 +1679,7 @@ async fn perform_shutdown(
         profile.lock().expect("profile lock").take();
     }
     *connection = None;
-    if failed {
+    if failed || tokio::time::Instant::now() >= deadline {
         tracing::warn!(
             elapsed_ms = started.elapsed().as_millis() as u64,
             forced_termination = true,
@@ -1768,6 +2106,9 @@ mod tests {
             state: Mutex::new(SupervisorState::new(compatibility.clone())),
             subscribers: Arc::new(SubscriberRegistry::new(4)),
             command_tx,
+            session_id: SessionId::from_uuid(Uuid::new_v4()),
+            session_origin: SessionOrigin::new(ObservedTime::from_nanos(0)),
+            capture: None,
             stop_result: Mutex::new(None),
         });
         let runtime = SupervisorRuntime {
@@ -1785,6 +2126,7 @@ mod tests {
                 reconnect_attach_concurrency: 1,
             },
             process_death: Arc::clone(&process_death),
+            capture_timeout: Duration::from_secs(5),
         };
         let task = tokio::spawn(async move {
             let mut state = SupervisorState::new(compatibility);

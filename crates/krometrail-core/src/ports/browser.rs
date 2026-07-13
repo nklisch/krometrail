@@ -6,6 +6,9 @@ use crate::{
         BrowserSessionState, BrowserStopOutcome, PageTarget, ProfileRef, SupervisedTarget,
     },
     error::{Result, invalid},
+    ids::SessionId,
+    recording::TargetCaptureStatus,
+    time::SessionOrigin,
 };
 
 use super::PortFuture;
@@ -115,12 +118,15 @@ pub trait BrowserConnector: Send + Sync {
 }
 
 pub trait BrowserSessionPort: Send + Sync {
+    fn session_id(&self) -> SessionId;
+    fn session_origin(&self) -> SessionOrigin;
     fn compatibility(&self) -> &BrowserCompatibility;
     fn ownership(&self) -> BrowserOwnership;
     fn profile(&self) -> &ProfileRef;
     fn state(&self) -> BrowserSessionState;
     fn targets(&self) -> PortFuture<'_, Result<Vec<SupervisedTarget>>>;
     fn subscribe(&self) -> PortFuture<'_, Result<Box<dyn BrowserSessionEvents>>>;
+    fn capture_statuses(&self) -> PortFuture<'_, Result<Vec<TargetCaptureStatus>>>;
     fn stop(&self) -> PortFuture<'_, Result<BrowserStopOutcome>>;
 }
 

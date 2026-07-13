@@ -7,6 +7,7 @@ use crate::{
 };
 
 use super::{BrowserVersion, PageTarget};
+use crate::recording::{CaptureGap, TargetCaptureStatus};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -262,6 +263,12 @@ pub enum BrowserSessionEvent {
     TargetFailed {
         target_id: crate::ids::TargetId,
         error: KrometrailError,
+    },
+    CaptureStateChanged {
+        status: TargetCaptureStatus,
+    },
+    CaptureGapDeclared {
+        gap: CaptureGap,
     },
 }
 

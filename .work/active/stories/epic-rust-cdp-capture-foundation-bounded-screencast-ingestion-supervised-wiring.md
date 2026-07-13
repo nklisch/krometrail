@@ -1,14 +1,14 @@
 ---
 id: epic-rust-cdp-capture-foundation-bounded-screencast-ingestion-supervised-wiring
 kind: story
-stage: implementing
+stage: review
 tags: [browser]
 parent: epic-rust-cdp-capture-foundation-bounded-screencast-ingestion
 depends_on: [epic-rust-cdp-capture-foundation-bounded-screencast-ingestion-engine]
 release_binding: null
 gate_origin: null
 created: 2026-07-12
-updated: 2026-07-12
+updated: 2026-07-13
 ---
 
 # Wire capture to supervised target generations
@@ -91,3 +91,13 @@ These files are exclusive to this story's implementation wave. This story delibe
 - Effective worker: `highest`.
 - Depends on the engine because session wiring must not outrun the ack/backpressure proof.
 - Review weight: `standard` at the parent feature; story verification may fast-advance.
+
+## Implementation notes
+
+- Execution capability: `cdpkit-transport` at highest implementation depth; this cross-cutting lifecycle work was kept inline as requested so reducer, session executor, core ports, and root composition stayed compile-real in one stride.
+- Review weight: `standard` from the parent feature; explicitly left at `stage: review` for a fresh timing/cross-cutting review.
+- Files changed: core browser-session events and port identity/status contracts; target model/reducer capture bindings and effects; production session capture observer/effect executor, reconnect wiring, and aggregate shutdown deadline; capture visibility/stop hardening; root shared dependency composition; deterministic supervised-capture tests.
+- Tests added/removed: `crates/krometrail-cdp/tests/session_capture.rs` covers reducer-owned start/suspend/resume/stop ordering, exact generations, visibility/failure locality, shutdown fencing, and event privacy. Existing capture-engine tests continue to cover blocked sinks, cancellation/deadline abandonment, visibility coalescing, target isolation, and privacy-safe status surfaces.
+- Simplification: reused the existing `RecordingSink`, `MonotonicClock`, `IdSource`, coordinator, subscriber registry, and transport seam; added no store, analysis, command, or fake-success adapter. Shutdown phases now share one named absolute `ShutdownDeadline` and an ownership-safe process fallback.
+- Discrepancies from design: Added an adapter-local `CaptureVisibilityChanged` input so capture visibility signals update the existing target reducer without a second reconciliation loop; added `CaptureStartFailed` as the reducer input for target-local start failures. Both remain outside the core public event contract.
+- Adjacent issues parked: none.

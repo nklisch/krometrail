@@ -7,8 +7,9 @@ mod reducer;
 pub(crate) mod supervisor;
 
 pub use model::{
-    ReconnectedSnapshot, ReconnectedTarget, Reduction, ShutdownCause, SupervisorEffect,
-    SupervisorInput, SupervisorState, SupervisorTargetState, TransportTargetInfo,
+    CaptureBinding, CaptureEffectContext, ReconnectedSnapshot, ReconnectedTarget, Reduction,
+    ShutdownCause, SupervisorEffect, SupervisorInput, SupervisorState, SupervisorTargetState,
+    TransportTargetInfo,
 };
 pub use reducer::reduce;
 

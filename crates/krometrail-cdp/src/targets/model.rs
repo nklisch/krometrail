@@ -90,10 +90,27 @@ pub struct ReconnectedSnapshot {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CaptureEffectContext {
+    pub target_id: TargetId,
+    pub connection_generation: u64,
+    pub attachment_generation: u64,
+    pub transport_session: TransportSessionId,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CaptureBinding {
+    Inactive,
+    Active(CaptureEffectContext),
+    Suspended(CaptureEffectContext),
+    Terminal,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SupervisorTargetState {
     pub target: SupervisedTarget,
     pub transport_session: Option<TransportSessionId>,
     pub prior_to_suspension: Option<TargetLifecycle>,
+    pub capture_binding: CaptureBinding,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -150,6 +167,7 @@ pub enum ShutdownCause {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SupervisorInput {
     InitialTargets(Vec<TransportTargetInfo>),
+    InitialReconciliationCompleted,
     TargetCreated(TransportTargetInfo),
     TargetInfoChanged(TransportTargetInfo),
     Attached {
@@ -157,6 +175,9 @@ pub enum SupervisorInput {
         session: TransportSessionId,
     },
     TargetAttachFailed {
+        target_key: String,
+    },
+    CaptureStartFailed {
         target_key: String,
     },
     Detached {
@@ -168,6 +189,10 @@ pub enum SupervisorInput {
     },
     VisibilityChanged {
         target_key: String,
+        visibility: TargetVisibility,
+    },
+    CaptureVisibilityChanged {
+        target_id: TargetId,
         visibility: TargetVisibility,
     },
     ConnectionLost(TransportClose),
@@ -199,6 +224,18 @@ pub enum SupervisorEffect {
     ProbeInitialVisibility {
         target_key: String,
         session: TransportSessionId,
+    },
+    StartCapture {
+        context: CaptureEffectContext,
+    },
+    SuspendCapture {
+        context: CaptureEffectContext,
+    },
+    ResumeCapture {
+        context: CaptureEffectContext,
+    },
+    StopCapture {
+        context: CaptureEffectContext,
     },
     Publish(BrowserSessionEvent),
     BeginReconnect,

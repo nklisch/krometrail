@@ -11,10 +11,10 @@ use krometrail_core::{
 };
 
 use super::model::{
-    ReconnectedSnapshot, ReconnectedTarget, Reduction, ShutdownCause, SupervisorEffect,
-    SupervisorInput, SupervisorState, SupervisorTargetState, TransportTargetInfo, cancelled_error,
-    close_event, close_reason, make_target, process_error, reconnect_error, target_changed_event,
-    target_discovered_event, target_error,
+    CaptureBinding, CaptureEffectContext, ReconnectedSnapshot, ReconnectedTarget, Reduction,
+    ShutdownCause, SupervisorEffect, SupervisorInput, SupervisorState, SupervisorTargetState,
+    TransportTargetInfo, cancelled_error, close_event, close_reason, make_target, process_error,
+    reconnect_error, target_changed_event, target_discovered_event, target_error,
 };
 
 /// Apply one serialized input. Callers must execute this function from one task/owner; sharing the
@@ -43,6 +43,7 @@ pub fn reduce(mut state: SupervisorState, input: SupervisorInput) -> Result<Redu
                 | SupervisorInput::Detached { .. }
                 | SupervisorInput::TargetDestroyed { .. }
                 | SupervisorInput::VisibilityChanged { .. }
+                | SupervisorInput::CaptureVisibilityChanged { .. }
         )
     {
         // Events from the disconnected transport can still be queued in another task. They are
@@ -57,6 +58,9 @@ pub fn reduce(mut state: SupervisorState, input: SupervisorInput) -> Result<Redu
     match input {
         SupervisorInput::InitialTargets(infos) => {
             reconcile_initial(&mut state, infos, &mut effects)?
+        }
+        SupervisorInput::InitialReconciliationCompleted => {
+            set_session_state(&mut state, BrowserSessionState::Ready, &mut effects)?;
         }
         SupervisorInput::TargetCreated(info) => {
             reconcile_one(&mut state, info, true, &mut effects)?
@@ -96,6 +100,9 @@ pub fn reduce(mut state: SupervisorState, input: SupervisorInput) -> Result<Redu
                 );
             }
         }
+        SupervisorInput::CaptureStartFailed { target_key } => {
+            capture_start_failed(&mut state, &target_key, &mut effects)?;
+        }
         SupervisorInput::Detached { session, reason: _ } => {
             detach_failed(&mut state, session, &mut effects)?
         }
@@ -106,6 +113,19 @@ pub fn reduce(mut state: SupervisorState, input: SupervisorInput) -> Result<Redu
             target_key,
             visibility,
         } => visibility_changed(&mut state, &target_key, visibility, &mut effects)?,
+        SupervisorInput::CaptureVisibilityChanged {
+            target_id,
+            visibility,
+        } => {
+            if let Some(target_key) = state
+                .targets_by_key
+                .iter()
+                .find(|(_, target)| target.target.target.id() == target_id)
+                .map(|(key, _)| key.clone())
+            {
+                visibility_changed(&mut state, &target_key, visibility, &mut effects)?;
+            }
+        }
         SupervisorInput::ConnectionLost(close) => {
             if matches!(
                 state.session_state,
@@ -185,6 +205,7 @@ pub fn reduce(mut state: SupervisorState, input: SupervisorInput) -> Result<Redu
             unreachable!("generation-guarded input is handled before reduction")
         }
     }
+    reconcile_capture_bindings(&mut state, &mut effects)?;
     Ok(Reduction { state, effects })
 }
 
@@ -264,6 +285,7 @@ fn reconcile_one(
         target,
         transport_session: None,
         prior_to_suspension: None,
+        capture_binding: CaptureBinding::Inactive,
     };
     if creation_event {
         effects.push(target_discovered_event(&target_state));
@@ -479,6 +501,7 @@ fn reconcile_restored(
                 target,
                 transport_session: None,
                 prior_to_suspension: None,
+                capture_binding: CaptureBinding::Inactive,
             },
         );
         if let Some(session) = reconnected.session {
@@ -518,6 +541,171 @@ fn reconcile_restored(
         let target = state.targets_by_key.get(&key).expect("key remains");
         effects.push(target_changed_event(target));
     }
+    Ok(())
+}
+
+fn reconcile_capture_bindings(
+    state: &mut SupervisorState,
+    effects: &mut Vec<SupervisorEffect>,
+) -> Result<()> {
+    let keys = state.targets_by_key.keys().cloned().collect::<Vec<_>>();
+    for key in keys {
+        let Some(target) = state.targets_by_key.get(&key) else {
+            continue;
+        };
+        let target_id = target.target.target.id();
+        let terminal = matches!(
+            target.target.lifecycle,
+            TargetLifecycle::Closed | TargetLifecycle::Failed
+        );
+        let eligible = state.session_state == BrowserSessionState::Ready
+            && target.target.visibility == TargetVisibility::Visible
+            && matches!(
+                target.target.lifecycle,
+                TargetLifecycle::Attached | TargetLifecycle::Recording
+            )
+            && target.transport_session.is_some();
+        let current_context =
+            target
+                .transport_session
+                .clone()
+                .map(|transport_session| CaptureEffectContext {
+                    target_id,
+                    connection_generation: state.connection_generation,
+                    attachment_generation: target.target.attachment_generation,
+                    transport_session,
+                });
+        let binding = target.capture_binding.clone();
+        let next = match binding {
+            CaptureBinding::Inactive => {
+                if terminal {
+                    CaptureBinding::Terminal
+                } else if eligible {
+                    let context = current_context.expect("eligible target has a session");
+                    effects.push(SupervisorEffect::StartCapture {
+                        context: context.clone(),
+                    });
+                    CaptureBinding::Active(context)
+                } else {
+                    CaptureBinding::Inactive
+                }
+            }
+            CaptureBinding::Active(previous) => {
+                if terminal || state.session_state == BrowserSessionState::Stopping {
+                    queue_capture_teardown(
+                        effects,
+                        SupervisorEffect::StopCapture { context: previous },
+                    );
+                    CaptureBinding::Terminal
+                } else if state.session_state == BrowserSessionState::Reconnecting
+                    || target.transport_session.is_none()
+                {
+                    queue_capture_teardown(
+                        effects,
+                        SupervisorEffect::SuspendCapture {
+                            context: previous.clone(),
+                        },
+                    );
+                    CaptureBinding::Suspended(previous)
+                } else if current_context.as_ref() != Some(&previous) {
+                    queue_capture_teardown(
+                        effects,
+                        SupervisorEffect::StopCapture { context: previous },
+                    );
+                    if eligible {
+                        let context = current_context.expect("eligible target has a session");
+                        effects.push(SupervisorEffect::StartCapture {
+                            context: context.clone(),
+                        });
+                        CaptureBinding::Active(context)
+                    } else {
+                        CaptureBinding::Inactive
+                    }
+                } else {
+                    CaptureBinding::Active(previous)
+                }
+            }
+            CaptureBinding::Suspended(previous) => {
+                if terminal || state.session_state == BrowserSessionState::Stopping {
+                    queue_capture_teardown(
+                        effects,
+                        SupervisorEffect::StopCapture { context: previous },
+                    );
+                    CaptureBinding::Terminal
+                } else if eligible
+                    && current_context.as_ref().is_some_and(|current| {
+                        current.attachment_generation > previous.attachment_generation
+                    })
+                {
+                    let context = current_context.expect("eligible target has a session");
+                    effects.push(SupervisorEffect::ResumeCapture {
+                        context: context.clone(),
+                    });
+                    CaptureBinding::Active(context)
+                } else {
+                    CaptureBinding::Suspended(previous)
+                }
+            }
+            CaptureBinding::Terminal => CaptureBinding::Terminal,
+        };
+        if let Some(target) = state.targets_by_key.get_mut(&key) {
+            target.capture_binding = next;
+        }
+    }
+    Ok(())
+}
+
+fn queue_capture_teardown(effects: &mut Vec<SupervisorEffect>, effect: SupervisorEffect) {
+    let Some(session) = (match &effect {
+        SupervisorEffect::StopCapture { context }
+        | SupervisorEffect::SuspendCapture { context } => Some(&context.transport_session),
+        _ => None,
+    }) else {
+        effects.push(effect);
+        return;
+    };
+    if let Some(index) = effects.iter().position(|existing| match existing {
+        SupervisorEffect::Detach { session: detached } => detached == session,
+        SupervisorEffect::Shutdown { .. } | SupervisorEffect::BeginReconnect => true,
+        _ => false,
+    }) {
+        effects.insert(index, effect);
+    } else {
+        effects.push(effect);
+    }
+}
+
+fn capture_start_failed(
+    state: &mut SupervisorState,
+    key: &str,
+    effects: &mut Vec<SupervisorEffect>,
+) -> Result<()> {
+    let Some(target) = state.targets_by_key.get_mut(key) else {
+        return Ok(());
+    };
+    if matches!(
+        target.target.lifecycle,
+        TargetLifecycle::Closed | TargetLifecycle::Failed
+    ) {
+        return Ok(());
+    }
+    if let Some(session) = target.transport_session.take() {
+        state.target_key_by_session.remove(&session);
+    }
+    target.target.lifecycle = target
+        .target
+        .lifecycle
+        .transition(TargetLifecycle::Failed)?;
+    target.capture_binding = CaptureBinding::Terminal;
+    let target_id = target.target.target.id();
+    publish(
+        state,
+        BrowserSessionEvent::TargetFailed {
+            target_id,
+            error: target_error(),
+        },
+        effects,
+    );
     Ok(())
 }
 
@@ -608,7 +796,9 @@ fn publish(
         BrowserSessionEvent::SessionStateChanged { .. }
         | BrowserSessionEvent::TargetDiscovered { .. }
         | BrowserSessionEvent::TargetChanged { .. }
-        | BrowserSessionEvent::TargetClosed { .. } => {}
+        | BrowserSessionEvent::TargetClosed { .. }
+        | BrowserSessionEvent::CaptureStateChanged { .. }
+        | BrowserSessionEvent::CaptureGapDeclared { .. } => {}
     }
     effects.push(SupervisorEffect::Publish(event));
 }
@@ -839,6 +1029,167 @@ mod tests {
             effect,
             SupervisorEffect::Attach { target_key } if target_key == "a"
         )));
+    }
+
+    #[test]
+    fn capture_starts_only_after_ready_and_visible_and_is_idempotent() {
+        let state = reduce(
+            SupervisorState::new(compatibility()),
+            SupervisorInput::InitialTargets(vec![info("a", "https://a")]),
+        )
+        .unwrap()
+        .state;
+        let state = reduce(
+            state,
+            SupervisorInput::Attached {
+                target_key: "a".into(),
+                session: crate::transport::TransportSessionId::new("session-a").unwrap(),
+            },
+        )
+        .unwrap()
+        .state;
+        let state = reduce(
+            state,
+            SupervisorInput::VisibilityChanged {
+                target_key: "a".into(),
+                visibility: TargetVisibility::Visible,
+            },
+        )
+        .unwrap()
+        .state;
+        let ready = reduce(state, SupervisorInput::InitialReconciliationCompleted).unwrap();
+        assert!(ready.effects.iter().any(|effect| matches!(
+            effect,
+            SupervisorEffect::StartCapture { context }
+                if context.target_id == ready.state.targets_by_key["a"].target.target.id()
+                    && context.connection_generation == 0
+                    && context.attachment_generation == 1
+                    && context.transport_session.as_str() == "session-a"
+        )));
+        let again = reduce(
+            ready.state.clone(),
+            SupervisorInput::InitialReconciliationCompleted,
+        )
+        .unwrap();
+        assert!(again.effects.is_empty());
+    }
+
+    #[test]
+    fn capture_suspends_on_disconnect_and_resumes_exact_key_on_new_generation() {
+        let state = reduce(
+            SupervisorState::new(compatibility()),
+            SupervisorInput::InitialTargets(vec![info("a", "https://a")]),
+        )
+        .unwrap()
+        .state;
+        let state = reduce(
+            state,
+            SupervisorInput::Attached {
+                target_key: "a".into(),
+                session: crate::transport::TransportSessionId::new("old").unwrap(),
+            },
+        )
+        .unwrap()
+        .state;
+        let state = reduce(
+            state,
+            SupervisorInput::VisibilityChanged {
+                target_key: "a".into(),
+                visibility: TargetVisibility::Visible,
+            },
+        )
+        .unwrap()
+        .state;
+        let state = reduce(state, SupervisorInput::InitialReconciliationCompleted)
+            .unwrap()
+            .state;
+        let disconnected = reduce(
+            state,
+            SupervisorInput::ConnectionLost(crate::transport::TransportClose {
+                reason: krometrail_core::NonEmptyText::new("remote").unwrap(),
+            }),
+        )
+        .unwrap();
+        assert!(
+            disconnected
+                .effects
+                .iter()
+                .any(|effect| matches!(effect, SupervisorEffect::SuspendCapture { .. }))
+        );
+        let old_id = disconnected.state.targets_by_key["a"].target.target.id();
+        let restored = reduce(
+            disconnected.state,
+            SupervisorInput::Reconnected(ReconnectedSnapshot {
+                connection_generation: 1,
+                compatibility: compatibility(),
+                targets: vec![ReconnectedTarget {
+                    info: info("a", "https://changed"),
+                    session: Some(crate::transport::TransportSessionId::new("new").unwrap()),
+                    visibility: TargetVisibility::Visible,
+                }],
+            }),
+        )
+        .unwrap();
+        assert!(restored.effects.iter().any(|effect| matches!(
+            effect,
+            SupervisorEffect::ResumeCapture { context }
+                if context.target_id == old_id
+                    && context.connection_generation == 1
+                    && context.attachment_generation == 2
+                    && context.transport_session.as_str() == "new"
+        )));
+        assert_eq!(
+            restored.state.targets_by_key["a"].target.target.id(),
+            old_id
+        );
+    }
+
+    #[test]
+    fn capture_stops_on_target_close_and_failure_without_affecting_other_targets() {
+        let state = reduce(
+            SupervisorState::new(compatibility()),
+            SupervisorInput::InitialTargets(vec![info("a", "https://a"), info("b", "https://b")]),
+        )
+        .unwrap()
+        .state;
+        let mut state = state;
+        for key in ["a", "b"] {
+            state = reduce(
+                state,
+                SupervisorInput::Attached {
+                    target_key: key.into(),
+                    session: crate::transport::TransportSessionId::new(key).unwrap(),
+                },
+            )
+            .unwrap()
+            .state;
+            state = reduce(
+                state,
+                SupervisorInput::VisibilityChanged {
+                    target_key: key.into(),
+                    visibility: TargetVisibility::Visible,
+                },
+            )
+            .unwrap()
+            .state;
+        }
+        let ready = reduce(state, SupervisorInput::InitialReconciliationCompleted).unwrap();
+        let state = ready.state;
+        let closed = reduce(
+            state,
+            SupervisorInput::TargetDestroyed {
+                target_key: "a".into(),
+            },
+        )
+        .unwrap();
+        assert!(closed
+            .effects
+            .iter()
+            .any(|effect| matches!(effect, SupervisorEffect::StopCapture { context } if context.transport_session.as_str() == "a")));
+        assert!(matches!(
+            closed.state.targets_by_key["b"].capture_binding,
+            CaptureBinding::Active(_)
+        ));
     }
 
     #[test]
