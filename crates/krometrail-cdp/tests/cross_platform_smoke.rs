@@ -276,15 +276,15 @@ async fn opt_in_cross_platform_smoke_records_fidelity_loss_and_cleanup_per_confi
             );
             continue;
         };
-        evidence.push(run_configuration(&configuration, &installation).await);
+        let document = run_configuration(&configuration, &installation).await;
+        // Preserve a completed configuration's evidence even if a later decisive configuration
+        // fails. This keeps a high-DPI failure honest without discarding a valid default-DPI run.
+        write_evidence(&document);
+        evidence.push(document);
     }
 
     #[cfg(target_os = "macos")]
     assert_macos_scale_pair(&evidence);
-
-    for document in &evidence {
-        write_evidence(document);
-    }
 }
 
 fn installation_for(product: BrowserProduct) -> Option<BrowserInstallation> {
