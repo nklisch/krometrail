@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-vision-toolkit-difference-map
 kind: feature
-stage: review
+stage: done
 tags: [visual]
 parent: epic-temporal-vision-toolkit
 depends_on: [epic-temporal-vision-toolkit-normalization-and-measurements]
@@ -504,3 +504,20 @@ The feature remains one cohesive implementation and feature-review bundle. Stori
 - Verification: temporal-vision format/check/test/clippy are green with 36 tests. Locked workspace check and 271 tests are green. Workspace format is currently blocked only by concurrently owned unformatted browser-navigation files, and workspace clippy only by the concurrent manual `Default` implementation in `crates/krometrail-core/src/ports/browser.rs`; neither failure touches temporal-vision or this feature's commits.
 - Commits: `db90ef4`, `5b4a999`, `e37a610`, `7efd5db`.
 - Adjacent issues parked: none.
+
+## Review (2026-07-14)
+
+**Verdict**: Approve with comments
+
+**Blockers**: none
+**Important**: none
+**Nits**: Use `checked_sub` for repeated-change span, optionally mirror the designed dimensions
+cross-check, and clarify the normalized-frequency legend precision. All are unreachable-defense or
+cosmetic improvements.
+**Rejected**: Adding a floating/inverse-LUT color reference and a generic panel framework; both add
+complexity without improving the required source-derived contract.
+
+**Notes**: Standard-weight fresh-context GLM 5.2 review verified canonical classifier/gap reuse,
+hand-computed accumulation, all frequency modes, checked bounds, fixed three-panel layout, palette,
+legends, gap warning, deterministic pinned PNG/SHA-256, provenance, 38 package tests, Clippy, and
+formatting. No material current-cycle risk survived adjudication.
