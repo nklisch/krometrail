@@ -12,6 +12,8 @@ use crate::{
     validation::deserialize_validated,
 };
 
+pub const DEFAULT_DISK_BUDGET_BYTES: u64 = 10_000_000_000;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(transparent)]
 pub struct DiskBudgetBytes(NonZeroU64);
@@ -25,6 +27,12 @@ impl DiskBudgetBytes {
 
     pub const fn get(self) -> u64 {
         self.0.get()
+    }
+}
+
+impl Default for DiskBudgetBytes {
+    fn default() -> Self {
+        Self::new(DEFAULT_DISK_BUDGET_BYTES).expect("default disk budget is non-zero")
     }
 }
 
@@ -194,6 +202,7 @@ define_stable_enum! {
     pub enum CaptureStreamState {
         Starting => "starting",
         Capturing => "capturing",
+        PausedBudget => "paused_budget",
         Hidden => "hidden",
         Suspended => "suspended",
         Draining => "draining",

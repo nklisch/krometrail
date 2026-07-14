@@ -11,6 +11,7 @@ pub mod frames;
 pub mod gaps;
 pub mod ids;
 pub mod recording;
+pub mod retention;
 pub mod timeline;
 
 /// The allocation is paid at an infrastructure boundary, keeping core traits
@@ -27,6 +28,7 @@ pub use frames::FrameSource;
 pub use gaps::CaptureGapStore;
 pub use ids::IdSource;
 pub use recording::RecordingSink;
+pub use retention::RetentionStore;
 pub use timeline::TimelineStore;
 
 #[cfg(test)]
@@ -161,6 +163,7 @@ mod tests {
                 selected,
                 pages,
                 Vec::new(),
+                crate::RetentionStatus::empty(crate::DiskBudgetBytes::default()),
             );
             Box::pin(std::future::ready(status))
         }
@@ -573,6 +576,7 @@ mod tests {
             include_str!("gaps.rs"),
             include_str!("ids.rs"),
             include_str!("recording.rs"),
+            include_str!("retention.rs"),
             include_str!("timeline.rs"),
         ];
         for source in sources {

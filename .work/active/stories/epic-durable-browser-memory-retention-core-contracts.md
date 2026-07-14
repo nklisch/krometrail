@@ -1,7 +1,7 @@
 ---
 id: epic-durable-browser-memory-retention-core-contracts
 kind: story
-stage: implementing
+stage: done
 tags: [storage, browser]
 parent: epic-durable-browser-memory-retention
 depends_on: []
@@ -28,3 +28,10 @@ First checkpoint. It establishes the values and port consumed by SQLite/store/CD
 - `RetentionStore` is object-safe, domain-only, and covered by the existing core port source guard.
 - `PausedBudget` and `BudgetExhausted` guidance round-trip through stable registries without adding an error category.
 - Browser status carries retention fields alongside the existing capture cadence and recorded/dropped statistics; it does not duplicate those counters.
+
+## Implementation notes
+
+- Added validated infrastructure-free retention values, the exact decimal 10 GB default, and the object-safe `RetentionStore` port.
+- Added the registry-backed `paused_budget` state and source-safe `BudgetExhausted` retry/recovery guidance.
+- `BrowserStatus` now composes one `RetentionStatus` beside the existing per-target capture counters; temporary CDP composition uses an empty default status until the capture-wiring checkpoint supplies the live store.
+- Verification: `cargo test -p krometrail-core --locked` passed (61 tests across unit and documentation suites); formatting and diff checks passed.

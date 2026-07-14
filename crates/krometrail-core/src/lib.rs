@@ -82,13 +82,14 @@ pub use ports::{
     AttachBrowser, BrowserConnectRequest, BrowserConnector, BrowserFailureKind, BrowserPageTargets,
     BrowserSessionEvents, BrowserSessionPort, CaptureGapStore, FrameSource, IdSource,
     LaunchBrowser, ManagedProfile, MonotonicClock, PortFuture, RecordingCatalog, RecordingSink,
-    TimelineStore, WallClock,
+    RetentionStore, TimelineStore, WallClock,
 };
 pub use recording::{
     ByteOffset, CaptureGap, CaptureGapReason, CaptureOrdinal, CaptureStatistics,
-    CaptureStreamState, CaptureTimingSummary, CaptureWarning, CapturedFrame, DeviceScaleFactor,
-    DiskBudgetBytes, EncodedFrame, FrameAddress, ImageFormat, PixelDimensions, RecordingSession,
-    TargetCaptureStatus,
+    CaptureStreamState, CaptureTimingSummary, CaptureWarning, CapturedFrame,
+    DEFAULT_DISK_BUDGET_BYTES, DeviceScaleFactor, DiskBudgetBytes, EncodedFrame, FrameAddress,
+    ImageFormat, PinChange, PixelDimensions, RecordingBudgetState, RecordingSession, RetainedPoint,
+    RetentionRange, RetentionStatus, SessionDeletion, StorageUsage, TargetCaptureStatus,
 };
 pub use time::{ObservedTime, SessionOrigin, SessionRange, SessionTime, SourceTime};
 pub use timeline::{ObservationKind, ObservationPayloadRef, TimelineObservation};

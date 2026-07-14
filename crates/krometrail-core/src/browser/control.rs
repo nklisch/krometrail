@@ -3,8 +3,8 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ErrorContext, InteractionId, KrometrailError, NonEmptyText, Result, SessionId, SessionTime,
-    TargetCaptureStatus, TargetId, error::invalid, validation::deserialize_validated,
+    ErrorContext, InteractionId, KrometrailError, NonEmptyText, Result, RetentionStatus, SessionId,
+    SessionTime, TargetCaptureStatus, TargetId, error::invalid, validation::deserialize_validated,
 };
 
 use super::{
@@ -38,6 +38,7 @@ pub struct BrowserStatus {
     pub selected_target_id: Option<TargetId>,
     pub pages: Vec<PageStatus>,
     pub capture: Vec<TargetCaptureStatus>,
+    pub retention: RetentionStatus,
 }
 
 #[derive(Deserialize)]
@@ -50,6 +51,7 @@ struct BrowserStatusWire {
     selected_target_id: Option<TargetId>,
     pages: Vec<PageStatus>,
     capture: Vec<TargetCaptureStatus>,
+    retention: RetentionStatus,
 }
 
 impl BrowserStatus {
@@ -63,6 +65,7 @@ impl BrowserStatus {
         selected_target_id: Option<TargetId>,
         pages: Vec<PageStatus>,
         capture: Vec<TargetCaptureStatus>,
+        retention: RetentionStatus,
     ) -> Result<Self> {
         let mut ids = HashSet::new();
         let selected = pages
@@ -92,6 +95,7 @@ impl BrowserStatus {
             selected_target_id,
             pages,
             capture,
+            retention,
         })
     }
 }
@@ -108,6 +112,7 @@ impl<'de> Deserialize<'de> for BrowserStatus {
                 w.selected_target_id,
                 w.pages,
                 w.capture,
+                w.retention,
             )
         })
     }
@@ -461,6 +466,7 @@ mod tests {
             None,
             vec![],
             vec![],
+            RetentionStatus::empty(crate::DiskBudgetBytes::default()),
         )
         .unwrap();
         assert_eq!(

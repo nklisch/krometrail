@@ -473,6 +473,7 @@ impl BrowserSessionPort for ProductionSession {
                 .capture
                 .as_ref()
                 .map_or_else(Vec::new, |capture| capture.coordinator.statuses()),
+            krometrail_core::RetentionStatus::empty(krometrail_core::DiskBudgetBytes::default()),
         );
         drop(state);
         Box::pin(std::future::ready(status))

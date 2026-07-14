@@ -166,7 +166,9 @@ impl ErrorCode {
             | Self::ScreenshotFailed
             | Self::NavigationFailed
             | Self::InteractionFailed => RetryAdvice::Safe,
-            Self::StaleReference | Self::ReferenceNotActionable => RetryAdvice::AfterRecovery,
+            Self::StaleReference | Self::ReferenceNotActionable | Self::BudgetExhausted => {
+                RetryAdvice::AfterRecovery
+            }
             _ => RetryAdvice::Never,
         }
     }
@@ -204,6 +206,9 @@ impl ErrorCode {
             Self::Cancelled => Some("start the operation again if it is still needed"),
             Self::ShutdownIncomplete => {
                 Some("inspect the browser process before starting another session")
+            }
+            Self::BudgetExhausted => {
+                Some("unpin or delete retained evidence, or increase the disk budget")
             }
             _ => None,
         }
