@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-operation-browser-page-lifecycle
 kind: feature
-stage: implementing
+stage: review
 tags: [browser, agent-ux]
 parent: epic-agent-browser-operation
 depends_on: [epic-agent-browser-operation-page-observation]
@@ -574,3 +574,34 @@ The standard fresh-context review found three receiver-confirmed current-cycle b
 The bounded snapshot lookup, unused history URLs, timestamp proxy, and test-count drift are nits.
 The feature returns to `implementing` for focused remediation and full deterministic/real-browser
 verification.
+
+## Review remediation (2026-07-14)
+
+- **CreatePage anchoring:** Creation now obtains and reduces the concrete browser target before
+  allocating the interaction, then routes every fallible attach, activation, and selection step
+  after allocation through an anchored `PageOperationResult::Failed`. The reducer remains the only
+  `TargetId` authority; no provisional identity or second target map was introduced. A scripted
+  attach-failure regression proves the returned `target_failed` outcome carries the exact session,
+  target, and interaction context and does not continue to activation.
+- **Stable-loader reload readiness:** Reload installs an interaction-unique marker in the current
+  JavaScript realm before dispatch. Bounded post-dispatch polling accepts either a changed loader or
+  a realm where that marker is absent and `document.readyState` is `interactive`/`complete`. This
+  proves fresh document/readiness evidence without network-idle waiting or accepting the stale
+  pre-reload realm. Deterministic coverage proves the service-worker/cache-like stable-loader path,
+  ordering of marker → reload → readiness probe, absence of Network-domain waits, and deadline
+  failure while stale readiness remains present.
+- **Cancellation-aware live observation:** Post-operation inspection, snapshot, and screenshot
+  transport futures now each race the generation-aware `OperationCancellation`. Cancellation or
+  disconnect stops the current transport call, preserves already completed observation parts,
+  marks remaining parts unavailable with the winning stable error, and returns one anchored failed
+  operation outcome. Scripted tests interrupt all three phases and prove prompt stop, prompt
+  disconnect, partial evidence, interaction context, and no operation replay.
+- **Files changed:** `crates/krometrail-cdp/src/control/{mod.rs,navigation.rs,pages.rs,screenshot.rs}`;
+  `crates/krometrail-cdp/src/session.rs`; `crates/krometrail-cdp/tests/page_lifecycle.rs`;
+  `crates/krometrail-cdp/tests/support/scripted_cdp.rs`.
+- **Verification:** `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --locked`;
+  318 locked workspace tests across 33 suites; `cargo clippy --workspace --all-targets --locked --
+  -D warnings`; `cargo check -p krometrail-cdp --no-default-features --all-targets --locked`; and
+  14 page-lifecycle tests under real Chrome in 6.80 seconds. All final gates passed.
+- **Deviations/blockers:** none. No core public contract or foundation assertion changed, and no
+  unrelated store, temporal-vision, root-app, or `work-view` file was edited or staged.

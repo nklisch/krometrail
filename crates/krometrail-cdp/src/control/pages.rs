@@ -3,8 +3,13 @@ use krometrail_core::{
     ObservationPart, PageSelection, Result, TargetId,
 };
 
-use super::{PageControl, bind_target};
+use super::{PageControl, bind_target, navigation::OperationCancellation};
 use crate::{SupervisorState, transport::CdpTransport};
+
+pub(crate) struct PostOperationObservation {
+    pub(crate) observation: ObservationPart<LiveObservation>,
+    pub(crate) interruption: Option<krometrail_core::KrometrailError>,
+}
 
 impl PageControl {
     pub(crate) fn next_interaction_id(&self) -> InteractionId {
@@ -20,10 +25,22 @@ impl PageControl {
         transport: &dyn CdpTransport,
         state: &SupervisorState,
         selection: PageSelection,
-    ) -> Result<ObservationPart<LiveObservation>> {
+        cancel: &OperationCancellation,
+    ) -> Result<PostOperationObservation> {
         let bound = match bind_target(state, selection) {
             Ok(bound) => bound,
-            Err(error) => return Ok(ObservationPart::Unavailable(error)),
+            Err(error) => {
+                let interruption = matches!(
+                    error.code,
+                    krometrail_core::ErrorCode::Cancelled
+                        | krometrail_core::ErrorCode::BrowserDisconnected
+                )
+                .then(|| error.clone());
+                return Ok(PostOperationObservation {
+                    observation: ObservationPart::Unavailable(error),
+                    interruption,
+                });
+            }
         };
         let started_at = self.session_time()?;
         match self
@@ -32,14 +49,21 @@ impl PageControl {
                 &bound,
                 LiveObservationRequest { target: selection },
                 started_at,
+                Some((cancel, state.connection_generation)),
             )
             .await
         {
-            Ok(BrowserOperationResult::ObserveLive(observation)) => {
-                Ok(ObservationPart::Available(*observation))
+            Ok((BrowserOperationResult::ObserveLive(observation), interruption)) => {
+                Ok(PostOperationObservation {
+                    observation: ObservationPart::Available(*observation),
+                    interruption,
+                })
             }
             Ok(_) => unreachable!("live observation returns its associated result"),
-            Err(error) => Ok(ObservationPart::Unavailable(error)),
+            Err(error) => Ok(PostOperationObservation {
+                observation: ObservationPart::Unavailable(error),
+                interruption: None,
+            }),
         }
     }
 }

@@ -2,7 +2,10 @@
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use krometrail_cdp::{
@@ -14,6 +17,8 @@ use tokio::sync::Notify;
 #[derive(Clone, Debug)]
 pub struct ScriptedCdp {
     state: Arc<Mutex<State>>,
+    closed: Arc<AtomicBool>,
+    disconnect_notify: Arc<Notify>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -56,6 +61,8 @@ impl ScriptedCdp {
                 held_methods: HashSet::new(),
                 command_notify: Arc::new(Notify::new()),
             })),
+            closed: Arc::new(AtomicBool::new(false)),
+            disconnect_notify: Arc::new(Notify::new()),
         }
     }
 
@@ -142,6 +149,11 @@ impl ScriptedCdp {
             };
             notified.await;
         }
+    }
+
+    pub fn disconnect(&self) {
+        self.closed.store(true, Ordering::Release);
+        self.disconnect_notify.notify_waiters();
     }
 
     #[allow(dead_code)]
@@ -264,17 +276,23 @@ impl CdpTransport for ScriptedCdp {
                 params,
                 index: 0,
                 hold_open,
+                closed: Arc::clone(&self.closed),
+                disconnect_notify: Arc::clone(&self.disconnect_notify),
             }) as Box<dyn TransportEvents>)
         };
         Box::pin(async move { result })
     }
 
     fn close_reason(&self) -> Option<krometrail_cdp::TransportClose> {
-        None
+        self.closed
+            .load(Ordering::Acquire)
+            .then(|| krometrail_cdp::TransportClose {
+                reason: krometrail_core::NonEmptyText::new("scripted disconnect").unwrap(),
+            })
     }
 
     fn is_closed(&self) -> bool {
-        false
+        self.closed.load(Ordering::Acquire)
     }
 }
 
@@ -283,6 +301,8 @@ struct ScriptedEvents {
     params: Vec<Value>,
     index: usize,
     hold_open: bool,
+    closed: Arc<AtomicBool>,
+    disconnect_notify: Arc<Notify>,
 }
 
 impl TransportEvents for ScriptedEvents {
@@ -291,12 +311,23 @@ impl TransportEvents for ScriptedEvents {
         self.index += usize::from(event.is_some());
         let method = self.method.clone();
         let hold_open = self.hold_open;
+        let closed = Arc::clone(&self.closed);
+        let disconnect_notify = Arc::clone(&self.disconnect_notify);
         Box::pin(async move {
             if let Some(params) = event {
                 return Ok(Some(NamedEvent { method, params }));
             }
             if hold_open {
-                std::future::pending::<()>().await;
+                loop {
+                    if closed.load(Ordering::Acquire) {
+                        return Err(TransportError::Disconnected);
+                    }
+                    let notified = disconnect_notify.notified();
+                    if closed.load(Ordering::Acquire) {
+                        return Err(TransportError::Disconnected);
+                    }
+                    notified.await;
+                }
             }
             Ok(None)
         })

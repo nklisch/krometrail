@@ -1071,7 +1071,6 @@ async fn execute_operation(
     match request {
         BrowserOperationRequest::CreatePage(request) => {
             let started_at = page_control.session_time()?;
-            let interaction_id = page_control.next_interaction_id();
             let dispatched_at = page_control.session_time()?;
             let response = transport
                 .send_raw(
@@ -1108,13 +1107,12 @@ async fn execute_operation(
                         "created browser target could not be reconciled",
                     )
                 })?;
-            commit_supervisor_input(
-                state,
-                SupervisorInput::TargetCreated(info),
-                Arc::clone(&transport),
-                shared,
-            )
-            .await?;
+            // The browser has supplied a concrete target before the interaction is allocated.
+            // Reducing first gives the anchor its real TargetId; every fallible attach/select step
+            // after allocation can therefore return an honest anchored failure instead of a plain
+            // browser-scoped error or a fabricated target identity.
+            let reduction = reduce(state.clone(), SupervisorInput::TargetCreated(info))?;
+            *state = reduction.state;
             let target_id = state
                 .targets_by_key
                 .get(&target_key)
@@ -1122,9 +1120,39 @@ async fn execute_operation(
                 .ok_or_else(|| {
                     stable_error(
                         ErrorCode::TargetFailed,
-                        "created browser target was not attached",
+                        "created browser target could not be reconciled",
                     )
                 })?;
+            let interaction_id = page_control.next_interaction_id();
+            let attach = apply_effects(
+                state,
+                reduction.effects,
+                Arc::clone(&transport),
+                Arc::clone(&shared.subscribers),
+                shared.capture.clone(),
+                None,
+            )
+            .await;
+            *shared.state.lock().expect("session state lock") = state.clone();
+            if attach.is_err()
+                || state
+                    .resolve_selection(PageSelection::Target(target_id))
+                    .is_err()
+            {
+                return page_failure_result(
+                    page_control,
+                    target_id,
+                    krometrail_core::BrowserOperationKind::CreatePage,
+                    interaction_id,
+                    started_at,
+                    dispatched_at,
+                    operation_error(
+                        ErrorCode::TargetFailed,
+                        target_id,
+                        "created browser target could not be attached",
+                    ),
+                );
+            }
             let activation = transport
                 .send_raw(
                     &CommandScope::Browser,
@@ -1143,13 +1171,29 @@ async fn execute_operation(
                     transport_page_error(error, ErrorCode::TargetFailed, target_id),
                 );
             }
-            commit_supervisor_input(
+            if commit_supervisor_input(
                 state,
                 SupervisorInput::SelectTarget { target_key },
                 Arc::clone(&transport),
                 shared,
             )
-            .await?;
+            .await
+            .is_err()
+            {
+                return page_failure_result(
+                    page_control,
+                    target_id,
+                    krometrail_core::BrowserOperationKind::CreatePage,
+                    interaction_id,
+                    started_at,
+                    dispatched_at,
+                    operation_error(
+                        ErrorCode::TargetFailed,
+                        target_id,
+                        "created browser target could not be selected",
+                    ),
+                );
+            }
             page_success_result(
                 page_control,
                 transport.as_ref(),
@@ -1161,6 +1205,7 @@ async fn execute_operation(
                 dispatched_at,
                 PageChange::Created { target_id },
                 PageSelection::Target(target_id),
+                &shared.operation_cancellation,
             )
             .await
             .map(|result| BrowserOperationResult::CreatePage(Box::new(result)))
@@ -1214,6 +1259,7 @@ async fn execute_operation(
                     selected: target_id,
                 },
                 PageSelection::Target(target_id),
+                &shared.operation_cancellation,
             )
             .await
             .map(|result| BrowserOperationResult::SelectPage(Box::new(result)))
@@ -1312,21 +1358,36 @@ async fn execute_operation(
             let selected = state
                 .selected_target()
                 .map(|target| target.target.target.id());
-            let observation = match selected {
+            let (observation, interruption) = match selected {
                 Some(selected) => {
-                    page_control
+                    let observed = page_control
                         .observe_after_operation(
                             transport.as_ref(),
                             state,
                             PageSelection::Target(selected),
+                            &shared.operation_cancellation,
                         )
-                        .await?
+                        .await?;
+                    (observed.observation, observed.interruption)
                 }
-                None => ObservationPart::Unavailable(KrometrailError::new(
-                    ErrorCode::NotFound,
-                    NonEmptyText::new("no browser page remains selected after closure").unwrap(),
-                )),
+                None => (
+                    ObservationPart::Unavailable(KrometrailError::new(
+                        ErrorCode::NotFound,
+                        NonEmptyText::new("no browser page remains selected after closure")
+                            .unwrap(),
+                    )),
+                    None,
+                ),
             };
+            let outcome = interruption.map_or_else(
+                || {
+                    PageOperationOutcome::Succeeded(PageChange::Closed {
+                        closed: target_id,
+                        selected,
+                    })
+                },
+                PageOperationOutcome::Failed,
+            );
             let result = build_page_result(
                 page_control,
                 target_id,
@@ -1334,10 +1395,7 @@ async fn execute_operation(
                 interaction_id,
                 started_at,
                 dispatched_at,
-                PageOperationOutcome::Succeeded(PageChange::Closed {
-                    closed: target_id,
-                    selected,
-                }),
+                outcome,
                 observation,
             )?;
             Ok(BrowserOperationResult::ClosePage(Box::new(result)))
@@ -1384,10 +1442,15 @@ async fn page_success_result(
     dispatched_at: krometrail_core::SessionTime,
     change: PageChange,
     observation_target: PageSelection,
+    cancel: &OperationCancellation,
 ) -> Result<PageOperationResult> {
     let observation = page_control
-        .observe_after_operation(transport, state, observation_target)
+        .observe_after_operation(transport, state, observation_target, cancel)
         .await?;
+    let outcome = observation.interruption.map_or_else(
+        || PageOperationOutcome::Succeeded(change),
+        PageOperationOutcome::Failed,
+    );
     build_page_result(
         page_control,
         target_id,
@@ -1395,8 +1458,8 @@ async fn page_success_result(
         interaction_id,
         started_at,
         dispatched_at,
-        PageOperationOutcome::Succeeded(change),
-        observation,
+        outcome,
+        observation.observation,
     )
 }
 

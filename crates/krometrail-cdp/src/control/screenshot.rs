@@ -1,3 +1,5 @@
+use std::future::Future;
+
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use krometrail_core::{
     BrowserOperationResult, CoordinateSpace, CssPoint, CssRect, CssSize, DeviceScaleFactor,
@@ -8,7 +10,9 @@ use krometrail_core::{
 use serde_json::{Map, Value, json};
 
 use super::{
-    BoundTarget, PageControl, operation_error,
+    BoundTarget, PageControl,
+    navigation::OperationCancellation,
+    operation_error,
     snapshot::{ReferenceRequirement, quad_bounds},
     transport_error,
 };
@@ -271,47 +275,69 @@ impl PageControl {
         bound: &BoundTarget,
         _request: LiveObservationRequest,
         started_at: krometrail_core::SessionTime,
-    ) -> Result<BrowserOperationResult> {
+        cancellation: Option<(&OperationCancellation, u64)>,
+    ) -> Result<(
+        BrowserOperationResult,
+        Option<krometrail_core::KrometrailError>,
+    )> {
+        let mut interruption = None;
+
         let page = if transport.is_closed() {
-            ObservationPart::Unavailable(disconnected(bound.target_id))
+            unavailable_disconnected(bound.target_id, cancellation, &mut interruption)
         } else {
             let part_started = self.session_time()?;
-            match self
-                .inspect(
-                    transport,
-                    bound,
-                    InspectPageRequest::new(bound.target_id),
-                    part_started,
-                )
-                .await
-            {
-                Ok(BrowserOperationResult::InspectPage(page)) => ObservationPart::Available(*page),
-                Ok(_) => unreachable!("inspection returns its associated result"),
-                Err(error) => ObservationPart::Unavailable(error),
+            let inspection = self.inspect(
+                transport,
+                bound,
+                InspectPageRequest::new(bound.target_id),
+                part_started,
+            );
+            match run_component(cancellation, bound.target_id, inspection).await {
+                ComponentResult::Completed(Ok(BrowserOperationResult::InspectPage(page))) => {
+                    ObservationPart::Available(*page)
+                }
+                ComponentResult::Completed(Ok(_)) => {
+                    unreachable!("inspection returns its associated result")
+                }
+                ComponentResult::Completed(Err(error)) => ObservationPart::Unavailable(error),
+                ComponentResult::Interrupted(error) => {
+                    interruption = Some(error.clone());
+                    ObservationPart::Unavailable(error)
+                }
             }
         };
-        let snapshot = if transport.is_closed() {
-            ObservationPart::Unavailable(disconnected(bound.target_id))
+
+        let snapshot = if let Some(error) = &interruption {
+            ObservationPart::Unavailable(error.clone())
+        } else if transport.is_closed() {
+            unavailable_disconnected(bound.target_id, cancellation, &mut interruption)
         } else {
             let part_started = self.session_time()?;
-            match self
-                .snapshot(
-                    transport,
-                    bound,
-                    SnapshotPageRequest::new(bound.target_id),
-                    part_started,
-                )
-                .await
-            {
-                Ok(BrowserOperationResult::SnapshotPage(snapshot)) => {
+            let snapshot = self.snapshot(
+                transport,
+                bound,
+                SnapshotPageRequest::new(bound.target_id),
+                part_started,
+            );
+            match run_component(cancellation, bound.target_id, snapshot).await {
+                ComponentResult::Completed(Ok(BrowserOperationResult::SnapshotPage(snapshot))) => {
                     ObservationPart::Available(*snapshot)
                 }
-                Ok(_) => unreachable!("snapshot returns its associated result"),
-                Err(error) => ObservationPart::Unavailable(error),
+                ComponentResult::Completed(Ok(_)) => {
+                    unreachable!("snapshot returns its associated result")
+                }
+                ComponentResult::Completed(Err(error)) => ObservationPart::Unavailable(error),
+                ComponentResult::Interrupted(error) => {
+                    interruption = Some(error.clone());
+                    ObservationPart::Unavailable(error)
+                }
             }
         };
-        let screenshot = if transport.is_closed() {
-            ObservationPart::Unavailable(disconnected(bound.target_id))
+
+        let screenshot = if let Some(error) = &interruption {
+            ObservationPart::Unavailable(error.clone())
+        } else if transport.is_closed() {
+            unavailable_disconnected(bound.target_id, cancellation, &mut interruption)
         } else {
             let part_started = self.session_time()?;
             let request = ScreenshotRequest::new(
@@ -320,17 +346,21 @@ impl PageControl {
                 krometrail_core::ImageFormat::Png,
                 None,
             )?;
-            match self
-                .capture_screenshot(transport, bound, request, part_started)
-                .await
-            {
-                Ok(screenshot) => ObservationPart::Available(screenshot),
-                Err(error) => ObservationPart::Unavailable(error),
+            let screenshot = self.capture_screenshot(transport, bound, request, part_started);
+            match run_component(cancellation, bound.target_id, screenshot).await {
+                ComponentResult::Completed(Ok(screenshot)) => {
+                    ObservationPart::Available(screenshot)
+                }
+                ComponentResult::Completed(Err(error)) => ObservationPart::Unavailable(error),
+                ComponentResult::Interrupted(error) => {
+                    interruption = Some(error.clone());
+                    ObservationPart::Unavailable(error)
+                }
             }
         };
         let completed_at = self.session_time()?;
-        Ok(BrowserOperationResult::ObserveLive(Box::new(
-            LiveObservation {
+        Ok((
+            BrowserOperationResult::ObserveLive(Box::new(LiveObservation {
                 context: ObservationContext::new(
                     self.session_id,
                     bound.target_id,
@@ -341,9 +371,44 @@ impl PageControl {
                 page,
                 snapshot,
                 screenshot,
-            },
-        )))
+            })),
+            interruption,
+        ))
     }
+}
+
+enum ComponentResult<T> {
+    Completed(Result<T>),
+    Interrupted(krometrail_core::KrometrailError),
+}
+
+async fn run_component<F, T>(
+    cancellation: Option<(&OperationCancellation, u64)>,
+    target_id: krometrail_core::TargetId,
+    future: F,
+) -> ComponentResult<T>
+where
+    F: Future<Output = Result<T>>,
+{
+    match cancellation {
+        Some((cancel, generation)) => match cancel.race(generation, target_id, future).await {
+            Ok(result) => ComponentResult::Completed(result),
+            Err(error) => ComponentResult::Interrupted(error),
+        },
+        None => ComponentResult::Completed(future.await),
+    }
+}
+
+fn unavailable_disconnected<T>(
+    target_id: krometrail_core::TargetId,
+    cancellation: Option<(&OperationCancellation, u64)>,
+    interruption: &mut Option<krometrail_core::KrometrailError>,
+) -> ObservationPart<T> {
+    let error = disconnected(target_id);
+    if cancellation.is_some() {
+        *interruption = Some(error.clone());
+    }
+    ObservationPart::Unavailable(error)
 }
 
 fn protocol_rect(

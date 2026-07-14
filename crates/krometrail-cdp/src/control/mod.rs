@@ -128,10 +128,10 @@ impl PageControl {
                 self.screenshot(transport, &bound, request, started_at)
                     .await
             }
-            BrowserOperationRequest::ObserveLive(request) => {
-                self.observe_live(transport, &bound, request, started_at)
-                    .await
-            }
+            BrowserOperationRequest::ObserveLive(request) => self
+                .observe_live(transport, &bound, request, started_at, None)
+                .await
+                .map(|(result, _)| result),
             BrowserOperationRequest::ListPages(_)
             | BrowserOperationRequest::CreatePage(_)
             | BrowserOperationRequest::SelectPage(_)

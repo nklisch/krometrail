@@ -157,6 +157,7 @@ impl PageControl {
                         dispatched,
                         transport_error(error, ErrorCode::NavigationFailed, bound.target_id),
                         false,
+                        cancel,
                     )
                     .await;
             }
@@ -173,6 +174,7 @@ impl PageControl {
                         dispatched,
                         error,
                         false,
+                        cancel,
                     )
                     .await;
             }
@@ -194,6 +196,7 @@ impl PageControl {
                     dispatched,
                     navigation_error(bound.target_id, "browser rejected page navigation"),
                     false,
+                    cancel,
                 )
                 .await;
         }
@@ -227,6 +230,7 @@ impl PageControl {
                 self.navigation_success(
                     transport,
                     state,
+                    cancel,
                     request.target,
                     bound.target_id,
                     BrowserOperationKind::NavigatePage,
@@ -249,6 +253,7 @@ impl PageControl {
                     dispatched,
                     error,
                     true,
+                    cancel,
                 )
                 .await
             }
@@ -266,7 +271,40 @@ impl PageControl {
         let before = read_document(transport, &bound.transport_session, bound.target_id).await?;
         let started = self.session_time()?;
         let interaction_id = self.next_interaction_id();
+        let reload_marker = format!("__krometrail_reload_{}", interaction_id.as_uuid().simple());
         let dispatched = self.session_time()?;
+        let marker = cancel
+            .race(
+                state.connection_generation,
+                bound.target_id,
+                install_reload_marker(
+                    transport,
+                    &bound.transport_session,
+                    bound.target_id,
+                    &reload_marker,
+                ),
+            )
+            .await;
+        match marker {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) | Err(error) => {
+                return self
+                    .navigation_failure(
+                        transport,
+                        state,
+                        request.target,
+                        bound.target_id,
+                        BrowserOperationKind::ReloadPage,
+                        interaction_id,
+                        started,
+                        dispatched,
+                        error,
+                        false,
+                        cancel,
+                    )
+                    .await;
+            }
+        }
         let command = cancel
             .race(
                 state.connection_generation,
@@ -293,6 +331,7 @@ impl PageControl {
                         dispatched,
                         transport_error(error, ErrorCode::NavigationFailed, bound.target_id),
                         false,
+                        cancel,
                     )
                     .await;
             }
@@ -309,19 +348,21 @@ impl PageControl {
                         dispatched,
                         error,
                         false,
+                        cancel,
                     )
                     .await;
             }
         }
         self.invalidate_target_snapshot(bound.target_id);
         match self
-            .await_commit(
+            .await_reload_commit(
                 transport,
                 &bound.transport_session,
                 bound.target_id,
                 state.connection_generation,
                 cancel,
-                |current| current.loader_id != before.loader_id,
+                &before.loader_id,
+                &reload_marker,
             )
             .await
         {
@@ -329,6 +370,7 @@ impl PageControl {
                 self.navigation_success(
                     transport,
                     state,
+                    cancel,
                     request.target,
                     bound.target_id,
                     BrowserOperationKind::ReloadPage,
@@ -351,6 +393,7 @@ impl PageControl {
                     dispatched,
                     error,
                     true,
+                    cancel,
                 )
                 .await
             }
@@ -454,6 +497,7 @@ impl PageControl {
                         dispatched,
                         transport_error(error, ErrorCode::NavigationFailed, bound.target_id),
                         false,
+                        cancel,
                     )
                     .await;
             }
@@ -470,6 +514,7 @@ impl PageControl {
                         dispatched,
                         error,
                         false,
+                        cancel,
                     )
                     .await;
             }
@@ -490,6 +535,7 @@ impl PageControl {
                 self.navigation_success(
                     transport,
                     state,
+                    cancel,
                     selection,
                     bound.target_id,
                     kind,
@@ -512,9 +558,86 @@ impl PageControl {
                     dispatched,
                     error,
                     true,
+                    cancel,
                 )
                 .await
             }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn await_reload_commit(
+        &self,
+        transport: &dyn CdpTransport,
+        session: &crate::transport::TransportSessionId,
+        target_id: TargetId,
+        connection_generation: u64,
+        cancel: &OperationCancellation,
+        previous_loader: &str,
+        marker: &str,
+    ) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + self.navigation.commit_timeout;
+        loop {
+            let current = self
+                .observe_before_deadline(
+                    connection_generation,
+                    target_id,
+                    deadline,
+                    cancel,
+                    read_document(transport, session, target_id),
+                )
+                .await?;
+            if current.loader_id != previous_loader {
+                return Ok(());
+            }
+            let readiness = self
+                .observe_before_deadline(
+                    connection_generation,
+                    target_id,
+                    deadline,
+                    cancel,
+                    read_reload_readiness(transport, session, target_id, marker),
+                )
+                .await?;
+            if !readiness.marker_present && readiness.ready {
+                return Ok(());
+            }
+            let wake = tokio::time::sleep_until(
+                (tokio::time::Instant::now() + self.navigation.poll_interval).min(deadline),
+            );
+            self.observe_before_deadline(
+                connection_generation,
+                target_id,
+                deadline,
+                cancel,
+                async {
+                    wake.await;
+                    Ok(())
+                },
+            )
+            .await?;
+        }
+    }
+
+    async fn observe_before_deadline<F, T>(
+        &self,
+        connection_generation: u64,
+        target_id: TargetId,
+        deadline: tokio::time::Instant,
+        cancel: &OperationCancellation,
+        future: F,
+    ) -> Result<T>
+    where
+        F: Future<Output = Result<T>>,
+    {
+        tokio::select! {
+            biased;
+            error = cancel.wait(connection_generation, target_id) => Err(error),
+            _ = tokio::time::sleep_until(deadline) => Err(navigation_error(
+                target_id,
+                "page navigation did not commit before its deadline",
+            )),
+            result = future => result,
         }
     }
 
@@ -535,17 +658,28 @@ impl PageControl {
                     "page navigation did not commit before its deadline",
                 ));
             }
-            let current = cancel
-                .race(
+            let current = self
+                .observe_before_deadline(
                     connection_generation,
                     target_id,
+                    deadline,
+                    cancel,
                     read_document(transport, session, target_id),
                 )
-                .await?;
+                .await;
             match current {
                 Ok(current) if committed(&current) => return Ok(()),
                 Ok(_) => {}
-                Err(error) if error.code == ErrorCode::BrowserDisconnected => return Err(error),
+                Err(error)
+                    if matches!(
+                        error.code,
+                        ErrorCode::BrowserDisconnected
+                            | ErrorCode::Cancelled
+                            | ErrorCode::NavigationFailed
+                    ) =>
+                {
+                    return Err(error);
+                }
                 Err(_) => {
                     return Err(navigation_error(
                         target_id,
@@ -565,6 +699,7 @@ impl PageControl {
         &mut self,
         transport: &dyn CdpTransport,
         state: &SupervisorState,
+        cancel: &OperationCancellation,
         selection: PageSelection,
         target_id: TargetId,
         kind: BrowserOperationKind,
@@ -573,17 +708,21 @@ impl PageControl {
         dispatched: SessionTime,
         change: PageChange,
     ) -> Result<BrowserOperationResult> {
-        let observation = self
-            .observe_after_operation(transport, state, selection)
+        let observed = self
+            .observe_after_operation(transport, state, selection, cancel)
             .await?;
+        let outcome = observed.interruption.map_or_else(
+            || PageOperationOutcome::Succeeded(change),
+            PageOperationOutcome::Failed,
+        );
         let result = self.navigation_result(
             target_id,
             kind,
             interaction_id,
             started,
             dispatched,
-            PageOperationOutcome::Succeeded(change),
-            observation,
+            outcome,
+            observed.observation,
         )?;
         Ok(wrap_result(kind, result))
     }
@@ -601,14 +740,16 @@ impl PageControl {
         dispatched: SessionTime,
         error: KrometrailError,
         mutation_accepted: bool,
+        cancel: &OperationCancellation,
     ) -> Result<BrowserOperationResult> {
         let observation = if mutation_accepted
             && !matches!(
                 error.code,
                 ErrorCode::Cancelled | ErrorCode::BrowserDisconnected
             ) {
-            self.observe_after_operation(transport, state, selection)
+            self.observe_after_operation(transport, state, selection, cancel)
                 .await?
+                .observation
         } else {
             ObservationPart::Unavailable(error.clone())
         };
@@ -659,6 +800,86 @@ impl PageControl {
         };
         PageOperationResult::new(anchor, outcome, observation)
     }
+}
+
+struct ReloadReadiness {
+    marker_present: bool,
+    ready: bool,
+}
+
+async fn install_reload_marker(
+    transport: &dyn CdpTransport,
+    session: &crate::transport::TransportSessionId,
+    target_id: TargetId,
+    marker: &str,
+) -> Result<()> {
+    let expression = format!(
+        "Object.defineProperty(globalThis, {marker:?}, {{value:true, configurable:true}}); true"
+    );
+    let response = transport
+        .send_raw(
+            &CommandScope::Session(session.clone()),
+            "Runtime.evaluate",
+            json!({
+                "expression": expression,
+                "returnByValue": true,
+                "silent": true,
+            }),
+        )
+        .await
+        .map_err(|error| transport_error(error, ErrorCode::NavigationFailed, target_id))?;
+    if response
+        .pointer("/result/value")
+        .or_else(|| response.pointer("/result/result/value"))
+        .and_then(Value::as_bool)
+        != Some(true)
+    {
+        return Err(navigation_error(
+            target_id,
+            "reload freshness marker could not be installed",
+        ));
+    }
+    Ok(())
+}
+
+async fn read_reload_readiness(
+    transport: &dyn CdpTransport,
+    session: &crate::transport::TransportSessionId,
+    target_id: TargetId,
+    marker: &str,
+) -> Result<ReloadReadiness> {
+    let expression = format!(
+        "({{markerPresent:Object.prototype.hasOwnProperty.call(globalThis, {marker:?}), readiness:document.readyState}})"
+    );
+    let response = transport
+        .send_raw(
+            &CommandScope::Session(session.clone()),
+            "Runtime.evaluate",
+            json!({
+                "expression": expression,
+                "returnByValue": true,
+                "throwOnSideEffect": true,
+                "silent": true,
+            }),
+        )
+        .await
+        .map_err(|error| transport_error(error, ErrorCode::NavigationFailed, target_id))?;
+    let value = response
+        .pointer("/result/value")
+        .or_else(|| response.pointer("/result/result/value"))
+        .ok_or_else(|| navigation_error(target_id, "reload readiness response is malformed"))?;
+    let marker_present = value
+        .get("markerPresent")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| navigation_error(target_id, "reload freshness evidence is malformed"))?;
+    let ready = matches!(
+        value.get("readiness").and_then(Value::as_str),
+        Some("interactive" | "complete")
+    );
+    Ok(ReloadReadiness {
+        marker_present,
+        ready,
+    })
 }
 
 async fn read_document(
@@ -756,7 +977,70 @@ fn wrap_result(kind: BrowserOperationKind, result: PageOperationResult) -> Brows
 #[cfg(test)]
 mod tests {
     use super::*;
+    use krometrail_core::{
+        IdSource, IdValue, MonotonicClock, ObservedTime, SessionId, SessionOrigin,
+    };
     use uuid::Uuid;
+
+    use crate::transport::{TransportError, TransportEvents, TransportFuture, TransportSessionId};
+
+    struct TestClock;
+
+    impl MonotonicClock for TestClock {
+        fn now(&self) -> ObservedTime {
+            ObservedTime::from_nanos(1)
+        }
+    }
+
+    struct TestIds;
+
+    impl IdSource for TestIds {
+        fn next(&self) -> IdValue {
+            IdValue::from_uuid(Uuid::from_u128(2))
+        }
+    }
+
+    struct StableStaleReload;
+
+    impl CdpTransport for StableStaleReload {
+        fn send_raw(
+            &self,
+            _scope: &CommandScope,
+            method: &str,
+            _params: Value,
+        ) -> TransportFuture<'_, std::result::Result<Value, TransportError>> {
+            let value = match method {
+                "Page.getFrameTree" => {
+                    json!({"frameTree":{"frame":{"id":"main","loaderId":"stable","url":"http://fixture/"}}})
+                }
+                "Page.getNavigationHistory" => {
+                    json!({"currentIndex":0,"entries":[{"id":1,"url":"http://fixture/"}]})
+                }
+                "Runtime.evaluate" => json!({"result":{"type":"object","value":{
+                    "markerPresent":true,"readiness":"complete"
+                }}}),
+                _ => Value::Object(Default::default()),
+            };
+            Box::pin(async move { Ok(value) })
+        }
+
+        fn subscribe_named(
+            &self,
+            _scope: &CommandScope,
+            _method: &str,
+        ) -> TransportFuture<'_, std::result::Result<Box<dyn TransportEvents>, TransportError>>
+        {
+            Box::pin(async { Err(TransportError::InvalidInput) })
+        }
+
+        fn close_reason(&self) -> Option<crate::transport::TransportClose> {
+            None
+        }
+
+        fn is_closed(&self) -> bool {
+            false
+        }
+    }
 
     fn target() -> TargetId {
         TargetId::from_uuid(Uuid::from_u128(1))
@@ -777,6 +1061,33 @@ mod tests {
         cancellation.stop();
         let error = task.await.unwrap().unwrap_err();
         assert_eq!(error.code, ErrorCode::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn stable_loader_never_accepts_stale_readiness_and_is_deadline_bounded() {
+        let mut control = PageControl::new(
+            Arc::new(TestClock),
+            Arc::new(TestIds),
+            SessionId::from_uuid(Uuid::from_u128(3)),
+            SessionOrigin::new(ObservedTime::from_nanos(0)),
+        );
+        control.navigation.commit_timeout = Duration::from_millis(10);
+        control.navigation.poll_interval = Duration::from_millis(1);
+        let started = tokio::time::Instant::now();
+        let error = control
+            .await_reload_commit(
+                &StableStaleReload,
+                &TransportSessionId::new("session-a").unwrap(),
+                target(),
+                0,
+                &OperationCancellation::default(),
+                "stable",
+                "marker",
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::NavigationFailed);
+        assert!(started.elapsed() < Duration::from_millis(250));
     }
 
     #[test]

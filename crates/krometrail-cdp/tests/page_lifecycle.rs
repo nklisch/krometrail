@@ -2,7 +2,7 @@
 
 mod support;
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use krometrail_cdp::{
@@ -282,6 +282,263 @@ async fn status_and_page_mutations_share_exact_selected_target_state() {
 }
 
 #[tokio::test]
+async fn create_attach_failure_keeps_the_allocated_interaction_anchor() {
+    let transport = ScriptedCdp::chrome();
+    let session = scripted_session(&transport).await;
+
+    transport.push_response("Target.createTarget", json!({"targetId":"target-failed"}));
+    transport.push_response(
+        "Target.getTargetInfo",
+        json!({"targetInfo":{
+            "targetId":"target-failed","type":"page","url":"about:blank","title":"","attached":false
+        }}),
+    );
+    transport.push_failure("Target.attachToTarget", TransportError::CommandFailed);
+
+    let created = session
+        .execute(BrowserOperationRequest::CreatePage(
+            CreatePageRequest::new(None::<String>).unwrap(),
+        ))
+        .await
+        .expect("anchored create result");
+    let BrowserOperationResult::CreatePage(created) = created else {
+        panic!("create failure")
+    };
+    let PageOperationOutcome::Failed(error) = &created.outcome else {
+        panic!("failed create outcome")
+    };
+    assert_eq!(error.code, ErrorCode::TargetFailed);
+    assert_eq!(error.context.target_id, Some(created.interaction.target_id));
+    assert_eq!(
+        error.context.interaction_id,
+        Some(created.interaction.interaction_id)
+    );
+    assert!(matches!(
+        created.observation,
+        ObservationPart::Unavailable(_)
+    ));
+    assert!(
+        transport
+            .command_calls()
+            .iter()
+            .all(|call| call.method != "Target.activateTarget")
+    );
+    assert_eq!(session.status().await.unwrap().pages.len(), 1);
+    session.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn stable_loader_reload_requires_fresh_document_readiness() {
+    let transport = ScriptedCdp::chrome();
+    let session = scripted_session(&transport).await;
+    let url = "http://fixture/service-worker-cached";
+
+    transport.push_response("Page.getFrameTree", frame("stable-loader", url));
+    transport.push_response("Page.getNavigationHistory", history(0, &[url]));
+    transport.push_response(
+        "Runtime.evaluate",
+        json!({"result":{"type":"boolean","value":true}}),
+    );
+    transport.push_response("Page.reload", json!({}));
+    transport.push_response("Page.getFrameTree", frame("stable-loader", url));
+    transport.push_response("Page.getNavigationHistory", history(0, &[url]));
+    transport.push_response(
+        "Runtime.evaluate",
+        json!({"result":{"type":"object","value":{
+            "markerPresent":false,"readiness":"interactive"
+        }}}),
+    );
+    script_live(&transport, url, "Cached", "stable-loader", 0, &[url]);
+
+    let reloaded = session
+        .execute(BrowserOperationRequest::ReloadPage(ReloadPageRequest {
+            target: PageSelection::Selected,
+            bypass_cache: false,
+        }))
+        .await
+        .unwrap();
+    let BrowserOperationResult::ReloadPage(reloaded) = reloaded else {
+        panic!("stable-loader reload")
+    };
+    assert_successful_observation(&reloaded);
+
+    let calls = transport.command_calls();
+    let marker_install = calls
+        .iter()
+        .position(|call| {
+            call.method == "Runtime.evaluate"
+                && call.params["expression"]
+                    .as_str()
+                    .is_some_and(|expression| expression.contains("Object.defineProperty"))
+        })
+        .expect("pre-dispatch freshness marker");
+    let reload = calls
+        .iter()
+        .position(|call| call.method == "Page.reload")
+        .expect("reload dispatch");
+    let readiness = calls
+        .iter()
+        .position(|call| {
+            call.method == "Runtime.evaluate"
+                && call.params["expression"]
+                    .as_str()
+                    .is_some_and(|expression| expression.contains("markerPresent"))
+        })
+        .expect("post-dispatch freshness probe");
+    assert!(marker_install < reload && reload < readiness);
+    assert!(
+        calls
+            .iter()
+            .all(|call| !call.method.starts_with("Network."))
+    );
+    session.stop().await.unwrap();
+}
+
+#[derive(Clone, Copy)]
+enum HeldObservationPart {
+    Inspection,
+    Snapshot,
+    Screenshot,
+}
+
+async fn start_select_with_held_observation(
+    held: HeldObservationPart,
+) -> (
+    ScriptedCdp,
+    Arc<dyn krometrail_core::BrowserSessionPort>,
+    tokio::task::JoinHandle<krometrail_core::Result<BrowserOperationResult>>,
+) {
+    let transport = ScriptedCdp::chrome();
+    let session = scripted_session(&transport).await;
+    let target_id = session.status().await.unwrap().selected_target_id.unwrap();
+    match held {
+        HeldObservationPart::Inspection => transport.hold_method("Runtime.evaluate"),
+        HeldObservationPart::Snapshot => {
+            transport.push_response(
+                "Runtime.evaluate",
+                json!({"result":{"type":"object","value":{
+                    "url":"http://fixture/","title":"fixture","readiness":"complete","deviceScaleFactor":1.0
+                }}}),
+            );
+            transport.push_response("Page.getLayoutMetrics", layout());
+            transport.push_response(
+                "Page.getNavigationHistory",
+                history(0, &["http://fixture/"]),
+            );
+            transport.hold_method("Page.getFrameTree");
+        }
+        HeldObservationPart::Screenshot => {
+            script_live(
+                &transport,
+                "http://fixture/",
+                "fixture",
+                "loader-a",
+                0,
+                &["http://fixture/"],
+            );
+            transport.hold_method("Page.captureScreenshot");
+        }
+    }
+    let operation = {
+        let session = Arc::clone(&session);
+        tokio::spawn(async move {
+            session
+                .execute(BrowserOperationRequest::SelectPage(SelectPageRequest {
+                    target_id,
+                }))
+                .await
+        })
+    };
+    let method = match held {
+        HeldObservationPart::Inspection => "Runtime.evaluate",
+        HeldObservationPart::Snapshot => "Page.getFrameTree",
+        HeldObservationPart::Screenshot => "Page.captureScreenshot",
+    };
+    let initial_count = usize::from(matches!(held, HeldObservationPart::Inspection)) * 2;
+    transport
+        .wait_for_command_count(method, initial_count + 1)
+        .await;
+    (transport, session, operation)
+}
+
+fn assert_interrupted_observation(
+    result: BrowserOperationResult,
+    code: ErrorCode,
+    held: HeldObservationPart,
+) {
+    let BrowserOperationResult::SelectPage(result) = result else {
+        panic!("interrupted select")
+    };
+    let PageOperationOutcome::Failed(error) = &result.outcome else {
+        panic!("interrupted outcome")
+    };
+    assert_eq!(error.code, code);
+    assert_eq!(
+        error.context.interaction_id,
+        Some(result.interaction.interaction_id)
+    );
+    let ObservationPart::Available(observation) = &result.observation else {
+        panic!("honest partial live observation")
+    };
+    assert_eq!(
+        matches!(observation.page, ObservationPart::Available(_)),
+        !matches!(held, HeldObservationPart::Inspection)
+    );
+    assert_eq!(
+        matches!(observation.snapshot, ObservationPart::Available(_)),
+        matches!(held, HeldObservationPart::Screenshot)
+    );
+    assert!(matches!(
+        observation.screenshot,
+        ObservationPart::Unavailable(_)
+    ));
+}
+
+#[tokio::test]
+async fn stop_interrupts_each_post_operation_observation_transport_phase() {
+    for held in [
+        HeldObservationPart::Inspection,
+        HeldObservationPart::Snapshot,
+        HeldObservationPart::Screenshot,
+    ] {
+        let (_transport, session, operation) = start_select_with_held_observation(held).await;
+        let stopped = tokio::time::timeout(Duration::from_secs(1), session.stop())
+            .await
+            .expect("stop must not wait for transport timeout")
+            .unwrap();
+        assert_eq!(stopped, krometrail_core::BrowserStopOutcome::Detached);
+        let result = operation.await.unwrap().unwrap();
+        assert_interrupted_observation(result, ErrorCode::Cancelled, held);
+    }
+}
+
+#[tokio::test]
+async fn disconnect_interrupts_post_operation_observation_without_replay() {
+    let (transport, session, operation) =
+        start_select_with_held_observation(HeldObservationPart::Screenshot).await;
+    transport.disconnect();
+    let result = tokio::time::timeout(Duration::from_secs(1), operation)
+        .await
+        .expect("disconnect must interrupt observation")
+        .unwrap()
+        .unwrap();
+    assert_interrupted_observation(
+        result,
+        ErrorCode::BrowserDisconnected,
+        HeldObservationPart::Screenshot,
+    );
+    assert_eq!(
+        transport
+            .command_calls()
+            .iter()
+            .filter(|call| call.method == "Target.activateTarget")
+            .count(),
+        1
+    );
+    let _ = tokio::time::timeout(Duration::from_secs(1), session.stop()).await;
+}
+
+#[tokio::test]
 async fn navigation_reload_history_and_stop_cancellation_are_anchored() {
     let transport = ScriptedCdp::chrome();
     let session = scripted_session(&transport).await;
@@ -354,6 +611,10 @@ async fn navigation_reload_history_and_stop_cancellation_are_anchored() {
 
     transport.push_response("Page.getFrameTree", frame("loader-2", second));
     transport.push_response("Page.getNavigationHistory", history(1, &[first, second]));
+    transport.push_response(
+        "Runtime.evaluate",
+        json!({"result":{"type":"boolean","value":true}}),
+    );
     transport.push_response("Page.reload", json!({}));
     transport.push_response("Page.getFrameTree", frame("loader-3", second));
     transport.push_response("Page.getNavigationHistory", history(1, &[first, second]));
