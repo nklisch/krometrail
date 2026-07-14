@@ -135,8 +135,18 @@ impl PageControl {
 
             let (result, mut error, mut child_termination) = match dispatched {
                 DispatchOutcome::Completed(Ok(result)) => {
+                    let wait_timed_out = matches!(
+                        &result,
+                        BrowserOperationResult::Wait(value)
+                            if matches!(value.outcome, WaitOutcome::TimedOut { .. })
+                    );
                     let error = result_failure(&result, target_id);
-                    let terminal = error.as_ref().and_then(error_termination);
+                    let terminal = if wait_timed_out {
+                        (tokio::time::Instant::now() >= deadline)
+                            .then_some(BatchTermination::TimedOut)
+                    } else {
+                        error.as_ref().and_then(error_termination)
+                    };
                     (Some(result), error, terminal)
                 }
                 DispatchOutcome::Completed(Err(error)) | DispatchOutcome::Interrupted(error) => {
@@ -312,9 +322,7 @@ impl PageControl {
             || {
                 if stopped_on_failure {
                     BatchOutcome::StoppedOnFailure
-                } else if failure_seen
-                    || matches!(final_observation, ObservationPart::Unavailable(_))
-                {
+                } else if failure_seen || final_observation_degraded(&final_observation) {
                     BatchOutcome::CompletedWithFailures
                 } else {
                     BatchOutcome::Completed
@@ -450,6 +458,17 @@ fn existing_screenshot(
             Some(clone_screenshot(&value.observation.screenshot))
         }
         _ => None,
+    }
+}
+
+fn final_observation_degraded(value: &ObservationPart<krometrail_core::LiveObservation>) -> bool {
+    match value {
+        ObservationPart::Unavailable(_) => true,
+        ObservationPart::Available(observation) => {
+            matches!(observation.page, ObservationPart::Unavailable(_))
+                || matches!(observation.snapshot, ObservationPart::Unavailable(_))
+                || matches!(observation.screenshot, ObservationPart::Unavailable(_))
+        }
     }
 }
 

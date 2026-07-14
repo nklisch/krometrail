@@ -342,12 +342,21 @@ impl WaitProbe {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct WaitResult {
     pub context: ObservationContext,
     pub condition: WaitCondition,
     pub outcome: WaitOutcome,
     pub last_probe: Option<WaitProbe>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WaitResultWire {
+    context: ObservationContext,
+    condition: WaitCondition,
+    outcome: WaitOutcome,
+    last_probe: Option<WaitProbe>,
 }
 
 impl WaitResult {
@@ -379,6 +388,16 @@ impl WaitResult {
             condition,
             outcome,
             last_probe,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for WaitResult {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        deserialize_validated(deserializer, |wire: WaitResultWire| {
+            Self::new(wire.context, wire.condition, wire.outcome, wire.last_probe)
         })
     }
 }

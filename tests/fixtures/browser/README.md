@@ -11,6 +11,7 @@ These directories are standalone target applications for the Rust browser-contro
 | `react-spa` | Multi-route target with forms, async data, dynamic lists, and transient visual defects for control and temporal-evaluation scenarios. |
 | `simple-page` | Dependency-free baseline for navigation, forms, DOM changes, console/error evidence, and screenshots. |
 | `verified-interactions` | Dependency-free target for reference/selector/coordinate input, forms, drag, scrolling, upload, dialogs, explicit no-op boundaries, and post-action evidence. |
+| `waits-and-batches` | Dependency-free two-page target for delayed text/element/page state, navigation readiness, finite-network and long-lived-connection limitations, stale references, and ordered batch qualification. |
 | `test-app` | Multi-page navigation, login/settings forms, validation failures, delayed responses, and WebSocket activity for browser-control and timeline capture. |
 | `vue3-counter` | Minimal dynamic DOM and state-change target for browser actions and temporal capture. |
 | `vue3-pinia` | Store-backed state changes and controls for browser interaction and temporal visual evidence. |

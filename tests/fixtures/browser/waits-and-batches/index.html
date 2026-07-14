@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Waits and batches fixture</title>
+  <style>
+    body { font-family: sans-serif; margin: 24px; }
+    .hidden { display: none; }
+    button, input { margin: 6px; padding: 8px; }
+    #network-image { width: 8px; height: 8px; }
+  </style>
+</head>
+<body>
+  <h1>Waits and batches</h1>
+  <button id="start-delays">Start delayed states</button>
+  <button id="navigate">Navigate after delay</button>
+  <button id="start-network">Start finite request</button>
+  <button id="replace-node">Replace target</button>
+  <button id="increment">Increment</button>
+  <button id="dynamic-button" class="hidden" disabled>Delayed button</button>
+  <input id="editable" aria-label="Editable target" value="ready">
+  <input id="check" aria-label="Check target" type="checkbox">
+  <button id="replaceable">Replaceable target</button>
+  <p id="delayed-text">waiting</p>
+  <output id="count">0</output>
+  <img id="network-image" alt="network marker">
+  <script>
+    (() => {
+      const state = window.fixtureState = {
+        ready: false,
+        count: 0,
+        finiteRequestsScheduled: 0,
+      };
+      const dynamic = document.querySelector('#dynamic-button');
+      const text = document.querySelector('#delayed-text');
+      const check = document.querySelector('#check');
+
+      document.querySelector('#start-delays').addEventListener('click', () => {
+        state.ready = false;
+        dynamic.classList.add('hidden');
+        dynamic.disabled = true;
+        text.textContent = 'waiting';
+        check.checked = false;
+        setTimeout(() => {
+          dynamic.classList.remove('hidden');
+          dynamic.disabled = false;
+          check.checked = true;
+          text.textContent = 'delayed text ready';
+          state.ready = true;
+        }, 400);
+      });
+
+      document.querySelector('#navigate').addEventListener('click', () => {
+        setTimeout(() => { location.href = 'second.html?qualified=1'; }, 60);
+      });
+
+      document.querySelector('#start-network').addEventListener('click', () => {
+        state.finiteRequestsScheduled += 1;
+        setTimeout(() => {
+          document.querySelector('#network-image').src = `payload.svg?run=${state.finiteRequestsScheduled}`;
+        }, 80);
+        // This connection is deliberately outside finite requestWillBeSent accounting. The
+        // qualification asserts the wait's disclosed limitation rather than global idleness.
+        try { window.longLivedSocket = new WebSocket('ws://127.0.0.1:9/long-lived-fixture'); } catch (_) {}
+      });
+
+      document.querySelector('#replace-node').addEventListener('click', () => {
+        const old = document.querySelector('#replaceable');
+        const replacement = old.cloneNode(true);
+        replacement.textContent = 'Replacement target';
+        old.replaceWith(replacement);
+      });
+
+      document.querySelector('#increment').addEventListener('click', () => {
+        state.count += 1;
+        document.querySelector('#count').textContent = String(state.count);
+      });
+    })();
+  </script>
+</body>
+</html>

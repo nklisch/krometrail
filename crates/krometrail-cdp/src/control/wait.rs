@@ -497,7 +497,7 @@ impl PageControl {
         cancel: &OperationCancellation,
     ) -> Result<WaitResult> {
         let scope = CommandScope::Session(bound.transport_session.clone());
-        let mut started = match self
+        let started = match self
             .subscribe_network(
                 transport,
                 &scope,
@@ -514,7 +514,7 @@ impl PageControl {
                 return self.timed_out(bound, started_at, condition, None, started_at);
             }
         };
-        let mut finished = match self
+        let finished = match self
             .subscribe_network(
                 transport,
                 &scope,
@@ -531,7 +531,7 @@ impl PageControl {
                 return self.timed_out(bound, started_at, condition, None, started_at);
             }
         };
-        let mut failed = match self
+        let failed = match self
             .subscribe_network(
                 transport,
                 &scope,
@@ -562,7 +562,9 @@ impl PageControl {
             }
         }
 
+        let (mut network_events, _event_pumps) = pump_network_events([started, finished, failed]);
         let mut in_flight = HashSet::<String>::new();
+        let mut completed_before_start = HashSet::<String>::new();
         let mut quiet_since = Some(tokio::time::Instant::now());
         loop {
             let now = tokio::time::Instant::now();
@@ -593,29 +595,33 @@ impl PageControl {
                 _ = tokio::time::sleep_until(deadline) => {
                     return self.timed_out(bound, started_at, condition, Some(probe), probe_at);
                 }
-                event = started.next() => NetworkWake::Event(event),
-                event = finished.next() => NetworkWake::Event(event),
-                event = failed.next() => NetworkWake::Event(event),
+                event = network_events.recv() => NetworkWake::Event(event),
                 _ = tokio::time::sleep_until(wake_at) => NetworkWake::Timer,
             };
             let NetworkWake::Event(event) = wake else {
                 continue;
             };
             let event = event
-                .map_err(|error| {
-                    transport_error(error, ErrorCode::BrowserDisconnected, bound.target_id)
-                })?
                 .ok_or_else(|| {
                     operation_error(
                         ErrorCode::BrowserDisconnected,
                         bound.target_id,
-                        "network event subscription ended during explicit wait",
+                        "network event subscriptions ended during explicit wait",
                     )
+                })?
+                .map_err(|error| {
+                    transport_error(error, ErrorCode::BrowserDisconnected, bound.target_id)
                 })?;
-            update_network_state(event, &mut in_flight, &mut quiet_since);
+            update_network_state(
+                event,
+                &mut in_flight,
+                &mut completed_before_start,
+                &mut quiet_since,
+            );
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn subscribe_network(
         &self,
         transport: &dyn CdpTransport,
@@ -707,12 +713,59 @@ where
 
 enum NetworkWake {
     Timer,
-    Event(std::result::Result<Option<NamedEvent>, TransportError>),
+    Event(Option<std::result::Result<NamedEvent, TransportError>>),
+}
+
+struct NetworkEventPumps(Vec<tokio::task::JoinHandle<()>>);
+
+impl Drop for NetworkEventPumps {
+    fn drop(&mut self) {
+        for pump in self.0.drain(..) {
+            pump.abort();
+        }
+    }
+}
+
+fn pump_network_events(
+    events: [Box<dyn TransportEvents>; 3],
+) -> (
+    tokio::sync::mpsc::Receiver<std::result::Result<NamedEvent, TransportError>>,
+    NetworkEventPumps,
+) {
+    let (sender, receiver) = tokio::sync::mpsc::channel(64);
+    let pumps = events
+        .into_iter()
+        .map(|mut events| {
+            let sender = sender.clone();
+            tokio::spawn(async move {
+                loop {
+                    match events.next().await {
+                        Ok(Some(event)) => {
+                            if sender.send(Ok(event)).await.is_err() {
+                                return;
+                            }
+                        }
+                        Ok(None) => {
+                            let _ = sender.send(Err(TransportError::SubscriptionClosed)).await;
+                            return;
+                        }
+                        Err(error) => {
+                            let _ = sender.send(Err(error)).await;
+                            return;
+                        }
+                    }
+                }
+            })
+        })
+        .collect();
+    drop(sender);
+    (receiver, NetworkEventPumps(pumps))
 }
 
 fn update_network_state(
     event: NamedEvent,
     in_flight: &mut HashSet<String>,
+    completed_before_start: &mut HashSet<String>,
     quiet_since: &mut Option<tokio::time::Instant>,
 ) {
     match event.method.as_str() {
@@ -727,6 +780,7 @@ fn update_network_state(
                 });
             if !long_lived
                 && let Some(request_id) = event.params.get("requestId").and_then(Value::as_str)
+                && !completed_before_start.remove(request_id)
             {
                 in_flight.insert(request_id.to_owned());
                 *quiet_since = None;
@@ -734,7 +788,9 @@ fn update_network_state(
         }
         "Network.loadingFinished" | "Network.loadingFailed" => {
             if let Some(request_id) = event.params.get("requestId").and_then(Value::as_str) {
-                in_flight.remove(request_id);
+                if !in_flight.remove(request_id) {
+                    completed_before_start.insert(request_id.to_owned());
+                }
                 if in_flight.is_empty() {
                     *quiet_since = Some(tokio::time::Instant::now());
                 }
@@ -792,6 +848,7 @@ mod tests {
     #[test]
     fn network_tracking_resets_quiet_only_for_finite_requests() {
         let mut requests = HashSet::new();
+        let mut completed = HashSet::new();
         let mut quiet = Some(tokio::time::Instant::now());
         update_network_state(
             NamedEvent {
@@ -799,6 +856,7 @@ mod tests {
                 params: json!({"requestId":"finite","type":"Fetch"}),
             },
             &mut requests,
+            &mut completed,
             &mut quiet,
         );
         assert!(requests.contains("finite"));
@@ -809,6 +867,7 @@ mod tests {
                 params: json!({"requestId":"socket","type":"WebSocket"}),
             },
             &mut requests,
+            &mut completed,
             &mut quiet,
         );
         assert!(!requests.contains("socket"));
@@ -818,6 +877,7 @@ mod tests {
                 params: json!({"requestId":"finite"}),
             },
             &mut requests,
+            &mut completed,
             &mut quiet,
         );
         assert!(requests.is_empty());

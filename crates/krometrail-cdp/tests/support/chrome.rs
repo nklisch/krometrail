@@ -55,6 +55,14 @@ pub fn page_lifecycle_fixture_url(page: &str) -> String {
     format!("file://{}", path.display())
 }
 
+pub fn waits_and_batches_fixture_url(page: &str) -> String {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/browser/waits-and-batches")
+        .join(page);
+    let path = fs::canonicalize(&path).unwrap_or(path);
+    format!("file://{}", path.display())
+}
+
 /// Smoke wrapper flag sets. Both variants force device scale so observations are host-independent;
 /// `DefaultDpi` anchors the default band to scale 1, `HighDpi` to scale 2.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -225,7 +233,8 @@ pub fn cleanup_real_browser_roots() {
             || name.starts_with("krometrail-real-reconnect-")
             || name.starts_with("krometrail-real-page-observation-")
             || name.starts_with("krometrail-real-page-lifecycle-")
-            || name.starts_with("krometrail-real-verified-interactions-"))
+            || name.starts_with("krometrail-real-verified-interactions-")
+            || name.starts_with("krometrail-real-waits-and-batches-"))
             && path.is_dir()
         {
             let _ = remove_empty_root_if_unreferenced(&path);
