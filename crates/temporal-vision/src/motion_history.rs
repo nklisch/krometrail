@@ -1051,6 +1051,25 @@ mod tests {
         assert_eq!(plan.changed_pixel_count(), 1);
         assert_eq!(plan.ever_changed().bits(), &[0x80]);
         assert_eq!(plan.outline().bits(), &[0x80]);
+
+        let lines = annotation_lines(&source, &plan);
+        assert_eq!(lines.range, "START 0.000 MS | END 0.000 MS | SPAN 40 NS");
+        assert_eq!(
+            lines.decay,
+            "DECAY: OLDEST RETAINED RANK 1 -> NEWEST RANK 0"
+        );
+        assert_eq!(
+            lines.disclaimer,
+            "MOTION HISTORY - SOURCE-DERIVED; NO DIRECTION INFERRED"
+        );
+        assert_eq!(
+            lines.direction,
+            "TIME -> START TO END; INTENSITY IS PER-SEGMENT RECENCY"
+        );
+        assert_eq!(
+            lines.gap.as_deref(),
+            Some("GAP - 1 DECLARED; UNSEEN BEHAVIOR MAY HAVE OCCURRED")
+        );
     }
 
     #[test]

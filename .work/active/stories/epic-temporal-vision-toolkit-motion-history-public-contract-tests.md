@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-vision-toolkit-motion-history-public-contract-tests
 kind: story
-stage: implementing
+stage: done
 tags: [visual]
 parent: epic-temporal-vision-toolkit-motion-history
 depends_on: [epic-temporal-vision-toolkit-motion-history-rendering]
@@ -70,3 +70,14 @@ No getter/derive matrix, giant golden image, exhaustive glyph test, exhaustive
 decay-parameter sweep, duplicate `FrameSequence` validation, codec-library conformance suite,
 browser fixture, visual-diagnosis assertion, inferred-direction assertion, or
 benchmark-success claim.
+
+## Implementation evidence
+
+- Added `crates/temporal-vision/tests/motion_history.rs` with arbitrary typed IDs and a browser-free translated-block sequence spanning tied timestamps, a stable pair, one declared gap, repeated traversal, and an excluded mask pixel.
+- Exact assertions protect rank-zero/half-life/live-window decay, within-segment saturation, max-across-gap composition, the 12-pixel changed union, 4-connected interior/outline distinction, and mask exclusion.
+- The render contract asserts deterministic repeated artifacts, committed PNG SHA-256 `2184d8633e2f04eda4a9e4bd285364b9c819c66eec2a7c6d8db5ef265ced2207`, decoded RGB8 dimensions/pixels, annotation/gap raster evidence, manifest JSON round trip, selected reference, omitted count, source-derived classification, and explicit no-inference/disambiguation parameters.
+- Tiny width, height, combined working-memory, and encoded-byte limits each fail with `ResourceLimitExceeded` without near-maximum allocations.
+- Package quality gate passed: format check, all-target check, 47 tests across 8 suites, and all-target Clippy with warnings denied.
+- Execution capability: raised/high; review weight: standard (autopilot caller).
+- Discrepancies from design: the public fixture uses a small 3×3 block translated by one pixel rather than a large visual golden, preserving hand-checkable accumulation and one non-outline interior pixel.
+- Blockers and adjacent issues: none.
