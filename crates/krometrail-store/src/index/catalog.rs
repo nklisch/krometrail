@@ -1,5 +1,5 @@
-use krometrail_core::{PageTarget, PortFuture, RecordingCatalog, RecordingSession, SessionId};
-use rusqlite::params;
+use krometrail_core::{PageTarget, PortFuture, RecordingCatalog, RecordingSession, SessionId, TargetId};
+use rusqlite::{OptionalExtension, params};
 
 use super::{SqliteIndex, codec, ensure_session};
 use crate::persistence_error;
@@ -21,6 +21,60 @@ impl RecordingCatalog for SqliteIndex {
                 )
                 .map_err(|_| persistence_error("could not persist session metadata"))?;
             Ok(())
+        })
+    }
+
+    fn session(
+        &self,
+        session_id: SessionId,
+    ) -> PortFuture<'_, krometrail_core::Result<Option<RecordingSession>>> {
+        Box::pin(async move {
+            let connection = self.connection()?;
+            let json: Option<String> = connection
+                .query_row(
+                    "SELECT record_json FROM sessions WHERE session_id=?1",
+                    params![codec::id(session_id.as_uuid()).to_vec()],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|_| persistence_error("could not query session metadata"))?
+                .flatten();
+            let Some(json) = json else { return Ok(None) };
+            let session: RecordingSession = serde_json::from_str(&json)
+                .map_err(|_| persistence_error("stored session metadata is malformed"))?;
+            if session.id() != session_id {
+                return Err(persistence_error("stored session metadata has the wrong identity"));
+            }
+            Ok(Some(session))
+        })
+    }
+
+    fn target(
+        &self,
+        session_id: SessionId,
+        target_id: TargetId,
+    ) -> PortFuture<'_, krometrail_core::Result<Option<PageTarget>>> {
+        Box::pin(async move {
+            let connection = self.connection()?;
+            let json: Option<String> = connection
+                .query_row(
+                    "SELECT record_json FROM targets WHERE session_id=?1 AND target_id=?2",
+                    params![
+                        codec::id(session_id.as_uuid()).to_vec(),
+                        codec::id(target_id.as_uuid()).to_vec()
+                    ],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|_| persistence_error("could not query target metadata"))?
+                .flatten();
+            let Some(json) = json else { return Ok(None) };
+            let target: PageTarget = serde_json::from_str(&json)
+                .map_err(|_| persistence_error("stored target metadata is malformed"))?;
+            if target.id() != target_id {
+                return Err(persistence_error("stored target metadata has the wrong identity"));
+            }
+            Ok(Some(target))
         })
     }
 

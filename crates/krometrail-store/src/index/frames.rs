@@ -1,7 +1,8 @@
 use std::fs::File;
 
 use krometrail_core::{
-    ByteOffset, EncodedFrame, ErrorCode, FrameAddress, FrameId, FrameSource, ImageFormat,
+    ByteOffset, CaptureOrdinal, CaptureWarning, CapturedFrame, DeviceScaleFactor, EncodedFrame,
+    ErrorCode, FrameAddress, FrameId, FrameSource, ImageFormat,
     KrometrailError, NonEmptyText, ObservationKind, ObservationPayloadRef, PortFuture, SessionId,
     SessionRange, TargetId, TimelineObservation,
 };
@@ -116,6 +117,34 @@ impl FrameSource for SqliteIndex {
         })
     }
 
+    fn frame_metadata_by_id(
+        &self,
+        frame_ids: Vec<FrameId>,
+    ) -> PortFuture<'_, krometrail_core::Result<Vec<CapturedFrame>>> {
+        Box::pin(async move {
+            let connection = self.connection()?;
+            let mut statement = connection
+                .prepare(
+                    "SELECT frame_id, session_id, target_id, capture_ordinal_be, source_time_be,\
+                            observed_time_be, session_time_be, format, image_width, image_height,\
+                            viewport_width, viewport_height, device_scale, warnings_json\
+                     FROM frames WHERE frame_id=?1",
+                )
+                .map_err(|_| persistence_error("could not prepare frame metadata lookup"))?;
+            frame_ids
+                .into_iter()
+                .map(|frame_id| {
+                    let raw = statement
+                        .query_row(params![codec::id(frame_id.as_uuid()).to_vec()], raw_metadata)
+                        .optional()
+                        .map_err(|_| persistence_error("could not query frame metadata"))?
+                        .ok_or_else(frame_not_found)?;
+                    decode_metadata(raw)
+                })
+                .collect()
+        })
+    }
+
     fn frames_in_range(
         &self,
         session_id: SessionId,
@@ -159,6 +188,131 @@ impl FrameSource for SqliteIndex {
                 .collect()
         })
     }
+
+    fn frames_in_ordinal_range(
+        &self,
+        session_id: SessionId,
+        target_id: TargetId,
+        start: CaptureOrdinal,
+        end: CaptureOrdinal,
+    ) -> PortFuture<'_, krometrail_core::Result<Vec<EncodedFrame>>> {
+        Box::pin(async move {
+            if start > end {
+                return Err(krometrail_core::KrometrailError::new(
+                    ErrorCode::InvalidInput,
+                    NonEmptyText::new("frame ordinal range start must not exceed its end")
+                        .expect("static frame error is non-empty"),
+                ));
+            }
+            let addresses = {
+                let connection = self.connection()?;
+                let mut statement = connection
+                    .prepare(
+                        "SELECT f.frame_id, f.session_id, f.target_id, f.segment_id,\
+                                f.byte_offset_be, s.relative_path\
+                         FROM frames f JOIN segments s USING(segment_id)\
+                         WHERE f.session_id=?1 AND f.target_id=?2\
+                           AND f.capture_ordinal_be>=?3 AND f.capture_ordinal_be<=?4\
+                         ORDER BY f.capture_ordinal_be ASC, f.session_time_be ASC, f.frame_id ASC",
+                    )
+                    .map_err(|_| persistence_error("could not prepare frame ordinal lookup"))?;
+                let rows = statement
+                    .query_map(
+                        params![
+                            codec::id(session_id.as_uuid()).to_vec(),
+                            codec::id(target_id.as_uuid()).to_vec(),
+                            codec::u64_blob(start.get()).to_vec(),
+                            codec::u64_blob(end.get()).to_vec(),
+                        ],
+                        raw_address,
+                    )
+                    .map_err(|_| persistence_error("could not query frame ordinal range"))?;
+                let raw: Vec<_> = rows
+                    .collect::<Result<_, _>>()
+                    .map_err(|_| persistence_error("could not read frame ordinal addresses"))?;
+                raw.into_iter()
+                    .map(decode_address)
+                    .collect::<krometrail_core::Result<Vec<_>>>()?
+            };
+            addresses
+                .into_iter()
+                .map(|address| self.read_address(address))
+                .collect()
+        })
+    }
+}
+
+struct RawMetadata {
+    frame_id: Vec<u8>,
+    session_id: Vec<u8>,
+    target_id: Vec<u8>,
+    capture_ordinal: Vec<u8>,
+    source_time: Option<Vec<u8>>,
+    observed_time: Vec<u8>,
+    session_time: Vec<u8>,
+    format: String,
+    image_width: i64,
+    image_height: i64,
+    viewport_width: i64,
+    viewport_height: i64,
+    device_scale: f64,
+    warnings_json: String,
+}
+
+fn raw_metadata(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawMetadata> {
+    Ok(RawMetadata {
+        frame_id: row.get(0)?,
+        session_id: row.get(1)?,
+        target_id: row.get(2)?,
+        capture_ordinal: row.get(3)?,
+        source_time: row.get(4)?,
+        observed_time: row.get(5)?,
+        session_time: row.get(6)?,
+        format: row.get(7)?,
+        image_width: row.get(8)?,
+        image_height: row.get(9)?,
+        viewport_width: row.get(10)?,
+        viewport_height: row.get(11)?,
+        device_scale: row.get(12)?,
+        warnings_json: row.get(13)?,
+    })
+}
+
+fn decode_metadata(raw: RawMetadata) -> krometrail_core::Result<CapturedFrame> {
+    let format = match raw.format.as_str() {
+        "jpeg" => ImageFormat::Jpeg,
+        "png" => ImageFormat::Png,
+        _ => return Err(persistence_error("stored frame format is unknown")),
+    };
+    let dimensions = |width: i64, height: i64| {
+        let width = u32::try_from(width).map_err(|_| persistence_error("stored frame dimensions are malformed"))?;
+        let height = u32::try_from(height).map_err(|_| persistence_error("stored frame dimensions are malformed"))?;
+        krometrail_core::PixelDimensions::new(width, height)
+            .map_err(|_| persistence_error("stored frame dimensions are invalid"))
+    };
+    let warnings: Vec<CaptureWarning> = serde_json::from_str(&raw.warnings_json)
+        .map_err(|_| persistence_error("stored frame warnings are malformed"))?;
+    CapturedFrame::new(
+        FrameId::from_uuid(codec::decode_id(&raw.frame_id)?),
+        SessionId::from_uuid(codec::decode_id(&raw.session_id)?),
+        TargetId::from_uuid(codec::decode_id(&raw.target_id)?),
+        CaptureOrdinal::new(codec::decode_u64(&raw.capture_ordinal)?)
+            .map_err(|_| persistence_error("stored frame ordinal is invalid"))?,
+        raw.source_time
+            .as_deref()
+            .map(codec::decode_i128)
+            .transpose()?
+            .map(krometrail_core::SourceTime::from_nanos),
+        krometrail_core::ObservedTime::from_nanos(codec::decode_u64(&raw.observed_time)?),
+        krometrail_core::SessionTime::from_nanos(codec::decode_u64(&raw.session_time)?),
+        format,
+        dimensions(raw.image_width, raw.image_height)?,
+        dimensions(raw.viewport_width, raw.viewport_height)?,
+        DeviceScaleFactor::new(raw.device_scale)
+            .map_err(|_| persistence_error("stored frame scale is invalid"))?,
+        warnings,
+    )
+    .map_err(|_| persistence_error("stored frame metadata is invalid"))
 }
 
 struct RawAddress {

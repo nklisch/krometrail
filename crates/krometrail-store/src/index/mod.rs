@@ -5,6 +5,7 @@ pub(crate) mod frames;
 mod gaps;
 pub(crate) mod maintenance;
 mod migrations;
+mod range;
 pub(crate) mod reconcile;
 pub(crate) mod retention;
 mod schema_v1;

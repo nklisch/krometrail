@@ -117,17 +117,17 @@ impl TimelineStore for SqliteIndex {
     }
 }
 
-struct RawObservation {
-    session_id: Vec<u8>,
-    target_id: Vec<u8>,
-    session_time: Vec<u8>,
-    source_time: Option<Vec<u8>>,
-    observed_time: Vec<u8>,
-    kind: String,
-    payload_json: String,
+pub(crate) struct RawObservation {
+    pub(crate) session_id: Vec<u8>,
+    pub(crate) target_id: Vec<u8>,
+    pub(crate) session_time: Vec<u8>,
+    pub(crate) source_time: Option<Vec<u8>>,
+    pub(crate) observed_time: Vec<u8>,
+    pub(crate) kind: String,
+    pub(crate) payload_json: String,
 }
 
-fn decode_observation(raw: RawObservation) -> krometrail_core::Result<TimelineObservation> {
+pub(crate) fn decode_observation(raw: RawObservation) -> krometrail_core::Result<TimelineObservation> {
     let kind = ObservationKind::from_stable_name(&raw.kind)
         .ok_or_else(|| persistence_error("stored observation kind is unknown"))?;
     let payload: ObservationPayloadRef = serde_json::from_str(&raw.payload_json)

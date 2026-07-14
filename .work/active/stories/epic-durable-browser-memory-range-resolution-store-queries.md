@@ -1,7 +1,7 @@
 ---
 id: epic-durable-browser-memory-range-resolution-store-queries
 kind: story
-stage: implementing
+stage: done
 tags: [storage, browser]
 parent: epic-durable-browser-memory-range-resolution
 depends_on: [epic-durable-browser-memory-range-resolution-core-contracts]
@@ -26,8 +26,12 @@ Extend the existing focused storage ports rather than creating a god-port. `Sqli
 
 ## Acceptance evidence
 
-- Source-frame ranges are read through `FrameSource`, not a second SQL frame path.
-- Frame ordering is deterministic by per-target `CaptureOrdinal`, including tied timestamps and multiple targets.
-- Marker/navigation lookup works from generic `timeline_observations` without structured marker/navigation tables.
-- Wrong payload kind, absent anchor, and placeholder catalog rows produce source-safe outcomes.
-- Core ports still do not expose `rusqlite`, paths, CDP, MCP, Tokio, or temporal-vision types.
+- [x] Source-frame ranges are read through `FrameSource`, not a second SQL frame path.
+- [x] Frame ordering is deterministic by per-target `CaptureOrdinal`, including tied timestamps and multiple targets.
+- [x] Marker/navigation lookup works from generic `timeline_observations` without structured marker/navigation tables.
+- [x] Wrong payload kind, absent anchor, and placeholder catalog rows produce source-safe outcomes.
+- [x] Core ports still do not expose `rusqlite`, paths, CDP, MCP, Tokio, or temporal-vision types.
+
+## Implementation
+
+Extended `RecordingCatalog` and `FrameSource` with domain-only metadata/ordinal reads. `SqliteIndex` now decodes complete catalog records, frame metadata, and ordinal-ordered frame payloads through the existing address/CRC reader. Added typed marker/navigation lookup over generic timeline rows and an explicit empty interaction-anchor adapter until browser-operation persistence lands. Store tests and locked checks pass for the focused adapter surface.
