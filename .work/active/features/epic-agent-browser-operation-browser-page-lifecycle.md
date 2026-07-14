@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-operation-browser-page-lifecycle
 kind: feature
-stage: implementing
+stage: review
 tags: [browser, agent-ux]
 parent: epic-agent-browser-operation
 depends_on: [epic-agent-browser-operation-page-observation]
@@ -541,3 +541,15 @@ One feature owner should carry the five checkpoints because core operation contr
 The riskiest assumption is that a browser-scoped create/close command can reconcile the exact target through the existing reducer before its asynchronous event reaches the actor, without duplicate attachments or target IDs. This fails if command handling waits on the actor's own queue or mutates the target map outside the reducer. The design avoids both: it fetches the exact returned key, applies the same reducer/effect path synchronously, and requires duplicate-event tests. If a renderer does not expose the target immediately, the operation returns an anchored failure while the normal event path remains authoritative; it never creates a speculative identity.
 
 The second risk is returning an observation too early after navigation. A bounded main-frame commit is the minimum honest completion point and deliberately does not promise network idle. If a renderer cannot provide matching loader/history evidence, the operation reports `navigation_failed` with whatever current observation can be obtained rather than sleeping indefinitely or claiming success. The least certain area is same-document history behavior across Chrome/Electron versions, so scripted exact cases and opt-in renderer qualification are both required.
+
+## Implementation notes
+
+- Execution capability: highest (caller); this cohesive owner carried the five ordered checkpoints because contracts, reducer state, transport commands, navigation completion, and live observation share invariants and files.
+- Review weight: standard (caller); the feature is intentionally left at `stage: review` with no self-approval.
+- Commits: `67d09fb` core control contracts; `5adcc3b` lifecycle/profile/status and integrated adapter implementation; `c3cb5f9` selected-page/target qualification; `b21d372` navigation-observation qualification; `4ace299` complete qualification and formatting.
+- Files changed: core lifecycle/status/selection/interaction contracts and registry; production launcher/session/reducer/page/navigation control; root profile assembly; shared scripted and Chrome support; lifecycle fixture and tests; affected status consumers.
+- Verification: `cargo fmt --all -- --check`; locked workspace all-target check; 282 locked workspace tests across 27 suites; locked workspace all-target clippy with `-D warnings`; locked no-default CDP all-target check; 10 page-lifecycle tests under real Chrome in 6.76 seconds. All passed.
+- Real-browser evidence: temporary managed launch and cleanup, coherent initial status/selection, exact distinct target creation, selected/direct page control, new- and same-document navigation, reload, back/forward, proactive stale-reference behavior, selected/unselected/last-page closure, ownership-correct stop, and named reusable profile persistence across reopen.
+- Simplification: one connector, profile guard, compatibility path, reducer, exact-key target map, selected key, operation registry, snapshot registry, cancellation signal, and live-observation path serve the capability. No MCP tools, durable interaction store, generic waits/batches, or second manager were added.
+- Design deviations: screenshot requests call selected/direct page scope `page` because `target` already names screenshot geometry; existing deterministic reducer allocation remains the sole `TargetId` authority while the independently injected `IdSource` supplies session/interaction IDs; malformed navigation baselines fail before interaction allocation; Electron end-to-end execution remains environment-gated while deterministic probes cover renderer classification and Node-inspector rejection.
+- Adjacent issues parked: none.
