@@ -5,8 +5,8 @@ use std::{
 
 use krometrail_core::{
     BrowserConnector, CaptureGapStore, DiskBudgetBytes, ErrorCode, FrameSource, IdSource, IdValue,
-    KrometrailError, MonotonicClock, NonEmptyText, RecordingCatalog, RecordingSink, Result,
-    RetentionStore, TimelineStore, WallClock,
+    InteractionEvidenceSink, KrometrailError, MonotonicClock, NonEmptyText, RecordingCatalog,
+    RecordingSink, Result, RetentionStore, TemporalQuery, TimelineStore, WallClock,
 };
 use uuid::Uuid;
 
@@ -36,15 +36,18 @@ pub(crate) struct RuntimeDependencies {
     pub catalog: Arc<dyn RecordingCatalog>,
     pub gaps: Arc<dyn CaptureGapStore>,
     pub frames: Arc<dyn FrameSource>,
+    pub temporal_queries: Arc<dyn TemporalQuery>,
 }
 
 struct StorageDependencies {
+    store: Arc<RecordingStore>,
     recording: Arc<dyn RecordingSink>,
     retention: Arc<dyn RetentionStore>,
     timeline: Arc<dyn TimelineStore>,
     catalog: Arc<dyn RecordingCatalog>,
     gaps: Arc<dyn CaptureGapStore>,
     frames: Arc<dyn FrameSource>,
+    temporal_queries: Arc<dyn TemporalQuery>,
 }
 
 pub(crate) struct Runtime {
@@ -73,6 +76,7 @@ impl Runtime {
                     &self.dependencies.catalog,
                     &self.dependencies.gaps,
                     &self.dependencies.frames,
+                    &self.dependencies.temporal_queries,
                 );
                 let installations = self.dependencies.browser.installations().await?;
                 if installations.is_empty() {
@@ -117,7 +121,8 @@ pub(crate) fn build_runtime() -> Result<Runtime> {
             Arc::clone(&storage.recording),
             Arc::clone(&storage.retention),
             CaptureConfig::default(),
-        ),
+        )
+        .with_interaction_evidence(Arc::clone(&storage.store) as Arc<dyn InteractionEvidenceSink>),
     );
     Ok(Runtime::new(RuntimeDependencies {
         clock,
@@ -130,6 +135,7 @@ pub(crate) fn build_runtime() -> Result<Runtime> {
         catalog: storage.catalog,
         gaps: storage.gaps,
         frames: storage.frames,
+        temporal_queries: storage.temporal_queries,
     }))
 }
 
@@ -163,9 +169,11 @@ fn open_storage_with_budget(
         budget,
     )?);
     Ok(StorageDependencies {
+        store: Arc::clone(&store),
         recording: Arc::clone(&store) as Arc<dyn RecordingSink>,
-        retention: store as Arc<dyn RetentionStore>,
-        timeline: Arc::clone(&index) as Arc<dyn TimelineStore>,
+        retention: Arc::clone(&store) as Arc<dyn RetentionStore>,
+        timeline: Arc::clone(&store) as Arc<dyn TimelineStore>,
+        temporal_queries: store as Arc<dyn TemporalQuery>,
         catalog: Arc::clone(&index) as Arc<dyn RecordingCatalog>,
         gaps: Arc::clone(&index) as Arc<dyn CaptureGapStore>,
         frames: index as Arc<dyn FrameSource>,
@@ -317,6 +325,7 @@ mod tests {
             catalog: storage.catalog,
             gaps: storage.gaps,
             frames: storage.frames,
+            temporal_queries: storage.temporal_queries,
         });
         let error = runtime.run(Command::Doctor).await.unwrap_err();
         assert_eq!(error.code, ErrorCode::BrowserNotFound);

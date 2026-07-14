@@ -7,8 +7,10 @@ use krometrail_core::{
     CaptureGap, CaptureGapStore, DiskBudgetBytes, EncodedFrame, ErrorCode, ErrorContext,
     FrameAddress, InteractionAnchor, InteractionEvidenceSink, InteractionRecord, KrometrailError,
     NavigationId, NonEmptyText, ObservedTime, PinChange, PortFuture, RecordingBudgetState,
-    RecordingSink, RetentionRange, RetentionStatus, RetentionStore, RetryAdvice, SessionDeletion,
-    SessionId, SessionRange, StorageUsage, TargetId, TimelineObservation, TimelineStore,
+    RecordingSink, ResolvedRange, RetentionRange, RetentionStatus, RetentionStore, RetryAdvice,
+    SessionDeletion, SessionId, SessionRange, StorageUsage, TargetId, TemporalQuery,
+    TemporalQueryRequest, TemporalQueryService, TemporalRangeResolver, TimelineObservation,
+    TimelineStore,
 };
 use tokio::sync::{Mutex, watch};
 
@@ -398,6 +400,26 @@ impl TimelineStore for RecordingStore {
         range: SessionRange,
     ) -> PortFuture<'_, krometrail_core::Result<Vec<TimelineObservation>>> {
         TimelineStore::range(self.index.as_ref(), session_id, target_id, range)
+    }
+}
+
+impl TemporalQuery for RecordingStore {
+    fn resolve_range(
+        &self,
+        request: TemporalQueryRequest,
+    ) -> PortFuture<'_, krometrail_core::Result<ResolvedRange>> {
+        Box::pin(async move {
+            let _mutation = self.mutations.lock().await;
+            TemporalQueryService::new(TemporalRangeResolver::new(
+                Arc::clone(&self.index),
+                Arc::clone(&self.index),
+                Arc::clone(&self.index),
+                Arc::clone(&self.index),
+                Arc::clone(&self.index),
+            ))
+            .resolve_range(request)
+            .await
+        })
     }
 }
 
