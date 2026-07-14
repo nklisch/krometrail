@@ -1,7 +1,7 @@
 ---
 id: refactor-remove-unused-progressive-response-control
 kind: story
-stage: review
+stage: done
 tags: [refactor, agent-ux]
 parent: null
 depends_on: [epic-temporal-debugging-workflow-mcp-investigation-surface]
@@ -113,3 +113,7 @@ rollback is required.
 - Discrepancies from design: none.
 - Adjacent issues parked: none.
 - Focused verification (Rust 1.85.0, locked): `cargo fmt --all -- --check`; `cargo check -p krometrail-mcp --locked --all-targets`; `cargo test -p krometrail-mcp --locked` (19 passed); `cargo clippy -p krometrail-mcp --locked --all-targets -- -D warnings`.
+
+## Review decision
+
+**Approved.** A fresh-context `openai-codex/gpt-5.6-luna` bounded standalone-story review confirmed the mapper was a pure projection, its sole caller remains correct, progressive execution retains deadline/cancellation/geometry control, and bundle inline retrieval remains async and controlled. JSON, resource, image, status, and error behavior are unchanged. Full Rust 1.85 workspace gates passed. The story advances to `done`.
