@@ -1,7 +1,7 @@
 ---
 id: epic-durable-browser-memory-range-resolution-core-contracts
 kind: story
-stage: implementing
+stage: done
 tags: [storage, browser]
 parent: epic-durable-browser-memory-range-resolution
 depends_on: []
@@ -26,7 +26,11 @@ Add the single core registry and response contract for temporal range resolution
 
 ## Acceptance evidence
 
-- Constructor tests reject empty frame lists, duplicate IDs, unordered ranges, partial retention without warnings, and resolved ranges outside the request.
-- Registry tests prove stable names, `ALL`, Serde, and reverse lookup stay in one declaration.
-- Boundary tests prove zero-length ranges are valid, endpoint inclusivity is explicit, and duration-to-nanosecond conversion failures are not lossy.
-- The core port/source scanner still finds no adapter/runtime dependencies in core.
+- [x] Constructor tests reject empty frame lists, duplicate IDs, unordered ranges, partial retention without warnings, and resolved ranges outside the request.
+- [x] Registry tests prove stable names, `ALL`, Serde, and reverse lookup stay in one declaration.
+- [x] Boundary tests prove zero-length ranges are valid, endpoint inclusivity is explicit, and duration-to-nanosecond conversion failures are not lossy.
+- [x] The core port/source scanner still finds no adapter/runtime dependencies in core.
+
+## Implementation
+
+Added the registry-backed `TemporalRangeAnchor`/`ResolvedRange` contracts, checked interaction windows, retention and gap policies, and constructor invariants in `krometrail-core`. Added domain-only `TimelineAnchorSource` and `InteractionAnchorSource` ports and extended catalog/frame ports for the next checkpoints. Core tests pass: `cargo test -p krometrail-core --all-targets --locked` (66 tests).
