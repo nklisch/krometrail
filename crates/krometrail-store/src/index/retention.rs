@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use krometrail_core::{
-    ArtifactId, PinChange, RecordingBudgetState, RetainedPoint, RetentionRange, RetentionStatus,
-    SegmentId, SessionId, SessionTime, StorageUsage, TargetId,
+    ArtifactId, PinChange, RetainedPoint, RetentionRange, SegmentId, SessionId, SessionTime,
+    StorageUsage, TargetId,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
@@ -265,29 +265,6 @@ impl SqliteIndex {
             })
             .collect()
     }
-
-    pub(crate) fn retention_status(
-        &self,
-        budget: krometrail_core::DiskBudgetBytes,
-        state: RecordingBudgetState,
-        open_overhead_limit: u64,
-    ) -> krometrail_core::Result<RetentionStatus> {
-        let snapshot = self.usage_snapshot()?;
-        let open_overhead = snapshot.usage.open_segment_bytes;
-        RetentionStatus::new(
-            budget,
-            snapshot.usage,
-            snapshot.pinned_usage_bytes,
-            snapshot.oldest_retained,
-            snapshot.newest_retained,
-            state,
-            state == RecordingBudgetState::PausedBudget,
-            state == RecordingBudgetState::PausedBudget,
-            snapshot.open_segment_count,
-            open_overhead,
-            open_overhead_limit,
-        )
-    }
 }
 
 type RawSegment = (Vec<u8>, Vec<u8>, Vec<u8>, String, Vec<u8>, i64);
@@ -513,7 +490,7 @@ pub(crate) fn validate_file_name(value: &str) -> krometrail_core::Result<()> {
 mod tests {
     use std::{path::PathBuf, time::Duration};
 
-    use krometrail_core::{DiskBudgetBytes, RetentionRange, SessionRange};
+    use krometrail_core::{RetentionRange, SessionRange};
     use tempfile::TempDir;
     use uuid::Uuid;
 
@@ -579,15 +556,6 @@ mod tests {
         assert_eq!(
             index.oldest_unpinned_segment().unwrap().unwrap().segment_id,
             first.segment_id
-        );
-        assert!(
-            index
-                .retention_status(
-                    DiskBudgetBytes::new(200).unwrap(),
-                    RecordingBudgetState::Available,
-                    0,
-                )
-                .is_ok()
         );
     }
 }

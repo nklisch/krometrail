@@ -36,6 +36,10 @@ impl RotationConfig {
         }
     }
 
+    pub const fn max_size(self) -> u64 {
+        self.max_size
+    }
+
     fn validate(self) -> krometrail_core::Result<Self> {
         if self.max_duration.is_zero() {
             return Err(persistence_error(
@@ -105,6 +109,7 @@ pub struct FrameWriteCommit {
 /// follows all previously accepted commands in FIFO order.
 pub struct SegmentWriter {
     commands: mpsc::Sender<WriterCommand>,
+    rotation_max_size: u64,
 }
 
 struct WorkerState {
@@ -133,6 +138,9 @@ enum WriterCommand {
     },
     Flush {
         session_id: SessionId,
+        reply: oneshot::Sender<krometrail_core::Result<Vec<SegmentRegistration>>>,
+    },
+    FlushAll {
         reply: oneshot::Sender<krometrail_core::Result<Vec<SegmentRegistration>>>,
     },
 }
@@ -185,11 +193,18 @@ impl SegmentWriter {
             .name("krometrail-segment-writer".to_owned())
             .spawn(move || state.run(receiver))
             .map_err(|error| io_error("start the segment writer worker", error))?;
-        Ok(Self { commands })
+        Ok(Self {
+            commands,
+            rotation_max_size: rotation.max_size(),
+        })
     }
 }
 
 impl SegmentWriter {
+    pub const fn rotation_max_size(&self) -> u64 {
+        self.rotation_max_size
+    }
+
     pub async fn append_indexable(
         &self,
         frame: EncodedFrame,
@@ -217,6 +232,17 @@ impl SegmentWriter {
             .await
             .map_err(|_| worker_unavailable("receive the recording flush result"))?
     }
+
+    pub async fn flush_all_indexable(&self) -> krometrail_core::Result<Vec<SegmentRegistration>> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WriterCommand::FlushAll { reply })
+            .await
+            .map_err(|_| worker_unavailable("flush all recording sessions"))?;
+        response
+            .await
+            .map_err(|_| worker_unavailable("receive the complete recording flush result"))?
+    }
 }
 
 impl WorkerState {
@@ -229,6 +255,10 @@ impl WorkerState {
                 }
                 WriterCommand::Flush { session_id, reply } => {
                     let result = self.execute(|state| state.flush_session(session_id));
+                    let _ = reply.send(result);
+                }
+                WriterCommand::FlushAll { reply } => {
+                    let result = self.execute(Self::flush_all);
                     let _ = reply.send(result);
                 }
             }
@@ -303,6 +333,18 @@ impl WorkerState {
             .filter(|(candidate, _)| *candidate == session_id)
             .copied()
             .collect();
+        self.flush_keys(keys)
+    }
+
+    fn flush_all(&mut self) -> krometrail_core::Result<Vec<SegmentRegistration>> {
+        let keys: Vec<_> = self.open_segments.keys().copied().collect();
+        self.flush_keys(keys)
+    }
+
+    fn flush_keys(
+        &mut self,
+        keys: Vec<(SessionId, TargetId)>,
+    ) -> krometrail_core::Result<Vec<SegmentRegistration>> {
         let mut registrations = Vec::with_capacity(keys.len());
         for key in keys {
             let open = self

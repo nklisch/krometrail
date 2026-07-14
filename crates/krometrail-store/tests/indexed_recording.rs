@@ -6,7 +6,7 @@ use krometrail_core::{
     ObservedTime, PixelDimensions, RecordingSink, SessionId, SessionRange, SessionTime, TargetId,
 };
 use krometrail_store::{
-    IndexStoreConfig, IndexedRecordingSink, RotationConfig, SegmentStoreConfig, SegmentWriter,
+    IndexStoreConfig, RecordingStore, RotationConfig, SegmentStoreConfig, SegmentWriter,
     SqliteIndex,
     segments::{read_frame_at, scan_complete_records, sealed_segment_path},
 };
@@ -17,7 +17,7 @@ use uuid::Uuid;
 struct Fixture {
     directory: TempDir,
     index: Arc<SqliteIndex>,
-    sink: Arc<IndexedRecordingSink>,
+    sink: Arc<RecordingStore>,
     session: SessionId,
     target: TargetId,
 }
@@ -41,7 +41,7 @@ impl Fixture {
             })
             .unwrap(),
         );
-        let sink = Arc::new(IndexedRecordingSink::new(writer, Arc::clone(&index)));
+        let sink = Arc::new(RecordingStore::new(writer, Arc::clone(&index)).unwrap());
         Self {
             directory,
             index,

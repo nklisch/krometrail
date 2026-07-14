@@ -1,7 +1,7 @@
 ---
 id: epic-durable-browser-memory-retention-removal-engine
 kind: story
-stage: implementing
+stage: done
 tags: [storage, browser]
 parent: epic-durable-browser-memory-retention
 depends_on: [epic-durable-browser-memory-retention-index-contracts]
@@ -29,3 +29,11 @@ Depends on the SQLite retention contracts; filesystem staging cannot be implemen
 - Every prepare/stage/metadata/unlink failure remains accounted and replayable; reopen converges without dangling metadata.
 - Session deletion removes all source/event/artifact/index/pin/usage data and prevents later writes from resurrecting the id.
 - Filesystem work is bounded and off the async executor; cancellation semantics match accepted-vs-unpolled mutations.
+
+## Implementation notes
+
+- Replaced `IndexedRecordingSink` with one `RecordingStore` coordinator and a single async mutation gate; append/index, pinning, eviction, explicit deletion, and flush now share one ordering authority.
+- Added a bounded dedicated removal worker with durable `.trash/<batch>` staging, directory sync, idempotent unlink/finalize, and constructor-time forward replay for both prepared and metadata-removed journal phases.
+- Added deterministic artifact-first/oldest-unpinned cleanup, mixed-source provenance invalidation, exact range pin/unpin with segment sealing, all-pinned paused state plus generation wakeup, one-open-segment status tolerance, and destructive session deletion with resurrection prevention.
+- SQLite usage refresh checkpoints prior WAL growth and reports a bounded fresh-frame slack, avoiding self-referential accounting growth while retaining physical index accounting.
+- Verification includes mixed-source artifact invalidation, replay from both journal boundaries, tiny-budget pause/unpin/evict/resume, scoped session deletion, package tests (55), and warning-free package Clippy.

@@ -1,10 +1,11 @@
-use krometrail_core::{ArtifactId, ByteOffset, FrameId, SegmentId, SessionId};
+use krometrail_core::{ByteOffset, FrameId, SegmentId, SessionId};
 use rusqlite::params;
 
 use super::{SqliteIndex, codec};
 use crate::persistence_error;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(dead_code)] // Browser-event and artifact writers use the same authoritative ledger as they land.
 pub(crate) enum UsageClass {
     Segment,
     Index,
@@ -13,7 +14,7 @@ pub(crate) enum UsageClass {
 }
 
 impl UsageClass {
-    const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Segment => "segment",
             Self::Index => "index",
@@ -31,6 +32,73 @@ pub(crate) struct UsageEntry {
 }
 
 impl SqliteIndex {
+    pub(crate) fn refresh_index_usage(&self) -> krometrail_core::Result<u64> {
+        const COMPONENTS: [(&str, &str); 3] = [("main", ""), ("wal", "-wal"), ("shm", "-shm")];
+        // Collapse prior WAL growth before measuring. The transaction below can
+        // create a bounded fresh WAL frame, which status reports as accounting
+        // slack instead of recursively accounting for its own write.
+        let mut connection = self.connection()?;
+        connection
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .map_err(|_| persistence_error("could not checkpoint index usage"))?;
+        let base = self.database_path().as_os_str().to_string_lossy();
+        let mut measured = Vec::with_capacity(COMPONENTS.len());
+        let mut total = 0_u64;
+        for (key, suffix) in COMPONENTS {
+            let path = std::path::PathBuf::from(format!("{base}{suffix}"));
+            let bytes = match std::fs::metadata(path) {
+                Ok(metadata) => metadata.len(),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+                Err(_) => return Err(persistence_error("could not inspect index usage")),
+            };
+            total = total
+                .checked_add(bytes)
+                .ok_or_else(|| persistence_error("index usage overflow"))?;
+            measured.push((key, bytes));
+        }
+        let transaction = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|_| persistence_error("could not begin index usage refresh"))?;
+        for (key, bytes) in measured {
+            transaction
+                .execute(
+                    "INSERT INTO usage(class, object_key, session_id, byte_len_be) \
+                     VALUES ('index', ?1, NULL, ?2) \
+                     ON CONFLICT(class, object_key) DO UPDATE SET byte_len_be=excluded.byte_len_be \
+                     WHERE usage.byte_len_be != excluded.byte_len_be",
+                    params![key.as_bytes(), codec::u64_blob(bytes).to_vec()],
+                )
+                .map_err(|_| persistence_error("could not refresh index usage"))?;
+        }
+        transaction
+            .commit()
+            .map_err(|_| persistence_error("could not commit index usage refresh"))?;
+        Ok(total)
+    }
+
+    pub(crate) fn session_usage_bytes(
+        &self,
+        session_id: SessionId,
+    ) -> krometrail_core::Result<u64> {
+        let connection = self.connection()?;
+        let mut statement = connection
+            .prepare("SELECT byte_len_be FROM usage WHERE session_id=?1")
+            .map_err(|_| persistence_error("could not prepare session usage lookup"))?;
+        let rows = statement
+            .query_map(params![codec::id(session_id.as_uuid()).to_vec()], |row| {
+                row.get::<_, Vec<u8>>(0)
+            })
+            .map_err(|_| persistence_error("could not query session usage"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|_| persistence_error("could not read session usage"))?
+            .into_iter()
+            .try_fold(0_u64, |total, raw| {
+                total
+                    .checked_add(codec::decode_u64(&raw)?)
+                    .ok_or_else(|| persistence_error("session usage overflow"))
+            })
+    }
+
     pub(crate) fn remove_frame_rows(
         &self,
         segment_id: SegmentId,
@@ -93,17 +161,6 @@ impl SqliteIndex {
                 params![codec::id(segment_id.as_uuid()).to_vec()],
             )
             .map_err(|_| persistence_error("could not remove segment metadata"))?;
-        Ok(())
-    }
-
-    pub(crate) fn remove_artifact(&self, artifact_id: ArtifactId) -> krometrail_core::Result<()> {
-        let connection = self.connection()?;
-        connection
-            .execute(
-                "DELETE FROM artifacts WHERE artifact_id=?1",
-                params![codec::id(artifact_id.as_uuid()).to_vec()],
-            )
-            .map_err(|_| persistence_error("could not remove artifact metadata"))?;
         Ok(())
     }
 
@@ -178,7 +235,7 @@ mod tests {
     use uuid::Uuid;
 
     use crate::{
-        IndexStoreConfig, IndexedRecordingSink, RotationConfig, SegmentStoreConfig, SegmentWriter,
+        IndexStoreConfig, RecordingStore, RotationConfig, SegmentStoreConfig, SegmentWriter,
     };
 
     use super::*;
@@ -217,7 +274,7 @@ mod tests {
             })
             .unwrap(),
         );
-        let sink = IndexedRecordingSink::new(
+        let sink = RecordingStore::new(
             Arc::new(
                 SegmentWriter::open(SegmentStoreConfig {
                     directory: segments,
@@ -226,7 +283,8 @@ mod tests {
                 .unwrap(),
             ),
             Arc::clone(&index),
-        );
+        )
+        .unwrap();
         let session = SessionId::from_uuid(Uuid::from_u128(1));
         let target = TargetId::from_uuid(Uuid::from_u128(2));
         let first = frame(session, target, 3, 1);
@@ -265,25 +323,6 @@ mod tests {
             .unwrap();
         assert_eq!(remaining, (0, 0));
         drop(connection);
-
-        let artifact_id = ArtifactId::from_uuid(Uuid::from_u128(10));
-        {
-            let connection = index.connection().unwrap();
-            connection.execute(
-                "INSERT INTO artifacts(artifact_id, session_id, target_id, kind, start_time_be, \
-                 end_time_be, manifest_json, relative_path, byte_len_be) \
-                 VALUES (?1, ?2, ?3, 'storyboard', ?4, ?4, '{}', 'artifact.png', ?5)",
-                params![
-                    codec::id(artifact_id.as_uuid()).to_vec(),
-                    codec::id(session.as_uuid()).to_vec(),
-                    codec::id(target.as_uuid()).to_vec(),
-                    codec::u64_blob(1).to_vec(),
-                    codec::u64_blob(u64::MAX).to_vec(),
-                ],
-            ).unwrap();
-        }
-        index.remove_artifact(artifact_id).unwrap();
-        index.remove_artifact(artifact_id).unwrap();
 
         for class in [
             UsageClass::Segment,

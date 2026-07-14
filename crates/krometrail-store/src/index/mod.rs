@@ -1,5 +1,5 @@
 mod catalog;
-mod codec;
+pub(crate) mod codec;
 pub(crate) mod deletion;
 pub(crate) mod frames;
 mod gaps;
@@ -34,7 +34,7 @@ pub struct IndexStoreConfig {
 /// File-backed searchable metadata authority.
 pub struct SqliteIndex {
     connection: Mutex<Connection>,
-    #[allow(dead_code)] // Address-backed frame reads land after timeline indexing.
+    database_path: PathBuf,
     segments_directory: PathBuf,
 }
 
@@ -93,6 +93,7 @@ impl SqliteIndex {
         migrations::migrate(&mut connection)?;
         Ok(Self {
             connection: Mutex::new(connection),
+            database_path: config.database_path,
             segments_directory: config.segments_directory,
         })
     }
@@ -103,7 +104,10 @@ impl SqliteIndex {
             .map_err(|_| persistence_error("metadata connection is unavailable"))
     }
 
-    #[allow(dead_code)]
+    pub(crate) fn database_path(&self) -> &std::path::Path {
+        &self.database_path
+    }
+
     pub(crate) fn segments_directory(&self) -> &std::path::Path {
         &self.segments_directory
     }
