@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-operation-mcp-control-surface-generated-contracts-and-sdk
 kind: story
-stage: implementing
+stage: drafting
 tags: [browser, agent-ux]
 parent: epic-agent-browser-operation-mcp-control-surface
 depends_on: []
@@ -38,3 +38,15 @@ Qualify exact `rmcp 2.2.0` against the workspace's Rust 1.85 contract and make t
 ## Out of scope
 
 No dynamic routes, session owner, response mapping, stdio service, CDP commands, storage, temporal tools, or resources are implemented here.
+
+## Implementation discovery
+
+The hard Rust 1.85 qualification gate invalidated the exact-SDK design on 2026-07-14, before any implementation checkpoint was committed.
+
+- Adding exact `rmcp = "=2.2.0"` with only `server`, `transport-io`, and `base64` succeeded on the host toolchain, but the authoritative command had to use the rustup Cargo shim explicitly because `/usr/bin/cargo` does not support `+toolchain` syntax.
+- `PATH=/home/nathan/.cargo/bin:$PATH cargo +1.85.0 check --workspace --all-targets --locked` first rejected the pre-existing locked ICU 2.2 dependency family because it declares Rust 1.86.
+- A temporary lock-only downgrade from `idna_adapter 1.2.2` to `1.1.0` removed that unrelated metadata barrier and allowed Rust 1.85 to compile source. Compilation then failed inside official `rmcp 2.2.0` at `src/model/elicitation_schema.rs:1004` and `:1015`: the crate uses let-chain syntax that Rust 1.85 reports as unstable. The current workspace also contains existing let-chain uses with the same Rust 1.85 failure, including `krometrail-core/src/browser/batch.rs` and `temporal-vision/src/provenance.rs`.
+- The rmcp failure is in an unconditionally compiled model module; the selected minimal features do not remove it. Exact official rmcp 2.2.0 therefore cannot satisfy the workspace's declared Rust 1.85 contract without changing one of the design's forbidden constraints (SDK version, vendoring/patching the SDK, or workspace MSRV).
+- All temporary manifest, lock, schema, and test changes were reverted. The unrelated `.work/bin/work-view` modification remains untouched.
+
+Per the feature's design-flaw escape hatch, this checkpoint returns to `drafting`. Downstream MCP checkpoints remain blocked until the SDK/MSRV contract is redesigned; the workspace MSRV was not raised and the SDK version was not silently changed.
