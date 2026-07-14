@@ -1,7 +1,7 @@
 ---
 id: refactor-split-cdp-session-supervisor-runtime-step-3-reconnect-transaction
 kind: story
-stage: implementing
+stage: done
 tags: [refactor, browser]
 parent: refactor-split-cdp-session-supervisor-runtime
 depends_on: [refactor-split-cdp-session-supervisor-runtime-step-2-shutdown-runtime]
@@ -51,3 +51,14 @@ High: reconnect is the highest-risk slice because it couples target restoration,
 ## Rollback
 
 Re-inline the reconnect helpers into `session/mod.rs` as one block if any extraction subtly changes reconnect ordering or interruption semantics.
+
+## Implementation notes
+
+- Execution capability: highest; selected by the autopilot caller because reconnect combines bounded restoration, interruption, cancellation, and terminal cleanup.
+- Review weight: standard (caller); child checkpoint review is not applicable.
+- Files changed: the complete reconnect attempt/transaction block moved from `session/mod.rs` to private `session/reconnect.rs`.
+- Tests added/removed: none; existing reconnect fixtures remain in the module-root test suite with narrow `pub(super)` access to their established seams.
+- Simplification: grouped backoff, endpoint refresh, target restoration, staged effects, and exhausted handling without a new policy abstraction.
+- Discrepancies from design: reconnect tests stayed in `session/mod.rs` to retain shared transport and endpoint fixtures.
+- Adjacent issues parked: none.
+- Verification: package all-target check; 93 library tests (including cap/concurrency/deadline/cancellation/process-death cases); session-supervision and capture suites (16 tests); package all-target Clippy with `-D warnings`; format check — all passed.
