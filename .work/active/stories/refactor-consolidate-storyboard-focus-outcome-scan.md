@@ -1,7 +1,7 @@
 ---
 id: refactor-consolidate-storyboard-focus-outcome-scan
 kind: story
-stage: review
+stage: done
 tags: [refactor, visual]
 parent: null
 depends_on: [epic-temporal-debugging-workflow-temporal-debug-bundle]
@@ -94,3 +94,7 @@ passes. No artifact, manifest, cache, or compatibility rollback is needed.
 - Discrepancies from design: none.
 - Adjacent issues parked: none.
 - Focused verification (Rust 1.85.0, locked): `cargo fmt --all -- --check`; `cargo check --locked --all-targets`; `cargo test --locked debug_bundle::focus` (8 passed); `cargo clippy --locked --all-targets -- -D warnings`.
+
+## Review decision
+
+**Approved.** A fresh-context `openai-codex/gpt-5.6-luna` bounded standalone-story review confirmed the eligibility gate now runs once while candidate ranks, `BTreeSet` ordering, deduplication, cap, and chronological output remain exact. Full Rust 1.85 workspace gates passed. The story advances to `done`.
