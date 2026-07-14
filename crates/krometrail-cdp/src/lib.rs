@@ -25,6 +25,8 @@ pub mod capture;
 pub mod compatibility;
 #[cfg(feature = "cdpkit-transport")]
 mod control;
+#[cfg(feature = "cdpkit-transport")]
+pub mod events;
 pub mod transport;
 
 #[cfg(feature = "cdp-spike")]
@@ -35,13 +37,15 @@ pub mod spike;
 pub use capture::CaptureConfig;
 #[cfg(feature = "cdpkit-transport")]
 pub use compatibility::{
-    CompatibilityProbeError, EndpointKind, RENDERER_CAPABILITY_PROBES, RendererCapabilityProbe,
-    probe_compatibility,
+    BrowserEventSupport, CompatibilityProbeError, EndpointKind, RENDERER_CAPABILITY_PROBES,
+    RendererCapabilityProbe, probe_compatibility,
 };
 pub use endpoint::{
     EndpointError, EndpointResolveFuture, EndpointResolver, LocalCdpEndpoint, LocalCdpEndpointKind,
     SystemEndpointResolver,
 };
+#[cfg(feature = "cdpkit-transport")]
+pub use events::{BrowserEventConfig, BrowserEventStatus};
 pub use launcher::{
     ChromeLauncher, DiscoveryCandidate, DiscoveryInputs, LaunchError, LaunchedChrome,
     LauncherConfig, ManagedChromeProcess, ProcessError, ProcessTermination, ProfileError,

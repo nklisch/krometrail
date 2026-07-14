@@ -11,9 +11,11 @@ const TARGET_EVENT_NAMES: &[(&str, TargetEventKind)] = &[
 // These domains are required by both the first control operation and a reconstructed target. Keep
 // the order stable: Page must be enabled before its dialog events can be associated with a flat
 // session, while Runtime and Accessibility are prerequisites for visibility and live observation.
+#[cfg(test)]
 const SESSION_RESTORE_DOMAINS: [&str; 3] =
     ["Page.enable", "Runtime.enable", "Accessibility.enable"];
 
+#[cfg(test)]
 pub(super) async fn restore_session_domains<F, Fut, E>(mut send: F) -> std::result::Result<(), E>
 where
     F: FnMut(&'static str) -> Fut,
@@ -64,6 +66,7 @@ pub(super) struct ConnectionResources {
     pub(super) subscriptions: Vec<(TargetEventKind, Box<dyn TransportEvents>)>,
     pub(super) targets: Vec<TransportTargetInfo>,
     pub(super) compatibility: BrowserCompatibility,
+    pub(super) browser_event_support: crate::compatibility::BrowserEventSupport,
     pub(super) pump_handles: Vec<JoinHandle<()>>,
 }
 
@@ -123,8 +126,13 @@ pub(super) async fn setup_connection_with_target_limit(
             .map_err(CompatibilityProbeError::Transport)?;
         subscriptions.push((*kind, events));
     }
-    let compatibility =
-        probe_compatibility_with_target_limit(transport.as_ref(), target_limit).await?;
+    let probe = crate::compatibility::probe_compatibility_details_with_target_limit(
+        transport.as_ref(),
+        target_limit,
+    )
+    .await?;
+    let compatibility = probe.compatibility;
+    let browser_event_support = probe.browser_events;
     transport
         .send_raw(
             &CommandScope::Browser,
@@ -157,22 +165,39 @@ pub(super) async fn setup_connection_with_target_limit(
         subscriptions,
         targets,
         compatibility,
+        browser_event_support,
         pump_handles: Vec::new(),
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn apply_effects(
     state: &mut SupervisorState,
     effects: Vec<SupervisorEffect>,
     transport: Arc<dyn CdpTransport>,
     subscribers: Arc<SubscriberRegistry>,
     capture: Option<Arc<CaptureRuntime>>,
+    browser_events: Arc<SessionDomainAuthority>,
+    browser_event_support: crate::compatibility::BrowserEventSupport,
     shutdown_deadline: Option<ShutdownDeadline>,
 ) -> Result<()> {
     let mut queue = VecDeque::from(effects);
     while let Some(effect) = queue.pop_front() {
         match effect {
-            SupervisorEffect::Publish(event) => subscribers.publish(event),
+            SupervisorEffect::Publish(event) => {
+                observe_supervisor_event(browser_events.as_ref(), &event);
+                let terminal_target = match &event {
+                    BrowserSessionEvent::TargetClosed { target_id }
+                    | BrowserSessionEvent::TargetFailed { target_id, .. } => Some(*target_id),
+                    _ => None,
+                };
+                subscribers.publish(event);
+                if let Some(target_id) = terminal_target {
+                    // Close acceptance immediately, but leave the per-target writer registered
+                    // so aggregate shutdown remains the only blocking flush boundary.
+                    browser_events.retire_target(target_id, None);
+                }
+            }
             SupervisorEffect::Attach { target_key } => {
                 let result = transport
                     .send_raw(
@@ -213,14 +238,24 @@ pub(super) async fn apply_effects(
                 target_key,
                 session,
             } => {
-                let scope = CommandScope::Session(session.clone());
-                let restored = restore_session_domains(|method| async {
-                    transport
-                        .send_raw(&scope, method, Value::Object(Default::default()))
+                let binding =
+                    state
+                        .targets_by_key
+                        .get(&target_key)
+                        .map(|target| EventTargetBinding {
+                            target_id: target.target.target.id(),
+                            connection_generation: state.connection_generation,
+                            attachment_generation: target.target.attachment_generation,
+                            transport_session: session.clone(),
+                        });
+                let restored = match binding {
+                    Some(binding) => browser_events
+                        .restore_target(binding, transport.as_ref(), browser_event_support)
                         .await
                         .map(|_| ())
-                })
-                .await;
+                        .map_err(|_| ()),
+                    None => Err(()),
+                };
                 if restored.is_ok() {
                     queue.push_front(SupervisorEffect::ProbeInitialVisibility {
                         target_key,
@@ -354,8 +389,12 @@ pub(super) async fn apply_effects(
                         .stop_target(&target, reason, deadline)
                         .await;
                 }
+                browser_events
+                    .retire_target(context.target_id, Some(context.attachment_generation));
             }
-            SupervisorEffect::BeginReconnect => {}
+            SupervisorEffect::BeginReconnect => {
+                browser_events.suspend_connection(state.connection_generation);
+            }
             SupervisorEffect::Shutdown { cause: _ } => {
                 // The outer supervisor owns the aggregate shutdown sequencing. Capture effects
                 // above have already fenced acceptance before this marker is handled.
@@ -363,6 +402,41 @@ pub(super) async fn apply_effects(
         }
     }
     Ok(())
+}
+
+fn observe_supervisor_event(browser_events: &SessionDomainAuthority, event: &BrowserSessionEvent) {
+    match event {
+        BrowserSessionEvent::TargetDiscovered { target }
+        | BrowserSessionEvent::TargetChanged { target } => {
+            browser_events.observe_target_lifecycle(
+                target.target.id(),
+                target.attachment_generation,
+                target.lifecycle,
+            );
+            browser_events.observe_visibility(
+                target.target.id(),
+                Some(target.attachment_generation),
+                target.visibility,
+            );
+        }
+        BrowserSessionEvent::TargetClosed { target_id } => {
+            browser_events.observe_current_target_lifecycle(
+                *target_id,
+                krometrail_core::TargetLifecycle::Closed,
+            );
+        }
+        BrowserSessionEvent::TargetFailed { target_id, .. } => {
+            browser_events.observe_current_target_lifecycle(
+                *target_id,
+                krometrail_core::TargetLifecycle::Failed,
+            );
+        }
+        BrowserSessionEvent::SessionStateChanged { .. }
+        | BrowserSessionEvent::SessionFailed { .. }
+        | BrowserSessionEvent::SelectedTargetChanged { .. }
+        | BrowserSessionEvent::CaptureStateChanged { .. }
+        | BrowserSessionEvent::CaptureGapDeclared { .. } => {}
+    }
 }
 
 pub(super) struct SupervisorRuntime {
@@ -455,6 +529,8 @@ pub(super) async fn run_supervisor(
                                 Arc::clone(&connection.transport),
                                 Arc::clone(&shared.subscribers),
                                 shared.capture.clone(),
+                                Arc::clone(&shared.browser_events),
+                                connection.browser_event_support,
                                 shutdown_deadline.clone(),
                             )
                             .await;
@@ -483,6 +559,7 @@ pub(super) async fn run_supervisor(
                                     cause,
                                     ownership: shared.ownership,
                                     capture: shared.capture.clone(),
+                                    browser_events: Arc::clone(&shared.browser_events),
                                     deadline: shutdown_deadline
                                         .expect("shutdown cause has an aggregate deadline"),
                                     flush_capture: !matches!(
@@ -553,6 +630,8 @@ pub(super) async fn run_supervisor(
                                 Arc::clone(&connection.transport),
                                 Arc::clone(&shared.subscribers),
                                 shared.capture.clone(),
+                                Arc::clone(&shared.browser_events),
+                                connection.browser_event_support,
                                 Some(shutdown_deadline.clone()),
                             )
                             .await;
@@ -566,6 +645,7 @@ pub(super) async fn run_supervisor(
                                 cause: crate::targets::ShutdownCause::StopRequested,
                                 ownership: shared.ownership,
                                 capture: shared.capture.clone(),
+                                browser_events: Arc::clone(&shared.browser_events),
                                 deadline: shutdown_deadline,
                                 flush_capture: true,
                             },

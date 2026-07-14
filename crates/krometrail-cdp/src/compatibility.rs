@@ -42,6 +42,18 @@ pub enum ProbeScope {
     Renderer,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct BrowserEventSupport {
+    pub lifecycle: bool,
+    pub log: bool,
+    pub network: bool,
+}
+
+pub(crate) struct CompatibilityProbeResult {
+    pub(crate) compatibility: BrowserCompatibility,
+    pub(crate) browser_events: BrowserEventSupport,
+}
+
 pub struct RendererCapabilityProbe {
     pub id: &'static str,
     pub capability: RendererCapability,
@@ -164,6 +176,15 @@ pub async fn probe_compatibility_with_target_limit(
     transport: &dyn CdpTransport,
     target_limit: usize,
 ) -> Result<BrowserCompatibility, CompatibilityProbeError> {
+    probe_compatibility_details_with_target_limit(transport, target_limit)
+        .await
+        .map(|result| result.compatibility)
+}
+
+pub(crate) async fn probe_compatibility_details_with_target_limit(
+    transport: &dyn CdpTransport,
+    target_limit: usize,
+) -> Result<CompatibilityProbeResult, CompatibilityProbeError> {
     let version_value = command(
         transport,
         &CommandScope::Browser,
@@ -242,6 +263,7 @@ pub async fn probe_compatibility_with_target_limit(
         .collect::<Vec<_>>();
     let has_recordable_page = !page_targets.is_empty();
     let mut best_renderer_support = [false; 4];
+    let mut best_event_support = BrowserEventSupport::default();
     let mut best_support_count = 0;
     let mut session_id = None;
     let mut flat_session_found = false;
@@ -310,12 +332,43 @@ pub async fn probe_compatibility_with_target_limit(
             )
             .await,
         ];
+        // Optional browser-event support is probed on this disposable attachment.
+        // No event subscription is created, so cdpkit cannot retain an undrained
+        // unbounded subscriber after the probe detaches.
+        let event_support = BrowserEventSupport {
+            lifecycle: probe_command(
+                transport,
+                &session,
+                "Page.setLifecycleEventsEnabled",
+                serde_json::json!({"enabled": true}),
+                any_response,
+            )
+            .await,
+            log: probe_command(
+                transport,
+                &session,
+                "Log.enable",
+                Value::Object(Default::default()),
+                any_response,
+            )
+            .await,
+            network: probe_command(
+                transport,
+                &session,
+                "Network.enable",
+                Value::Object(Default::default()),
+                any_response,
+            )
+            .await,
+        };
         let support_count = support.iter().filter(|available| **available).count();
         if support_count > best_support_count {
             best_renderer_support = support;
+            best_event_support = event_support;
             best_support_count = support_count;
         }
         if support.iter().all(|available| *available) {
+            best_event_support = event_support;
             session_id = Some(candidate_session);
             break;
         }
@@ -412,8 +465,12 @@ pub async fn probe_compatibility_with_target_limit(
             .expect("registry capability values are valid")
         })
         .collect();
-    BrowserCompatibility::new(identity.version, capabilities)
-        .map_err(|_| CompatibilityProbeError::InvalidIdentity)
+    let compatibility = BrowserCompatibility::new(identity.version, capabilities)
+        .map_err(|_| CompatibilityProbeError::InvalidIdentity)?;
+    Ok(CompatibilityProbeResult {
+        compatibility,
+        browser_events: best_event_support,
+    })
 }
 
 struct ParsedIdentity {

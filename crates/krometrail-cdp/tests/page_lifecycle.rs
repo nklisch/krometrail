@@ -446,7 +446,7 @@ async fn stable_loader_reload_requires_fresh_document_readiness() {
         .expect("post-dispatch freshness probe");
     assert!(marker_install < reload && reload < readiness);
     assert!(
-        calls
+        calls[marker_install..]
             .iter()
             .all(|call| !call.method.starts_with("Network."))
     );

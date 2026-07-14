@@ -88,6 +88,7 @@ async fn execute_operation_unfenced(
         return page_control
             .execute_interaction_request(
                 transport.as_ref(),
+                shared.browser_events.as_ref(),
                 state,
                 request,
                 cancellation,
@@ -151,12 +152,18 @@ async fn execute_operation_unfenced(
                     )
                 })?;
             let interaction_id = page_control.next_interaction_id();
+            let browser_event_support = *shared
+                .browser_event_support
+                .lock()
+                .expect("browser event support lock");
             let attach = apply_effects(
                 state,
                 reduction.effects,
                 Arc::clone(&transport),
                 Arc::clone(&shared.subscribers),
                 shared.capture.clone(),
+                Arc::clone(&shared.browser_events),
+                browser_event_support,
                 None,
             )
             .await;
@@ -411,6 +418,7 @@ async fn execute_operation_unfenced(
             page_control
                 .execute(
                     transport.as_ref(),
+                    shared.browser_events.as_ref(),
                     state,
                     request,
                     cancellation,
@@ -430,12 +438,18 @@ async fn commit_supervisor_input(
     let previous = std::mem::replace(state, SupervisorState::new(shared.compatibility.clone()));
     let reduction = reduce(previous, input)?;
     *state = reduction.state;
+    let browser_event_support = *shared
+        .browser_event_support
+        .lock()
+        .expect("browser event support lock");
     apply_effects(
         state,
         reduction.effects,
         transport,
         Arc::clone(&shared.subscribers),
         shared.capture.clone(),
+        Arc::clone(&shared.browser_events),
+        browser_event_support,
         None,
     )
     .await?;

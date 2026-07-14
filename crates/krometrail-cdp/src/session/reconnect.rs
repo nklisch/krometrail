@@ -29,6 +29,8 @@ async fn finish_interrupted_reconnect(
             Arc::clone(&current.transport),
             Arc::clone(&shared.subscribers),
             shared.capture.clone(),
+            Arc::clone(&shared.browser_events),
+            current.browser_event_support,
             Some(deadline.clone()),
         )
         .await;
@@ -42,6 +44,7 @@ async fn finish_interrupted_reconnect(
             cause,
             ownership: shared.ownership,
             capture: shared.capture.clone(),
+            browser_events: Arc::clone(&shared.browser_events),
             deadline,
             flush_capture: !matches!(cause, crate::targets::ShutdownCause::ReconnectExhausted),
         },
@@ -224,40 +227,14 @@ pub(super) async fn restore_one_target(
         .and_then(|value| TransportSessionId::new(value.to_owned()).ok())
         .ok_or(AttemptFailure::Failed)?;
     sessions.insert(session.clone());
-    let scope = CommandScope::Session(session.clone());
-    // Restore the control/recording domains without starting a screencast. Capture is a separate,
-    // later effect and must not become an implicit side effect of reconnect supervision. The same
-    // ordered helper is used by initial attachment so dialog events and visibility probing have one
-    // restoration contract.
-    restore_session_domains(|method| async {
-        attempt
-            .command(
-                &transport,
-                &scope,
-                method,
-                Value::Object(Default::default()),
-            )
-            .await
-            .map(|_| ())
-    })
-    .await?;
-    let visibility_value = attempt
-        .command(
-            &transport,
-            &scope,
-            "Runtime.evaluate",
-            serde_json::json!({
-                "expression": "document.visibilityState",
-                "returnByValue": true
-            }),
-        )
-        .await?;
-    let visibility =
-        parse_visibility_result(&visibility_value).map_err(|_| AttemptFailure::Failed)?;
+    // Domain subscriptions and ordered enablement are committed by the one
+    // session domain authority after the reducer has recovered the exact target
+    // identity/generation. Returning Unknown keeps this attachment phase bounded
+    // and prevents duplicate Runtime/Page/Network ownership.
     Ok(ReconnectedTarget {
         info,
         session: Some(session),
-        visibility,
+        visibility: TargetVisibility::Unknown,
     })
 }
 
@@ -290,6 +267,60 @@ pub(super) async fn restore_targets(
     }
     restored.sort_by(|left, right| left.info.target_key.cmp(&right.info.target_key));
     Ok(restored)
+}
+
+pub(super) async fn restore_event_domains_and_visibility(
+    attempt: &AttemptControl,
+    authority: &Arc<SessionDomainAuthority>,
+    transport: &Arc<dyn CdpTransport>,
+    support: crate::compatibility::BrowserEventSupport,
+    state: &mut SupervisorState,
+    effects: &mut Vec<SupervisorEffect>,
+) -> std::result::Result<(), AttemptFailure> {
+    let mut keys = state.targets_by_key.keys().cloned().collect::<Vec<_>>();
+    keys.sort();
+    for target_key in keys {
+        let Some(target) = state.targets_by_key.get(&target_key) else {
+            continue;
+        };
+        let Some(session) = target.transport_session.clone() else {
+            continue;
+        };
+        let binding = EventTargetBinding {
+            target_id: target.target.target.id(),
+            connection_generation: state.connection_generation,
+            attachment_generation: target.target.attachment_generation,
+            transport_session: session.clone(),
+        };
+        attempt
+            .race(authority.restore_target(binding, transport.as_ref(), support))
+            .await?
+            .map_err(|_| AttemptFailure::Failed)?;
+        let visibility_value = attempt
+            .command(
+                transport,
+                &CommandScope::Session(session),
+                "Runtime.evaluate",
+                serde_json::json!({
+                    "expression": "document.visibilityState",
+                    "returnByValue": true
+                }),
+            )
+            .await?;
+        let visibility =
+            parse_visibility_result(&visibility_value).map_err(|_| AttemptFailure::Failed)?;
+        let reduction = reduce(
+            state.clone(),
+            SupervisorInput::VisibilityChanged {
+                target_key: target_key.clone(),
+                visibility,
+            },
+        )
+        .map_err(|_| AttemptFailure::Failed)?;
+        *state = reduction.state;
+        effects.extend(reduction.effects);
+    }
+    Ok(())
 }
 
 async fn stage_reconnection_effects(
@@ -349,6 +380,7 @@ async fn stage_reconnection_effects(
 async fn reconstruct_connection(
     runtime: &SupervisorRuntime,
     current_state: &SupervisorState,
+    browser_events: Arc<SessionDomainAuthority>,
     attempt: AttemptControl,
 ) -> std::result::Result<PreparedReconnection, AttemptFailure> {
     let (target_limit, attach_concurrency) = runtime.config.normalized_reconnect_bounds();
@@ -420,19 +452,41 @@ async fn reconstruct_connection(
             return Err(AttemptFailure::Failed);
         }
     };
-    let effects =
-        match stage_reconnection_effects(&attempt, &connection.transport, &reduction.effects).await
-        {
-            Ok(effects) => effects,
-            Err(error) => {
-                discard_partial_connection(&mut connection, &sessions).await;
-                drop(connection);
-                return Err(error);
-            }
-        };
+    let mut restored_state = reduction.state;
+    let mut restored_effects = reduction.effects;
+    if let Err(error) = restore_event_domains_and_visibility(
+        &attempt,
+        &browser_events,
+        &connection.transport,
+        connection.browser_event_support,
+        &mut restored_state,
+        &mut restored_effects,
+    )
+    .await
+    {
+        browser_events.suspend_connection(restored_state.connection_generation);
+        discard_partial_connection(&mut connection, &sessions).await;
+        drop(connection);
+        return Err(error);
+    }
+    let effects = match stage_reconnection_effects(
+        &attempt,
+        &connection.transport,
+        &restored_effects,
+    )
+    .await
+    {
+        Ok(effects) => effects,
+        Err(error) => {
+            browser_events.suspend_connection(restored_state.connection_generation);
+            discard_partial_connection(&mut connection, &sessions).await;
+            drop(connection);
+            return Err(error);
+        }
+    };
     Ok(PreparedReconnection {
         connection,
-        state: reduction.state,
+        state: restored_state,
         effects,
     })
 }
@@ -542,6 +596,7 @@ pub(super) async fn reconnect_loop_transactional(
         let mut transaction = Box::pin(reconstruct_connection(
             runtime,
             &reconnect_state,
+            Arc::clone(&shared.browser_events),
             attempt_control,
         ));
         let outcome = loop {
@@ -611,6 +666,11 @@ pub(super) async fn reconnect_loop_transactional(
                 *state = prepared.state;
                 let new_transport = Arc::clone(&prepared.connection.transport);
                 let effects = std::mem::take(&mut prepared.effects);
+                *shared
+                    .browser_event_support
+                    .lock()
+                    .expect("browser event support lock") =
+                    prepared.connection.browser_event_support;
                 *connection = Some(prepared.connection);
                 let _ = apply_effects(
                     state,
@@ -618,6 +678,11 @@ pub(super) async fn reconnect_loop_transactional(
                     new_transport,
                     Arc::clone(&shared.subscribers),
                     shared.capture.clone(),
+                    Arc::clone(&shared.browser_events),
+                    connection
+                        .as_ref()
+                        .expect("prepared reconnect connection is installed")
+                        .browser_event_support,
                     None,
                 )
                 .await;
@@ -644,6 +709,8 @@ pub(super) async fn reconnect_loop_transactional(
                 Arc::clone(&current.transport),
                 Arc::clone(&shared.subscribers),
                 shared.capture.clone(),
+                Arc::clone(&shared.browser_events),
+                current.browser_event_support,
                 Some(deadline.clone()),
             )
             .await;
@@ -657,6 +724,7 @@ pub(super) async fn reconnect_loop_transactional(
                 cause: crate::targets::ShutdownCause::ReconnectExhausted,
                 ownership: shared.ownership,
                 capture: shared.capture.clone(),
+                browser_events: Arc::clone(&shared.browser_events),
                 deadline,
                 flush_capture: false,
             },

@@ -12,7 +12,7 @@ use krometrail_cdp::{
     CdpTransport, CommandScope, NamedEvent, TransportError, TransportEvents, TransportFuture,
 };
 use serde_json::{Value, json};
-use tokio::sync::Notify;
+use tokio::sync::{Notify, mpsc};
 
 #[derive(Clone, Debug)]
 pub struct ScriptedCdp {
@@ -28,6 +28,18 @@ pub struct CommandCall {
     pub params: Value,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ScriptedActivity {
+    Command {
+        method: String,
+        session: Option<String>,
+    },
+    Subscription {
+        method: String,
+        session: Option<String>,
+    },
+}
+
 #[derive(Debug)]
 struct State {
     product: String,
@@ -37,7 +49,9 @@ struct State {
     commands: Vec<(String, Option<String>)>,
     command_calls: Vec<CommandCall>,
     subscriptions: Vec<(String, Option<String>)>,
-    events: HashMap<String, Vec<Value>>,
+    activity: Vec<ScriptedActivity>,
+    events: HashMap<(String, Option<String>), Vec<Value>>,
+    live_events: HashMap<(String, Option<String>), Vec<mpsc::UnboundedSender<Value>>>,
     responses: HashMap<String, VecDeque<Result<Value, TransportError>>>,
     hold_events_open: bool,
     held_methods: HashSet<String>,
@@ -55,7 +69,9 @@ impl ScriptedCdp {
                 commands: Vec::new(),
                 command_calls: Vec::new(),
                 subscriptions: Vec::new(),
+                activity: Vec::new(),
                 events: HashMap::new(),
+                live_events: HashMap::new(),
                 responses: HashMap::new(),
                 hold_events_open: false,
                 held_methods: HashSet::new(),
@@ -91,6 +107,11 @@ impl ScriptedCdp {
     #[allow(dead_code)]
     pub fn command_calls(&self) -> Vec<CommandCall> {
         self.state.lock().unwrap().command_calls.clone()
+    }
+
+    #[allow(dead_code)]
+    pub fn activity(&self) -> Vec<ScriptedActivity> {
+        self.state.lock().unwrap().activity.clone()
     }
 
     #[allow(dead_code)]
@@ -163,13 +184,27 @@ impl ScriptedCdp {
 
     #[allow(dead_code)]
     pub fn push_event(&self, method: &str, params: Value) {
-        self.state
-            .lock()
-            .unwrap()
-            .events
-            .entry(method.to_owned())
-            .or_default()
-            .push(params);
+        self.push_scoped_event(method, None, params);
+    }
+
+    #[allow(dead_code)]
+    pub fn push_scoped_event(&self, method: &str, session: Option<&str>, params: Value) {
+        let mut state = self.state.lock().unwrap();
+        let session = session.map(str::to_owned);
+        let mut delivered = false;
+        for ((live_method, live_session), senders) in &mut state.live_events {
+            if live_method == method && (session.is_none() || *live_session == session) {
+                senders.retain(|sender| sender.send(params.clone()).is_ok());
+                delivered |= !senders.is_empty();
+            }
+        }
+        if !delivered {
+            state
+                .events
+                .entry((method.to_owned(), session))
+                .or_default()
+                .push(params);
+        }
     }
 
     fn response(
@@ -184,6 +219,10 @@ impl ScriptedCdp {
             CommandScope::Session(session) => Some(session.as_str().to_owned()),
         };
         state.commands.push((method.to_owned(), session.clone()));
+        state.activity.push(ScriptedActivity::Command {
+            method: method.to_owned(),
+            session: session.clone(),
+        });
         state.command_calls.push(CommandCall {
             method: method.to_owned(),
             session: session.clone(),
@@ -259,23 +298,50 @@ impl CdpTransport for ScriptedCdp {
         let result = if method.trim().is_empty() {
             Err(TransportError::InvalidInput)
         } else {
-            self.state
-                .lock()
-                .unwrap()
-                .subscriptions
-                .push((method.to_owned(), session));
-            let (params, hold_open) = {
+            {
                 let mut state = self.state.lock().unwrap();
-                (
-                    state.events.remove(method).unwrap_or_default(),
-                    state.hold_events_open,
-                )
+                state
+                    .subscriptions
+                    .push((method.to_owned(), session.clone()));
+                state.activity.push(ScriptedActivity::Subscription {
+                    method: method.to_owned(),
+                    session: session.clone(),
+                });
+            }
+            let (params, hold_open, live_receiver) = {
+                let mut state = self.state.lock().unwrap();
+                let exact = (method.to_owned(), session.clone());
+                let fallback = (method.to_owned(), None);
+                let params = state
+                    .events
+                    .remove(&exact)
+                    .or_else(|| {
+                        (exact != fallback)
+                            .then(|| state.events.remove(&fallback))
+                            .flatten()
+                    })
+                    .unwrap_or_default();
+                let hold_open = state.hold_events_open;
+                let live_receiver = hold_open.then(|| {
+                    let (sender, receiver) = mpsc::unbounded_channel();
+                    for params in &params {
+                        let _ = sender.send(params.clone());
+                    }
+                    state.live_events.entry(exact).or_default().push(sender);
+                    receiver
+                });
+                (params, hold_open, live_receiver)
             };
             Ok(Box::new(ScriptedEvents {
                 method: method.to_owned(),
-                params,
+                params: if live_receiver.is_none() {
+                    params
+                } else {
+                    Vec::new()
+                },
                 index: 0,
                 hold_open,
+                live_receiver,
                 closed: Arc::clone(&self.closed),
                 disconnect_notify: Arc::clone(&self.disconnect_notify),
             }) as Box<dyn TransportEvents>)
@@ -301,6 +367,7 @@ struct ScriptedEvents {
     params: Vec<Value>,
     index: usize,
     hold_open: bool,
+    live_receiver: Option<mpsc::UnboundedReceiver<Value>>,
     closed: Arc<AtomicBool>,
     disconnect_notify: Arc<Notify>,
 }
@@ -313,11 +380,20 @@ impl TransportEvents for ScriptedEvents {
         let hold_open = self.hold_open;
         let closed = Arc::clone(&self.closed);
         let disconnect_notify = Arc::clone(&self.disconnect_notify);
+        let live_receiver = self.live_receiver.as_mut();
         Box::pin(async move {
             if let Some(params) = event {
                 return Ok(Some(NamedEvent { method, params }));
             }
-            if hold_open {
+            if let Some(receiver) = live_receiver {
+                tokio::select! {
+                    params = receiver.recv() => match params {
+                        Some(params) => Ok(Some(NamedEvent { method, params })),
+                        None => Ok(None),
+                    },
+                    _ = disconnect_notify.notified() => Err(TransportError::Disconnected),
+                }
+            } else if hold_open {
                 loop {
                     if closed.load(Ordering::Acquire) {
                         return Err(TransportError::Disconnected);
@@ -328,8 +404,9 @@ impl TransportEvents for ScriptedEvents {
                     }
                     notified.await;
                 }
+            } else {
+                Ok(None)
             }
-            Ok(None)
         })
     }
 }

@@ -4,6 +4,7 @@ use super::*;
 pub(super) enum ShutdownPhase {
     Origin,
     CaptureStopDrainFlush,
+    BrowserEventDrainFlush,
     TargetDetach,
     BrowserClose,
     ProcessTerminate,
@@ -57,6 +58,7 @@ pub(super) struct ShutdownPlan {
     pub(super) cause: crate::targets::ShutdownCause,
     pub(super) ownership: BrowserOwnership,
     pub(super) capture: Option<Arc<CaptureRuntime>>,
+    pub(super) browser_events: Arc<SessionDomainAuthority>,
     pub(super) deadline: ShutdownDeadline,
     pub(super) flush_capture: bool,
 }
@@ -91,6 +93,16 @@ pub(super) async fn perform_shutdown(
                 failed = true;
             }
         }
+    }
+
+    if !plan
+        .deadline
+        .remaining(ShutdownPhase::BrowserEventDrainFlush)
+        .is_zero()
+    {
+        failed |= !plan.browser_events.shutdown(deadline).await;
+    } else {
+        failed = true;
     }
 
     if let Some(connection) = connection.as_mut() {

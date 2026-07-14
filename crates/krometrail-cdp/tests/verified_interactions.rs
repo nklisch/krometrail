@@ -115,13 +115,14 @@ async fn production_port_rejects_empty_coordinate_hits_and_returns_anchored_live
         .rposition(|call| call.method == "Target.attachToTarget")
         .expect("initial target attach");
     assert_eq!(
-        calls[attach_index..attach_index + 4]
+        calls[attach_index..attach_index + 5]
             .iter()
             .map(|call| call.method.as_str())
             .collect::<Vec<_>>(),
         vec![
             "Target.attachToTarget",
             "Page.enable",
+            "Page.setLifecycleEventsEnabled",
             "Runtime.enable",
             "Accessibility.enable"
         ]

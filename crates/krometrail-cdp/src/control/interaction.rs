@@ -16,7 +16,11 @@ use super::{
 };
 use crate::{
     SupervisorState,
-    transport::{CdpTransport, CommandScope, TransportEvents},
+    events::{
+        EventTargetBinding, PageSignalKind, PageSignalReceiveError, PageSignalReceiver,
+        PageSignalSetupError, SessionDomainAuthority,
+    },
+    transport::{CdpTransport, CommandScope},
 };
 
 const NAVIGATION_AWARE_WINDOW: std::time::Duration = std::time::Duration::from_millis(750);
@@ -70,6 +74,7 @@ impl PageControl {
     pub(crate) async fn execute_interaction_request(
         &mut self,
         transport: &dyn CdpTransport,
+        browser_events: &SessionDomainAuthority,
         state: &SupervisorState,
         request: BrowserOperationRequest,
         cancel: &OperationCancellation,
@@ -80,7 +85,12 @@ impl PageControl {
         let started_at = self.session_time()?;
         let interaction_id = InteractionId::from_uuid(*self.ids.next().as_uuid());
         let generation = state.connection_generation;
-        let scope = CommandScope::Session(bound.transport_session.clone());
+        let event_binding = EventTargetBinding {
+            target_id: bound.target_id,
+            connection_generation: generation,
+            attachment_generation: bound.attachment_generation,
+            transport_session: bound.transport_session.clone(),
+        };
         let resolved = self
             .resolve_interaction_target(
                 transport,
@@ -97,18 +107,19 @@ impl PageControl {
             )
             .await?;
         let navigation_events = if plan.navigation_aware {
-            Some(
-                cancel
-                    .race(
-                        generation,
+            match browser_events.page_signal(&event_binding, PageSignalKind::Lifecycle) {
+                Ok(events) => Some(events),
+                // Navigation awareness is an optional completion refinement. Browsers without
+                // lifecycle support still dispatch the interaction and use bounded settling.
+                Err(PageSignalSetupError::Unsupported) => None,
+                Err(PageSignalSetupError::StaleGeneration) => {
+                    return Err(operation_error(
+                        ErrorCode::BrowserDisconnected,
                         bound.target_id,
-                        transport.subscribe_named(&scope, "Page.lifecycleEvent"),
-                    )
-                    .await?
-                    .map_err(|error| {
-                        transport_error(error, ErrorCode::InteractionFailed, bound.target_id)
-                    })?,
-            )
+                        "page event authority became stale before interaction dispatch",
+                    ));
+                }
+            }
         } else {
             None
         };
@@ -119,27 +130,20 @@ impl PageControl {
             None
         } else {
             Some(
-                cancel
-                    .race(
-                        generation,
-                        bound.target_id,
-                        transport.subscribe_named(&scope, "Page.javascriptDialogOpening"),
-                    )
-                    .await?
-                    .map_err(|error| {
-                        transport_error(error, ErrorCode::InteractionFailed, bound.target_id)
-                    })?,
+                browser_events
+                    .page_signal(&event_binding, PageSignalKind::DialogOpening)
+                    .map_err(|error| page_signal_setup_error(error, bound.target_id))?,
             )
         };
         let dispatch_time = self.session_time()?;
         let dispatch = async {
-            if let Some(events) = dialog_events.as_deref_mut() {
+            if let Some(events) = dialog_events.as_mut() {
                 tokio::select! {
                     result = self.dispatch_action(transport, &bound, &request, &resolved, cancel, generation) => {
                         result?;
                         Ok(false)
                     }
-                    event = cancel.race(generation, bound.target_id, events.next()) => {
+                    event = cancel.race(generation, bound.target_id, events.recv()) => {
                         dialog_event_opened(event, bound.target_id)
                     }
                 }
@@ -443,8 +447,8 @@ impl PageControl {
         transport: &dyn CdpTransport,
         bound: &BoundTarget,
         completion: CompletionKind,
-        navigation_events: Option<Box<dyn TransportEvents>>,
-        dialog_events: Option<Box<dyn TransportEvents>>,
+        navigation_events: Option<PageSignalReceiver>,
+        dialog_events: Option<PageSignalReceiver>,
         cancel: &OperationCancellation,
         generation: u64,
     ) -> Result<bool> {
@@ -462,7 +466,7 @@ impl PageControl {
                 if let Some(mut events) = dialog_events {
                     tokio::select! {
                         result = settle => { result?; }
-                        event = cancel.race(generation, bound.target_id, events.next()) => {
+                        event = cancel.race(generation, bound.target_id, events.recv()) => {
                             if dialog_event_opened(event, bound.target_id)? {
                                 return Ok(true);
                             }
@@ -472,14 +476,13 @@ impl PageControl {
                     settle.await?;
                 }
                 if let Some(mut events) = navigation_events {
-                    let next = tokio::time::timeout(NAVIGATION_AWARE_WINDOW, events.next());
+                    let next = tokio::time::timeout(NAVIGATION_AWARE_WINDOW, events.recv());
                     // Navigation awareness is an optional completion refinement. A bounded timeout
                     // means no lifecycle event was observed, not that the already-dispatched input
                     // failed. Cancellation and disconnect still win explicitly.
                     if let Ok(result) = cancel.race(generation, bound.target_id, next).await? {
-                        result.map_err(|error| {
-                            transport_error(error, ErrorCode::InteractionFailed, bound.target_id)
-                        })?;
+                        result
+                            .map_err(|error| page_signal_receive_error(error, bound.target_id))?;
                     }
                 }
                 Ok(false)
@@ -515,23 +518,41 @@ impl PageControl {
 }
 
 fn dialog_event_opened(
-    event: Result<
-        std::result::Result<Option<crate::transport::NamedEvent>, crate::transport::TransportError>,
-    >,
+    event: Result<std::result::Result<(), PageSignalReceiveError>>,
     target_id: TargetId,
 ) -> Result<bool> {
     match event? {
-        Ok(Some(event)) => Ok(event.method == "Page.javascriptDialogOpening"),
-        Ok(None) => Err(interaction_error(
-            target_id,
-            "dialog event subscription ended during interaction dispatch",
-        )),
-        Err(error) => Err(transport_error(
-            error,
-            ErrorCode::InteractionFailed,
-            target_id,
-        )),
+        Ok(()) => Ok(true),
+        Err(error) => Err(page_signal_receive_error(error, target_id)),
     }
+}
+
+fn page_signal_setup_error(
+    error: PageSignalSetupError,
+    target_id: TargetId,
+) -> krometrail_core::KrometrailError {
+    let (code, message) = match error {
+        PageSignalSetupError::StaleGeneration => (
+            ErrorCode::BrowserDisconnected,
+            "page event authority became stale before interaction dispatch",
+        ),
+        PageSignalSetupError::Unsupported => (
+            ErrorCode::InteractionFailed,
+            "browser cannot provide dialog safety events for interaction dispatch",
+        ),
+    };
+    operation_error(code, target_id, message)
+}
+
+fn page_signal_receive_error(
+    error: PageSignalReceiveError,
+    target_id: TargetId,
+) -> krometrail_core::KrometrailError {
+    let message = match error {
+        PageSignalReceiveError::Lagged => "page event authority lagged during interaction dispatch",
+        PageSignalReceiveError::Closed => "page event authority closed during interaction dispatch",
+    };
+    operation_error(ErrorCode::InteractionFailed, target_id, message)
 }
 
 fn interaction_plan(request: &BrowserOperationRequest) -> Result<InteractionPlan> {

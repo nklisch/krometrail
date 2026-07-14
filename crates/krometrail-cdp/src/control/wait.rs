@@ -13,13 +13,18 @@ use super::{
 };
 use crate::{
     SupervisorState,
-    transport::{CdpTransport, CommandScope, NamedEvent, TransportError, TransportEvents},
+    events::{
+        EventTargetBinding, NetworkActivity, NetworkActivityKind, NetworkReceiveError,
+        NetworkRequestKey, NetworkSetupError, SessionDomainAuthority,
+    },
+    transport::{CdpTransport, CommandScope},
 };
 
 impl PageControl {
     pub(crate) async fn execute_wait(
         &mut self,
         transport: &dyn CdpTransport,
+        browser_events: &SessionDomainAuthority,
         state: &SupervisorState,
         request: WaitRequest,
         cancel: &OperationCancellation,
@@ -48,6 +53,7 @@ impl PageControl {
             return self
                 .wait_network_quiet(
                     transport,
+                    browser_events,
                     &bound,
                     started_at,
                     quiet_for,
@@ -60,30 +66,9 @@ impl PageControl {
                 .await;
         }
 
-        let mut lifecycle_events = if matches!(request.condition, WaitCondition::Navigation { .. })
-        {
-            match controlled(cancel, generation, bound.target_id, deadline, async {
-                transport
-                    .subscribe_named(
-                        &CommandScope::Session(bound.transport_session.clone()),
-                        "Page.lifecycleEvent",
-                    )
-                    .await
-                    .map_err(|error| {
-                        transport_error(error, ErrorCode::PageObservationFailed, bound.target_id)
-                    })
-            })
-            .await?
-            {
-                Controlled::Value(events) => Some(events),
-                Controlled::TimedOut => {
-                    return self.timed_out(&bound, started_at, request.condition, None, started_at);
-                }
-            }
-        } else {
-            None
-        };
-
+        // Navigation remains a bounded poll. Page lifecycle events are owned by
+        // the session authority; a wait never creates a competing transport
+        // subscription merely as a wake-up optimization.
         let mut last_probe = None;
         let mut last_probe_at = started_at;
         loop {
@@ -124,37 +109,21 @@ impl PageControl {
             last_probe_at = probe_at;
 
             let wake_at = (tokio::time::Instant::now() + request.poll_interval).min(deadline);
-            if let Some(events) = lifecycle_events.as_deref_mut() {
-                tokio::select! {
-                    biased;
-                    error = cancel.wait(generation, bound.target_id) => return Err(error),
-                    _ = tokio::time::sleep_until(deadline) => {
-                        return self.timed_out(&bound, started_at, request.condition, last_probe, last_probe_at);
-                    }
-                    event = events.next() => {
-                        if !matches!(event, Ok(Some(_))) {
-                            lifecycle_events = None;
-                        }
-                    }
-                    _ = tokio::time::sleep_until(wake_at) => {}
-                }
-            } else {
-                match controlled(cancel, generation, bound.target_id, deadline, async {
-                    tokio::time::sleep_until(wake_at).await;
-                    Ok(())
-                })
-                .await?
-                {
-                    Controlled::Value(()) => {}
-                    Controlled::TimedOut => {
-                        return self.timed_out(
-                            &bound,
-                            started_at,
-                            request.condition,
-                            last_probe,
-                            last_probe_at,
-                        );
-                    }
+            match controlled(cancel, generation, bound.target_id, deadline, async {
+                tokio::time::sleep_until(wake_at).await;
+                Ok(())
+            })
+            .await?
+            {
+                Controlled::Value(()) => {}
+                Controlled::TimedOut => {
+                    return self.timed_out(
+                        &bound,
+                        started_at,
+                        request.condition,
+                        last_probe,
+                        last_probe_at,
+                    );
                 }
             }
         }
@@ -487,6 +456,7 @@ impl PageControl {
     async fn wait_network_quiet(
         &self,
         transport: &dyn CdpTransport,
+        browser_events: &SessionDomainAuthority,
         bound: &BoundTarget,
         started_at: SessionTime,
         quiet_for: Duration,
@@ -496,75 +466,29 @@ impl PageControl {
         generation: u64,
         cancel: &OperationCancellation,
     ) -> Result<WaitResult> {
-        let scope = CommandScope::Session(bound.transport_session.clone());
-        let started = match self
-            .subscribe_network(
-                transport,
-                &scope,
-                "Network.requestWillBeSent",
-                bound,
-                deadline,
-                generation,
-                cancel,
-            )
-            .await?
-        {
-            Controlled::Value(events) => events,
-            Controlled::TimedOut => {
-                return self.timed_out(bound, started_at, condition, None, started_at);
-            }
+        let binding = EventTargetBinding {
+            target_id: bound.target_id,
+            connection_generation: generation,
+            attachment_generation: bound.attachment_generation,
+            transport_session: bound.transport_session.clone(),
         };
-        let finished = match self
-            .subscribe_network(
-                transport,
-                &scope,
-                "Network.loadingFinished",
-                bound,
-                deadline,
-                generation,
-                cancel,
-            )
+        let mut network_events =
+            match controlled(cancel, generation, bound.target_id, deadline, async {
+                browser_events
+                    .network_activity(&binding, transport)
+                    .await
+                    .map_err(|error| network_authority_error(error, bound.target_id))
+            })
             .await?
-        {
-            Controlled::Value(events) => events,
-            Controlled::TimedOut => {
-                return self.timed_out(bound, started_at, condition, None, started_at);
-            }
-        };
-        let failed = match self
-            .subscribe_network(
-                transport,
-                &scope,
-                "Network.loadingFailed",
-                bound,
-                deadline,
-                generation,
-                cancel,
-            )
-            .await?
-        {
-            Controlled::Value(events) => events,
-            Controlled::TimedOut => {
-                return self.timed_out(bound, started_at, condition, None, started_at);
-            }
-        };
-        match controlled(cancel, generation, bound.target_id, deadline, async {
-            transport
-                .send_raw(&scope, "Network.enable", json!({}))
-                .await
-                .map_err(|error| network_setup_error(error, bound.target_id))
-        })
-        .await?
-        {
-            Controlled::Value(_) => {}
-            Controlled::TimedOut => {
-                return self.timed_out(bound, started_at, condition, None, started_at);
-            }
-        }
+            {
+                Controlled::Value(events) => events,
+                Controlled::TimedOut => {
+                    return self.timed_out(bound, started_at, condition, None, started_at);
+                }
+            };
 
-        let (mut network_events, _event_pumps) = pump_network_events([started, finished, failed]);
-        let mut in_flight = HashSet::<String>::new();
-        let mut completed_before_start = HashSet::<String>::new();
+        let mut in_flight = HashSet::<NetworkRequestKey>::new();
+        let mut completed_before_start = HashSet::<NetworkRequestKey>::new();
         let mut quiet_since = Some(tokio::time::Instant::now());
         loop {
             let now = tokio::time::Instant::now();
@@ -601,17 +525,7 @@ impl PageControl {
             let NetworkWake::Event(event) = wake else {
                 continue;
             };
-            let event = event
-                .ok_or_else(|| {
-                    operation_error(
-                        ErrorCode::BrowserDisconnected,
-                        bound.target_id,
-                        "network event subscriptions ended during explicit wait",
-                    )
-                })?
-                .map_err(|error| {
-                    transport_error(error, ErrorCode::BrowserDisconnected, bound.target_id)
-                })?;
+            let event = event.map_err(|error| network_receive_error(error, bound.target_id))?;
             update_network_state(
                 event,
                 &mut in_flight,
@@ -619,26 +533,6 @@ impl PageControl {
                 &mut quiet_since,
             );
         }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn subscribe_network(
-        &self,
-        transport: &dyn CdpTransport,
-        scope: &CommandScope,
-        method: &str,
-        bound: &BoundTarget,
-        deadline: tokio::time::Instant,
-        generation: u64,
-        cancel: &OperationCancellation,
-    ) -> Result<Controlled<Box<dyn TransportEvents>>> {
-        controlled(cancel, generation, bound.target_id, deadline, async {
-            transport
-                .subscribe_named(scope, method)
-                .await
-                .map_err(|error| network_setup_error(error, bound.target_id))
-        })
-        .await
     }
 
     fn satisfied(
@@ -714,92 +608,32 @@ where
 
 enum NetworkWake {
     Timer,
-    Event(Option<std::result::Result<NamedEvent, TransportError>>),
-}
-
-struct NetworkEventPumps(Vec<tokio::task::JoinHandle<()>>);
-
-impl Drop for NetworkEventPumps {
-    fn drop(&mut self) {
-        for pump in self.0.drain(..) {
-            pump.abort();
-        }
-    }
-}
-
-fn pump_network_events(
-    events: [Box<dyn TransportEvents>; 3],
-) -> (
-    tokio::sync::mpsc::Receiver<std::result::Result<NamedEvent, TransportError>>,
-    NetworkEventPumps,
-) {
-    let (sender, receiver) = tokio::sync::mpsc::channel(64);
-    let pumps = events
-        .into_iter()
-        .map(|mut events| {
-            let sender = sender.clone();
-            tokio::spawn(async move {
-                loop {
-                    match events.next().await {
-                        Ok(Some(event)) => {
-                            if sender.send(Ok(event)).await.is_err() {
-                                return;
-                            }
-                        }
-                        Ok(None) => {
-                            let _ = sender.send(Err(TransportError::SubscriptionClosed)).await;
-                            return;
-                        }
-                        Err(error) => {
-                            let _ = sender.send(Err(error)).await;
-                            return;
-                        }
-                    }
-                }
-            })
-        })
-        .collect();
-    drop(sender);
-    (receiver, NetworkEventPumps(pumps))
+    Event(std::result::Result<NetworkActivity, NetworkReceiveError>),
 }
 
 fn update_network_state(
-    event: NamedEvent,
-    in_flight: &mut HashSet<String>,
-    completed_before_start: &mut HashSet<String>,
+    event: NetworkActivity,
+    in_flight: &mut HashSet<NetworkRequestKey>,
+    completed_before_start: &mut HashSet<NetworkRequestKey>,
     quiet_since: &mut Option<tokio::time::Instant>,
 ) {
-    match event.method.as_str() {
-        "Network.requestWillBeSent" => {
-            let long_lived = event
-                .params
-                .get("type")
-                .and_then(Value::as_str)
-                .is_some_and(|kind| {
-                    kind.eq_ignore_ascii_case("websocket")
-                        || kind.eq_ignore_ascii_case("eventsource")
-                });
-            if !long_lived {
-                if let Some(request_id) = event.params.get("requestId").and_then(Value::as_str) {
-                    if !completed_before_start.remove(request_id) {
-                        in_flight.insert(request_id.to_owned());
-                        *quiet_since = None;
-                    }
-                }
+    match event.kind() {
+        NetworkActivityKind::Started if !event.long_lived() => {
+            if !completed_before_start.remove(event.key()) {
+                in_flight.insert(event.key().clone());
+                *quiet_since = None;
             }
         }
-        "Network.loadingFinished" | "Network.loadingFailed" => {
-            if let Some(request_id) = event.params.get("requestId").and_then(Value::as_str) {
-                if in_flight.remove(request_id) {
-                    if in_flight.is_empty() {
-                        *quiet_since = Some(tokio::time::Instant::now());
-                    }
-                } else {
-                    completed_before_start.insert(request_id.to_owned());
+        NetworkActivityKind::Finished | NetworkActivityKind::Failed => {
+            if in_flight.remove(event.key()) {
+                if in_flight.is_empty() {
+                    *quiet_since = Some(tokio::time::Instant::now());
                 }
+            } else {
+                completed_before_start.insert(event.key().clone());
             }
         }
-        _ => {}
+        NetworkActivityKind::Started | NetworkActivityKind::Response => {}
     }
 }
 
@@ -825,22 +659,42 @@ fn wait_probe_error(target_id: krometrail_core::TargetId) -> KrometrailError {
     )
 }
 
-fn network_setup_error(
-    error: TransportError,
+fn network_authority_error(
+    error: NetworkSetupError,
     target_id: krometrail_core::TargetId,
 ) -> KrometrailError {
-    if matches!(
-        error,
-        TransportError::Disconnected | TransportError::Closed | TransportError::SubscriptionClosed
-    ) {
-        transport_error(error, ErrorCode::BrowserDisconnected, target_id)
-    } else {
-        operation_error(
+    match error {
+        NetworkSetupError::StaleGeneration => operation_error(
+            ErrorCode::BrowserDisconnected,
+            target_id,
+            "network activity binding became stale during explicit wait",
+        ),
+        NetworkSetupError::Unsupported
+        | NetworkSetupError::Subscription
+        | NetworkSetupError::Enable => operation_error(
             ErrorCode::Unsupported,
             target_id,
             "browser transport cannot provide explicit network-quiet tracking",
         )
-        .with_retry(RetryAdvice::Never)
+        .with_retry(RetryAdvice::Never),
+    }
+}
+
+fn network_receive_error(
+    error: NetworkReceiveError,
+    target_id: krometrail_core::TargetId,
+) -> KrometrailError {
+    match error {
+        NetworkReceiveError::Lagged => operation_error(
+            ErrorCode::PageObservationFailed,
+            target_id,
+            "network activity was lost during explicit quiet tracking",
+        ),
+        NetworkReceiveError::Closed => operation_error(
+            ErrorCode::BrowserDisconnected,
+            target_id,
+            "network activity ended during explicit quiet tracking",
+        ),
     }
 }
 
@@ -854,43 +708,34 @@ mod tests {
         let mut completed = HashSet::new();
         let mut quiet = Some(tokio::time::Instant::now());
         let initial_quiet = quiet;
+        let before = NetworkRequestKey::new("before-subscription").unwrap();
         update_network_state(
-            NamedEvent {
-                method: "Network.loadingFinished".into(),
-                params: json!({"requestId":"before-subscription"}),
-            },
+            NetworkActivity::test_event(before.clone(), NetworkActivityKind::Finished, false),
             &mut requests,
             &mut completed,
             &mut quiet,
         );
         assert_eq!(quiet, initial_quiet);
-        assert!(completed.contains("before-subscription"));
+        assert!(completed.contains(&before));
+        let finite = NetworkRequestKey::new("finite").unwrap();
         update_network_state(
-            NamedEvent {
-                method: "Network.requestWillBeSent".into(),
-                params: json!({"requestId":"finite","type":"Fetch"}),
-            },
+            NetworkActivity::test_event(finite.clone(), NetworkActivityKind::Started, false),
             &mut requests,
             &mut completed,
             &mut quiet,
         );
-        assert!(requests.contains("finite"));
+        assert!(requests.contains(&finite));
         assert!(quiet.is_none());
+        let socket = NetworkRequestKey::new("socket").unwrap();
         update_network_state(
-            NamedEvent {
-                method: "Network.requestWillBeSent".into(),
-                params: json!({"requestId":"socket","type":"WebSocket"}),
-            },
+            NetworkActivity::test_event(socket.clone(), NetworkActivityKind::Started, true),
             &mut requests,
             &mut completed,
             &mut quiet,
         );
-        assert!(!requests.contains("socket"));
+        assert!(!requests.contains(&socket));
         update_network_state(
-            NamedEvent {
-                method: "Network.loadingFailed".into(),
-                params: json!({"requestId":"finite"}),
-            },
+            NetworkActivity::test_event(finite, NetworkActivityKind::Failed, false),
             &mut requests,
             &mut completed,
             &mut quiet,

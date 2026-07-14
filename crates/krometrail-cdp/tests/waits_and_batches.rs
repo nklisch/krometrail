@@ -538,13 +538,26 @@ async fn explicit_network_quiet_tracks_finite_events_and_discloses_limits() {
     let transport = ScriptedCdp::chrome();
     let session = scripted_session(transport.clone()).await;
     let target = session.status().await.unwrap().selected_target_id.unwrap();
+    let enables_before_wait = transport
+        .command_calls()
+        .iter()
+        .filter(|call| call.method == "Network.enable")
+        .count();
     transport.push_event(
         "Network.requestWillBeSent",
-        json!({"requestId":"private-request-id","type":"Fetch"}),
+        json!({
+            "requestId":"private-request-id",
+            "type":"Fetch",
+            "request":{"method":"GET","url":"https://fixture.test/data"}
+        }),
     );
     transport.push_event(
         "Network.requestWillBeSent",
-        json!({"requestId":"private-websocket-id","type":"WebSocket"}),
+        json!({
+            "requestId":"private-websocket-id",
+            "type":"WebSocket",
+            "request":{"method":"GET","url":"wss://fixture.test/socket"}
+        }),
     );
     transport.push_event(
         "Network.loadingFinished",
@@ -594,8 +607,24 @@ async fn explicit_network_quiet_tracks_finite_events_and_discloses_limits() {
             .iter()
             .filter(|call| call.method == "Network.enable")
             .count(),
-        1
+        enables_before_wait + 1
     );
+    for method in [
+        "Network.requestWillBeSent",
+        "Network.responseReceived",
+        "Network.loadingFinished",
+        "Network.loadingFailed",
+    ] {
+        assert_eq!(
+            transport
+                .subscriptions()
+                .iter()
+                .filter(|(subscribed, _)| subscribed == method)
+                .count(),
+            1,
+            "network authority installed {method} more than once"
+        );
+    }
     session.stop().await.unwrap();
 }
 

@@ -16,7 +16,7 @@ use std::{
 use futures_util::{StreamExt, stream::FuturesUnordered};
 
 use krometrail_core::{
-    AttachBrowser, BrowserCompatibility, BrowserConnectRequest, BrowserConnector,
+    AttachBrowser, BrowserCompatibility, BrowserConnectRequest, BrowserConnector, BrowserEventSink,
     BrowserInstallation, BrowserOperationContext, BrowserOperationRequest, BrowserOperationResult,
     BrowserOperationScope, BrowserOwnership, BrowserSessionEvent, BrowserSessionEvents,
     BrowserSessionPort, BrowserSessionState, BrowserStatus, BrowserStopOutcome, ErrorCode,
@@ -37,8 +37,9 @@ use crate::{
         CaptureConfig, CaptureCoordinator, CaptureDependencies, CaptureObserver, CaptureStopReason,
         CaptureTarget,
     },
-    compatibility::{CompatibilityProbeError, probe_compatibility_with_target_limit},
+    compatibility::CompatibilityProbeError,
     control::{PageControl, navigation::OperationCancellation, operation_error},
+    events::{BrowserEventConfig, EventTargetBinding, SessionDomainAuthority},
     launcher::{
         ChromeLauncher, LaunchError, LauncherConfig, ManagedChromeProcess, ProfileLease,
         SystemChromeLauncher, attach_endpoint,
@@ -65,17 +66,18 @@ use reconnect::reconnect_loop_transactional;
 #[cfg(test)]
 use reconnect::{
     AttemptCancellation, AttemptControl, AttemptFailure, PartialSessionTracker,
-    recordable_reconnect_targets, restore_one_target, restore_targets,
+    recordable_reconnect_targets, restore_event_domains_and_visibility, restore_one_target,
+    restore_targets,
 };
 #[allow(unused_imports)]
 pub(crate) use runtime::VisibilityProbeError;
 pub(crate) use runtime::parse_visibility_result;
 use runtime::{
     ConnectionResources, ProcessDeathSignal, SupervisorRuntime, apply_effects, parse_target_info,
-    restore_session_domains, run_supervisor, setup_connection, setup_connection_with_target_limit,
+    run_supervisor, setup_connection, setup_connection_with_target_limit,
 };
 #[cfg(test)]
-use runtime::{TargetEventKind, parse_event};
+use runtime::{TargetEventKind, parse_event, restore_session_domains};
 #[cfg(test)]
 use shutdown::{ShutdownBudgetSource, ShutdownPhase};
 use shutdown::{ShutdownDeadline, ShutdownPlan, finish_state, perform_shutdown};
@@ -109,7 +111,16 @@ pub struct ProductionBrowserConnector {
     clock: Arc<dyn MonotonicClock>,
     ids: Arc<dyn IdSource>,
     capture: Option<CaptureAssembly>,
+    browser_events: Option<BrowserEventAssembly>,
     interaction_evidence: Option<Arc<dyn krometrail_core::InteractionEvidenceSink>>,
+}
+
+#[derive(Clone)]
+struct BrowserEventAssembly {
+    clock: Arc<dyn MonotonicClock>,
+    ids: Arc<dyn IdSource>,
+    sink: Arc<dyn BrowserEventSink>,
+    config: BrowserEventConfig,
 }
 
 #[derive(Clone)]
@@ -135,6 +146,7 @@ impl ProductionBrowserConnector {
             }),
             ids: Arc::new(AdapterIdSource),
             capture: None,
+            browser_events: None,
             interaction_evidence: None,
         }
     }
@@ -164,6 +176,24 @@ impl ProductionBrowserConnector {
             ids,
             sink,
             retention,
+            config,
+        });
+        self
+    }
+
+    pub fn with_browser_events(
+        mut self,
+        clock: Arc<dyn MonotonicClock>,
+        ids: Arc<dyn IdSource>,
+        sink: Arc<dyn BrowserEventSink>,
+        config: BrowserEventConfig,
+    ) -> Self {
+        self.clock = Arc::clone(&clock);
+        self.ids = Arc::clone(&ids);
+        self.browser_events = Some(BrowserEventAssembly {
+            clock,
+            ids,
+            sink,
             config,
         });
         self
@@ -219,6 +249,7 @@ impl BrowserConnector for ProductionBrowserConnector {
         let transport_factory = Arc::clone(&self.transport_factory);
         let config = self.config.clone();
         let capture_assembly = self.capture.clone();
+        let browser_event_assembly = self.browser_events.clone();
         let interaction_evidence = self.interaction_evidence.clone();
         let control_clock = Arc::clone(&self.clock);
         let ids = Arc::clone(&self.ids);
@@ -266,11 +297,38 @@ impl BrowserConnector for ProductionBrowserConnector {
             let (command_tx, command_rx) = mpsc::channel(64);
             let session_id = SessionId::from_uuid(*ids.next().as_uuid());
             let session_origin = SessionOrigin::new(control_clock.now());
+            let browser_events = Arc::new(
+                match browser_event_assembly {
+                    Some(assembly) => SessionDomainAuthority::new(
+                        session_id,
+                        session_origin,
+                        assembly.clock,
+                        assembly.ids,
+                        Some(assembly.sink),
+                        assembly.config,
+                    ),
+                    None => SessionDomainAuthority::new(
+                        session_id,
+                        session_origin,
+                        Arc::clone(&control_clock),
+                        Arc::clone(&ids),
+                        None,
+                        BrowserEventConfig::disabled(),
+                    ),
+                }
+                .map_err(|_| {
+                    stable_error(
+                        ErrorCode::InvalidInput,
+                        "browser event configuration is invalid",
+                    )
+                })?,
+            );
             let capture = capture_assembly
                 .map(|assembly| {
                     let observer: Arc<dyn CaptureObserver> = Arc::new(SessionCaptureObserver {
                         subscribers: Arc::clone(&subscribers),
                         command_tx: command_tx.clone(),
+                        browser_events: Arc::clone(&browser_events),
                     });
                     let coordinator = CaptureCoordinator::new(
                         assembly.config.clone(),
@@ -309,6 +367,8 @@ impl BrowserConnector for ProductionBrowserConnector {
                 Arc::clone(&connection.transport),
                 Arc::clone(&subscribers),
                 capture.clone(),
+                Arc::clone(&browser_events),
+                connection.browser_event_support,
                 None,
             )
             .await?;
@@ -323,12 +383,15 @@ impl BrowserConnector for ProductionBrowserConnector {
                 Arc::clone(&connection.transport),
                 Arc::clone(&subscribers),
                 capture.clone(),
+                Arc::clone(&browser_events),
+                connection.browser_event_support,
                 None,
             )
             .await?;
             let process_death = Arc::new(ProcessDeathSignal::default());
             let shared = Arc::new(SessionShared {
                 compatibility,
+                browser_event_support: Mutex::new(connection.browser_event_support),
                 ownership,
                 profile: profile.unwrap_or(ProfileRef::External),
                 state: Mutex::new(state.clone()),
@@ -337,6 +400,7 @@ impl BrowserConnector for ProductionBrowserConnector {
                 session_id,
                 session_origin,
                 capture: capture.clone(),
+                browser_events: Arc::clone(&browser_events),
                 interaction_evidence,
                 operation_cancellation: OperationCancellation::default(),
                 stop_result: Mutex::new(None),
@@ -383,10 +447,12 @@ struct CaptureRuntime {
 struct SessionCaptureObserver {
     subscribers: Arc<SubscriberRegistry>,
     command_tx: mpsc::Sender<SupervisorCommand>,
+    browser_events: Arc<SessionDomainAuthority>,
 }
 
 impl CaptureObserver for SessionCaptureObserver {
     fn status_changed(&self, status: TargetCaptureStatus) {
+        self.browser_events.observe_capture_status(status.clone());
         self.subscribers
             .publish(BrowserSessionEvent::CaptureStateChanged { status });
     }
@@ -401,6 +467,8 @@ impl CaptureObserver for SessionCaptureObserver {
         target_id: krometrail_core::TargetId,
         visibility: TargetVisibility,
     ) {
+        self.browser_events
+            .observe_visibility(target_id, None, visibility);
         let _ = self.command_tx.try_send(SupervisorCommand::Input(
             SupervisorInput::CaptureVisibilityChanged {
                 target_id,
@@ -412,6 +480,7 @@ impl CaptureObserver for SessionCaptureObserver {
 
 pub(crate) struct SessionShared {
     compatibility: BrowserCompatibility,
+    browser_event_support: Mutex<crate::compatibility::BrowserEventSupport>,
     ownership: BrowserOwnership,
     profile: ProfileRef,
     state: Mutex<SupervisorState>,
@@ -420,6 +489,7 @@ pub(crate) struct SessionShared {
     session_id: SessionId,
     session_origin: SessionOrigin,
     capture: Option<Arc<CaptureRuntime>>,
+    browser_events: Arc<SessionDomainAuthority>,
     interaction_evidence: Option<Arc<dyn krometrail_core::InteractionEvidenceSink>>,
     pub(crate) operation_cancellation: OperationCancellation,
     stop_result: Mutex<Option<Result<BrowserStopOutcome>>>,
@@ -920,6 +990,20 @@ mod tests {
             capture: None,
             interaction_evidence: None,
             operation_cancellation: OperationCancellation::default(),
+            browser_events: Arc::new(
+                SessionDomainAuthority::new(
+                    SessionId::from_uuid(Uuid::new_v4()),
+                    SessionOrigin::new(krometrail_core::ObservedTime::from_nanos(0)),
+                    Arc::new(AdapterMonotonicClock {
+                        origin: Instant::now(),
+                    }),
+                    Arc::new(AdapterIdSource),
+                    None,
+                    BrowserEventConfig::default(),
+                )
+                .unwrap(),
+            ),
+            browser_event_support: Mutex::new(crate::BrowserEventSupport::default()),
             stop_result: Mutex::new(None),
         });
         let runtime = SupervisorRuntime {
@@ -1001,9 +1085,141 @@ mod tests {
         assert!(transport.maximum_active() >= 2);
     }
 
+    fn reconnect_reduction_fixture() -> (SupervisorState, Vec<SupervisorEffect>) {
+        let state = reduce(
+            SupervisorState::new(test_compatibility()),
+            SupervisorInput::InitialTargets(vec![page_info("restored")]),
+        )
+        .unwrap()
+        .state;
+        let state = reduce(
+            state,
+            SupervisorInput::Attached {
+                target_key: "restored".into(),
+                session: TransportSessionId::new("old-session").unwrap(),
+            },
+        )
+        .unwrap()
+        .state;
+        let state = reduce(
+            state,
+            SupervisorInput::VisibilityChanged {
+                target_key: "restored".into(),
+                visibility: TargetVisibility::Visible,
+            },
+        )
+        .unwrap()
+        .state;
+        let state = reduce(
+            state,
+            SupervisorInput::ConnectionLost(TransportClose {
+                reason: NonEmptyText::new("fixture disconnect").unwrap(),
+            }),
+        )
+        .unwrap()
+        .state;
+        let reduction = reduce(
+            state,
+            SupervisorInput::Reconnected(ReconnectedSnapshot {
+                connection_generation: 1,
+                compatibility: test_compatibility(),
+                targets: vec![ReconnectedTarget {
+                    info: page_info("restored"),
+                    session: Some(TransportSessionId::new("new-session").unwrap()),
+                    visibility: TargetVisibility::Unknown,
+                }],
+            }),
+        )
+        .unwrap();
+        (reduction.state, reduction.effects)
+    }
+
     #[tokio::test]
-    async fn stalled_restore_command_is_cut_off_by_attempt_deadline() {
-        let transport = Arc::new(ControlledTransport::stalled("Runtime.enable"));
+    async fn reconnect_restores_authority_domains_then_probes_visibility_with_one_deadline() {
+        let transport = Arc::new(ControlledTransport::paced());
+        let transport_dyn = transport.clone() as Arc<dyn CdpTransport>;
+        let authority = Arc::new(
+            SessionDomainAuthority::new(
+                SessionId::from_uuid(Uuid::from_u128(40)),
+                SessionOrigin::new(krometrail_core::ObservedTime::from_nanos(0)),
+                Arc::new(AdapterMonotonicClock {
+                    origin: Instant::now(),
+                }),
+                Arc::new(AdapterIdSource),
+                None,
+                BrowserEventConfig::disabled(),
+            )
+            .unwrap(),
+        );
+        let (mut state, mut effects) = reconnect_reduction_fixture();
+        let attempt = AttemptControl {
+            cancellation: AttemptCancellation::new(),
+            deadline: tokio::time::Instant::now() + Duration::from_secs(1),
+        };
+        restore_event_domains_and_visibility(
+            &attempt,
+            &authority,
+            &transport_dyn,
+            crate::BrowserEventSupport::default(),
+            &mut state,
+            &mut effects,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            state.targets_by_key["restored"].target.visibility,
+            TargetVisibility::Visible
+        );
+        assert_eq!(
+            transport.commands(),
+            [
+                "Page.enable",
+                "Runtime.enable",
+                "Accessibility.enable",
+                "Runtime.evaluate",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn reconnect_domain_restore_is_cut_off_by_attempt_deadline() {
+        let transport = Arc::new(ControlledTransport::stalled("Page.enable"));
+        let transport_dyn = transport as Arc<dyn CdpTransport>;
+        let authority = Arc::new(
+            SessionDomainAuthority::new(
+                SessionId::from_uuid(Uuid::from_u128(41)),
+                SessionOrigin::new(krometrail_core::ObservedTime::from_nanos(0)),
+                Arc::new(AdapterMonotonicClock {
+                    origin: Instant::now(),
+                }),
+                Arc::new(AdapterIdSource),
+                None,
+                BrowserEventConfig::disabled(),
+            )
+            .unwrap(),
+        );
+        let (mut state, mut effects) = reconnect_reduction_fixture();
+        let attempt = AttemptControl {
+            cancellation: AttemptCancellation::new(),
+            deadline: tokio::time::Instant::now() + Duration::from_millis(20),
+        };
+        assert_eq!(
+            restore_event_domains_and_visibility(
+                &attempt,
+                &authority,
+                &transport_dyn,
+                crate::BrowserEventSupport::default(),
+                &mut state,
+                &mut effects,
+            )
+            .await,
+            Err(AttemptFailure::TimedOut)
+        );
+    }
+
+    #[tokio::test]
+    async fn stalled_target_attachment_is_cut_off_by_attempt_deadline() {
+        let transport = Arc::new(ControlledTransport::stalled("Target.attachToTarget"));
         let started = transport.started();
         let attempt = AttemptControl {
             cancellation: AttemptCancellation::new(),
@@ -1028,8 +1244,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancellation_interrupts_a_stalled_restore_immediately() {
-        let transport = Arc::new(ControlledTransport::stalled("Runtime.enable"));
+    async fn cancellation_interrupts_a_stalled_target_attachment_immediately() {
+        let transport = Arc::new(ControlledTransport::stalled("Target.attachToTarget"));
         let started = transport.started();
         let cancellation = AttemptCancellation::new();
         let attempt = AttemptControl {
@@ -1076,6 +1292,7 @@ mod tests {
 
     struct ControlledTransportState {
         stall_method: Mutex<Option<String>>,
+        commands: Mutex<Vec<String>>,
         next_session: AtomicUsize,
         active: AtomicUsize,
         maximum_active: AtomicUsize,
@@ -1087,6 +1304,7 @@ mod tests {
             Self {
                 state: Arc::new(ControlledTransportState {
                     stall_method: Mutex::new(None),
+                    commands: Mutex::new(Vec::new()),
                     next_session: AtomicUsize::new(0),
                     active: AtomicUsize::new(0),
                     maximum_active: AtomicUsize::new(0),
@@ -1112,6 +1330,14 @@ mod tests {
         fn maximum_active(&self) -> usize {
             self.state.maximum_active.load(Ordering::Acquire)
         }
+
+        fn commands(&self) -> Vec<String> {
+            self.state
+                .commands
+                .lock()
+                .expect("controlled command lock")
+                .clone()
+        }
     }
 
     impl CdpTransport for ControlledTransport {
@@ -1121,6 +1347,11 @@ mod tests {
             method: &str,
             _params: Value,
         ) -> TransportFuture<'_, std::result::Result<Value, TransportError>> {
+            self.state
+                .commands
+                .lock()
+                .expect("controlled command lock")
+                .push(method.to_owned());
             let stalled = self
                 .state
                 .stall_method
@@ -1419,6 +1650,7 @@ mod tests {
             subscriptions: Vec::new(),
             targets: Vec::new(),
             compatibility: test_compatibility(),
+            browser_event_support: crate::BrowserEventSupport::default(),
             pump_handles: Vec::new(),
         };
         let process = ManagedChromeProcess::from_child(
@@ -1453,6 +1685,17 @@ mod tests {
                 capture: Some(capture),
                 deadline: deadline.clone(),
                 flush_capture: true,
+                browser_events: Arc::new(
+                    SessionDomainAuthority::new(
+                        session_id,
+                        SessionOrigin::new(krometrail_core::ObservedTime::from_nanos(0)),
+                        Arc::new(ShutdownTestClock),
+                        Arc::new(AdapterIdSource),
+                        None,
+                        BrowserEventConfig::default(),
+                    )
+                    .unwrap(),
+                ),
             },
         )
         .await;
@@ -1478,6 +1721,7 @@ mod tests {
             vec![
                 ShutdownPhase::Origin,
                 ShutdownPhase::CaptureStopDrainFlush,
+                ShutdownPhase::BrowserEventDrainFlush,
                 ShutdownPhase::TargetDetach,
                 ShutdownPhase::BrowserClose,
                 ShutdownPhase::ProcessTerminate,
@@ -1497,6 +1741,7 @@ mod tests {
                 Duration::from_millis(70),
                 Duration::from_millis(60),
                 Duration::from_millis(50),
+                Duration::from_millis(40),
             ]
         );
         assert!(budgets.windows(2).all(|pair| pair[0] > pair[1]));
@@ -1522,14 +1767,14 @@ mod tests {
             run_shutdown_fixture(Duration::from_millis(100), Duration::from_millis(30)).await;
         assert_eq!(result.unwrap_err().code, ErrorCode::ShutdownIncomplete);
         let samples = source.samples();
-        assert_eq!(samples[4].0, ShutdownPhase::ProcessTerminate);
+        assert_eq!(samples[5].0, ShutdownPhase::ProcessTerminate);
         assert_eq!(
-            deadline.instant().saturating_duration_since(samples[4].1),
+            deadline.instant().saturating_duration_since(samples[5].1),
             Duration::ZERO
         );
-        assert!(samples[5].1 >= samples[4].1);
+        assert!(samples[6].1 >= samples[5].1);
         assert!(
-            log.lock()
+            !log.lock()
                 .expect("shutdown log lock")
                 .contains(&"Browser.close".into())
         );

@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 
 use crate::{
     SupervisorState,
+    events::SessionDomainAuthority,
     transport::{CdpTransport, CommandScope, TransportError, TransportSessionId},
 };
 
@@ -82,6 +83,7 @@ impl PageControl {
     pub(crate) async fn execute(
         &mut self,
         transport: &dyn CdpTransport,
+        browser_events: &SessionDomainAuthority,
         state: &SupervisorState,
         request: BrowserOperationRequest,
         cancel: &navigation::OperationCancellation,
@@ -171,7 +173,14 @@ impl PageControl {
                 .await?
                 .map(|(result, _)| result),
             BrowserOperationRequest::Wait(request) => self
-                .execute_wait(transport, state, request, cancel, parent_deadline)
+                .execute_wait(
+                    transport,
+                    browser_events,
+                    state,
+                    request,
+                    cancel,
+                    parent_deadline,
+                )
                 .await
                 .map(|result| BrowserOperationResult::Wait(Box::new(result))),
             BrowserOperationRequest::ListPages(_)
