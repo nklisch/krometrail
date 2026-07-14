@@ -6,6 +6,7 @@
 
 pub mod artifacts;
 pub mod browser;
+pub mod browser_events;
 pub mod catalog;
 pub mod clock;
 pub mod frames;
@@ -29,6 +30,7 @@ pub use browser::{
     BrowserOperationContext, BrowserPageTargets, BrowserSessionEvents, BrowserSessionPort,
     CancellationSignal, LaunchBrowser, ManagedProfile,
 };
+pub use browser_events::BrowserEventSink;
 pub use catalog::RecordingCatalog;
 pub use clock::{MonotonicClock, WallClock};
 pub use frames::FrameSource;
@@ -582,6 +584,7 @@ mod tests {
             include_str!("mod.rs"),
             include_str!("artifacts.rs"),
             include_str!("browser.rs"),
+            include_str!("browser_events.rs"),
             include_str!("catalog.rs"),
             include_str!("clock.rs"),
             include_str!("frames.rs"),

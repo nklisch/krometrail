@@ -113,6 +113,8 @@ typed_ids!(
     ArtifactId,
     GapId,
     NavigationId,
+    BrowserEventId,
+    NetworkRequestId,
 );
 
 #[cfg(test)]

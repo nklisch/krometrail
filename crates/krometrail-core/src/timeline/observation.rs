@@ -2,7 +2,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     error::{Result, invalid},
-    ids::{FrameId, GapId, InteractionId, MarkerId, NavigationId, SessionId, TargetId},
+    ids::{
+        BrowserEventId, FrameId, GapId, InteractionId, MarkerId, NavigationId, SessionId, TargetId,
+    },
     time::{ObservedTime, SessionTime, SourceTime},
     validation::deserialize_validated,
 };
@@ -141,6 +143,7 @@ define_observation_contract! {
     ConsoleMessage => ("console_message", external),
     JavascriptException => ("javascript_exception", external),
     NetworkLifecycle => ("network_lifecycle", external),
+    BrowserEvent => ("browser_event", (typed(BrowserEvent, BrowserEventId))),
     Marker => ("marker", (typed(Marker, MarkerId))),
 }
 
