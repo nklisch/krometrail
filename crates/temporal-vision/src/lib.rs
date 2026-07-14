@@ -57,6 +57,7 @@ macro_rules! stable_registry {
 }
 
 mod artifact;
+mod difference_map;
 mod encode;
 mod error;
 mod frame;
@@ -69,6 +70,9 @@ mod select;
 mod sequence;
 
 pub use artifact::{EncodedImage, GeneratedArtifact};
+pub use difference_map::{
+    DifferenceMapLimits, DifferenceMapParameters, FrequencyMode, TimePalette,
+};
 pub use error::{ErrorCode, Result, VisionError};
 pub use frame::{BorrowedFrame, Frame, OwnedFrame, PixelDimensions, PixelFormat, Timestamp};
 pub use geometry::{BinaryMask, FrameRegion, PixelRect};

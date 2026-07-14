@@ -205,11 +205,11 @@ pub fn measure_pair<F>(
                 "comparison timestamps are not in nondecreasing order",
             )
         })?;
-    let gap_count = sequence
-        .gap_ranges()
-        .iter()
-        .filter(|gap| gap.start() <= later.timestamp() && gap.end() >= earlier.timestamp())
-        .count();
+    let gap_count = intersecting_gap_count(
+        sequence.gap_ranges(),
+        earlier.timestamp(),
+        later.timestamp(),
+    );
     let outcome = if let Some(declared_gap_count) = NonZeroUsize::new(gap_count) {
         ComparisonOutcome::GapBoundary { declared_gap_count }
     } else {
@@ -249,11 +249,6 @@ fn measure_pixels<F>(
     let later = sequence.frames()[later_index].linear_rgb16();
     let dimensions = sequence.dimensions();
     let mask = sequence.analysis_mask();
-    let threshold = u128::from(parameters.noise_floor)
-        .checked_pow(2)
-        .and_then(|value| value.checked_mul(WEIGHT_SUM))
-        .ok_or_else(measurement_overflow)?;
-
     let mut changed = 0_u128;
     let mut absolute_sum = 0_u128;
     let mut luminance_sum = 0_u128;
@@ -280,19 +275,19 @@ fn measure_pixels<F>(
             continue;
         }
 
+        let before_pixel: &[u16; 3] = before
+            .try_into()
+            .expect("chunks_exact yields three-channel pixels");
+        let after_pixel: &[u16; 3] = after
+            .try_into()
+            .expect("chunks_exact yields three-channel pixels");
+        let change = classify_pixel_change(before_pixel, after_pixel, parameters)?;
+        if !change.changed {
+            continue;
+        }
         let dr = u128::from(before[0].abs_diff(after[0]));
         let dg = u128::from(before[1].abs_diff(after[1]));
         let db = u128::from(before[2].abs_diff(after[2]));
-        let red_square = weighted_channel_square(RED_WEIGHT, dr)?;
-        let green_square = weighted_channel_square(GREEN_WEIGHT, dg)?;
-        let blue_square = weighted_channel_square(BLUE_WEIGHT, db)?;
-        let weighted_square = red_square
-            .checked_add(green_square)
-            .and_then(|value| value.checked_add(blue_square))
-            .ok_or_else(measurement_overflow)?;
-        if weighted_square <= threshold {
-            continue;
-        }
 
         changed = changed.checked_add(1).ok_or_else(measurement_overflow)?;
         let channel_sum = dr
@@ -303,7 +298,7 @@ fn measure_pixels<F>(
             .checked_add(channel_sum)
             .ok_or_else(measurement_overflow)?;
         weighted_square_sum = weighted_square_sum
-            .checked_add(weighted_square)
+            .checked_add(change.weighted_square)
             .ok_or_else(measurement_overflow)?;
         let before_luma = linear_luminance(before)?;
         let after_luma = linear_luminance(after)?;
@@ -358,6 +353,50 @@ fn measure_pixels<F>(
     })
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PixelChange {
+    pub(crate) changed: bool,
+    pub(crate) weighted_square: u128,
+}
+
+/// Canonical thresholded weighted-linear-RGB pixel classifier.
+pub(crate) fn classify_pixel_change(
+    before: &[u16; 3],
+    after: &[u16; 3],
+    parameters: MeasurementParameters,
+) -> Result<PixelChange> {
+    let threshold = u128::from(parameters.noise_floor)
+        .checked_pow(2)
+        .and_then(|value| value.checked_mul(WEIGHT_SUM))
+        .ok_or_else(measurement_overflow)?;
+    let dr = u128::from(before[0].abs_diff(after[0]));
+    let dg = u128::from(before[1].abs_diff(after[1]));
+    let db = u128::from(before[2].abs_diff(after[2]));
+    let red_square = weighted_channel_square(RED_WEIGHT, dr)?;
+    let green_square = weighted_channel_square(GREEN_WEIGHT, dg)?;
+    let blue_square = weighted_channel_square(BLUE_WEIGHT, db)?;
+    let weighted_square = red_square
+        .checked_add(green_square)
+        .and_then(|value| value.checked_add(blue_square))
+        .ok_or_else(measurement_overflow)?;
+    Ok(PixelChange {
+        changed: weighted_square > threshold,
+        weighted_square,
+    })
+}
+
+/// Count declared gaps intersecting an inclusive comparison interval.
+pub(crate) fn intersecting_gap_count(
+    gap_ranges: &[crate::TimeRange],
+    earlier: crate::Timestamp,
+    later: crate::Timestamp,
+) -> usize {
+    gap_ranges
+        .iter()
+        .filter(|gap| gap.start() <= later && gap.end() >= earlier)
+        .count()
+}
+
 fn weighted_channel_square(weight: u128, delta: u128) -> Result<u128> {
     delta
         .checked_mul(delta)
@@ -365,7 +404,7 @@ fn weighted_channel_square(weight: u128, delta: u128) -> Result<u128> {
         .ok_or_else(measurement_overflow)
 }
 
-fn linear_luminance(pixel: &[u16]) -> Result<u128> {
+pub(crate) fn linear_luminance(pixel: &[u16]) -> Result<u128> {
     let red = RED_WEIGHT
         .checked_mul(u128::from(pixel[0]))
         .ok_or_else(measurement_overflow)?;

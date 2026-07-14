@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-vision-toolkit-difference-map-change-accumulation
 kind: story
-stage: implementing
+stage: done
 tags: [visual]
 parent: epic-temporal-vision-toolkit-difference-map
 depends_on: [epic-temporal-vision-toolkit-difference-map-rendering-foundation]
@@ -136,3 +136,13 @@ impl DifferenceMapData {
 ## Ordering constraints
 
 Depends on `rendering-foundation` for `lib.rs` coherence only; the accumulation kernel itself does not import rendering code. Coordinate the `measure.rs` edit with `epic-temporal-vision-toolkit-normalization-and-measurements`: sequence this story after that feature reaches `done`, or have the orchestrator sequence the shared edit so the two features never hold conflicting `measure.rs` state.
+
+## Implementation notes
+
+- Execution capability: raised/high; integer overflow, gap semantics, and per-pixel memory bounds are load-bearing evidence contracts.
+- Review weight: standard (autopilot caller).
+- Files changed: `crates/temporal-vision/src/measure.rs`, `crates/temporal-vision/src/difference_map.rs`, `crates/temporal-vision/src/lib.rs`.
+- Tests added/removed: exact accumulation/gap/repeated-change/allocation-bound regression added; all 34 package tests pass.
+- Simplification: extracted the existing threshold and gap predicates once and retained one struct-of-arrays accumulator with no alternate change model.
+- Discrepancies from design: none material; the internal generic does not require unnecessary `Clone + Eq` bounds.
+- Adjacent issues parked: none.
