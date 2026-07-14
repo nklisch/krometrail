@@ -7,8 +7,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::{
-    InteractionId, NonEmptyText, Result, SessionTime, error::invalid,
-    validation::deserialize_validated,
+    InteractionId, NonEmptyText, Result, SessionTime,
+    error::invalid,
+    validation::{delegate_json_schema, deserialize_validated},
 };
 
 use super::{
@@ -23,7 +24,7 @@ const MAX_PATH_COMPONENTS: usize = 32;
 const MAX_KEY_CHORDS: usize = 32;
 const MAX_CLICK_COUNT: u8 = 3;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ActionCategory {
     Pointer,
@@ -82,7 +83,7 @@ pub enum InteractionLocator {
     },
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 enum InteractionLocatorWire {
     Element(ElementLocator),
@@ -114,6 +115,8 @@ impl InteractionLocator {
     }
 }
 
+delegate_json_schema!(InteractionLocator => InteractionLocatorWire);
+
 impl<'de> Deserialize<'de> for InteractionLocator {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
         deserialize_validated(d, |wire: InteractionLocatorWire| match wire {
@@ -123,7 +126,7 @@ impl<'de> Deserialize<'de> for InteractionLocator {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum MouseButton {
     Left,
@@ -131,7 +134,9 @@ pub enum MouseButton {
     Right,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 pub struct Modifiers {
     pub alt: bool,
     pub control: bool,
@@ -139,7 +144,7 @@ pub struct Modifiers {
     pub meta: bool,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Modifier {
     Alt,
@@ -148,7 +153,7 @@ pub enum Modifier {
     Meta,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum NamedKey {
     Enter,
@@ -246,7 +251,7 @@ impl NamedKey {
     ];
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum KeySegment {
     Modifier(Modifier),
@@ -254,7 +259,7 @@ pub enum KeySegment {
     Char(char),
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(transparent)]
 pub struct KeyChord(String);
 
@@ -310,14 +315,14 @@ fn parse_chord(value: &str) -> Result<Vec<KeySegment>> {
         .collect()
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FillMode {
     Replace,
     Append,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum SelectValue {
     Value(Option<String>),
@@ -331,7 +336,7 @@ pub enum ScrollDelta {
     ByOffset { dx: f64, dy: f64 },
     ToElement(ElementLocator),
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 enum ScrollDeltaWire {
     ByOffset { dx: f64, dy: f64 },
@@ -348,6 +353,8 @@ impl ScrollDelta {
         Ok(Self::ByOffset { dx, dy })
     }
 }
+delegate_json_schema!(ScrollDelta => ScrollDeltaWire);
+
 impl<'de> Deserialize<'de> for ScrollDelta {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
         deserialize_validated(d, |wire: ScrollDeltaWire| match wire {
@@ -357,14 +364,14 @@ impl<'de> Deserialize<'de> for ScrollDelta {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum DialogAction {
     Accept { prompt_text: Option<NonEmptyText> },
     Dismiss,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(transparent)]
 pub struct ValidatedFilePath(String);
 impl ValidatedFilePath {
@@ -429,7 +436,7 @@ pub struct ClickRequest {
     pub click_count: u8,
     pub wait_for_navigation: bool,
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct ClickRequestWire {
     target: PageSelection,
     locator: InteractionLocator,
@@ -460,6 +467,7 @@ impl ClickRequest {
         })
     }
 }
+delegate_json_schema!(ClickRequest => ClickRequestWire);
 request_wire!(ClickRequest, ClickRequestWire, |w: ClickRequestWire| {
     Self::new(
         w.target,
@@ -479,7 +487,7 @@ pub struct FillRequest {
     pub mode: FillMode,
     pub wait_for_navigation: bool,
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct FillRequestWire {
     target: PageSelection,
     locator: InteractionLocator,
@@ -506,6 +514,7 @@ impl FillRequest {
         })
     }
 }
+delegate_json_schema!(FillRequest => FillRequestWire);
 request_wire!(
     FillRequest,
     FillRequestWire,
@@ -525,7 +534,7 @@ pub struct PressKeysRequest {
     pub keys: Vec<KeyChord>,
     pub wait_for_navigation: bool,
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct PressKeysRequestWire {
     target: PageSelection,
     locator: Option<InteractionLocator>,
@@ -558,6 +567,7 @@ impl PressKeysRequest {
         })
     }
 }
+delegate_json_schema!(PressKeysRequest => PressKeysRequestWire);
 request_wire!(
     PressKeysRequest,
     PressKeysRequestWire,
@@ -570,7 +580,7 @@ pub struct SelectOptionRequest {
     pub locator: InteractionLocator,
     pub value: SelectValue,
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct SelectOptionRequestWire {
     target: PageSelection,
     locator: InteractionLocator,
@@ -590,24 +600,25 @@ impl SelectOptionRequest {
         })
     }
 }
+delegate_json_schema!(SelectOptionRequest => SelectOptionRequestWire);
 request_wire!(
     SelectOptionRequest,
     SelectOptionRequestWire,
     |w: SelectOptionRequestWire| Self::new(w.target, w.locator, w.value)
 );
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct HoverRequest {
     pub target: PageSelection,
     pub locator: InteractionLocator,
 }
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct DragRequest {
     pub target: PageSelection,
     pub source: InteractionLocator,
     pub destination: InteractionLocator,
 }
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ScrollRequest {
     pub target: PageSelection,
     pub delta: ScrollDelta,
@@ -619,7 +630,7 @@ pub struct UploadFilesRequest {
     pub locator: InteractionLocator,
     pub files: Vec<ValidatedFilePath>,
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct UploadFilesRequestWire {
     target: PageSelection,
     locator: InteractionLocator,
@@ -642,13 +653,14 @@ impl UploadFilesRequest {
         })
     }
 }
+delegate_json_schema!(UploadFilesRequest => UploadFilesRequestWire);
 request_wire!(
     UploadFilesRequest,
     UploadFilesRequestWire,
     |w: UploadFilesRequestWire| Self::new(w.target, w.locator, w.files)
 );
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct HandleDialogRequest {
     pub target: PageSelection,
     pub action: DialogAction,

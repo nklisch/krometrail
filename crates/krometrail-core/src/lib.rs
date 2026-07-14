@@ -8,7 +8,7 @@ macro_rules! define_stable_enum {
         }
     ) => {
         $(#[$meta])*
-        #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
+        #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
         $vis enum $name {
             $( #[serde(rename = $stable_name)] $variant ),+
         }

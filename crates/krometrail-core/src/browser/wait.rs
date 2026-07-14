@@ -2,7 +2,11 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{NonEmptyText, Result, SessionTime, error::invalid, validation::deserialize_validated};
+use crate::{
+    NonEmptyText, Result, SessionTime,
+    error::invalid,
+    validation::{delegate_json_schema, deserialize_validated},
+};
 
 use super::{DocumentReadiness, ElementLocator, ObservationContext, PageSelection};
 
@@ -14,21 +18,21 @@ const MAX_WAIT_EXPRESSION_BYTES: usize = 16 * 1024;
 const MAX_WAIT_SELECTOR_BYTES: usize = 4 * 1024;
 const MAX_WAIT_URL_BYTES: usize = 8 * 1024;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WaitTextMatch {
     Contains,
     Exact,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WaitPresence {
     Present,
     Absent,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ElementState {
     Attached,
@@ -41,7 +45,7 @@ pub enum ElementState {
     Unchecked,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum UrlMatch {
     Exact,
@@ -76,7 +80,7 @@ pub enum WaitCondition {
     },
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(
     tag = "condition",
     content = "value",
@@ -109,6 +113,8 @@ enum WaitConditionWire {
         quiet_for: u64,
     },
 }
+
+delegate_json_schema!(WaitCondition => WaitConditionWire);
 
 impl WaitCondition {
     fn validate(&self) -> Result<()> {
@@ -227,7 +233,7 @@ pub struct WaitRequest {
     pub poll_interval: Duration,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct WaitRequestWire {
     target: PageSelection,
@@ -270,6 +276,8 @@ impl WaitRequest {
         })
     }
 }
+
+delegate_json_schema!(WaitRequest => WaitRequestWire);
 
 impl<'de> Deserialize<'de> for WaitRequest {
     fn deserialize<D: serde::Deserializer<'de>>(

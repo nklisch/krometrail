@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-operation-mcp-control-surface-generated-contracts-and-sdk
 kind: story
-stage: implementing
+stage: done
 tags: [browser, agent-ux]
 parent: epic-agent-browser-operation-mcp-control-surface
 depends_on: [bug-restore-rust-1-85-contract]
@@ -58,3 +58,19 @@ A descending official-release probe established exact rmcp 0.11.0 as the newest 
 Version 0.11.0 requires its default macros feature for its own server/Schemars implementation to compile even though Krometrail uses dynamic routes. The dependency therefore keeps defaults and adds only `transport-io`. Registration must sort `tools/list` by stable name because this release's router returns `HashMap` iteration order. Response mapping must assign public `structured_content` after constructing bounded summary/image content, and root shutdown must use the actual 0.11.0 running-service API.
 
 The parent feature's `## SDK compatibility redesign` section is authoritative for the remaining accepted advisory corrections. This checkpoint is redesigned and returns to `implementing`; downstream order is unchanged.
+
+## Implementation notes
+
+- Execution capability: highest, selected by the autopilot caller for the public generated-contract and exact-SDK boundary; direct-read implementation kept one feature owner.
+- Review weight: `standard`, from the autopilot caller; child checkpoints do not receive independent review.
+- Files changed: workspace/core/MCP manifests and lock; core operation, request, lifecycle, identifier, time, error, and schema-delegation contracts.
+- Tests added: registry-wide nonempty description/control membership/object-root schema checks plus validated wait and recursive batch schema checks.
+- Simplification: one reusable schema-delegation macro keeps custom Serde wire shapes authoritative; `ListPagesRequest` now publishes an empty object while retaining its former value spelling.
+- Discrepancies from design: Schemars' UUID integration requires its `uuid1` feature; no MCP-only schema or request enum was introduced.
+- Adjacent issues parked: none.
+
+## Completion evidence
+
+- Exact `rmcp = "=0.11.0"` with default server/macros/base64 features plus `transport-io` is committed in the workspace lock.
+- `PATH=/home/nathan/.cargo/bin:$PATH cargo +1.85.0 check --workspace --all-targets --locked` passed on 2026-07-14.
+- `PATH=/home/nathan/.cargo/bin:$PATH cargo +1.85.0 test -p krometrail-core browser::operation --locked` passed all 4 focused operation/schema tests.

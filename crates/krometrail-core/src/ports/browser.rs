@@ -1,5 +1,7 @@
 use std::{path::PathBuf, sync::Arc};
 
+use serde::{Deserialize, Serialize};
+
 use crate::{
     browser::{
         BrowserInstallation, BrowserOperationRequest, BrowserOperationResult, BrowserSessionEvent,
@@ -7,6 +9,7 @@ use crate::{
     },
     error::{Result, invalid},
     time::SessionOrigin,
+    validation::{delegate_json_schema, deserialize_validated},
 };
 
 use super::PortFuture;
@@ -17,7 +20,7 @@ pub enum BrowserConnectRequest {
     Attach(AttachBrowser),
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct LaunchBrowser {
     pub executable: Option<PathBuf>,
     pub profile: ManagedProfile,
@@ -34,7 +37,8 @@ impl LaunchBrowser {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum ManagedProfile {
     Reusable {
         name: crate::browser::ProfileIdentity,
@@ -53,10 +57,17 @@ impl Default for ManagedProfile {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct AttachBrowser {
     pub endpoint: String,
 }
+
+#[derive(Deserialize, schemars::JsonSchema)]
+struct AttachBrowserWire {
+    endpoint: String,
+}
+
+delegate_json_schema!(AttachBrowser => AttachBrowserWire);
 
 impl AttachBrowser {
     pub fn new(endpoint: impl Into<String>) -> Result<Self> {
@@ -65,6 +76,16 @@ impl AttachBrowser {
             return Err(invalid("browser endpoint must not be empty"));
         }
         Ok(Self { endpoint })
+    }
+}
+
+impl<'de> Deserialize<'de> for AttachBrowser {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        deserialize_validated(deserializer, |wire: AttachBrowserWire| {
+            Self::new(wire.endpoint)
+        })
     }
 }
 

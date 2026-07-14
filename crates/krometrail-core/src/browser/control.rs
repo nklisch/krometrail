@@ -15,7 +15,7 @@ use super::{
 
 pub const DEFAULT_MANAGED_PROFILE_NAME: &str = "default";
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "selection", content = "target_id", rename_all = "snake_case")]
 pub enum PageSelection {
     Selected,
@@ -118,10 +118,14 @@ impl<'de> Deserialize<'de> for BrowserStatus {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, Default)]
-pub struct ListPagesRequest;
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, Default, schemars::JsonSchema)]
+pub struct ListPagesRequest {}
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+// Keep the former unit-value spelling source-compatible while publishing an object schema.
+#[allow(non_upper_case_globals)]
+pub const ListPagesRequest: ListPagesRequest = ListPagesRequest {};
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CreatePageRequest {
     pub initial_url: Option<NonEmptyText>,
 }
@@ -137,17 +141,17 @@ impl CreatePageRequest {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SelectPageRequest {
     pub target_id: TargetId,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ClosePageRequest {
     pub target: PageSelection,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct NavigatePageRequest {
     pub target: PageSelection,
     pub url: NonEmptyText,
@@ -163,18 +167,18 @@ impl NavigatePageRequest {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ReloadPageRequest {
     pub target: PageSelection,
     pub bypass_cache: bool,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct GoBackRequest {
     pub target: PageSelection,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct GoForwardRequest {
     pub target: PageSelection,
 }

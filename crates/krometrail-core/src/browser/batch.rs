@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     ErrorCode, InteractionId, KrometrailError, NonEmptyText, Result, SessionTime, TargetId,
-    error::invalid, validation::deserialize_validated,
+    error::invalid,
+    validation::{delegate_json_schema, deserialize_validated},
 };
 
 use super::{
@@ -16,14 +17,14 @@ use super::{
 
 const MAX_BATCH_STEPS: usize = 64;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum BatchFailurePolicy {
     StopOnFailure,
     ContinueOnFailure,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct BatchOptions {
     pub failure_policy: BatchFailurePolicy,
     pub include_step_screenshots: bool,
@@ -47,7 +48,7 @@ pub struct BatchRequest {
     pub options: BatchOptions,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct BatchRequestWire {
     target: PageSelection,
@@ -111,6 +112,8 @@ impl BatchRequest {
         })
     }
 }
+
+delegate_json_schema!(BatchRequest => BatchRequestWire);
 
 impl<'de> Deserialize<'de> for BatchRequest {
     fn deserialize<D: serde::Deserializer<'de>>(

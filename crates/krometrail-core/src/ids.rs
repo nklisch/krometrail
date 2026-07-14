@@ -4,7 +4,19 @@ use std::{fmt, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    Deserialize,
+    schemars::JsonSchema,
+)]
 #[serde(transparent)]
 pub struct IdValue(uuid::Uuid);
 
@@ -35,7 +47,7 @@ impl FromStr for IdValue {
 macro_rules! typed_ids {
     ($($name:ident),+ $(,)?) => {
         $(
-            #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+            #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, schemars::JsonSchema)]
             #[serde(transparent)]
             pub struct $name(IdValue);
 

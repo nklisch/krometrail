@@ -134,7 +134,7 @@ impl<'de> Deserialize<'de> for BrowserInstallation {
     }
 }
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(transparent)]
 pub struct ProfileIdentity(String);
 

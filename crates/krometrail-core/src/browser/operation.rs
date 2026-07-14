@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::CapabilityId;
+
 use super::{
     AcceptedLocator, ActionCategory, ActionDefinition, ActionabilityRequirement, BatchRequest,
     BatchResult, ClickRequest, ClosePageRequest, CompletionKind, CreatePageRequest, DragRequest,
@@ -43,6 +45,8 @@ pub enum BrowserOperationScope {
 pub struct BrowserOperationDefinition {
     pub kind: BrowserOperationKind,
     pub stable_name: &'static str,
+    pub description: &'static str,
+    pub capability: CapabilityId,
     pub mutability: OperationMutability,
     pub evidence: OperationEvidence,
     pub scope: BrowserOperationScopeKind,
@@ -99,6 +103,7 @@ macro_rules! define_browser_operations {
     ($(
         $variant:ident($request:ty) => $result:ty {
             stable_name: $stable_name:literal,
+            description: $description:literal,
             mutability: $mutability:ident,
             evidence: $evidence:ident,
             scope: $scope:ident,
@@ -106,7 +111,7 @@ macro_rules! define_browser_operations {
             action: $action:expr,
         }
     ),+ $(,)?) => {
-        #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+        #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
         pub enum BrowserOperationKind {
             $(#[serde(rename = $stable_name)] $variant),+
         }
@@ -116,6 +121,9 @@ macro_rules! define_browser_operations {
             pub const fn stable_name(self) -> &'static str {
                 match self { $(Self::$variant => $stable_name),+ }
             }
+            pub fn input_schema(self) -> schemars::Schema {
+                match self { $(Self::$variant => schemars::schema_for!($request)),+ }
+            }
             pub fn is_interaction(self) -> bool {
                 BROWSER_OPERATION_REGISTRY
                     .iter()
@@ -124,7 +132,7 @@ macro_rules! define_browser_operations {
             }
         }
 
-        #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+        #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
         #[serde(tag = "operation", content = "request")]
         pub enum BrowserOperationRequest {
             $(#[serde(rename = $stable_name)] $variant($request)),+
@@ -153,6 +161,8 @@ macro_rules! define_browser_operations {
             $(BrowserOperationDefinition {
                 kind: BrowserOperationKind::$variant,
                 stable_name: $stable_name,
+                description: $description,
+                capability: CapabilityId::Control,
                 mutability: OperationMutability::$mutability,
                 evidence: OperationEvidence::$evidence,
                 scope: BrowserOperationScopeKind::$scope,
@@ -231,76 +241,76 @@ const ACTION_DIALOG: ActionDefinition = ActionDefinition {
 
 define_browser_operations! {
     InspectPage(InspectPageRequest) => PageState {
-        stable_name: "inspect_page", mutability: ReadOnly, evidence: RequestedOnly, scope: Page, batchable: true, action: None,
+        stable_name: "inspect_page", description: "Inspect the current page URL, title, viewport, and navigation state.", mutability: ReadOnly, evidence: RequestedOnly, scope: Page, batchable: true, action: None,
     },
     SnapshotPage(SnapshotPageRequest) => PageSnapshot {
-        stable_name: "snapshot_page", mutability: ReadOnly, evidence: RequestedOnly, scope: Page, batchable: true, action: None,
+        stable_name: "snapshot_page", description: "Capture a structured accessibility snapshot with actionable references.", mutability: ReadOnly, evidence: RequestedOnly, scope: Page, batchable: true, action: None,
     },
     TakeScreenshot(ScreenshotRequest) => EncodedScreenshot {
-        stable_name: "take_screenshot", mutability: ReadOnly, evidence: RequestedOnly, scope: Page, batchable: true, action: None,
+        stable_name: "take_screenshot", description: "Capture the requested viewport, page, element, or region image.", mutability: ReadOnly, evidence: RequestedOnly, scope: Page, batchable: true, action: None,
     },
     EvaluatePage(ReadOnlyEvaluationRequest) => EvaluationResult {
-        stable_name: "evaluate_page", mutability: ReadOnly, evidence: RequestedOnly, scope: Page, batchable: true, action: None,
+        stable_name: "evaluate_page", description: "Evaluate a bounded read-only JavaScript expression in the page.", mutability: ReadOnly, evidence: RequestedOnly, scope: Page, batchable: true, action: None,
     },
     ObserveLive(LiveObservationRequest) => LiveObservation {
-        stable_name: "observe_live", mutability: ReadOnly, evidence: LiveObservation, scope: Page, batchable: false, action: None,
+        stable_name: "observe_live", description: "Capture current page state, snapshot, and screenshot together.", mutability: ReadOnly, evidence: LiveObservation, scope: Page, batchable: false, action: None,
     },
     ListPages(ListPagesRequest) => Vec<PageStatus> {
-        stable_name: "list_pages", mutability: ReadOnly, evidence: RequestedOnly, scope: Browser, batchable: false, action: None,
+        stable_name: "list_pages", description: "List supervised browser pages and the current selection.", mutability: ReadOnly, evidence: RequestedOnly, scope: Browser, batchable: false, action: None,
     },
     CreatePage(CreatePageRequest) => PageOperationResult {
-        stable_name: "create_page", mutability: StateChanging, evidence: LiveObservation, scope: Browser, batchable: false, action: None,
+        stable_name: "create_page", description: "Create and select a new browser page.", mutability: StateChanging, evidence: LiveObservation, scope: Browser, batchable: false, action: None,
     },
     SelectPage(SelectPageRequest) => PageOperationResult {
-        stable_name: "select_page", mutability: StateChanging, evidence: LiveObservation, scope: Browser, batchable: false, action: None,
+        stable_name: "select_page", description: "Select a supervised browser page.", mutability: StateChanging, evidence: LiveObservation, scope: Browser, batchable: false, action: None,
     },
     ClosePage(ClosePageRequest) => PageOperationResult {
-        stable_name: "close_page", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: false, action: None,
+        stable_name: "close_page", description: "Close a supervised browser page.", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: false, action: None,
     },
     NavigatePage(NavigatePageRequest) => PageOperationResult {
-        stable_name: "navigate_page", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: None,
+        stable_name: "navigate_page", description: "Navigate a page to a URL and return live evidence.", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: None,
     },
     ReloadPage(ReloadPageRequest) => PageOperationResult {
-        stable_name: "reload_page", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: None,
+        stable_name: "reload_page", description: "Reload a page and return live evidence.", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: None,
     },
     GoBack(GoBackRequest) => PageOperationResult {
-        stable_name: "go_back", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: None,
+        stable_name: "go_back", description: "Move backward in page history and return live evidence.", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: None,
     },
     GoForward(GoForwardRequest) => PageOperationResult {
-        stable_name: "go_forward", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: None,
+        stable_name: "go_forward", description: "Move forward in page history and return live evidence.", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: None,
     },
     Click(ClickRequest) => InteractionResult {
-        stable_name: "click", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: Some(&ACTION_CLICK),
+        stable_name: "click", description: "Click an element or declared coordinate and return live evidence.", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: Some(&ACTION_CLICK),
     },
     Fill(FillRequest) => InteractionResult {
-        stable_name: "fill", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: Some(&ACTION_FILL),
+        stable_name: "fill", description: "Fill an editable element and return live evidence.", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: Some(&ACTION_FILL),
     },
     PressKeys(PressKeysRequest) => InteractionResult {
-        stable_name: "press_keys", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: Some(&ACTION_PRESS_KEYS),
+        stable_name: "press_keys", description: "Press validated key chords and return live evidence.", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: Some(&ACTION_PRESS_KEYS),
     },
     SelectOption(SelectOptionRequest) => InteractionResult {
-        stable_name: "select_option", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: Some(&ACTION_SELECT),
+        stable_name: "select_option", description: "Choose an option in a selectable element and return live evidence.", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: Some(&ACTION_SELECT),
     },
     Hover(HoverRequest) => InteractionResult {
-        stable_name: "hover", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: Some(&ACTION_HOVER),
+        stable_name: "hover", description: "Move the pointer over an element or coordinate and return live evidence.", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: Some(&ACTION_HOVER),
     },
     Drag(DragRequest) => InteractionResult {
-        stable_name: "drag", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: Some(&ACTION_DRAG),
+        stable_name: "drag", description: "Drag between validated locations and return live evidence.", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: Some(&ACTION_DRAG),
     },
     Scroll(ScrollRequest) => InteractionResult {
-        stable_name: "scroll", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: Some(&ACTION_SCROLL),
+        stable_name: "scroll", description: "Scroll by an offset or to an element and return live evidence.", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: Some(&ACTION_SCROLL),
     },
     UploadFiles(UploadFilesRequest) => InteractionResult {
-        stable_name: "upload_files", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: Some(&ACTION_UPLOAD),
+        stable_name: "upload_files", description: "Upload validated local files through a file input.", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: Some(&ACTION_UPLOAD),
     },
     HandleDialog(HandleDialogRequest) => InteractionResult {
-        stable_name: "handle_dialog", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: Some(&ACTION_DIALOG),
+        stable_name: "handle_dialog", description: "Accept or dismiss the active browser dialog.", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: Some(&ACTION_DIALOG),
     },
     Wait(WaitRequest) => WaitResult {
-        stable_name: "wait", mutability: ReadOnly, evidence: RequestedOnly, scope: Page, batchable: true, action: None,
+        stable_name: "wait", description: "Wait for an explicit page, element, text, navigation, or network condition.", mutability: ReadOnly, evidence: RequestedOnly, scope: Page, batchable: true, action: None,
     },
     Batch(BatchRequest) => BatchResult {
-        stable_name: "batch", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: false, action: None,
+        stable_name: "batch", description: "Execute an ordered one-page batch of browser operations.", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: false, action: None,
     },
 }
 
@@ -327,7 +337,16 @@ mod tests {
         {
             assert_eq!(definition.kind, *kind);
             assert_eq!(definition.stable_name, kind.stable_name());
+            assert!(!definition.description.trim().is_empty());
+            assert_eq!(definition.capability, CapabilityId::Control);
             assert_eq!(definition.action.is_some(), kind.is_interaction());
+            let schema = serde_json::to_value(kind.input_schema()).unwrap();
+            assert_eq!(
+                schema["type"],
+                "object",
+                "{} input schema",
+                kind.stable_name()
+            );
         }
         assert_eq!(
             BROWSER_OPERATION_REGISTRY
@@ -398,6 +417,25 @@ mod tests {
             BrowserOperationRequest::ListPages(ListPagesRequest).scope(),
             BrowserOperationScope::Browser
         );
+    }
+
+    #[test]
+    fn generated_request_schemas_preserve_validated_wire_shapes_and_recursion() {
+        let list_schema =
+            serde_json::to_value(BrowserOperationKind::ListPages.input_schema()).unwrap();
+        assert_eq!(list_schema["type"], "object");
+
+        let wait_schema = serde_json::to_value(BrowserOperationKind::Wait.input_schema()).unwrap();
+        let encoded = wait_schema.to_string();
+        assert!(encoded.contains("poll_interval"));
+        assert!(encoded.contains("integer"));
+        assert!(!encoded.contains("secs"));
+        assert!(!encoded.contains("nanos"));
+
+        let batch_schema =
+            serde_json::to_value(BrowserOperationKind::Batch.input_schema()).unwrap();
+        assert_eq!(batch_schema["type"], "object");
+        assert!(batch_schema.to_string().contains("BrowserOperationRequest"));
     }
 
     #[test]

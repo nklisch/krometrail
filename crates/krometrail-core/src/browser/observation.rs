@@ -12,10 +12,12 @@ use crate::{
     ids::{SessionId, TargetId},
     recording::{DeviceScaleFactor, ImageFormat, PixelDimensions},
     time::SessionTime,
-    validation::deserialize_validated,
+    validation::{delegate_json_schema, deserialize_validated},
 };
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, schemars::JsonSchema,
+)]
 #[serde(transparent)]
 pub struct SnapshotGeneration(NonZeroU64);
 
@@ -38,7 +40,9 @@ impl<'de> Deserialize<'de> for SnapshotGeneration {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, schemars::JsonSchema,
+)]
 #[serde(transparent)]
 pub struct SnapshotNodeId(NonZeroU32);
 
@@ -61,7 +65,7 @@ impl<'de> Deserialize<'de> for SnapshotNodeId {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct NodeReference {
     pub target_id: TargetId,
     pub generation: SnapshotGeneration,
@@ -123,7 +127,7 @@ impl<'de> Deserialize<'de> for ObservationContext {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CssPoint {
     pub x: f64,
     pub y: f64,
@@ -139,7 +143,7 @@ impl CssPoint {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct CssSize {
     pub width: f64,
     pub height: f64,
@@ -170,7 +174,7 @@ impl<'de> Deserialize<'de> for CssSize {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct CssRect {
     pub origin: CssPoint,
     pub size: CssSize,
@@ -255,7 +259,7 @@ impl<'de> Deserialize<'de> for ViewportState {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DocumentReadiness {
     Loading,
@@ -487,19 +491,19 @@ impl<'de> Deserialize<'de> for PageSnapshot {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum ElementLocator {
     Reference(NodeReference),
     CssSelector(NonEmptyText),
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum CoordinateSpace {
     ViewportCss,
     DocumentCss,
 }
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum ScreenshotTarget {
     Viewport,
@@ -518,7 +522,7 @@ pub struct ScreenshotRequest {
     pub format: ImageFormat,
     pub jpeg_quality: Option<u8>,
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct ScreenshotRequestWire {
     page: PageSelection,
     target: ScreenshotTarget,
@@ -563,6 +567,8 @@ impl ScreenshotRequest {
         })
     }
 }
+delegate_json_schema!(ScreenshotRequest => ScreenshotRequestWire);
+
 impl<'de> Deserialize<'de> for ScreenshotRequest {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
         deserialize_validated(d, |w: ScreenshotRequestWire| {
@@ -641,7 +647,7 @@ impl EncodedScreenshot {
 
 macro_rules! page_request {
     ($name:ident) => {
-        #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+        #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
         pub struct $name {
             pub target: PageSelection,
         }
@@ -665,7 +671,7 @@ pub struct ReadOnlyEvaluationRequest {
     pub expression: NonEmptyText,
     pub await_promise: bool,
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct ReadOnlyEvaluationRequestWire {
     target: PageSelection,
     expression: NonEmptyText,
@@ -685,6 +691,8 @@ impl ReadOnlyEvaluationRequest {
         })
     }
 }
+delegate_json_schema!(ReadOnlyEvaluationRequest => ReadOnlyEvaluationRequestWire);
+
 impl<'de> Deserialize<'de> for ReadOnlyEvaluationRequest {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
         deserialize_validated(d, |w: ReadOnlyEvaluationRequestWire| {

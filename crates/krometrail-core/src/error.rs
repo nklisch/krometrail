@@ -46,7 +46,9 @@ define_stable_enum! {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum RetryAdvice {
     #[default]
@@ -55,7 +57,7 @@ pub enum RetryAdvice {
     AfterRecovery,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ErrorContext {
     pub session_id: Option<SessionId>,
     pub target_id: Option<TargetId>,
@@ -69,7 +71,7 @@ pub struct EmptyTextError;
 
 /// A validated user-facing string. It prevents an error boundary from emitting
 /// an empty explanation or recovery action while preserving exact serde shape.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(transparent)]
 pub struct NonEmptyText(Box<str>);
 
@@ -108,7 +110,9 @@ impl fmt::Display for NonEmptyText {
 /// `KrometrailError` intentionally has no source-error field. Infrastructure
 /// adapters can retain their private cause in local logs, but cannot accidentally
 /// serialize arbitrary implementation details to callers.
-#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Eq, PartialEq, thiserror::Error, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[error("{code}: {message}")]
 pub struct KrometrailError {
     pub code: ErrorCode,
