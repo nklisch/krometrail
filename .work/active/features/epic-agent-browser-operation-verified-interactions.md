@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-operation-verified-interactions
 kind: feature
-stage: review
+stage: implementing
 tags: [browser, agent-ux]
 parent: epic-agent-browser-operation
 depends_on: [epic-agent-browser-operation-page-observation]
@@ -807,3 +807,18 @@ All five implementation checkpoints are complete and the feature is ready for re
 - Real Chrome qualification passed all eight verified-interactions tests under `KROMETRAIL_REAL_CHROME_TESTS=1`; deterministic qualification passed eight tests.
 - CDP package gates passed: 190 all-target tests, no-default-features check, and Clippy with `-D warnings`.
 - Workspace check and tests passed (379 tests). Workspace Clippy remains blocked by unrelated concurrent range-test warnings only; no range files were modified or staged.
+
+## Review bounce 1 (2026-07-14)
+
+**Verdict:** Request changes
+
+**Receiver-confirmed blockers:**
+
+1. Element-targeted pointer resolution currently treats `DOM.getBoxModel` quad centers as viewport coordinates, while screenshot and declared document-coordinate paths treat the same geometry as document/page coordinates. Existing tests only click before scrolling and never assert dispatched coordinates with non-zero visual-viewport offsets. Add deterministic non-zero-offset dispatch assertions plus a real-Chrome scroll-then-click target, then correct or empirically justify the conversion.
+2. Fill sanitization persists the first 32 characters verbatim, exposing complete short passwords, tokens, and codes. Replace value previews with non-sensitive metadata (for example, character count) and prove short values never appear.
+
+**Important to adjudicate in remediation:** A dialog event can win `tokio::select!` and drop an in-flight multi-command pointer dispatch between press and release. Verify cdpkit abandonment and pointer-state behavior with a focused test or restructure the boundary so dialog observation does not leave a partially dispatched gesture.
+
+**Non-blocking:** Restore or explain `throwOnSideEffect` for coordinate hit testing; align final design prose with shipped field names; sharing one layout-metrics read for drag is a performance nit outside this correction.
+
+The approved initial-attach domain restoration, exact-session single-attempt dialog handling, registry/actionability/key/upload/error/record contracts, and package gates remain valid. This bounce is focused on post-scroll pointer correctness, secret-safe fill records, and the dispatch-cancellation edge above.
