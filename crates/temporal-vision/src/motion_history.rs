@@ -1,13 +1,19 @@
-use std::num::NonZeroU8;
+use std::{collections::BTreeMap, fmt::Display, num::NonZeroU8};
 
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    BinaryMask, ComparisonOutcome, ErrorCode, FrameSequence, MeasurementParameters,
-    NormalizedSequence, PixelDimensions, Result, Rgb8, TimeRange, VisionError,
-    measure::classify_pixel_change,
+    AlgorithmDescriptor, ArtifactKind, ArtifactManifest, BinaryMask, ComparisonOutcome,
+    EncodedImage, ErrorCode, EvidenceClass, FrameSequence, GeneratedArtifact,
+    MeasurementParameters, NormalizationKind, NormalizationStep, NormalizedSequence,
+    ParameterValue, Parameters, PixelDimensions, Result, Rgb8, TimeRange, Timestamp, VisionError,
+    measure::{classify_pixel_change, linear_luminance},
     measure_adjacent,
-    render::{ArtifactLabels, RenderLimits},
+    render::{
+        ArtifactLabels, RenderLimits,
+        canvas::{BLACK, Canvas, MUTED, PANEL, WARNING, WHITE, canvas_limit_error},
+        font::{CELL_WIDTH, draw_text, ellipsize},
+    },
 };
 
 /// One deterministic integer exponential-decay curve over pair recency rank.
@@ -334,19 +340,22 @@ fn validate_source_alignment<F: Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
 }
 
 fn ensure_plan_memory_fits(pixel_count: usize, limits: RenderLimits) -> Result<()> {
+    if plan_working_bytes(pixel_count)? > limits.max_canvas_bytes() {
+        return Err(motion_limit_error());
+    }
+    Ok(())
+}
+
+fn plan_working_bytes(pixel_count: usize) -> Result<usize> {
     let mask_bytes = pixel_count
         .checked_add(7)
         .and_then(|value| value.checked_div(8))
         .ok_or_else(motion_limit_error)?;
-    let bytes = pixel_count
+    pixel_count
         .checked_mul(std::mem::size_of::<u16>())
         .and_then(|value| value.checked_mul(2))
         .and_then(|value| value.checked_add(mask_bytes.checked_mul(2)?))
-        .ok_or_else(motion_limit_error)?;
-    if bytes > limits.max_canvas_bytes() {
-        return Err(motion_limit_error());
-    }
-    Ok(())
+        .ok_or_else(motion_limit_error)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -440,6 +449,501 @@ fn bit_is_set(bits: &[u8], index: usize) -> bool {
 
 fn set_bit(bits: &mut [u8], index: usize) {
     bits[index / 8] |= 0x80 >> (index % 8);
+}
+
+const ALGORITHM_NAME: &str = "motion-history";
+const ALGORITHM_VERSION: &str = "1.0.0";
+const HEADER_HEIGHT: u32 = 38;
+const FOOTER_HEIGHT: u32 = 94;
+const LEGEND_X: u32 = 4;
+const LEGEND_Y_OFFSET: u32 = 30;
+const LEGEND_HEIGHT: u32 = 8;
+const PNG_PROFILE: &str = "png-0.17.16-rgb8-best-no_filter-no_chunks";
+
+/// Encoded motion-history evidence and its machine-readable provenance.
+pub type MotionHistoryArtifact<ArtifactId, FrameId, MarkerId, GapId> =
+    GeneratedArtifact<ArtifactId, FrameId, MarkerId, GapId>;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct MotionHistoryLayout {
+    dimensions: PixelDimensions,
+    main_y: u32,
+    footer_y: u32,
+}
+
+impl MotionHistoryLayout {
+    fn new(source: PixelDimensions, limits: RenderLimits) -> Result<Self> {
+        let height = HEADER_HEIGHT
+            .checked_add(source.height())
+            .and_then(|value| value.checked_add(FOOTER_HEIGHT))
+            .ok_or_else(canvas_limit_error)?;
+        if source.width() > limits.max_width() || height > limits.max_height() {
+            return Err(canvas_limit_error());
+        }
+        let dimensions =
+            PixelDimensions::new(source.width(), height).map_err(|_| canvas_limit_error())?;
+        let canvas_bytes = dimensions
+            .pixel_count()?
+            .checked_mul(3)
+            .ok_or_else(canvas_limit_error)?;
+        let total_working_bytes = plan_working_bytes(source.pixel_count()?)?
+            .checked_add(canvas_bytes)
+            .ok_or_else(canvas_limit_error)?;
+        if total_working_bytes > limits.max_canvas_bytes() {
+            return Err(canvas_limit_error());
+        }
+        Ok(Self {
+            dimensions,
+            main_y: HEADER_HEIGHT,
+            footer_y: HEADER_HEIGHT + source.height(),
+        })
+    }
+}
+
+/// Render and encode one deterministic, bounded, source-derived motion-history image.
+pub fn generate_motion_history<A, F, M, G, P>(
+    artifact_id: A,
+    source: &FrameSequence<F, M, G, P>,
+    normalized: &NormalizedSequence<F>,
+    parameters: MotionHistoryParameters,
+) -> Result<MotionHistoryArtifact<A, F, M, G>>
+where
+    F: Clone + Eq + Display,
+    M: Clone + Eq,
+    G: Clone + Eq,
+    P: AsRef<[u8]>,
+{
+    validate_source_alignment(source, normalized, parameters.reference_frame_index)?;
+    let layout = MotionHistoryLayout::new(normalized.dimensions(), parameters.limits)?;
+    let plan = build_motion_history_plan(source, normalized, &parameters)?;
+    let mut canvas = Canvas::new(
+        layout.dimensions,
+        BLACK,
+        parameters.limits.max_canvas_bytes(),
+    )?;
+    draw_motion_history(&mut canvas, layout, source, normalized, &plan, &parameters)?;
+    let (bytes, hash) = crate::encode::encode_png(
+        layout.dimensions,
+        canvas.pixels(),
+        parameters.limits.max_encoded_bytes(),
+    )?;
+
+    let mut normalization = normalized.normalization_steps().to_vec();
+    normalization.push(parameters.measurement.provenance_step()?);
+    normalization.push(display_step()?);
+    let manifest = ArtifactManifest::from_sequence(
+        artifact_id,
+        ArtifactKind::MotionHistory,
+        EvidenceClass::SourceDerived,
+        AlgorithmDescriptor::new(ALGORITHM_NAME, ALGORITHM_VERSION)?,
+        source,
+        vec![plan.reference_frame_id().clone()],
+        normalization,
+        manifest_parameters(source, &plan, &parameters)?,
+        layout.dimensions,
+        hash,
+    )?;
+    Ok(GeneratedArtifact::new(
+        EncodedImage::new(layout.dimensions, bytes),
+        manifest,
+    ))
+}
+
+fn draw_motion_history<F: Display + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
+    canvas: &mut Canvas,
+    layout: MotionHistoryLayout,
+    source: &FrameSequence<F, M, G, P>,
+    normalized: &NormalizedSequence<F>,
+    plan: &MotionHistoryPlan<F>,
+    parameters: &MotionHistoryParameters,
+) -> Result<()> {
+    canvas.fill_rect(0, 0, layout.dimensions.width(), HEADER_HEIGHT, BLACK)?;
+    draw_clipped_text(
+        canvas,
+        0,
+        1,
+        layout.dimensions.width(),
+        parameters.labels.title(),
+        WHITE,
+    )?;
+    draw_clipped_text(
+        canvas,
+        0,
+        13,
+        layout.dimensions.width(),
+        parameters.labels.source(),
+        MUTED,
+    )?;
+    draw_clipped_text(
+        canvas,
+        0,
+        25,
+        layout.dimensions.width(),
+        &format!(
+            "MOTION HISTORY | RANGE {} - {}",
+            format_time(source.range().start()),
+            format_time(source.range().end())
+        ),
+        MUTED,
+    )?;
+
+    let reference = &normalized.frames()[plan.reference_frame_index()];
+    let width = usize::try_from(plan.dimensions().width()).map_err(|_| canvas_limit_error())?;
+    for (pixel, rgb) in reference.linear_rgb16().chunks_exact(3).enumerate() {
+        let luminance = linear_luminance(rgb)?;
+        let gray =
+            u8::try_from((luminance * u128::from(parameters.reference_strength) + 32_767) / 65_535)
+                .map_err(|_| canvas_limit_error())?;
+        let alpha = u32::from(plan.accumulation[pixel]);
+        let accent = parameters.accent_color.channels();
+        let color = accent.map(|channel| {
+            let value = u32::from(gray) * (65_535 - alpha) + u32::from(channel) * alpha + 32_767;
+            (value / 65_535) as u8
+        });
+        let x = u32::try_from(pixel % width).map_err(|_| canvas_limit_error())?;
+        let y = u32::try_from(pixel / width).map_err(|_| canvas_limit_error())?;
+        canvas.set_pixel(x, layout.main_y + y, color)?;
+    }
+    for pixel in 0..plan.dimensions().pixel_count()? {
+        let x = u32::try_from(pixel % width).map_err(|_| canvas_limit_error())?;
+        let y = u32::try_from(pixel / width).map_err(|_| canvas_limit_error())?;
+        if plan.outline.includes(x, y) == Some(true) {
+            canvas.set_pixel(x, layout.main_y + y, parameters.outline_color.channels())?;
+        }
+    }
+    draw_footer(canvas, layout, source, plan, parameters)
+}
+
+fn draw_footer<F: Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
+    canvas: &mut Canvas,
+    layout: MotionHistoryLayout,
+    source: &FrameSequence<F, M, G, P>,
+    plan: &MotionHistoryPlan<F>,
+    parameters: &MotionHistoryParameters,
+) -> Result<()> {
+    canvas.fill_rect(
+        0,
+        layout.footer_y,
+        layout.dimensions.width(),
+        FOOTER_HEIGHT,
+        PANEL,
+    )?;
+    let lines = annotation_lines(source, plan);
+    draw_clipped_text(
+        canvas,
+        4,
+        layout.footer_y + 3,
+        layout.dimensions.width().saturating_sub(8),
+        &lines.range,
+        WHITE,
+    )?;
+    draw_clipped_text(
+        canvas,
+        4,
+        layout.footer_y + 15,
+        layout.dimensions.width().saturating_sub(8),
+        &lines.decay,
+        MUTED,
+    )?;
+    draw_decay_ramp(canvas, layout, plan, parameters)?;
+    draw_clipped_text(
+        canvas,
+        4,
+        layout.footer_y + 42,
+        layout.dimensions.width().saturating_sub(8),
+        lines.disclaimer,
+        MUTED,
+    )?;
+    draw_clipped_text(
+        canvas,
+        4,
+        layout.footer_y + 54,
+        layout.dimensions.width().saturating_sub(8),
+        lines.direction,
+        WHITE,
+    )?;
+    draw_clipped_text(
+        canvas,
+        4,
+        layout.footer_y + 66,
+        layout.dimensions.width().saturating_sub(8),
+        lines.disambiguation,
+        MUTED,
+    )?;
+    if let Some(gap) = lines.gap {
+        canvas.fill_rect(
+            0,
+            layout.footer_y + 78,
+            layout.dimensions.width(),
+            16,
+            WARNING,
+        )?;
+        draw_clipped_text(
+            canvas,
+            4,
+            layout.footer_y + 80,
+            layout.dimensions.width().saturating_sub(8),
+            &gap,
+            BLACK,
+        )?;
+    }
+    Ok(())
+}
+
+fn draw_decay_ramp<F>(
+    canvas: &mut Canvas,
+    layout: MotionHistoryLayout,
+    plan: &MotionHistoryPlan<F>,
+    parameters: &MotionHistoryParameters,
+) -> Result<()> {
+    let width = layout.dimensions.width().saturating_sub(LEGEND_X * 2);
+    if width == 0 {
+        return Ok(());
+    }
+    let oldest_rank = plan
+        .live_window()
+        .saturating_sub(1)
+        .min(plan.max_segment_rank());
+    for x in 0..width {
+        let rank = if width == 1 {
+            oldest_rank
+        } else {
+            u32::try_from(u64::from(oldest_rank) * u64::from(width - 1 - x) / u64::from(width - 1))
+                .map_err(|_| canvas_limit_error())?
+        };
+        let alpha = u32::from(parameters.decay.weight_at(rank));
+        let color = parameters
+            .accent_color
+            .channels()
+            .map(|channel| (u32::from(channel) * alpha / 65_535) as u8);
+        for y in 0..LEGEND_HEIGHT {
+            canvas.set_pixel(LEGEND_X + x, layout.footer_y + LEGEND_Y_OFFSET + y, color)?;
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct AnnotationLines {
+    range: String,
+    decay: String,
+    disclaimer: &'static str,
+    direction: &'static str,
+    disambiguation: &'static str,
+    gap: Option<String>,
+}
+
+fn annotation_lines<F, M, G, P>(
+    source: &FrameSequence<F, M, G, P>,
+    plan: &MotionHistoryPlan<F>,
+) -> AnnotationLines
+where
+    F: Eq,
+    M: Eq,
+    G: Eq,
+    P: AsRef<[u8]>,
+{
+    let span = source
+        .range()
+        .end()
+        .as_nanos()
+        .saturating_sub(source.range().start().as_nanos());
+    let oldest_rank = plan
+        .live_window()
+        .saturating_sub(1)
+        .min(plan.max_segment_rank());
+    AnnotationLines {
+        range: format!(
+            "START {} | END {} | SPAN {} NS",
+            format_time(source.range().start()),
+            format_time(source.range().end()),
+            span
+        ),
+        decay: format!(
+            "DECAY: OLDEST RETAINED RANK {} -> NEWEST RANK 0",
+            oldest_rank
+        ),
+        disclaimer: "MOTION HISTORY - SOURCE-DERIVED; NO DIRECTION INFERRED",
+        direction: "TIME -> START TO END; INTENSITY IS PER-SEGMENT RECENCY",
+        disambiguation: "OVERLAP MAY SMEAR DETAIL; INSPECT STORYBOARD OR REGION FILMSTRIP",
+        gap: (!source.gaps().is_empty()).then(|| {
+            format!(
+                "GAP - {} DECLARED; UNSEEN BEHAVIOR MAY HAVE OCCURRED",
+                source.gaps().len()
+            )
+        }),
+    }
+}
+
+fn draw_clipped_text(
+    canvas: &mut Canvas,
+    x: u32,
+    y: u32,
+    width: u32,
+    text: &str,
+    color: [u8; 3],
+) -> Result<()> {
+    let cells = usize::try_from(width / CELL_WIDTH).unwrap_or(0);
+    if cells == 0 {
+        return Ok(());
+    }
+    draw_text(canvas, x, y, &ellipsize(text, cells), color)
+}
+
+fn format_time(timestamp: Timestamp) -> String {
+    let milliseconds = timestamp.as_nanos() / 1_000_000;
+    let micros = timestamp.as_nanos() % 1_000_000 / 1_000;
+    format!("{milliseconds}.{micros:03} MS")
+}
+
+fn display_step() -> Result<NormalizationStep> {
+    NormalizationStep::new(
+        NormalizationKind::ColorSpaceConversion,
+        "motion-history-display-rgb8-v1",
+        parameter_map([
+            (
+                "reference",
+                ParameterValue::Text("linear16_luminance_subdued_rgb8".into()),
+            ),
+            (
+                "motion",
+                ParameterValue::Text("u16_straight_alpha_accent_rgb8".into()),
+            ),
+            (
+                "outline",
+                ParameterValue::Text("four_connectivity_ever_changed".into()),
+            ),
+        ])?,
+    )
+}
+
+fn manifest_parameters<F, M, G, P>(
+    source: &FrameSequence<F, M, G, P>,
+    plan: &MotionHistoryPlan<F>,
+    request: &MotionHistoryParameters,
+) -> Result<Parameters>
+where
+    F: Display + Eq,
+    M: Eq,
+    G: Eq,
+    P: AsRef<[u8]>,
+{
+    parameter_map([
+        ("title", ParameterValue::Text(request.labels.title().into())),
+        (
+            "source",
+            ParameterValue::Text(request.labels.source().into()),
+        ),
+        (
+            "reference_frame_index",
+            unsigned_usize(request.reference_frame_index)?,
+        ),
+        (
+            "reference_frame_id",
+            ParameterValue::Text(plan.reference_frame_id().to_string().into()),
+        ),
+        (
+            "peak_intensity",
+            ParameterValue::Unsigned(u64::from(request.decay.peak_intensity())),
+        ),
+        (
+            "half_life_ranks",
+            ParameterValue::Unsigned(u64::from(request.decay.half_life_ranks().get())),
+        ),
+        (
+            "live_window",
+            ParameterValue::Unsigned(u64::from(plan.live_window())),
+        ),
+        (
+            "reference_strength",
+            ParameterValue::Unsigned(u64::from(request.reference_strength)),
+        ),
+        ("accent_rgb8", rgb_parameter(request.accent_color)),
+        ("outline_rgb8", rgb_parameter(request.outline_color)),
+        (
+            "continuity_segment_count",
+            unsigned_usize(plan.continuity_segment_count())?,
+        ),
+        (
+            "measured_pair_count",
+            unsigned_usize(plan.measured_pair_count())?,
+        ),
+        ("gap_pair_count", unsigned_usize(plan.gap_pair_count())?),
+        ("declared_gap_count", unsigned_usize(source.gaps().len())?),
+        (
+            "changed_pixel_count",
+            ParameterValue::Unsigned(plan.changed_pixel_count()),
+        ),
+        (
+            "max_segment_rank",
+            ParameterValue::Unsigned(u64::from(plan.max_segment_rank())),
+        ),
+        (
+            "accumulation",
+            ParameterValue::Text("saturating_u16_per_segment_then_pixelwise_max".into()),
+        ),
+        (
+            "cross_gap_policy",
+            ParameterValue::Text("never_accumulate_across_declared_gap".into()),
+        ),
+        (
+            "outline",
+            ParameterValue::Text("ever_changed_four_connectivity_boundary".into()),
+        ),
+        ("direction_inference", ParameterValue::Text("none".into())),
+        (
+            "disambiguation",
+            ParameterValue::Text("storyboard_or_region_filmstrip".into()),
+        ),
+        (
+            "layout",
+            ParameterValue::Text("fixed_header_combined_image_footer_v1".into()),
+        ),
+        (
+            "header_height",
+            ParameterValue::Unsigned(u64::from(HEADER_HEIGHT)),
+        ),
+        (
+            "footer_height",
+            ParameterValue::Unsigned(u64::from(FOOTER_HEIGHT)),
+        ),
+        ("encoding", ParameterValue::Text(PNG_PROFILE.into())),
+        (
+            "max_canvas_bytes",
+            unsigned_usize(request.limits.max_canvas_bytes())?,
+        ),
+        (
+            "max_encoded_bytes",
+            unsigned_usize(request.limits.max_encoded_bytes())?,
+        ),
+    ])
+}
+
+fn rgb_parameter(color: Rgb8) -> ParameterValue {
+    ParameterValue::List(
+        color
+            .channels()
+            .into_iter()
+            .map(|channel| ParameterValue::Unsigned(u64::from(channel)))
+            .collect(),
+    )
+}
+
+fn parameter_map<const N: usize>(
+    entries: [(&'static str, ParameterValue); N],
+) -> Result<Parameters> {
+    Parameters::new(
+        entries
+            .into_iter()
+            .map(|(key, value)| (key.into(), value))
+            .collect::<BTreeMap<_, _>>(),
+    )
+}
+
+fn unsigned_usize(value: usize) -> Result<ParameterValue> {
+    Ok(ParameterValue::Unsigned(
+        u64::try_from(value).map_err(|_| motion_limit_error())?,
+    ))
 }
 
 fn motion_limit_error() -> VisionError {

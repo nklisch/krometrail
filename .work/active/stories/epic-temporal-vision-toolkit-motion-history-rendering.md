@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-vision-toolkit-motion-history-rendering
 kind: story
-stage: implementing
+stage: done
 tags: [visual]
 parent: epic-temporal-vision-toolkit-motion-history
 depends_on: [epic-temporal-vision-toolkit-motion-history-decay-and-plan]
@@ -75,3 +75,15 @@ the `ArtifactManifest`.
 Integration tests — those belong to
 `epic-temporal-vision-toolkit-motion-history-public-contract-tests`. This story may add only
 focused colocated private-mechanics tests for composition arithmetic if needed.
+
+## Implementation evidence
+
+- Added `generate_motion_history` and `MotionHistoryArtifact`, reusing the shared RGB8 canvas, bitmap-font, deterministic PNG, SHA-256, measurement classifier, and linear-luminance seams.
+- The fixed composition draws one subdued reference plus accent intensity plus a final 4-connected outline; it emits no independently selectable layers and introduces no rendering framework.
+- Header/footer annotations derive from the same range, decay, gap, and parameter values recorded in the manifest. The footer explicitly states source-derived evidence, no direction inference, chronological time, and storyboard/region-filmstrip disambiguation.
+- Manifest provenance records the reference frame, complete source set, canonical normalization and threshold steps, integer decay/accumulation choices, segment/gap statistics, colors, bounds, fixed layout, and pinned encoder profile.
+- Combined accumulator/mask/canvas working memory, output dimensions, canvas bytes, and encoded bytes are checked before partial artifact success.
+- Verification: `cargo test -p temporal-vision --locked` (45 passed) and `cargo clippy -p temporal-vision --all-targets --locked -- -D warnings` passed.
+- Execution capability: raised/high; review weight: standard (autopilot caller).
+- Discrepancies from design: added an explicit display conversion provenance step after the required canonical normalization and threshold steps, matching the established difference-map renderer and making the RGB8 composition reproducible.
+- Blockers and adjacent issues: none.

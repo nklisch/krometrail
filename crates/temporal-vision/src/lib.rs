@@ -90,7 +90,8 @@ pub use measure::{
     MeasurementVector, measure_adjacent, measure_pair,
 };
 pub use motion_history::{
-    MotionDecay, MotionHistoryParameters, MotionHistoryPlan, build_motion_history_plan,
+    MotionDecay, MotionHistoryArtifact, MotionHistoryParameters, MotionHistoryPlan,
+    build_motion_history_plan, generate_motion_history,
 };
 pub use normalize::{
     IntegerScale, NormalizationParameters, NormalizedFrame, NormalizedSequence, ProcessingLimits,
