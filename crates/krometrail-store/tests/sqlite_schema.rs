@@ -24,7 +24,7 @@ fn schema_migrates_reopens_and_has_the_declared_inventory() {
     let version: u32 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 1);
+    assert_eq!(version, 2);
     let mut statement = connection
         .prepare(
             "SELECT name FROM sqlite_master \
@@ -43,12 +43,17 @@ fn schema_migrates_reopens_and_has_the_declared_inventory() {
             "artifact_range_idx",
             "artifacts",
             "capture_gaps",
+            "deletion_batch_state_idx",
+            "deletion_batches",
+            "deletion_objects",
             "frame_range_idx",
             "frames",
             "gap_range_idx",
             "pin_segments",
             "pins",
+            "retention_sequence",
             "segment_retention_idx",
+            "segment_retention_sequence_idx",
             "segments",
             "sessions",
             "targets",
@@ -81,7 +86,7 @@ fn future_schema_is_refused_without_mutation() {
     let directory = TempDir::new().unwrap();
     let config = config(&directory);
     let connection = Connection::open(&config.database_path).unwrap();
-    connection.pragma_update(None, "user_version", 2).unwrap();
+    connection.pragma_update(None, "user_version", 3).unwrap();
     drop(connection);
 
     let error = SqliteIndex::open(config.clone()).err().unwrap();
@@ -90,7 +95,7 @@ fn future_schema_is_refused_without_mutation() {
     let version: u32 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 2);
+    assert_eq!(version, 3);
 }
 
 #[test]

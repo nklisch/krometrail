@@ -1,7 +1,7 @@
 ---
 id: epic-durable-browser-memory-retention-index-contracts
 kind: story
-stage: implementing
+stage: done
 tags: [storage, browser]
 parent: epic-durable-browser-memory-retention
 depends_on: [epic-durable-browser-memory-retention-core-contracts]
@@ -29,3 +29,11 @@ Depends on core contracts so query results and status snapshots use settled doma
 - Exact and overlapping pin operations are idempotent and never make a protected segment eligible.
 - Artifact candidates include every artifact referencing any frame selected for deletion.
 - Deletion journal rows round-trip every object key/path/usage fact required for deterministic replay after reopen.
+
+## Implementation notes
+
+- Added contiguous schema v2 with durable immutable segment retention sequences, deterministic v1 row-order backfill, deletion journal tables, replay-state index, and insert/update guards.
+- Segment registration now allocates one sequence once and updates the authoritative segment usage row in the same transaction as searchable metadata.
+- Added exact range pins, overlap-safe distinct pinned accounting, global sequence candidate selection, classed checked usage snapshots, provenance-dependent artifact selection, and typed deletion journal prepare/replay/metadata/finalize operations.
+- Updated the schema inventory/future-version qualification and added deterministic sequence/pin/usage coverage. No second migration runner, scanner, resolver, or manifest parser was introduced.
+- Verification: `cargo test -p krometrail-store --locked` passed (51 tests); formatting and diff checks passed. Dead-code warnings are expected at this checkpoint and are consumed by the immediately dependent removal engine.

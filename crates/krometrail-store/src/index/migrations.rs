@@ -2,18 +2,24 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use crate::persistence_error;
 
-use super::schema_v1;
+use super::{schema_v1, schema_v2};
 
 pub(crate) struct Migration {
     pub version: u32,
     pub sql: &'static str,
 }
 
-pub(crate) const LATEST_SCHEMA_VERSION: u32 = 1;
-pub(crate) const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    sql: schema_v1::SQL,
-}];
+pub(crate) const LATEST_SCHEMA_VERSION: u32 = 2;
+pub(crate) const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        sql: schema_v1::SQL,
+    },
+    Migration {
+        version: 2,
+        sql: schema_v2::SQL,
+    },
+];
 
 pub(crate) fn migrate(connection: &mut Connection) -> krometrail_core::Result<()> {
     migrate_with(connection, MIGRATIONS, LATEST_SCHEMA_VERSION)

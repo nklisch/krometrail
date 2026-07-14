@@ -1,12 +1,14 @@
 mod catalog;
 mod codec;
+pub(crate) mod deletion;
 pub(crate) mod frames;
 mod gaps;
-#[allow(dead_code)] // Consumed by the dependent retention and recovery features.
 pub(crate) mod maintenance;
 mod migrations;
 pub(crate) mod reconcile;
+pub(crate) mod retention;
 mod schema_v1;
+mod schema_v2;
 pub(crate) mod segments;
 mod timeline;
 
