@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-operation-browser-page-lifecycle
 kind: feature
-stage: review
+stage: implementing
 tags: [browser, agent-ux]
 parent: epic-agent-browser-operation
 depends_on: [epic-agent-browser-operation-page-observation]
@@ -553,3 +553,24 @@ The second risk is returning an observation too early after navigation. A bounde
 - Simplification: one connector, profile guard, compatibility path, reducer, exact-key target map, selected key, operation registry, snapshot registry, cancellation signal, and live-observation path serve the capability. No MCP tools, durable interaction store, generic waits/batches, or second manager were added.
 - Design deviations: screenshot requests call selected/direct page scope `page` because `target` already names screenshot geometry; existing deterministic reducer allocation remains the sole `TargetId` authority while the independently injected `IdSource` supplies session/interaction IDs; malformed navigation baselines fail before interaction allocation; Electron end-to-end execution remains environment-gated while deterministic probes cover renderer classification and Node-inspector rejection.
 - Adjacent issues parked: none.
+
+## Review findings (2026-07-14)
+
+The standard fresh-context review found three receiver-confirmed current-cycle blockers:
+
+1. **Preserve CreatePage anchors after allocation.** A post-create synchronous attach/reconcile
+   failure can escape as a plain error after `interaction_id` exists. Route every post-allocation
+   failure through anchored `PageOperationResult::Failed`, matching activate-target handling and the
+   public invariant that state-changing operation failures retain their timeline anchor.
+2. **Reload readiness fallback.** Reload currently requires a changed loader ID and can report
+   `navigation_failed` after five seconds on valid service-worker/cache/bfcache reloads that retain
+   loader identity. Implement the designed bounded fresh-document/readiness fallback without
+   claiming network idle or accepting stale pre-dispatch evidence.
+3. **Cancellation-aware post-operation observation.** `observe_after_operation` calls transport
+   inspection/snapshot/screenshot without racing `OperationCancellation`, so stop/disconnect waits
+   for transport timeout. Thread cancellation through the observation path and race each in-flight
+   component while preserving honest partial evidence and exactly-once operation completion.
+
+The bounded snapshot lookup, unused history URLs, timestamp proxy, and test-count drift are nits.
+The feature returns to `implementing` for focused remediation and full deterministic/real-browser
+verification.
