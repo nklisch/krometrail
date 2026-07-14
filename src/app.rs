@@ -4,10 +4,11 @@ use std::{
 };
 
 use krometrail_core::{
-    ArtifactGeneration, ArtifactStore, BrowserConnector, CaptureGapStore, DiskBudgetBytes,
-    ErrorCode, FrameSource, IdSource, IdValue, InteractionEvidenceSink, KrometrailError,
-    MonotonicClock, NonEmptyText, RecordingCatalog, RecordingSink, Result, RetentionStore,
-    TemporalQuery, TimelineStore, WallClock,
+    ArtifactGeneration, ArtifactStore, BrowserConnector, BrowserEventSink, CapabilityId,
+    CaptureGapStore, DiskBudgetBytes, ErrorCode, FrameSource, IdSource, IdValue,
+    InteractionEvidenceSink, KrometrailError, MonotonicClock, NonEmptyText, RecordingCatalog,
+    RecordingSink, Result, RetentionStore, TemporalContextQuery, TemporalQuery, TimelineStore,
+    WallClock,
 };
 use uuid::Uuid;
 
@@ -19,7 +20,8 @@ use crate::{
     cli::Command,
 };
 use krometrail_cdp::{
-    CaptureConfig, LauncherConfig, ProductionBrowserConnector, SystemChromeLauncher,
+    BrowserEventConfig, CaptureConfig, LauncherConfig, ProductionBrowserConnector,
+    SystemChromeLauncher,
 };
 use krometrail_mcp::{McpConfig, build_service};
 use krometrail_store::{
@@ -39,7 +41,9 @@ pub(crate) struct RuntimeDependencies {
     pub gaps: Arc<dyn CaptureGapStore>,
     pub frames: Arc<dyn FrameSource>,
     pub temporal_queries: Arc<dyn TemporalQuery>,
+    pub temporal_context: Arc<dyn TemporalContextQuery>,
     pub artifact_generation: Arc<dyn ArtifactGeneration>,
+    pub mcp_config: McpConfig,
 }
 
 struct StorageDependencies {
@@ -51,6 +55,8 @@ struct StorageDependencies {
     gaps: Arc<dyn CaptureGapStore>,
     frames: Arc<dyn FrameSource>,
     temporal_queries: Arc<dyn TemporalQuery>,
+    browser_event_sink: Arc<dyn BrowserEventSink>,
+    temporal_context: Arc<dyn TemporalContextQuery>,
     artifacts: Arc<dyn ArtifactStore>,
 }
 
@@ -81,6 +87,7 @@ impl Runtime {
                     &self.dependencies.gaps,
                     &self.dependencies.frames,
                     &self.dependencies.temporal_queries,
+                    &self.dependencies.temporal_context,
                     &self.dependencies.artifact_generation,
                 );
                 let installations = self.dependencies.browser.installations().await?;
@@ -94,9 +101,12 @@ impl Runtime {
                 // The complete runtime is assembled before this branch. MCP receives only the
                 // browser port, while controlled-browser capture retains the shared recording and
                 // retention services owned by the production connector.
-                build_service(Arc::clone(&self.dependencies.browser), McpConfig::default())?
-                    .serve_stdio()
-                    .await
+                build_service(
+                    Arc::clone(&self.dependencies.browser),
+                    self.dependencies.mcp_config.clone(),
+                )?
+                .serve_stdio()
+                .await
             }
         }
     }
@@ -109,6 +119,11 @@ pub(crate) fn build_runtime() -> Result<Runtime> {
     let ids: Arc<dyn IdSource> = Arc::new(ProcessIdSource);
     let data_directory = data_directory();
     let storage = open_storage_with_budget(&data_directory, configured_disk_budget()?)?;
+    // One capability selection governs both collection and the MCP surface. Browser events are
+    // default-enabled by the core registry, while an explicit selection can still disable their
+    // semantic subscriptions without changing capture or control composition.
+    let mcp_config = McpConfig::default();
+    let browser_event_config = browser_event_config(&mcp_config);
     let profile_root = std::env::var_os("KROMETRAIL_PROFILE_ROOT")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| data_directory.join("browser-profiles"));
@@ -134,6 +149,12 @@ pub(crate) fn build_runtime() -> Result<Runtime> {
             Arc::clone(&storage.retention),
             CaptureConfig::default(),
         )
+        .with_browser_events(
+            Arc::clone(&clock),
+            Arc::clone(&ids),
+            Arc::clone(&storage.browser_event_sink),
+            browser_event_config,
+        )
         .with_interaction_evidence(Arc::clone(&storage.store) as Arc<dyn InteractionEvidenceSink>),
     );
     Ok(Runtime::new(RuntimeDependencies {
@@ -148,8 +169,18 @@ pub(crate) fn build_runtime() -> Result<Runtime> {
         gaps: storage.gaps,
         frames: storage.frames,
         temporal_queries: storage.temporal_queries,
+        temporal_context: storage.temporal_context,
         artifact_generation,
+        mcp_config,
     }))
+}
+
+fn browser_event_config(capabilities: &McpConfig) -> BrowserEventConfig {
+    if capabilities.is_enabled(CapabilityId::BrowserEvents) {
+        BrowserEventConfig::default()
+    } else {
+        BrowserEventConfig::disabled()
+    }
 }
 
 fn open_storage_with_budget(
@@ -187,6 +218,8 @@ fn open_storage_with_budget(
         retention: Arc::clone(&store) as Arc<dyn RetentionStore>,
         timeline: Arc::clone(&store) as Arc<dyn TimelineStore>,
         temporal_queries: Arc::clone(&store) as Arc<dyn TemporalQuery>,
+        browser_event_sink: Arc::clone(&store) as Arc<dyn BrowserEventSink>,
+        temporal_context: Arc::clone(&store) as Arc<dyn TemporalContextQuery>,
         artifacts: Arc::clone(&store) as Arc<dyn ArtifactStore>,
         catalog: Arc::clone(&index) as Arc<dyn RecordingCatalog>,
         gaps: Arc::clone(&index) as Arc<dyn CaptureGapStore>,
@@ -350,7 +383,9 @@ mod tests {
             gaps: storage.gaps,
             frames: storage.frames,
             temporal_queries: storage.temporal_queries,
+            temporal_context: storage.temporal_context,
             artifact_generation,
+            mcp_config: McpConfig::default(),
         });
         let error = runtime.run(Command::Doctor).await.unwrap_err();
         assert_eq!(error.code, ErrorCode::BrowserNotFound);
@@ -362,6 +397,24 @@ mod tests {
     async fn storage_composition_shares_lossless_gap_metadata_and_fails_before_runtime() {
         let root = std::env::temp_dir().join(format!("krometrail-storage-test-{}", Uuid::new_v4()));
         let storage = open_storage_with_budget(&root, DiskBudgetBytes::default()).unwrap();
+        let concrete = Arc::as_ptr(&storage.store) as *const ();
+        assert_eq!(
+            concrete,
+            Arc::as_ptr(&storage.browser_event_sink) as *const (),
+            "browser-event writes must use the one recording store",
+        );
+        let browser_event_source =
+            Arc::clone(&storage.store) as Arc<dyn krometrail_core::BrowserEventSource>;
+        assert_eq!(
+            concrete,
+            Arc::as_ptr(&browser_event_source) as *const (),
+            "browser-event reads must use the one recording store",
+        );
+        assert_eq!(
+            concrete,
+            Arc::as_ptr(&storage.temporal_context) as *const (),
+            "temporal context must use the one recording store",
+        );
         let session = krometrail_core::SessionId::from_uuid(Uuid::from_u128(1));
         let target = krometrail_core::TargetId::from_uuid(Uuid::from_u128(2));
         let gap = krometrail_core::CaptureGap::new(
@@ -404,6 +457,20 @@ mod tests {
         std::fs::write(&occupied, b"not a data directory").unwrap();
         assert!(open_storage_with_budget(&occupied, DiskBudgetBytes::default()).is_err());
         std::fs::remove_file(occupied).unwrap();
+    }
+
+    #[test]
+    fn browser_event_composition_follows_the_shared_capability_selection() {
+        let defaults = McpConfig::default();
+        assert!(defaults.is_enabled(CapabilityId::BrowserEvents));
+        assert!(browser_event_config(&defaults).enabled);
+
+        let explicitly_disabled =
+            McpConfig::new(vec![CapabilityId::Control, CapabilityId::TemporalVision]).unwrap();
+        assert!(explicitly_disabled.is_enabled(CapabilityId::Control));
+        assert!(explicitly_disabled.is_enabled(CapabilityId::TemporalVision));
+        assert!(!explicitly_disabled.is_enabled(CapabilityId::BrowserEvents));
+        assert!(!browser_event_config(&explicitly_disabled).enabled);
     }
 
     #[test]
