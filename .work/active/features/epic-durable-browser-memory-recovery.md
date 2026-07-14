@@ -1,7 +1,7 @@
 ---
 id: epic-durable-browser-memory-recovery
 kind: feature
-stage: implementing
+stage: review
 tags: [storage, browser]
 parent: epic-durable-browser-memory
 depends_on:
@@ -418,3 +418,20 @@ Linear chain. Unit 1 delivers the engine and the composition hook with determini
 ## Notes
 
 - The asymmetric failure direction (§2), the four-phase idempotent algorithm (§3), and the crash-during-recovery-via-idempotence settlement (§6) are the load-bearing decisions. Everything else (quarantine extension, segment-only usage, composition logging) is tunable within the constraints above.
+
+## Implementation summary
+
+- Execution capability: highest (autopilot caller), selected because recovery owns the cross-filesystem/SQLite durability invariant, corruption isolation, and startup safety.
+- Review weight: standard (caller/project default). Implementation is complete and the feature is intentionally left at `stage: review`; no self-approval was performed.
+- Dispatch: one cohesive feature owner carried both child checkpoints linearly. The engine checkpoint committed as `b8bcd46`; fault-injection and final idempotence hardening committed as `e370189`.
+- Child checkpoints: `epic-durable-browser-memory-recovery-engine` and `epic-durable-browser-memory-recovery-fault-injection` advanced directly to `done` with focused evidence.
+- Production files: new `krometrail-store::recovery` four-phase startup pass; new private `index::reconcile` SQL seam; store exports/module declarations; and root `open_storage` recovery/logging before the indexed recording sink is made available.
+- Recovery behavior: validates UUID publications; skips quarantined/non-segment files; seals `.open` segments; repairs torn, CRC-corrupt, semantically undecodable, or footer-damaged tails; file-syncs and directory-syncs publication changes; quarantines header-invalid files; reconciles the disk/index union in both directions; recomputes segment usage; trusts surviving pins; and returns raw open-segment evidence without adding retention policy.
+- Record-before-index direction: complete orphan payloads with absent frame IDs insert frame and timeline rows; dangling or mismatched claims are removed. Duplicate-ID orphan records are stably ignored without rewriting metadata on every startup, preserving true all-zero/no-mutation idempotence.
+- Tests: 13 real-filesystem recovery cases use the real `SegmentWriter`, `SqliteIndex`, and `IndexedRecordingSink`, plus two deterministic module tests. Coverage includes both asymmetric directions, torn open tails, damaged sealed footers, crash-after-seal-before-reconcile, quarantine, missing files, pin trust/cascade, usage restore/stale removal, empty segments, multi-target reopen/open count, duplicate-ID idempotence, and stable error mapping.
+- Verification: exact committed state `e370189` passed locked workspace format, check, 338 tests, and Clippy with warnings denied in an isolated worktree. Isolated `doctor` found one browser and created both `index.sqlite3` and `segments/` with recovery in startup. The shared working tree's check/test also passed, but its Clippy was temporarily blocked by an unrelated in-flight browser-interaction `too_many_arguments` warning; that browser work was preserved and excluded from this feature's commit/gate.
+- Simplification: no recovery journal, retention behavior, second segment scanner, parallel usage authority, or new core error/port was introduced. Existing scanner/decoder, frame-index transaction, segment registration, and maintenance primitives remain the authorities.
+- Discrepancies from design: logical SQLite row snapshots replace a raw database-file byte comparison for idempotence because WAL/page bytes can change without logical mutation. The implementation also carries the original torn-tail boundary across Phase B sealing into Phase C so only dangling tail rows are removed, and treats a CRC-valid but semantically undecodable record as the start of a corrupt tail.
+- Foundation alignment: no standing foundation assertion became false or contradictory; this implementation concretizes the existing startup recovery and record-before-index claims.
+- Adjacent issues parked: none.
+- Blockers: none.
