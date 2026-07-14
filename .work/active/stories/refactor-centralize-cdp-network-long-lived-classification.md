@@ -1,7 +1,7 @@
 ---
 id: refactor-centralize-cdp-network-long-lived-classification
 kind: story
-stage: review
+stage: done
 tags: [refactor, browser]
 parent: null
 depends_on: [epic-temporal-debugging-workflow-capture-and-browser-event-context]
@@ -46,6 +46,16 @@ One private `is_long_lived(resource_type: Option<NetworkResourceType>) -> bool` 
 - `is_long_lived(Option<NetworkResourceType>)` is now the sole WebSocket/EventSource rule for request starts and orphan response/failure contexts. Missing/other types remain finite exactly as before.
 - Orphan paths normalize the resource type once and reuse it for both stored context and classification; allowlist mapping, event/activity values, wait fan-out, ordering, and errors are unchanged.
 - Rust 1.85 locked format, full workspace all-target tests, and Clippy with warnings denied passed.
+
+## Review (2026-07-14)
+
+**Verdict**: Approve
+
+**Blockers**: none
+**Important**: none
+**Nits**: none
+
+**Evidence**: Bounded standalone-story review inspected commit `d0063d2`, confirmed the helper's `Some(WebSocket | EventSource)` and `None` behavior exactly matches all three removed expressions, and verified each normalized resource type is reused without changing stored or fan-out values. Full Rust 1.85 workspace gates passed. No independent reviewer ran, as required for a standalone story.
 
 ## Risk and Rollback
 
