@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-debugging-workflow-temporal-debug-bundle
 kind: feature
-stage: review
+stage: done
 tags: [visual, browser, storage, agent-ux]
 parent: epic-temporal-debugging-workflow
 depends_on:
@@ -567,3 +567,7 @@ The standard independent review returned four accepted findings. All four are im
 4. **Stale compatibility prose (this feature body).** The Risks bullet previously claimed trace-less manifests "remain progressively readable"; aligned with the committed prepublic policy and the actual rejection/regeneration behavior, the bullet now states trace-less storyboard/orientation manifests are rejected at deserialization and construction so stale cache rows invalidate and regenerate from retained sources.
 
 Fix verification: Rust 1.85.0 `cargo fmt --all -- --check`, `cargo check --workspace --all-targets --locked`, `cargo test --workspace --all-targets --locked` (622 passed, 1 ignored), and `cargo clippy --workspace --all-targets --locked -- -D warnings` — all green. The added service-path and generic-anchor tests reproduce the accepted evidence-state and fallback-warning findings.
+
+## Review decision
+
+**Approved.** The single standard independent review was performed by `openai-codex/gpt-5.5`. Its permit-control, evidence-wording, marker-identity, and documentation findings were accepted, repaired in commit `734ebae`, and verified through focused regressions plus the complete Rust 1.85 workspace gate. Per standard review policy, no repeat review was run. The feature advances to `done`.
