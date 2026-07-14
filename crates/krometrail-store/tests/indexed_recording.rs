@@ -8,7 +8,7 @@ use krometrail_core::{
 use krometrail_store::{
     IndexStoreConfig, IndexedRecordingSink, RotationConfig, SegmentStoreConfig, SegmentWriter,
     SqliteIndex,
-    segments::{read_frame_at, scan_complete_records},
+    segments::{read_frame_at, scan_complete_records, sealed_segment_path},
 };
 use rusqlite::Connection;
 use tempfile::TempDir;
@@ -229,6 +229,85 @@ async fn gaps_bypass_segments_and_concurrent_targets_remain_consistent() {
             .await
             .unwrap(),
         [frame_right, frame_left]
+    );
+}
+
+#[tokio::test]
+async fn missing_and_corrupt_segment_payloads_fail_source_safely() {
+    let missing = Fixture::new(RotationConfig::suggested());
+    let frame = missing.frame(40, missing.target, 1, 1);
+    let address = missing.sink.append_frame(frame.clone()).await.unwrap();
+    missing.sink.flush(missing.session).await.unwrap();
+    fs::remove_file(sealed_segment_path(
+        &missing.segments_directory(),
+        address.segment_id,
+    ))
+    .unwrap();
+    let error = missing
+        .index
+        .frames_by_id(vec![frame.metadata().id()])
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::PersistenceFailed);
+    assert!(
+        !error
+            .message
+            .as_str()
+            .contains(&address.segment_id.to_string())
+    );
+
+    let corrupt = Fixture::new(RotationConfig::suggested());
+    let frame = corrupt.frame(41, corrupt.target, 1, 1);
+    let address = corrupt.sink.append_frame(frame.clone()).await.unwrap();
+    corrupt.sink.flush(corrupt.session).await.unwrap();
+    let path = sealed_segment_path(&corrupt.segments_directory(), address.segment_id);
+    let mut bytes = fs::read(&path).unwrap();
+    let payload_byte = usize::try_from(address.byte_offset.get()).unwrap() + 20;
+    bytes[payload_byte] ^= 1;
+    fs::write(&path, bytes).unwrap();
+    let error = corrupt
+        .index
+        .frames_by_id(vec![frame.metadata().id()])
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::PersistenceFailed);
+    assert!(
+        !error
+            .message
+            .as_str()
+            .contains(&address.segment_id.to_string())
+    );
+    assert!(
+        !error
+            .message
+            .as_str()
+            .contains(path.to_string_lossy().as_ref())
+    );
+}
+
+#[tokio::test]
+async fn index_failure_after_physical_flush_is_never_reported_as_success() {
+    let fixture = Fixture::new(RotationConfig::suggested());
+    let frame = fixture.frame(42, fixture.target, 1, 1);
+    let address = fixture.sink.append_frame(frame.clone()).await.unwrap();
+    let connection = Connection::open(fixture.database_path()).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TRIGGER reject_segment_seal BEFORE UPDATE ON segments \
+             BEGIN SELECT RAISE(ABORT, 'injected'); END;",
+        )
+        .unwrap();
+    drop(connection);
+    let error = fixture.sink.flush(fixture.session).await.unwrap_err();
+    assert_eq!(error.code, ErrorCode::PersistenceFailed);
+    assert!(sealed_segment_path(&fixture.segments_directory(), address.segment_id).is_file());
+    assert_eq!(
+        fixture
+            .index
+            .frames_by_id(vec![frame.metadata().id()])
+            .await
+            .unwrap(),
+        [frame]
     );
 }
 
