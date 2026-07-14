@@ -1,7 +1,7 @@
 ---
 id: bug-recover-browser-event-collection-status
 kind: story
-stage: review
+stage: done
 tags: [bug, browser, storage]
 parent: null
 depends_on: []
@@ -37,3 +37,13 @@ The existing fail-once sink test now requires `Operational` after the collection
 - Successful gap flushes and normal batches invoke recovery after durable append and persisted-count update. Failure/backoff/gap evidence and shutdown semantics are unchanged.
 - The focused test reproduced the stale `Failed` state before the fix, then all six pipeline tests passed after it. Locked Rust 1.85 full workspace tests, format, and Clippy with warnings denied passed.
 - Parked separately: `idea-temporal-context-clip-and-truncation-exactness` and `idea-redact-windows-drive-relative-paths` capture accepted lower-risk review nits.
+
+## Review (2026-07-14)
+
+**Verdict**: Approve
+
+**Blockers**: none
+**Important**: none
+**Nits**: none
+
+**Evidence**: Bounded standalone-story review inspected commit `9ff5d28`, confirmed recovery occurs only after successful durable writes and only from `Failed`, preserves optional-source degradation, and cannot overwrite lifecycle-owned statuses. Failure gap/backoff, counters, shutdown deadline failure, and source availability sets remain unchanged. The reproducing regression and full Rust 1.85 workspace gate passed. No independent reviewer ran, as required for a standalone fix story.
