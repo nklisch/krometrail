@@ -1085,7 +1085,12 @@ async fn execute_operation(
                 .get("targetId")
                 .and_then(Value::as_str)
                 .filter(|value| !value.is_empty())
-                .ok_or_else(|| stable_error(ErrorCode::TargetFailed, "browser returned an invalid created target"))?
+                .ok_or_else(|| {
+                    stable_error(
+                        ErrorCode::TargetFailed,
+                        "browser returned an invalid created target",
+                    )
+                })?
                 .to_owned();
             let info = transport
                 .send_raw(
@@ -1097,7 +1102,12 @@ async fn execute_operation(
                 .map_err(|error| transport_error_to_core(error, true))?
                 .get("targetInfo")
                 .and_then(parse_target_info)
-                .ok_or_else(|| stable_error(ErrorCode::TargetFailed, "created browser target could not be reconciled"))?;
+                .ok_or_else(|| {
+                    stable_error(
+                        ErrorCode::TargetFailed,
+                        "created browser target could not be reconciled",
+                    )
+                })?;
             commit_supervisor_input(
                 state,
                 SupervisorInput::TargetCreated(info),
@@ -1109,7 +1119,12 @@ async fn execute_operation(
                 .targets_by_key
                 .get(&target_key)
                 .map(|target| target.target.target.id())
-                .ok_or_else(|| stable_error(ErrorCode::TargetFailed, "created browser target was not attached"))?;
+                .ok_or_else(|| {
+                    stable_error(
+                        ErrorCode::TargetFailed,
+                        "created browser target was not attached",
+                    )
+                })?;
             let activation = transport
                 .send_raw(
                     &CommandScope::Browser,
@@ -1154,7 +1169,9 @@ async fn execute_operation(
             let target = state.resolve_selection(PageSelection::Target(request.target_id))?;
             let target_key = target.target.target.browser_target_key().to_owned();
             let target_id = target.target.target.id();
-            let previous = state.selected_target().map(|target| target.target.target.id());
+            let previous = state
+                .selected_target()
+                .map(|target| target.target.target.id());
             let started_at = page_control.session_time()?;
             let interaction_id = page_control.next_interaction_id();
             let dispatched_at = page_control.session_time()?;
@@ -1192,44 +1209,55 @@ async fn execute_operation(
                 interaction_id,
                 started_at,
                 dispatched_at,
-                PageChange::Selected { previous, selected: target_id },
+                PageChange::Selected {
+                    previous,
+                    selected: target_id,
+                },
                 PageSelection::Target(target_id),
             )
             .await
             .map(|result| BrowserOperationResult::SelectPage(Box::new(result)))
         }
-        BrowserOperationRequest::NavigatePage(request) => page_control
-            .navigate(
-                transport.as_ref(),
-                state,
-                request,
-                &shared.operation_cancellation,
-            )
-            .await,
-        BrowserOperationRequest::ReloadPage(request) => page_control
-            .reload(
-                transport.as_ref(),
-                state,
-                request,
-                &shared.operation_cancellation,
-            )
-            .await,
-        BrowserOperationRequest::GoBack(request) => page_control
-            .go_back(
-                transport.as_ref(),
-                state,
-                request,
-                &shared.operation_cancellation,
-            )
-            .await,
-        BrowserOperationRequest::GoForward(request) => page_control
-            .go_forward(
-                transport.as_ref(),
-                state,
-                request,
-                &shared.operation_cancellation,
-            )
-            .await,
+        BrowserOperationRequest::NavigatePage(request) => {
+            page_control
+                .navigate(
+                    transport.as_ref(),
+                    state,
+                    request,
+                    &shared.operation_cancellation,
+                )
+                .await
+        }
+        BrowserOperationRequest::ReloadPage(request) => {
+            page_control
+                .reload(
+                    transport.as_ref(),
+                    state,
+                    request,
+                    &shared.operation_cancellation,
+                )
+                .await
+        }
+        BrowserOperationRequest::GoBack(request) => {
+            page_control
+                .go_back(
+                    transport.as_ref(),
+                    state,
+                    request,
+                    &shared.operation_cancellation,
+                )
+                .await
+        }
+        BrowserOperationRequest::GoForward(request) => {
+            page_control
+                .go_forward(
+                    transport.as_ref(),
+                    state,
+                    request,
+                    &shared.operation_cancellation,
+                )
+                .await
+        }
         BrowserOperationRequest::ClosePage(request) => {
             let target = state.resolve_selection(request.target)?;
             let target_key = target.target.target.browser_target_key().to_owned();
@@ -1266,7 +1294,11 @@ async fn execute_operation(
                     interaction_id,
                     started_at,
                     dispatched_at,
-                    operation_error(ErrorCode::TargetFailed, target_id, "browser did not confirm page closure"),
+                    operation_error(
+                        ErrorCode::TargetFailed,
+                        target_id,
+                        "browser did not confirm page closure",
+                    ),
                 );
             }
             commit_supervisor_input(
@@ -1277,15 +1309,19 @@ async fn execute_operation(
             )
             .await?;
             page_control.invalidate_target_snapshot(target_id);
-            let selected = state.selected_target().map(|target| target.target.target.id());
+            let selected = state
+                .selected_target()
+                .map(|target| target.target.target.id());
             let observation = match selected {
-                Some(selected) => page_control
-                    .observe_after_operation(
-                        transport.as_ref(),
-                        state,
-                        PageSelection::Target(selected),
-                    )
-                    .await?,
+                Some(selected) => {
+                    page_control
+                        .observe_after_operation(
+                            transport.as_ref(),
+                            state,
+                            PageSelection::Target(selected),
+                        )
+                        .await?
+                }
                 None => ObservationPart::Unavailable(KrometrailError::new(
                     ErrorCode::NotFound,
                     NonEmptyText::new("no browser page remains selected after closure").unwrap(),
@@ -1298,12 +1334,19 @@ async fn execute_operation(
                 interaction_id,
                 started_at,
                 dispatched_at,
-                PageOperationOutcome::Succeeded(PageChange::Closed { closed: target_id, selected }),
+                PageOperationOutcome::Succeeded(PageChange::Closed {
+                    closed: target_id,
+                    selected,
+                }),
                 observation,
             )?;
             Ok(BrowserOperationResult::ClosePage(Box::new(result)))
         }
-        request => page_control.execute(transport.as_ref(), state, request).await,
+        request => {
+            page_control
+                .execute(transport.as_ref(), state, request)
+                .await
+        }
     }
 }
 
@@ -1377,13 +1420,27 @@ fn page_failure_result(
         ObservationPart::Unavailable(error),
     )?;
     Ok(match operation {
-        krometrail_core::BrowserOperationKind::CreatePage => BrowserOperationResult::CreatePage(Box::new(result)),
-        krometrail_core::BrowserOperationKind::SelectPage => BrowserOperationResult::SelectPage(Box::new(result)),
-        krometrail_core::BrowserOperationKind::ClosePage => BrowserOperationResult::ClosePage(Box::new(result)),
-        krometrail_core::BrowserOperationKind::NavigatePage => BrowserOperationResult::NavigatePage(Box::new(result)),
-        krometrail_core::BrowserOperationKind::ReloadPage => BrowserOperationResult::ReloadPage(Box::new(result)),
-        krometrail_core::BrowserOperationKind::GoBack => BrowserOperationResult::GoBack(Box::new(result)),
-        krometrail_core::BrowserOperationKind::GoForward => BrowserOperationResult::GoForward(Box::new(result)),
+        krometrail_core::BrowserOperationKind::CreatePage => {
+            BrowserOperationResult::CreatePage(Box::new(result))
+        }
+        krometrail_core::BrowserOperationKind::SelectPage => {
+            BrowserOperationResult::SelectPage(Box::new(result))
+        }
+        krometrail_core::BrowserOperationKind::ClosePage => {
+            BrowserOperationResult::ClosePage(Box::new(result))
+        }
+        krometrail_core::BrowserOperationKind::NavigatePage => {
+            BrowserOperationResult::NavigatePage(Box::new(result))
+        }
+        krometrail_core::BrowserOperationKind::ReloadPage => {
+            BrowserOperationResult::ReloadPage(Box::new(result))
+        }
+        krometrail_core::BrowserOperationKind::GoBack => {
+            BrowserOperationResult::GoBack(Box::new(result))
+        }
+        krometrail_core::BrowserOperationKind::GoForward => {
+            BrowserOperationResult::GoForward(Box::new(result))
+        }
         _ => unreachable!("only state-changing page operations produce page failures"),
     })
 }

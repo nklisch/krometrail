@@ -131,7 +131,9 @@ async fn production_operation_port_routes_snapshot_screenshot_and_partial_live_e
     let target_id = session.status().await.unwrap().pages[0].target.target.id();
 
     let inspected = session
-        .execute(BrowserOperationRequest::InspectPage(InspectPageRequest::new(target_id)))
+        .execute(BrowserOperationRequest::InspectPage(
+            InspectPageRequest::new(target_id),
+        ))
         .await
         .unwrap();
     let BrowserOperationResult::InspectPage(inspected) = inspected else {
@@ -156,7 +158,9 @@ async fn production_operation_port_routes_snapshot_screenshot_and_partial_live_e
     );
 
     let first = session
-        .execute(BrowserOperationRequest::SnapshotPage(SnapshotPageRequest::new(target_id)))
+        .execute(BrowserOperationRequest::SnapshotPage(
+            SnapshotPageRequest::new(target_id),
+        ))
         .await
         .unwrap();
     let BrowserOperationResult::SnapshotPage(first) = first else {
@@ -165,7 +169,9 @@ async fn production_operation_port_routes_snapshot_screenshot_and_partial_live_e
     assert_eq!(first.nodes.len(), 2);
     let old_reference = first.nodes[1].reference.unwrap();
     let second = session
-        .execute(BrowserOperationRequest::SnapshotPage(SnapshotPageRequest::new(target_id)))
+        .execute(BrowserOperationRequest::SnapshotPage(
+            SnapshotPageRequest::new(target_id),
+        ))
         .await
         .unwrap();
     let BrowserOperationResult::SnapshotPage(second) = second else {
@@ -329,7 +335,9 @@ async fn production_operation_port_routes_snapshot_screenshot_and_partial_live_e
     // Refresh against the new document, then prove live actionability is rechecked.
     transport.push_response("Page.getFrameTree", frame_tree_with_loader("loader-2"));
     let refreshed = session
-        .execute(BrowserOperationRequest::SnapshotPage(SnapshotPageRequest::new(target_id)))
+        .execute(BrowserOperationRequest::SnapshotPage(
+            SnapshotPageRequest::new(target_id),
+        ))
         .await
         .unwrap();
     let BrowserOperationResult::SnapshotPage(refreshed) = refreshed else {
@@ -425,7 +433,9 @@ async fn production_operation_port_routes_snapshot_screenshot_and_partial_live_e
     transport.push_response("Page.getFrameTree", frame_tree_with_loader("loader-2"));
     transport.push_response("Accessibility.getFullAXTree", json!({"nodes":"malformed"}));
     let malformed_ax = session
-        .execute(BrowserOperationRequest::SnapshotPage(SnapshotPageRequest::new(target_id)))
+        .execute(BrowserOperationRequest::SnapshotPage(
+            SnapshotPageRequest::new(target_id),
+        ))
         .await
         .unwrap_err();
     assert_eq!(
@@ -486,7 +496,9 @@ async fn production_operation_port_routes_snapshot_screenshot_and_partial_live_e
     session.stop().await.unwrap();
     let terminal = tokio::time::timeout(
         std::time::Duration::from_secs(1),
-        session.execute(BrowserOperationRequest::InspectPage(InspectPageRequest::new(target_id))),
+        session.execute(BrowserOperationRequest::InspectPage(
+            InspectPageRequest::new(target_id),
+        )),
     )
     .await
     .expect("terminal actor must answer without hanging")
@@ -559,7 +571,9 @@ async fn opt_in_real_chrome_reports_forced_scale_without_fabricating_high_dpi() 
         .expect("forced-scale Chrome observation session");
     let target_id = session.status().await.unwrap().pages[0].target.target.id();
     let result = session
-        .execute(BrowserOperationRequest::InspectPage(InspectPageRequest::new(target_id)))
+        .execute(BrowserOperationRequest::InspectPage(
+            InspectPageRequest::new(target_id),
+        ))
         .await
         .expect("forced-scale inspection");
     let BrowserOperationResult::InspectPage(page) = result else {
@@ -607,7 +621,9 @@ async fn opt_in_real_chrome_observes_fixture_and_all_screenshot_target_families(
         .expect("real observation fixture");
     let target_id = session.status().await.unwrap().pages[0].target.target.id();
     let inspected = session
-        .execute(BrowserOperationRequest::InspectPage(InspectPageRequest::new(target_id)))
+        .execute(BrowserOperationRequest::InspectPage(
+            InspectPageRequest::new(target_id),
+        ))
         .await
         .expect("real inspection");
     let BrowserOperationResult::InspectPage(inspected) = inspected else {
@@ -629,7 +645,9 @@ async fn opt_in_real_chrome_observes_fixture_and_all_screenshot_target_families(
         krometrail_core::EvaluationValue::Json(json!("Observation fixture"))
     );
     let snapshot = session
-        .execute(BrowserOperationRequest::SnapshotPage(SnapshotPageRequest::new(target_id)))
+        .execute(BrowserOperationRequest::SnapshotPage(
+            SnapshotPageRequest::new(target_id),
+        ))
         .await
         .unwrap();
     let BrowserOperationResult::SnapshotPage(snapshot) = snapshot else {
@@ -731,7 +749,9 @@ async fn opt_in_real_chrome_observes_fixture_and_all_screenshot_target_families(
         .unwrap_err();
     assert_eq!(replaced.code, krometrail_core::ErrorCode::StaleReference);
     let refreshed = session
-        .execute(BrowserOperationRequest::SnapshotPage(SnapshotPageRequest::new(target_id)))
+        .execute(BrowserOperationRequest::SnapshotPage(
+            SnapshotPageRequest::new(target_id),
+        ))
         .await
         .expect("snapshot after backing-node replacement");
     let BrowserOperationResult::SnapshotPage(refreshed) = refreshed else {

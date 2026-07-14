@@ -1080,7 +1080,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(closed.state.selected_target_key.as_deref(), Some("a"));
-        assert_eq!(closed.state.selected_target().unwrap().target.target.id(), a_id);
+        assert_eq!(
+            closed.state.selected_target().unwrap().target.target.id(),
+            a_id
+        );
 
         let disconnected = reduce(
             closed.state,
@@ -1105,7 +1108,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(restored.state.selected_target_key.as_deref(), Some("a"));
-        assert_eq!(restored.state.selected_target().unwrap().target.target.id(), a_id);
+        assert_eq!(
+            restored.state.selected_target().unwrap().target.target.id(),
+            a_id
+        );
         assert!(!restored.effects.iter().any(|effect| matches!(
             effect,
             SupervisorEffect::Publish(BrowserSessionEvent::SelectedTargetChanged { .. })

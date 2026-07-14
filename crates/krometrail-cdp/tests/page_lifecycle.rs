@@ -10,11 +10,11 @@ use krometrail_cdp::{
 };
 use krometrail_core::{
     AttachBrowser, BrowserConnectRequest, BrowserConnector, BrowserOperationRequest,
-    BrowserOperationResult, BrowserSessionState, ClosePageRequest, CreatePageRequest, ElementLocator,
-    ErrorCode, GoBackRequest, GoForwardRequest, ImageFormat, InspectPageRequest, LaunchBrowser,
-    ListPagesRequest, ManagedProfile, NavigatePageRequest, ObservationPart, PageOperationOutcome,
-    PageSelection, ProfileIdentity, ProfileRef, ReadOnlyEvaluationRequest, ReloadPageRequest,
-    ScreenshotRequest, ScreenshotTarget, SelectPageRequest, SnapshotPageRequest,
+    BrowserOperationResult, BrowserSessionState, ClosePageRequest, CreatePageRequest,
+    ElementLocator, ErrorCode, GoBackRequest, GoForwardRequest, ImageFormat, InspectPageRequest,
+    LaunchBrowser, ListPagesRequest, ManagedProfile, NavigatePageRequest, ObservationPart,
+    PageOperationOutcome, PageSelection, ProfileIdentity, ProfileRef, ReadOnlyEvaluationRequest,
+    ReloadPageRequest, ScreenshotRequest, ScreenshotTarget, SelectPageRequest, SnapshotPageRequest,
 };
 use serde_json::{Value, json};
 use support::scripted_cdp::ScriptedCdp;
@@ -69,8 +69,14 @@ fn ax_tree() -> Value {
 
 fn script_initial(transport: &ScriptedCdp) {
     transport.hold_events_open();
-    transport.push_response("Runtime.evaluate", json!({"result":{"type":"number","value":2}}));
-    transport.push_response("Runtime.evaluate", json!({"result":{"type":"string","value":"visible"}}));
+    transport.push_response(
+        "Runtime.evaluate",
+        json!({"result":{"type":"number","value":2}}),
+    );
+    transport.push_response(
+        "Runtime.evaluate",
+        json!({"result":{"type":"string","value":"visible"}}),
+    );
     transport.push_response("Accessibility.getFullAXTree", json!({}));
 }
 
@@ -82,10 +88,16 @@ fn script_live(
     index: u32,
     urls: &[&str],
 ) {
-    transport.push_response("Runtime.evaluate", json!({"result":{"type":"object","value":{
-        "url":url,"title":title,"readiness":"complete","deviceScaleFactor":1.0
-    }}}));
-    transport.push_response("Runtime.evaluate", json!({"result":{"type":"number","value":1.0}}));
+    transport.push_response(
+        "Runtime.evaluate",
+        json!({"result":{"type":"object","value":{
+            "url":url,"title":title,"readiness":"complete","deviceScaleFactor":1.0
+        }}}),
+    );
+    transport.push_response(
+        "Runtime.evaluate",
+        json!({"result":{"type":"number","value":1.0}}),
+    );
     transport.push_response("Page.getLayoutMetrics", layout());
     transport.push_response("Page.getLayoutMetrics", layout());
     transport.push_response("Page.getNavigationHistory", history(index, urls));
@@ -125,7 +137,10 @@ async fn status_and_page_mutations_share_exact_selected_target_state() {
     let initial = session.status().await.unwrap();
     assert_eq!(initial.state, BrowserSessionState::Ready);
     assert_eq!(initial.pages.len(), 1);
-    assert_eq!(initial.selected_target_id, Some(initial.pages[0].target.target.id()));
+    assert_eq!(
+        initial.selected_target_id,
+        Some(initial.pages[0].target.target.id())
+    );
     assert_eq!(initial.profile, ProfileRef::External);
     let initial_id = initial.selected_target_id.unwrap();
 
@@ -133,23 +148,47 @@ async fn status_and_page_mutations_share_exact_selected_target_state() {
         .execute(BrowserOperationRequest::ListPages(ListPagesRequest))
         .await
         .unwrap();
-    let BrowserOperationResult::ListPages(listed) = listed else { panic!("page list") };
+    let BrowserOperationResult::ListPages(listed) = listed else {
+        panic!("page list")
+    };
     assert_eq!(listed.len(), 1);
     assert!(listed[0].selected);
-    assert!(transport.command_calls().iter().all(|call| call.method != "Page.captureScreenshot"));
+    assert!(
+        transport
+            .command_calls()
+            .iter()
+            .all(|call| call.method != "Page.captureScreenshot")
+    );
 
     transport.push_response("Target.createTarget", json!({"targetId":"target-b"}));
-    transport.push_response("Target.getTargetInfo", json!({"targetInfo":{
-        "targetId":"target-b","type":"page","url":"about:blank","title":"","attached":false
-    }}));
+    transport.push_response(
+        "Target.getTargetInfo",
+        json!({"targetInfo":{
+            "targetId":"target-b","type":"page","url":"about:blank","title":"","attached":false
+        }}),
+    );
     transport.push_response("Target.attachToTarget", json!({"sessionId":"session-b"}));
-    transport.push_response("Runtime.evaluate", json!({"result":{"type":"string","value":"visible"}}));
-    script_live(&transport, "about:blank", "", "loader-b", 0, &["about:blank"]);
+    transport.push_response(
+        "Runtime.evaluate",
+        json!({"result":{"type":"string","value":"visible"}}),
+    );
+    script_live(
+        &transport,
+        "about:blank",
+        "",
+        "loader-b",
+        0,
+        &["about:blank"],
+    );
     let created = session
-        .execute(BrowserOperationRequest::CreatePage(CreatePageRequest::new(None::<String>).unwrap()))
+        .execute(BrowserOperationRequest::CreatePage(
+            CreatePageRequest::new(None::<String>).unwrap(),
+        ))
         .await
         .unwrap();
-    let BrowserOperationResult::CreatePage(created) = created else { panic!("create") };
+    let BrowserOperationResult::CreatePage(created) = created else {
+        panic!("create")
+    };
     assert_successful_observation(&created);
     let created_id = created.interaction.target_id;
     assert_ne!(created_id, initial_id);
@@ -157,16 +196,37 @@ async fn status_and_page_mutations_share_exact_selected_target_state() {
     assert_eq!(status.selected_target_id, Some(created_id));
     assert_eq!(status.pages.len(), 2);
 
-    script_live(&transport, "http://fixture/", "fixture", "loader-a", 0, &["http://fixture/"]);
+    script_live(
+        &transport,
+        "http://fixture/",
+        "fixture",
+        "loader-a",
+        0,
+        &["http://fixture/"],
+    );
     let selected = session
-        .execute(BrowserOperationRequest::SelectPage(SelectPageRequest { target_id: initial_id }))
+        .execute(BrowserOperationRequest::SelectPage(SelectPageRequest {
+            target_id: initial_id,
+        }))
         .await
         .unwrap();
-    let BrowserOperationResult::SelectPage(selected) = selected else { panic!("select") };
+    let BrowserOperationResult::SelectPage(selected) = selected else {
+        panic!("select")
+    };
     assert_successful_observation(&selected);
-    assert_eq!(session.status().await.unwrap().selected_target_id, Some(initial_id));
+    assert_eq!(
+        session.status().await.unwrap().selected_target_id,
+        Some(initial_id)
+    );
 
-    script_live(&transport, "http://fixture/", "fixture", "loader-a", 0, &["http://fixture/"]);
+    script_live(
+        &transport,
+        "http://fixture/",
+        "fixture",
+        "loader-a",
+        0,
+        &["http://fixture/"],
+    );
     transport.push_response("Target.closeTarget", json!({"success":true}));
     let closed = session
         .execute(BrowserOperationRequest::ClosePage(ClosePageRequest {
@@ -174,9 +234,14 @@ async fn status_and_page_mutations_share_exact_selected_target_state() {
         }))
         .await
         .unwrap();
-    let BrowserOperationResult::ClosePage(closed) = closed else { panic!("close") };
+    let BrowserOperationResult::ClosePage(closed) = closed else {
+        panic!("close")
+    };
     assert_successful_observation(&closed);
-    assert_eq!(session.status().await.unwrap().selected_target_id, Some(initial_id));
+    assert_eq!(
+        session.status().await.unwrap().selected_target_id,
+        Some(initial_id)
+    );
 
     transport.push_response("Target.closeTarget", json!({"success":true}));
     let last = session
@@ -185,16 +250,34 @@ async fn status_and_page_mutations_share_exact_selected_target_state() {
         }))
         .await
         .unwrap();
-    let BrowserOperationResult::ClosePage(last) = last else { panic!("last close") };
+    let BrowserOperationResult::ClosePage(last) = last else {
+        panic!("last close")
+    };
     assert!(matches!(last.outcome, PageOperationOutcome::Succeeded(_)));
     assert!(matches!(last.observation, ObservationPart::Unavailable(_)));
     assert_eq!(session.status().await.unwrap().selected_target_id, None);
 
     let calls = transport.command_calls();
-    let activate_b = calls.iter().position(|call| call.method == "Target.activateTarget" && call.params["targetId"] == "target-b").unwrap();
-    let close_b = calls.iter().position(|call| call.method == "Target.closeTarget" && call.params["targetId"] == "target-b").unwrap();
+    let activate_b = calls
+        .iter()
+        .position(|call| {
+            call.method == "Target.activateTarget" && call.params["targetId"] == "target-b"
+        })
+        .unwrap();
+    let close_b = calls
+        .iter()
+        .position(|call| {
+            call.method == "Target.closeTarget" && call.params["targetId"] == "target-b"
+        })
+        .unwrap();
     assert!(activate_b < close_b);
-    assert!(calls.iter().filter(|call| call.method == "Target.attachToTarget" && call.params["targetId"] == "target-b").all(|call| call.session.is_none()));
+    assert!(
+        calls
+            .iter()
+            .filter(|call| call.method == "Target.attachToTarget"
+                && call.params["targetId"] == "target-b")
+            .all(|call| call.session.is_none())
+    );
     session.stop().await.unwrap();
 }
 
@@ -209,34 +292,64 @@ async fn navigation_reload_history_and_stop_cancellation_are_anchored() {
     transport.push_response("Page.getFrameTree", frame("loader-1", first));
     transport.push_response("Accessibility.getFullAXTree", ax_tree());
     let snapshot = session
-        .execute(BrowserOperationRequest::SnapshotPage(SnapshotPageRequest::new(target_id)))
+        .execute(BrowserOperationRequest::SnapshotPage(
+            SnapshotPageRequest::new(target_id),
+        ))
         .await
         .unwrap();
-    let BrowserOperationResult::SnapshotPage(snapshot) = snapshot else { panic!("snapshot") };
-    let old_reference = snapshot.nodes.iter().find_map(|node| node.reference).unwrap();
+    let BrowserOperationResult::SnapshotPage(snapshot) = snapshot else {
+        panic!("snapshot")
+    };
+    let old_reference = snapshot
+        .nodes
+        .iter()
+        .find_map(|node| node.reference)
+        .unwrap();
 
     transport.push_response("Page.getFrameTree", frame("loader-1", first));
     transport.push_response("Page.getNavigationHistory", history(0, &[first]));
-    transport.push_response("Page.navigate", json!({"frameId":"main","loaderId":"loader-2"}));
+    transport.push_response(
+        "Page.navigate",
+        json!({"frameId":"main","loaderId":"loader-2"}),
+    );
     transport.push_response("Page.getFrameTree", frame("loader-2", second));
     transport.push_response("Page.getNavigationHistory", history(1, &[first, second]));
-    script_live(&transport, second, "Second", "loader-2", 1, &[first, second]);
-    let navigated = session.execute(BrowserOperationRequest::NavigatePage(
-        NavigatePageRequest::new(PageSelection::Selected, second).unwrap(),
-    )).await.unwrap();
-    let BrowserOperationResult::NavigatePage(navigated) = navigated else { panic!("navigate") };
+    script_live(
+        &transport,
+        second,
+        "Second",
+        "loader-2",
+        1,
+        &[first, second],
+    );
+    let navigated = session
+        .execute(BrowserOperationRequest::NavigatePage(
+            NavigatePageRequest::new(PageSelection::Selected, second).unwrap(),
+        ))
+        .await
+        .unwrap();
+    let BrowserOperationResult::NavigatePage(navigated) = navigated else {
+        panic!("navigate")
+    };
     assert_successful_observation(&navigated);
     assert_eq!(navigated.interaction.target_id, target_id);
     transport.push_response("Page.getLayoutMetrics", layout());
-    transport.push_response("Runtime.evaluate", json!({"result":{"type":"number","value":1.0}}));
-    let stale = session.execute(BrowserOperationRequest::TakeScreenshot(
-        ScreenshotRequest::new(
-            target_id,
-            ScreenshotTarget::Element(ElementLocator::Reference(old_reference)),
-            ImageFormat::Png,
-            None,
-        ).unwrap(),
-    )).await.unwrap_err();
+    transport.push_response(
+        "Runtime.evaluate",
+        json!({"result":{"type":"number","value":1.0}}),
+    );
+    let stale = session
+        .execute(BrowserOperationRequest::TakeScreenshot(
+            ScreenshotRequest::new(
+                target_id,
+                ScreenshotTarget::Element(ElementLocator::Reference(old_reference)),
+                ImageFormat::Png,
+                None,
+            )
+            .unwrap(),
+        ))
+        .await
+        .unwrap_err();
     assert_eq!(stale.code, ErrorCode::StaleReference);
 
     transport.push_response("Page.getFrameTree", frame("loader-2", second));
@@ -244,12 +357,24 @@ async fn navigation_reload_history_and_stop_cancellation_are_anchored() {
     transport.push_response("Page.reload", json!({}));
     transport.push_response("Page.getFrameTree", frame("loader-3", second));
     transport.push_response("Page.getNavigationHistory", history(1, &[first, second]));
-    script_live(&transport, second, "Second", "loader-3", 1, &[first, second]);
-    let reloaded = session.execute(BrowserOperationRequest::ReloadPage(ReloadPageRequest {
-        target: PageSelection::Selected,
-        bypass_cache: true,
-    })).await.unwrap();
-    let BrowserOperationResult::ReloadPage(reloaded) = reloaded else { panic!("reload") };
+    script_live(
+        &transport,
+        second,
+        "Second",
+        "loader-3",
+        1,
+        &[first, second],
+    );
+    let reloaded = session
+        .execute(BrowserOperationRequest::ReloadPage(ReloadPageRequest {
+            target: PageSelection::Selected,
+            bypass_cache: true,
+        }))
+        .await
+        .unwrap();
+    let BrowserOperationResult::ReloadPage(reloaded) = reloaded else {
+        panic!("reload")
+    };
     assert_successful_observation(&reloaded);
 
     transport.push_response("Page.getFrameTree", frame("loader-3", second));
@@ -258,17 +383,25 @@ async fn navigation_reload_history_and_stop_cancellation_are_anchored() {
     transport.push_response("Page.getFrameTree", frame("loader-3", first));
     transport.push_response("Page.getNavigationHistory", history(0, &[first, second]));
     script_live(&transport, first, "First", "loader-3", 0, &[first, second]);
-    let back = session.execute(BrowserOperationRequest::GoBack(GoBackRequest {
-        target: PageSelection::Selected,
-    })).await.unwrap();
-    let BrowserOperationResult::GoBack(back) = back else { panic!("back") };
+    let back = session
+        .execute(BrowserOperationRequest::GoBack(GoBackRequest {
+            target: PageSelection::Selected,
+        }))
+        .await
+        .unwrap();
+    let BrowserOperationResult::GoBack(back) = back else {
+        panic!("back")
+    };
     assert_successful_observation(&back);
 
     transport.push_response("Page.getFrameTree", frame("loader-3", first));
     transport.push_response("Page.getNavigationHistory", history(0, &[first, second]));
-    let boundary = session.execute(BrowserOperationRequest::GoBack(GoBackRequest {
-        target: PageSelection::Selected,
-    })).await.unwrap_err();
+    let boundary = session
+        .execute(BrowserOperationRequest::GoBack(GoBackRequest {
+            target: PageSelection::Selected,
+        }))
+        .await
+        .unwrap_err();
     assert_eq!(boundary.code, ErrorCode::InvalidInput);
 
     transport.push_response("Page.getFrameTree", frame("loader-3", first));
@@ -276,16 +409,30 @@ async fn navigation_reload_history_and_stop_cancellation_are_anchored() {
     transport.push_response("Page.navigateToHistoryEntry", json!({}));
     transport.push_response("Page.getFrameTree", frame("loader-3", second));
     transport.push_response("Page.getNavigationHistory", history(1, &[first, second]));
-    script_live(&transport, second, "Second", "loader-3", 1, &[first, second]);
-    let forward = session.execute(BrowserOperationRequest::GoForward(GoForwardRequest {
-        target: PageSelection::Selected,
-    })).await.unwrap();
-    let BrowserOperationResult::GoForward(forward) = forward else { panic!("forward") };
+    script_live(
+        &transport,
+        second,
+        "Second",
+        "loader-3",
+        1,
+        &[first, second],
+    );
+    let forward = session
+        .execute(BrowserOperationRequest::GoForward(GoForwardRequest {
+            target: PageSelection::Selected,
+        }))
+        .await
+        .unwrap();
+    let BrowserOperationResult::GoForward(forward) = forward else {
+        panic!("forward")
+    };
     assert_successful_observation(&forward);
 
     assert!(snapshot.generation.get() > 0);
     let calls = transport.command_calls();
-    assert!(calls.iter().any(|call| call.method == "Page.reload" && call.session.as_deref() == Some("session-a") && call.params["ignoreCache"] == true));
+    assert!(calls.iter().any(|call| call.method == "Page.reload"
+        && call.session.as_deref() == Some("session-a")
+        && call.params["ignoreCache"] == true));
     assert!(calls.iter().any(|call| call.method == "Page.navigateToHistoryEntry" && call.params["entryId"] == 1));
 
     transport.push_response("Page.getFrameTree", frame("loader-3", second));
@@ -294,19 +441,29 @@ async fn navigation_reload_history_and_stop_cancellation_are_anchored() {
     let operation = {
         let session = Arc::clone(&session);
         tokio::spawn(async move {
-            session.execute(BrowserOperationRequest::NavigatePage(
-                NavigatePageRequest::new(PageSelection::Selected, "http://fixture/stalled").unwrap(),
-            )).await
+            session
+                .execute(BrowserOperationRequest::NavigatePage(
+                    NavigatePageRequest::new(PageSelection::Selected, "http://fixture/stalled")
+                        .unwrap(),
+                ))
+                .await
         })
     };
     transport.wait_for_command_count("Page.navigate", 2).await;
     let stopped = session.stop().await.unwrap();
     assert_eq!(stopped, krometrail_core::BrowserStopOutcome::Detached);
     let result = operation.await.unwrap().unwrap();
-    let BrowserOperationResult::NavigatePage(result) = result else { panic!("cancelled navigate") };
-    let PageOperationOutcome::Failed(error) = result.outcome else { panic!("failed outcome") };
+    let BrowserOperationResult::NavigatePage(result) = result else {
+        panic!("cancelled navigate")
+    };
+    let PageOperationOutcome::Failed(error) = result.outcome else {
+        panic!("failed outcome")
+    };
     assert_eq!(error.code, ErrorCode::Cancelled);
-    assert_eq!(error.context.interaction_id, Some(result.interaction.interaction_id));
+    assert_eq!(
+        error.context.interaction_id,
+        Some(result.interaction.interaction_id)
+    );
 }
 
 #[tokio::test]
@@ -316,21 +473,41 @@ async fn navigation_rejection_and_malformed_preflight_are_source_safe() {
     let target_id = session.status().await.unwrap().selected_target_id.unwrap();
 
     transport.push_response("Page.getFrameTree", frame("loader-1", "http://fixture/"));
-    transport.push_response("Page.getNavigationHistory", history(0, &["http://fixture/"]));
-    transport.push_response("Page.navigate", json!({"frameId":"main","errorText":"private protocol detail"}));
-    let rejected = session.execute(BrowserOperationRequest::NavigatePage(
-        NavigatePageRequest::new(PageSelection::Target(target_id), "http://fixture/rejected").unwrap(),
-    )).await.unwrap();
-    let BrowserOperationResult::NavigatePage(rejected) = rejected else { panic!("rejected navigate") };
-    let PageOperationOutcome::Failed(error) = rejected.outcome else { panic!("failed rejection") };
+    transport.push_response(
+        "Page.getNavigationHistory",
+        history(0, &["http://fixture/"]),
+    );
+    transport.push_response(
+        "Page.navigate",
+        json!({"frameId":"main","errorText":"private protocol detail"}),
+    );
+    let rejected = session
+        .execute(BrowserOperationRequest::NavigatePage(
+            NavigatePageRequest::new(PageSelection::Target(target_id), "http://fixture/rejected")
+                .unwrap(),
+        ))
+        .await
+        .unwrap();
+    let BrowserOperationResult::NavigatePage(rejected) = rejected else {
+        panic!("rejected navigate")
+    };
+    let PageOperationOutcome::Failed(error) = rejected.outcome else {
+        panic!("failed rejection")
+    };
     assert_eq!(error.code, ErrorCode::NavigationFailed);
     assert!(!error.message.as_str().contains("private"));
-    assert_eq!(error.context.interaction_id, Some(rejected.interaction.interaction_id));
+    assert_eq!(
+        error.context.interaction_id,
+        Some(rejected.interaction.interaction_id)
+    );
 
     transport.push_response("Page.getFrameTree", json!({"frameTree":{}}));
-    let malformed = session.execute(BrowserOperationRequest::NavigatePage(
-        NavigatePageRequest::new(PageSelection::Selected, "http://fixture/malformed").unwrap(),
-    )).await.unwrap_err();
+    let malformed = session
+        .execute(BrowserOperationRequest::NavigatePage(
+            NavigatePageRequest::new(PageSelection::Selected, "http://fixture/malformed").unwrap(),
+        ))
+        .await
+        .unwrap_err();
     assert_eq!(malformed.code, ErrorCode::NavigationFailed);
     assert!(malformed.context.interaction_id.is_none());
     session.stop().await.unwrap();
@@ -370,83 +547,164 @@ async fn opt_in_real_chrome_runs_complete_managed_page_lifecycle() {
         .expect("real lifecycle session");
     let initial = session.status().await.unwrap();
     assert_eq!(initial.state, BrowserSessionState::Ready);
-    let ProfileRef::Managed(profile) = &initial.profile else { panic!("managed profile") };
-    assert_eq!(profile.persistence, krometrail_core::ManagedProfilePersistence::Temporary);
+    let ProfileRef::Managed(profile) = &initial.profile else {
+        panic!("managed profile")
+    };
+    assert_eq!(
+        profile.persistence,
+        krometrail_core::ManagedProfilePersistence::Temporary
+    );
     let initial_id = initial.selected_target_id.expect("initial selection");
 
-    let snapshot = session.execute(BrowserOperationRequest::SnapshotPage(
-        SnapshotPageRequest::new(initial_id),
-    )).await.unwrap();
-    let BrowserOperationResult::SnapshotPage(snapshot) = snapshot else { panic!("initial snapshot") };
-    let old_reference = snapshot.nodes.iter().find_map(|node| {
-        (node.name.as_deref() == Some("Push history")).then_some(node.reference).flatten()
-    }).expect("push-history reference");
+    let snapshot = session
+        .execute(BrowserOperationRequest::SnapshotPage(
+            SnapshotPageRequest::new(initial_id),
+        ))
+        .await
+        .unwrap();
+    let BrowserOperationResult::SnapshotPage(snapshot) = snapshot else {
+        panic!("initial snapshot")
+    };
+    let old_reference = snapshot
+        .nodes
+        .iter()
+        .find_map(|node| {
+            (node.name.as_deref() == Some("Push history"))
+                .then_some(node.reference)
+                .flatten()
+        })
+        .expect("push-history reference");
 
-    let created = session.execute(BrowserOperationRequest::CreatePage(
-        CreatePageRequest::new(Some(second_url.clone())).unwrap(),
-    )).await.unwrap();
-    let BrowserOperationResult::CreatePage(created) = created else { panic!("real create") };
+    let created = session
+        .execute(BrowserOperationRequest::CreatePage(
+            CreatePageRequest::new(Some(second_url.clone())).unwrap(),
+        ))
+        .await
+        .unwrap();
+    let BrowserOperationResult::CreatePage(created) = created else {
+        panic!("real create")
+    };
     assert_successful_observation(&created);
     let created_id = created.interaction.target_id;
     assert_ne!(created_id, initial_id);
 
-    let navigated_initial = session.execute(BrowserOperationRequest::NavigatePage(
-        NavigatePageRequest::new(PageSelection::Target(initial_id), second_url.clone()).unwrap(),
-    )).await.unwrap();
-    let BrowserOperationResult::NavigatePage(navigated_initial) = navigated_initial else { panic!("real direct navigation") };
+    let navigated_initial = session
+        .execute(BrowserOperationRequest::NavigatePage(
+            NavigatePageRequest::new(PageSelection::Target(initial_id), second_url.clone())
+                .unwrap(),
+        ))
+        .await
+        .unwrap();
+    let BrowserOperationResult::NavigatePage(navigated_initial) = navigated_initial else {
+        panic!("real direct navigation")
+    };
     assert_successful_observation(&navigated_initial);
-    let stale = session.execute(BrowserOperationRequest::TakeScreenshot(
-        ScreenshotRequest::new(
-            initial_id,
-            ScreenshotTarget::Element(ElementLocator::Reference(old_reference)),
-            ImageFormat::Png,
-            None,
-        ).unwrap(),
-    )).await.unwrap_err();
+    let stale = session
+        .execute(BrowserOperationRequest::TakeScreenshot(
+            ScreenshotRequest::new(
+                initial_id,
+                ScreenshotTarget::Element(ElementLocator::Reference(old_reference)),
+                ImageFormat::Png,
+                None,
+            )
+            .unwrap(),
+        ))
+        .await
+        .unwrap_err();
     assert_eq!(stale.code, ErrorCode::StaleReference);
 
-    session.execute(BrowserOperationRequest::SelectPage(SelectPageRequest {
-        target_id: created_id,
-    })).await.unwrap();
-    session.execute(BrowserOperationRequest::NavigatePage(
-        NavigatePageRequest::new(PageSelection::Selected, first_url.clone()).unwrap(),
-    )).await.unwrap();
-    session.execute(BrowserOperationRequest::NavigatePage(
-        NavigatePageRequest::new(PageSelection::Selected, format!("{first_url}#pushed")).unwrap(),
-    )).await.unwrap();
-    let back = session.execute(BrowserOperationRequest::GoBack(GoBackRequest {
-        target: PageSelection::Selected,
-    })).await.unwrap();
-    let BrowserOperationResult::GoBack(back) = back else { panic!("real back") };
+    session
+        .execute(BrowserOperationRequest::SelectPage(SelectPageRequest {
+            target_id: created_id,
+        }))
+        .await
+        .unwrap();
+    session
+        .execute(BrowserOperationRequest::NavigatePage(
+            NavigatePageRequest::new(PageSelection::Selected, first_url.clone()).unwrap(),
+        ))
+        .await
+        .unwrap();
+    session
+        .execute(BrowserOperationRequest::NavigatePage(
+            NavigatePageRequest::new(PageSelection::Selected, format!("{first_url}#pushed"))
+                .unwrap(),
+        ))
+        .await
+        .unwrap();
+    let back = session
+        .execute(BrowserOperationRequest::GoBack(GoBackRequest {
+            target: PageSelection::Selected,
+        }))
+        .await
+        .unwrap();
+    let BrowserOperationResult::GoBack(back) = back else {
+        panic!("real back")
+    };
     assert_successful_observation(&back);
-    let forward = session.execute(BrowserOperationRequest::GoForward(GoForwardRequest {
-        target: PageSelection::Selected,
-    })).await.unwrap();
-    let BrowserOperationResult::GoForward(forward) = forward else { panic!("real forward") };
+    let forward = session
+        .execute(BrowserOperationRequest::GoForward(GoForwardRequest {
+            target: PageSelection::Selected,
+        }))
+        .await
+        .unwrap();
+    let BrowserOperationResult::GoForward(forward) = forward else {
+        panic!("real forward")
+    };
     assert_successful_observation(&forward);
-    let reload = session.execute(BrowserOperationRequest::ReloadPage(ReloadPageRequest {
-        target: PageSelection::Selected,
-        bypass_cache: true,
-    })).await.unwrap();
-    let BrowserOperationResult::ReloadPage(reload) = reload else { panic!("real reload") };
+    let reload = session
+        .execute(BrowserOperationRequest::ReloadPage(ReloadPageRequest {
+            target: PageSelection::Selected,
+            bypass_cache: true,
+        }))
+        .await
+        .unwrap();
+    let BrowserOperationResult::ReloadPage(reload) = reload else {
+        panic!("real reload")
+    };
     assert_successful_observation(&reload);
 
-    let closed_unselected = session.execute(BrowserOperationRequest::ClosePage(ClosePageRequest {
-        target: PageSelection::Target(initial_id),
-    })).await.unwrap();
-    let BrowserOperationResult::ClosePage(closed_unselected) = closed_unselected else { panic!("real unselected close") };
+    let closed_unselected = session
+        .execute(BrowserOperationRequest::ClosePage(ClosePageRequest {
+            target: PageSelection::Target(initial_id),
+        }))
+        .await
+        .unwrap();
+    let BrowserOperationResult::ClosePage(closed_unselected) = closed_unselected else {
+        panic!("real unselected close")
+    };
     assert_successful_observation(&closed_unselected);
-    assert_eq!(session.status().await.unwrap().selected_target_id, Some(created_id));
-    let closed_selected = session.execute(BrowserOperationRequest::ClosePage(ClosePageRequest {
-        target: PageSelection::Selected,
-    })).await.unwrap();
-    let BrowserOperationResult::ClosePage(closed_selected) = closed_selected else { panic!("real selected close") };
-    assert!(matches!(closed_selected.outcome, PageOperationOutcome::Succeeded(_)));
+    assert_eq!(
+        session.status().await.unwrap().selected_target_id,
+        Some(created_id)
+    );
+    let closed_selected = session
+        .execute(BrowserOperationRequest::ClosePage(ClosePageRequest {
+            target: PageSelection::Selected,
+        }))
+        .await
+        .unwrap();
+    let BrowserOperationResult::ClosePage(closed_selected) = closed_selected else {
+        panic!("real selected close")
+    };
+    assert!(matches!(
+        closed_selected.outcome,
+        PageOperationOutcome::Succeeded(_)
+    ));
     assert_eq!(session.status().await.unwrap().selected_target_id, None);
 
-    assert_eq!(session.stop().await.unwrap(), krometrail_core::BrowserStopOutcome::ManagedBrowserClosed);
+    assert_eq!(
+        session.stop().await.unwrap(),
+        krometrail_core::BrowserStopOutcome::ManagedBrowserClosed
+    );
     assert!(support::chrome::process_references(&root).is_empty());
-    assert!(!root.join("tmp").exists() || std::fs::read_dir(root.join("tmp")).unwrap().next().is_none());
+    assert!(
+        !root.join("tmp").exists()
+            || std::fs::read_dir(root.join("tmp"))
+                .unwrap()
+                .next()
+                .is_none()
+    );
 }
 
 #[tokio::test]
@@ -474,25 +732,42 @@ async fn opt_in_real_chrome_reopens_named_profile_state() {
     };
     let url = support::chrome::page_lifecycle_fixture_url("index.html");
     for expected in ["1", "2"] {
-        let session = connector.connect(BrowserConnectRequest::Launch(LaunchBrowser {
-            executable: None,
-            profile: profile.clone(),
-            initial_url: Some(url.clone()),
-        })).await.unwrap();
+        let session = connector
+            .connect(BrowserConnectRequest::Launch(LaunchBrowser {
+                executable: None,
+                profile: profile.clone(),
+                initial_url: Some(url.clone()),
+            }))
+            .await
+            .unwrap();
         let status = session.status().await.unwrap();
-        let ProfileRef::Managed(profile) = status.profile else { panic!("managed named profile") };
+        let ProfileRef::Managed(profile) = status.profile else {
+            panic!("managed named profile")
+        };
         assert_eq!(profile.identity.as_str(), "lifecycle-named");
-        assert_eq!(profile.persistence, krometrail_core::ManagedProfilePersistence::Reusable);
+        assert_eq!(
+            profile.persistence,
+            krometrail_core::ManagedProfilePersistence::Reusable
+        );
         let target_id = status.selected_target_id.unwrap();
-        let result = session.execute(BrowserOperationRequest::EvaluatePage(
-            ReadOnlyEvaluationRequest::new(
-                target_id,
-                "document.querySelector('#profile-visits').textContent",
-                false,
-            ).unwrap(),
-        )).await.unwrap();
-        let BrowserOperationResult::EvaluatePage(result) = result else { panic!("profile evaluation") };
-        assert_eq!(result.value, krometrail_core::EvaluationValue::Json(json!(expected)));
+        let result = session
+            .execute(BrowserOperationRequest::EvaluatePage(
+                ReadOnlyEvaluationRequest::new(
+                    target_id,
+                    "document.querySelector('#profile-visits').textContent",
+                    false,
+                )
+                .unwrap(),
+            ))
+            .await
+            .unwrap();
+        let BrowserOperationResult::EvaluatePage(result) = result else {
+            panic!("profile evaluation")
+        };
+        assert_eq!(
+            result.value,
+            krometrail_core::EvaluationValue::Json(json!(expected))
+        );
         session.stop().await.unwrap();
     }
 }
@@ -505,5 +780,7 @@ fn lifecycle_fixture_is_standalone_and_has_stable_markers() {
     assert!(second.contains("second-page-ready") && second.contains("Lifecycle second"));
     assert!(!first.contains("krometrail") && !second.contains("krometrail"));
     let _ = ImageFormat::Png;
-    let _ = InspectPageRequest::new(krometrail_core::TargetId::from_uuid(uuid::Uuid::from_u128(1)));
+    let _ = InspectPageRequest::new(krometrail_core::TargetId::from_uuid(uuid::Uuid::from_u128(
+        1,
+    )));
 }

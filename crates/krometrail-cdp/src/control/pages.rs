@@ -1,6 +1,6 @@
 use krometrail_core::{
-    BrowserOperationResult, InteractionId, LiveObservation,
-    LiveObservationRequest, ObservationPart, PageSelection, Result, TargetId,
+    BrowserOperationResult, InteractionId, LiveObservation, LiveObservationRequest,
+    ObservationPart, PageSelection, Result, TargetId,
 };
 
 use super::{PageControl, bind_target};
@@ -42,5 +42,4 @@ impl PageControl {
             Err(error) => Ok(ObservationPart::Unavailable(error)),
         }
     }
-
 }

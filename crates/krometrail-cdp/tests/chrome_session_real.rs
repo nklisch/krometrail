@@ -213,7 +213,10 @@ async fn opt_in_electron_renderer_endpoint_uses_capability_probe() {
         status.compatibility.version.product,
         krometrail_core::BrowserProduct::ElectronRenderer
     );
-    assert_eq!(status.ownership, krometrail_core::BrowserOwnership::Attached);
+    assert_eq!(
+        status.ownership,
+        krometrail_core::BrowserOwnership::Attached
+    );
     assert_eq!(status.profile, krometrail_core::ProfileRef::External);
     assert!(status.selected_target_id.is_some());
     assert_eq!(session.stop().await.unwrap(), BrowserStopOutcome::Detached);

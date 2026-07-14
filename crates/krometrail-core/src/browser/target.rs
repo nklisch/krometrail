@@ -433,7 +433,10 @@ mod tests {
         let temporary = ProfileRef::temporary(ProfileIdentity::new("temporary-1").unwrap());
         let temporary_json = serde_json::to_string(&temporary).unwrap();
         assert!(temporary_json.contains("temporary"));
-        assert_eq!(serde_json::from_str::<ProfileRef>(&temporary_json).unwrap(), temporary);
+        assert_eq!(
+            serde_json::from_str::<ProfileRef>(&temporary_json).unwrap(),
+            temporary
+        );
 
         let external = serde_json::to_string(&ProfileRef::External).unwrap();
         assert_eq!(external, r#""external""#);

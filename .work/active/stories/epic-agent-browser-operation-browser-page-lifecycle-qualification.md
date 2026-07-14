@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-operation-browser-page-lifecycle-qualification
 kind: story
-stage: implementing
+stage: done
 tags: [browser, agent-ux]
 parent: epic-agent-browser-operation-browser-page-lifecycle
 depends_on: [epic-agent-browser-operation-browser-page-lifecycle-navigation-observations]
@@ -46,3 +46,14 @@ Run the complete Rust quality gate. This story is verification of the parent fea
 ## Ordering
 
 Final checkpoint after all contract, lifecycle, selected-target, and navigation work. Green verification advances this child directly to done and makes the parent eligible for feature-level review.
+
+## Implementation notes
+
+- Execution capability: highest; qualification covers public contracts, serialized state, protocol ordering, cancellation, ownership, and real renderer behavior.
+- Review weight: standard (caller); child checkpoints do not self-review.
+- Files changed: shared `ScriptedCdp`, lifecycle fixture/helper, deterministic lifecycle suite, focused existing test migrations, and final formatting.
+- Tests: 282 default workspace tests across 27 suites; 10 page-lifecycle tests with real Chrome enabled, including complete managed start/status/create/select/new- and same-document navigation/reload/back/forward/reference invalidation/unselected and selected close/stop, plus named-profile reopen persistence. Existing profile, compatibility, supervision, capture, and observation suites remain green.
+- Gates: formatting, locked workspace check/test/clippy with `-D warnings`, and locked no-default CDP all-target compilation passed.
+- Simplification: qualification extends the shared scripted transport and browser fixture helpers; no second fake protocol or runtime was introduced.
+- Discrepancies from design: Electron lifecycle remains environment-gated by `KROMETRAIL_ELECTRON_ENDPOINT`; deterministic compatibility tests prove classification and Node-inspector rejection when no endpoint is available.
+- Adjacent issues parked: none.

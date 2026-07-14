@@ -17,7 +17,7 @@ pub enum BrowserConnectRequest {
     Attach(AttachBrowser),
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct LaunchBrowser {
     pub executable: Option<PathBuf>,
     pub profile: ManagedProfile,
@@ -29,16 +29,6 @@ impl LaunchBrowser {
         Self {
             executable: None,
             profile,
-            initial_url: None,
-        }
-    }
-}
-
-impl Default for LaunchBrowser {
-    fn default() -> Self {
-        Self {
-            executable: None,
-            profile: ManagedProfile::default(),
             initial_url: None,
         }
     }

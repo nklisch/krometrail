@@ -55,7 +55,10 @@ async fn opt_in_real_chrome_capture_records_fidelity_and_managed_cleanup() {
     .await;
 
     let browser_status = session.status().await.expect("browser status");
-    assert_eq!(browser_status.ownership, krometrail_core::BrowserOwnership::Managed);
+    assert_eq!(
+        browser_status.ownership,
+        krometrail_core::BrowserOwnership::Managed
+    );
     assert_eq!(browser_status.state, BrowserSessionState::Ready);
     let session_id = browser_status.session_id;
     let origin = session.session_origin().observed().as_nanos();
@@ -109,11 +112,7 @@ async fn opt_in_real_chrome_capture_records_fidelity_and_managed_cleanup() {
         .expect("managed capture stop");
     assert_eq!(outcome, BrowserStopOutcome::ManagedBrowserClosed);
     assert_eq!(sink.flush_count(), 1);
-    assert!(
-        sink.gaps()
-            .iter()
-            .all(|gap| gap.session_id() == session_id)
-    );
+    assert!(sink.gaps().iter().all(|gap| gap.session_id() == session_id));
 
     let stopped = terminal_capture_status(&mut events, target_id, STOP_TIMEOUT)
         .await
@@ -179,7 +178,10 @@ async fn opt_in_real_chrome_capture_isolates_two_targets_and_records_visibility_
         .await
         .expect("attached capture session");
     let browser_status = session.status().await.expect("browser status");
-    assert_eq!(browser_status.ownership, krometrail_core::BrowserOwnership::Attached);
+    assert_eq!(
+        browser_status.ownership,
+        krometrail_core::BrowserOwnership::Attached
+    );
     assert_eq!(browser_status.state, BrowserSessionState::Ready);
     let session_id = browser_status.session_id;
     let mut events = session

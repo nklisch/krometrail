@@ -129,7 +129,13 @@ impl ScriptedCdp {
         loop {
             let notified = {
                 let state = self.state.lock().unwrap();
-                if state.commands.iter().filter(|(called, _)| called == method).count() >= count {
+                if state
+                    .commands
+                    .iter()
+                    .filter(|(called, _)| called == method)
+                    .count()
+                    >= count
+                {
                     return;
                 }
                 Arc::clone(&state.command_notify).notified_owned()
