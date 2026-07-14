@@ -1,10 +1,17 @@
 //! Browser and page-target domain contracts.
 
+mod control;
 mod observation;
 mod operation;
 mod session;
 mod target;
 
+pub use control::{
+    BrowserStatus, ClosePageRequest, CreatePageRequest, DEFAULT_MANAGED_PROFILE_NAME,
+    GoBackRequest, GoForwardRequest, InteractionAnchor, InteractionTiming, ListPagesRequest,
+    NavigatePageRequest, PageChange, PageOperationOutcome, PageOperationResult, PageSelection,
+    PageStatus, ReloadPageRequest, SelectPageRequest,
+};
 pub use observation::{
     AccessibleProperty, AccessibleValue, CoordinateSpace, CssPoint, CssRect, CssSize,
     DocumentReadiness, ElementLocator, EncodedScreenshot, EvaluationResult, EvaluationValue,
@@ -15,7 +22,8 @@ pub use observation::{
 };
 pub use operation::{
     BROWSER_OPERATION_REGISTRY, BrowserOperationDefinition, BrowserOperationKind,
-    BrowserOperationRequest, BrowserOperationResult, OperationEvidence, OperationMutability,
+    BrowserOperationRequest, BrowserOperationResult, BrowserOperationScope,
+    BrowserOperationScopeKind, OperationEvidence, OperationMutability,
 };
 pub use session::{
     BrowserCompatibility, BrowserOwnership, BrowserSessionEvent, BrowserSessionState,
@@ -24,5 +32,6 @@ pub use session::{
 };
 pub use target::{
     BrowserInstallation, BrowserInstallationSource, BrowserProduct, BrowserProductVersion,
-    BrowserVersion, PageTarget, ProfileIdentity, ProfileRef,
+    BrowserVersion, ManagedProfilePersistence, ManagedProfileRef, PageTarget, ProfileIdentity,
+    ProfileRef,
 };

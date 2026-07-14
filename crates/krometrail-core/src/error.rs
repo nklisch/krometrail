@@ -33,6 +33,7 @@ define_stable_enum! {
         PageObservationFailed => "page_observation_failed",
         ScreenshotFailed => "screenshot_failed",
         EvaluationFailed => "evaluation_failed",
+        NavigationFailed => "navigation_failed",
         ReconnectExhausted => "reconnect_exhausted",
         Cancelled => "cancelled",
         ShutdownIncomplete => "shutdown_incomplete",
@@ -159,9 +160,10 @@ impl ErrorCode {
             | Self::BrowserCompatibilityFailed
             | Self::ProfileInUse
             | Self::ReconnectExhausted => RetryAdvice::AfterRecovery,
-            Self::TargetFailed | Self::PageObservationFailed | Self::ScreenshotFailed => {
-                RetryAdvice::Safe
-            }
+            Self::TargetFailed
+            | Self::PageObservationFailed
+            | Self::ScreenshotFailed
+            | Self::NavigationFailed => RetryAdvice::Safe,
             Self::StaleReference | Self::ReferenceNotActionable => RetryAdvice::AfterRecovery,
             _ => RetryAdvice::Never,
         }
@@ -189,6 +191,9 @@ impl ErrorCode {
             }
             Self::EvaluationFailed => {
                 Some("use a bounded side-effect-free expression returning a JSON value")
+            }
+            Self::NavigationFailed => {
+                Some("inspect current page status before retrying navigation")
             }
             Self::ReconnectExhausted => Some("check the browser and start a new session"),
             Self::Cancelled => Some("start the operation again if it is still needed"),

@@ -7,6 +7,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    browser::PageSelection,
     error::{KrometrailError, NonEmptyText, Result, invalid},
     ids::{SessionId, TargetId},
     recording::{DeviceScaleFactor, ImageFormat, PixelDimensions},
@@ -511,14 +512,14 @@ pub enum ScreenshotTarget {
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ScreenshotRequest {
-    pub target_id: TargetId,
+    pub page: PageSelection,
     pub target: ScreenshotTarget,
     pub format: ImageFormat,
     pub jpeg_quality: Option<u8>,
 }
 #[derive(Deserialize)]
 struct ScreenshotRequestWire {
-    target_id: TargetId,
+    page: PageSelection,
     target: ScreenshotTarget,
     format: ImageFormat,
     jpeg_quality: Option<u8>,
@@ -526,6 +527,20 @@ struct ScreenshotRequestWire {
 impl ScreenshotRequest {
     pub fn new(
         target_id: TargetId,
+        target: ScreenshotTarget,
+        format: ImageFormat,
+        jpeg_quality: Option<u8>,
+    ) -> Result<Self> {
+        Self::for_selection(
+            PageSelection::Target(target_id),
+            target,
+            format,
+            jpeg_quality,
+        )
+    }
+
+    pub fn for_selection(
+        page: PageSelection,
         target: ScreenshotTarget,
         format: ImageFormat,
         jpeg_quality: Option<u8>,
@@ -540,7 +555,7 @@ impl ScreenshotRequest {
             _ => {}
         }
         Ok(Self {
-            target_id,
+            page,
             target,
             format,
             jpeg_quality,
@@ -550,7 +565,7 @@ impl ScreenshotRequest {
 impl<'de> Deserialize<'de> for ScreenshotRequest {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
         deserialize_validated(d, |w: ScreenshotRequestWire| {
-            Self::new(w.target_id, w.target, w.format, w.jpeg_quality)
+            Self::for_selection(w.page, w.target, w.format, w.jpeg_quality)
         })
     }
 }
@@ -623,28 +638,35 @@ impl EncodedScreenshot {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct InspectPageRequest {
-    pub target_id: TargetId,
+macro_rules! page_request {
+    ($name:ident) => {
+        #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+        pub struct $name {
+            pub target: PageSelection,
+        }
+
+        impl $name {
+            pub const fn new(target_id: TargetId) -> Self {
+                Self {
+                    target: PageSelection::Target(target_id),
+                }
+            }
+        }
+    };
 }
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct SnapshotPageRequest {
-    pub target_id: TargetId,
-}
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct LiveObservationRequest {
-    pub target_id: TargetId,
-}
+page_request!(InspectPageRequest);
+page_request!(SnapshotPageRequest);
+page_request!(LiveObservationRequest);
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ReadOnlyEvaluationRequest {
-    pub target_id: TargetId,
+    pub target: PageSelection,
     pub expression: NonEmptyText,
     pub await_promise: bool,
 }
 #[derive(Deserialize)]
 struct ReadOnlyEvaluationRequestWire {
-    target_id: TargetId,
+    target: PageSelection,
     expression: NonEmptyText,
     await_promise: bool,
 }
@@ -655,7 +677,7 @@ impl ReadOnlyEvaluationRequest {
         await_promise: bool,
     ) -> Result<Self> {
         Ok(Self {
-            target_id,
+            target: PageSelection::Target(target_id),
             expression: NonEmptyText::new(expression.into())
                 .map_err(|_| invalid("evaluation expression must not be empty"))?,
             await_promise,
@@ -665,7 +687,14 @@ impl ReadOnlyEvaluationRequest {
 impl<'de> Deserialize<'de> for ReadOnlyEvaluationRequest {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
         deserialize_validated(d, |w: ReadOnlyEvaluationRequestWire| {
-            Self::new(w.target_id, w.expression.as_str(), w.await_promise)
+            if w.expression.as_str().trim().is_empty() {
+                return Err(invalid("evaluation expression must not be empty"));
+            }
+            Ok(Self {
+                target: w.target,
+                expression: w.expression,
+                await_promise: w.await_promise,
+            })
         })
     }
 }

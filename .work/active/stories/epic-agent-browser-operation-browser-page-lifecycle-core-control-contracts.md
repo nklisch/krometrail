@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-operation-browser-page-lifecycle-core-control-contracts
 kind: story
-stage: implementing
+stage: done
 tags: [browser, agent-ux]
 parent: epic-agent-browser-operation-browser-page-lifecycle
 depends_on: []
@@ -46,3 +46,13 @@ Replace split `BrowserSessionPort` status getters with one object-safe `status()
 ## Ordering
 
 This is the first checkpoint. It defines the shared contracts used by lifecycle/profile status, reducer selection, navigation, later rich interactions, batching, and MCP. It is not a separate worker assignment.
+
+## Implementation notes
+
+- Execution capability: highest; the public control contract, generated operation registry, and Serde invariants are cross-cutting external boundaries.
+- Review weight: standard (caller).
+- Files changed: `krometrail-core` browser control/observation/operation/session/target exports, browser port, stable errors, and affected contract fakes.
+- Tests: constructor and wire rejection for profile/page inputs, coherent status selection, interaction timing/kind/context, exhaustive operation metadata, and launch defaults; `cargo test -p krometrail-core --all-targets --locked` passed with 56 tests.
+- Simplification: one registry now generates lifecycle and observation operation metadata and one `status()` replaces split session getters.
+- Discrepancies from design: screenshot addressing uses `page: PageSelection` because `target` already names viewport/full-page/element/region screenshot scope; semantics are unchanged.
+- Adjacent issues parked: none.

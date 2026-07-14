@@ -119,59 +119,50 @@ mod tests {
     }
 
     impl BrowserSessionPort for FakeBrowserSession {
-        fn session_id(&self) -> SessionId {
-            self.session_id
-        }
-
         fn session_origin(&self) -> SessionOrigin {
             self.session_origin
         }
 
-        fn compatibility(&self) -> &BrowserCompatibility {
-            &self.compatibility
-        }
-
-        fn ownership(&self) -> BrowserOwnership {
-            match self.profile {
+        fn status(&self) -> PortFuture<'_, crate::Result<crate::BrowserStatus>> {
+            let ownership = match self.profile {
                 ProfileRef::Managed(_) => BrowserOwnership::Managed,
                 ProfileRef::External => BrowserOwnership::Attached,
-            }
-        }
-
-        fn profile(&self) -> &ProfileRef {
-            &self.profile
-        }
-
-        fn state(&self) -> BrowserSessionState {
-            if self.fail {
-                BrowserSessionState::Ended
-            } else {
-                BrowserSessionState::Ready
-            }
-        }
-
-        fn targets(&self) -> PortFuture<'_, crate::Result<Vec<SupervisedTarget>>> {
-            let result = if self.fail {
-                Err(crate::KrometrailError::new(
-                    ErrorCode::BrowserNotFound,
-                    crate::NonEmptyText::new("browser session is unavailable").unwrap(),
-                ))
-            } else {
-                Ok(self.targets.clone())
             };
-            Box::pin(std::future::ready(result))
+            let pages = if self.fail {
+                Vec::new()
+            } else {
+                self.targets
+                    .iter()
+                    .cloned()
+                    .enumerate()
+                    .map(|(index, target)| crate::PageStatus {
+                        target,
+                        selected: index == 0,
+                    })
+                    .collect()
+            };
+            let selected = pages.first().map(|page| page.target.target.id());
+            let status = crate::BrowserStatus::new(
+                self.session_id,
+                if self.fail {
+                    BrowserSessionState::Ended
+                } else {
+                    BrowserSessionState::Ready
+                },
+                ownership,
+                self.profile.clone(),
+                self.compatibility.clone(),
+                selected,
+                pages,
+                Vec::new(),
+            );
+            Box::pin(std::future::ready(status))
         }
 
         fn subscribe(&self) -> PortFuture<'_, crate::Result<Box<dyn BrowserSessionEvents>>> {
             Box::pin(std::future::ready(Ok(
                 Box::new(ClosedEvents) as Box<dyn BrowserSessionEvents>
             )))
-        }
-
-        fn capture_statuses(
-            &self,
-        ) -> PortFuture<'_, crate::Result<Vec<crate::TargetCaptureStatus>>> {
-            Box::pin(std::future::ready(Ok(Vec::new())))
         }
 
         fn execute(
@@ -415,6 +406,19 @@ mod tests {
     }
 
     #[test]
+    fn launch_defaults_to_the_named_reusable_managed_profile() {
+        let request = LaunchBrowser::default();
+        assert!(request.executable.is_none());
+        assert!(request.initial_url.is_none());
+        assert_eq!(
+            request.profile,
+            ManagedProfile::Reusable {
+                name: ProfileIdentity::new(crate::DEFAULT_MANAGED_PROFILE_NAME).unwrap(),
+            }
+        );
+    }
+
+    #[test]
     fn browser_failure_kind_maps_exhaustively_to_safe_core_errors() {
         assert_eq!(
             BrowserFailureKind::ALL.len(),
@@ -433,7 +437,7 @@ mod tests {
 
     #[test]
     fn browser_port_supports_object_safe_lifecycle_and_event_closure() {
-        let managed_profile = ProfileRef::Managed(ProfileIdentity::new("profile").unwrap());
+        let managed_profile = ProfileRef::managed(ProfileIdentity::new("profile").unwrap());
         let connector: Arc<dyn BrowserConnector> = Arc::new(FakeBrowserConnector {
             session: browser_session(false, managed_profile.clone()),
             fail: false,
@@ -443,12 +447,13 @@ mod tests {
             AttachBrowser::new("local").unwrap(),
         )))
         .unwrap();
+        let status = block_on(session.status()).unwrap();
         assert_eq!(
-            session.compatibility().version.product(),
+            status.compatibility.version.product(),
             BrowserProduct::Chrome
         );
-        assert_eq!(session.profile(), &managed_profile);
-        assert_eq!(block_on(session.targets()).unwrap().len(), 1);
+        assert_eq!(status.profile, managed_profile);
+        assert_eq!(status.pages.len(), 1);
         let mut events = block_on(session.subscribe()).unwrap();
         assert!(block_on(events.next()).unwrap().is_none());
         assert_eq!(

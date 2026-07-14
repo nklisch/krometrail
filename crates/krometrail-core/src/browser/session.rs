@@ -260,6 +260,10 @@ pub enum BrowserSessionEvent {
     TargetClosed {
         target_id: crate::ids::TargetId,
     },
+    SelectedTargetChanged {
+        previous: Option<crate::ids::TargetId>,
+        selected: Option<crate::ids::TargetId>,
+    },
     TargetFailed {
         target_id: crate::ids::TargetId,
         error: KrometrailError,
@@ -366,6 +370,6 @@ mod tests {
             serde_json::from_str::<BrowserSessionEvent>(&encoded).unwrap(),
             event
         );
-        let _ = ProfileRef::Managed(ProfileIdentity::new("managed").unwrap());
+        let _ = ProfileRef::managed(ProfileIdentity::new("managed").unwrap());
     }
 }

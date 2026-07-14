@@ -2,13 +2,10 @@ use std::{path::PathBuf, sync::Arc};
 
 use crate::{
     browser::{
-        BrowserCompatibility, BrowserInstallation, BrowserOperationRequest, BrowserOperationResult,
-        BrowserOwnership, BrowserSessionEvent, BrowserSessionState, BrowserStopOutcome, PageTarget,
-        ProfileRef, SupervisedTarget,
+        BrowserInstallation, BrowserOperationRequest, BrowserOperationResult, BrowserSessionEvent,
+        BrowserStatus, BrowserStopOutcome, PageTarget,
     },
     error::{Result, invalid},
-    ids::SessionId,
-    recording::TargetCaptureStatus,
     time::SessionOrigin,
 };
 
@@ -37,12 +34,33 @@ impl LaunchBrowser {
     }
 }
 
+impl Default for LaunchBrowser {
+    fn default() -> Self {
+        Self {
+            executable: None,
+            profile: ManagedProfile::default(),
+            initial_url: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ManagedProfile {
     Reusable {
         name: crate::browser::ProfileIdentity,
     },
     Temporary,
+}
+
+impl Default for ManagedProfile {
+    fn default() -> Self {
+        Self::Reusable {
+            name: crate::browser::ProfileIdentity::new(
+                crate::browser::DEFAULT_MANAGED_PROFILE_NAME,
+            )
+            .expect("default managed profile name is valid"),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -119,15 +137,9 @@ pub trait BrowserConnector: Send + Sync {
 }
 
 pub trait BrowserSessionPort: Send + Sync {
-    fn session_id(&self) -> SessionId;
     fn session_origin(&self) -> SessionOrigin;
-    fn compatibility(&self) -> &BrowserCompatibility;
-    fn ownership(&self) -> BrowserOwnership;
-    fn profile(&self) -> &ProfileRef;
-    fn state(&self) -> BrowserSessionState;
-    fn targets(&self) -> PortFuture<'_, Result<Vec<SupervisedTarget>>>;
+    fn status(&self) -> PortFuture<'_, Result<BrowserStatus>>;
     fn subscribe(&self) -> PortFuture<'_, Result<Box<dyn BrowserSessionEvents>>>;
-    fn capture_statuses(&self) -> PortFuture<'_, Result<Vec<TargetCaptureStatus>>>;
     fn execute(
         &self,
         request: BrowserOperationRequest,

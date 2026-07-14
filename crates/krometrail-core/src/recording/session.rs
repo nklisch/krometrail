@@ -618,7 +618,7 @@ mod tests {
                 "12",
             )
             .unwrap(),
-            ProfileRef::Managed(crate::ProfileIdentity::new("profile").unwrap()),
+            ProfileRef::managed(crate::ProfileIdentity::new("profile").unwrap()),
             DiskBudgetBytes::new(1024).unwrap(),
             vec![CapabilityId::Control],
         )

@@ -161,10 +161,23 @@ impl<'de> Deserialize<'de> for ProfileIdentity {
     }
 }
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedProfilePersistence {
+    Reusable,
+    Temporary,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+pub struct ManagedProfileRef {
+    pub identity: ProfileIdentity,
+    pub persistence: ManagedProfilePersistence,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProfileRef {
-    Managed(ProfileIdentity),
+    Managed(ManagedProfileRef),
     External,
 }
 
@@ -174,25 +187,17 @@ impl ProfileRef {
     }
 
     pub fn managed(identity: ProfileIdentity) -> Self {
-        Self::Managed(identity)
+        Self::Managed(ManagedProfileRef {
+            identity,
+            persistence: ManagedProfilePersistence::Reusable,
+        })
     }
-}
 
-impl<'de> Deserialize<'de> for ProfileRef {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        #[serde(rename_all = "snake_case")]
-        enum Wire {
-            Managed(ProfileIdentity),
-            External,
-        }
-        match Wire::deserialize(deserializer)? {
-            Wire::Managed(identity) => Ok(Self::Managed(identity)),
-            Wire::External => Ok(Self::External),
-        }
+    pub fn temporary(identity: ProfileIdentity) -> Self {
+        Self::Managed(ManagedProfileRef {
+            identity,
+            persistence: ManagedProfilePersistence::Temporary,
+        })
     }
 }
 
@@ -417,11 +422,19 @@ mod tests {
     fn managed_and_external_profiles_have_distinct_wire_values() {
         let managed = ProfileRef::managed(ProfileIdentity::new("profile").unwrap());
         let managed_json = serde_json::to_string(&managed).unwrap();
-        assert_eq!(managed_json, r#"{"managed":"profile"}"#);
+        assert_eq!(
+            managed_json,
+            r#"{"managed":{"identity":"profile","persistence":"reusable"}}"#
+        );
         assert_eq!(
             serde_json::from_str::<ProfileRef>(&managed_json).unwrap(),
             managed
         );
+        let temporary = ProfileRef::temporary(ProfileIdentity::new("temporary-1").unwrap());
+        let temporary_json = serde_json::to_string(&temporary).unwrap();
+        assert!(temporary_json.contains("temporary"));
+        assert_eq!(serde_json::from_str::<ProfileRef>(&temporary_json).unwrap(), temporary);
+
         let external = serde_json::to_string(&ProfileRef::External).unwrap();
         assert_eq!(external, r#""external""#);
         assert_eq!(
