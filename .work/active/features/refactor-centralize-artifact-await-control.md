@@ -1,7 +1,7 @@
 ---
 id: refactor-centralize-artifact-await-control
 kind: feature
-stage: implementing
+stage: review
 tags: [refactor, visual, storage]
 parent: null
 depends_on: [epic-temporal-debugging-workflow-artifact-generation-and-cache]
@@ -285,3 +285,7 @@ sites of scheduler `controlled` and no local duplicate.
 This feature depends only on its already-done artifact-generation parent. The
 one child story has `depends_on: []`; the parent edge supplies the feature's
 existing sequencing without introducing a dependency cycle.
+
+## Implementation summary
+
+The single checkpoint landed in `9bf998c`. `scheduler::controlled` is the sole caller deadline/external-cancellation await policy for scheduler request permits and the service's frame-read, planning, and cache-lookup futures. Its implementation is unchanged apart from crate visibility; service duplicates were removed. Shared `WorkCancellation`, `controlled_work`, and the notify-aware single-flight loop remain untouched. Rust 1.85 locked format, full workspace tests, and Clippy with warnings denied passed. The feature is ready for standard review.
