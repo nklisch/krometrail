@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-vision-toolkit-difference-map
 kind: feature
-stage: implementing
+stage: review
 tags: [visual]
 parent: epic-temporal-vision-toolkit
 depends_on: [epic-temporal-vision-toolkit-normalization-and-measurements]
@@ -491,3 +491,16 @@ The feature remains one cohesive implementation and feature-review bundle. Stori
 - **Magnitude-weighted timing can mislead under bursts:** A pixel with one large-magnitude change and several small ones weights the average toward the large event. This is documented behavior, not a defect; the repeated-change indicator surfaces multi-burst pixels separately so the timing panel does not silently average them into one false timestamp.
 - **Auto-scaled frequency maximum:** Scaling `Count`/`Magnitude` brightness by the image-wide maximum makes the brightest pixel always full-scale, which could over-emphasize a quiet sequence. The legend reports the actual maximum value so the scale is explicit; `NormalizedFrequency` is available when an absolute scale is preferred.
 - **Accumulator memory headroom:** `weighted_time_sum` is `u128` and near-full-range timestamps plus near-maximum deltas across many frames approach the type's capacity. Checked arithmetic fails explicitly on adversarial overflow rather than wrapping, and realistic capture ranges (sub-second to minutes) are many orders of magnitude below the limit.
+
+## Implementation notes
+
+- Execution capability: raised/high; this feature combines canonical visual measurement semantics, bounded per-pixel arithmetic, deterministic image encoding, and a public provenance contract.
+- Review weight: standard (autopilot caller); feature is intentionally left at `stage: review` for independent approval.
+- Dispatch: one cohesive owner implemented all four ordered story checkpoints because the accumulation, RGB8 shared renderer seam, manifest, and public tests form one tightly coupled boundary.
+- Files changed: `crates/temporal-vision/src/difference_map.rs`, `src/measure.rs`, `src/render.rs`, `src/lib.rs`, `tests/difference_map.rs`, and the four owned story records.
+- Tests added: exact canonical threshold/gap equivalence, bounded accumulation, all frequency modes, repeated-change timing, deterministic browser-free PNG/manifest/hash/JSON output, semantic panel pixels, visible gap warning, and output-limit rejection.
+- Simplification: reused storyboard's existing RGB8 `Canvas`, checked-in font, deterministic encoder, `EncodedImage`, and `GeneratedArtifact`; no RGBA compatibility layer, second encoder, second artifact wrapper, panel framework, tracking, diagnosis, or motion direction was added.
+- Discrepancies from design: `DifferenceMapArtifact` aliases the shared `GeneratedArtifact`, so output bytes use `image()` and SHA-256 remains manifest-owned rather than adding the draft-only `RenderedArtifact::rendered()` surface. The implemented algorithm version is the designed `v1`; PNG profile and layout constants are recorded in manifest parameters.
+- Verification: temporal-vision format/check/test/clippy are green with 36 tests. Locked workspace check and 271 tests are green. Workspace format is currently blocked only by concurrently owned unformatted browser-navigation files, and workspace clippy only by the concurrent manual `Default` implementation in `crates/krometrail-core/src/ports/browser.rs`; neither failure touches temporal-vision or this feature's commits.
+- Commits: `db90ef4`, `5b4a999`, `e37a610`, `7efd5db`.
+- Adjacent issues parked: none.
