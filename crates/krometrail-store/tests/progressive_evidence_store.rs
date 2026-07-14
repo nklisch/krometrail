@@ -13,6 +13,7 @@ use krometrail_store::{
 };
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
+use tokio::sync::Barrier;
 use uuid::Uuid;
 
 struct Fixture {
@@ -389,4 +390,47 @@ async fn resolved_pin_refuses_partial_or_deleted_source_truth() {
             .code,
         krometrail_core::ErrorCode::NotFound
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pin_serializes_with_concurrent_session_deletion_without_resurrection() {
+    let fixture = fixture(1_000_000).await;
+    let request =
+        RetentionPinRequest::from_resolved(&resolved(&fixture, fixture.frame_ids.clone(), 1, 3))
+            .unwrap();
+    let start = Arc::new(Barrier::new(3));
+    let pin = {
+        let store = Arc::clone(&fixture.store);
+        let request = request.clone();
+        let start = Arc::clone(&start);
+        tokio::spawn(async move {
+            start.wait().await;
+            store.pin_resolved_range(request).await
+        })
+    };
+    let deletion = {
+        let store = Arc::clone(&fixture.store);
+        let start = Arc::clone(&start);
+        tokio::spawn(async move {
+            start.wait().await;
+            store.delete_session(fixture.session_id).await
+        })
+    };
+    start.wait().await;
+
+    let pin = pin.await.unwrap();
+    deletion.await.unwrap().unwrap();
+    if let Err(error) = pin {
+        assert_eq!(error.code, krometrail_core::ErrorCode::NotFound);
+    }
+    assert_eq!(
+        fixture
+            .store
+            .query_pin_state(request)
+            .await
+            .unwrap_err()
+            .code,
+        krometrail_core::ErrorCode::NotFound
+    );
+    assert_eq!(fixture.store.status().await.unwrap().pinned_usage_bytes, 0);
 }

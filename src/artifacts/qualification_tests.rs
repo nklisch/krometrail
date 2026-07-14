@@ -12,13 +12,14 @@ use krometrail_core::{
     AnalysisScale, ArtifactCacheDisposition, ArtifactFailurePolicy, ArtifactGeneration,
     ArtifactGenerationContext, ArtifactGenerationRequest, ArtifactGeneratorRequest,
     ArtifactLabelsRequest, ArtifactLookup, ArtifactManifest, ArtifactMarker, ArtifactMarkerId,
-    ArtifactOutcome, ArtifactPublication, ArtifactPublish, ArtifactStore, CaptureGap,
-    CaptureGapReason, CaptureOrdinal, CapturedFrame, DeviceScaleFactor, EncodedFrame,
-    FrameAvailability, FrameId, FrameSelector, FrameSource, IdSource, IdValue, ImageFormat,
-    NonEmptyText, NormalizationRequest, ObservedTime, OutputLimitsRequest, PixelDimensions,
-    PortFuture, RangeResolutionOptions, RecordingSink, ResolvedRange, RetentionStore, SessionId,
-    SessionRange, SessionTime, StoredArtifact, StoryboardRequest, TargetId,
-    TemporalRangeAnchorKind,
+    ArtifactOutcome, ArtifactPublication, ArtifactPublish, ArtifactStore, BrowserEvent,
+    BrowserEventBatch, BrowserEventId, BrowserEventOrdinal, BrowserEventPayload,
+    BrowserEventSeverity, BrowserEventSink, CaptureGap, CaptureGapReason, CaptureOrdinal,
+    CapturedFrame, DeviceScaleFactor, EncodedFrame, FrameAvailability, FrameId, FrameSelector,
+    FrameSource, IdSource, IdValue, ImageFormat, NonEmptyText, NormalizationRequest, ObservedTime,
+    OutputLimitsRequest, PixelDimensions, PortFuture, RangeResolutionOptions, RecordingSink,
+    ResolvedRange, RetentionStore, SessionId, SessionRange, SessionTime, StoredArtifact,
+    StoryboardRequest, TargetId, TargetLifecycle, TargetLifecycleEvent, TemporalRangeAnchorKind,
 };
 use krometrail_store::{
     IndexStoreConfig, RecordingStore, RotationConfig, SegmentStoreConfig, SegmentWriter,
@@ -431,7 +432,7 @@ impl ArtifactStore for DelayedPublishStore {
 }
 
 #[tokio::test]
-async fn active_generation_does_not_hold_the_recording_mutation_gate() {
+async fn active_generation_does_not_block_frame_or_event_persistence() {
     let rig = real_rig().await;
     let reached = Arc::new(Semaphore::new(0));
     let release = Arc::new(Semaphore::new(0));
@@ -465,10 +466,65 @@ async fn active_generation_does_not_hold_the_recording_mutation_gate() {
     .unwrap();
     tokio::time::timeout(Duration::from_secs(1), rig.store.append_gap(gap))
         .await
-        .expect("ingestion must not wait for artifact publication")
+        .expect("gap persistence must not wait for artifact publication")
         .unwrap();
+    let persisted_frame = FrameId::from_uuid(Uuid::from_u128(998));
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        rig.store.append_frame(
+            EncodedFrame::new(
+                CapturedFrame::new(
+                    persisted_frame,
+                    rig.session,
+                    rig.target,
+                    CaptureOrdinal::new(5).unwrap(),
+                    None,
+                    ObservedTime::from_nanos(31),
+                    SessionTime::from_nanos(4),
+                    ImageFormat::Png,
+                    PixelDimensions::new(2, 2).unwrap(),
+                    PixelDimensions::new(3, 2).unwrap(),
+                    DeviceScaleFactor::new(1.0).unwrap(),
+                    vec![],
+                )
+                .unwrap(),
+                PNG.to_vec(),
+            )
+            .unwrap(),
+        ),
+    )
+    .await
+    .expect("frame persistence must not wait for artifact publication")
+    .unwrap();
+    let event = BrowserEvent::new(
+        BrowserEventId::from_uuid(Uuid::from_u128(997)),
+        rig.session,
+        rig.target,
+        1,
+        BrowserEventOrdinal::new(1).unwrap(),
+        SessionTime::from_nanos(4),
+        None,
+        ObservedTime::from_nanos(32),
+        BrowserEventSeverity::Info,
+        BrowserEventPayload::TargetLifecycle(TargetLifecycleEvent::new(TargetLifecycle::Attached)),
+    )
+    .unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        rig.store
+            .append_event_batch(BrowserEventBatch::new(rig.session, vec![event]).unwrap()),
+    )
+    .await
+    .expect("schema-v5 event persistence must not wait for artifact publication")
+    .unwrap();
     release.add_permits(4);
     task.await.unwrap().unwrap();
+    assert_eq!(
+        rig.store.frames_by_id(vec![persisted_frame]).await.unwrap()[0]
+            .metadata()
+            .id(),
+        persisted_frame
+    );
 }
 
 #[tokio::test]
