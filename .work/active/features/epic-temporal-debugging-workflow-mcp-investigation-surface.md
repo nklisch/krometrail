@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-debugging-workflow-mcp-investigation-surface
 kind: feature
-stage: implementing
+stage: review
 tags: [agent-ux, visual, browser, storage]
 parent: epic-temporal-debugging-workflow
 depends_on:
@@ -491,9 +491,28 @@ The next failure is presenting a full artifact as a compact image or presenting 
 
 The least certain area is client behavior around resource templates and `ResourceLink` content in rmcp 0.11. The implementation qualification must use real wire messages, not just Rust model serialization. If a client ignores templates, the links remain explicit and the agent can call `resources/read` with the canonical URI; no file URI fallback is introduced.
 
+## Integrated implementation evidence
+
+The five sequential checkpoints are implemented and verified as one feature:
+
+- Contracts/registries/resource reads: validated progressive resource-only operations, schema-derived routes, scoped lifetime checks, and schema-v5 store coverage.
+- Routing/session/cancellation: capability-derived routes, one request cancellation/deadline bridge, current-reference geometry through the single session owner, and exact typed dispatch.
+- Response/resources/inline evidence: byte-free structured projections, canonical links, exact blob projection, deterministic bounded images, and stable resource errors.
+- Resource server/root composition: MCP 2025-06-18 tools/resources capability, empty concrete listing, deterministic templates, strict `resources/read`, shared runtime authorities, and EOF/signal lifecycle preservation.
+- Final qualification: real rmcp 0.11 JSON-RPC over Tokio duplex covers initialize, tools/resources listing, templates, calls, resource authority, malformed/unavailable/cancelled reads, control-only filtering, exact drill-down route propagation, and EOF.
+
+Feature-level verification:
+
+- `cargo fmt --all -- --check`
+- `cargo check --workspace --all-targets --locked`
+- `cargo test --workspace --all-targets --locked` (636 passed, 1 ignored)
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`
+
+The feature is advanced to `stage: review`; no parent review was performed in this implementation pass.
+
 ## Blockers
 
-None. Both temporal domain dependencies are complete and their existing service/retention/cache contracts provide the required authorities. The MCP crate already pins the required SDK and protocol version, and the remaining work is adapter contracts, resource presentation, root injection, and deterministic qualification.
+None. The feature is ready for its separate parent review; paid/thesis evaluation and other explicitly out-of-scope capabilities remain deferred.
 
 ## Foundation/document posture
 

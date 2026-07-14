@@ -369,6 +369,8 @@ mod tests {
         SourceFrameHandle, SourceFrameRead,
     };
     use std::{sync::Mutex, time::Duration};
+    use tokio::sync::Notify;
+    use tokio_util::sync::CancellationToken;
 
     fn scope() -> EvidenceScope {
         EvidenceScope::new(
@@ -428,6 +430,111 @@ mod tests {
                 "{alternate}"
             );
         }
+    }
+
+    struct ErrorSpy {
+        error: KrometrailError,
+    }
+
+    impl ProgressiveEvidence for ErrorSpy {
+        fn execute(
+            &self,
+            _request: ProgressiveEvidenceRequest,
+            _context: ProgressiveEvidenceContext,
+        ) -> PortFuture<'_, Result<ProgressiveEvidenceResult>> {
+            Box::pin(std::future::ready(Err(self.error.clone())))
+        }
+    }
+
+    struct TokenCancellation(CancellationToken);
+
+    impl CancellationSignal for TokenCancellation {
+        fn is_cancelled(&self) -> bool {
+            self.0.is_cancelled()
+        }
+
+        fn cancelled(&self) -> PortFuture<'_, ()> {
+            Box::pin(self.0.cancelled())
+        }
+    }
+
+    struct BlockingSpy {
+        started: Arc<Notify>,
+    }
+
+    impl ProgressiveEvidence for BlockingSpy {
+        fn execute(
+            &self,
+            _request: ProgressiveEvidenceRequest,
+            context: ProgressiveEvidenceContext,
+        ) -> PortFuture<'_, Result<ProgressiveEvidenceResult>> {
+            let started = Arc::clone(&self.started);
+            let cancellation = context
+                .cancellation
+                .expect("resource reads provide cancellation");
+            Box::pin(async move {
+                started.notify_one();
+                cancellation.cancelled().await;
+                Err(KrometrailError::new(
+                    ErrorCode::Cancelled,
+                    NonEmptyText::new("resource read cancelled").unwrap(),
+                ))
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn unavailable_resource_returns_not_found_without_contents() {
+        let error = KrometrailError::new(
+            ErrorCode::NotFound,
+            NonEmptyText::new("fixture evidence was evicted").unwrap(),
+        );
+        let uri = EvidenceResourceUri::source_frame(
+            scope(),
+            "00000000-0000-0000-0000-000000000003".parse().unwrap(),
+        )
+        .canonical_uri();
+        let result = read_resource(
+            &uri,
+            &ErrorSpy { error },
+            Instant::now() + Duration::from_secs(1),
+            Arc::new(NeverCancelled),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(result.code, rmcp::model::ErrorCode::RESOURCE_NOT_FOUND);
+        assert!(result.data.unwrap()["krometrail_error"].is_object());
+    }
+
+    #[tokio::test]
+    async fn cancelled_resource_read_returns_no_partial_contents() {
+        let token = CancellationToken::new();
+        let started = Arc::new(Notify::new());
+        let spy = Arc::new(BlockingSpy {
+            started: Arc::clone(&started),
+        });
+        let uri = EvidenceResourceUri::source_frame(
+            scope(),
+            "00000000-0000-0000-0000-000000000003".parse().unwrap(),
+        )
+        .canonical_uri();
+        let task = tokio::spawn({
+            let token = token.clone();
+            async move {
+                read_resource(
+                    &uri,
+                    spy.as_ref(),
+                    Instant::now() + Duration::from_secs(1),
+                    Arc::new(TokenCancellation(token)),
+                )
+                .await
+            }
+        });
+        started.notified().await;
+        token.cancel();
+        let result = task.await.unwrap().unwrap_err();
+        assert_eq!(result.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
+        assert!(result.data.unwrap()["krometrail_error"].is_object());
     }
 
     #[tokio::test]

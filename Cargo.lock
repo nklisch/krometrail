@@ -781,6 +781,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "temporal-vision",
  "thiserror",
  "tokio",
  "tokio-util",

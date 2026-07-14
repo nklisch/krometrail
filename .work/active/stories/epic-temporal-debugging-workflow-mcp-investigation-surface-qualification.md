@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-debugging-workflow-mcp-investigation-surface-qualification
 kind: story
-stage: implementing
+stage: done
 tags: [agent-ux, visual, browser, storage, testing]
 parent: epic-temporal-debugging-workflow-mcp-investigation-surface
 depends_on:
@@ -43,6 +43,23 @@ Use one schema-v5 recording fixture with a changing and unchanged interval, one 
 ## Ordering constraints
 
 This is the final checkpoint and depends on the complete server/resource/root composition. It advances the parent feature only after the integrated local workflow is green.
+
+## Implementation notes
+
+- Execution capability: inline feature-owner qualification pass; the final checkpoint uses the existing real rmcp/Tokio duplex harness and lower-layer schema-v5 authorities rather than introducing another runtime or fixture format.
+- Review weight: standard, default; this child checkpoint advances directly to done and the parent feature is left at review without a parent review pass.
+- Files changed: `crates/krometrail-mcp/src/{server.rs,resources.rs}` test surfaces.
+- Tests added: exact retained blob/error/cancellation resource-authority cases, full MCP initialize/resource/template/EOF wire coverage, control-only template omission, and exact typed source-frame/fetch/artifact/region/pin/event route propagation.
+- Simplification: reused the existing protocol helpers, strict resource authority, request cancellation bridge, and lower-layer schema-v5/store qualification tests; no second fixture, cache, decoder, or protocol runtime was introduced.
+- Discrepancies from design: none; the existing artifact/progressive/store schema-v5 qualifications remain the lower-layer authorities for generation/cache, retention, corruption, and mutation-gate behavior.
+- Adjacent issues parked: none.
+
+## Verification evidence
+
+- `cargo fmt --all -- --check`
+- `cargo check --workspace --all-targets --locked`
+- `cargo test --workspace --all-targets --locked` (636 passed, 1 ignored)
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`
 
 ## Out of scope
 

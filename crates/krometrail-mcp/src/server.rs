@@ -230,23 +230,30 @@ mod tests {
     use super::*;
     use crate::registry::lifecycle_tool_names;
     use krometrail_core::{
-        AnchorScope, BROWSER_OPERATION_REGISTRY, BrowserCompatibility, BrowserConnectRequest,
-        BrowserConnector, BrowserEventDetailRequest, BrowserEventFilter, BrowserInstallation,
-        BrowserOperationContext, BrowserOperationRequest, BrowserOperationResult, BrowserOwnership,
-        BrowserProduct, BrowserProductVersion, BrowserSessionEvent, BrowserSessionEvents,
-        BrowserSessionPort, BrowserSessionState, BrowserStatus, BrowserStopOutcome, BrowserVersion,
-        CapabilityId, CapabilitySupport, FrameId, PageStatus, PortFuture, ProfileRef,
-        ProgressiveEvidence, ProgressiveEvidenceContext, ProgressiveEvidenceRequest,
-        ProgressiveEvidenceResult, RangeResolutionOptions, RendererCapability, ResolvedRange,
-        RetentionStatus, SessionId, SessionOrigin, SessionRange, SessionTime, TargetId,
-        TemporalContext, TemporalContextQuery, TemporalContextRequest, TemporalDebugBundle,
-        TemporalDebugBundleContext, TemporalDebugBundleRequest, TemporalDebugBundles,
-        TemporalQueryRequest, TemporalRangeAnchor, TemporalRangeAnchorKind,
+        AnalysisScale, AnchorScope, ArtifactFailurePolicy, ArtifactGenerationRequest,
+        ArtifactGeneratorRequest, ArtifactLabelsRequest, BROWSER_OPERATION_REGISTRY,
+        BrowserCompatibility, BrowserConnectRequest, BrowserConnector, BrowserEventDetailRequest,
+        BrowserEventFilter, BrowserInstallation, BrowserOperationContext, BrowserOperationRequest,
+        BrowserOperationResult, BrowserOwnership, BrowserProduct, BrowserProductVersion,
+        BrowserSessionEvent, BrowserSessionEvents, BrowserSessionPort, BrowserSessionState,
+        BrowserStatus, BrowserStopOutcome, BrowserVersion, CapabilityId, CapabilitySupport,
+        FrameId, GenerateArtifactsRequest, NormalizationRequest, OutputLimitsRequest, PageStatus,
+        PortFuture, ProfileRef, ProgressiveEvidence, ProgressiveEvidenceContext,
+        ProgressiveEvidenceRequest, ProgressiveEvidenceResult, ProgressiveRegion,
+        RangeResolutionOptions, RegionFilmstripEvidenceRequest, RendererCapability, ResolvedRange,
+        ResolvedRangeEvidenceRequest, RetentionStatus, SessionId, SessionOrigin, SessionRange,
+        SessionTime, SourceFrameSelection, SourceFramesRequest, SourceReadLimitsRequest,
+        StoryboardRequest, TargetId, TemporalContext, TemporalContextQuery, TemporalContextRequest,
+        TemporalDebugBundle, TemporalDebugBundleContext, TemporalDebugBundleRequest,
+        TemporalDebugBundles, TemporalQueryRequest, TemporalRangeAnchor, TemporalRangeAnchorKind,
     };
     use serde_json::{Value, json};
-    use std::sync::{
-        Mutex,
-        atomic::{AtomicUsize, Ordering},
+    use std::{
+        num::NonZeroU32,
+        sync::{
+            Mutex,
+            atomic::{AtomicUsize, Ordering},
+        },
     };
     use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 
@@ -735,6 +742,154 @@ mod tests {
             spy.progressive_request.lock().unwrap().as_ref(),
             Some(&serde_json::to_value(&progressive).unwrap())
         );
+
+        let source_limits = SourceReadLimitsRequest::new(1, 1024, 2048).unwrap();
+        let list_request = SourceFramesRequest::new(
+            range.clone(),
+            SourceFrameSelection::ResolvedOrder,
+            source_limits,
+        )
+        .unwrap();
+        let list_operation = ProgressiveEvidenceRequest::ListSourceFrames(list_request);
+        let list_wire = serde_json::to_value(&list_operation).unwrap();
+        let _ = invoke_temporal_tool(
+            dependencies_with_spy(Arc::new(UnusedConnector), Arc::clone(&spy)),
+            "list_source_frames",
+            list_wire["request"].clone(),
+        )
+        .await;
+        assert_eq!(spy.progressive_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            spy.progressive_request.lock().unwrap().as_ref(),
+            Some(&list_wire)
+        );
+
+        let fetch_request = SourceFramesRequest::new(
+            range.clone(),
+            SourceFrameSelection::Ids(vec![frame_id()]),
+            SourceReadLimitsRequest::new(1, 1024, 1024).unwrap(),
+        )
+        .unwrap();
+        let fetch_operation = ProgressiveEvidenceRequest::FetchSourceFrames(fetch_request);
+        let fetch_wire = serde_json::to_value(&fetch_operation).unwrap();
+        let _ = invoke_temporal_tool(
+            dependencies_with_spy(Arc::new(UnusedConnector), Arc::clone(&spy)),
+            "fetch_source_frames",
+            fetch_wire["request"].clone(),
+        )
+        .await;
+        assert_eq!(spy.progressive_calls.load(Ordering::SeqCst), 3);
+        assert_eq!(
+            spy.progressive_request.lock().unwrap().as_ref(),
+            Some(&fetch_wire)
+        );
+
+        let normalization = NormalizationRequest::new(
+            None,
+            temporal_vision::Rgb8::new(0, 0, 0),
+            AnalysisScale::Identity,
+        )
+        .unwrap();
+        let generator = ArtifactGeneratorRequest::Storyboard(StoryboardRequest {
+            anchor: SessionTime::from_nanos(5),
+            tile_limit: 3,
+            noise_floor: 0,
+            normalization,
+            labels: ArtifactLabelsRequest::new(
+                NonEmptyText::new("qualification").unwrap(),
+                NonEmptyText::new("schema-v5").unwrap(),
+            ),
+            include_orientation: true,
+            output: OutputLimitsRequest::new(64, 64, 1024).unwrap(),
+        });
+        let artifact_operation = ProgressiveEvidenceRequest::GenerateArtifacts(
+            GenerateArtifactsRequest::new(
+                ArtifactGenerationRequest::new(
+                    range.clone(),
+                    vec![],
+                    vec![generator],
+                    ArtifactFailurePolicy::AllowPartial,
+                )
+                .unwrap(),
+            )
+            .unwrap(),
+        );
+        let artifact_wire = serde_json::to_value(&artifact_operation).unwrap();
+        let _ = invoke_temporal_tool(
+            dependencies_with_spy(Arc::new(UnusedConnector), Arc::clone(&spy)),
+            "generate_artifacts",
+            artifact_wire["request"].clone(),
+        )
+        .await;
+        assert_eq!(spy.progressive_calls.load(Ordering::SeqCst), 4);
+        assert_eq!(
+            spy.progressive_request.lock().unwrap().as_ref(),
+            Some(&artifact_wire)
+        );
+
+        let region = ProgressiveRegion::SourcePixels {
+            rect: temporal_vision::SignedPixelRect::new(
+                0,
+                0,
+                NonZeroU32::new(1).unwrap(),
+                NonZeroU32::new(1).unwrap(),
+            )
+            .unwrap(),
+            source_frame_id: frame_id(),
+        };
+        let region_operation = ProgressiveEvidenceRequest::GenerateRegionFilmstrip(
+            RegionFilmstripEvidenceRequest::new(
+                range.clone(),
+                region,
+                vec![],
+                SessionTime::from_nanos(5),
+                3,
+                temporal_vision::Rgb8::new(0, 0, 0),
+                temporal_vision::Rgb8::new(255, 255, 255),
+                AnalysisScale::Identity,
+                ArtifactLabelsRequest::new(
+                    NonEmptyText::new("qualification").unwrap(),
+                    NonEmptyText::new("schema-v5").unwrap(),
+                ),
+                OutputLimitsRequest::new(64, 64, 1024).unwrap(),
+            )
+            .unwrap(),
+        );
+        let region_wire = serde_json::to_value(&region_operation).unwrap();
+        let _ = invoke_temporal_tool(
+            dependencies_with_spy(Arc::new(UnusedConnector), Arc::clone(&spy)),
+            "generate_region_filmstrip",
+            region_wire["request"].clone(),
+        )
+        .await;
+        assert_eq!(spy.progressive_calls.load(Ordering::SeqCst), 5);
+        assert_eq!(
+            spy.progressive_request.lock().unwrap().as_ref(),
+            Some(&region_wire)
+        );
+
+        for name in ["pin_resolved_range", "unpin_resolved_range"] {
+            let pin_operation = match name {
+                "pin_resolved_range" => ProgressiveEvidenceRequest::PinResolvedRange(
+                    ResolvedRangeEvidenceRequest::new(range.clone()).unwrap(),
+                ),
+                _ => ProgressiveEvidenceRequest::UnpinResolvedRange(
+                    ResolvedRangeEvidenceRequest::new(range.clone()).unwrap(),
+                ),
+            };
+            let pin_wire = serde_json::to_value(&pin_operation).unwrap();
+            let _ = invoke_temporal_tool(
+                dependencies_with_spy(Arc::new(UnusedConnector), Arc::clone(&spy)),
+                name,
+                pin_wire["request"].clone(),
+            )
+            .await;
+            assert_eq!(
+                spy.progressive_request.lock().unwrap().as_ref(),
+                Some(&pin_wire)
+            );
+        }
+        assert_eq!(spy.progressive_calls.load(Ordering::SeqCst), 7);
 
         let detail = BrowserEventDetailRequest::new(
             range,
