@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-vision-toolkit-region-filmstrip
 kind: feature
-stage: implementing
+stage: review
 tags: [visual]
 parent: epic-temporal-vision-toolkit
 depends_on: [epic-temporal-vision-toolkit-normalization-and-measurements]
@@ -362,3 +362,22 @@ The feature remains one cohesive implementation and feature-review bundle. Stori
 ## Blockers
 
 None. `epic-temporal-vision-toolkit-normalization-and-measurements` has completed verified implementation and is at feature review, which is sufficient for dependency-ordered implementation. The design intentionally avoids inferred tracking and any browser/UI dependency.
+
+## Implementation notes
+
+- Execution capability: raised/high, selected by the autopilot caller because fixed coordinate conversion, generated-padding honesty, deterministic rendering, and provenance alignment form a high-consequence visual-evidence boundary.
+- Review weight: standard (caller). This implementation stops at `stage: review`; it does not self-approve.
+- Dispatch: one cohesive owner used direct repository reads for region plan → rendering → contract tests; no exploratory agent, subagent, peeragent, push, or overlapping write ownership.
+- Files changed: `crates/temporal-vision/src/filmstrip.rs`, `src/lib.rs`, `src/normalize.rs`, `src/provenance.rs`, `tests/filmstrip.rs`, and the three owned child-story records.
+- Reused seams: existing `Canvas`, embedded bitmap font, deterministic PNG/SHA-256 encoder, `EncodedImage`, `GeneratedArtifact`, normalization contracts, provenance parameters, gap model, and stable registry.
+- Public contract: fixed source-image and rationally mapped viewport coordinates; signed out-of-bounds rectangles; deterministic source-order thinning; explicit locator source; exact crop/padding plan; bounded wrapped rendering; visible timestamp/anchor/source/gap/padding/no-tracking labels; source-derived manifest and exact output hash.
+- Traceability correction: an explicit locator frame outside the crop-strip selection is added to the manifest's ordered source subsequence. Shared artifact omission and strip-tile omission are recorded separately so visible and machine-readable claims do not disagree.
+- Provenance correction: the internal manifest constructor accepts an artifact-specific region/domain override. Filmstrip sets `region` only for an in-bounds fixed source-image rectangle and does not claim that an unrelated sequence analysis mask was applied to the fixed crop.
+- Tests added: 3 public integration tests plus 2 focused planning tests cover typed IDs, source/viewport semantics, rational 2× mapping, partial/full padding, thinning, locator choice, visible warnings, deterministic PNG/hash/manifest, explicit locator traceability, invalid mapping/downscale/tile deserialization, and processing/render ceilings. One tiny PNG hash is pinned; no binary golden or OCR coverage was added.
+- Simplification: v1 remains one `filmstrip.rs` module with no tracking strategy, decoder, UI/layout framework, host font, browser/CDP/MCP type, filesystem sink, runtime, GPU path, cache, or inferred-analysis type.
+- Design reconciliations: a one-tile thinning request deterministically keeps the first source frame because one tile cannot preserve two distinct endpoints; locator-only source frames count as artifact sources but not crop-strip tiles; `with_max_source_frames` extends the four-argument limits constructor without changing its designed signature; layout/text/PNG facts are manifest parameters rather than falsely classified normalization steps; downscaling uses a recorded non-overlapping sRGB8 box average over the complete padded crop.
+- Verification: owned Rust files pass `rustfmt --check`; `cargo check -p temporal-vision --all-targets --locked`; `cargo test -p temporal-vision --locked` (41 passed across 7 suites); `cargo clippy -p temporal-vision --all-targets --locked -- -D warnings`.
+- Workspace gate interference: `cargo fmt --all -- --check` and `cargo check --workspace --all-targets --locked` were attempted, but concurrent unowned browser-control/store edits were respectively unformatted and temporarily uncompilable (`krometrail-cdp` navigation/session call-site work and `krometrail-store` writer work). Those files were preserved and not edited; the parent orchestrator must rerun workspace format/check/test/clippy after their owners settle.
+- Child commits: `4d6f680` (region plan), `0f477bb` (rendering), `82f3d80` (contract tests and final traceability hardening).
+- Discrepancies from design: only the explicit reconciliations above; no acceptance behavior was removed.
+- Adjacent issues parked: none.
