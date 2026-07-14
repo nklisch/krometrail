@@ -1,7 +1,7 @@
 ---
 id: refactor-centralize-mcp-live-observation-projection
 kind: story
-stage: implementing
+stage: review
 tags: [refactor, agent-ux]
 parent: null
 depends_on: []
@@ -37,3 +37,12 @@ Extract one private helper that turns a `LiveObservation` or `ObservationPart<Li
 **Risk**: Low. The work stays inside one response-mapping file, but it sits on a public MCP boundary, so image-role or warning drift would be user-visible.
 
 **Rollback**: Revert the refactor commit to restore the four inline branches.
+
+## Implementation notes
+
+- Execution capability: baseline inline ownership; the change is one private-helper extraction in one file with complete existing response tests.
+- Review weight: standard from autopilot; as a standalone story this uses bounded inline review and no independent reviewer.
+- `project_live_observation` now owns JSON/warning/screenshot projection plus caller-supplied `ImageRole` and optional step index, returning an `EncodedMcpImage` directly.
+- Observe-live, interactions, page operations, and batch final observation all reuse that helper while retaining their caller-specific availability wrappers, anchors, status/failure rules, and image roles.
+- No response schema, summary text, warning/error ordering, MIME logic, or batch degradation behavior changed.
+- Verification passed `cargo fmt --all -- --check`, all 9 `krometrail-mcp` tests, and MCP all-target Clippy with warnings denied.

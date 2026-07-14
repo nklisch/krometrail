@@ -206,16 +206,11 @@ fn project_operation(result: BrowserOperationResult) -> Result<Projection, Respo
         }
         BrowserOperationResult::EvaluatePage(value) => serializable(*value),
         BrowserOperationResult::ObserveLive(value) => {
-            let (result, warnings, image) = project_live_observation(*value)?;
+            let (result, warnings, image) =
+                project_live_observation(*value, ImageRole::LiveObservation, None)?;
             let mut projection = Projection::success(result);
             projection.degrade_with(warnings);
-            if let Some(screenshot) = image {
-                projection.images.push(EncodedMcpImage {
-                    role: ImageRole::LiveObservation,
-                    step_index: None,
-                    screenshot,
-                });
-            }
+            projection.images.extend(image);
             Ok(projection)
         }
         BrowserOperationResult::ListPages(value) => serializable(*value),
@@ -236,20 +231,15 @@ fn project_operation(result: BrowserOperationResult) -> Result<Projection, Respo
         | BrowserOperationResult::UploadFiles(value)
         | BrowserOperationResult::HandleDialog(value) => {
             let anchor = value.anchor().map_err(|_| ResponseInvariantError)?;
-            let (observation, warnings, image) = project_live_observation(value.observation)?;
+            let (observation, warnings, image) =
+                project_live_observation(value.observation, ImageRole::PostAction, None)?;
             let mut projection = Projection::success(json!({
                 "record": value.record,
                 "observation": observation,
             }));
             projection.interaction = Some(anchor);
             projection.degrade_with(warnings);
-            if let Some(screenshot) = image {
-                projection.images.push(EncodedMcpImage {
-                    role: ImageRole::PostAction,
-                    step_index: None,
-                    screenshot,
-                });
-            }
+            projection.images.extend(image);
             Ok(projection)
         }
         BrowserOperationResult::Wait(value) => {
@@ -271,7 +261,8 @@ fn project_page_operation(
     let interaction = value.interaction.clone();
     let (observation, warnings, image) = match value.observation {
         ObservationPart::Available(observation) => {
-            let (value, warnings, image) = project_live_observation(observation)?;
+            let (value, warnings, image) =
+                project_live_observation(observation, ImageRole::PostAction, None)?;
             (json!({"available": value}), warnings, image)
         }
         ObservationPart::Unavailable(error) => (json!({"unavailable": error}), vec![error], None),
@@ -284,13 +275,7 @@ fn project_page_operation(
     }));
     projection.interaction = Some(interaction);
     projection.degrade_with(warnings);
-    if let Some(screenshot) = image {
-        projection.images.push(EncodedMcpImage {
-            role: ImageRole::PostAction,
-            step_index: None,
-            screenshot,
-        });
-    }
+    projection.images.extend(image);
     if let PageOperationOutcome::Failed(error) = value.outcome {
         projection.fail_with(error);
     }
@@ -343,18 +328,13 @@ fn project_batch(value: BatchResult) -> Result<Projection, ResponseInvariantErro
 
     let (final_observation, final_warnings, final_image) = match value.final_observation {
         ObservationPart::Available(observation) => {
-            let (result, warnings, image) = project_live_observation(observation)?;
+            let (result, warnings, image) =
+                project_live_observation(observation, ImageRole::BatchFinal, None)?;
             (json!({"available": result}), warnings, image)
         }
         ObservationPart::Unavailable(error) => (json!({"unavailable": error}), vec![error], None),
     };
-    if let Some(screenshot) = final_image {
-        images.push(EncodedMcpImage {
-            role: ImageRole::BatchFinal,
-            step_index: None,
-            screenshot,
-        });
-    }
+    images.extend(final_image);
     let outcome = value.outcome;
     let mut projection = Projection::success(json!({
         "batch_id": value.batch_id,
@@ -380,7 +360,9 @@ fn project_batch(value: BatchResult) -> Result<Projection, ResponseInvariantErro
 
 fn project_live_observation(
     value: LiveObservation,
-) -> Result<(Value, Vec<KrometrailError>, Option<EncodedScreenshot>), ResponseInvariantError> {
+    role: ImageRole,
+    step_index: Option<u32>,
+) -> Result<(Value, Vec<KrometrailError>, Option<EncodedMcpImage>), ResponseInvariantError> {
     let mut warnings = Vec::new();
     let page = project_serializable_part(value.page, &mut warnings)?;
     let snapshot = project_serializable_part(value.snapshot, &mut warnings)?;
@@ -402,7 +384,11 @@ fn project_live_observation(
             "screenshot": screenshot,
         }),
         warnings,
-        image,
+        image.map(|screenshot| EncodedMcpImage {
+            role,
+            step_index,
+            screenshot,
+        }),
     ))
 }
 
