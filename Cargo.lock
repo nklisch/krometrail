@@ -1313,6 +1313,7 @@ name = "temporal-vision"
 version = "0.2.20"
 dependencies = [
  "png 0.17.16",
+ "schemars",
  "serde",
  "serde_json",
  "sha2",

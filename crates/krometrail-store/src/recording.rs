@@ -14,12 +14,12 @@ use krometrail_core::{
     KrometrailError, NavigationId, NonEmptyText, ObservedTime, PinChange, PinProtectionScope,
     PinState, PortFuture, ProgressivePinChange, ProtectedSegment, RecordingBudgetState,
     RecordingSink, ResolvedRange, RetentionPinRequest, RetentionRange, RetentionStatus,
-    RetentionStore, RetrieveArtifactRequest, RetryAdvice, SessionDeletion, SessionId, SessionRange,
-    SessionTime, Sha256Digest, SourceFrameBatch, SourceFrameHandle, SourceFrameList,
-    SourceFrameRead, SourceFrameSelection, SourceFramesRequest, StorageUsage, StoredArtifact,
-    TargetId, TemporalContext, TemporalContextQuery, TemporalContextRequest,
-    TemporalContextService, TemporalQuery, TemporalQueryRequest, TemporalQueryService,
-    TemporalRangeResolver, TimelineObservation, TimelineStore,
+    RetentionStore, RetrieveArtifactRequest, RetrieveSourceFrameRequest, RetryAdvice,
+    SessionDeletion, SessionId, SessionRange, SessionTime, Sha256Digest, SourceFrameBatch,
+    SourceFrameHandle, SourceFrameList, SourceFrameRead, SourceFrameSelection, SourceFramesRequest,
+    StorageUsage, StoredArtifact, TargetId, TemporalContext, TemporalContextQuery,
+    TemporalContextRequest, TemporalContextService, TemporalQuery, TemporalQueryRequest,
+    TemporalQueryService, TemporalRangeResolver, TimelineObservation, TimelineStore,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, watch};
@@ -693,6 +693,83 @@ impl RecordingStore {
         prepared
     }
 
+    async fn progressive_source_frame_read(
+        &self,
+        request: RetrieveSourceFrameRequest,
+    ) -> krometrail_core::Result<SourceFrameRead> {
+        let snapshot = {
+            let _mutation = self.mutations.lock().await;
+            self.reject_deleted(request.scope.session_id)?;
+            let snapshots = match self.index.frame_read_snapshots_by_id(&[request.frame_id]) {
+                Ok(snapshots) => snapshots,
+                Err(error) if error.code == ErrorCode::NotFound => {
+                    return Err(source_read_not_found_for_scope(request.scope));
+                }
+                Err(error) => return Err(error),
+            };
+            let Some(snapshot) = snapshots.into_iter().next() else {
+                return Err(source_read_not_found_for_scope(request.scope));
+            };
+            if snapshot.metadata.id() != request.frame_id
+                || snapshot.metadata.session_id() != request.scope.session_id
+                || snapshot.metadata.target_id() != request.scope.target_id
+            {
+                return Err(source_read_not_found_for_scope(request.scope));
+            }
+            snapshot
+        };
+
+        self.pause_after_read_snapshot(EvidenceReadKind::Source)
+            .await;
+        let frame_result = self.index.read_frame_snapshot(&snapshot);
+        {
+            let _mutation = self.mutations.lock().await;
+            self.reject_deleted(request.scope.session_id)?;
+            let current = self
+                .index
+                .frame_read_snapshots_by_id(&[request.frame_id])
+                .ok()
+                .and_then(|mut snapshots| snapshots.pop());
+            if current.as_ref() != Some(&snapshot) {
+                return Err(source_read_not_found_for_scope(request.scope));
+            }
+        }
+        let frame = frame_result?;
+        if frame.byte_len().get() > request.max_encoded_bytes() {
+            return Err(source_limit_error(
+                "source frame exceeds the encoded-byte limit",
+                request.scope,
+            ));
+        }
+        let media_type = match frame.metadata().format() {
+            krometrail_core::ImageFormat::Jpeg => "image/jpeg",
+            krometrail_core::ImageFormat::Png => "image/png",
+        };
+        let handle = SourceFrameHandle::new(
+            frame.metadata().id(),
+            request.scope,
+            0,
+            0,
+            NonEmptyText::new(media_type).expect("source media type is non-empty"),
+            Sha256Digest::digest(frame.bytes()),
+            frame.byte_len().get(),
+            frame.metadata().clone(),
+        )?;
+        let prepared = SourceFrameRead::new(handle, frame.encoded_bytes())?;
+
+        let _mutation = self.mutations.lock().await;
+        self.reject_deleted(request.scope.session_id)?;
+        let current = self
+            .index
+            .frame_read_snapshots_by_id(&[request.frame_id])
+            .ok()
+            .and_then(|mut snapshots| snapshots.pop());
+        if current.as_ref() != Some(&snapshot) {
+            return Err(source_read_not_found_for_scope(request.scope));
+        }
+        Ok(prepared)
+    }
+
     async fn read_artifact_snapshot(
         &self,
         snapshot: &ArtifactReadSnapshot,
@@ -818,6 +895,13 @@ impl FrameSource for RecordingStore {
             let frames = self.progressive_source_reads(request).await?;
             Ok(SourceFrameBatch { range, frames })
         })
+    }
+
+    fn read_source_frame(
+        &self,
+        request: RetrieveSourceFrameRequest,
+    ) -> PortFuture<'_, krometrail_core::Result<SourceFrameRead>> {
+        Box::pin(self.progressive_source_frame_read(request))
     }
 
     fn frames_by_id(
@@ -1584,6 +1668,23 @@ fn source_read_not_found(snapshot: Option<&FrameReadSnapshot>) -> KrometrailErro
     )
 }
 
+fn source_read_not_found_for_scope(scope: EvidenceScope) -> KrometrailError {
+    KrometrailError::new(
+        ErrorCode::NotFound,
+        NonEmptyText::new("source frame is not retained in the requested evidence scope")
+            .expect("static scoped source read error is non-empty"),
+    )
+    .with_context(ErrorContext {
+        session_id: Some(scope.session_id),
+        target_id: Some(scope.target_id),
+        ..Default::default()
+    })
+    .with_recovery(
+        NonEmptyText::new("resolve and list the temporal range again")
+            .expect("static scoped source read recovery is non-empty"),
+    )
+}
+
 fn source_limit_error(message: &'static str, scope: EvidenceScope) -> KrometrailError {
     KrometrailError::new(
         ErrorCode::ResourceLimitExceeded,
@@ -1723,8 +1824,9 @@ mod tests {
     use std::{sync::Arc, time::Duration};
 
     use krometrail_core::{
-        CaptureOrdinal, CapturedFrame, DeviceScaleFactor, EncodedFrame, FrameId, FrameSource,
-        ImageFormat, ObservedTime, PixelDimensions, RecordingSink, SessionTime, TargetId,
+        CaptureOrdinal, CapturedFrame, DeviceScaleFactor, EncodedFrame, EvidenceScope, FrameId,
+        FrameSource, ImageFormat, ObservedTime, PixelDimensions, RecordingSink,
+        RetrieveSourceFrameRequest, SessionTime, TargetId,
     };
     use tempfile::TempDir;
     use uuid::Uuid;
@@ -1984,6 +2086,66 @@ mod tests {
             .unwrap();
         pause.resume.notify_one();
         assert_eq!(reader.await.unwrap().unwrap_err().code, ErrorCode::NotFound);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn scoped_source_resource_read_returns_only_a_revalidated_snapshot() {
+        let directory = TempDir::new().unwrap();
+        let (_index, _writer, store) = fixture(&directory);
+        let source = frame(45, 46, 47, 1);
+        store.append_frame(source.clone()).await.unwrap();
+        store.flush(source.metadata().session_id()).await.unwrap();
+        let scope = EvidenceScope::new(
+            source.metadata().session_id(),
+            source.metadata().target_id(),
+        )
+        .unwrap();
+        let read = store
+            .read_source_frame(
+                RetrieveSourceFrameRequest::new(scope, source.metadata().id(), 1024).unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(read.encoded_bytes(), source.bytes());
+        assert_eq!(read.handle.scope, scope);
+        assert_eq!(read.handle.frame_id, source.metadata().id());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn scoped_source_resource_read_rejects_concurrent_deletion_without_bytes() {
+        let directory = TempDir::new().unwrap();
+        let (_index, _writer, store) = fixture(&directory);
+        let store = Arc::new(store);
+        let source = frame(48, 49, 50, 1);
+        store.append_frame(source.clone()).await.unwrap();
+        store.flush(source.metadata().session_id()).await.unwrap();
+        let scope = EvidenceScope::new(
+            source.metadata().session_id(),
+            source.metadata().target_id(),
+        )
+        .unwrap();
+        let session_id = source.metadata().session_id();
+        let frame_id = source.metadata().id();
+
+        let pause = store.pause_next_evidence_read(EvidenceReadKind::Source);
+        let reached = pause.reached.notified();
+        tokio::pin!(reached);
+        reached.as_mut().enable();
+        let reader = {
+            let store = Arc::clone(&store);
+            tokio::spawn(async move {
+                store
+                    .read_source_frame(
+                        RetrieveSourceFrameRequest::new(scope, frame_id, 1024).unwrap(),
+                    )
+                    .await
+            })
+        };
+        reached.await;
+        store.delete_session(session_id).await.unwrap();
+        pause.resume.notify_one();
+        let error = reader.await.unwrap().unwrap_err();
+        assert_eq!(error.code, ErrorCode::NotFound);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

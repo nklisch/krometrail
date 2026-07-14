@@ -23,7 +23,7 @@ use crate::{
 pub type ArtifactManifest =
     temporal_vision::ArtifactManifest<ArtifactId, FrameId, ArtifactMarkerId, GapId>;
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "source", content = "id", rename_all = "snake_case")]
 pub enum ArtifactMarkerId {
     Interaction(InteractionId),
@@ -40,7 +40,7 @@ pub struct ArtifactMarker {
     label: NonEmptyText,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct ArtifactMarkerWire {
     id: ArtifactMarkerId,
@@ -85,7 +85,9 @@ impl<'de> Deserialize<'de> for ArtifactMarker {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+crate::validation::delegate_json_schema!(ArtifactMarker => ArtifactMarkerWire);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactFailurePolicy {
     RequireAll,
@@ -93,7 +95,7 @@ pub enum ArtifactFailurePolicy {
 }
 
 /// Requested integer analysis scale. `FitLimits` is resolved before cache lookup.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "scale", content = "factor", rename_all = "snake_case")]
 pub enum AnalysisScale {
     Identity,
@@ -113,7 +115,7 @@ impl AnalysisScale {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ArtifactLabelsRequest {
     pub title: NonEmptyText,
@@ -126,7 +128,7 @@ impl ArtifactLabelsRequest {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NormalizationRequest {
     pub crop: Option<temporal_vision::PixelRect>,
@@ -160,7 +162,7 @@ pub struct OutputLimitsRequest {
     max_encoded_bytes: NonZeroU64,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct OutputLimitsWire {
     max_width: u32,
@@ -199,7 +201,9 @@ impl<'de> Deserialize<'de> for OutputLimitsRequest {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+crate::validation::delegate_json_schema!(OutputLimitsRequest => OutputLimitsWire);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "frame", content = "id", rename_all = "snake_case")]
 pub enum FrameSelector {
     First,
@@ -207,7 +211,7 @@ pub enum FrameSelector {
     Frame(FrameId),
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct StoryboardRequest {
     pub anchor: SessionTime,
@@ -219,7 +223,7 @@ pub struct StoryboardRequest {
     pub output: OutputLimitsRequest,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DifferenceMapRequest {
     pub reference: FrameSelector,
@@ -231,7 +235,7 @@ pub struct DifferenceMapRequest {
     pub output: OutputLimitsRequest,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RegionFilmstripRequest {
     pub region: temporal_vision::RegionDefinition,
@@ -246,7 +250,7 @@ pub struct RegionFilmstripRequest {
     pub output: OutputLimitsRequest,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MotionHistoryRequest {
     pub reference: FrameSelector,
@@ -261,7 +265,7 @@ pub struct MotionHistoryRequest {
     pub output: OutputLimitsRequest,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "generator", rename_all = "snake_case")]
 pub enum ArtifactGeneratorRequest {
     Storyboard(StoryboardRequest),
@@ -377,7 +381,7 @@ pub struct ArtifactGenerationRequest {
     failure_policy: ArtifactFailurePolicy,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct ArtifactGenerationRequestWire {
     range: ResolvedRange,
@@ -444,6 +448,8 @@ impl<'de> Deserialize<'de> for ArtifactGenerationRequest {
         })
     }
 }
+
+crate::validation::delegate_json_schema!(ArtifactGenerationRequest => ArtifactGenerationRequestWire);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

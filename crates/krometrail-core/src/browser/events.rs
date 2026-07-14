@@ -26,7 +26,19 @@ pub const MAX_CONSOLE_ARGUMENT_TYPES: usize = 16;
 pub const MAX_EVENT_STACK_FRAMES: usize = 16;
 pub const MAX_NETWORK_INITIATOR_STACK_FRAMES: usize = 8;
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    Deserialize,
+    schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum BrowserEventSeverity {
     Debug,
@@ -48,7 +60,19 @@ impl BrowserEventSeverity {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    Deserialize,
+    schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum BrowserEventClass {
     Console,
@@ -76,7 +100,7 @@ impl BrowserEventClass {
     ];
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum BrowserSourceClock {
     CdpMonotonic,
@@ -134,7 +158,7 @@ impl<'de> Deserialize<'de> for BrowserSourceTimestamp {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, schemars::JsonSchema)]
 #[serde(transparent)]
 pub struct BrowserEventOrdinal(NonZeroU64);
 

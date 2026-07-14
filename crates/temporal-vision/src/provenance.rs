@@ -746,12 +746,13 @@ impl<A, F: Clone + Eq, M: Clone + Eq, G: Clone + Eq> ArtifactManifest<A, F, M, G
                 .selected_frames()
                 .iter()
                 .find(|selected| selected.frame_index() == moment.frame_index())
-                && selected.timestamp() != moment.timestamp()
             {
-                return Err(VisionError::new(
-                    ErrorCode::InvalidManifest,
-                    "storyboard visual moment timestamp disagrees with its selected frame",
-                ));
+                if selected.timestamp() != moment.timestamp() {
+                    return Err(VisionError::new(
+                        ErrorCode::InvalidManifest,
+                        "storyboard visual moment timestamp disagrees with its selected frame",
+                    ));
+                }
             }
             Ok(())
         };

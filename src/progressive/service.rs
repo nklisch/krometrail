@@ -61,6 +61,34 @@ impl ProgressiveEvidenceService {
                 validate_artifact_read(&read, scope, artifact_id, max_bytes)?;
                 Ok(ProgressiveEvidenceResult::RetrieveArtifact(Box::new(read)))
             }
+            ProgressiveEvidenceRequest::RetrieveSourceFrame(request) => {
+                let request = krometrail_core::RetrieveSourceFrameRequest::new(
+                    request.scope,
+                    request.frame_id,
+                    request.max_encoded_bytes(),
+                )?;
+                let scope = request.scope;
+                let frame_id = request.frame_id;
+                let max_bytes = request.max_encoded_bytes();
+                let read = self.store.read_source_frame(request).await?;
+                check_context(&context)?;
+                if read.handle.scope != scope
+                    || read.handle.frame_id != frame_id
+                    || read.handle.encoded_byte_len > max_bytes
+                    || read.encoded_bytes().len() as u64 != read.handle.encoded_byte_len
+                    || krometrail_core::Sha256Digest::digest(read.encoded_bytes())
+                        != read.handle.content_sha256
+                {
+                    return Err(KrometrailError::new(
+                        ErrorCode::EvidenceInvalidated,
+                        NonEmptyText::new("source frame evidence disagrees with its scoped handle")
+                            .expect("static source handle error is non-empty"),
+                    ));
+                }
+                Ok(ProgressiveEvidenceResult::RetrieveSourceFrame(Box::new(
+                    read,
+                )))
+            }
             ProgressiveEvidenceRequest::ListSourceFrames(request) => {
                 let request = validate_source_request(request)?;
                 let result = self.store.list_source_frames(request.clone()).await?;

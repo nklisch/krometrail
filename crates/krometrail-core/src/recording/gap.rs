@@ -34,7 +34,7 @@ pub struct CaptureGap {
     detail: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 struct CaptureGapWire {
     id: GapId,
     session_id: SessionId,
@@ -135,6 +135,8 @@ impl<'de> Deserialize<'de> for CaptureGap {
         })
     }
 }
+
+crate::validation::delegate_json_schema!(CaptureGap => CaptureGapWire);
 
 #[cfg(test)]
 mod tests {

@@ -29,7 +29,7 @@ stable_registry! {
 }
 
 /// A non-empty half-open rectangle whose origin may lie outside the source image.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct SignedPixelRect {
     x: i64,
     y: i64,
@@ -159,7 +159,7 @@ impl<'de> Deserialize<'de> for SignedPixelRect {
 }
 
 /// A positive exact rational scale in source pixels per declared coordinate unit.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct RationalScale {
     numerator: NonZeroU32,
     denominator: NonZeroU32,
@@ -183,7 +183,7 @@ impl RationalScale {
 }
 
 /// Caller-declared mapping from viewport units to source-image pixels.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ViewportMapping {
     viewport_dimensions: PixelDimensions,
     scale_x: RationalScale,
@@ -244,7 +244,7 @@ impl ViewportMapping {
 }
 
 /// One fixed region declaration. Neither variant implies logical-element tracking.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "coordinate_space", rename_all = "snake_case")]
 pub enum RegionDefinition {
     FixedSourceImage {

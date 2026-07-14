@@ -12,7 +12,7 @@ use crate::{
     validation::deserialize_validated,
 };
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum TemporalRangeAnchorKind {
     #[serde(rename = "session_time")]
     SessionTime,
@@ -59,7 +59,7 @@ impl TemporalRangeAnchorKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AnchorScope {
     pub session_id: Option<SessionId>,
@@ -76,7 +76,7 @@ impl AnchorScope {
 
 pub const MAX_NATURAL_ANCHOR_WINDOW: Duration = Duration::from_secs(120);
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct InteractionWindow {
     #[serde(rename = "before_ms")]
     before_millis: u64,
@@ -146,18 +146,18 @@ impl<'de> Deserialize<'de> for InteractionWindow {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum RetentionPolicy {
     RequireComplete,
     AllowPartial,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum CaptureGapPolicy {
     Include,
     Reject,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct RangeResolutionOptions {
     pub retention: RetentionPolicy,
     pub capture_gaps: CaptureGapPolicy,
@@ -176,7 +176,7 @@ impl RangeResolutionOptions {
     };
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(tag = "anchor", rename_all = "snake_case")]
 pub enum TemporalRangeAnchor {
     SessionTime {
@@ -366,7 +366,7 @@ impl<'de> Deserialize<'de> for TemporalRangeAnchor {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FrameAvailability {
     pub retained_bounds: Option<SessionRange>,
@@ -409,7 +409,7 @@ impl<'de> Deserialize<'de> for FrameAvailability {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum RetentionWarning {
     RequestedStartBeforeOldestRetained {
         requested: SessionTime,
@@ -429,7 +429,7 @@ pub enum RetentionWarning {
 }
 
 /// Exact semantic anchor chosen by the resolver before retention is applied.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(tag = "source", rename_all = "snake_case")]
 pub enum ResolvedAnchorReference {
     Interval,
@@ -508,7 +508,7 @@ impl<'de> Deserialize<'de> for ResolvedAnchorReference {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ResolvedAnchor {
     pub reference: ResolvedAnchorReference,
@@ -548,7 +548,7 @@ impl<'de> Deserialize<'de> for ResolvedAnchor {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ResolvedRange {
     pub session_id: SessionId,

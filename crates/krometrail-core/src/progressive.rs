@@ -22,7 +22,7 @@ use crate::{
     SegmentId, SessionId, SessionRange, SessionTime, TargetId, VisualEpoch,
     error::invalid,
     ports::{CurrentReferenceGeometry, PortFuture},
-    validation::deserialize_validated,
+    validation::{delegate_json_schema, deserialize_validated},
 };
 
 pub const MAX_SOURCE_READ_FRAMES: u16 = 64;
@@ -47,7 +47,7 @@ pub struct EvidenceScope {
     pub target_id: TargetId,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct EvidenceScopeWire {
     session_id: SessionId,
@@ -76,6 +76,8 @@ impl<'de> Deserialize<'de> for EvidenceScope {
         })
     }
 }
+
+delegate_json_schema!(EvidenceScope => EvidenceScopeWire);
 
 /// Canonical lowercase SHA-256 digest used by weak evidence handles.
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
@@ -366,7 +368,7 @@ pub struct SourceReadLimitsRequest {
     max_total_bytes: NonZeroU64,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct SourceReadLimitsWire {
     max_frames: u16,
@@ -419,6 +421,8 @@ impl<'de> Deserialize<'de> for SourceReadLimitsRequest {
     }
 }
 
+delegate_json_schema!(SourceReadLimitsRequest => SourceReadLimitsWire);
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct RetrieveArtifactRequest {
     pub scope: EvidenceScope,
@@ -426,7 +430,7 @@ pub struct RetrieveArtifactRequest {
     max_encoded_bytes: NonZeroU64,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RetrieveArtifactRequestWire {
     scope: EvidenceScope,
@@ -465,6 +469,57 @@ impl<'de> Deserialize<'de> for RetrieveArtifactRequest {
         })
     }
 }
+
+delegate_json_schema!(RetrieveArtifactRequest => RetrieveArtifactRequestWire);
+
+/// One scoped source-frame read used by durable resource adapters.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RetrieveSourceFrameRequest {
+    pub scope: EvidenceScope,
+    pub frame_id: FrameId,
+    max_encoded_bytes: NonZeroU64,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct RetrieveSourceFrameRequestWire {
+    scope: EvidenceScope,
+    frame_id: FrameId,
+    max_encoded_bytes: u64,
+}
+
+impl RetrieveSourceFrameRequest {
+    pub fn new(scope: EvidenceScope, frame_id: FrameId, max_encoded_bytes: u64) -> Result<Self> {
+        validate_id(&frame_id, "source frame id", FrameId::as_uuid)?;
+        let max_encoded_bytes = NonZeroU64::new(max_encoded_bytes)
+            .ok_or_else(|| invalid("source frame read byte limit must be non-zero"))?;
+        if max_encoded_bytes.get() > MAX_SOURCE_ITEM_BYTES {
+            return Err(invalid(
+                "source frame read byte limit exceeds runtime ceiling",
+            ));
+        }
+        Ok(Self {
+            scope,
+            frame_id,
+            max_encoded_bytes,
+        })
+    }
+
+    pub const fn max_encoded_bytes(&self) -> u64 {
+        self.max_encoded_bytes.get()
+    }
+}
+
+impl<'de> Deserialize<'de> for RetrieveSourceFrameRequest {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        deserialize_validated(deserializer, |wire: RetrieveSourceFrameRequestWire| {
+            Self::new(wire.scope, wire.frame_id, wire.max_encoded_bytes)
+        })
+    }
+}
+
+delegate_json_schema!(RetrieveSourceFrameRequest => RetrieveSourceFrameRequestWire);
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "selection", content = "frame_ids", rename_all = "snake_case")]
@@ -513,28 +568,31 @@ impl SourceFrameSelection {
     }
 }
 
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(
+    tag = "selection",
+    content = "frame_ids",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+enum SourceFrameSelectionWire {
+    ResolvedOrder,
+    Ids(Vec<FrameId>),
+}
+
 impl<'de> Deserialize<'de> for SourceFrameSelection {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
-        #[derive(Deserialize)]
-        #[serde(
-            tag = "selection",
-            content = "frame_ids",
-            rename_all = "snake_case",
-            deny_unknown_fields
-        )]
-        enum Wire {
-            ResolvedOrder,
-            Ids(Vec<FrameId>),
-        }
-        match Wire::deserialize(deserializer)? {
-            Wire::ResolvedOrder => Ok(Self::ResolvedOrder),
-            Wire::Ids(ids) => {
+        match SourceFrameSelectionWire::deserialize(deserializer)? {
+            SourceFrameSelectionWire::ResolvedOrder => Ok(Self::ResolvedOrder),
+            SourceFrameSelectionWire::Ids(ids) => {
                 Self::validate_ids(&ids).map_err(D::Error::custom)?;
                 Ok(Self::Ids(ids))
             }
         }
     }
 }
+
+delegate_json_schema!(SourceFrameSelection => SourceFrameSelectionWire);
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct SourceFramesRequest {
@@ -543,7 +601,7 @@ pub struct SourceFramesRequest {
     pub limits: SourceReadLimitsRequest,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct SourceFramesRequestWire {
     range: ResolvedRange,
@@ -580,6 +638,8 @@ impl<'de> Deserialize<'de> for SourceFramesRequest {
     }
 }
 
+delegate_json_schema!(SourceFramesRequest => SourceFramesRequestWire);
+
 /// Generic generation stays owned by the artifact registry while this wrapper
 /// revalidates the one already-resolved range at the progressive boundary.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -609,6 +669,20 @@ impl<'de> Deserialize<'de> for GenerateArtifactsRequest {
     }
 }
 
+impl schemars::JsonSchema for GenerateArtifactsRequest {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        <ArtifactGenerationRequest as schemars::JsonSchema>::schema_name()
+    }
+
+    fn schema_id() -> std::borrow::Cow<'static, str> {
+        <ArtifactGenerationRequest as schemars::JsonSchema>::schema_id()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        <ArtifactGenerationRequest as schemars::JsonSchema>::json_schema(generator)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct SourceFrameList {
     pub range: ResolvedRange,
@@ -632,21 +706,22 @@ pub enum CallerRegionShape {
     },
 }
 
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(tag = "shape", rename_all = "snake_case", deny_unknown_fields)]
+enum CallerRegionShapeWire {
+    Rect {
+        rect: temporal_vision::SignedPixelRect,
+    },
+    Mask {
+        mask: temporal_vision::BinaryMask,
+    },
+}
+
 impl<'de> Deserialize<'de> for CallerRegionShape {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
-        #[derive(Deserialize)]
-        #[serde(tag = "shape", rename_all = "snake_case", deny_unknown_fields)]
-        enum Wire {
-            Rect {
-                rect: temporal_vision::SignedPixelRect,
-            },
-            Mask {
-                mask: temporal_vision::BinaryMask,
-            },
-        }
-        let value = match Wire::deserialize(deserializer)? {
-            Wire::Rect { rect } => Self::Rect { rect },
-            Wire::Mask { mask } => {
+        let value = match CallerRegionShapeWire::deserialize(deserializer)? {
+            CallerRegionShapeWire::Rect { rect } => Self::Rect { rect },
+            CallerRegionShapeWire::Mask { mask } => {
                 validate_mask(&mask).map_err(D::Error::custom)?;
                 Self::Mask { mask }
             }
@@ -654,6 +729,8 @@ impl<'de> Deserialize<'de> for CallerRegionShape {
         Ok(value)
     }
 }
+
+delegate_json_schema!(CallerRegionShape => CallerRegionShapeWire);
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "region", rename_all = "snake_case")]
@@ -677,7 +754,7 @@ pub enum ProgressiveRegion {
     },
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(tag = "region", rename_all = "snake_case", deny_unknown_fields)]
 enum ProgressiveRegionWire {
     SourcePixels {
@@ -826,6 +903,8 @@ impl<'de> Deserialize<'de> for ProgressiveRegion {
     }
 }
 
+delegate_json_schema!(ProgressiveRegion => ProgressiveRegionWire);
+
 fn validate_mask(mask: &temporal_vision::BinaryMask) -> Result<()> {
     let dimensions = mask.dimensions();
     if dimensions.width() > MAX_MASK_DIMENSION || dimensions.height() > MAX_MASK_DIMENSION {
@@ -860,7 +939,7 @@ pub struct RegionFilmstripEvidenceRequest {
     pub output: OutputLimitsRequest,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RegionFilmstripEvidenceRequestWire {
     range: ResolvedRange,
@@ -1012,6 +1091,8 @@ impl<'de> Deserialize<'de> for RegionFilmstripEvidenceRequest {
     }
 }
 
+delegate_json_schema!(RegionFilmstripEvidenceRequest => RegionFilmstripEvidenceRequestWire);
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ResolvedProgressiveRegion {
     pub declared: ProgressiveRegion,
@@ -1044,16 +1125,21 @@ impl ResolvedRangeEvidenceRequest {
     }
 }
 
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ResolvedRangeEvidenceRequestWire {
+    range: ResolvedRange,
+}
+
 impl<'de> Deserialize<'de> for ResolvedRangeEvidenceRequest {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Wire {
-            range: ResolvedRange,
-        }
-        deserialize_validated(deserializer, |wire: Wire| Self::new(wire.range))
+        deserialize_validated(deserializer, |wire: ResolvedRangeEvidenceRequestWire| {
+            Self::new(wire.range)
+        })
     }
 }
+
+delegate_json_schema!(ResolvedRangeEvidenceRequest => ResolvedRangeEvidenceRequestWire);
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct RetentionPinRequest {
@@ -1412,11 +1498,21 @@ fn validate_resolved_range(range: &ResolvedRange) -> Result<()> {
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OperationExposure {
+    Tool,
+    ResourceOnly,
+}
+
 macro_rules! define_progressive_evidence_operations {
     (
         $(
             $variant:ident($request:ty) => $result:ty {
                 stable_name: $stable_name:literal,
+                description: $description:literal,
+                capability: $capability:expr,
+                mutability: $mutability:expr,
+                exposure: $exposure:expr,
             }
         ),+ $(,)?
     ) => {
@@ -1431,6 +1527,12 @@ macro_rules! define_progressive_evidence_operations {
             pub const fn as_str(self) -> &'static str {
                 match self {
                     $(Self::$variant => $stable_name),+
+                }
+            }
+
+            pub fn input_schema(self) -> schemars::Schema {
+                match self {
+                    $(Self::$variant => schemars::schema_for!($request)),+
                 }
             }
         }
@@ -1455,6 +1557,10 @@ macro_rules! define_progressive_evidence_operations {
         pub struct ProgressiveEvidenceOperationDefinition {
             pub kind: ProgressiveEvidenceOperationKind,
             pub stable_name: &'static str,
+            pub description: &'static str,
+            pub capability: crate::CapabilityId,
+            pub mutability: crate::OperationMutability,
+            pub exposure: OperationExposure,
             pub request_type: &'static str,
             pub result_type: &'static str,
         }
@@ -1463,12 +1569,16 @@ macro_rules! define_progressive_evidence_operations {
             $(ProgressiveEvidenceOperationDefinition {
                 kind: ProgressiveEvidenceOperationKind::$variant,
                 stable_name: $stable_name,
+                description: $description,
+                capability: $capability,
+                mutability: $mutability,
+                exposure: $exposure,
                 request_type: stringify!($request),
                 result_type: stringify!($result),
             }),+
         ];
 
-        #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+        #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
         #[serde(tag = "operation", content = "request", deny_unknown_fields)]
         pub enum ProgressiveEvidenceRequest {
             $(#[serde(rename = $stable_name)] $variant($request)),+
@@ -1500,27 +1610,66 @@ macro_rules! define_progressive_evidence_operations {
 define_progressive_evidence_operations! {
     RetrieveArtifact(RetrieveArtifactRequest) => ArtifactRead {
         stable_name: "retrieve_artifact",
+        description: "Read one retained generated artifact by scoped evidence identity.",
+        capability: crate::CapabilityId::TemporalVision,
+        mutability: crate::OperationMutability::ReadOnly,
+        exposure: OperationExposure::ResourceOnly,
+    },
+    RetrieveSourceFrame(RetrieveSourceFrameRequest) => SourceFrameRead {
+        stable_name: "retrieve_source_frame",
+        description: "Read one retained source frame by scoped evidence identity.",
+        capability: crate::CapabilityId::TemporalVision,
+        mutability: crate::OperationMutability::ReadOnly,
+        exposure: OperationExposure::ResourceOnly,
     },
     ListSourceFrames(SourceFramesRequest) => SourceFrameList {
         stable_name: "list_source_frames",
+        description: "List retained source-frame metadata for a resolved range.",
+        capability: crate::CapabilityId::TemporalVision,
+        mutability: crate::OperationMutability::ReadOnly,
+        exposure: OperationExposure::Tool,
     },
     FetchSourceFrames(SourceFramesRequest) => SourceFrameBatch {
         stable_name: "fetch_source_frames",
+        description: "Fetch selected retained source frames for a resolved range.",
+        capability: crate::CapabilityId::TemporalVision,
+        mutability: crate::OperationMutability::ReadOnly,
+        exposure: OperationExposure::Tool,
     },
     GenerateArtifacts(GenerateArtifactsRequest) => ArtifactGenerationResult {
         stable_name: "generate_artifacts",
+        description: "Generate supported visual artifacts for a resolved range.",
+        capability: crate::CapabilityId::TemporalVision,
+        mutability: crate::OperationMutability::ReadOnly,
+        exposure: OperationExposure::Tool,
     },
     GenerateRegionFilmstrip(RegionFilmstripEvidenceRequest) => RegionFilmstripEvidence {
         stable_name: "generate_region_filmstrip",
+        description: "Generate a fixed-region filmstrip for a resolved range.",
+        capability: crate::CapabilityId::TemporalVision,
+        mutability: crate::OperationMutability::ReadOnly,
+        exposure: OperationExposure::Tool,
     },
     PinResolvedRange(ResolvedRangeEvidenceRequest) => PinChange {
         stable_name: "pin_resolved_range",
+        description: "Protect the source segments for a resolved range.",
+        capability: crate::CapabilityId::TemporalVision,
+        mutability: crate::OperationMutability::StateChanging,
+        exposure: OperationExposure::Tool,
     },
     UnpinResolvedRange(ResolvedRangeEvidenceRequest) => PinChange {
         stable_name: "unpin_resolved_range",
+        description: "Release the exact retention pin for a resolved range.",
+        capability: crate::CapabilityId::TemporalVision,
+        mutability: crate::OperationMutability::StateChanging,
+        exposure: OperationExposure::Tool,
     },
     QueryPinState(ResolvedRangeEvidenceRequest) => PinState {
         stable_name: "query_pin_state",
+        description: "Report retention and pin state for a resolved range.",
+        capability: crate::CapabilityId::TemporalVision,
+        mutability: crate::OperationMutability::ReadOnly,
+        exposure: OperationExposure::Tool,
     },
 }
 
@@ -1558,7 +1707,7 @@ pub trait ProgressiveEvidence: Send + Sync {
 mod tests {
     use super::*;
     use crate::{
-        CaptureOrdinal, DeviceScaleFactor, DiskBudgetBytes, ErrorCode, ObservedTime,
+        CapabilityId, CaptureOrdinal, DeviceScaleFactor, DiskBudgetBytes, ErrorCode, ObservedTime,
         PixelDimensions, RangeResolutionOptions, RecordingBudgetState, SourceTime, StorageUsage,
         TemporalRangeAnchorKind,
     };
@@ -1612,8 +1761,8 @@ mod tests {
     }
 
     #[test]
-    fn registry_is_the_exhaustive_eight_operation_pairing() {
-        assert_eq!(PROGRESSIVE_EVIDENCE_REGISTRY.len(), 8);
+    fn registry_is_exhaustive_and_metadata_is_generated_with_each_operation() {
+        assert_eq!(PROGRESSIVE_EVIDENCE_REGISTRY.len(), 9);
         assert_eq!(
             PROGRESSIVE_EVIDENCE_REGISTRY
                 .iter()
@@ -1621,6 +1770,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 "retrieve_artifact",
+                "retrieve_source_frame",
                 "list_source_frames",
                 "fetch_source_frames",
                 "generate_artifacts",
@@ -1639,6 +1789,14 @@ mod tests {
         );
         for entry in PROGRESSIVE_EVIDENCE_REGISTRY {
             assert_eq!(entry.kind.as_str(), entry.stable_name);
+            assert!(!entry.description.trim().is_empty());
+            assert_eq!(entry.capability, CapabilityId::TemporalVision);
+            assert!(matches!(
+                entry.exposure,
+                OperationExposure::Tool | OperationExposure::ResourceOnly
+            ));
+            let schema = serde_json::to_value(entry.kind.input_schema()).unwrap();
+            assert_eq!(schema["type"], "object");
             assert!(!entry.request_type.is_empty());
             assert!(!entry.result_type.is_empty());
             let json = serde_json::to_string(&entry.kind).unwrap();
@@ -1648,6 +1806,57 @@ mod tests {
                 entry.kind
             );
         }
+    }
+
+    #[test]
+    fn scoped_source_reads_validate_before_storage_and_round_trip() {
+        let request = RetrieveSourceFrameRequest::new(
+            EvidenceScope::new(session(), target()).unwrap(),
+            frame(3),
+            1024,
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::from_value::<RetrieveSourceFrameRequest>(
+                serde_json::to_value(&request).unwrap()
+            )
+            .unwrap(),
+            request
+        );
+        assert!(EvidenceScope::new(SessionId::from_uuid(Uuid::nil()), target()).is_err());
+        assert!(
+            RetrieveSourceFrameRequest::new(
+                EvidenceScope::new(session(), target()).unwrap(),
+                FrameId::from_uuid(Uuid::nil()),
+                1024,
+            )
+            .is_err()
+        );
+        assert!(
+            RetrieveSourceFrameRequest::new(
+                EvidenceScope::new(session(), target()).unwrap(),
+                frame(3),
+                0,
+            )
+            .is_err()
+        );
+        assert!(
+            RetrieveSourceFrameRequest::new(
+                EvidenceScope::new(session(), target()).unwrap(),
+                frame(3),
+                MAX_SOURCE_ITEM_BYTES + 1,
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<RetrieveSourceFrameRequest>(serde_json::json!({
+                "scope": { "session_id": session(), "target_id": target() },
+                "frame_id": frame(3),
+                "max_encoded_bytes": 1024,
+                "extra": true
+            }))
+            .is_err()
+        );
     }
 
     #[test]

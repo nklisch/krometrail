@@ -5,11 +5,11 @@ use serde::{Deserialize, Serialize};
 use crate::{
     BrowserEvent, BrowserEventClass, BrowserEventCollectionGap, BrowserEventCursor,
     BrowserEventPayload, BrowserEventSelector, BrowserEventSeverity, BrowserEventSource,
-    BrowserEventUnavailableRange, CaptureGap, CaptureStatusSamples, CaptureStreamState,
-    CaptureWarning, CapturedFrame, ErrorCode, ErrorContext, EventCandidateLimit, EventPageLimit,
-    FrameId, FrameSource, KrometrailError, NonEmptyText, PortFuture, ResolvedRange, Result,
-    RetentionWarning, RetryAdvice, SessionRange, SessionTime, TargetCaptureStatus,
-    validation::deserialize_validated,
+    BrowserEventUnavailableRange, CapabilityId, CaptureGap, CaptureStatusSamples,
+    CaptureStreamState, CaptureWarning, CapturedFrame, ErrorCode, ErrorContext,
+    EventCandidateLimit, EventPageLimit, FrameId, FrameSource, KrometrailError, NonEmptyText,
+    OperationMutability, PortFuture, ResolvedRange, Result, RetentionWarning, RetryAdvice,
+    SessionRange, SessionTime, TargetCaptureStatus, validation::deserialize_validated,
 };
 
 pub const MAX_CAPTURE_QUALITY_FRAMES: usize = 20_000;
@@ -26,7 +26,7 @@ pub struct BrowserEventFilter {
     minimum_severity: BrowserEventSeverity,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct BrowserEventFilterWire {
     classes: Vec<BrowserEventClass>,
@@ -91,7 +91,9 @@ impl<'de> Deserialize<'de> for BrowserEventFilter {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+crate::validation::delegate_json_schema!(BrowserEventFilter => BrowserEventFilterWire);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(transparent)]
 pub struct EventCompactLimit(NonZeroU8);
 
@@ -123,7 +125,7 @@ impl<'de> Deserialize<'de> for EventCompactLimit {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
 pub enum BrowserEventSelection {
     Compact {
@@ -177,7 +179,7 @@ pub struct TemporalContextRequest {
     focus_times: Vec<SessionTime>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct TemporalContextRequestWire {
     range: ResolvedRange,
@@ -305,6 +307,127 @@ impl<'de> Deserialize<'de> for TemporalContextRequest {
         })
     }
 }
+
+/// Validated verbose browser-event detail. Unlike the broader context request,
+/// this public operation intentionally cannot select compact correlation output.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BrowserEventDetailRequest(TemporalContextRequest);
+
+impl BrowserEventDetailRequest {
+    pub fn new(
+        range: ResolvedRange,
+        clip: Option<SessionRange>,
+        filter: BrowserEventFilter,
+        limit: u16,
+        cursor: Option<BrowserEventCursor>,
+        focus_times: Vec<SessionTime>,
+    ) -> Result<Self> {
+        let selection = BrowserEventSelection::chronological(limit, cursor)?;
+        Ok(Self(TemporalContextRequest::new(
+            range,
+            clip,
+            filter,
+            selection,
+            focus_times,
+        )?))
+    }
+
+    pub fn into_context_request(self) -> TemporalContextRequest {
+        self.0
+    }
+
+    pub const fn context_request(&self) -> &TemporalContextRequest {
+        &self.0
+    }
+}
+
+impl Serialize for BrowserEventDetailRequest {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for BrowserEventDetailRequest {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserialize_validated(deserializer, |wire: TemporalContextRequestWire| {
+            let request = TemporalContextRequest::new(
+                wire.range,
+                wire.clip,
+                wire.filter,
+                wire.selection,
+                wire.focus_times,
+            )?;
+            if !matches!(
+                request.selection(),
+                BrowserEventSelection::Chronological { .. }
+            ) {
+                return Err(invalid_error(
+                    "browser event detail requests must use chronological selection",
+                ));
+            }
+            Ok(Self(request))
+        })
+    }
+}
+
+impl schemars::JsonSchema for BrowserEventDetailRequest {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        <TemporalContextRequestWire as schemars::JsonSchema>::schema_name()
+    }
+
+    fn schema_id() -> std::borrow::Cow<'static, str> {
+        <TemporalContextRequestWire as schemars::JsonSchema>::schema_id()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        <TemporalContextRequestWire as schemars::JsonSchema>::json_schema(generator)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TemporalContextOperationKind {
+    QueryBrowserEvents,
+}
+
+impl TemporalContextOperationKind {
+    pub const ALL: &'static [Self] = &[Self::QueryBrowserEvents];
+
+    pub const fn stable_name(self) -> &'static str {
+        match self {
+            Self::QueryBrowserEvents => "query_browser_events",
+        }
+    }
+
+    pub fn input_schema(self) -> schemars::Schema {
+        match self {
+            Self::QueryBrowserEvents => schemars::schema_for!(BrowserEventDetailRequest),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TemporalContextOperationDefinition {
+    pub kind: TemporalContextOperationKind,
+    pub stable_name: &'static str,
+    pub description: &'static str,
+    pub capability: CapabilityId,
+    pub mutability: OperationMutability,
+}
+
+pub static TEMPORAL_CONTEXT_OPERATION_REGISTRY: &[TemporalContextOperationDefinition] =
+    &[TemporalContextOperationDefinition {
+        kind: TemporalContextOperationKind::QueryBrowserEvents,
+        stable_name: "query_browser_events",
+        description: "Read chronological browser-event detail for a resolved temporal range.",
+        capability: CapabilityId::BrowserEvents,
+        mutability: OperationMutability::ReadOnly,
+    }];
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct FramePoint {
@@ -1198,6 +1321,62 @@ mod tests {
         );
         assert!(EventCompactLimit::new(0).is_err());
         assert!(EventCompactLimit::new(MAX_COMPACT_EVENT_LIMIT + 1).is_err());
+    }
+
+    #[test]
+    fn chronological_detail_wrapper_rejects_compact_invalid_limits_focus_and_unknown_fields() {
+        let range = resolved(1);
+        let request = BrowserEventDetailRequest::new(
+            range.clone(),
+            None,
+            BrowserEventFilter::default(),
+            DEFAULT_CHRONOLOGICAL_EVENT_LIMIT,
+            None,
+            vec![SessionTime::from_nanos(50)],
+        )
+        .unwrap();
+        let encoded = serde_json::to_value(&request).unwrap();
+        assert_eq!(encoded["selection"]["mode"], "chronological");
+        assert_eq!(
+            serde_json::from_value::<BrowserEventDetailRequest>(encoded.clone()).unwrap(),
+            request
+        );
+        assert_eq!(
+            TEMPORAL_CONTEXT_OPERATION_REGISTRY,
+            &[TemporalContextOperationDefinition {
+                kind: TemporalContextOperationKind::QueryBrowserEvents,
+                stable_name: "query_browser_events",
+                description: "Read chronological browser-event detail for a resolved temporal range.",
+                capability: CapabilityId::BrowserEvents,
+                mutability: OperationMutability::ReadOnly,
+            }]
+        );
+        let schema =
+            serde_json::to_value(TemporalContextOperationKind::QueryBrowserEvents.input_schema())
+                .unwrap();
+        assert_eq!(schema["type"], "object");
+
+        let compact =
+            serde_json::to_value(TemporalContextRequest::compact(range.clone(), vec![]).unwrap())
+                .unwrap();
+        assert!(serde_json::from_value::<BrowserEventDetailRequest>(compact).is_err());
+        let mut invalid_limit = encoded.clone();
+        invalid_limit["selection"]["limit"] = serde_json::json!(0);
+        assert!(serde_json::from_value::<BrowserEventDetailRequest>(invalid_limit).is_err());
+        let mut unknown = encoded;
+        unknown["unexpected"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<BrowserEventDetailRequest>(unknown).is_err());
+        assert!(
+            BrowserEventDetailRequest::new(
+                range,
+                None,
+                BrowserEventFilter::default(),
+                DEFAULT_CHRONOLOGICAL_EVENT_LIMIT,
+                None,
+                vec![SessionTime::from_nanos(101)],
+            )
+            .is_err()
+        );
     }
 
     #[test]

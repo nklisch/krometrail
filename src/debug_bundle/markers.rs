@@ -81,30 +81,32 @@ pub(crate) fn assemble_markers(evidence: MarkerEvidence<'_>) -> Result<Assembled
     //   is no longer retained) emits `MarkerLabelUnavailable` so the receiver
     //   never mistakes the ID-only label for an exact caller-supplied label.
     let anchor = anchor_marker(evidence.range, evidence.interactions)?;
-    if let Some(anchor_marker) = &anchor.marker
-        && let Some(caller_match) = evidence
+    if let Some(anchor_marker) = &anchor.marker {
+        if let Some(caller_match) = evidence
             .caller_markers
             .iter()
             .find(|caller| caller.id() == anchor_marker.id())
-        && caller_match.session_time() != anchor_marker.session_time()
-    {
-        return Err(KrometrailError::new(
-            ErrorCode::InvalidInput,
-            NonEmptyText::new(
-                "caller marker session time conflicts with the resolved anchor at the same identifier",
-            )
-            .expect("static conflict error is non-empty"),
-        ));
+        {
+            if caller_match.session_time() != anchor_marker.session_time() {
+                return Err(KrometrailError::new(
+                    ErrorCode::InvalidInput,
+                    NonEmptyText::new(
+                        "caller marker session time conflicts with the resolved anchor at the same identifier",
+                    )
+                    .expect("static conflict error is non-empty"),
+                ));
+            }
+        }
     }
     let anchor_marker = anchor
         .marker
         .filter(|marker| !caller_ids.contains(marker.id()));
-    if let Some(marker) = &anchor_marker
-        && anchor.synthetic_label
-    {
-        warnings.push(BundleWarning::MarkerLabelUnavailable {
-            marker_id: marker.id().clone(),
-        });
+    if anchor.synthetic_label {
+        if let Some(marker) = &anchor_marker {
+            warnings.push(BundleWarning::MarkerLabelUnavailable {
+                marker_id: marker.id().clone(),
+            });
+        }
     }
     mandatory.extend(anchor_marker);
 

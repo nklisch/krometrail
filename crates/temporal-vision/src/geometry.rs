@@ -3,7 +3,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::{ErrorCode, PixelDimensions, Result, VisionError};
 
 /// A non-empty half-open rectangle in source-frame pixel coordinates.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct PixelRect {
     x: u32,
     y: u32,
@@ -92,7 +92,7 @@ impl<'de> Deserialize<'de> for PixelRect {
 }
 
 /// A rectangle validated against one source-frame geometry.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct FrameRegion {
     rect: PixelRect,
 }
@@ -131,7 +131,7 @@ impl<'de> Deserialize<'de> for FrameRegion {
 }
 
 /// A full-frame row-major, MSB-first, one-bit-per-pixel mask.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct BinaryMask {
     dimensions: PixelDimensions,
     bits: Box<[u8]>,

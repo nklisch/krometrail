@@ -11,10 +11,11 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::{
     ArtifactFailurePolicy, ArtifactGenerationRequest, ArtifactGenerationResult,
     ArtifactGeneratorRequest, ArtifactMarker, ArtifactMarkerId, BrowserEventFilter,
-    BrowserEventSelection, CancellationSignal, FrameId, KrometrailError, NonEmptyText, PortFuture,
-    ResolvedAnchorReference, ResolvedRange, Result, SessionTime, TemporalContext,
-    TemporalContextRequest, TemporalQueryRequest, TemporalRangeAnchor, error::invalid,
-    timeline::MAX_FOCUS_TIMES, validation::deserialize_validated,
+    BrowserEventSelection, CancellationSignal, CapabilityId, FrameId, KrometrailError,
+    NonEmptyText, OperationMutability, PortFuture, ResolvedAnchorReference, ResolvedRange, Result,
+    SessionTime, TemporalContext, TemporalContextRequest, TemporalQueryRequest,
+    TemporalRangeAnchor, error::invalid, timeline::MAX_FOCUS_TIMES,
+    validation::deserialize_validated,
 };
 
 pub const TEMPORAL_DEBUG_BUNDLE_POLICY_VERSION: &str = "temporal-debug-bundle-v1";
@@ -23,7 +24,9 @@ pub const MAX_BUNDLE_ARTIFACT_MARKERS: usize = 256;
 pub const MAX_BUNDLE_TIMELINE_ROWS: u16 = 1_024;
 pub const MAX_BUNDLE_HEADER_BYTES: usize = 512;
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum OrientationPolicy {
     #[default]
@@ -41,7 +44,7 @@ pub struct TemporalDebugBundleRequest {
     orientation: OrientationPolicy,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct TemporalDebugBundleRequestWire {
     query: TemporalQueryRequest,
@@ -94,6 +97,25 @@ impl<'de> Deserialize<'de> for TemporalDebugBundleRequest {
         })
     }
 }
+
+crate::validation::delegate_json_schema!(TemporalDebugBundleRequest => TemporalDebugBundleRequestWire);
+
+/// Metadata for the single natural-anchor temporal entry point.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TemporalDebugBundleOperationDefinition {
+    pub stable_name: &'static str,
+    pub description: &'static str,
+    pub capability: CapabilityId,
+    pub mutability: OperationMutability,
+}
+
+pub const TEMPORAL_DEBUG_BUNDLE_OPERATION: TemporalDebugBundleOperationDefinition =
+    TemporalDebugBundleOperationDefinition {
+        stable_name: "temporal_debug_bundle",
+        description: "Inspect a resolved interaction or temporal range as a compact evidence bundle.",
+        capability: CapabilityId::TemporalVision,
+        mutability: OperationMutability::ReadOnly,
+    };
 
 fn validate_caller_markers(markers: &[ArtifactMarker]) -> Result<()> {
     if markers.len() > MAX_BUNDLE_CALLER_MARKERS {

@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use crate::{
     CaptureOrdinal, CapturedFrame, EncodedFrame, ErrorCode, FrameAvailability, FrameId,
-    KrometrailError, NonEmptyText, Result, SessionId, SessionRange, SourceFrameBatch,
-    SourceFrameList, SourceFramesRequest, TargetId,
+    KrometrailError, NonEmptyText, Result, RetrieveSourceFrameRequest, SessionId, SessionRange,
+    SourceFrameBatch, SourceFrameList, SourceFrameRead, SourceFramesRequest, TargetId,
 };
 
 use super::PortFuture;
@@ -26,6 +26,14 @@ pub trait FrameSource: Send + Sync {
         &self,
         _request: SourceFramesRequest,
     ) -> PortFuture<'_, Result<SourceFrameBatch>> {
+        Box::pin(std::future::ready(Err(progressive_read_unsupported())))
+    }
+
+    /// Reads one scoped source frame with request-scoped encoded bytes.
+    fn read_source_frame(
+        &self,
+        _request: RetrieveSourceFrameRequest,
+    ) -> PortFuture<'_, Result<SourceFrameRead>> {
         Box::pin(std::future::ready(Err(progressive_read_unsupported())))
     }
 
@@ -92,6 +100,12 @@ impl<T: FrameSource + ?Sized> FrameSource for Arc<T> {
         request: SourceFramesRequest,
     ) -> PortFuture<'_, Result<SourceFrameBatch>> {
         (**self).fetch_source_frames(request)
+    }
+    fn read_source_frame(
+        &self,
+        request: RetrieveSourceFrameRequest,
+    ) -> PortFuture<'_, Result<SourceFrameRead>> {
+        (**self).read_source_frame(request)
     }
     fn frames_by_id(&self, frame_ids: Vec<FrameId>) -> PortFuture<'_, Result<Vec<EncodedFrame>>> {
         (**self).frames_by_id(frame_ids)

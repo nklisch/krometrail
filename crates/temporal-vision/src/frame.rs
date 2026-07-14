@@ -3,7 +3,9 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::{ErrorCode, Result, VisionError};
 
 /// Nanoseconds in one caller-declared sequence clock.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(transparent)]
 pub struct Timestamp(u64);
 
@@ -20,7 +22,7 @@ impl Timestamp {
 }
 
 /// Non-zero source-frame pixel dimensions.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct PixelDimensions {
     width: u32,
     height: u32,

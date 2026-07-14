@@ -18,7 +18,7 @@ const DEFAULT_MAX_PIXELS_PER_FRAME: usize = 16_777_216;
 const DEFAULT_MAX_RETAINED_BYTES: usize = 512 * 1024 * 1024;
 
 /// An sRGB background used to make straight-alpha input pixels opaque.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Rgb8 {
     red: u8,
     green: u8,

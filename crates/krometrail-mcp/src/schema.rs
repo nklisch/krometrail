@@ -111,7 +111,17 @@ fn schema_error(message: &'static str) -> KrometrailError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use krometrail_core::CapabilityId;
+    use krometrail_core::{
+        BrowserEventDetailRequest, CapabilityId, RetrieveSourceFrameRequest,
+        TemporalDebugBundleRequest,
+    };
+
+    #[test]
+    fn generated_temporal_request_schemas_are_object_roots() {
+        assert!(type_input_schema::<BrowserEventDetailRequest>().is_ok());
+        assert!(type_input_schema::<RetrieveSourceFrameRequest>().is_ok());
+        assert!(type_input_schema::<TemporalDebugBundleRequest>().is_ok());
+    }
 
     #[test]
     fn batch_schema_is_filtered_from_the_generated_complete_union() {

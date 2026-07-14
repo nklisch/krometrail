@@ -103,9 +103,9 @@ pub use debug_bundle::{
     BundleArtifactEvidence, BundleContextEvidence, BundleDegradation, BundleEpochVisualSummary,
     BundleWarning, EffectiveBundlePolicy, EvidencePosture, MAX_BUNDLE_ARTIFACT_MARKERS,
     MAX_BUNDLE_CALLER_MARKERS, MAX_BUNDLE_HEADER_BYTES, MAX_BUNDLE_TIMELINE_ROWS,
-    OrientationPolicy, TEMPORAL_DEBUG_BUNDLE_POLICY_VERSION, TemporalDebugBundle,
-    TemporalDebugBundleContext, TemporalDebugBundleRequest, TemporalDebugBundles,
-    TemporalDebugHeader,
+    OrientationPolicy, TEMPORAL_DEBUG_BUNDLE_OPERATION, TEMPORAL_DEBUG_BUNDLE_POLICY_VERSION,
+    TemporalDebugBundle, TemporalDebugBundleContext, TemporalDebugBundleOperationDefinition,
+    TemporalDebugBundleRequest, TemporalDebugBundles, TemporalDebugHeader,
 };
 pub use error::{
     EmptyTextError, ErrorCode, ErrorContext, KrometrailError, NonEmptyText, Result, RetryAdvice,
@@ -133,14 +133,15 @@ pub use ports::{
 };
 pub use progressive::{
     ArtifactEvidenceHandle, ArtifactRead, CallerRegionShape, EvidenceScope,
-    GenerateArtifactsRequest, PROGRESSIVE_EVIDENCE_REGISTRY, PinChange as ProgressivePinChange,
-    PinProtectionScope, PinState, ProgressiveEvidence, ProgressiveEvidenceContext,
-    ProgressiveEvidenceOperationDefinition, ProgressiveEvidenceOperationKind,
-    ProgressiveEvidenceRequest, ProgressiveEvidenceResult, ProgressiveRegion, ProtectedSegment,
-    RangeEvidenceAvailability, RegionFilmstripEvidence, RegionFilmstripEvidenceRequest,
-    ResolvedProgressiveRegion, ResolvedRangeEvidenceRequest, RetentionPinRequest,
-    RetrieveArtifactRequest, Sha256Digest, SourceFrameBatch, SourceFrameHandle, SourceFrameList,
-    SourceFrameRead, SourceFrameSelection, SourceFramesRequest, SourceReadLimitsRequest,
+    GenerateArtifactsRequest, OperationExposure, PROGRESSIVE_EVIDENCE_REGISTRY,
+    PinChange as ProgressivePinChange, PinProtectionScope, PinState, ProgressiveEvidence,
+    ProgressiveEvidenceContext, ProgressiveEvidenceOperationDefinition,
+    ProgressiveEvidenceOperationKind, ProgressiveEvidenceRequest, ProgressiveEvidenceResult,
+    ProgressiveRegion, ProtectedSegment, RangeEvidenceAvailability, RegionFilmstripEvidence,
+    RegionFilmstripEvidenceRequest, ResolvedProgressiveRegion, ResolvedRangeEvidenceRequest,
+    RetentionPinRequest, RetrieveArtifactRequest, RetrieveSourceFrameRequest, Sha256Digest,
+    SourceFrameBatch, SourceFrameHandle, SourceFrameList, SourceFrameRead, SourceFrameSelection,
+    SourceFramesRequest, SourceReadLimitsRequest,
 };
 pub use recording::{
     ByteOffset, CaptureGap, CaptureGapReason, CaptureOrdinal, CaptureStatistics,
@@ -151,15 +152,17 @@ pub use recording::{
 };
 pub use time::{ObservedTime, SessionOrigin, SessionRange, SessionTime, SourceTime};
 pub use timeline::{
-    AnchorScope, BrowserEventContext, BrowserEventFilter, BrowserEventSelection,
-    BrowserEventSelectionReason, CadenceSummary, CaptureGapPolicy, CaptureGapSummary,
-    CaptureQuality, CaptureQualityWarning, CaptureStatusEvidence, CaptureStatusPoint,
-    CaptureWarningSummary, DEFAULT_CHRONOLOGICAL_EVENT_LIMIT, DEFAULT_COMPACT_EVENT_LIMIT,
-    EventCompactLimit, EventQueryWarning, FrameAvailability, FramePoint, InteractionWindow,
-    MAX_CAPTURE_QUALITY_FRAMES, MAX_COMPACT_EVENT_LIMIT, MAX_FOCUS_TIMES,
-    MAX_NATURAL_ANCHOR_WINDOW, ObservationKind, ObservationPayloadRef, RangeResolutionOptions,
-    ResolvedAnchor, ResolvedAnchorReference, ResolvedRange, RetentionPolicy, RetentionWarning,
-    SelectedBrowserEvent, TemporalContext, TemporalContextQuery, TemporalContextRequest,
-    TemporalContextService, TemporalQuery, TemporalQueryRequest, TemporalQueryService,
-    TemporalRangeAnchor, TemporalRangeAnchorKind, TemporalRangeResolver, TimelineObservation,
+    AnchorScope, BrowserEventContext, BrowserEventDetailRequest, BrowserEventFilter,
+    BrowserEventSelection, BrowserEventSelectionReason, CadenceSummary, CaptureGapPolicy,
+    CaptureGapSummary, CaptureQuality, CaptureQualityWarning, CaptureStatusEvidence,
+    CaptureStatusPoint, CaptureWarningSummary, DEFAULT_CHRONOLOGICAL_EVENT_LIMIT,
+    DEFAULT_COMPACT_EVENT_LIMIT, EventCompactLimit, EventQueryWarning, FrameAvailability,
+    FramePoint, InteractionWindow, MAX_CAPTURE_QUALITY_FRAMES, MAX_COMPACT_EVENT_LIMIT,
+    MAX_FOCUS_TIMES, MAX_NATURAL_ANCHOR_WINDOW, ObservationKind, ObservationPayloadRef,
+    RangeResolutionOptions, ResolvedAnchor, ResolvedAnchorReference, ResolvedRange,
+    RetentionPolicy, RetentionWarning, SelectedBrowserEvent, TEMPORAL_CONTEXT_OPERATION_REGISTRY,
+    TemporalContext, TemporalContextOperationDefinition, TemporalContextOperationKind,
+    TemporalContextQuery, TemporalContextRequest, TemporalContextService, TemporalQuery,
+    TemporalQueryRequest, TemporalQueryService, TemporalRangeAnchor, TemporalRangeAnchorKind,
+    TemporalRangeResolver, TimelineObservation,
 };

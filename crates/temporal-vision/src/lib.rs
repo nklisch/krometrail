@@ -8,7 +8,7 @@ macro_rules! stable_registry {
         }
     ) => {
         $(#[$meta])*
-        #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+        #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, schemars::JsonSchema)]
         pub enum $name {
             $($variant),+
         }

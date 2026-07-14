@@ -185,14 +185,15 @@ impl SessionDomainAuthority {
         });
         {
             let mut current = self.current.lock().expect("event current-target lock");
-            if let Some(previous_key) = current.insert(binding.target_id, key.clone())
-                && let Some(previous) = self
+            if let Some(previous_key) = current.insert(binding.target_id, key.clone()) {
+                if let Some(previous) = self
                     .targets
                     .lock()
                     .expect("event runtime registry lock")
                     .remove(&previous_key)
-            {
-                previous.abort();
+                {
+                    previous.abort();
+                }
             }
             self.targets
                 .lock()

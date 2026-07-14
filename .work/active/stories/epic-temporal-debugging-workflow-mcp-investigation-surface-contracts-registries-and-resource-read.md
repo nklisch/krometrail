@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-debugging-workflow-mcp-investigation-surface-contracts-registries-and-resource-read
 kind: story
-stage: implementing
+stage: done
 tags: [agent-ux, visual, browser, storage]
 parent: epic-temporal-debugging-workflow-mcp-investigation-surface
 depends_on: []
@@ -37,11 +37,11 @@ Establish the exact domain contracts consumed by the temporal MCP adapter. Add t
 
 ## Acceptance evidence
 
-- [ ] Progressive registry and context/bundle definitions are exhaustive, unique, capability-tagged, and contain no duplicate stable-name constants in MCP.
-- [ ] Scoped source-frame reads reject invalid scope/frame/limits before storage I/O and return no bytes after an eviction or session-deletion race.
-- [ ] Chronological event requests reject compact mode, invalid cursors, out-of-range focus times, and unknown fields.
-- [ ] Generated schemas describe the exact validated external shapes, including custom millisecond/UUID/nonzero forms; no MCP-only request mirror is introduced.
-- [ ] Existing artifact/progressive/context tests remain green and no compatibility or migration path is added.
+- [x] Progressive registry and context/bundle definitions are exhaustive, unique, capability-tagged, and contain no duplicate stable-name constants in MCP.
+- [x] Scoped source-frame reads reject invalid scope/frame/limits before storage I/O and return no bytes after an eviction or session-deletion race.
+- [x] Chronological event requests reject compact mode, invalid cursors, out-of-range focus times, and unknown fields.
+- [x] Generated schemas describe the exact validated external shapes, including custom millisecond/UUID/nonzero forms; no MCP-only request mirror is introduced.
+- [x] Existing artifact/progressive/context tests remain green and no compatibility or migration path is added.
 
 ## Ordering constraints
 
@@ -50,3 +50,16 @@ This must complete before route construction because route names, exposure, capa
 ## Out of scope
 
 No `rmcp` route, URI grammar, resource template, response mapping, inline image, stdio/server change, root wiring, or end-to-end protocol test.
+
+## Implementation notes
+
+- Added the ninth progressive operation as a resource-only scoped source-frame read and wired it through the core port, store, and progressive service without synthesizing a resolved range.
+- Added chronological-only browser-event detail validation, context and bundle operation metadata, and wire-derived schemas for the temporal request graph.
+- Added optimistic source-read race coverage for deletion and preserved Rust 1.85 compatibility by replacing pre-existing let-chain syntax in adjacent code.
+
+## Verification
+
+- `cargo +1.85.0 fmt --all -- --check`
+- `cargo +1.85.0 check --workspace --all-targets --locked`
+- `cargo +1.85.0 test --workspace --all-targets --locked`
+- `cargo +1.85.0 clippy --workspace --all-targets --locked -- -D warnings`

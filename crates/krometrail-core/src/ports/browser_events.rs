@@ -39,7 +39,7 @@ pub struct BrowserEventSelector {
     minimum_severity: BrowserEventSeverity,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct BrowserEventSelectorWire {
     session_id: SessionId,
@@ -112,6 +112,8 @@ impl<'de> Deserialize<'de> for BrowserEventSelector {
     }
 }
 
+crate::validation::delegate_json_schema!(BrowserEventSelector => BrowserEventSelectorWire);
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct BrowserEventCursor {
@@ -121,7 +123,7 @@ pub struct BrowserEventCursor {
     event_id: BrowserEventId,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct BrowserEventCursorWire {
     selector: BrowserEventSelector,
@@ -181,7 +183,9 @@ impl<'de> Deserialize<'de> for BrowserEventCursor {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+crate::validation::delegate_json_schema!(BrowserEventCursor => BrowserEventCursorWire);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(transparent)]
 pub struct EventPageLimit(NonZeroU16);
 
@@ -213,7 +217,7 @@ impl<'de> Deserialize<'de> for EventPageLimit {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(transparent)]
 pub struct EventCandidateLimit(NonZeroU16);
 
@@ -239,7 +243,7 @@ impl<'de> Deserialize<'de> for EventCandidateLimit {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum BrowserEventUnavailableReason {
     RetentionEvicted,
@@ -275,7 +279,7 @@ pub struct BrowserEventUnavailableRange {
     reason: BrowserEventUnavailableReason,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct BrowserEventUnavailableRangeWire {
     session_id: SessionId,
@@ -364,6 +368,10 @@ impl<'de> Deserialize<'de> for BrowserEventUnavailableRange {
         })
     }
 }
+
+crate::validation::delegate_json_schema!(
+    BrowserEventUnavailableRange => BrowserEventUnavailableRangeWire
+);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CaptureStatusSamples {

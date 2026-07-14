@@ -16,7 +16,7 @@ pub struct TemporalQueryRequest {
     pub capture_gaps: CaptureGapPolicy,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct TemporalQueryRequestWire {
     anchor: TemporalRangeAnchor,
@@ -63,6 +63,8 @@ impl<'de> Deserialize<'de> for TemporalQueryRequest {
         })
     }
 }
+
+crate::validation::delegate_json_schema!(TemporalQueryRequest => TemporalQueryRequestWire);
 
 /// Resolves validated temporal requests without exposing persistence details.
 pub trait TemporalQuery: Send + Sync {
