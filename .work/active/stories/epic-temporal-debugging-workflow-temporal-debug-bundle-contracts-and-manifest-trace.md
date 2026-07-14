@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-debugging-workflow-temporal-debug-bundle-contracts-and-manifest-trace
 kind: story
-stage: implementing
+stage: done
 tags: [visual, browser, storage, agent-ux]
 parent: epic-temporal-debugging-workflow-temporal-debug-bundle
 depends_on: []
@@ -43,3 +43,21 @@ Establish the one-request temporal debug-bundle boundary, complete `ResolvedRang
 ## Ordering
 
 This is the first checkpoint. It unblocks policy/focus code because cached artifact manifests must expose authoritative visual decisions before the bundle can correlate events. On green verification this child advances directly to `done`; only the parent feature receives standard review.
+
+## Implementation notes
+
+- Execution capability: highest-capability cohesive inline ownership, as required by the caller; direct reads covered the bounded core and temporal-vision surfaces without nested agents.
+- Review weight: standard from the caller; not applicable at this checkpoint because it is a child story and advances directly to done after verification.
+- Files changed: `crates/krometrail-core/src/debug_bundle.rs`, `crates/krometrail-core/src/lib.rs`, `crates/krometrail-core/src/timeline/{mod.rs,range.rs}`, `crates/temporal-vision/src/{lib.rs,provenance.rs,render.rs,select.rs}`, and `crates/temporal-vision/tests/{contracts.rs,storyboard.rs}`.
+- Tests added: exact seven-kind resolved-anchor identity/time/Serde and partial-retention clamping; bundle request nesting, marker bounds, privacy, and unknown-field rejection; storyboard first/peak/adjacent trace identity, gap exclusion, deterministic ties, current/old manifest compatibility, kind/source/role validation, descriptor isolation, and unchanged PNG SHA-256.
+- Simplification: interaction and latest-interaction seed construction share one exact helper; typed storyboard decisions replace any need to parse free-form parameters or remeasure cached evidence; existing artifact/context/range/error contracts remain the bundle result authorities.
+- Discrepancies from design: the manifest stores its private optional trace and algorithm descriptor behind boxes to keep existing public artifact enums Clippy-clean after the trace expansion; getters, constructors, and serialized shape remain the designed contracts. No requested behavior changed.
+- Adjacent issues parked: none.
+
+## Verification
+
+- Rust 1.85: `cargo fmt --all -- --check` passed through `rustup run 1.85.0`.
+- Rust 1.85 core + temporal-vision: all-target `check`, `test` (101 core and 51 temporal-vision tests), and Clippy with `-D warnings` passed.
+- Rust 1.85 workspace: `cargo check --workspace --all-targets --locked` passed.
+- Focused integration: all seven store-backed temporal query forms passed (3 tests), and cache fingerprint/version isolation passed (4 root cache tests).
+- Storyboard/orientation PNG golden remained `b606148fe214fd4d68545e1ad3379299f427a8c75e1797f7f7dd34358b1d2417`.

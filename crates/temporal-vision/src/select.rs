@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
 
-use serde::Serialize;
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::{
     ComparisonOutcome, ErrorCode, FrameSequence, MeasurementParameters, MeasurementVector,
@@ -58,7 +58,8 @@ impl Default for StoryboardTileLimit {
 }
 
 /// One selected source frame and every unique reason assigned to it.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SelectedFrame<FrameId> {
     frame_id: FrameId,
     frame_index: usize,
@@ -85,7 +86,8 @@ impl<F> SelectedFrame<F> {
 }
 
 /// An available required or boundary anchor displaced by the hard tile budget.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OmittedAnchor {
     frame_index: usize,
     reason: SelectionReason,
@@ -101,6 +103,128 @@ impl OmittedAnchor {
     }
 }
 
+/// One authoritative visual-change decision retained from selector measurements.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct VisualChangeMoment<FrameId> {
+    frame_id: FrameId,
+    frame_index: usize,
+    timestamp: Timestamp,
+    comparison: crate::FrameComparison,
+}
+
+impl<F> VisualChangeMoment<F> {
+    pub fn frame_id(&self) -> &F {
+        &self.frame_id
+    }
+
+    pub const fn frame_index(&self) -> usize {
+        self.frame_index
+    }
+
+    pub const fn timestamp(&self) -> Timestamp {
+        self.timestamp
+    }
+
+    pub const fn comparison(&self) -> &crate::FrameComparison {
+        &self.comparison
+    }
+
+    fn validate_local(&self) -> Result<()> {
+        let changed = matches!(
+            self.comparison.outcome(),
+            ComparisonOutcome::Measured(vector)
+                if vector.changed_pixel_proportion().changed() > 0
+        );
+        if self.frame_index != self.comparison.later_frame_index() || !changed {
+            return Err(VisionError::new(
+                ErrorCode::InvalidManifest,
+                "storyboard visual moments must name the changed later comparison frame",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl<'de, F: Deserialize<'de>> Deserialize<'de> for VisualChangeMoment<F> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(bound(deserialize = "F: Deserialize<'de>"), deny_unknown_fields)]
+        struct Wire<F> {
+            frame_id: F,
+            frame_index: usize,
+            timestamp: Timestamp,
+            comparison: crate::FrameComparison,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        let moment = Self {
+            frame_id: wire.frame_id,
+            frame_index: wire.frame_index,
+            timestamp: wire.timestamp,
+            comparison: wire.comparison,
+        };
+        moment.validate_local().map_err(serde::de::Error::custom)?;
+        Ok(moment)
+    }
+}
+
+/// Direct moments already measured while constructing one storyboard selection.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct StoryboardVisualSummary<FrameId> {
+    first_change: Option<VisualChangeMoment<FrameId>>,
+    peak_baseline_change: Option<VisualChangeMoment<FrameId>>,
+    peak_adjacent_changed_area: Option<VisualChangeMoment<FrameId>>,
+}
+
+impl<F> StoryboardVisualSummary<F> {
+    pub const fn first_change(&self) -> Option<&VisualChangeMoment<F>> {
+        self.first_change.as_ref()
+    }
+
+    pub const fn peak_baseline_change(&self) -> Option<&VisualChangeMoment<F>> {
+        self.peak_baseline_change.as_ref()
+    }
+
+    pub const fn peak_adjacent_changed_area(&self) -> Option<&VisualChangeMoment<F>> {
+        self.peak_adjacent_changed_area.as_ref()
+    }
+
+    fn validate_local(&self) -> Result<()> {
+        for moment in [
+            self.first_change.as_ref(),
+            self.peak_baseline_change.as_ref(),
+            self.peak_adjacent_changed_area.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            moment.validate_local()?;
+        }
+        Ok(())
+    }
+}
+
+impl<'de, F: Deserialize<'de>> Deserialize<'de> for StoryboardVisualSummary<F> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(bound(deserialize = "F: Deserialize<'de>"), deny_unknown_fields)]
+        struct Wire<F> {
+            first_change: Option<VisualChangeMoment<F>>,
+            peak_baseline_change: Option<VisualChangeMoment<F>>,
+            peak_adjacent_changed_area: Option<VisualChangeMoment<F>>,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        let summary = Self {
+            first_change: wire.first_change,
+            peak_baseline_change: wire.peak_baseline_change,
+            peak_adjacent_changed_area: wire.peak_adjacent_changed_area,
+        };
+        summary.validate_local().map_err(serde::de::Error::custom)?;
+        Ok(summary)
+    }
+}
+
 /// Reusable deterministic source-frame plan shared by storyboard renderers.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct StoryboardSelection<FrameId> {
@@ -110,6 +234,7 @@ pub struct StoryboardSelection<FrameId> {
     during_index: usize,
     after_index: usize,
     continuity_segment_count: usize,
+    visual_summary: StoryboardVisualSummary<FrameId>,
 }
 
 impl<F> StoryboardSelection<F> {
@@ -139,9 +264,93 @@ impl<F> StoryboardSelection<F> {
     pub const fn continuity_segment_count(&self) -> usize {
         self.continuity_segment_count
     }
+
+    pub const fn visual_summary(&self) -> &StoryboardVisualSummary<F> {
+        &self.visual_summary
+    }
 }
 
-/// Select representative source frames using the temporal-storyboard 1.0.0 rules.
+impl<F: Eq> StoryboardSelection<F> {
+    pub(crate) fn validate_local(&self) -> Result<()> {
+        if self.selected_frames.is_empty()
+            || self.continuity_segment_count == 0
+            || self.before_index > self.during_index
+            || self.during_index > self.after_index
+        {
+            return Err(VisionError::new(
+                ErrorCode::InvalidManifest,
+                "storyboard selection roles and counts are invalid",
+            ));
+        }
+        for (position, frame) in self.selected_frames.iter().enumerate() {
+            if frame.reasons.is_empty()
+                || frame
+                    .reasons
+                    .iter()
+                    .enumerate()
+                    .any(|(index, reason)| frame.reasons[..index].contains(reason))
+                || self.selected_frames[..position]
+                    .iter()
+                    .any(|prior| prior.frame_id == frame.frame_id)
+                || position > 0
+                    && (self.selected_frames[position - 1].frame_index >= frame.frame_index
+                        || self.selected_frames[position - 1].timestamp > frame.timestamp)
+            {
+                return Err(VisionError::new(
+                    ErrorCode::InvalidManifest,
+                    "storyboard selected frames must be unique, ordered, and reasoned",
+                ));
+            }
+        }
+        self.visual_summary.validate_local()?;
+        if let Some(moment) = self.visual_summary.peak_baseline_change() {
+            if moment.comparison().earlier_frame_index() != self.before_index
+                || moment.frame_index() != self.during_index
+            {
+                return Err(VisionError::new(
+                    ErrorCode::InvalidManifest,
+                    "storyboard peak baseline moment must agree with orientation roles",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<'de, F> Deserialize<'de> for StoryboardSelection<F>
+where
+    F: Deserialize<'de> + Eq,
+{
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(bound(deserialize = "F: Deserialize<'de>"), deny_unknown_fields)]
+        struct Wire<F> {
+            selected_frames: Box<[SelectedFrame<F>]>,
+            omitted_anchors: Box<[OmittedAnchor]>,
+            before_index: usize,
+            during_index: usize,
+            after_index: usize,
+            continuity_segment_count: usize,
+            visual_summary: StoryboardVisualSummary<F>,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        let selection = Self {
+            selected_frames: wire.selected_frames,
+            omitted_anchors: wire.omitted_anchors,
+            before_index: wire.before_index,
+            during_index: wire.during_index,
+            after_index: wire.after_index,
+            continuity_segment_count: wire.continuity_segment_count,
+            visual_summary: wire.visual_summary,
+        };
+        selection
+            .validate_local()
+            .map_err(serde::de::Error::custom)?;
+        Ok(selection)
+    }
+}
+
+/// Select representative source frames using the temporal-storyboard 1.1.0 rules.
 pub fn select_storyboard_frames<F: Clone + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
     source: &FrameSequence<F, M, G, P>,
     normalized: &NormalizedSequence<F>,
@@ -169,8 +378,23 @@ pub fn select_storyboard_frames<F: Clone + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
         .frames()
         .iter()
         .position(|frame| frame.timestamp() > anchor);
-    let first_change = first_change_index(&adjacent, normalized, anchor);
-    let peak = peak_baseline_index(normalized, baseline, &analysis, measurement)?;
+    let first_change_comparison = first_change_comparison(&adjacent, normalized, anchor);
+    let first_change = first_change_comparison.map(crate::FrameComparison::later_frame_index);
+    let peak_baseline_comparison =
+        peak_baseline_comparison(normalized, baseline, &analysis, measurement)?;
+    let peak = peak_baseline_comparison
+        .as_ref()
+        .map(crate::FrameComparison::later_frame_index);
+    let peak_adjacent_comparison = peak_adjacent_changed_area_comparison(&adjacent);
+    let visual_summary = StoryboardVisualSummary {
+        first_change: first_change_comparison
+            .map(|comparison| visual_moment(source, comparison.clone())),
+        peak_baseline_change: peak_baseline_comparison
+            .clone()
+            .map(|comparison| visual_moment(source, comparison)),
+        peak_adjacent_changed_area: peak_adjacent_comparison
+            .map(|comparison| visual_moment(source, comparison.clone())),
+    };
     let final_frame = frame_count - 1;
 
     let mut selected = vec![false; frame_count];
@@ -299,6 +523,7 @@ pub fn select_storyboard_frames<F: Clone + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
         during_index: peak.or(post_anchor).unwrap_or(baseline),
         after_index: final_frame,
         continuity_segment_count: analysis.segment_count,
+        visual_summary,
     })
 }
 
@@ -325,11 +550,11 @@ fn validate_alignment<F: Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
     Ok(())
 }
 
-fn first_change_index<F>(
-    adjacent: &[crate::FrameComparison],
+fn first_change_comparison<'a, F>(
+    adjacent: &'a [crate::FrameComparison],
     normalized: &NormalizedSequence<F>,
     anchor: Timestamp,
-) -> Option<usize> {
+) -> Option<&'a crate::FrameComparison> {
     let changed = |comparison: &&crate::FrameComparison| {
         matches!(
             comparison.outcome(),
@@ -344,15 +569,14 @@ fn first_change_index<F>(
             normalized.frames()[comparison.later_frame_index()].timestamp() >= anchor
         })
         .or_else(|| adjacent.iter().find(changed))
-        .map(crate::FrameComparison::later_frame_index)
 }
 
-fn peak_baseline_index<F>(
+fn peak_baseline_comparison<F>(
     normalized: &NormalizedSequence<F>,
     baseline: usize,
     analysis: &SelectionAnalysis,
     measurement: MeasurementParameters,
-) -> Result<Option<usize>> {
+) -> Result<Option<crate::FrameComparison>> {
     let segment = analysis.segments[baseline];
     let mut best = None;
     let mut best_metrics = None::<PeakMetrics>;
@@ -372,11 +596,53 @@ fn peak_baseline_index<F>(
             .as_ref()
             .is_none_or(|current| metrics > *current)
         {
-            best = Some(index);
+            best = Some(comparison);
             best_metrics = Some(metrics);
         }
     }
     Ok(best)
+}
+
+fn peak_adjacent_changed_area_comparison(
+    adjacent: &[crate::FrameComparison],
+) -> Option<&crate::FrameComparison> {
+    let mut best: Option<&crate::FrameComparison> = None;
+    for comparison in adjacent {
+        let ComparisonOutcome::Measured(candidate) = comparison.outcome() else {
+            continue;
+        };
+        let candidate_area = candidate.changed_pixel_proportion();
+        if candidate_area.changed() == 0 {
+            continue;
+        }
+        let replace = best.is_none_or(|current| {
+            let ComparisonOutcome::Measured(current) = current.outcome() else {
+                unreachable!("only measured comparisons become changed-area candidates")
+            };
+            let current_area = current.changed_pixel_proportion();
+            u128::from(candidate_area.changed()) * u128::from(current_area.compared())
+                > u128::from(current_area.changed()) * u128::from(candidate_area.compared())
+        });
+        // Equality deliberately keeps the earliest source comparison.
+        if replace {
+            best = Some(comparison);
+        }
+    }
+    best
+}
+
+fn visual_moment<F: Clone + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
+    source: &FrameSequence<F, M, G, P>,
+    comparison: crate::FrameComparison,
+) -> VisualChangeMoment<F> {
+    let frame_index = comparison.later_frame_index();
+    let frame = &source.frames()[frame_index];
+    VisualChangeMoment {
+        frame_id: frame.id().clone(),
+        frame_index,
+        timestamp: frame.timestamp(),
+        comparison,
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

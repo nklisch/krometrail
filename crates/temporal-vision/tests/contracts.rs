@@ -5,7 +5,7 @@ use temporal_vision::{
     AlgorithmDescriptor, ArtifactKind, ArtifactManifest, BinaryMask, DeclaredGap, EvidenceClass,
     FiniteNumber, Frame, FrameRegion, FrameSequence, Marker, NormalizationKind, NormalizationStep,
     OutputHash, ParameterValue, Parameters, PixelDimensions, PixelFormat, PixelRect, TimeRange,
-    Timestamp,
+    Timestamp, generator_descriptor,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -144,6 +144,30 @@ fn browser_free_consumer_builds_deterministic_complete_manifest() {
         serde_json::from_slice(&first).unwrap();
     assert_eq!(decoded, manifest);
     assert_eq!(serde_json::to_vec(&decoded).unwrap(), first);
+}
+
+#[test]
+fn descriptor_version_isolates_storyboard_and_orientation_cache_identity() {
+    assert_eq!(
+        generator_descriptor(ArtifactKind::Storyboard).version,
+        "1.1.0"
+    );
+    assert_eq!(
+        generator_descriptor(ArtifactKind::BeforeDuringAfter).version,
+        "1.1.0"
+    );
+    assert_eq!(
+        generator_descriptor(ArtifactKind::DifferenceMap).version,
+        "v1"
+    );
+    assert_eq!(
+        generator_descriptor(ArtifactKind::RegionFilmstrip).version,
+        "1.0.0"
+    );
+    assert_eq!(
+        generator_descriptor(ArtifactKind::MotionHistory).version,
+        "1.0.0"
+    );
 }
 
 #[test]

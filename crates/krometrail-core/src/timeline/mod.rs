@@ -18,6 +18,7 @@ pub use observation::{ObservationKind, ObservationPayloadRef, TimelineObservatio
 pub use query::{TemporalQuery, TemporalQueryRequest, TemporalQueryService};
 pub use range::{
     AnchorScope, CaptureGapPolicy, FrameAvailability, InteractionWindow, MAX_NATURAL_ANCHOR_WINDOW,
-    RangeResolutionOptions, ResolvedRange, RetentionPolicy, RetentionWarning, TemporalRangeAnchor,
-    TemporalRangeAnchorKind, TemporalRangeResolver,
+    RangeResolutionOptions, ResolvedAnchor, ResolvedAnchorReference, ResolvedRange,
+    RetentionPolicy, RetentionWarning, TemporalRangeAnchor, TemporalRangeAnchorKind,
+    TemporalRangeResolver,
 };

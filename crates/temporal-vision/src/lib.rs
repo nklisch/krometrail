@@ -107,7 +107,7 @@ pub use render::{
 };
 pub use select::{
     OmittedAnchor, SelectedFrame, SelectionReason, StoryboardSelection, StoryboardTileLimit,
-    select_storyboard_frames,
+    StoryboardVisualSummary, VisualChangeMoment, select_storyboard_frames,
 };
 pub use sequence::{
     BorrowedFrameSequence, DeclaredGap, FrameSequence, Marker, OwnedFrameSequence, TimeRange,

@@ -3,8 +3,8 @@ use std::{collections::BTreeMap, fmt, str::FromStr};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{
-    BinaryMask, DeclaredGap, ErrorCode, FrameRegion, FrameSequence, Marker, PixelDimensions,
-    Result, TimeRange, VisionError,
+    BinaryMask, ComparisonOutcome, DeclaredGap, ErrorCode, FrameRegion, FrameSequence, Marker,
+    PixelDimensions, Result, SelectionReason, StoryboardSelection, TimeRange, VisionError,
     sequence::{NonEmptyText, validate_gaps, validate_markers},
 };
 
@@ -31,7 +31,7 @@ pub const fn generator_descriptor(kind: ArtifactKind) -> GeneratorDescriptor {
     match kind {
         ArtifactKind::Storyboard | ArtifactKind::BeforeDuringAfter => GeneratorDescriptor {
             name: "temporal-storyboard",
-            version: "1.0.0",
+            version: "1.1.0",
         },
         ArtifactKind::DifferenceMap => GeneratorDescriptor {
             name: "temporal-difference-map",
@@ -397,9 +397,11 @@ pub struct ArtifactManifest<ArtifactId, FrameId, MarkerId, GapId> {
     artifact_id: ArtifactId,
     artifact_kind: ArtifactKind,
     evidence_class: EvidenceClass,
-    algorithm: AlgorithmDescriptor,
+    algorithm: Box<AlgorithmDescriptor>,
     source_frame_ids: Box<[FrameId]>,
     selected_frame_ids: Box<[FrameId]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    storyboard_selection: Option<Box<StoryboardSelection<FrameId>>>,
     source_frame_count: u64,
     omitted_frame_count: u64,
     range: TimeRange,
@@ -427,7 +429,7 @@ impl<A, F: Clone + Eq, M: Clone + Eq, G: Clone + Eq> ArtifactManifest<A, F, M, G
         output_dimensions: PixelDimensions,
         output_hash: OutputHash,
     ) -> Result<Self> {
-        Self::from_sequence_with_domain(
+        Self::from_sequence_with_trace_and_domain(
             artifact_id,
             artifact_kind,
             evidence_class,
@@ -436,6 +438,38 @@ impl<A, F: Clone + Eq, M: Clone + Eq, G: Clone + Eq> ArtifactManifest<A, F, M, G
             sequence.region(),
             sequence.mask().cloned(),
             selected_frame_ids,
+            None,
+            normalization,
+            parameters,
+            output_dimensions,
+            output_hash,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_storyboard_sequence<P: AsRef<[u8]>>(
+        artifact_id: A,
+        artifact_kind: ArtifactKind,
+        evidence_class: EvidenceClass,
+        algorithm: AlgorithmDescriptor,
+        sequence: &FrameSequence<F, M, G, P>,
+        selected_frame_ids: Vec<F>,
+        storyboard_selection: StoryboardSelection<F>,
+        normalization: Vec<NormalizationStep>,
+        parameters: Parameters,
+        output_dimensions: PixelDimensions,
+        output_hash: OutputHash,
+    ) -> Result<Self> {
+        Self::from_sequence_with_trace_and_domain(
+            artifact_id,
+            artifact_kind,
+            evidence_class,
+            algorithm,
+            sequence,
+            sequence.region(),
+            sequence.mask().cloned(),
+            selected_frame_ids,
+            Some(Box::new(storyboard_selection)),
             normalization,
             parameters,
             output_dimensions,
@@ -453,6 +487,39 @@ impl<A, F: Clone + Eq, M: Clone + Eq, G: Clone + Eq> ArtifactManifest<A, F, M, G
         region: Option<FrameRegion>,
         mask: Option<BinaryMask>,
         selected_frame_ids: Vec<F>,
+        normalization: Vec<NormalizationStep>,
+        parameters: Parameters,
+        output_dimensions: PixelDimensions,
+        output_hash: OutputHash,
+    ) -> Result<Self> {
+        Self::from_sequence_with_trace_and_domain(
+            artifact_id,
+            artifact_kind,
+            evidence_class,
+            algorithm,
+            sequence,
+            region,
+            mask,
+            selected_frame_ids,
+            None,
+            normalization,
+            parameters,
+            output_dimensions,
+            output_hash,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn from_sequence_with_trace_and_domain<P: AsRef<[u8]>>(
+        artifact_id: A,
+        artifact_kind: ArtifactKind,
+        evidence_class: EvidenceClass,
+        algorithm: AlgorithmDescriptor,
+        sequence: &FrameSequence<F, M, G, P>,
+        region: Option<FrameRegion>,
+        mask: Option<BinaryMask>,
+        selected_frame_ids: Vec<F>,
+        storyboard_selection: Option<Box<StoryboardSelection<F>>>,
         normalization: Vec<NormalizationStep>,
         parameters: Parameters,
         output_dimensions: PixelDimensions,
@@ -489,9 +556,10 @@ impl<A, F: Clone + Eq, M: Clone + Eq, G: Clone + Eq> ArtifactManifest<A, F, M, G
             artifact_id,
             artifact_kind,
             evidence_class,
-            algorithm,
+            algorithm: Box::new(algorithm),
             source_frame_ids,
             selected_frame_ids: selected_frame_ids.into_boxed_slice(),
+            storyboard_selection,
             source_frame_count,
             omitted_frame_count,
             range: sequence.range(),
@@ -520,6 +588,7 @@ impl<A, F: Clone + Eq, M: Clone + Eq, G: Clone + Eq> ArtifactManifest<A, F, M, G
             "source frame identifiers must be unique",
         )?;
         validate_selected_subsequence(&self.source_frame_ids, &self.selected_frame_ids)?;
+        self.validate_storyboard_trace()?;
         let source_count = u64::try_from(self.source_frame_ids.len()).map_err(|_| {
             VisionError::new(
                 ErrorCode::InvalidManifest,
@@ -553,6 +622,179 @@ impl<A, F: Clone + Eq, M: Clone + Eq, G: Clone + Eq> ArtifactManifest<A, F, M, G
         Ok(())
     }
 
+    fn validate_storyboard_trace(&self) -> Result<()> {
+        let storyboard_kind = matches!(
+            self.artifact_kind,
+            ArtifactKind::Storyboard | ArtifactKind::BeforeDuringAfter
+        );
+        let descriptor = generator_descriptor(self.artifact_kind);
+        let current_storyboard = storyboard_kind
+            && self.algorithm.name() == descriptor.name
+            && self.algorithm.version() == descriptor.version;
+        let Some(selection) = self.storyboard_selection.as_ref() else {
+            if current_storyboard {
+                return Err(VisionError::new(
+                    ErrorCode::InvalidManifest,
+                    "current storyboard manifests require their selection trace",
+                ));
+            }
+            return Ok(());
+        };
+        if !storyboard_kind {
+            return Err(VisionError::new(
+                ErrorCode::InvalidManifest,
+                "only storyboard artifacts may carry a storyboard selection trace",
+            ));
+        }
+        selection.validate_local().map_err(as_manifest_error)?;
+        let source_len = self.source_frame_ids.len();
+        if selection.after_index() >= source_len
+            || selection.continuity_segment_count() > source_len
+        {
+            return Err(VisionError::new(
+                ErrorCode::InvalidManifest,
+                "storyboard selection roles exceed the manifest source frames",
+            ));
+        }
+        for selected in selection.selected_frames() {
+            if selected.frame_index() >= source_len
+                || self.source_frame_ids[selected.frame_index()] != *selected.frame_id()
+                || !self.range.contains(selected.timestamp())
+            {
+                return Err(VisionError::new(
+                    ErrorCode::InvalidManifest,
+                    "storyboard selected trace disagrees with manifest source identity or time",
+                ));
+            }
+        }
+        if selection
+            .omitted_anchors()
+            .iter()
+            .any(|anchor| anchor.frame_index() >= source_len)
+        {
+            return Err(VisionError::new(
+                ErrorCode::InvalidManifest,
+                "storyboard omitted anchors exceed the manifest source frames",
+            ));
+        }
+        let expected_selected: Vec<&F> = match self.artifact_kind {
+            ArtifactKind::Storyboard => selection
+                .selected_frames()
+                .iter()
+                .map(|frame| frame.frame_id())
+                .collect(),
+            ArtifactKind::BeforeDuringAfter => {
+                let mut indices = vec![
+                    selection.before_index(),
+                    selection.during_index(),
+                    selection.after_index(),
+                ];
+                indices.sort_unstable();
+                indices.dedup();
+                indices
+                    .into_iter()
+                    .map(|index| &self.source_frame_ids[index])
+                    .collect()
+            }
+            _ => unreachable!("non-storyboard traces were rejected"),
+        };
+        if expected_selected
+            .iter()
+            .copied()
+            .ne(self.selected_frame_ids.iter())
+        {
+            return Err(VisionError::new(
+                ErrorCode::InvalidManifest,
+                "storyboard trace does not match manifest selected frame roles",
+            ));
+        }
+
+        let validate_moment = |moment: &crate::VisualChangeMoment<F>| -> Result<()> {
+            let comparison = moment.comparison();
+            if comparison.earlier_frame_index() >= source_len
+                || comparison.later_frame_index() >= source_len
+                || self.source_frame_ids[moment.frame_index()] != *moment.frame_id()
+                || !self.range.contains(moment.timestamp())
+            {
+                return Err(VisionError::new(
+                    ErrorCode::InvalidManifest,
+                    "storyboard visual moment disagrees with manifest source identity or time",
+                ));
+            }
+            let earlier_nanos = moment
+                .timestamp()
+                .as_nanos()
+                .checked_sub(comparison.elapsed_nanos())
+                .ok_or_else(|| {
+                    VisionError::new(
+                        ErrorCode::InvalidManifest,
+                        "storyboard visual moment elapsed time precedes the manifest range",
+                    )
+                })?;
+            let comparison_range = TimeRange::new(
+                crate::Timestamp::from_nanos(earlier_nanos),
+                moment.timestamp(),
+            )?;
+            if !self.range.contains(comparison_range.start())
+                || self.gaps.iter().any(|gap| {
+                    gap.range().start() <= comparison_range.end()
+                        && gap.range().end() >= comparison_range.start()
+                })
+                || !matches!(comparison.outcome(), ComparisonOutcome::Measured(_))
+            {
+                return Err(VisionError::new(
+                    ErrorCode::InvalidManifest,
+                    "storyboard visual moments must not cross declared gaps",
+                ));
+            }
+            if let Some(selected) = selection
+                .selected_frames()
+                .iter()
+                .find(|selected| selected.frame_index() == moment.frame_index())
+                && selected.timestamp() != moment.timestamp()
+            {
+                return Err(VisionError::new(
+                    ErrorCode::InvalidManifest,
+                    "storyboard visual moment timestamp disagrees with its selected frame",
+                ));
+            }
+            Ok(())
+        };
+        let summary = selection.visual_summary();
+        for moment in [
+            summary.first_change(),
+            summary.peak_baseline_change(),
+            summary.peak_adjacent_changed_area(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            validate_moment(moment)?;
+        }
+        for (moment, reason) in [
+            (summary.first_change(), SelectionReason::FirstChange),
+            (
+                summary.peak_baseline_change(),
+                SelectionReason::PeakBaselineChange,
+            ),
+        ] {
+            if let Some(moment) = moment {
+                let represented = selection.selected_frames().iter().any(|frame| {
+                    frame.frame_index() == moment.frame_index() && frame.reasons().contains(&reason)
+                }) || selection.omitted_anchors().iter().any(|anchor| {
+                    anchor.frame_index() == moment.frame_index() && anchor.reason() == reason
+                });
+                if !represented {
+                    return Err(VisionError::new(
+                        ErrorCode::InvalidManifest,
+                        "storyboard visual moment is missing its selection reason",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub const fn artifact_id(&self) -> &A {
         &self.artifact_id
     }
@@ -570,6 +812,9 @@ impl<A, F: Clone + Eq, M: Clone + Eq, G: Clone + Eq> ArtifactManifest<A, F, M, G
     }
     pub fn selected_frame_ids(&self) -> &[F] {
         &self.selected_frame_ids
+    }
+    pub fn storyboard_selection(&self) -> Option<&StoryboardSelection<F>> {
+        self.storyboard_selection.as_deref()
     }
     pub const fn source_frame_count(&self) -> u64 {
         self.source_frame_count
@@ -618,9 +863,12 @@ where
         D: Deserializer<'de>,
     {
         #[derive(Deserialize)]
-        #[serde(bound(
-            deserialize = "A: Deserialize<'de>, F: Deserialize<'de>, M: Deserialize<'de>, G: Deserialize<'de>"
-        ))]
+        #[serde(
+            bound(
+                deserialize = "A: Deserialize<'de>, F: Deserialize<'de> + Eq, M: Deserialize<'de>, G: Deserialize<'de>"
+            ),
+            deny_unknown_fields
+        )]
         struct Wire<A, F, M, G> {
             artifact_id: A,
             artifact_kind: ArtifactKind,
@@ -628,6 +876,8 @@ where
             algorithm: AlgorithmDescriptor,
             source_frame_ids: Box<[F]>,
             selected_frame_ids: Box<[F]>,
+            #[serde(default)]
+            storyboard_selection: Option<Box<StoryboardSelection<F>>>,
             source_frame_count: u64,
             omitted_frame_count: u64,
             range: TimeRange,
@@ -645,9 +895,10 @@ where
             artifact_id: wire.artifact_id,
             artifact_kind: wire.artifact_kind,
             evidence_class: wire.evidence_class,
-            algorithm: wire.algorithm,
+            algorithm: Box::new(wire.algorithm),
             source_frame_ids: wire.source_frame_ids,
             selected_frame_ids: wire.selected_frame_ids,
+            storyboard_selection: wire.storyboard_selection,
             source_frame_count: wire.source_frame_count,
             omitted_frame_count: wire.omitted_frame_count,
             range: wire.range,

@@ -32,6 +32,7 @@ macro_rules! define_stable_enum {
 pub mod artifacts;
 pub mod browser;
 pub mod capabilities;
+pub mod debug_bundle;
 pub mod error;
 pub mod ids;
 pub mod lifecycle;
@@ -98,6 +99,14 @@ pub use capabilities::{
     CAPABILITY_REGISTRY, CapabilityDefault, CapabilityDefinition, CapabilityId, RecordingSubsystem,
     capability, validate_capability_selection,
 };
+pub use debug_bundle::{
+    BundleArtifactEvidence, BundleContextEvidence, BundleDegradation, BundleEpochVisualSummary,
+    BundleWarning, EffectiveBundlePolicy, EvidencePosture, MAX_BUNDLE_ARTIFACT_MARKERS,
+    MAX_BUNDLE_CALLER_MARKERS, MAX_BUNDLE_HEADER_BYTES, MAX_BUNDLE_TIMELINE_ROWS,
+    OrientationPolicy, TEMPORAL_DEBUG_BUNDLE_POLICY_VERSION, TemporalDebugBundle,
+    TemporalDebugBundleContext, TemporalDebugBundleRequest, TemporalDebugBundles,
+    TemporalDebugHeader,
+};
 pub use error::{
     EmptyTextError, ErrorCode, ErrorContext, KrometrailError, NonEmptyText, Result, RetryAdvice,
 };
@@ -148,8 +157,8 @@ pub use timeline::{
     EventCompactLimit, EventQueryWarning, FrameAvailability, FramePoint, InteractionWindow,
     MAX_CAPTURE_QUALITY_FRAMES, MAX_COMPACT_EVENT_LIMIT, MAX_FOCUS_TIMES,
     MAX_NATURAL_ANCHOR_WINDOW, ObservationKind, ObservationPayloadRef, RangeResolutionOptions,
-    ResolvedRange, RetentionPolicy, RetentionWarning, SelectedBrowserEvent, TemporalContext,
-    TemporalContextQuery, TemporalContextRequest, TemporalContextService, TemporalQuery,
-    TemporalQueryRequest, TemporalQueryService, TemporalRangeAnchor, TemporalRangeAnchorKind,
-    TemporalRangeResolver, TimelineObservation,
+    ResolvedAnchor, ResolvedAnchorReference, ResolvedRange, RetentionPolicy, RetentionWarning,
+    SelectedBrowserEvent, TemporalContext, TemporalContextQuery, TemporalContextRequest,
+    TemporalContextService, TemporalQuery, TemporalQueryRequest, TemporalQueryService,
+    TemporalRangeAnchor, TemporalRangeAnchorKind, TemporalRangeResolver, TimelineObservation,
 };

@@ -191,6 +191,53 @@ fn selection_preserves_anchor_priority_ties_segments_and_exact_roles() {
             || frame.reasons().contains(&SelectionReason::TemporalCoverage)
     }));
 
+    let summary = default.visual_summary();
+    let first = summary.first_change().unwrap();
+    assert_eq!(
+        (first.frame_id().0.as_str(), first.frame_index()),
+        ("f2", 2)
+    );
+    assert_eq!(first.timestamp(), Timestamp::from_nanos(20_000_000));
+    assert_eq!(
+        (
+            first.comparison().earlier_frame_index(),
+            first.comparison().later_frame_index(),
+        ),
+        (1, 2)
+    );
+    let baseline = summary.peak_baseline_change().unwrap();
+    assert_eq!(
+        (baseline.frame_id().0.as_str(), baseline.frame_index()),
+        ("f5", 5)
+    );
+    assert_eq!(
+        (
+            baseline.comparison().earlier_frame_index(),
+            baseline.comparison().later_frame_index(),
+        ),
+        (1, 5)
+    );
+    let adjacent_peak = summary.peak_adjacent_changed_area().unwrap();
+    assert_eq!(
+        (
+            adjacent_peak.frame_id().0.as_str(),
+            adjacent_peak.frame_index()
+        ),
+        ("f4", 4)
+    );
+    assert_eq!(
+        (
+            adjacent_peak.comparison().earlier_frame_index(),
+            adjacent_peak.comparison().later_frame_index(),
+        ),
+        (3, 4)
+    );
+    assert!(matches!(
+        adjacent_peak.comparison().outcome(),
+        ComparisonOutcome::Measured(vector)
+            if vector.changed_pixel_proportion().changed() == 2
+    ));
+
     let adjacent = measure_adjacent(&normalized, MeasurementParameters::new(0)).unwrap();
     assert!(matches!(
         adjacent[5].outcome(),
@@ -278,7 +325,19 @@ fn public_generator_returns_traceable_deterministic_pngs_and_manifests() {
         first.storyboard().manifest().algorithm().name(),
         "temporal-storyboard"
     );
-    assert_eq!(first.storyboard().manifest().algorithm().version(), "1.0.0");
+    assert_eq!(first.storyboard().manifest().algorithm().version(), "1.1.0");
+    assert_eq!(
+        first.storyboard().manifest().storyboard_selection(),
+        Some(first.selection())
+    );
+    assert_eq!(
+        first
+            .orientation()
+            .unwrap()
+            .manifest()
+            .storyboard_selection(),
+        Some(first.selection())
+    );
     assert_eq!(
         first.storyboard().manifest().parameters().get("title"),
         Some(&ParameterValue::Text("Panel transition".into()))
@@ -336,6 +395,50 @@ fn public_generator_returns_traceable_deterministic_pngs_and_manifests() {
 }
 
 #[test]
+fn manifest_trace_is_kind_role_and_version_validated_with_backward_read() {
+    let (source, normalized) = fixture();
+    let artifacts = generate_storyboard(
+        ArtifactId("storyboard-trace".into()),
+        Some(ArtifactId("orientation-trace".into())),
+        &source,
+        &normalized,
+        request(
+            StoryboardTileLimit::new(3).unwrap(),
+            RenderLimits::default(),
+        ),
+    )
+    .unwrap();
+
+    let mut current_without_trace =
+        serde_json::to_value(artifacts.storyboard().manifest()).unwrap();
+    current_without_trace
+        .as_object_mut()
+        .unwrap()
+        .remove("storyboard_selection");
+    assert!(decode_manifest_value(current_without_trace.clone()).is_err());
+    current_without_trace["algorithm"]["version"] = serde_json::json!("1.0.0");
+    let old: ArtifactManifest<ArtifactId, FrameId, MarkerId, GapId> =
+        serde_json::from_slice(&serde_json::to_vec(&current_without_trace).unwrap()).unwrap();
+    assert_eq!(old.storyboard_selection(), None);
+
+    let mut wrong_kind = serde_json::to_value(artifacts.storyboard().manifest()).unwrap();
+    wrong_kind["artifact_kind"] = serde_json::json!("difference_map");
+    wrong_kind["algorithm"]["name"] = serde_json::json!("temporal-difference-map");
+    wrong_kind["algorithm"]["version"] = serde_json::json!("v1");
+    assert!(decode_manifest_value(wrong_kind).is_err());
+
+    let mut wrong_source = serde_json::to_value(artifacts.storyboard().manifest()).unwrap();
+    wrong_source["storyboard_selection"]["selected_frames"][0]["frame_id"] =
+        serde_json::json!("not-a-source-frame");
+    assert!(decode_manifest_value(wrong_source).is_err());
+
+    let mut wrong_roles =
+        serde_json::to_value(artifacts.orientation().unwrap().manifest()).unwrap();
+    wrong_roles["selected_frame_ids"][0] = serde_json::json!("f0");
+    assert!(decode_manifest_value(wrong_roles).is_err());
+}
+
+#[test]
 fn orientation_falls_back_to_post_anchor_for_an_unchanged_sequence() {
     let dimensions = PixelDimensions::new(1, 1).unwrap();
     let source = FrameSequence::new(
@@ -385,6 +488,12 @@ fn orientation_falls_back_to_post_anchor_for_an_unchanged_sequence() {
         ),
         (0, 2, 2)
     );
+    assert_eq!(selection.visual_summary().first_change(), None);
+    assert_eq!(selection.visual_summary().peak_baseline_change(), None);
+    assert_eq!(
+        selection.visual_summary().peak_adjacent_changed_area(),
+        None
+    );
 }
 
 #[test]
@@ -431,6 +540,12 @@ fn tiny_render_limits_reject_without_partial_artifacts() {
             ErrorCode::ResourceLimitExceeded
         );
     }
+}
+
+fn decode_manifest_value(
+    value: serde_json::Value,
+) -> serde_json::Result<ArtifactManifest<ArtifactId, FrameId, MarkerId, GapId>> {
+    serde_json::from_slice(&serde_json::to_vec(&value).unwrap())
 }
 
 fn object_value(tile: u64, markers: &[u64]) -> ParameterValue {

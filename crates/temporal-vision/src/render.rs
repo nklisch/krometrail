@@ -738,7 +738,7 @@ where
         raster.image_height,
         layout_name,
     )?;
-    let manifest = ArtifactManifest::from_sequence(
+    let manifest = ArtifactManifest::from_storyboard_sequence(
         artifact_id,
         kind,
         EvidenceClass::SourceDerived,
@@ -748,6 +748,7 @@ where
         },
         source,
         selected_ids,
+        selection.clone(),
         normalization,
         parameters,
         dimensions,

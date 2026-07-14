@@ -428,11 +428,133 @@ pub enum RetentionWarning {
     },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+/// Exact semantic anchor chosen by the resolver before retention is applied.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(tag = "source", rename_all = "snake_case")]
+pub enum ResolvedAnchorReference {
+    Interval,
+    Interaction {
+        interaction_id: InteractionId,
+    },
+    Navigation {
+        navigation_id: NavigationId,
+    },
+    Marker {
+        marker_id: MarkerId,
+    },
+    SourceFrames {
+        start_frame_id: FrameId,
+        end_frame_id: FrameId,
+    },
+}
+
+impl ResolvedAnchorReference {
+    fn validate(&self) -> Result<()> {
+        let non_nil = match self {
+            Self::Interval => return Ok(()),
+            Self::Interaction { interaction_id } => !interaction_id.as_uuid().is_nil(),
+            Self::Navigation { navigation_id } => !navigation_id.as_uuid().is_nil(),
+            Self::Marker { marker_id } => !marker_id.as_uuid().is_nil(),
+            Self::SourceFrames {
+                start_frame_id,
+                end_frame_id,
+            } => !start_frame_id.as_uuid().is_nil() && !end_frame_id.as_uuid().is_nil(),
+        };
+        if non_nil {
+            Ok(())
+        } else {
+            Err(invalid("resolved anchor identifiers must be non-nil"))
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ResolvedAnchorReference {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
+        enum Wire {
+            Interval,
+            Interaction {
+                interaction_id: InteractionId,
+            },
+            Navigation {
+                navigation_id: NavigationId,
+            },
+            Marker {
+                marker_id: MarkerId,
+            },
+            SourceFrames {
+                start_frame_id: FrameId,
+                end_frame_id: FrameId,
+            },
+        }
+        let value = match Wire::deserialize(deserializer)? {
+            Wire::Interval => Self::Interval,
+            Wire::Interaction { interaction_id } => Self::Interaction { interaction_id },
+            Wire::Navigation { navigation_id } => Self::Navigation { navigation_id },
+            Wire::Marker { marker_id } => Self::Marker { marker_id },
+            Wire::SourceFrames {
+                start_frame_id,
+                end_frame_id,
+            } => Self::SourceFrames {
+                start_frame_id,
+                end_frame_id,
+            },
+        };
+        value.validate().map_err(serde::de::Error::custom)?;
+        Ok(value)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResolvedAnchor {
+    pub reference: ResolvedAnchorReference,
+    pub requested_time: SessionTime,
+    pub effective_time: SessionTime,
+}
+
+impl ResolvedAnchor {
+    pub fn new(
+        reference: ResolvedAnchorReference,
+        requested_time: SessionTime,
+        effective_time: SessionTime,
+    ) -> Result<Self> {
+        reference.validate()?;
+        Ok(Self {
+            reference,
+            requested_time,
+            effective_time,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for ResolvedAnchor {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            reference: ResolvedAnchorReference,
+            requested_time: SessionTime,
+            effective_time: SessionTime,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        Self::new(wire.reference, wire.requested_time, wire.effective_time)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ResolvedRange {
     pub session_id: SessionId,
     pub target_id: TargetId,
     pub anchor_kind: TemporalRangeAnchorKind,
+    pub resolved_anchor: ResolvedAnchor,
     pub requested_range: SessionRange,
     pub resolved_range: SessionRange,
     pub frame_ids: Vec<FrameId>,
@@ -443,7 +565,11 @@ pub struct ResolvedRange {
     pub retention_warnings: Vec<RetentionWarning>,
     pub options: RangeResolutionOptions,
 }
+
 impl ResolvedRange {
+    /// Compatibility constructor for explicit ranges used by internal callers.
+    /// Natural anchors must use `new_with_anchor` because their semantic time
+    /// cannot be reconstructed from a resolved interval.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         session_id: SessionId,
@@ -459,41 +585,27 @@ impl ResolvedRange {
         retention_warnings: Vec<RetentionWarning>,
         options: RangeResolutionOptions,
     ) -> Result<Self> {
-        if frame_ids.is_empty() {
-            return Err(invalid(
-                "resolved range must contain at least one retained frame",
-            ));
-        }
-        if has_duplicates(&frame_ids)
-            || has_duplicates(&interaction_ids)
-            || has_duplicates(&navigation_ids)
-            || has_duplicates(&marker_ids)
-        {
-            return Err(invalid("resolved range identifiers must be unique"));
-        }
-        if resolved_range.start() < requested_range.start()
-            || resolved_range.end() > requested_range.end()
-        {
-            return Err(invalid(
-                "resolved range must be contained in its requested range",
-            ));
-        }
-        let partial = resolved_range != requested_range;
-        if partial && options.retention == RetentionPolicy::RequireComplete {
-            return Err(invalid("complete retention cannot return a partial range"));
-        }
-        if partial && retention_warnings.is_empty() {
-            return Err(invalid("partial retention requires retention warnings"));
-        }
-        if !partial && !retention_warnings.is_empty() {
-            return Err(invalid(
-                "retention warnings require a partial resolved range",
-            ));
-        }
-        Ok(Self {
+        let reference = match anchor_kind {
+            TemporalRangeAnchorKind::SessionTime | TemporalRangeAnchorKind::WallClock => {
+                ResolvedAnchorReference::Interval
+            }
+            _ => {
+                return Err(invalid(
+                    "non-interval resolved ranges require their exact resolver-selected anchor",
+                ));
+            }
+        };
+        let requested_time = range_midpoint(requested_range);
+        let resolved_anchor = ResolvedAnchor::new(
+            reference,
+            requested_time,
+            clamp_time(requested_time, resolved_range),
+        )?;
+        Self::new_with_anchor(
             session_id,
             target_id,
             anchor_kind,
+            resolved_anchor,
             requested_range,
             resolved_range,
             frame_ids,
@@ -503,9 +615,223 @@ impl ResolvedRange {
             gaps,
             retention_warnings,
             options,
-        })
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_anchor(
+        session_id: SessionId,
+        target_id: TargetId,
+        anchor_kind: TemporalRangeAnchorKind,
+        resolved_anchor: ResolvedAnchor,
+        requested_range: SessionRange,
+        resolved_range: SessionRange,
+        frame_ids: Vec<FrameId>,
+        interaction_ids: Vec<InteractionId>,
+        navigation_ids: Vec<NavigationId>,
+        marker_ids: Vec<MarkerId>,
+        gaps: Vec<CaptureGap>,
+        retention_warnings: Vec<RetentionWarning>,
+        options: RangeResolutionOptions,
+    ) -> Result<Self> {
+        let value = Self {
+            session_id,
+            target_id,
+            anchor_kind,
+            resolved_anchor,
+            requested_range,
+            resolved_range,
+            frame_ids,
+            interaction_ids,
+            navigation_ids,
+            marker_ids,
+            gaps,
+            retention_warnings,
+            options,
+        };
+        value.validate()?;
+        Ok(value)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.session_id.as_uuid().is_nil() || self.target_id.as_uuid().is_nil() {
+            return Err(invalid("resolved range scope identifiers must be non-nil"));
+        }
+        self.resolved_anchor.reference.validate()?;
+        if self.frame_ids.is_empty() {
+            return Err(invalid(
+                "resolved range must contain at least one retained frame",
+            ));
+        }
+        if self.frame_ids.iter().any(|id| id.as_uuid().is_nil())
+            || self.interaction_ids.iter().any(|id| id.as_uuid().is_nil())
+            || self.navigation_ids.iter().any(|id| id.as_uuid().is_nil())
+            || self.marker_ids.iter().any(|id| id.as_uuid().is_nil())
+            || has_duplicates(&self.frame_ids)
+            || has_duplicates(&self.interaction_ids)
+            || has_duplicates(&self.navigation_ids)
+            || has_duplicates(&self.marker_ids)
+        {
+            return Err(invalid(
+                "resolved range identifiers must be non-nil and unique",
+            ));
+        }
+        if self.resolved_range.start() < self.requested_range.start()
+            || self.resolved_range.end() > self.requested_range.end()
+        {
+            return Err(invalid(
+                "resolved range must be contained in its requested range",
+            ));
+        }
+        if !self
+            .requested_range
+            .contains(self.resolved_anchor.requested_time)
+            || !self
+                .resolved_range
+                .contains(self.resolved_anchor.effective_time)
+            || self.resolved_anchor.effective_time
+                != clamp_time(self.resolved_anchor.requested_time, self.resolved_range)
+        {
+            return Err(invalid(
+                "resolved anchor times must match requested and retained ranges",
+            ));
+        }
+        if self.gaps.iter().any(|gap| {
+            gap.session_id() != self.session_id
+                || gap.target_id() != self.target_id
+                || !ranges_intersect(gap.range(), self.resolved_range)
+        }) {
+            return Err(invalid(
+                "resolved capture gaps must match and intersect the resolved scope",
+            ));
+        }
+        validate_anchor_kind(self.anchor_kind, &self.resolved_anchor.reference)?;
+        if let ResolvedAnchorReference::SourceFrames {
+            start_frame_id,
+            end_frame_id,
+        } = &self.resolved_anchor.reference
+            && (self.frame_ids.first() != Some(start_frame_id)
+                || self.frame_ids.last() != Some(end_frame_id))
+        {
+            return Err(invalid(
+                "source-frame anchor endpoints must match resolved source order",
+            ));
+        }
+        if matches!(
+            self.anchor_kind,
+            TemporalRangeAnchorKind::SessionTime
+                | TemporalRangeAnchorKind::WallClock
+                | TemporalRangeAnchorKind::SourceFrame
+        ) && self.resolved_anchor.requested_time != range_midpoint(self.requested_range)
+        {
+            return Err(invalid(
+                "interval and source-frame anchors must use the requested midpoint",
+            ));
+        }
+        let partial = self.resolved_range != self.requested_range;
+        if partial && self.options.retention == RetentionPolicy::RequireComplete {
+            return Err(invalid("complete retention cannot return a partial range"));
+        }
+        if partial && self.retention_warnings.is_empty() {
+            return Err(invalid("partial retention requires retention warnings"));
+        }
+        if !partial && !self.retention_warnings.is_empty() {
+            return Err(invalid(
+                "retention warnings require a partial resolved range",
+            ));
+        }
+        Ok(())
     }
 }
+
+impl<'de> Deserialize<'de> for ResolvedRange {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            session_id: SessionId,
+            target_id: TargetId,
+            anchor_kind: TemporalRangeAnchorKind,
+            resolved_anchor: ResolvedAnchor,
+            requested_range: SessionRange,
+            resolved_range: SessionRange,
+            frame_ids: Vec<FrameId>,
+            interaction_ids: Vec<InteractionId>,
+            navigation_ids: Vec<NavigationId>,
+            marker_ids: Vec<MarkerId>,
+            gaps: Vec<CaptureGap>,
+            retention_warnings: Vec<RetentionWarning>,
+            options: RangeResolutionOptions,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        Self::new_with_anchor(
+            wire.session_id,
+            wire.target_id,
+            wire.anchor_kind,
+            wire.resolved_anchor,
+            wire.requested_range,
+            wire.resolved_range,
+            wire.frame_ids,
+            wire.interaction_ids,
+            wire.navigation_ids,
+            wire.marker_ids,
+            wire.gaps,
+            wire.retention_warnings,
+            wire.options,
+        )
+        .map_err(serde::de::Error::custom)
+    }
+}
+
+fn validate_anchor_kind(
+    kind: TemporalRangeAnchorKind,
+    reference: &ResolvedAnchorReference,
+) -> Result<()> {
+    let compatible = matches!(
+        (kind, reference),
+        (
+            TemporalRangeAnchorKind::SessionTime | TemporalRangeAnchorKind::WallClock,
+            ResolvedAnchorReference::Interval
+        ) | (
+            TemporalRangeAnchorKind::Interaction | TemporalRangeAnchorKind::LatestInteraction,
+            ResolvedAnchorReference::Interaction { .. }
+        ) | (
+            TemporalRangeAnchorKind::Navigation,
+            ResolvedAnchorReference::Navigation { .. }
+        ) | (
+            TemporalRangeAnchorKind::Marker,
+            ResolvedAnchorReference::Marker { .. }
+        ) | (
+            TemporalRangeAnchorKind::SourceFrame,
+            ResolvedAnchorReference::SourceFrames { .. }
+        )
+    );
+    if !compatible {
+        return Err(invalid(
+            "resolved anchor reference does not match its anchor kind",
+        ));
+    }
+    Ok(())
+}
+
+const fn range_midpoint(range: SessionRange) -> SessionTime {
+    let start = range.start().as_nanos();
+    let distance = range.end().as_nanos() - start;
+    SessionTime::from_nanos(start + distance / 2)
+}
+
+const fn clamp_time(value: SessionTime, range: SessionRange) -> SessionTime {
+    if value.as_nanos() < range.start().as_nanos() {
+        range.start()
+    } else if value.as_nanos() > range.end().as_nanos() {
+        range.end()
+    } else {
+        value
+    }
+}
+
 fn has_duplicates<T: Eq + std::hash::Hash>(values: &[T]) -> bool {
     values.iter().collect::<HashSet<_>>().len() != values.len()
 }
@@ -595,7 +921,31 @@ struct RangeSeed {
     target_id: TargetId,
     requested_range: SessionRange,
     anchor_kind: TemporalRangeAnchorKind,
+    anchor_reference: ResolvedAnchorReference,
+    requested_anchor_time: SessionTime,
     preloaded_frames: Option<Vec<CapturedFrame>>,
+}
+
+fn seed_from_interaction(
+    interaction: InteractionAnchor,
+    window: InteractionWindow,
+    anchor_kind: TemporalRangeAnchorKind,
+) -> Result<RangeSeed> {
+    debug_assert!(matches!(
+        anchor_kind,
+        TemporalRangeAnchorKind::Interaction | TemporalRangeAnchorKind::LatestInteraction
+    ));
+    Ok(RangeSeed {
+        session_id: interaction.session_id,
+        target_id: interaction.target_id,
+        requested_range: interaction_range(&interaction, window)?,
+        anchor_kind,
+        anchor_reference: ResolvedAnchorReference::Interaction {
+            interaction_id: interaction.interaction_id,
+        },
+        requested_anchor_time: interaction.timing.dispatched_at,
+        preloaded_frames: None,
+    })
 }
 
 impl<C, F, G, T, I> TemporalRangeResolver<C, F, G, T, I>
@@ -632,6 +982,8 @@ where
                     target_id,
                     requested_range: range,
                     anchor_kind: TemporalRangeAnchorKind::SessionTime,
+                    anchor_reference: ResolvedAnchorReference::Interval,
+                    requested_anchor_time: range_midpoint(range),
                     preloaded_frames: None,
                 })
             }
@@ -651,12 +1003,15 @@ where
                 })?;
                 let start = wall_clock_offset(start, session.started_at(), scope)?;
                 let end = wall_clock_offset(end, session.started_at(), scope)?;
+                let requested_range = SessionRange::new(start, end)?;
                 self.validate_catalog_scope(session_id, target_id).await?;
                 Ok(RangeSeed {
                     session_id,
                     target_id,
-                    requested_range: SessionRange::new(start, end)?,
+                    requested_range,
                     anchor_kind: TemporalRangeAnchorKind::WallClock,
+                    anchor_reference: ResolvedAnchorReference::Interval,
+                    requested_anchor_time: range_midpoint(requested_range),
                     preloaded_frames: None,
                 })
             }
@@ -705,6 +1060,11 @@ where
                     target_id: start.target_id(),
                     requested_range,
                     anchor_kind: TemporalRangeAnchorKind::SourceFrame,
+                    anchor_reference: ResolvedAnchorReference::SourceFrames {
+                        start_frame_id,
+                        end_frame_id,
+                    },
+                    requested_anchor_time: range_midpoint(requested_range),
                     preloaded_frames: Some(frames),
                 })
             }
@@ -725,13 +1085,7 @@ where
                     })?;
                 validate_scope_match(scope, interaction.session_id, interaction.target_id)?;
                 let window = window.unwrap_or(options.implicit_interaction_window);
-                Ok(RangeSeed {
-                    session_id: interaction.session_id,
-                    target_id: interaction.target_id,
-                    requested_range: interaction_range(&interaction, window)?,
-                    anchor_kind: TemporalRangeAnchorKind::Interaction,
-                    preloaded_frames: None,
-                })
+                seed_from_interaction(interaction, window, TemporalRangeAnchorKind::Interaction)
             }
             TemporalRangeAnchor::LatestInteraction {
                 session_id,
@@ -763,13 +1117,11 @@ where
                     ));
                 }
                 let window = window.unwrap_or(options.implicit_interaction_window);
-                Ok(RangeSeed {
-                    session_id,
-                    target_id,
-                    requested_range: interaction_range(&interaction, window)?,
-                    anchor_kind: TemporalRangeAnchorKind::LatestInteraction,
-                    preloaded_frames: None,
-                })
+                seed_from_interaction(
+                    interaction,
+                    window,
+                    TemporalRangeAnchorKind::LatestInteraction,
+                )
             }
             TemporalRangeAnchor::Navigation {
                 scope,
@@ -792,6 +1144,7 @@ where
                     scope,
                     window,
                     TemporalRangeAnchorKind::Navigation,
+                    ResolvedAnchorReference::Navigation { navigation_id },
                 )
             }
             TemporalRangeAnchor::Marker {
@@ -810,7 +1163,13 @@ where
                     .ok_or_else(|| {
                         not_found("marker anchor was not found", scope_context(scope))
                     })?;
-                seed_from_observation(observation, scope, window, TemporalRangeAnchorKind::Marker)
+                seed_from_observation(
+                    observation,
+                    scope,
+                    window,
+                    TemporalRangeAnchorKind::Marker,
+                    ResolvedAnchorReference::Marker { marker_id },
+                )
             }
         }
     }
@@ -910,10 +1269,16 @@ where
             .into_iter()
             .map(|frame| frame.id())
             .collect();
-        ResolvedRange::new(
+        let resolved_anchor = ResolvedAnchor::new(
+            seed.anchor_reference,
+            seed.requested_anchor_time,
+            clamp_time(seed.requested_anchor_time, resolved_range),
+        )?;
+        ResolvedRange::new_with_anchor(
             seed.session_id,
             seed.target_id,
             seed.anchor_kind,
+            resolved_anchor,
             seed.requested_range,
             resolved_range,
             frame_ids,
@@ -1160,6 +1525,7 @@ fn seed_from_observation(
     scope: AnchorScope,
     window: Option<InteractionWindow>,
     kind: TemporalRangeAnchorKind,
+    anchor_reference: ResolvedAnchorReference,
 ) -> Result<RangeSeed> {
     validate_scope_match(scope, observation.session_id(), observation.target_id())?;
     Ok(RangeSeed {
@@ -1167,6 +1533,8 @@ fn seed_from_observation(
         target_id: observation.target_id(),
         requested_range: point_range(observation.session_time(), window)?,
         anchor_kind: kind,
+        anchor_reference,
+        requested_anchor_time: observation.session_time(),
         preloaded_frames: None,
     })
 }
@@ -1264,6 +1632,138 @@ mod tests {
             anchor
         );
     }
+    #[test]
+    fn every_resolved_anchor_kind_preserves_exact_identity_time_and_validated_serde() {
+        let (session, target, frame, interaction, navigation, marker) = ids();
+        let requested = SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(10)).unwrap();
+        let cases = [
+            (
+                TemporalRangeAnchorKind::SessionTime,
+                ResolvedAnchorReference::Interval,
+                SessionTime::from_nanos(5),
+            ),
+            (
+                TemporalRangeAnchorKind::WallClock,
+                ResolvedAnchorReference::Interval,
+                SessionTime::from_nanos(5),
+            ),
+            (
+                TemporalRangeAnchorKind::Interaction,
+                ResolvedAnchorReference::Interaction {
+                    interaction_id: interaction,
+                },
+                SessionTime::from_nanos(7),
+            ),
+            (
+                TemporalRangeAnchorKind::LatestInteraction,
+                ResolvedAnchorReference::Interaction {
+                    interaction_id: interaction,
+                },
+                SessionTime::from_nanos(7),
+            ),
+            (
+                TemporalRangeAnchorKind::Navigation,
+                ResolvedAnchorReference::Navigation {
+                    navigation_id: navigation,
+                },
+                SessionTime::from_nanos(7),
+            ),
+            (
+                TemporalRangeAnchorKind::Marker,
+                ResolvedAnchorReference::Marker { marker_id: marker },
+                SessionTime::from_nanos(7),
+            ),
+            (
+                TemporalRangeAnchorKind::SourceFrame,
+                ResolvedAnchorReference::SourceFrames {
+                    start_frame_id: frame,
+                    end_frame_id: frame,
+                },
+                SessionTime::from_nanos(5),
+            ),
+        ];
+        for (kind, reference, requested_time) in cases {
+            let value = ResolvedRange::new_with_anchor(
+                session,
+                target,
+                kind,
+                ResolvedAnchor::new(reference.clone(), requested_time, requested_time).unwrap(),
+                requested,
+                requested,
+                vec![frame],
+                vec![interaction],
+                vec![navigation],
+                vec![marker],
+                vec![],
+                vec![],
+                RangeResolutionOptions::DEFAULT,
+            )
+            .unwrap();
+            assert_eq!(value.resolved_anchor.reference, reference);
+            assert_eq!(value.resolved_anchor.requested_time, requested_time);
+            let encoded = serde_json::to_string(&value).unwrap();
+            assert_eq!(
+                serde_json::from_str::<ResolvedRange>(&encoded).unwrap(),
+                value
+            );
+        }
+    }
+
+    #[test]
+    fn partial_retention_clamps_only_effective_anchor_and_midpoint_is_overflow_safe() {
+        let (session, target, frame, _, _, _) = ids();
+        let requested = SessionRange::new(
+            SessionTime::from_nanos(u64::MAX - 10),
+            SessionTime::from_nanos(u64::MAX),
+        )
+        .unwrap();
+        let retained = SessionRange::new(
+            SessionTime::from_nanos(u64::MAX - 2),
+            SessionTime::from_nanos(u64::MAX),
+        )
+        .unwrap();
+        let warning = RetentionWarning::PartiallyEvicted {
+            requested,
+            retained,
+        };
+        let value = ResolvedRange::new_with_anchor(
+            session,
+            target,
+            TemporalRangeAnchorKind::SessionTime,
+            ResolvedAnchor::new(
+                ResolvedAnchorReference::Interval,
+                SessionTime::from_nanos(u64::MAX - 5),
+                SessionTime::from_nanos(u64::MAX - 2),
+            )
+            .unwrap(),
+            requested,
+            retained,
+            vec![frame],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![warning],
+            RangeResolutionOptions {
+                retention: RetentionPolicy::AllowPartial,
+                ..RangeResolutionOptions::DEFAULT
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            value.resolved_anchor.requested_time,
+            SessionTime::from_nanos(u64::MAX - 5)
+        );
+        assert_eq!(
+            value.resolved_anchor.effective_time,
+            SessionTime::from_nanos(u64::MAX - 2)
+        );
+
+        let mut malformed = serde_json::to_value(value).unwrap();
+        malformed["resolved_anchor"]["effective_time"] = serde_json::json!(u64::MAX - 1);
+        assert!(serde_json::from_value::<ResolvedRange>(malformed).is_err());
+    }
+
     #[test]
     fn resolved_range_enforces_nonempty_unique_and_contained_contracts() {
         let requested = SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(10)).unwrap();
@@ -1375,6 +1875,19 @@ mod tests {
             .unwrap()
             .start(),
             SessionTime::ZERO
+        );
+        let latest = seed_from_interaction(
+            anchor,
+            InteractionWindow::new(Duration::ZERO, Duration::ZERO).unwrap(),
+            TemporalRangeAnchorKind::LatestInteraction,
+        )
+        .unwrap();
+        assert_eq!(latest.requested_anchor_time, SessionTime::from_nanos(10));
+        assert_eq!(
+            latest.anchor_reference,
+            ResolvedAnchorReference::Interaction {
+                interaction_id: interaction,
+            }
         );
         assert!(InteractionWindow::new(Duration::ZERO, Duration::MAX).is_err());
     }
