@@ -1,7 +1,7 @@
 ---
 id: refactor-dedupe-reconnect-operation-rejection
 kind: story
-stage: review
+stage: done
 tags: [refactor, browser]
 parent: null
 depends_on: []
@@ -45,6 +45,17 @@ Extract one private helper for this reconnect-boundary rejection and call it fro
 - `reject_operation_during_reconnect` consumes the original request and oneshot sender, derives the same direct target, and sends the unchanged `BrowserDisconnected` error from both reconnect phases.
 - Both select-loop control-flow shapes remain unchanged: backoff continues after rejection, and in-flight transaction rejection still yields `None` rather than interrupting the attempt.
 - Target-file rustfmt check, all CDP all-target tests, and CDP all-target Clippy with warnings denied passed.
+
+## Review (2026-07-14)
+
+**Verdict**: Approve
+
+**Blockers**: none
+**Important**: none
+**Nits**: none
+**Rejected**: Combining reconnect backoff and transaction command loops would change cancellation and interruption ownership and is correctly excluded.
+
+**Evidence**: Bounded standalone-story review inspected commit `fdf1c29`, verified the helper reproduces the exact target anchoring, error code/message/retry mapping, sender consumption, and per-loop continuation result, and relied on the full CDP all-target suite plus Clippy. No independent reviewer ran, as required for a standalone story.
 
 ## Discovery notes
 
