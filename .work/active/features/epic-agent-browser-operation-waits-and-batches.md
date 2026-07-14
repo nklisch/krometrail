@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-operation-waits-and-batches
 kind: feature
-stage: implementing
+stage: review
 tags: [browser, agent-ux]
 parent: epic-agent-browser-operation
 depends_on: [epic-agent-browser-operation-browser-page-lifecycle, epic-agent-browser-operation-verified-interactions]
@@ -351,3 +351,9 @@ All four child stories are `done`, integrated and real-browser verification is g
 **Rejected**: Disabling the Network domain after each wait, duplicating an internal `ObserveLive` deadline, and adding a speculative `BatchOutcome::TargetUnavailable` variant were rejected as contrary to the settled boundaries or unnecessary.
 
 **Notes**: One standard cross-model GLM 5.2 pass reviewed commits `abbe53f`, `b4bec85`, `6ccd2c3`, `976de46`, and `6f28110`. The receiver confirmed the untracked-completion reset as material current-cycle contract risk and accepted the localized direction: update the quiet timer only when `in_flight.remove(request_id)` succeeds, then add a regression proving an unseen completion leaves `quiet_since` unchanged. All other reviewed deadline, cancellation, batching, target, anchor, screenshot, degradation, registry, and foundation assertions were accepted.
+
+## Review remediation (2026-07-14)
+
+`Network.loadingFinished` and `Network.loadingFailed` now restart `quiet_since` only when they remove a request from the tracked `in_flight` set. Completions observed without a matching post-subscription start remain recorded in `completed_before_start` for cross-stream reconciliation but no longer prolong a tracked-only quiet window. The focused regression first delivers an unseen completion and proves the original quiet instant is unchanged, then proves a finite tracked request still clears and restarts the timer normally.
+
+Fix verification passed `cargo fmt --all -- --check`, the focused network-tracking regression, and `cargo clippy -p krometrail-cdp --all-targets --locked -- -D warnings`. The feature returned to `stage: review` for standard fix-verification closure; no second independent pass is required.

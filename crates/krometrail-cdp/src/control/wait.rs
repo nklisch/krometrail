@@ -789,11 +789,12 @@ fn update_network_state(
         }
         "Network.loadingFinished" | "Network.loadingFailed" => {
             if let Some(request_id) = event.params.get("requestId").and_then(Value::as_str) {
-                if !in_flight.remove(request_id) {
+                if in_flight.remove(request_id) {
+                    if in_flight.is_empty() {
+                        *quiet_since = Some(tokio::time::Instant::now());
+                    }
+                } else {
                     completed_before_start.insert(request_id.to_owned());
-                }
-                if in_flight.is_empty() {
-                    *quiet_since = Some(tokio::time::Instant::now());
                 }
             }
         }
@@ -851,6 +852,18 @@ mod tests {
         let mut requests = HashSet::new();
         let mut completed = HashSet::new();
         let mut quiet = Some(tokio::time::Instant::now());
+        let initial_quiet = quiet;
+        update_network_state(
+            NamedEvent {
+                method: "Network.loadingFinished".into(),
+                params: json!({"requestId":"before-subscription"}),
+            },
+            &mut requests,
+            &mut completed,
+            &mut quiet,
+        );
+        assert_eq!(quiet, initial_quiet);
+        assert!(completed.contains("before-subscription"));
         update_network_state(
             NamedEvent {
                 method: "Network.requestWillBeSent".into(),
