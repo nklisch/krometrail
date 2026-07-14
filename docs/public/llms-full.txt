@@ -406,7 +406,7 @@ This writes both `macos-chrome-default-dpi.json` and `macos-chrome-high-dpi.json
 
 Install Rust 1.85 or newer. The supported product development environments are Linux and macOS. Windows binaries are produced as a best-effort release artifact but Windows is not a supported development environment.
 
-The future browser runtime targets locally installed Chrome or a compatible Chromium browser. The current executable does not connect to a browser yet. Explicitly debug-enabled Electron renderer endpoints are part of the intended browser boundary; Electron's Node main process is not.
+The browser runtime targets locally installed Chrome or a compatible Chromium browser. It can launch a managed browser or attach to an explicitly debug-enabled Chrome/Electron renderer endpoint through MCP. Electron's Node main process is not part of the browser boundary.
 
 Linux release artifacts target `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`, so they are statically linked against musl and do not inherit a glibc minimum from the GitHub runner. Local development builds remain native Cargo builds for the host environment.
 
@@ -427,15 +427,16 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 
 ## Run the binary
 
-The current binary intentionally exposes only its executable contract:
+Run the current executable contract with:
 
 ```bash
 cargo run -- --version
 cargo run -- --help
 cargo run -- doctor
+cargo run -- mcp
 ```
 
-The first two commands succeed. `doctor` currently reports an `unsupported` error because the browser transport adapter is not implemented. There is no current browser, recording, MCP, or debugger command to configure.
+`doctor` performs browser discovery without launching. `mcp` owns standard output for protocol traffic and serves the registry-derived browser-control tools until transport EOF or shutdown. It uses the same full runtime composition as controlled-browser capture and recording.
 
 ## Documentation and fixtures
 
@@ -526,11 +527,26 @@ Set `KROMETRAIL_INSTALL_DIR` to choose another destination. This development hel
 
 # MCP configuration
 
-The current Rust executable does not expose an MCP server. Do not add a Krometrail MCP entry to an agent configuration yet, and do not use historical command examples copied from an earlier runtime.
+Krometrail exposes its browser-control surface through the `mcp` command and standard input/output transport. A typical MCP client entry is:
 
-MCP is an intended boundary for the browser-control and temporal-recording capabilities described in [`SPEC.md`](../SPEC.md) and [`ARCHITECTURE.md`](../ARCHITECTURE.md). Those documents are contracts for work in progress, not proof that a command is available today.
+```json
+{
+  "mcpServers": {
+    "krometrail": {
+      "command": "krometrail",
+      "args": ["mcp"]
+    }
+  }
+}
+```
 
-The browser boundary includes Chrome-compatible pages and explicitly debug-enabled Electron renderer processes. Electron's Node main process is outside that boundary. The first real transport implementation will define the supported connection and MCP setup details; this page will be updated when that surface exists.
+The client must be able to find the `krometrail` executable. Standard output belongs exclusively to MCP JSON-RPC traffic; startup and runtime failures are reported on standard error.
+
+The server owns at most one active browser session. Call `start_browser` to launch a managed Chrome-compatible browser or `attach_browser` with an explicitly enabled local CDP endpoint. Use `stop_browser` before starting or attaching another session. Ending the MCP transport also closes a managed browser or detaches from an externally owned browser through the same bounded shutdown path.
+
+The current server exposes the four lifecycle tools and the 24 browser-control operations derived from the shared control registry. It does not yet expose temporal investigation, browser-event inspection, durable resources, page-state, or framework-state tools. Screenshots and post-action images are returned directly as MCP image content; no unreadable resource URI is advertised.
+
+The browser boundary includes Chrome-compatible pages and explicitly debug-enabled Electron renderer processes. Electron's Node main process remains outside that boundary. Browser control and captured evidence remain local unless the connected MCP client explicitly reads a response.
 
 ---
 
@@ -538,15 +554,16 @@ The browser boundary includes Chrome-compatible pages and explicitly debug-enabl
 
 Krometrail is a Rust foundation for local browser control and temporal visual evidence for coding agents.
 
-The current executable is intentionally small:
+The current executable provides browser discovery and the local MCP browser-control boundary:
 
 ```bash
 cargo run -- --version
 cargo run -- --help
 cargo run -- doctor
+cargo run -- mcp
 ```
 
-The first two commands work. `doctor` reports that browser transport is not yet available. Browser capture, storage, temporal analysis, and MCP are intended capabilities described by the five foundation documents, not commands exposed by this build.
+`doctor` reports discovered browser installations without launching. `mcp` serves the registry-derived browser-control tools over protocol-only stdio and keeps controlled-browser capture and recording assembled behind the same runtime. Temporal investigation tools remain future-facing contracts in the foundation documents.
 
 ## Start here
 
@@ -569,7 +586,7 @@ The first two commands work. `doctor` reports that browser transport is not yet 
 
 # Privacy Policy
 
-*Last updated: 2026-07-12*
+*Last updated: 2026-07-14*
 
 ## Website analytics
 
@@ -577,9 +594,9 @@ Krometrail's documentation website uses Google Analytics for anonymous website u
 
 ## The local runtime
 
-The current Rust executable does not send telemetry, session contents, source code, screenshots, browser events, or derived artifacts to Krometrail. The repository's intended runtime is local-first: captured browser data remains on the user's machine unless the user or a connected agent explicitly reads it through a future local MCP boundary.
+The Rust executable does not send telemetry, session contents, source code, screenshots, browser events, or derived artifacts to Krometrail. Browser control, recording storage, and MCP stdio transport run locally. An explicitly attached Chrome-compatible or Electron renderer endpoint must be local.
 
-The current executable has no browser capture or MCP command surface. Future implementations must update this policy before introducing any network communication.
+Captured browser data remains on the user's machine unless the user or connected agent explicitly reads an image or structured result through MCP. Standard output is reserved for MCP protocol traffic; diagnostics do not include browser content or image bytes.
 
 ## Contact
 
@@ -589,17 +606,25 @@ For privacy questions, open an issue on [GitHub](https://github.com/nklisch/krom
 
 # Configuration
 
-The current executable has no user configuration file, environment-variable configuration, browser launch options, or MCP configuration surface. The only available command is `doctor`, which reports that browser transport is not yet available.
+Krometrail currently has no user configuration file or browser-control CLI flags. MCP lifecycle tool inputs select managed launch versus explicit local attachment, profiles, initial URLs, executables, and endpoints through their generated schemas.
 
-Do not copy configuration examples from the historical runtime. When configuration is implemented, startup validation and precedence will follow the contracts in [`SPEC.md`](../SPEC.md) and [`ARCHITECTURE.md`](../ARCHITECTURE.md): command-line arguments, environment variables, user configuration, then built-in defaults.
+The root runtime recognizes these environment variables:
 
-The intended configuration areas include the browser endpoint or launch profile, data directory and disk budget, capture settings, enabled capabilities, concurrency, and logging. They are not current options and should not be passed to the binary today.
+| Variable | Behavior |
+| --- | --- |
+| `KROMETRAIL_DATA_DIR` | Overrides the local recording/index and managed-profile data root. |
+| `KROMETRAIL_DISK_BUDGET_BYTES` | Sets the positive global recording budget in decimal bytes. |
+| `KROMETRAIL_PROFILE_ROOT` | Overrides the managed-browser profile directory. |
+
+Invalid disk-budget input prevents startup with a structured error. Built-in platform data directories and the default 10 GB budget apply when variables are absent.
+
+The broader configuration precedence remains command-line arguments, environment variables, user configuration, then built-in defaults as defined in [`SPEC.md`](../SPEC.md) and [`ARCHITECTURE.md`](../ARCHITECTURE.md). Capture settings, capability selection, concurrency, logging, and a user configuration file are not yet public configuration surfaces.
 
 ---
 
 # Runtime reference
 
-Krometrail is currently a Rust workspace foundation. The executable does not yet launch a browser, record frames, persist sessions, expose MCP tools, or provide a language debugger.
+Krometrail ships one Rust binary and one composition root. The runtime assembles browser transport, controlled-browser capture, recording storage, and retention before dispatching a command.
 
 ## Commands
 
@@ -607,21 +632,14 @@ Krometrail is currently a Rust workspace foundation. The executable does not yet
 | --- | --- |
 | `krometrail --version` | Prints the Cargo package version and exits successfully. |
 | `krometrail --help` | Prints the available command surface and exits successfully. |
-| `krometrail doctor` | Fails explicitly with `error[unsupported]` because browser transport is not available. |
+| `krometrail doctor` | Reports discovered Chrome/Chromium installations or a structured `browser_not_found` failure. It does not launch a browser. |
+| `krometrail mcp` | Serves the browser-control tool registry over MCP stdio until transport EOF or process shutdown. |
 
-The root CLI is defined in [`src/cli.rs`](https://github.com/nklisch/krometrail/blob/main/src/cli.rs), and the composition root is in [`src/app.rs`](https://github.com/nklisch/krometrail/blob/main/src/app.rs). `doctor` must remain a truthful availability check rather than a fake-success placeholder.
+`krometrail mcp` writes only MCP JSON-RPC traffic to standard output. It owns at most one controlled browser session and uses ownership-aware shutdown: managed browsers close, while explicitly attached browsers detach. The current MCP surface provides four lifecycle tools and 24 registry-derived control operations, including ordered batching.
 
-## Intended capabilities
+Temporal investigation tools, browser-event inspection tools, durable MCP resources, and unavailable page/framework-state capabilities are not part of the current command. Current screenshots are returned as MCP image content.
 
-The five foundation documents define the contracts that later implementations will consume:
-
-- browser lifecycle and control;
-- continuous visual capture and explicit capture gaps;
-- recording storage and temporal range queries;
-- temporal visual artifacts with provenance;
-- MCP tools derived from the capability registry.
-
-Use [`SPEC.md`](../SPEC.md) for intended external behavior and [`ARCHITECTURE.md`](../ARCHITECTURE.md) for implementation boundaries. No command or MCP configuration should be inferred from those future-facing contracts until the corresponding Rust implementation lands.
+The root CLI is defined in [`src/cli.rs`](https://github.com/nklisch/krometrail/blob/main/src/cli.rs), and the full composition root is in [`src/app.rs`](https://github.com/nklisch/krometrail/blob/main/src/app.rs). See [MCP configuration](../guide/mcp-configuration.md) for a client entry and [`SPEC.md`](../SPEC.md) for the broader intended external contracts.
 
 ---
 

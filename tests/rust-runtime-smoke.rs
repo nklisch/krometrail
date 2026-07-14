@@ -1,4 +1,7 @@
-use std::process::{Command, Output};
+use std::{
+    io::{BufRead as _, BufReader, Read as _, Write as _},
+    process::{Command, Output, Stdio},
+};
 
 fn run(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_krometrail"))
@@ -77,6 +80,92 @@ fn mcp_eof_exits_cleanly_without_non_protocol_output() {
     assert!(output.status.success(), "stderr: {}", text(&output.stderr));
     assert!(output.stdout.is_empty(), "stdout: {}", text(&output.stdout));
     assert!(output.stderr.is_empty(), "stderr: {}", text(&output.stderr));
+    std::fs::remove_dir_all(data).unwrap();
+}
+
+#[test]
+fn mcp_binary_initializes_lists_json_rpc_and_keeps_stderr_separate() {
+    let data = std::env::temp_dir().join(format!(
+        "krometrail-mcp-protocol-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let mut child = Command::new(env!("CARGO_BIN_EXE_krometrail"))
+        .arg("mcp")
+        .env("KROMETRAIL_DATA_DIR", &data)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("MCP binary should spawn");
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut first = String::new();
+    {
+        let stdin = child.stdin.as_mut().unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({
+                "jsonrpc":"2.0","id":1,"method":"initialize","params":{
+                    "protocolVersion":"2025-06-18","capabilities":{},
+                    "clientInfo":{"name":"binary-smoke","version":"1"}
+                }
+            })
+        )
+        .unwrap();
+        stdin.flush().unwrap();
+    }
+    stdout.read_line(&mut first).unwrap();
+    let initialized: serde_json::Value = serde_json::from_str(first.trim()).unwrap();
+    assert_eq!(initialized["id"], 1);
+    assert_eq!(initialized["result"]["protocolVersion"], "2025-06-18");
+
+    {
+        let stdin = child.stdin.as_mut().unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({
+                "jsonrpc":"2.0","method":"notifications/initialized"
+            })
+        )
+        .unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({
+                "jsonrpc":"2.0","id":2,"method":"tools/list","params":{}
+            })
+        )
+        .unwrap();
+        stdin.flush().unwrap();
+    }
+    let mut second = String::new();
+    stdout.read_line(&mut second).unwrap();
+    let listed: serde_json::Value = serde_json::from_str(second.trim()).unwrap();
+    assert_eq!(listed["id"], 2);
+    assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 28);
+
+    drop(child.stdin.take());
+    let mut trailing_stdout = String::new();
+    stdout.read_to_string(&mut trailing_stdout).unwrap();
+    let status = child.wait().unwrap();
+    let mut stderr = String::new();
+    child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    assert!(status.success(), "stderr: {stderr}");
+    assert!(stderr.is_empty(), "stderr: {stderr}");
+    assert!(
+        trailing_stdout.trim().is_empty(),
+        "stdout: {trailing_stdout}"
+    );
     std::fs::remove_dir_all(data).unwrap();
 }
 

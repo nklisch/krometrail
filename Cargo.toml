@@ -57,6 +57,7 @@ krometrail-cdp.workspace = true
 krometrail-store.workspace = true
 krometrail-mcp.workspace = true
 temporal-vision.workspace = true
+serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 uuid.workspace = true

@@ -1,6 +1,6 @@
 # Krometrail
 
-Krometrail is a Rust 2024 workspace for local browser control and temporal visual evidence. The current tree is a foundation: the binary exposes `--version`, `--help`, and an explicit unavailable `doctor` check; browser transport, storage, MCP tools, and temporal artifacts are intended capabilities, not current commands.
+Krometrail is a Rust 2024 workspace for local browser control and temporal visual evidence. The binary exposes `--version`, `--help`, browser-discovery `doctor`, and the `mcp` stdio browser-control server. Browser transport, controlled capture, recording storage, and 24 registry-derived control operations are implemented; temporal investigation tools and artifact resources remain future capabilities.
 
 ## Project Structure
 
@@ -14,7 +14,7 @@ crates/
   krometrail-core/   Domain identities, time, lifecycle, recording, timeline, capabilities, errors, and ports
   krometrail-cdp/    Reserved CDP adapter boundary
   krometrail-store/  Reserved recording-store boundary
-  krometrail-mcp/    Reserved MCP boundary
+  krometrail-mcp/    MCP stdio, generated schemas, dynamic tools, responses, and session ownership
   temporal-vision/   Browser-agnostic visual-analysis boundary
 tests/
   rust-runtime-smoke.rs  Binary contract checks
@@ -56,7 +56,7 @@ cargo run -- --help
 cargo run -- doctor
 ```
 
-`doctor` is expected to report that browser transport is unavailable until the CDP adapter lands. Keep that failure explicit; do not substitute a fake-success implementation.
+`doctor` is discovery-only: it reports discovered Chrome/Chromium installations or a structured `browser_not_found` failure without launching. `mcp` reserves stdout for JSON-RPC and must exit cleanly on stdin EOF.
 
 For documentation development only:
 

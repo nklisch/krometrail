@@ -21,6 +21,7 @@ pub enum BrowserConnectRequest {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(default)]
 pub struct LaunchBrowser {
     pub executable: Option<PathBuf>,
     pub profile: ManagedProfile,

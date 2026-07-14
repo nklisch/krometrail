@@ -161,9 +161,17 @@ mod tests {
     use super::*;
     use crate::registry::lifecycle_tool_names;
     use krometrail_core::{
-        BROWSER_OPERATION_REGISTRY, BrowserConnectRequest, BrowserInstallation, BrowserSessionPort,
-        CapabilityId, PortFuture,
+        BROWSER_OPERATION_REGISTRY, BrowserCompatibility, BrowserConnectRequest,
+        BrowserInstallation, BrowserOperationContext, BrowserOperationRequest,
+        BrowserOperationResult, BrowserOwnership, BrowserProduct, BrowserProductVersion,
+        BrowserSessionEvent, BrowserSessionEvents, BrowserSessionPort, BrowserSessionState,
+        BrowserStatus, BrowserStopOutcome, BrowserVersion, CapabilityId, CapabilitySupport,
+        PageStatus, PortFuture, ProfileRef, RendererCapability, RetentionStatus, SessionId,
+        SessionOrigin,
     };
+    use serde_json::{Value, json};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 
     struct UnusedConnector;
 
@@ -232,5 +240,213 @@ mod tests {
         )
         .unwrap();
         assert!(service.server().tools().is_empty());
+    }
+
+    struct ProtocolEvents;
+    impl BrowserSessionEvents for ProtocolEvents {
+        fn next(&mut self) -> PortFuture<'_, krometrail_core::Result<Option<BrowserSessionEvent>>> {
+            Box::pin(std::future::ready(Ok(None)))
+        }
+    }
+
+    struct ProtocolSession {
+        status: BrowserStatus,
+        execute_calls: Arc<AtomicUsize>,
+        stop_calls: Arc<AtomicUsize>,
+    }
+
+    impl BrowserSessionPort for ProtocolSession {
+        fn session_origin(&self) -> SessionOrigin {
+            SessionOrigin::new(krometrail_core::ObservedTime::from_nanos(0))
+        }
+        fn status(&self) -> PortFuture<'_, krometrail_core::Result<BrowserStatus>> {
+            Box::pin(std::future::ready(Ok(self.status.clone())))
+        }
+        fn subscribe(
+            &self,
+        ) -> PortFuture<'_, krometrail_core::Result<Box<dyn BrowserSessionEvents>>> {
+            Box::pin(std::future::ready(Ok(
+                Box::new(ProtocolEvents) as Box<dyn BrowserSessionEvents>
+            )))
+        }
+        fn execute(
+            &self,
+            request: BrowserOperationRequest,
+            _context: BrowserOperationContext,
+        ) -> PortFuture<'_, krometrail_core::Result<BrowserOperationResult>> {
+            self.execute_calls.fetch_add(1, Ordering::SeqCst);
+            let result = match request {
+                BrowserOperationRequest::ListPages(_) => {
+                    Ok(BrowserOperationResult::ListPages(Box::default()))
+                }
+                _ => panic!("protocol test dispatched an unexpected operation"),
+            };
+            Box::pin(std::future::ready(result))
+        }
+        fn stop(&self) -> PortFuture<'_, krometrail_core::Result<BrowserStopOutcome>> {
+            self.stop_calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(std::future::ready(Ok(BrowserStopOutcome::Detached)))
+        }
+    }
+
+    struct ProtocolConnector {
+        session: Arc<ProtocolSession>,
+    }
+    impl BrowserConnector for ProtocolConnector {
+        fn installations(
+            &self,
+        ) -> PortFuture<'_, krometrail_core::Result<Vec<BrowserInstallation>>> {
+            Box::pin(std::future::ready(Ok(Vec::new())))
+        }
+        fn connect(
+            &self,
+            _request: BrowserConnectRequest,
+        ) -> PortFuture<'_, krometrail_core::Result<Arc<dyn BrowserSessionPort>>> {
+            let session = Arc::clone(&self.session) as Arc<dyn BrowserSessionPort>;
+            Box::pin(std::future::ready(Ok(session)))
+        }
+    }
+
+    fn protocol_status() -> BrowserStatus {
+        let version = BrowserVersion::new(
+            BrowserProduct::Chrome,
+            BrowserProductVersion::new("1").unwrap(),
+            "revision",
+            "1.3",
+            "agent",
+            "1",
+        )
+        .unwrap();
+        let compatibility = BrowserCompatibility::new(
+            version,
+            RendererCapability::ALL
+                .iter()
+                .map(|capability| CapabilitySupport::new(*capability, true, true, None).unwrap())
+                .collect(),
+        )
+        .unwrap();
+        BrowserStatus::new(
+            "00000000-0000-0000-0000-000000000001"
+                .parse::<SessionId>()
+                .unwrap(),
+            BrowserSessionState::Ready,
+            BrowserOwnership::Attached,
+            ProfileRef::External,
+            compatibility,
+            None,
+            Vec::<PageStatus>::new(),
+            Vec::new(),
+            RetentionStatus::empty(krometrail_core::DiskBudgetBytes::default()),
+        )
+        .unwrap()
+    }
+
+    async fn send_json(writer: &mut tokio::io::WriteHalf<tokio::io::DuplexStream>, value: Value) {
+        writer
+            .write_all(value.to_string().as_bytes())
+            .await
+            .unwrap();
+        writer.write_all(b"\n").await.unwrap();
+        writer.flush().await.unwrap();
+    }
+
+    async fn read_json(
+        reader: &mut BufReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>,
+    ) -> Value {
+        let mut line = String::new();
+        reader.read_line(&mut line).await.unwrap();
+        assert!(!line.is_empty(), "server closed before a JSON-RPC response");
+        serde_json::from_str(&line).unwrap()
+    }
+
+    #[tokio::test]
+    async fn in_memory_json_rpc_initializes_lists_calls_validates_and_closes() {
+        let execute_calls = Arc::new(AtomicUsize::new(0));
+        let stop_calls = Arc::new(AtomicUsize::new(0));
+        let session = Arc::new(ProtocolSession {
+            status: protocol_status(),
+            execute_calls: Arc::clone(&execute_calls),
+            stop_calls: Arc::clone(&stop_calls),
+        });
+        let service = build_service(
+            Arc::new(ProtocolConnector { session }),
+            McpConfig::new(vec![CapabilityId::Control]).unwrap(),
+        )
+        .unwrap();
+        let owner = Arc::clone(&service.sessions);
+        let (client_io, server_io) = tokio::io::duplex(256 * 1024);
+        let server_task = tokio::spawn(async move {
+            let running = service.server.serve(server_io).await.unwrap();
+            running.waiting().await.unwrap()
+        });
+        let (read, mut write) = tokio::io::split(client_io);
+        let mut read = BufReader::new(read);
+
+        send_json(
+            &mut write,
+            json!({
+                "jsonrpc":"2.0","id":1,"method":"initialize","params":{
+                    "protocolVersion":"2025-06-18","capabilities":{},
+                    "clientInfo":{"name":"krometrail-test","version":"1"}
+                }
+            }),
+        )
+        .await;
+        let initialized = read_json(&mut read).await;
+        assert_eq!(initialized["result"]["protocolVersion"], "2025-06-18");
+        send_json(
+            &mut write,
+            json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+        )
+        .await;
+
+        send_json(
+            &mut write,
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
+        )
+        .await;
+        let listed = read_json(&mut read).await;
+        let tools = listed["result"]["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), BROWSER_OPERATION_REGISTRY.len() + 4);
+        assert!(
+            tools.windows(2).all(|pair| {
+                pair[0]["name"].as_str().unwrap() < pair[1]["name"].as_str().unwrap()
+            })
+        );
+
+        send_json(
+            &mut write,
+            json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"start_browser","arguments":{}}}),
+        )
+        .await;
+        assert_eq!(read_json(&mut read).await["result"]["isError"], false);
+        send_json(
+            &mut write,
+            json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"list_pages","arguments":{}}}),
+        )
+        .await;
+        let valid = read_json(&mut read).await;
+        assert_eq!(valid["result"]["isError"], false);
+        assert_eq!(valid["result"]["structuredContent"]["status"], "succeeded");
+        assert_eq!(execute_calls.load(Ordering::SeqCst), 1);
+
+        send_json(
+            &mut write,
+            json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"navigate_page","arguments":{"url":""}}}),
+        )
+        .await;
+        let invalid = read_json(&mut read).await;
+        assert_eq!(invalid["result"]["isError"], true);
+        assert_eq!(
+            invalid["result"]["structuredContent"]["error"]["code"],
+            "invalid_input"
+        );
+        assert_eq!(execute_calls.load(Ordering::SeqCst), 1);
+
+        drop(write);
+        drop(read);
+        assert!(matches!(server_task.await.unwrap(), QuitReason::Closed));
+        owner.shutdown().await.unwrap();
+        assert_eq!(stop_calls.load(Ordering::SeqCst), 1);
     }
 }
