@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-operation-mcp-control-surface
 kind: feature
-stage: review
+stage: done
 tags: [browser, agent-ux]
 parent: epic-agent-browser-operation
 depends_on: [epic-agent-browser-operation-waits-and-batches]
@@ -546,4 +546,15 @@ This compatibility revision changes only the SDK/protocol implementation choice.
 
 `project_batch` now distinguishes actual step/termination failures from `BatchOutcome::CompletedWithFailures` caused only by incomplete final live evidence. It tracks whether any step failed or was skipped; when every step succeeded, final-observation warnings keep the structured domain outcome but map MCP status to `Degraded` with `isError=false`. This preserves already-applied mutations and avoids encouraging callers to replay the batch. Actual failed/stopped/cancelled/timed-out batches remain caller-visible failures.
 
-The regression constructs one successful wait step plus an unavailable final observation and asserts `Degraded`, `is_error=false`, retained `completed_with_failures`, and one warning. Formatting, the focused MCP response test, the full Rust 1.85 all-target workspace check, and MCP all-target Clippy with warnings denied passed. The feature returned to `stage: review` for standard fix-verification closure; no second independent pass is required.
+The regression constructs one successful wait step plus an unavailable final observation and asserts `Degraded`, `is_error=false`, retained `completed_with_failures`, and one warning. Formatting, the focused MCP response test, the full Rust 1.85 all-target workspace check, and MCP all-target Clippy with warnings denied passed. The feature returned to `stage: review` for standard fix-verification closure; no second independent pass was required.
+
+## Review closure (2026-07-14)
+
+**Verdict**: Approve with comments
+
+**Blockers**: none — final-observation-only batch degradation is corrected and verified.
+**Important**: `idea-mcp-cancellation-protocol-regression` records the accepted lower-risk test follow-up outside the current cycle.
+**Nits**: Default capability breadth, no-session status, malformed-image fallback, and permissive lifecycle fields remain intentional or defensive details.
+**Rejected**: All unsupported registry, ordering, schema recursion, cancellation leak, double-stop, and foundation-drift proposals remain rejected by evidence.
+
+**Notes**: Standard-weight closure used one cross-model pass, receiver adjudication, one material correction, and fix verification. No unresolved current-cycle risk remains and no second review pass ran.
