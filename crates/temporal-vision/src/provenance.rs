@@ -398,13 +398,14 @@ impl<A, F: Clone + Eq, M: Clone + Eq, G: Clone + Eq> ArtifactManifest<A, F, M, G
         output_dimensions: PixelDimensions,
         output_hash: OutputHash,
     ) -> Result<Self> {
-        Self::from_sequence_with_region(
+        Self::from_sequence_with_domain(
             artifact_id,
             artifact_kind,
             evidence_class,
             algorithm,
             sequence,
             sequence.region(),
+            sequence.mask().cloned(),
             selected_frame_ids,
             normalization,
             parameters,
@@ -414,13 +415,14 @@ impl<A, F: Clone + Eq, M: Clone + Eq, G: Clone + Eq> ArtifactManifest<A, F, M, G
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn from_sequence_with_region<P: AsRef<[u8]>>(
+    pub(crate) fn from_sequence_with_domain<P: AsRef<[u8]>>(
         artifact_id: A,
         artifact_kind: ArtifactKind,
         evidence_class: EvidenceClass,
         algorithm: AlgorithmDescriptor,
         sequence: &FrameSequence<F, M, G, P>,
         region: Option<FrameRegion>,
+        mask: Option<BinaryMask>,
         selected_frame_ids: Vec<F>,
         normalization: Vec<NormalizationStep>,
         parameters: Parameters,
@@ -467,7 +469,7 @@ impl<A, F: Clone + Eq, M: Clone + Eq, G: Clone + Eq> ArtifactManifest<A, F, M, G
             markers: sequence.markers().to_vec().into_boxed_slice(),
             gaps: sequence.gaps().to_vec().into_boxed_slice(),
             region,
-            mask: sequence.mask().cloned(),
+            mask,
             normalization: normalization.into_boxed_slice(),
             parameters,
             output_dimensions,

@@ -307,7 +307,7 @@ impl<F> RegionFilmstripPlan<F> {
 }
 
 /// Maximum number of crops shown in one filmstrip.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(transparent)]
 pub struct FilmstripTileLimit(NonZeroU8);
 
@@ -338,6 +338,15 @@ impl FilmstripTileLimit {
 impl Default for FilmstripTileLimit {
     fn default() -> Self {
         Self::DEFAULT
+    }
+}
+
+impl<'de> Deserialize<'de> for FilmstripTileLimit {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Self::new(u8::deserialize(deserializer)?).map_err(serde::de::Error::custom)
     }
 }
 
@@ -494,14 +503,17 @@ fn select_indices(frame_count: usize, limit: usize) -> Vec<usize> {
     let span = frame_count - 1;
     let denominator = limit - 1;
     (0..limit)
-        .map(|slot| round_ratio_ties_down(slot * span, denominator))
+        .map(|slot| {
+            let numerator = (slot as u128) * (span as u128);
+            round_ratio_ties_down(numerator, denominator as u128) as usize
+        })
         .collect()
 }
 
-fn round_ratio_ties_down(numerator: usize, denominator: usize) -> usize {
+fn round_ratio_ties_down(numerator: u128, denominator: u128) -> u128 {
     let quotient = numerator / denominator;
     let remainder = numerator % denominator;
-    quotient + usize::from(remainder > denominator - remainder)
+    quotient + u128::from(remainder > denominator - remainder)
 }
 
 fn intersect_region(
@@ -843,22 +855,38 @@ where
             tile_dimensions,
         )?);
     }
-    let selected_ids = plan
+    let mut artifact_source_indices = plan
         .tiles()
         .iter()
-        .map(|tile| tile.frame_id().clone())
+        .map(FilmstripTilePlan::frame_index)
+        .collect::<Vec<_>>();
+    if !artifact_source_indices.contains(&plan.locator_frame_index()) {
+        artifact_source_indices.push(plan.locator_frame_index());
+        artifact_source_indices.sort_unstable();
+    }
+    let selected_ids = artifact_source_indices
+        .iter()
+        .map(|index| source.frames()[*index].id().clone())
         .collect();
     let manifest_region = manifest_region(parameters.region, source.dimensions())?;
-    let manifest = ArtifactManifest::from_sequence_with_region(
+    let manifest = ArtifactManifest::from_sequence_with_domain(
         artifact_id,
         ArtifactKind::RegionFilmstrip,
         EvidenceClass::SourceDerived,
         AlgorithmDescriptor::new(ALGORITHM_NAME, ALGORITHM_VERSION)?,
         source,
         manifest_region,
+        None,
         selected_ids,
         normalization,
-        filmstrip_parameters(&plan, &parameters, layout, tile_dimensions)?,
+        filmstrip_parameters(
+            &plan,
+            &artifact_source_indices,
+            source.frames().len(),
+            &parameters,
+            layout,
+            tile_dimensions,
+        )?,
         layout.dimensions,
         hash,
     )?;
@@ -1085,7 +1113,7 @@ fn draw_header<F: Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
     )?;
     let status = if source.gaps().is_empty() {
         format!(
-            "SOURCE-DERIVED | FIXED {} | TRACKING NONE | OMITTED {}",
+            "SOURCE-DERIVED | FIXED {} | TRACKING NONE | STRIP OMITTED {}",
             plan.coordinate_space().as_str(),
             plan.omitted_frame_count()
         )
@@ -1631,6 +1659,8 @@ fn manifest_region(
 
 fn filmstrip_parameters<F: Display>(
     plan: &RegionFilmstripPlan<F>,
+    artifact_source_indices: &[usize],
+    source_frame_count: usize,
     request: &RegionFilmstripParameters,
     layout: FilmstripLayout,
     tile_dimensions: PixelDimensions,
@@ -1650,12 +1680,19 @@ fn filmstrip_parameters<F: Display>(
                     ParameterValue::Unsigned(tile.timestamp().as_nanos()),
                 ),
                 (
-                    "anchor_offset_nanos",
-                    signed_i128(tile.anchor_offset_nanos())?,
+                    "anchor_offset",
+                    signed_offset_value(tile.anchor_offset_nanos())?,
                 ),
                 (
                     "selection_reason",
-                    ParameterValue::Text("uniform_source_order_coverage".into()),
+                    ParameterValue::Text(
+                        if plan.omitted_frame_count() == 0 {
+                            "all_source_frames"
+                        } else {
+                            "uniform_source_order_coverage"
+                        }
+                        .into(),
+                    ),
                 ),
                 ("source_rect", optional_rect_value(tile.source_rect())?),
                 ("padding", padding_value(tile.padding())?),
@@ -1693,7 +1730,24 @@ fn filmstrip_parameters<F: Display>(
             ),
             ("selected".into(), ParameterValue::List(selected)),
             (
+                "artifact_source_indices".into(),
+                ParameterValue::List(
+                    artifact_source_indices
+                        .iter()
+                        .map(|index| unsigned_usize(*index))
+                        .collect::<Result<Vec<_>>>()?,
+                ),
+            ),
+            (
                 "omitted_frame_count".into(),
+                unsigned_usize(
+                    source_frame_count
+                        .checked_sub(artifact_source_indices.len())
+                        .ok_or_else(render_limit_error)?,
+                )?,
+            ),
+            (
+                "strip_omitted_frame_count".into(),
                 ParameterValue::Unsigned(plan.omitted_frame_count()),
             ),
             (
@@ -1894,10 +1948,13 @@ fn rgb_value(color: Rgb8) -> ParameterValue {
     )
 }
 
-fn signed_i128(value: i128) -> Result<ParameterValue> {
-    i64::try_from(value)
-        .map(ParameterValue::Signed)
-        .map_err(|_| render_limit_error())
+fn signed_offset_value(value: i128) -> Result<ParameterValue> {
+    let sign = if value < 0 { "negative" } else { "nonnegative" };
+    let magnitude = u64::try_from(value.unsigned_abs()).map_err(|_| render_limit_error())?;
+    object([
+        ("sign", ParameterValue::Text(sign.into())),
+        ("magnitude_nanos", ParameterValue::Unsigned(magnitude)),
+    ])
 }
 
 fn unsigned_usize(value: usize) -> Result<ParameterValue> {

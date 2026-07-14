@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-vision-toolkit-region-filmstrip-contract-tests
 kind: story
-stage: implementing
+stage: done
 tags: [visual]
 parent: epic-temporal-vision-toolkit-region-filmstrip
 depends_on: [epic-temporal-vision-toolkit-region-filmstrip-rendering]
@@ -34,3 +34,11 @@ Tests should verify visible metadata through deterministic canvas/glyph layout o
 ## Ordering
 
 Depends on `epic-temporal-vision-toolkit-region-filmstrip-rendering`. This checkpoint verifies the public source-derived evidence contract and should advance directly to `done` once green.
+
+## Implementation notes
+
+- Added `crates/temporal-vision/tests/filmstrip.rs` with arbitrary typed IDs and browser-free exact cases for source-image and rational 2× viewport regions, negative/partial/fully outside geometry, thinning, locator choice, gaps, signed offsets, padding color/hatching, locator chevrons, deterministic bytes/hash/manifest, and honest `tracking_method: none` provenance.
+- Boundary coverage rejects contradictory viewport mappings, non-divisible downscales, oversized layout/canvas/PNG requests, source-frame limits, and invalid tile-limit deserialization before artifact return.
+- One tiny stable PNG hash protects the deterministic shared encoder seam; decoded-pixel checks protect source/padding separation and visible warning/glyph bands without binary fixtures or OCR.
+- Normal dependencies remain unchanged and browser/CDP/MCP/UI/filesystem/runtime/GPU/decoder dependencies were not introduced; `png` remains a dev dependency for decoded-pixel assertions.
+- Verification: format/check/test/clippy package gate passed; 41 temporal-vision tests passed across 7 suites.
