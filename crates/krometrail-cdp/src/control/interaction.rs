@@ -73,6 +73,7 @@ impl PageControl {
         state: &SupervisorState,
         request: BrowserOperationRequest,
         cancel: &OperationCancellation,
+        parent_batch: Option<InteractionId>,
     ) -> Result<BrowserOperationResult> {
         let plan = interaction_plan(&request)?;
         let bound = bind_target(state, plan.target)?;
@@ -215,7 +216,7 @@ impl PageControl {
             plan.sanitized,
             LocatorSummary::from_locator(plan.locator.as_ref()),
             InteractionOutcome::Dispatched,
-            None,
+            parent_batch,
         )?;
         Ok(wrap_interaction_result(
             plan.kind,

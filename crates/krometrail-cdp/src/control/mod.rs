@@ -14,6 +14,7 @@ use crate::{
     transport::{CdpTransport, CommandScope, TransportError, TransportSessionId},
 };
 
+mod batch;
 mod dialog;
 mod evaluation;
 mod form;

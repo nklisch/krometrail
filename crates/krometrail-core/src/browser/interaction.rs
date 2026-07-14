@@ -833,6 +833,23 @@ pub struct InteractionResult {
     pub observation: LiveObservation,
 }
 
+impl InteractionResult {
+    pub fn anchor(&self) -> Result<super::InteractionAnchor> {
+        super::InteractionAnchor::new(
+            self.record.id,
+            self.record.context.session_id,
+            self.record.context.target_id,
+            self.record.action,
+            super::InteractionTiming::new(
+                self.record.context.started_at,
+                self.record.dispatch_time,
+                self.record.live_observation_time,
+                Some(self.record.live_observation_time),
+            )?,
+        )
+    }
+}
+
 pub trait BrowserActionRequest {
     fn locator(&self) -> Option<&InteractionLocator>;
     fn sanitize(&self) -> SanitizedParameters;

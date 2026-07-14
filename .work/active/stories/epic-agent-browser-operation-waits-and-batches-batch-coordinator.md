@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-operation-waits-and-batches-batch-coordinator
 kind: story
-stage: implementing
+stage: done
 tags: [browser, agent-ux]
 parent: epic-agent-browser-operation-waits-and-batches
 depends_on: [epic-agent-browser-operation-waits-and-batches-wait-executor]
@@ -35,3 +35,13 @@ Add batch execution to the existing session operation path. Admit one target, al
 ## Implementation notes
 
 The coordinator is a thin sequential wrapper over `execute_operation`; it must not call `Input.*`, `Page.*`, `Runtime.*`, screenshot composition, or locator resolution directly. Public requests remain unchanged; deadline and parent id travel in private execution context.
+
+## Implementation notes
+
+- Added `crates/krometrail-cdp/src/control/batch.rs` as a sequential coordinator over the existing `session::execute_operation` dispatcher. It contains no CDP action, navigation, evaluation, screenshot-composition, or locator command logic.
+- Added private `OperationExecutionContext` carrying only the shared absolute deadline and optional parent batch id. Standalone calls use the default context; batch children pass the same deadline and `Some(batch_id)`. Verified interaction records now receive that id without changing public action requests, and `InteractionResult::anchor()` derives the normal public child anchor from its existing record timing.
+- Admission binds one target once, then re-resolves every child selection immediately before dispatch and refuses drift. Registry validation remains the public first boundary; runtime validation protects `Selected` semantics and target loss.
+- Implemented stop/continue policy, terminal cancellation/deadline/disconnect handling, explicit skipped reasons with absent execution timing, wait-timeout/page-failure classification, preserved concrete standalone results, and no rollback or replay.
+- Optional per-step screenshots reuse an existing child live screenshot when present or dispatch the ordinary `TakeScreenshot` operation. Finalization dispatches exactly one ordinary `ObserveLive` unless cancellation, deadline, or target loss makes that impossible; all degradation remains an `ObservationPart`.
+- Added scripted production-port coverage in `crates/krometrail-cdp/tests/waits_and_batches.rs` for sequential dispatch, parent correlation/anchors, stop versus continue, preserved failed results, screenshot policy, and exactly-one final observation.
+- Verification: `cargo fmt --all`; `cargo test -p krometrail-cdp --all-targets` (202 passed across 18 suites); `cargo test -p krometrail-core --all-targets` (70 passed); `cargo check -p krometrail-cdp --all-targets --locked` (passed).

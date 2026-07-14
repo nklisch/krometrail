@@ -431,7 +431,7 @@ impl CaptureObserver for SessionCaptureObserver {
     }
 }
 
-struct SessionShared {
+pub(crate) struct SessionShared {
     compatibility: BrowserCompatibility,
     ownership: BrowserOwnership,
     profile: ProfileRef,
@@ -441,7 +441,7 @@ struct SessionShared {
     session_id: SessionId,
     session_origin: SessionOrigin,
     capture: Option<Arc<CaptureRuntime>>,
-    operation_cancellation: OperationCancellation,
+    pub(crate) operation_cancellation: OperationCancellation,
     stop_result: Mutex<Option<Result<BrowserStopOutcome>>>,
 }
 
@@ -1056,6 +1056,7 @@ async fn run_supervisor(
                             Arc::clone(&connection.transport),
                             &shared,
                             request,
+                            OperationExecutionContext::default(),
                         )
                         .await
                     }
@@ -1128,13 +1129,26 @@ async fn run_supervisor(
     // and are cleaned by the explicit shutdown path or by their guards on cancellation.
 }
 
-async fn execute_operation(
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct OperationExecutionContext {
+    pub(crate) deadline: Option<tokio::time::Instant>,
+    pub(crate) parent_batch: Option<krometrail_core::InteractionId>,
+}
+
+pub(crate) async fn execute_operation(
     page_control: &mut PageControl,
     state: &mut SupervisorState,
     transport: Arc<dyn CdpTransport>,
     shared: &Arc<SessionShared>,
     request: BrowserOperationRequest,
+    context: OperationExecutionContext,
 ) -> Result<BrowserOperationResult> {
+    if let BrowserOperationRequest::Batch(request) = request {
+        return page_control
+            .execute_batch(transport, state, shared, request, context)
+            .await
+            .map(|result| BrowserOperationResult::Batch(Box::new(result)));
+    }
     if request.kind().is_interaction() {
         return page_control
             .execute_interaction_request(
@@ -1142,6 +1156,7 @@ async fn execute_operation(
                 state,
                 request,
                 &shared.operation_cancellation,
+                context.parent_batch,
             )
             .await;
     }
@@ -1484,7 +1499,7 @@ async fn execute_operation(
                     state,
                     request,
                     &shared.operation_cancellation,
-                    None,
+                    context.deadline,
                 )
                 .await
         }
