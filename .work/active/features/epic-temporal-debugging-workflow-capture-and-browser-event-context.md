@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-debugging-workflow-capture-and-browser-event-context
 kind: feature
-stage: review
+stage: done
 tags: [browser, storage, agent-ux]
 parent: epic-temporal-debugging-workflow
 depends_on: [epic-temporal-debugging-workflow-resolved-temporal-queries]
@@ -697,3 +697,19 @@ The most damaging failure is a collector that appears bounded while cdpkit's hid
 The next failure is a useful-looking event row that leaks a token or local path. Raw payload persistence is structurally impossible, and URL/dialog/network fields are allowlisted before handoff; free text remains the least certain area. The redaction corpus and serialized-row negative sentinels protect it, while hash/type-only console/exception fallback can reduce fidelity without changing identity/query/schema.
 
 Finally, an event flood could consume the global budget and evict visual evidence unexpectedly. Shared retention sequence ordering, event-first metadata batches only when genuinely older, source-segment pins, classified live-page accounting, and explicit event tombstones keep the trade visible. Artifact outputs remain derived and first-evictable; capture frames remain the authoritative center.
+
+## Review (2026-07-14)
+
+**Verdict**: Approve after fix
+
+**Blockers**: none
+
+**Important finding fixed**:
+- A transient event-store failure permanently left collection status at `Failed` after the writer durably persisted its gap and resumed. Focused story `bug-recover-browser-event-collection-status` reproduced the stale status, restores only a current `Failed` state to `Operational` or source-aware `Degraded` after successful writes, passed the full Rust 1.85 gate, and was reviewed/archived in `9ff5d28`, `a579d1d`, and `71fae25`.
+
+**Nits adjudicated**:
+- Effective-clip gap semantics and exact collection/unavailable truncation counts are parked together as `idea-temporal-context-clip-and-truncation-exactness` before MCP exposure.
+- Rare Windows drive-relative and single-rooted-backslash path forms are parked as `idea-redact-windows-drive-relative-paths` for defense-in-depth corpus coverage.
+- Reusing the bounded network capacity for low-volume page signals is harmless; no extra configuration is warranted without measured pressure.
+
+**Evidence**: Independent cross-model standard review verified all eleven material lenses: registry authority, structural privacy, domain subscription/order/generation ownership, shared network waits, bounded nonblocking ingestion, shutdown/disable semantics, transactional v5 persistence, global accounting/retention, recovery, deterministic temporal context, and root integration. Focused Rust 1.85 checks and 369 feature-crate tests passed; the accepted status fix then passed current locked Rust 1.85 format, full workspace tests, and Clippy with warnings denied. Standard weight requires no re-review.
