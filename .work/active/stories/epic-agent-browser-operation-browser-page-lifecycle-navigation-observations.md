@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-operation-browser-page-lifecycle-navigation-observations
 kind: story
-stage: implementing
+stage: done
 tags: [browser, agent-ux]
 parent: epic-agent-browser-operation-browser-page-lifecycle
 depends_on: [epic-agent-browser-operation-browser-page-lifecycle-selected-page-targets]
@@ -40,3 +40,13 @@ Stop must signal cancellation before queueing shutdown, and transport-pump closu
 ## Ordering
 
 Depends on selected-page target mutations so every operation shares one binding, selection, interaction, and observation path. Qualification follows after the complete workflow exists.
+
+## Implementation notes
+
+- Execution capability: highest; navigation completion, snapshot invalidation, and cancellation cross protocol, actor, and observation boundaries.
+- Review weight: standard (caller).
+- Files changed: private navigation completion/cancellation policy, supervisor stop/disconnect wiring, operation dispatch, snapshot invalidation, and scripted lifecycle qualification.
+- Tests: exact-session navigate/reload/back/forward, same-document and loader commits, history boundary preflight, stale references, source-safe rejection/malformed replies, anchored cancellation, and generation-aware disconnect. Navigation filters passed with 4 deterministic tests.
+- Simplification: bounded `Page.getFrameTree`/`Page.getNavigationHistory` polling reuses page control and adds no permanent event subscriber, generic wait, replay, or network-idle policy.
+- Discrepancies from design: malformed frame/history replies discovered during preflight remain ordinary operation errors because no interaction is allocated until the completion baseline is valid.
+- Adjacent issues parked: none.

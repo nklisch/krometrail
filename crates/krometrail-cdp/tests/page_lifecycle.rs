@@ -61,7 +61,10 @@ fn history(index: u32, urls: &[&str]) -> Value {
 }
 
 fn ax_tree() -> Value {
-    json!({"nodes":[{"nodeId":"root","ignored":false,"role":{"value":"document"},"name":{"value":"Lifecycle"}}]})
+    json!({"nodes":[
+        {"nodeId":"root","ignored":false,"role":{"value":"document"},"name":{"value":"Lifecycle"},"childIds":["button"]},
+        {"nodeId":"button","ignored":false,"role":{"value":"button"},"name":{"value":"Push history"},"backendDOMNodeId":42,"properties":[{"name":"focusable","value":{"value":true}}]}
+    ]})
 }
 
 fn script_initial(transport: &ScriptedCdp) {
@@ -210,6 +213,7 @@ async fn navigation_reload_history_and_stop_cancellation_are_anchored() {
         .await
         .unwrap();
     let BrowserOperationResult::SnapshotPage(snapshot) = snapshot else { panic!("snapshot") };
+    let old_reference = snapshot.nodes.iter().find_map(|node| node.reference).unwrap();
 
     transport.push_response("Page.getFrameTree", frame("loader-1", first));
     transport.push_response("Page.getNavigationHistory", history(0, &[first]));
@@ -223,6 +227,17 @@ async fn navigation_reload_history_and_stop_cancellation_are_anchored() {
     let BrowserOperationResult::NavigatePage(navigated) = navigated else { panic!("navigate") };
     assert_successful_observation(&navigated);
     assert_eq!(navigated.interaction.target_id, target_id);
+    transport.push_response("Page.getLayoutMetrics", layout());
+    transport.push_response("Runtime.evaluate", json!({"result":{"type":"number","value":1.0}}));
+    let stale = session.execute(BrowserOperationRequest::TakeScreenshot(
+        ScreenshotRequest::new(
+            target_id,
+            ScreenshotTarget::Element(ElementLocator::Reference(old_reference)),
+            ImageFormat::Png,
+            None,
+        ).unwrap(),
+    )).await.unwrap_err();
+    assert_eq!(stale.code, ErrorCode::StaleReference);
 
     transport.push_response("Page.getFrameTree", frame("loader-2", second));
     transport.push_response("Page.getNavigationHistory", history(1, &[first, second]));
