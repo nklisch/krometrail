@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-operation-verified-interactions-core-contracts
 kind: story
-stage: implementing
+stage: done
 tags: [browser, agent-ux]
 parent: epic-agent-browser-operation-verified-interactions
 depends_on: []
@@ -43,3 +43,11 @@ Extend the operation declaration macro and `BROWSER_OPERATION_REGISTRY` slice wi
 - Adapter dispatch, CDP input translation, the `IdSource` plumbing into `PageControl`, real-browser qualification. Those land in later stories.
 - Durable persistence of `InteractionRecord` (owned by `epic-durable-browser-memory`).
 - MCP schemas or batch composition (owned by sibling features).
+
+## Implementation notes
+
+- Extended the existing operation declaration from 13 to 22 variants. Lifecycle and observation entries remain in the same registry; all nine interactions carry generated action metadata rather than introducing a parallel action list.
+- Adapted the design to the approved lifecycle contract by using `PageSelection` on interaction requests. Direct target and selected-page requests therefore share the same session-owned resolver as every existing page operation.
+- Added validated, Serde-safe core values and request constructors, closed key-chord parsing, bounded file-path and collection inputs, sanitized parameter envelopes, interaction records, and `interaction_failed` recovery semantics without filesystem or transport dependencies.
+- Sensitive sanitization keeps the bounded fill preview specified by design, prompt lengths, and upload basenames only. Full paths and prompt text do not enter records.
+- Verification passed: formatting, locked all-target core check, 59 core tests, and locked all-target core Clippy with warnings denied.

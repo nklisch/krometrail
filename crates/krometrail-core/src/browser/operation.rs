@@ -1,11 +1,14 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
-    ClosePageRequest, CreatePageRequest, EncodedScreenshot, EvaluationResult, GoBackRequest,
-    GoForwardRequest, InspectPageRequest, ListPagesRequest, LiveObservation,
+    AcceptedLocator, ActionCategory, ActionDefinition, ActionabilityRequirement, ClickRequest,
+    ClosePageRequest, CompletionKind, CreatePageRequest, DragRequest, EncodedScreenshot,
+    EvaluationResult, FillRequest, GoBackRequest, GoForwardRequest, HandleDialogRequest,
+    HoverRequest, InspectPageRequest, InteractionResult, ListPagesRequest, LiveObservation,
     LiveObservationRequest, NavigatePageRequest, PageOperationResult, PageSelection, PageSnapshot,
-    PageState, PageStatus, ReadOnlyEvaluationRequest, ReloadPageRequest, ScreenshotRequest,
-    SelectPageRequest, SnapshotPageRequest,
+    PageState, PageStatus, PressKeysRequest, ReadOnlyEvaluationRequest, ReloadPageRequest,
+    ScreenshotRequest, ScrollRequest, SelectOptionRequest, SelectPageRequest, SnapshotPageRequest,
+    UploadFilesRequest,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -42,6 +45,7 @@ pub struct BrowserOperationDefinition {
     pub mutability: OperationMutability,
     pub evidence: OperationEvidence,
     pub scope: BrowserOperationScopeKind,
+    pub action: Option<&'static ActionDefinition>,
 }
 
 trait PageScopedRequest {
@@ -67,6 +71,15 @@ selected_field!(NavigatePageRequest, target);
 selected_field!(ReloadPageRequest, target);
 selected_field!(GoBackRequest, target);
 selected_field!(GoForwardRequest, target);
+selected_field!(ClickRequest, target);
+selected_field!(FillRequest, target);
+selected_field!(PressKeysRequest, target);
+selected_field!(SelectOptionRequest, target);
+selected_field!(HoverRequest, target);
+selected_field!(DragRequest, target);
+selected_field!(ScrollRequest, target);
+selected_field!(UploadFilesRequest, target);
+selected_field!(HandleDialogRequest, target);
 
 macro_rules! operation_scope {
     (Browser, $request:ident) => {{
@@ -85,6 +98,7 @@ macro_rules! define_browser_operations {
             mutability: $mutability:ident,
             evidence: $evidence:ident,
             scope: $scope:ident,
+            action: $action:expr,
         }
     ),+ $(,)?) => {
         #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
@@ -96,6 +110,12 @@ macro_rules! define_browser_operations {
             pub const ALL: &'static [Self] = &[$(Self::$variant),+];
             pub const fn stable_name(self) -> &'static str {
                 match self { $(Self::$variant => $stable_name),+ }
+            }
+            pub fn is_interaction(self) -> bool {
+                BROWSER_OPERATION_REGISTRY
+                    .iter()
+                    .find(|definition| definition.kind == self)
+                    .is_some_and(|definition| definition.action.is_some())
             }
         }
 
@@ -131,50 +151,142 @@ macro_rules! define_browser_operations {
                 mutability: OperationMutability::$mutability,
                 evidence: OperationEvidence::$evidence,
                 scope: BrowserOperationScopeKind::$scope,
+                action: $action,
             }),+
         ];
     };
 }
 
+const ACTION_CLICK: ActionDefinition = ActionDefinition {
+    category: ActionCategory::Pointer,
+    actionability: ActionabilityRequirement::Actionable,
+    locator: AcceptedLocator::ElementOrCoordinate,
+    completion: CompletionKind::Settled,
+    display_name: "Click",
+};
+const ACTION_FILL: ActionDefinition = ActionDefinition {
+    category: ActionCategory::Form,
+    actionability: ActionabilityRequirement::Editable,
+    locator: AcceptedLocator::Element,
+    completion: CompletionKind::Settled,
+    display_name: "Fill",
+};
+const ACTION_PRESS_KEYS: ActionDefinition = ActionDefinition {
+    category: ActionCategory::Keyboard,
+    actionability: ActionabilityRequirement::Actionable,
+    locator: AcceptedLocator::OptionalElement,
+    completion: CompletionKind::Settled,
+    display_name: "Press keys",
+};
+const ACTION_SELECT: ActionDefinition = ActionDefinition {
+    category: ActionCategory::Form,
+    actionability: ActionabilityRequirement::Selectable,
+    locator: AcceptedLocator::Element,
+    completion: CompletionKind::Settled,
+    display_name: "Select option",
+};
+const ACTION_HOVER: ActionDefinition = ActionDefinition {
+    category: ActionCategory::Pointer,
+    actionability: ActionabilityRequirement::VisibleGeometry,
+    locator: AcceptedLocator::ElementOrCoordinate,
+    completion: CompletionKind::Settled,
+    display_name: "Hover",
+};
+const ACTION_DRAG: ActionDefinition = ActionDefinition {
+    category: ActionCategory::DragDrop,
+    actionability: ActionabilityRequirement::Actionable,
+    locator: AcceptedLocator::ElementOrCoordinate,
+    completion: CompletionKind::Settled,
+    display_name: "Drag",
+};
+const ACTION_SCROLL: ActionDefinition = ActionDefinition {
+    category: ActionCategory::Scroll,
+    actionability: ActionabilityRequirement::Actionable,
+    locator: AcceptedLocator::OptionalElement,
+    completion: CompletionKind::InputAcknowledged,
+    display_name: "Scroll",
+};
+const ACTION_UPLOAD: ActionDefinition = ActionDefinition {
+    category: ActionCategory::FileDialog,
+    actionability: ActionabilityRequirement::FileInput,
+    locator: AcceptedLocator::Element,
+    completion: CompletionKind::InputAcknowledged,
+    display_name: "Upload files",
+};
+const ACTION_DIALOG: ActionDefinition = ActionDefinition {
+    category: ActionCategory::Dialog,
+    actionability: ActionabilityRequirement::None,
+    locator: AcceptedLocator::None,
+    completion: CompletionKind::InputAcknowledged,
+    display_name: "Handle dialog",
+};
+
 define_browser_operations! {
     InspectPage(InspectPageRequest) => PageState {
-        stable_name: "inspect_page", mutability: ReadOnly, evidence: RequestedOnly, scope: Page,
+        stable_name: "inspect_page", mutability: ReadOnly, evidence: RequestedOnly, scope: Page, action: None,
     },
     SnapshotPage(SnapshotPageRequest) => PageSnapshot {
-        stable_name: "snapshot_page", mutability: ReadOnly, evidence: RequestedOnly, scope: Page,
+        stable_name: "snapshot_page", mutability: ReadOnly, evidence: RequestedOnly, scope: Page, action: None,
     },
     TakeScreenshot(ScreenshotRequest) => EncodedScreenshot {
-        stable_name: "take_screenshot", mutability: ReadOnly, evidence: RequestedOnly, scope: Page,
+        stable_name: "take_screenshot", mutability: ReadOnly, evidence: RequestedOnly, scope: Page, action: None,
     },
     EvaluatePage(ReadOnlyEvaluationRequest) => EvaluationResult {
-        stable_name: "evaluate_page", mutability: ReadOnly, evidence: RequestedOnly, scope: Page,
+        stable_name: "evaluate_page", mutability: ReadOnly, evidence: RequestedOnly, scope: Page, action: None,
     },
     ObserveLive(LiveObservationRequest) => LiveObservation {
-        stable_name: "observe_live", mutability: ReadOnly, evidence: LiveObservation, scope: Page,
+        stable_name: "observe_live", mutability: ReadOnly, evidence: LiveObservation, scope: Page, action: None,
     },
     ListPages(ListPagesRequest) => Vec<PageStatus> {
-        stable_name: "list_pages", mutability: ReadOnly, evidence: RequestedOnly, scope: Browser,
+        stable_name: "list_pages", mutability: ReadOnly, evidence: RequestedOnly, scope: Browser, action: None,
     },
     CreatePage(CreatePageRequest) => PageOperationResult {
-        stable_name: "create_page", mutability: StateChanging, evidence: LiveObservation, scope: Browser,
+        stable_name: "create_page", mutability: StateChanging, evidence: LiveObservation, scope: Browser, action: None,
     },
     SelectPage(SelectPageRequest) => PageOperationResult {
-        stable_name: "select_page", mutability: StateChanging, evidence: LiveObservation, scope: Browser,
+        stable_name: "select_page", mutability: StateChanging, evidence: LiveObservation, scope: Browser, action: None,
     },
     ClosePage(ClosePageRequest) => PageOperationResult {
-        stable_name: "close_page", mutability: StateChanging, evidence: LiveObservation, scope: Page,
+        stable_name: "close_page", mutability: StateChanging, evidence: LiveObservation, scope: Page, action: None,
     },
     NavigatePage(NavigatePageRequest) => PageOperationResult {
-        stable_name: "navigate_page", mutability: StateChanging, evidence: LiveObservation, scope: Page,
+        stable_name: "navigate_page", mutability: StateChanging, evidence: LiveObservation, scope: Page, action: None,
     },
     ReloadPage(ReloadPageRequest) => PageOperationResult {
-        stable_name: "reload_page", mutability: StateChanging, evidence: LiveObservation, scope: Page,
+        stable_name: "reload_page", mutability: StateChanging, evidence: LiveObservation, scope: Page, action: None,
     },
     GoBack(GoBackRequest) => PageOperationResult {
-        stable_name: "go_back", mutability: StateChanging, evidence: LiveObservation, scope: Page,
+        stable_name: "go_back", mutability: StateChanging, evidence: LiveObservation, scope: Page, action: None,
     },
     GoForward(GoForwardRequest) => PageOperationResult {
-        stable_name: "go_forward", mutability: StateChanging, evidence: LiveObservation, scope: Page,
+        stable_name: "go_forward", mutability: StateChanging, evidence: LiveObservation, scope: Page, action: None,
+    },
+    Click(ClickRequest) => InteractionResult {
+        stable_name: "click", mutability: StateChanging, evidence: LiveObservation, scope: Page, action: Some(&ACTION_CLICK),
+    },
+    Fill(FillRequest) => InteractionResult {
+        stable_name: "fill", mutability: StateChanging, evidence: LiveObservation, scope: Page, action: Some(&ACTION_FILL),
+    },
+    PressKeys(PressKeysRequest) => InteractionResult {
+        stable_name: "press_keys", mutability: StateChanging, evidence: LiveObservation, scope: Page, action: Some(&ACTION_PRESS_KEYS),
+    },
+    SelectOption(SelectOptionRequest) => InteractionResult {
+        stable_name: "select_option", mutability: StateChanging, evidence: LiveObservation, scope: Page, action: Some(&ACTION_SELECT),
+    },
+    Hover(HoverRequest) => InteractionResult {
+        stable_name: "hover", mutability: StateChanging, evidence: LiveObservation, scope: Page, action: Some(&ACTION_HOVER),
+    },
+    Drag(DragRequest) => InteractionResult {
+        stable_name: "drag", mutability: StateChanging, evidence: LiveObservation, scope: Page, action: Some(&ACTION_DRAG),
+    },
+    Scroll(ScrollRequest) => InteractionResult {
+        stable_name: "scroll", mutability: StateChanging, evidence: LiveObservation, scope: Page, action: Some(&ACTION_SCROLL),
+    },
+    UploadFiles(UploadFilesRequest) => InteractionResult {
+        stable_name: "upload_files", mutability: StateChanging, evidence: LiveObservation, scope: Page, action: Some(&ACTION_UPLOAD),
+    },
+    HandleDialog(HandleDialogRequest) => InteractionResult {
+        stable_name: "handle_dialog", mutability: StateChanging, evidence: LiveObservation, scope: Page, action: Some(&ACTION_DIALOG),
     },
 }
 
@@ -190,7 +302,7 @@ mod tests {
 
     #[test]
     fn declaration_is_the_complete_operation_registry() {
-        assert_eq!(BrowserOperationKind::ALL.len(), 13);
+        assert_eq!(BrowserOperationKind::ALL.len(), 22);
         assert_eq!(
             BROWSER_OPERATION_REGISTRY.len(),
             BrowserOperationKind::ALL.len()
@@ -201,7 +313,20 @@ mod tests {
         {
             assert_eq!(definition.kind, *kind);
             assert_eq!(definition.stable_name, kind.stable_name());
+            assert_eq!(definition.action.is_some(), kind.is_interaction());
         }
+        assert!(
+            BROWSER_OPERATION_REGISTRY
+                .iter()
+                .take(13)
+                .all(|definition| definition.action.is_none())
+        );
+        assert!(
+            BROWSER_OPERATION_REGISTRY
+                .iter()
+                .skip(13)
+                .all(|definition| definition.action.is_some())
+        );
         assert_eq!(
             BROWSER_OPERATION_REGISTRY[5].scope,
             BrowserOperationScopeKind::Browser

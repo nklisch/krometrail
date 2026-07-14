@@ -1,6 +1,7 @@
 //! Browser and page-target domain contracts.
 
 mod control;
+mod interaction;
 mod observation;
 mod operation;
 mod session;
@@ -11,6 +12,14 @@ pub use control::{
     GoBackRequest, GoForwardRequest, InteractionAnchor, InteractionTiming, ListPagesRequest,
     NavigatePageRequest, PageChange, PageOperationOutcome, PageOperationResult, PageSelection,
     PageStatus, ReloadPageRequest, SelectPageRequest,
+};
+pub use interaction::{
+    AcceptedLocator, ActionCategory, ActionDefinition, ActionabilityRequirement,
+    BrowserActionRequest, ClickRequest, CompletionKind, DialogAction, DragRequest, FillMode,
+    FillRequest, HandleDialogRequest, HoverRequest, InteractionLocator, InteractionOutcome,
+    InteractionRecord, InteractionResult, KeyChord, KeySegment, LocatorKind, LocatorSummary,
+    Modifier, Modifiers, MouseButton, NamedKey, PressKeysRequest, SanitizedParameters, ScrollDelta,
+    ScrollRequest, SelectOptionRequest, SelectValue, UploadFilesRequest, ValidatedFilePath,
 };
 pub use observation::{
     AccessibleProperty, AccessibleValue, CoordinateSpace, CssPoint, CssRect, CssSize,

@@ -34,6 +34,7 @@ define_stable_enum! {
         ScreenshotFailed => "screenshot_failed",
         EvaluationFailed => "evaluation_failed",
         NavigationFailed => "navigation_failed",
+        InteractionFailed => "interaction_failed",
         ReconnectExhausted => "reconnect_exhausted",
         Cancelled => "cancelled",
         ShutdownIncomplete => "shutdown_incomplete",
@@ -163,7 +164,8 @@ impl ErrorCode {
             Self::TargetFailed
             | Self::PageObservationFailed
             | Self::ScreenshotFailed
-            | Self::NavigationFailed => RetryAdvice::Safe,
+            | Self::NavigationFailed
+            | Self::InteractionFailed => RetryAdvice::Safe,
             Self::StaleReference | Self::ReferenceNotActionable => RetryAdvice::AfterRecovery,
             _ => RetryAdvice::Never,
         }
@@ -194,6 +196,9 @@ impl ErrorCode {
             }
             Self::NavigationFailed => {
                 Some("inspect current page status before retrying navigation")
+            }
+            Self::InteractionFailed => {
+                Some("retry against a current target, or refresh the snapshot if the page changed")
             }
             Self::ReconnectExhausted => Some("check the browser and start a new session"),
             Self::Cancelled => Some("start the operation again if it is still needed"),
