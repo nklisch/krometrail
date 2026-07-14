@@ -1,7 +1,7 @@
 ---
 id: epic-durable-browser-memory-range-resolution-resolver-semantics
 kind: story
-stage: implementing
+stage: done
 tags: [storage, browser]
 parent: epic-durable-browser-memory-range-resolution
 depends_on: [epic-durable-browser-memory-range-resolution-store-queries]
@@ -29,8 +29,12 @@ Implement `TemporalRangeResolver` in core over injected `RecordingCatalog`, `Fra
 
 ## Acceptance evidence
 
-- Session-time and equivalent wall-clock ranges return identical frame IDs.
-- Source-frame ranges include both endpoints and all retained ordinal-interior frames, even with timestamp ties.
-- Gap include/reject and retention allow/strict policies are covered.
-- Wrong-target/wrong-session anchors return `InvalidInput`; absent anchors and no retained evidence return `NotFound`; overflow returns `InvalidTime`.
-- Resolved ranges include related marker/navigation/interaction IDs from timeline order while frame IDs remain from the frame source path.
+- [x] Session-time and equivalent wall-clock ranges return identical frame IDs.
+- [x] Source-frame ranges include both endpoints and all retained ordinal-interior frames, even with timestamp ties.
+- [x] Gap include/reject and retention allow/strict policies are covered.
+- [x] Wrong-target/wrong-session anchors return `InvalidInput`; absent anchors and no retained evidence return `NotFound`; overflow returns `InvalidTime`.
+- [x] Resolved ranges include related marker/navigation/interaction IDs from timeline order while frame IDs remain from the frame source path.
+
+## Implementation
+
+Implemented `TemporalRangeResolver` over the focused catalog, frame, gap, timeline-anchor, timeline, and interaction-anchor ports. Explicit session/wall-clock, source-frame, marker/navigation, and interaction policies now converge on one inclusive `ResolvedRange`; retention and gap behavior produce source-safe errors and warnings. Interaction anchors remain `NotFound` while durable browser-operation persistence is absent. Qualification coverage is in `crates/krometrail-store/tests/range_resolution.rs`.

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::{
     CaptureOrdinal, CapturedFrame, EncodedFrame, FrameId, Result, SessionId, SessionRange, TargetId,
 };
@@ -31,4 +33,33 @@ pub trait FrameSource: Send + Sync {
         start: CaptureOrdinal,
         end: CaptureOrdinal,
     ) -> PortFuture<'_, Result<Vec<EncodedFrame>>>;
+}
+
+impl<T: FrameSource + ?Sized> FrameSource for Arc<T> {
+    fn frames_by_id(&self, frame_ids: Vec<FrameId>) -> PortFuture<'_, Result<Vec<EncodedFrame>>> {
+        (**self).frames_by_id(frame_ids)
+    }
+    fn frame_metadata_by_id(
+        &self,
+        frame_ids: Vec<FrameId>,
+    ) -> PortFuture<'_, Result<Vec<CapturedFrame>>> {
+        (**self).frame_metadata_by_id(frame_ids)
+    }
+    fn frames_in_range(
+        &self,
+        session_id: SessionId,
+        target_id: TargetId,
+        range: SessionRange,
+    ) -> PortFuture<'_, Result<Vec<EncodedFrame>>> {
+        (**self).frames_in_range(session_id, target_id, range)
+    }
+    fn frames_in_ordinal_range(
+        &self,
+        session_id: SessionId,
+        target_id: TargetId,
+        start: CaptureOrdinal,
+        end: CaptureOrdinal,
+    ) -> PortFuture<'_, Result<Vec<EncodedFrame>>> {
+        (**self).frames_in_ordinal_range(session_id, target_id, start, end)
+    }
 }

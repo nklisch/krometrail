@@ -7,4 +7,5 @@ pub use observation::{ObservationKind, ObservationPayloadRef, TimelineObservatio
 pub use range::{
     AnchorScope, CaptureGapPolicy, InteractionWindow, RangeResolutionOptions, ResolvedRange,
     RetentionPolicy, RetentionWarning, TemporalRangeAnchor, TemporalRangeAnchorKind,
+    TemporalRangeResolver,
 };

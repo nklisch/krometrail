@@ -6,8 +6,8 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    CaptureGap, FrameId, InteractionAnchor, InteractionId, MarkerId, NavigationId, Result,
-    SessionId, SessionRange, SessionTime, TargetId,
+    CaptureGap, FrameId, InteractionAnchor, InteractionId, MarkerId, NavigationId, ObservationKind,
+    Result, SessionId, SessionRange, SessionTime, TargetId, TimelineObservation,
     error::{ErrorCode, ErrorContext, KrometrailError, NonEmptyText, invalid, invalid_time},
 };
 
@@ -317,6 +317,492 @@ pub(crate) fn scope_context(scope: AnchorScope) -> ErrorContext {
         session_id: scope.session_id,
         target_id: scope.target_id,
         ..ErrorContext::default()
+    }
+}
+
+use crate::{
+    CaptureGapStore, EncodedFrame, FrameSource, InteractionAnchorSource, ObservationPayloadRef,
+    PortFuture, RecordingCatalog, TimelineAnchorSource, TimelineStore,
+};
+
+/// Resolves every temporal request through the same storage authorities before a
+/// consumer can read source frames or generate an artifact.
+pub struct TemporalRangeResolver<C, F, G, T, I> {
+    catalog: C,
+    frames: F,
+    gaps: G,
+    timeline: T,
+    interactions: I,
+}
+
+impl<C, F, G, T, I> TemporalRangeResolver<C, F, G, T, I> {
+    pub const fn new(catalog: C, frames: F, gaps: G, timeline: T, interactions: I) -> Self {
+        Self {
+            catalog,
+            frames,
+            gaps,
+            timeline,
+            interactions,
+        }
+    }
+}
+
+struct RangeSeed {
+    session_id: SessionId,
+    target_id: TargetId,
+    requested_range: SessionRange,
+    anchor_kind: TemporalRangeAnchorKind,
+    preloaded_frames: Option<Vec<EncodedFrame>>,
+}
+
+impl<C, F, G, T, I> TemporalRangeResolver<C, F, G, T, I>
+where
+    C: RecordingCatalog,
+    F: FrameSource,
+    G: CaptureGapStore,
+    T: TimelineStore + TimelineAnchorSource,
+    I: InteractionAnchorSource,
+{
+    pub fn resolve(
+        &self,
+        anchor: TemporalRangeAnchor,
+        options: RangeResolutionOptions,
+    ) -> PortFuture<'_, Result<ResolvedRange>> {
+        Box::pin(async move {
+            let seed = self.seed(anchor, options).await?;
+            self.finalize(seed, options).await
+        })
+    }
+
+    async fn seed(
+        &self,
+        anchor: TemporalRangeAnchor,
+        options: RangeResolutionOptions,
+    ) -> Result<RangeSeed> {
+        match anchor {
+            TemporalRangeAnchor::SessionTime { scope, range } => {
+                let (session_id, target_id) = required_scope(scope)?;
+                self.validate_catalog_scope(session_id, target_id).await?;
+                Ok(RangeSeed {
+                    session_id,
+                    target_id,
+                    requested_range: range,
+                    anchor_kind: TemporalRangeAnchorKind::SessionTime,
+                    preloaded_frames: None,
+                })
+            }
+            TemporalRangeAnchor::WallClock { scope, start, end } => {
+                let (session_id, target_id) = required_scope(scope)?;
+                if start > end {
+                    return Err(invalid_with_context(
+                        "wall-clock range start must not exceed its end",
+                        scope_context(scope),
+                    ));
+                }
+                let session = self.catalog.session(session_id).await?.ok_or_else(|| {
+                    not_found(
+                        "wall-clock resolution requires complete session metadata",
+                        scope_context(scope),
+                    )
+                })?;
+                let start = wall_clock_offset(start, session.started_at(), scope)?;
+                let end = wall_clock_offset(end, session.started_at(), scope)?;
+                self.validate_catalog_scope(session_id, target_id).await?;
+                Ok(RangeSeed {
+                    session_id,
+                    target_id,
+                    requested_range: SessionRange::new(start, end)?,
+                    anchor_kind: TemporalRangeAnchorKind::WallClock,
+                    preloaded_frames: None,
+                })
+            }
+            TemporalRangeAnchor::SourceFrame {
+                scope,
+                start_frame_id,
+                end_frame_id,
+            } => {
+                let metadata = self
+                    .frames
+                    .frame_metadata_by_id(vec![start_frame_id, end_frame_id])
+                    .await?;
+                if metadata.len() != 2 {
+                    return Err(not_found(
+                        "source-frame range endpoint is not retained",
+                        scope_context(scope),
+                    ));
+                }
+                let start = &metadata[0];
+                let end = &metadata[1];
+                if start.session_id() != end.session_id() || start.target_id() != end.target_id() {
+                    return Err(invalid_with_context(
+                        "source-frame range endpoints belong to different sessions or targets",
+                        scope_context(scope),
+                    ));
+                }
+                validate_scope_match(scope, start.session_id(), start.target_id())?;
+                if start.capture_ordinal() > end.capture_ordinal() {
+                    return Err(invalid_with_context(
+                        "source-frame range start must not follow its end",
+                        scope_context(scope),
+                    ));
+                }
+                let requested_range = SessionRange::new(start.session_time(), end.session_time())?;
+                let frames = self
+                    .frames
+                    .frames_in_ordinal_range(
+                        start.session_id(),
+                        start.target_id(),
+                        start.capture_ordinal(),
+                        end.capture_ordinal(),
+                    )
+                    .await?;
+                Ok(RangeSeed {
+                    session_id: start.session_id(),
+                    target_id: start.target_id(),
+                    requested_range,
+                    anchor_kind: TemporalRangeAnchorKind::SourceFrame,
+                    preloaded_frames: Some(frames),
+                })
+            }
+            TemporalRangeAnchor::Interaction {
+                scope,
+                interaction_id,
+                window,
+            } => {
+                let interaction = self
+                    .interactions
+                    .interaction_anchor(interaction_id)
+                    .await?
+                    .ok_or_else(|| {
+                        not_found(
+                            "no durable interaction anchor exists for this interaction",
+                            scope_context(scope).with_interaction(interaction_id),
+                        )
+                    })?;
+                validate_scope_match(scope, interaction.session_id, interaction.target_id)?;
+                let window = window.unwrap_or(options.implicit_interaction_window);
+                Ok(RangeSeed {
+                    session_id: interaction.session_id,
+                    target_id: interaction.target_id,
+                    requested_range: interaction_range(&interaction, window)?,
+                    anchor_kind: TemporalRangeAnchorKind::Interaction,
+                    preloaded_frames: None,
+                })
+            }
+            TemporalRangeAnchor::LatestInteraction {
+                session_id,
+                target_id,
+                window,
+            } => {
+                let interaction = self
+                    .interactions
+                    .latest_interaction_anchor(session_id, target_id)
+                    .await?
+                    .ok_or_else(|| {
+                        not_found(
+                            "no durable interaction anchor exists for this session and target",
+                            ErrorContext {
+                                session_id: Some(session_id),
+                                target_id: Some(target_id),
+                                ..ErrorContext::default()
+                            },
+                        )
+                    })?;
+                if interaction.session_id != session_id || interaction.target_id != target_id {
+                    return Err(invalid_with_context(
+                        "latest interaction anchor has the wrong session or target",
+                        ErrorContext {
+                            session_id: Some(session_id),
+                            target_id: Some(target_id),
+                            ..ErrorContext::default()
+                        },
+                    ));
+                }
+                let window = window.unwrap_or(options.implicit_interaction_window);
+                Ok(RangeSeed {
+                    session_id,
+                    target_id,
+                    requested_range: interaction_range(&interaction, window)?,
+                    anchor_kind: TemporalRangeAnchorKind::LatestInteraction,
+                    preloaded_frames: None,
+                })
+            }
+            TemporalRangeAnchor::Navigation {
+                scope,
+                navigation_id,
+                window,
+            } => {
+                let observation = self
+                    .timeline
+                    .observation_for_payload(
+                        scope,
+                        ObservationKind::Navigation,
+                        ObservationPayloadRef::Navigation(navigation_id),
+                    )
+                    .await?
+                    .ok_or_else(|| {
+                        not_found("navigation anchor was not found", scope_context(scope))
+                    })?;
+                seed_from_observation(
+                    observation,
+                    scope,
+                    window,
+                    TemporalRangeAnchorKind::Navigation,
+                )
+            }
+            TemporalRangeAnchor::Marker {
+                scope,
+                marker_id,
+                window,
+            } => {
+                let observation = self
+                    .timeline
+                    .observation_for_payload(
+                        scope,
+                        ObservationKind::Marker,
+                        ObservationPayloadRef::Marker(marker_id),
+                    )
+                    .await?
+                    .ok_or_else(|| {
+                        not_found("marker anchor was not found", scope_context(scope))
+                    })?;
+                seed_from_observation(observation, scope, window, TemporalRangeAnchorKind::Marker)
+            }
+        }
+    }
+
+    async fn validate_catalog_scope(
+        &self,
+        session_id: SessionId,
+        target_id: TargetId,
+    ) -> Result<()> {
+        if let Some(session) = self.catalog.session(session_id).await? {
+            if session.id() != session_id {
+                return Err(invalid(
+                    "session catalog identity does not match its lookup",
+                ));
+            }
+        }
+        if let Some(target) = self.catalog.target(session_id, target_id).await? {
+            if target.id() != target_id {
+                return Err(invalid("target catalog identity does not match its lookup"));
+            }
+        }
+        Ok(())
+    }
+
+    async fn finalize(
+        &self,
+        seed: RangeSeed,
+        options: RangeResolutionOptions,
+    ) -> Result<ResolvedRange> {
+        let frames = match seed.preloaded_frames {
+            Some(frames) => frames,
+            None => {
+                self.frames
+                    .frames_in_range(seed.session_id, seed.target_id, seed.requested_range)
+                    .await?
+            }
+        };
+        if frames.is_empty() {
+            return Err(not_found(
+                "requested interval has no retained source frames",
+                ErrorContext {
+                    session_id: Some(seed.session_id),
+                    target_id: Some(seed.target_id),
+                    range: Some(seed.requested_range),
+                    ..ErrorContext::default()
+                },
+            ));
+        }
+        for frame in &frames {
+            if frame.metadata().session_id() != seed.session_id
+                || frame.metadata().target_id() != seed.target_id
+            {
+                return Err(persistence_range_error(
+                    "frame source returned a frame for the wrong session or target",
+                ));
+            }
+            if seed.anchor_kind != TemporalRangeAnchorKind::SourceFrame
+                && !seed
+                    .requested_range
+                    .contains(frame.metadata().session_time())
+            {
+                return Err(persistence_range_error(
+                    "frame source returned a frame outside the requested range",
+                ));
+            }
+        }
+        let first = frames
+            .first()
+            .expect("non-empty frame result")
+            .metadata()
+            .session_time();
+        let last = frames
+            .last()
+            .expect("non-empty frame result")
+            .metadata()
+            .session_time();
+        let resolved_range = SessionRange::new(first.min(last), first.max(last))?;
+        let mut retention_warnings = Vec::new();
+        if resolved_range.start() != seed.requested_range.start() {
+            retention_warnings.push(RetentionWarning::RequestedStartBeforeOldestRetained {
+                requested: seed.requested_range.start(),
+                oldest_retained: resolved_range.start(),
+            });
+        }
+        if resolved_range.end() != seed.requested_range.end() {
+            retention_warnings.push(RetentionWarning::RequestedEndAfterNewestRetained {
+                requested: seed.requested_range.end(),
+                newest_retained: resolved_range.end(),
+            });
+        }
+        if !retention_warnings.is_empty() {
+            retention_warnings.push(RetentionWarning::PartiallyEvicted {
+                requested: seed.requested_range,
+                retained: resolved_range,
+            });
+            if options.retention == RetentionPolicy::RequireComplete {
+                return Err(not_found(
+                    "requested range is not completely retained",
+                    ErrorContext {
+                        session_id: Some(seed.session_id),
+                        target_id: Some(seed.target_id),
+                        range: Some(seed.requested_range),
+                        ..ErrorContext::default()
+                    },
+                ));
+            }
+        }
+        let gaps = self
+            .gaps
+            .gaps(seed.session_id, seed.target_id, resolved_range)
+            .await?;
+        if options.capture_gaps == CaptureGapPolicy::Reject && !gaps.is_empty() {
+            return Err(not_found(
+                "requested range contains known capture gaps",
+                ErrorContext {
+                    session_id: Some(seed.session_id),
+                    target_id: Some(seed.target_id),
+                    range: Some(resolved_range),
+                    ..ErrorContext::default()
+                },
+            ));
+        }
+        let observations = self
+            .timeline
+            .range(seed.session_id, seed.target_id, resolved_range)
+            .await?;
+        let mut interaction_ids = Vec::new();
+        let mut navigation_ids = Vec::new();
+        let mut marker_ids = Vec::new();
+        for observation in observations {
+            match observation.payload() {
+                ObservationPayloadRef::Interaction(id) => push_unique(&mut interaction_ids, *id),
+                ObservationPayloadRef::Navigation(id) => push_unique(&mut navigation_ids, *id),
+                ObservationPayloadRef::Marker(id) => push_unique(&mut marker_ids, *id),
+                _ => {}
+            }
+        }
+        let frame_ids = frames
+            .into_iter()
+            .map(|frame| frame.metadata().id())
+            .collect();
+        ResolvedRange::new(
+            seed.session_id,
+            seed.target_id,
+            seed.anchor_kind,
+            seed.requested_range,
+            resolved_range,
+            frame_ids,
+            interaction_ids,
+            navigation_ids,
+            marker_ids,
+            gaps,
+            retention_warnings,
+            options,
+        )
+    }
+}
+
+fn required_scope(scope: AnchorScope) -> Result<(SessionId, TargetId)> {
+    match (scope.session_id, scope.target_id) {
+        (Some(session_id), Some(target_id)) => Ok((session_id, target_id)),
+        _ => Err(invalid_with_context(
+            "range anchor requires both session and target scope",
+            scope_context(scope),
+        )),
+    }
+}
+
+fn validate_scope_match(
+    scope: AnchorScope,
+    session_id: SessionId,
+    target_id: TargetId,
+) -> Result<()> {
+    if scope.session_id.is_some_and(|value| value != session_id)
+        || scope.target_id.is_some_and(|value| value != target_id)
+    {
+        return Err(invalid_with_context(
+            "range anchor belongs to another session or target",
+            scope_context(scope),
+        ));
+    }
+    Ok(())
+}
+
+fn wall_clock_offset(
+    value: SystemTime,
+    started_at: SystemTime,
+    scope: AnchorScope,
+) -> Result<SessionTime> {
+    let duration = value.duration_since(started_at).map_err(|_| {
+        not_found(
+            "wall-clock timestamp precedes the recording session",
+            scope_context(scope),
+        )
+    })?;
+    let nanos = u64::try_from(duration.as_nanos())
+        .map_err(|_| invalid_time("wall-clock offset exceeds session time"))?;
+    Ok(SessionTime::from_nanos(nanos))
+}
+
+fn seed_from_observation(
+    observation: TimelineObservation,
+    scope: AnchorScope,
+    window: Option<InteractionWindow>,
+    kind: TemporalRangeAnchorKind,
+) -> Result<RangeSeed> {
+    validate_scope_match(scope, observation.session_id(), observation.target_id())?;
+    Ok(RangeSeed {
+        session_id: observation.session_id(),
+        target_id: observation.target_id(),
+        requested_range: point_range(observation.session_time(), window)?,
+        anchor_kind: kind,
+        preloaded_frames: None,
+    })
+}
+
+fn push_unique<T: Eq>(values: &mut Vec<T>, value: T) {
+    if !values.contains(&value) {
+        values.push(value);
+    }
+}
+
+fn persistence_range_error(message: impl Into<String>) -> KrometrailError {
+    KrometrailError::new(
+        ErrorCode::PersistenceFailed,
+        NonEmptyText::new(message).expect("range persistence errors must have a message"),
+    )
+}
+
+trait ErrorContextInteraction {
+    fn with_interaction(self, interaction_id: InteractionId) -> Self;
+}
+impl ErrorContextInteraction for ErrorContext {
+    fn with_interaction(mut self, interaction_id: InteractionId) -> Self {
+        self.interaction_id = Some(interaction_id);
+        self
     }
 }
 

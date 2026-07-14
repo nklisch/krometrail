@@ -96,5 +96,5 @@ pub use time::{ObservedTime, SessionOrigin, SessionRange, SessionTime, SourceTim
 pub use timeline::{
     AnchorScope, CaptureGapPolicy, InteractionWindow, ObservationKind, ObservationPayloadRef,
     RangeResolutionOptions, ResolvedRange, RetentionPolicy, RetentionWarning, TemporalRangeAnchor,
-    TemporalRangeAnchorKind, TimelineObservation,
+    TemporalRangeAnchorKind, TemporalRangeResolver, TimelineObservation,
 };
