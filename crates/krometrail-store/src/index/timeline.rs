@@ -1,9 +1,10 @@
 use krometrail_core::{
     CaptureOrdinal, ErrorCode, KrometrailError, NonEmptyText, ObservationKind,
     ObservationPayloadRef, ObservedTime, PortFuture, SessionId, SessionRange, SessionTime,
-    SourceTime, TargetId, TimelineObservation, TimelineStore,
+    SourceTime, TargetId, TimelineObservation, TimelineRangeQuery, TimelineRangeSlice,
+    TimelineStore,
 };
-use rusqlite::{OptionalExtension, Transaction, params};
+use rusqlite::{OptionalExtension, Transaction, params, params_from_iter};
 
 use super::{SqliteIndex, codec, ensure_identity};
 use crate::persistence_error;
@@ -148,6 +149,96 @@ impl TimelineStore for SqliteIndex {
             raw.into_iter().map(decode_observation).collect()
         })
     }
+
+    fn selected_range(
+        &self,
+        query: TimelineRangeQuery,
+    ) -> PortFuture<'_, krometrail_core::Result<TimelineRangeSlice>> {
+        Box::pin(async move {
+            let connection = self.connection()?;
+            let (where_sql, kind_names) = selected_range_sql(&query);
+            // Heterogeneous parameter list: scope/range are blobs, kinds are text.
+            let scope_params: &[&dyn rusqlite::ToSql] = &[
+                &codec::id(query.session_id.as_uuid()).to_vec(),
+                &codec::id(query.target_id.as_uuid()).to_vec(),
+                &codec::u64_blob(query.range.start().as_nanos()).to_vec(),
+                &codec::u64_blob(query.range.end().as_nanos()).to_vec(),
+            ];
+            let kind_params: Vec<String> =
+                kind_names.iter().map(|name| (*name).to_string()).collect();
+            let count_params: Vec<&dyn rusqlite::ToSql> = scope_params
+                .iter()
+                .copied()
+                .chain(kind_params.iter().map(|s| s as &dyn rusqlite::ToSql))
+                .collect();
+            // Count exact matches first, independent of the row limit.
+            let matched_count: u64 = connection
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM timeline_observations WHERE {where_sql}"),
+                    params_from_iter(count_params.iter()),
+                    |row| row.get::<_, i64>(0),
+                )
+                .map(|value| value.max(0) as u64)
+                .map_err(|_| persistence_error("could not count timeline evidence"))?;
+            let limit = i64::try_from(usize::from(query.limit.get()))
+                .map_err(|_| persistence_error("timeline range limit overflows i64"))?;
+            let mut statement = connection
+                .prepare(&format!(
+                    "SELECT session_id, target_id, session_time_be, source_time_be, \
+                            observed_time_be, kind, payload_json \
+                     FROM timeline_observations \
+                     WHERE {where_sql} \
+                     ORDER BY session_time_be ASC, \
+                       CASE WHEN capture_ordinal_be IS NULL THEN 1 ELSE 0 END ASC, \
+                       capture_ordinal_be ASC, observed_time_be ASC, kind ASC, \
+                       payload_sort_key ASC, observation_id ASC \
+                     LIMIT ?"
+                ))
+                .map_err(|_| persistence_error("could not prepare the bounded timeline query"))?;
+            let row_params: Vec<&dyn rusqlite::ToSql> = scope_params
+                .iter()
+                .copied()
+                .chain(kind_params.iter().map(|s| s as &dyn rusqlite::ToSql))
+                .chain(std::iter::once(&limit as &dyn rusqlite::ToSql))
+                .collect();
+            let rows = statement
+                .query_map(params_from_iter(row_params.iter()), raw_observation)
+                .map_err(|_| persistence_error("could not query bounded timeline metadata"))?;
+            let raw: Vec<_> = rows
+                .collect::<Result<_, _>>()
+                .map_err(|_| persistence_error("could not read bounded timeline metadata"))?;
+            let observations: Vec<TimelineObservation> = raw
+                .into_iter()
+                .map(decode_observation)
+                .collect::<Result<_, _>>()?;
+            let returned_count = observations.len() as u64;
+            Ok(TimelineRangeSlice {
+                matched_count,
+                observations,
+                truncated: matched_count > returned_count,
+            })
+        })
+    }
+}
+
+/// Builds the WHERE clause text and the ordered kind stable-name list shared by
+/// the count and row queries.
+///
+/// The kind filter is applied at SQL selection time so high-volume kinds
+/// (such as browser events) never enter the result when not requested.
+fn selected_range_sql(query: &TimelineRangeQuery) -> (String, Vec<&'static str>) {
+    let placeholders = query
+        .kinds
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "session_id=? AND target_id=? AND session_time_be>=? AND session_time_be<=? \
+         AND kind IN ({placeholders})"
+    );
+    let kind_names = query.kind_names();
+    (sql, kind_names)
 }
 
 pub(crate) fn raw_observation(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawObservation> {

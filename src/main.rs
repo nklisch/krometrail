@@ -1,6 +1,7 @@
 mod app;
 mod artifacts;
 mod cli;
+mod debug_bundle;
 mod progressive;
 
 use std::process::ExitCode;

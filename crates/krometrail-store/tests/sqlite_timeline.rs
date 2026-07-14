@@ -278,3 +278,128 @@ async fn unknown_database_names_fail_with_source_safe_errors() {
     assert!(!error.message.as_str().contains("future_kind"));
     assert!(!error.message.as_str().contains("SELECT"));
 }
+
+#[tokio::test]
+async fn selected_range_filters_by_kind_reports_exact_count_and_truncates() {
+    use krometrail_core::{
+        InteractionId, MarkerId, NavigationId, TimelineRangeQuery, TimelineStore,
+    };
+    use std::num::NonZeroU16;
+
+    let fixture = Fixture::new();
+    // Three marker-kind observations at distinct times. Browser-event and frame
+    // rows are never inserted through the generic timeline path; the kind IN
+    // (...) filter excludes them by design when not requested.
+    let interaction = fixture.observation(
+        1,
+        2,
+        ObservationKind::InteractionBoundary,
+        ObservationPayloadRef::Interaction(InteractionId::from_uuid(Uuid::from_u128(10))),
+    );
+    let navigation = fixture.observation(
+        2,
+        3,
+        ObservationKind::Navigation,
+        ObservationPayloadRef::Navigation(NavigationId::from_uuid(Uuid::from_u128(11))),
+    );
+    let marker = fixture.observation(
+        3,
+        4,
+        ObservationKind::Marker,
+        ObservationPayloadRef::Marker(MarkerId::from_uuid(Uuid::from_u128(12))),
+    );
+    for entry in [interaction, navigation, marker] {
+        fixture.index.append(entry).await.unwrap();
+    }
+
+    // Limit below the matched count: exact count, bounded rows, truncated flag.
+    let query = TimelineRangeQuery::new(
+        fixture.session,
+        fixture.target,
+        SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(10)).unwrap(),
+        vec![
+            ObservationKind::InteractionBoundary,
+            ObservationKind::Navigation,
+            ObservationKind::Marker,
+        ],
+        NonZeroU16::new(2).unwrap(),
+    )
+    .unwrap();
+    let slice = TimelineStore::selected_range(&fixture.index, query)
+        .await
+        .unwrap();
+    assert_eq!(slice.matched_count, 3);
+    assert_eq!(slice.observations.len(), 2);
+    assert!(slice.truncated);
+    assert_eq!(
+        slice.observations[0].kind(),
+        ObservationKind::InteractionBoundary
+    );
+    assert_eq!(slice.observations[1].kind(), ObservationKind::Navigation);
+
+    // Limit above the matched count: no truncation.
+    let query = TimelineRangeQuery::new(
+        fixture.session,
+        fixture.target,
+        SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(10)).unwrap(),
+        vec![ObservationKind::Marker],
+        NonZeroU16::new(64).unwrap(),
+    )
+    .unwrap();
+    let slice = TimelineStore::selected_range(&fixture.index, query)
+        .await
+        .unwrap();
+    assert_eq!(slice.matched_count, 1);
+    assert_eq!(slice.observations.len(), 1);
+    assert!(!slice.truncated);
+    assert_eq!(slice.observations[0].kind(), ObservationKind::Marker);
+
+    // A kind not present in the timeline returns zero matched.
+    let query = TimelineRangeQuery::new(
+        fixture.session,
+        fixture.target,
+        SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(10)).unwrap(),
+        vec![ObservationKind::ConsoleMessage],
+        NonZeroU16::new(64).unwrap(),
+    )
+    .unwrap();
+    let slice = TimelineStore::selected_range(&fixture.index, query)
+        .await
+        .unwrap();
+    assert_eq!(slice.matched_count, 0);
+    assert!(slice.observations.is_empty());
+    assert!(!slice.truncated);
+
+    // Query constructor validates unique non-empty kinds and the 4096-row cap.
+    assert!(
+        TimelineRangeQuery::new(
+            fixture.session,
+            fixture.target,
+            SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(1)).unwrap(),
+            Vec::new(),
+            NonZeroU16::new(1).unwrap(),
+        )
+        .is_err()
+    );
+    assert!(
+        TimelineRangeQuery::new(
+            fixture.session,
+            fixture.target,
+            SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(1)).unwrap(),
+            vec![ObservationKind::Marker, ObservationKind::Marker],
+            NonZeroU16::new(1).unwrap(),
+        )
+        .is_err()
+    );
+    assert!(
+        TimelineRangeQuery::new(
+            fixture.session,
+            fixture.target,
+            SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(1)).unwrap(),
+            vec![ObservationKind::Marker],
+            NonZeroU16::new(4097).unwrap(),
+        )
+        .is_err()
+    );
+    assert_eq!(krometrail_core::MAX_TIMELINE_RANGE_ROWS, 4096);
+}

@@ -9,14 +9,15 @@ use krometrail_core::{
     BrowserEventCursor, BrowserEventSelector, BrowserEventSink, BrowserEventSource,
     BrowserEventUnavailableRange, CaptureGap, CaptureGapStore, CaptureStatusSamples,
     DiskBudgetBytes, EncodedFrame, ErrorCode, ErrorContext, EventCandidateLimit, EventPageLimit,
-    EvidenceScope, FrameAddress, FrameId, FrameSource, InteractionAnchor, InteractionEvidenceSink,
-    InteractionRecord, KrometrailError, NavigationId, NonEmptyText, ObservedTime, PinChange,
-    PinProtectionScope, PinState, PortFuture, ProgressivePinChange, ProtectedSegment,
-    RecordingBudgetState, RecordingSink, ResolvedRange, RetentionPinRequest, RetentionRange,
-    RetentionStatus, RetentionStore, RetrieveArtifactRequest, RetryAdvice, SessionDeletion,
-    SessionId, SessionRange, SessionTime, Sha256Digest, SourceFrameBatch, SourceFrameHandle,
-    SourceFrameList, SourceFrameRead, SourceFrameSelection, SourceFramesRequest, StorageUsage,
-    StoredArtifact, TargetId, TemporalContext, TemporalContextQuery, TemporalContextRequest,
+    EvidenceScope, FrameAddress, FrameId, FrameSource, InteractionAnchor, InteractionAnchorSource,
+    InteractionEvidenceSink, InteractionId, InteractionRecord, InteractionRecordSource,
+    KrometrailError, NavigationId, NonEmptyText, ObservedTime, PinChange, PinProtectionScope,
+    PinState, PortFuture, ProgressivePinChange, ProtectedSegment, RecordingBudgetState,
+    RecordingSink, ResolvedRange, RetentionPinRequest, RetentionRange, RetentionStatus,
+    RetentionStore, RetrieveArtifactRequest, RetryAdvice, SessionDeletion, SessionId, SessionRange,
+    SessionTime, Sha256Digest, SourceFrameBatch, SourceFrameHandle, SourceFrameList,
+    SourceFrameRead, SourceFrameSelection, SourceFramesRequest, StorageUsage, StoredArtifact,
+    TargetId, TemporalContext, TemporalContextQuery, TemporalContextRequest,
     TemporalContextService, TemporalQuery, TemporalQueryRequest, TemporalQueryService,
     TemporalRangeResolver, TimelineObservation, TimelineStore,
 };
@@ -1325,6 +1326,45 @@ impl TimelineStore for RecordingStore {
         range: SessionRange,
     ) -> PortFuture<'_, krometrail_core::Result<Vec<TimelineObservation>>> {
         TimelineStore::range(self.index.as_ref(), session_id, target_id, range)
+    }
+
+    fn selected_range(
+        &self,
+        query: krometrail_core::TimelineRangeQuery,
+    ) -> PortFuture<'_, krometrail_core::Result<krometrail_core::TimelineRangeSlice>> {
+        TimelineStore::selected_range(self.index.as_ref(), query)
+    }
+}
+
+// Marker/interaction evidence reads are metadata-only and do not hold the
+// mutation gate; the bundle service completes them before visual work begins.
+impl InteractionAnchorSource for RecordingStore {
+    fn interaction_anchor(
+        &self,
+        interaction_id: InteractionId,
+    ) -> PortFuture<'_, krometrail_core::Result<Option<InteractionAnchor>>> {
+        InteractionAnchorSource::interaction_anchor(self.index.as_ref(), interaction_id)
+    }
+
+    fn latest_interaction_anchor(
+        &self,
+        session_id: SessionId,
+        target_id: TargetId,
+    ) -> PortFuture<'_, krometrail_core::Result<Option<InteractionAnchor>>> {
+        InteractionAnchorSource::latest_interaction_anchor(
+            self.index.as_ref(),
+            session_id,
+            target_id,
+        )
+    }
+}
+
+impl InteractionRecordSource for RecordingStore {
+    fn interaction_record(
+        &self,
+        interaction_id: InteractionId,
+    ) -> PortFuture<'_, krometrail_core::Result<Option<InteractionRecord>>> {
+        InteractionRecordSource::interaction_record(self.index.as_ref(), interaction_id)
     }
 }
 

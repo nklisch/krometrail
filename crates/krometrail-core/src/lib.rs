@@ -126,9 +126,10 @@ pub use ports::{
     DEFAULT_EVENT_PAGE_ROWS, EventCandidateLimit, EventPageLimit, FrameSource, IdSource,
     InteractionAnchorSource, InteractionEvidenceSink, InteractionRecordSource, LaunchBrowser,
     MAX_CAPTURE_STATUS_SAMPLES, MAX_EVENT_CANDIDATE_ROWS, MAX_EVENT_PAGE_ROWS,
-    MAX_EVENT_UNAVAILABLE_RANGES, ManagedProfile, MonotonicClock, PortFuture,
-    ProgressiveEvidenceStore, RecordingCatalog, RecordingSink, ResolvedReferenceGeometry,
-    RetentionStore, StoredArtifact, TimelineAnchorSource, TimelineStore, WallClock,
+    MAX_EVENT_UNAVAILABLE_RANGES, MAX_TIMELINE_RANGE_ROWS, ManagedProfile, MonotonicClock,
+    PortFuture, ProgressiveEvidenceStore, RecordingCatalog, RecordingSink,
+    ResolvedReferenceGeometry, RetentionStore, StoredArtifact, TimelineAnchorSource,
+    TimelineRangeQuery, TimelineRangeSlice, TimelineStore, WallClock,
 };
 pub use progressive::{
     ArtifactEvidenceHandle, ArtifactRead, CallerRegionShape, EvidenceScope,

@@ -49,7 +49,9 @@ pub use range::{
 };
 pub use recording::RecordingSink;
 pub use retention::RetentionStore;
-pub use timeline::TimelineStore;
+pub use timeline::{
+    MAX_TIMELINE_RANGE_ROWS, TimelineRangeQuery, TimelineRangeSlice, TimelineStore,
+};
 
 #[cfg(test)]
 mod tests {
@@ -345,6 +347,47 @@ mod tests {
                     })
                     .cloned()
                     .collect())
+            };
+            Box::pin(async move { result })
+        }
+
+        fn selected_range(
+            &self,
+            query: crate::TimelineRangeQuery,
+        ) -> PortFuture<'_, crate::Result<crate::TimelineRangeSlice>> {
+            let result = if self.fail {
+                Err(crate::KrometrailError::new(
+                    ErrorCode::PersistenceFailed,
+                    crate::NonEmptyText::new("timeline selected range failed").unwrap(),
+                ))
+            } else {
+                let kinds: Vec<_> = query.kind_names();
+                let matched: Vec<_> = self
+                    .observations
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|observation| {
+                        observation.session_id() == query.session_id
+                            && observation.target_id() == query.target_id
+                            && query.range.contains(observation.session_time())
+                            && kinds.contains(&observation.kind().as_str())
+                    })
+                    .cloned()
+                    .collect();
+                let matched_count = matched.len() as u64;
+                let limit = usize::from(query.limit.get());
+                let truncated = matched_count as usize > limit;
+                let observations = if truncated {
+                    matched.into_iter().take(limit).collect()
+                } else {
+                    matched
+                };
+                Ok(crate::TimelineRangeSlice {
+                    matched_count,
+                    observations,
+                    truncated,
+                })
             };
             Box::pin(async move { result })
         }
