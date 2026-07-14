@@ -1,7 +1,7 @@
 ---
 id: refactor-centralize-cdp-network-long-lived-classification
 kind: story
-stage: implementing
+stage: review
 tags: [refactor, browser]
 parent: null
 depends_on: [epic-temporal-debugging-workflow-capture-and-browser-event-context]
@@ -39,6 +39,13 @@ One private `is_long_lived(resource_type: Option<NetworkResourceType>) -> bool` 
 - [ ] Redirect and out-of-order response/failure normalization, finite-request network quiet, long-lived exclusion, and generation-fenced routing retain their existing behavior.
 - [ ] Existing focused CDP browser-event and waits/batches tests pass; no new test surface or public/API/schema/privacy policy is introduced.
 - [ ] `cargo fmt --all -- --check`, `cargo check --workspace --all-targets --locked`, `cargo test --workspace --all-targets --locked`, and `cargo clippy --workspace --all-targets --locked -- -D warnings` pass.
+
+## Implementation record
+
+- Execution capability: baseline inline ownership; one private pure classifier in one module.
+- `is_long_lived(Option<NetworkResourceType>)` is now the sole WebSocket/EventSource rule for request starts and orphan response/failure contexts. Missing/other types remain finite exactly as before.
+- Orphan paths normalize the resource type once and reuse it for both stored context and classification; allowlist mapping, event/activity values, wait fan-out, ordering, and errors are unchanged.
+- Rust 1.85 locked format, full workspace all-target tests, and Clippy with warnings denied passed.
 
 ## Risk and Rollback
 

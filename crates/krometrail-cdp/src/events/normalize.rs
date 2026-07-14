@@ -414,10 +414,7 @@ impl EventNormalizer {
             privacy::sanitized_url(request.get("url"))?.ok_or(NormalizeError::InvalidPayload)?;
         let resource_type =
             privacy::resource_type(params.get("type")).unwrap_or(NetworkResourceType::Other);
-        let long_lived = matches!(
-            resource_type,
-            NetworkResourceType::WebSocket | NetworkResourceType::EventSource
-        );
+        let long_lived = is_long_lived(Some(resource_type));
         let source_time = privacy::source_seconds(params.get("timestamp"));
         let mut state = self.state.lock().expect("event normalizer lock");
         let id = if let Some(existing) = state.requests.get(&key) {
@@ -485,17 +482,13 @@ impl EventNormalizer {
             if state.requests.len() >= self.request_limit {
                 return Err(NormalizeError::RequestLimit);
             }
+            let resource_type = privacy::resource_type(params.get("type"));
             let context = RequestContext {
                 id: self.next_request_id(),
                 method: None,
-                resource_type: privacy::resource_type(params.get("type")),
+                resource_type,
                 url: privacy::sanitized_url(response.get("url"))?,
-                long_lived: privacy::resource_type(params.get("type")).is_some_and(|kind| {
-                    matches!(
-                        kind,
-                        NetworkResourceType::WebSocket | NetworkResourceType::EventSource
-                    )
-                }),
+                long_lived: is_long_lived(resource_type),
             };
             state.requests.insert(key.clone(), context.clone());
             context
@@ -556,17 +549,15 @@ impl EventNormalizer {
             .expect("event normalizer lock")
             .requests
             .remove(&key)
-            .unwrap_or_else(|| RequestContext {
-                id: self.next_request_id(),
-                method: None,
-                resource_type: privacy::resource_type(params.get("type")),
-                url: None,
-                long_lived: privacy::resource_type(params.get("type")).is_some_and(|kind| {
-                    matches!(
-                        kind,
-                        NetworkResourceType::WebSocket | NetworkResourceType::EventSource
-                    )
-                }),
+            .unwrap_or_else(|| {
+                let resource_type = privacy::resource_type(params.get("type"));
+                RequestContext {
+                    id: self.next_request_id(),
+                    method: None,
+                    resource_type,
+                    url: None,
+                    long_lived: is_long_lived(resource_type),
+                }
             });
         Ok(NetworkActivity::new(
             key,
@@ -591,6 +582,13 @@ impl EventNormalizer {
     fn next_request_id(&self) -> NetworkRequestId {
         NetworkRequestId::from_uuid(*self.ids.next().as_uuid())
     }
+}
+
+fn is_long_lived(resource_type: Option<NetworkResourceType>) -> bool {
+    matches!(
+        resource_type,
+        Some(NetworkResourceType::WebSocket | NetworkResourceType::EventSource)
+    )
 }
 
 fn response_payload(
