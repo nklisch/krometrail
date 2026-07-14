@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Lifecycle first</title></head>
+<body>
+  <h1>Lifecycle first</h1>
+  <button id="push" type="button">Push history</button>
+  <output id="marker">first</output>
+  <output id="profile-visits"></output>
+  <script>
+    const visits = Number(localStorage.getItem('lifecycle-visits') || '0') + 1;
+    localStorage.setItem('lifecycle-visits', String(visits));
+    document.querySelector('#profile-visits').textContent = String(visits);
+    document.querySelector('#push').addEventListener('click', () => {
+      history.pushState({ marker: 'pushed' }, '', '#pushed');
+      document.querySelector('#marker').textContent = 'pushed';
+    });
+    addEventListener('popstate', () => {
+      document.querySelector('#marker').textContent = location.hash === '#pushed' ? 'pushed' : 'first';
+    });
+  </script>
+</body>
+</html>

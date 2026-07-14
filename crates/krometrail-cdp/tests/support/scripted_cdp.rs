@@ -9,6 +9,7 @@ use krometrail_cdp::{
     CdpTransport, CommandScope, NamedEvent, TransportError, TransportEvents, TransportFuture,
 };
 use serde_json::{Value, json};
+use tokio::sync::Notify;
 
 #[derive(Clone, Debug)]
 pub struct ScriptedCdp {
@@ -34,6 +35,8 @@ struct State {
     events: HashMap<String, Vec<Value>>,
     responses: HashMap<String, VecDeque<Result<Value, TransportError>>>,
     hold_events_open: bool,
+    held_methods: HashSet<String>,
+    command_notify: Arc<Notify>,
 }
 
 impl ScriptedCdp {
@@ -50,6 +53,8 @@ impl ScriptedCdp {
                 events: HashMap::new(),
                 responses: HashMap::new(),
                 hold_events_open: false,
+                held_methods: HashSet::new(),
+                command_notify: Arc::new(Notify::new()),
             })),
         }
     }
@@ -108,6 +113,31 @@ impl ScriptedCdp {
         self.state.lock().unwrap().hold_events_open = true;
     }
 
+    pub fn hold_method(&self, method: &str) {
+        self.state
+            .lock()
+            .unwrap()
+            .held_methods
+            .insert(method.to_owned());
+    }
+
+    pub async fn wait_for_command(&self, method: &str) {
+        self.wait_for_command_count(method, 1).await;
+    }
+
+    pub async fn wait_for_command_count(&self, method: &str, count: usize) {
+        loop {
+            let notified = {
+                let state = self.state.lock().unwrap();
+                if state.commands.iter().filter(|(called, _)| called == method).count() >= count {
+                    return;
+                }
+                Arc::clone(&state.command_notify).notified_owned()
+            };
+            notified.await;
+        }
+    }
+
     #[allow(dead_code)]
     pub fn subscriptions(&self) -> Vec<(String, Option<String>)> {
         self.state.lock().unwrap().subscriptions.clone()
@@ -141,6 +171,7 @@ impl ScriptedCdp {
             session: session.clone(),
             params: params.clone(),
         });
+        state.command_notify.notify_waiters();
         if state.missing.contains(method) {
             return Err(TransportError::CommandFailed);
         }
@@ -187,8 +218,15 @@ impl CdpTransport for ScriptedCdp {
         method: &str,
         params: Value,
     ) -> TransportFuture<'_, Result<Value, TransportError>> {
+        let held = self.state.lock().unwrap().held_methods.contains(method);
         let result = self.response(scope, method, params);
-        Box::pin(async move { result })
+        Box::pin(async move {
+            if held {
+                std::future::pending::<Result<Value, TransportError>>().await
+            } else {
+                result
+            }
+        })
     }
 
     fn subscribe_named(

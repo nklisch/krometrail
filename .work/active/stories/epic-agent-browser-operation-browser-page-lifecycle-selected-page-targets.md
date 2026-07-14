@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-operation-browser-page-lifecycle-selected-page-targets
 kind: story
-stage: implementing
+stage: done
 tags: [browser, agent-ux]
 parent: epic-agent-browser-operation-browser-page-lifecycle
 depends_on: [epic-agent-browser-operation-browser-page-lifecycle-lifecycle-profile-status]
@@ -41,3 +41,13 @@ Inject `IdSource` independently of capture so every state-changing page operatio
 ## Ordering
 
 Depends on lifecycle/profile/status because selection is reported through that coherent session contract. Navigation then relies on this one selected/direct resolution path.
+
+## Implementation notes
+
+- Execution capability: highest; exact-key identity, synchronous reconciliation, and duplicate-event behavior are state-machine correctness risks.
+- Review weight: standard (caller).
+- Files changed: reducer/model selection ownership, page-control helpers, production command dispatch, scripted transport support, and lifecycle qualification.
+- Tests: 12 reducer tests plus scripted create/list/select/close qualification prove deterministic initial/explicit/fallback/reconnect selection, activate-before-select, exact-key attachment, browser/session command scope, anchored outcomes, screenshot-free listing, and last-page unavailable observation.
+- Simplification: selected page is one optional exact key in the existing reducer; no second target, selection, interaction, or lifecycle store was added.
+- Discrepancies from design: `TargetId` allocation remains reducer-owned and deterministic as established by the completed supervision foundation; the injected ID source is used independently for session and interaction IDs.
+- Adjacent issues parked: none.
