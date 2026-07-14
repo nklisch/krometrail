@@ -1,7 +1,7 @@
 ---
 id: refactor-use-typed-artifact-kind-ranking
 kind: story
-stage: review
+stage: done
 tags: [refactor, agent-ux, visual]
 parent: null
 depends_on: [epic-temporal-debugging-workflow-mcp-investigation-surface]
@@ -110,3 +110,7 @@ helper. No resource, cache, or compatibility rollback is required.
 - Discrepancies from design: none; no registry, serialized name, cache identity, resource, or response changes were made.
 - Adjacent issues parked: none.
 - Focused verification (Rust 1.85.0, locked): `cargo fmt --all -- --check`; `cargo check -p krometrail-mcp --locked --all-targets`; `cargo test -p krometrail-mcp --locked` (19 passed); `cargo clippy -p krometrail-mcp --locked --all-targets -- -D warnings`.
+
+## Review decision
+
+**Approved.** A fresh-context `openai-codex/gpt-5.6-luna` bounded standalone-story review confirmed typed matching preserves kind priority, epoch/generator/ID ordering, fallback behavior, serialized contracts, cache identity, and MCP projection. The production dependency move is justified. Full Rust 1.85 workspace gates passed. The story advances to `done`.
