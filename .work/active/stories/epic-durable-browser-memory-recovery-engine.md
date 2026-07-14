@@ -1,7 +1,7 @@
 ---
 id: epic-durable-browser-memory-recovery-engine
 kind: story
-stage: drafting
+stage: implementing
 tags: [storage, browser]
 parent: epic-durable-browser-memory-recovery
 depends_on: []
