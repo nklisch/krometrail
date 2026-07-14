@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-debugging-workflow-artifact-generation-and-cache
 kind: feature
-stage: implementing
+stage: review
 tags: [visual, storage]
 parent: epic-temporal-debugging-workflow
 depends_on: [epic-temporal-debugging-workflow-resolved-temporal-queries]
@@ -685,3 +685,13 @@ These are sequential checkpoints for one future feature owner. They preserve cro
 The likeliest severe failure is a cache hit whose PNG and manifest look valid but whose source frame was evicted or whose cache key omitted one output-affecting detail. The agent would receive confident, unreproducible evidence. The design attacks both halves: source links participate in retention deletion, every hit revalidates source rows plus exact bytes/manifest, and the cache transcript includes encoded content, source timing/geometry/scale, markers/gaps, effective parameters, output kind, and both algorithm versions.
 
 The next failure is capture starvation caused by a large decode while holding the store gate or consuming every CPU. The design reads source bytes and performs all decoding/rendering outside the mutation gate, caps CPU jobs independently, and includes a controlled append-during-generation regression. The least certain area is real Chrome color metadata across platforms; the initial contract is deliberately narrow and versioned, with reject/bump rather than silent conversion as the fallback.
+
+## Implementation record
+
+- Completed sequential checkpoints: contracts/cache identity (`5a73b16`), schema v4/publication (`e524bc0`), frame adaptation/decoding (`bf0e74f`), bounded service (`13e6464`), and retention/recovery/qualification (`72daea2`). Each child records its exact files, verification, decisions, and discrepancies and is now `done`.
+- Core exposes validated artifact request/result/service/store contracts while carrying the exact generic `temporal_vision::ArtifactManifest` alias. One descriptor registry and one length-framed SHA-256 transcript bind complete source, epoch, marker/gap, effective parameter, output-kind, adapter, and algorithm identity.
+- Store schema v4 is the exclusive artifact migration and sole durable authority: staging/ready rows, ordered source hashes, exact manifest and artifact hashes, conservative usage, atomic file publication, hit validation, corruption invalidation, deletion-journal reuse, retention linkage, startup convergence, and session deletion fencing.
+- Root now forces declared JPEG/PNG decode through exact `image 0.25.9`, preserves the narrow RGBA8/epoch contract, invokes all four temporal generator families, materializes `FitLimits`, and composes one shared service. CPU work runs through bounded blocking workers under independent request/CPU/memory/generator/frame/pixel/output/deadline/cancellation ceilings; deterministic result slots and process-wide single flight preserve ordering and prevent late publication.
+- Integrated real-store qualification covers mixed formats, tied epoch boundaries, two epochs, markers/gaps, exact cache hits and deterministic bytes, corruption regeneration, limit boundaries, permit independence, last-waiter cancellation, source eviction, pin behavior, recovery, session-deletion races, and ingestion non-starvation. The ignored synthetic 24-frame 1080p workload passed when explicitly run and reports workload shape without a speed threshold or live-Chrome claim.
+- Final verification: Rust 1.85 locked workspace all-target format/check/test/Clippy `-D warnings` passed in an isolated copy that excluded another feature owner's concurrent uncommitted CDP event-transport files; focused root/core/store qualification passed again after the final retention case. No MCP, presentation, browser-event, natural-anchor, diagnosis, replay, comparison, UI, documentation, or foundation surface was added.
+- Review posture: standard feature-level review remains intentionally pending. The implementation owner advanced this feature to `review` but did not self-approve or mark it `done`.
