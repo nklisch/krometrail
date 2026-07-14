@@ -1,7 +1,7 @@
 ---
 id: refactor-centralize-mcp-live-observation-projection
 kind: story
-stage: review
+stage: done
 tags: [refactor, agent-ux]
 parent: null
 depends_on: []
@@ -46,3 +46,14 @@ Extract one private helper that turns a `LiveObservation` or `ObservationPart<Li
 - Observe-live, interactions, page operations, and batch final observation all reuse that helper while retaining their caller-specific availability wrappers, anchors, status/failure rules, and image roles.
 - No response schema, summary text, warning/error ordering, MIME logic, or batch degradation behavior changed.
 - Verification passed `cargo fmt --all -- --check`, all 9 `krometrail-mcp` tests, and MCP all-target Clippy with warnings denied.
+
+## Review (2026-07-14)
+
+**Verdict**: Approve
+
+**Blockers**: none
+**Important**: none
+**Nits**: none
+**Rejected**: Expanding the helper to absorb caller-specific availability wrappers or status rules would blur boundaries rather than simplify them.
+
+**Notes**: Bounded standalone-story review inspected commit `b398b84`, confirmed each original image role and degradation/failure path remains in its caller while the repeated live-observation image construction is centralized, and relied on the full existing MCP response/protocol suite plus Clippy. No independent or cross-model reviewer ran, as required for standalone stories.
