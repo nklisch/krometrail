@@ -1,7 +1,7 @@
 ---
 id: epic-durable-browser-memory-recovery
 kind: feature
-stage: review
+stage: done
 tags: [storage, browser]
 parent: epic-durable-browser-memory
 depends_on:
@@ -435,3 +435,20 @@ Linear chain. Unit 1 delivers the engine and the composition hook with determini
 - Foundation alignment: no standing foundation assertion became false or contradictory; this implementation concretizes the existing startup recovery and record-before-index claims.
 - Adjacent issues parked: none.
 - Blockers: none.
+
+## Review (2026-07-14)
+
+**Verdict**: Approve with comments
+
+**Blockers**: none
+**Important**: none
+**Nits**: Synthesized sealed filenames depend on the current discovery invariant; recovery performs
+a bounded second discovery; and report docs could clarify torn open-segment counting.
+**Rejected**: none
+
+**Notes**: Standard-weight fresh-context review verified publication discovery, tail scan/truncate/
+seal/sync, quarantine, orphan-payload insertion, dangling-row removal, identity/address checks,
+usage reconciliation, pin trust, idempotence and crash-during-recovery behavior, startup ordering,
+open-segment reporting, source-safe errors, and realistic fault injection. Store tests, format,
+check, and Clippy were green; the implementation's isolated locked workspace run passed 338 tests.
+No material current-cycle risk remains.
