@@ -1,7 +1,7 @@
 ---
 id: refactor-centralize-artifact-await-control
 kind: feature
-stage: review
+stage: done
 tags: [refactor, visual, storage]
 parent: null
 depends_on: [epic-temporal-debugging-workflow-artifact-generation-and-cache]
@@ -288,4 +288,14 @@ existing sequencing without introducing a dependency cycle.
 
 ## Implementation summary
 
-The single checkpoint landed in `9bf998c`. `scheduler::controlled` is the sole caller deadline/external-cancellation await policy for scheduler request permits and the service's frame-read, planning, and cache-lookup futures. Its implementation is unchanged apart from crate visibility; service duplicates were removed. Shared `WorkCancellation`, `controlled_work`, and the notify-aware single-flight loop remain untouched. Rust 1.85 locked format, full workspace tests, and Clippy with warnings denied passed. The feature is ready for standard review.
+The single checkpoint landed in `9bf998c`. `scheduler::controlled` is the sole caller deadline/external-cancellation await policy for scheduler request permits and the service's frame-read, planning, and cache-lookup futures. Its implementation is unchanged apart from crate visibility; service duplicates were removed. Shared `WorkCancellation`, `controlled_work`, and the notify-aware single-flight loop remain untouched. Rust 1.85 locked format, full workspace tests, and Clippy with warnings denied passed.
+
+## Review (2026-07-14)
+
+**Verdict**: Approve
+
+**Blockers**: none
+**Important**: none
+**Nits**: none
+
+**Evidence**: Independent cross-model standard review proved the scheduler helper body and branch order byte-identical, exactly three service call substitutions retained identical arguments, duplicate helpers/imports were fully removed, and shared-work plus notify-aware single-flight semantics remained untouched. The write set was restricted to the two planned source modules and substrate items. Full workspace format, 526 tests, and Clippy with warnings denied passed independently. No re-review or follow-up is required.
