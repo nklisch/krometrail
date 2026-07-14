@@ -807,6 +807,7 @@ async fn writer_loop(
                 };
             if persisted {
                 ingress.inner.persisted_count.fetch_add(1, Ordering::AcqRel);
+                ingress.inner.mark_recovered();
                 retry = ingress.inner.config.persistence_retry_initial;
                 continue;
             } else {
@@ -874,6 +875,7 @@ async fn writer_loop(
                 .inner
                 .persisted_count
                 .fetch_add(events.len() as u64, Ordering::AcqRel);
+            ingress.inner.mark_recovered();
             retry = ingress.inner.config.persistence_retry_initial;
         } else {
             ingress.record_batch_failure(&events);
@@ -885,6 +887,18 @@ async fn writer_loop(
 impl PipelineInner {
     fn mark_failed(&self) {
         self.state.lock().expect("event status lock").status = BrowserEventCollectionStatus::Failed;
+    }
+
+    fn mark_recovered(&self) {
+        let mut state = self.state.lock().expect("event status lock");
+        if state.status != BrowserEventCollectionStatus::Failed || !self.config.enabled {
+            return;
+        }
+        state.status = if state.unavailable.is_empty() {
+            BrowserEventCollectionStatus::Operational
+        } else {
+            BrowserEventCollectionStatus::Degraded
+        };
     }
 }
 
@@ -1211,12 +1225,34 @@ mod tests {
         .await
         .expect("collection gap was not persisted");
         let status = pipeline.status();
-        assert_eq!(status.state, BrowserEventCollectionStatus::Failed);
+        assert_eq!(status.state, BrowserEventCollectionStatus::Operational);
         assert_eq!(status.dropped_count, 1);
         assert!(
             pipeline
                 .shutdown(tokio::time::Instant::now() + Duration::from_secs(1))
                 .await
+        );
+    }
+
+    #[test]
+    fn persistence_recovery_preserves_optional_source_degradation() {
+        let pipeline = EventPipeline::new(
+            SessionId::from_uuid(Uuid::from_u128(27)),
+            SessionOrigin::new(ObservedTime::from_nanos(0)),
+            Arc::new(TestClock(AtomicU64::new(0))),
+            Arc::new(TestIds(AtomicU64::new(0))),
+            None,
+            BrowserEventConfig::default(),
+        )
+        .unwrap();
+        pipeline.mark_degraded(BrowserEventClass::Network);
+        pipeline.inner.mark_failed();
+
+        pipeline.inner.mark_recovered();
+
+        assert_eq!(
+            pipeline.status().state,
+            BrowserEventCollectionStatus::Degraded
         );
     }
 
