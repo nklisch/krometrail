@@ -3,7 +3,8 @@ use std::sync::Arc;
 use krometrail_core::{
     AttachBrowser, BrowserConnectRequest, BrowserConnector, BrowserOperationContext,
     BrowserOperationRequest, BrowserOperationResult, BrowserSessionPort, BrowserStatus,
-    BrowserStopOutcome, ErrorCode, KrometrailError, LaunchBrowser, NonEmptyText, Result,
+    BrowserStopOutcome, CurrentReferenceGeometry, CurrentReferenceGeometryRequest, ErrorCode,
+    KrometrailError, LaunchBrowser, NonEmptyText, PortFuture, ResolvedReferenceGeometry, Result,
     RetryAdvice,
 };
 use tokio::sync::Mutex;
@@ -86,6 +87,18 @@ impl BrowserSessionOwner {
     }
 }
 
+impl CurrentReferenceGeometry for BrowserSessionOwner {
+    fn current_reference_geometry(
+        &self,
+        request: CurrentReferenceGeometryRequest,
+    ) -> PortFuture<'_, Result<ResolvedReferenceGeometry>> {
+        Box::pin(async move {
+            let session = self.active_session().await?;
+            session.as_ref().current_reference_geometry(request).await
+        })
+    }
+}
+
 fn lifecycle_error(message: &'static str, recovery: &'static str) -> KrometrailError {
     KrometrailError::new(
         ErrorCode::InvalidLifecycleTransition,
@@ -101,8 +114,10 @@ mod tests {
     use krometrail_core::{
         BrowserCompatibility, BrowserInstallation, BrowserOperationResult, BrowserOwnership,
         BrowserProduct, BrowserProductVersion, BrowserSessionEvent, BrowserSessionEvents,
-        BrowserSessionState, BrowserVersion, CapabilitySupport, ListPagesRequest, PageStatus,
-        PortFuture, ProfileRef, RendererCapability, RetentionStatus, SessionId, SessionOrigin,
+        BrowserSessionState, BrowserVersion, CapabilitySupport, CurrentReferenceGeometryRequest,
+        ErrorCode, ListPagesRequest, NodeReference, PageStatus, PortFuture, ProfileRef,
+        RendererCapability, RetentionStatus, SessionId, SessionOrigin, SnapshotGeneration,
+        SnapshotNodeId, TargetId,
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -142,6 +157,16 @@ mod tests {
                 NonEmptyText::new("fake operation result").unwrap(),
             ))))
         }
+        fn resolve_current_reference_geometry(
+            &self,
+            _request: CurrentReferenceGeometryRequest,
+        ) -> PortFuture<'_, Result<ResolvedReferenceGeometry>> {
+            Box::pin(std::future::ready(Err(KrometrailError::new(
+                ErrorCode::StaleReference,
+                NonEmptyText::new("fake stale reference").unwrap(),
+            ))))
+        }
+
         fn stop(&self) -> PortFuture<'_, Result<BrowserStopOutcome>> {
             self.stop_calls.fetch_add(1, Ordering::SeqCst);
             Box::pin(std::future::ready(Ok(BrowserStopOutcome::Detached)))
@@ -250,5 +275,62 @@ mod tests {
         );
         owner.shutdown().await.unwrap();
         assert_eq!(session.stop_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn current_geometry_delegates_through_the_active_owner_lifecycle() {
+        let session = Arc::new(FakeSession {
+            status: status(),
+            execute_calls: AtomicUsize::new(0),
+            stop_calls: AtomicUsize::new(0),
+        });
+        let owner = BrowserSessionOwner::new(Arc::new(FakeConnector {
+            session: Arc::clone(&session),
+            connect_calls: AtomicUsize::new(0),
+        }));
+        let request = || {
+            CurrentReferenceGeometryRequest::new(
+                "00000000-0000-0000-0000-000000000001"
+                    .parse::<SessionId>()
+                    .unwrap(),
+                NodeReference {
+                    target_id: "00000000-0000-0000-0000-000000000002"
+                        .parse::<TargetId>()
+                        .unwrap(),
+                    generation: SnapshotGeneration::new(1).unwrap(),
+                    node_id: SnapshotNodeId::new(1).unwrap(),
+                },
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            owner
+                .current_reference_geometry(request())
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::InvalidLifecycleTransition
+        );
+        owner
+            .attach(AttachBrowser::new("http://127.0.0.1:9222").unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            owner
+                .current_reference_geometry(request())
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::StaleReference
+        );
+        owner.stop().await.unwrap();
+        assert_eq!(
+            owner
+                .current_reference_geometry(request())
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::InvalidLifecycleTransition
+        );
     }
 }

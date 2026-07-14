@@ -147,7 +147,18 @@ fn mcp_binary_initializes_lists_json_rpc_and_keeps_stderr_separate() {
     stdout.read_line(&mut second).unwrap();
     let listed: serde_json::Value = serde_json::from_str(second.trim()).unwrap();
     assert_eq!(listed["id"], 2);
-    assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 28);
+    let expected_tools = 4
+        + krometrail_core::BROWSER_OPERATION_REGISTRY.len()
+        + 1
+        + krometrail_core::PROGRESSIVE_EVIDENCE_REGISTRY
+            .iter()
+            .filter(|definition| definition.exposure == krometrail_core::OperationExposure::Tool)
+            .count()
+        + krometrail_core::TEMPORAL_CONTEXT_OPERATION_REGISTRY.len();
+    assert_eq!(
+        listed["result"]["tools"].as_array().unwrap().len(),
+        expected_tools
+    );
 
     drop(child.stdin.take());
     let mut trailing_stdout = String::new();

@@ -25,7 +25,7 @@ use krometrail_cdp::{
     BrowserEventConfig, CaptureConfig, LauncherConfig, ProductionBrowserConnector,
     SystemChromeLauncher,
 };
-use krometrail_mcp::{McpConfig, build_service};
+use krometrail_mcp::{McpConfig, McpDependencies, build_service};
 use krometrail_store::{
     IndexStoreConfig, RecordingStore, RotationConfig, SegmentStoreConfig, SegmentWriter,
     SqliteIndex, recover,
@@ -104,11 +104,17 @@ impl Runtime {
                 Ok(())
             }
             Command::Mcp => {
-                // The complete runtime is assembled before this branch. MCP receives only the
-                // browser port, while controlled-browser capture retains the shared recording and
-                // retention services owned by the production connector.
+                // The complete runtime is assembled before this branch. MCP receives the
+                // already-created application ports and never constructs storage or CDP adapters.
                 build_service(
-                    Arc::clone(&self.dependencies.browser),
+                    McpDependencies {
+                        browser: Arc::clone(&self.dependencies.browser),
+                        temporal_debug_bundles: Arc::clone(
+                            &self.dependencies.temporal_debug_bundles,
+                        ),
+                        progressive_evidence: Arc::clone(&self.dependencies.progressive_evidence),
+                        temporal_context: Arc::clone(&self.dependencies.temporal_context),
+                    },
                     self.dependencies.mcp_config.clone(),
                 )?
                 .serve_stdio()

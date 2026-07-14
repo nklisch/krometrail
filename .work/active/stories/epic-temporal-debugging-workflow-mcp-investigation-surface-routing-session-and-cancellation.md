@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-debugging-workflow-mcp-investigation-surface-routing-session-and-cancellation
 kind: story
-stage: implementing
+stage: done
 tags: [agent-ux, visual, browser]
 parent: epic-temporal-debugging-workflow-mcp-investigation-surface
 depends_on:
@@ -35,12 +35,12 @@ Extend the existing dynamic MCP adapter to route the primary bundle, progressive
 
 ## Acceptance evidence
 
-- [ ] Capability-filtered registration lists control tools unchanged, temporal-vision tools/resources separately, and browser-event detail independently; names and descriptions come only from registries.
-- [ ] Valid bundle, progressive, event, and current-reference calls reach exactly one intended port with the exact request; malformed input reaches none.
-- [ ] Registry/schema initialization fails closed on duplicate names, missing definitions, non-object schemas, or disabled capability leakage.
-- [ ] Current-reference geometry delegates through the active owner and preserves existing stale/lifecycle errors; no CDP or storage type enters MCP/core contracts.
-- [ ] Cancellation before dispatch and deadline expiry produce stable cancellation without cancelling another request or stopping the browser session.
-- [ ] Exact rmcp 0.11.0 APIs compile; no future task or subscription semantics are used.
+- [x] Capability-filtered registration lists control tools unchanged, temporal-vision tools/resources separately, and browser-event detail independently; names and descriptions come only from registries.
+- [x] Valid bundle, progressive, event, and current-reference calls reach exactly one intended port with the exact request; malformed input reaches none.
+- [x] Registry/schema initialization fails closed on duplicate names, missing definitions, non-object schemas, or disabled capability leakage.
+- [x] Current-reference geometry delegates through the active owner and preserves existing stale/lifecycle errors; no CDP or storage type enters MCP/core contracts.
+- [x] Cancellation before dispatch and deadline expiry produce stable cancellation without cancelling another request or stopping the browser session.
+- [x] Exact rmcp 0.11.0 APIs compile; no future task or subscription semantics are used.
 
 ## Ordering constraints
 
@@ -49,3 +49,20 @@ Depends on the contract/registry checkpoint. Response projection must consume th
 ## Out of scope
 
 No response envelope extension, resource URI parser/templates, blob reads, inline image loading, root runtime composition, or full JSON-RPC qualification.
+
+## Implementation notes
+
+- Execution capability: inline implementation; this checkpoint is one cohesive MCP adapter boundary with registry, session-owner, and cancellation changes.
+- Review weight: standard, per project default; child stories advance directly after green verification.
+- Files changed: `crates/krometrail-mcp/src/{config.rs,lib.rs,registry.rs,server.rs,session.rs}`, `src/app.rs` for the required constructor call-site update.
+- Tests added/updated: capability-isolated route registration, exact bundle/progressive/context dispatch and malformed-input no-call JSON-RPC coverage, route/schema fail-closed checks, request-budget cancellation/deadline isolation, and active-owner geometry lifecycle delegation.
+- Simplification: retained one `McpDependencies` constructor and one registry-driven route builder; no compatibility constructor or MCP-specific request mirrors were added.
+- Discrepancies from design: temporary successful temporal routes return the existing minimal structured response seam until the response-projection checkpoint; root wiring only passes already-constructed ports so the new constructor compiles.
+- Adjacent issues parked: none.
+
+## Verification
+
+- `/home/nathan/.cargo/bin/cargo +1.85.0 fmt --all -- --check`
+- `/home/nathan/.cargo/bin/cargo +1.85.0 check --workspace --all-targets --locked`
+- `/home/nathan/.cargo/bin/cargo +1.85.0 test --workspace --all-targets --locked`
+- `/home/nathan/.cargo/bin/cargo +1.85.0 clippy --workspace --all-targets --locked -- -D warnings`

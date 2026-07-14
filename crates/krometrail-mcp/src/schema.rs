@@ -28,6 +28,13 @@ pub(crate) fn type_input_schema<T: schemars::JsonSchema>() -> Result<Arc<JsonObj
     )
 }
 
+pub(crate) fn generated_input_schema(schema: schemars::Schema) -> Result<Arc<JsonObject>> {
+    object_schema(
+        serde_json::to_value(schema)
+            .map_err(|_| schema_error("generated operation schema could not be serialized"))?,
+    )
+}
+
 pub(crate) fn object_schema(value: Value) -> Result<Arc<JsonObject>> {
     match value {
         Value::Object(object) if object.get("type") == Some(&Value::String("object".into())) => {

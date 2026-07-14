@@ -1,8 +1,17 @@
 use std::sync::Arc;
 
 use krometrail_core::{
-    CAPABILITY_REGISTRY, CapabilityDefault, CapabilityId, Result, validate_capability_selection,
+    BrowserConnector, CAPABILITY_REGISTRY, CapabilityDefault, CapabilityId, ProgressiveEvidence,
+    Result, TemporalContextQuery, TemporalDebugBundles, validate_capability_selection,
 };
+
+#[derive(Clone)]
+pub struct McpDependencies {
+    pub browser: Arc<dyn BrowserConnector>,
+    pub temporal_debug_bundles: Arc<dyn TemporalDebugBundles>,
+    pub progressive_evidence: Arc<dyn ProgressiveEvidence>,
+    pub temporal_context: Arc<dyn TemporalContextQuery>,
+}
 
 #[derive(Clone, Debug)]
 pub struct McpConfig {

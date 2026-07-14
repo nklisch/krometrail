@@ -1,8 +1,6 @@
 use std::sync::Arc;
 
-use krometrail_core::{
-    BrowserConnector, ErrorCode, KrometrailError, NonEmptyText, Result, RetryAdvice,
-};
+use krometrail_core::{ErrorCode, KrometrailError, NonEmptyText, Result, RetryAdvice};
 use rmcp::{
     ErrorData, ServerHandler,
     handler::server::tool::{ToolCallContext, ToolRouter},
@@ -13,7 +11,11 @@ use rmcp::{
     service::{QuitReason, RequestContext, RoleServer, ServerInitializeError, ServiceExt as _},
 };
 
-use crate::{config::McpConfig, registry::build_router, session::BrowserSessionOwner};
+use crate::{
+    config::{McpConfig, McpDependencies},
+    registry::build_router,
+    session::BrowserSessionOwner,
+};
 
 #[derive(Clone)]
 pub struct KrometrailMcpServer {
@@ -22,12 +24,13 @@ pub struct KrometrailMcpServer {
 }
 
 impl KrometrailMcpServer {
-    fn new(sessions: Arc<BrowserSessionOwner>, config: &McpConfig) -> Result<Self> {
-        let mut server = Self {
-            sessions,
-            router: Arc::new(ToolRouter::new()),
-        };
-        server.router = Arc::new(build_router(config)?);
+    fn new(
+        sessions: Arc<BrowserSessionOwner>,
+        dependencies: Arc<McpDependencies>,
+        config: &McpConfig,
+    ) -> Result<Self> {
+        let router = Arc::new(build_router(config, dependencies, Arc::clone(&sessions))?);
+        let server = Self { sessions, router };
         Ok(server)
     }
 
@@ -147,12 +150,10 @@ fn service_error(message: &'static str) -> KrometrailError {
     )
 }
 
-pub fn build_service(
-    connector: Arc<dyn BrowserConnector>,
-    config: McpConfig,
-) -> Result<McpService> {
-    let sessions = Arc::new(BrowserSessionOwner::new(connector));
-    let server = KrometrailMcpServer::new(Arc::clone(&sessions), &config)?;
+pub fn build_service(dependencies: McpDependencies, config: McpConfig) -> Result<McpService> {
+    let dependencies = Arc::new(dependencies);
+    let sessions = Arc::new(BrowserSessionOwner::new(Arc::clone(&dependencies.browser)));
+    let server = KrometrailMcpServer::new(Arc::clone(&sessions), dependencies, &config)?;
     Ok(McpService { server, sessions })
 }
 
@@ -161,16 +162,24 @@ mod tests {
     use super::*;
     use crate::registry::lifecycle_tool_names;
     use krometrail_core::{
-        BROWSER_OPERATION_REGISTRY, BrowserCompatibility, BrowserConnectRequest,
-        BrowserInstallation, BrowserOperationContext, BrowserOperationRequest,
-        BrowserOperationResult, BrowserOwnership, BrowserProduct, BrowserProductVersion,
-        BrowserSessionEvent, BrowserSessionEvents, BrowserSessionPort, BrowserSessionState,
-        BrowserStatus, BrowserStopOutcome, BrowserVersion, CapabilityId, CapabilitySupport,
-        PageStatus, PortFuture, ProfileRef, RendererCapability, RetentionStatus, SessionId,
-        SessionOrigin,
+        AnchorScope, BROWSER_OPERATION_REGISTRY, BrowserCompatibility, BrowserConnectRequest,
+        BrowserConnector, BrowserEventDetailRequest, BrowserEventFilter, BrowserInstallation,
+        BrowserOperationContext, BrowserOperationRequest, BrowserOperationResult, BrowserOwnership,
+        BrowserProduct, BrowserProductVersion, BrowserSessionEvent, BrowserSessionEvents,
+        BrowserSessionPort, BrowserSessionState, BrowserStatus, BrowserStopOutcome, BrowserVersion,
+        CapabilityId, CapabilitySupport, FrameId, PageStatus, PortFuture, ProfileRef,
+        ProgressiveEvidence, ProgressiveEvidenceContext, ProgressiveEvidenceRequest,
+        ProgressiveEvidenceResult, RangeResolutionOptions, RendererCapability, ResolvedRange,
+        RetentionStatus, SessionId, SessionOrigin, SessionRange, SessionTime, TargetId,
+        TemporalContext, TemporalContextQuery, TemporalContextRequest, TemporalDebugBundle,
+        TemporalDebugBundleContext, TemporalDebugBundleRequest, TemporalDebugBundles,
+        TemporalQueryRequest, TemporalRangeAnchor, TemporalRangeAnchorKind,
     };
     use serde_json::{Value, json};
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
     use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 
     struct UnusedConnector;
@@ -190,10 +199,170 @@ mod tests {
         }
     }
 
+    struct UnusedTemporal;
+
+    impl TemporalDebugBundles for UnusedTemporal {
+        fn bundle(
+            &self,
+            _request: TemporalDebugBundleRequest,
+            _context: TemporalDebugBundleContext,
+        ) -> PortFuture<'_, krometrail_core::Result<TemporalDebugBundle>> {
+            panic!("temporal bundle should not be called by a control-only test")
+        }
+    }
+
+    impl ProgressiveEvidence for UnusedTemporal {
+        fn execute(
+            &self,
+            _request: ProgressiveEvidenceRequest,
+            _context: ProgressiveEvidenceContext,
+        ) -> PortFuture<'_, krometrail_core::Result<ProgressiveEvidenceResult>> {
+            panic!("progressive evidence should not be called by a control-only test")
+        }
+    }
+
+    impl TemporalContextQuery for UnusedTemporal {
+        fn context(
+            &self,
+            _request: TemporalContextRequest,
+        ) -> PortFuture<'_, krometrail_core::Result<TemporalContext>> {
+            panic!("temporal context should not be called by a control-only test")
+        }
+    }
+
+    fn dependencies(browser: Arc<dyn BrowserConnector>) -> McpDependencies {
+        let temporal = Arc::new(UnusedTemporal);
+        McpDependencies {
+            browser,
+            temporal_debug_bundles: Arc::clone(&temporal) as Arc<dyn TemporalDebugBundles>,
+            progressive_evidence: Arc::clone(&temporal) as Arc<dyn ProgressiveEvidence>,
+            temporal_context: temporal as Arc<dyn TemporalContextQuery>,
+        }
+    }
+
+    struct TemporalSpy {
+        bundle_calls: AtomicUsize,
+        progressive_calls: AtomicUsize,
+        context_calls: AtomicUsize,
+        bundle_request: Mutex<Option<Value>>,
+        progressive_request: Mutex<Option<Value>>,
+        context_request: Mutex<Option<Value>>,
+    }
+
+    impl TemporalSpy {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                bundle_calls: AtomicUsize::new(0),
+                progressive_calls: AtomicUsize::new(0),
+                context_calls: AtomicUsize::new(0),
+                bundle_request: Mutex::new(None),
+                progressive_request: Mutex::new(None),
+                context_request: Mutex::new(None),
+            })
+        }
+
+        fn error() -> KrometrailError {
+            KrometrailError::new(
+                krometrail_core::ErrorCode::Unsupported,
+                krometrail_core::NonEmptyText::new("spy result").unwrap(),
+            )
+        }
+    }
+
+    impl TemporalDebugBundles for TemporalSpy {
+        fn bundle(
+            &self,
+            request: TemporalDebugBundleRequest,
+            _context: TemporalDebugBundleContext,
+        ) -> PortFuture<'_, krometrail_core::Result<TemporalDebugBundle>> {
+            self.bundle_calls.fetch_add(1, Ordering::SeqCst);
+            *self.bundle_request.lock().unwrap() = Some(serde_json::to_value(request).unwrap());
+            Box::pin(std::future::ready(Err(Self::error())))
+        }
+    }
+
+    impl ProgressiveEvidence for TemporalSpy {
+        fn execute(
+            &self,
+            request: ProgressiveEvidenceRequest,
+            _context: ProgressiveEvidenceContext,
+        ) -> PortFuture<'_, krometrail_core::Result<ProgressiveEvidenceResult>> {
+            self.progressive_calls.fetch_add(1, Ordering::SeqCst);
+            *self.progressive_request.lock().unwrap() =
+                Some(serde_json::to_value(request).unwrap());
+            Box::pin(std::future::ready(Err(Self::error())))
+        }
+    }
+
+    impl TemporalContextQuery for TemporalSpy {
+        fn context(
+            &self,
+            request: TemporalContextRequest,
+        ) -> PortFuture<'_, krometrail_core::Result<TemporalContext>> {
+            self.context_calls.fetch_add(1, Ordering::SeqCst);
+            *self.context_request.lock().unwrap() = Some(serde_json::to_value(request).unwrap());
+            Box::pin(std::future::ready(Err(Self::error())))
+        }
+    }
+
+    fn dependencies_with_spy(
+        browser: Arc<dyn BrowserConnector>,
+        spy: Arc<TemporalSpy>,
+    ) -> McpDependencies {
+        McpDependencies {
+            browser,
+            temporal_debug_bundles: Arc::clone(&spy) as Arc<dyn TemporalDebugBundles>,
+            progressive_evidence: Arc::clone(&spy) as Arc<dyn ProgressiveEvidence>,
+            temporal_context: spy as Arc<dyn TemporalContextQuery>,
+        }
+    }
+
+    fn session_id() -> SessionId {
+        "00000000-0000-0000-0000-000000000001".parse().unwrap()
+    }
+
+    fn target_id() -> TargetId {
+        "00000000-0000-0000-0000-000000000002".parse().unwrap()
+    }
+
+    fn frame_id() -> FrameId {
+        "00000000-0000-0000-0000-000000000003".parse().unwrap()
+    }
+
+    fn resolved_range() -> ResolvedRange {
+        let range = SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(10)).unwrap();
+        ResolvedRange::new(
+            session_id(),
+            target_id(),
+            TemporalRangeAnchorKind::SessionTime,
+            range,
+            range,
+            vec![frame_id()],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            RangeResolutionOptions::DEFAULT,
+        )
+        .unwrap()
+    }
+
+    fn bundle_request() -> TemporalDebugBundleRequest {
+        TemporalDebugBundleRequest::default_policy(
+            TemporalQueryRequest::strict(TemporalRangeAnchor::SessionTime {
+                scope: AnchorScope::new(Some(session_id()), Some(target_id())),
+                range: SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(10)).unwrap(),
+            })
+            .unwrap(),
+        )
+        .unwrap()
+    }
+
     #[test]
     fn control_registry_is_complete_unique_sorted_and_conservatively_annotated() {
         let service = build_service(
-            Arc::new(UnusedConnector),
+            dependencies(Arc::new(UnusedConnector)),
             McpConfig::new(vec![CapabilityId::Control]).unwrap(),
         )
         .unwrap();
@@ -229,9 +398,9 @@ mod tests {
     }
 
     #[test]
-    fn disabled_control_registers_no_speculative_tools() {
+    fn capability_filters_keep_temporal_tools_when_control_is_disabled() {
         let service = build_service(
-            Arc::new(UnusedConnector),
+            dependencies(Arc::new(UnusedConnector)),
             McpConfig::new(vec![
                 CapabilityId::TemporalVision,
                 CapabilityId::BrowserEvents,
@@ -239,7 +408,52 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        assert!(service.server().tools().is_empty());
+        let mut expected = vec![
+            krometrail_core::TEMPORAL_DEBUG_BUNDLE_OPERATION.stable_name,
+            krometrail_core::TEMPORAL_CONTEXT_OPERATION_REGISTRY[0].stable_name,
+        ];
+        expected.extend(
+            krometrail_core::PROGRESSIVE_EVIDENCE_REGISTRY
+                .iter()
+                .filter(|definition| {
+                    definition.exposure == krometrail_core::OperationExposure::Tool
+                })
+                .map(|definition| definition.stable_name),
+        );
+        expected.sort_unstable();
+        let tools = service.server().tools();
+        let names: Vec<_> = tools.iter().map(|tool| tool.name.as_ref()).collect();
+        assert_eq!(names, expected);
+        assert!(names.iter().all(|name| {
+            *name != "start_browser" && *name != "list_pages" && *name != "retrieve_artifact"
+        }));
+
+        let temporal_only = build_service(
+            dependencies(Arc::new(UnusedConnector)),
+            McpConfig::new(vec![CapabilityId::TemporalVision]).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            temporal_only
+                .server()
+                .tools()
+                .iter()
+                .all(|tool| tool.name != "query_browser_events")
+        );
+        let events_only = build_service(
+            dependencies(Arc::new(UnusedConnector)),
+            McpConfig::new(vec![CapabilityId::BrowserEvents]).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            events_only
+                .server()
+                .tools()
+                .iter()
+                .map(|tool| tool.name.as_ref())
+                .collect::<Vec<_>>(),
+            vec!["query_browser_events"]
+        );
     }
 
     struct ProtocolEvents;
@@ -359,6 +573,124 @@ mod tests {
         serde_json::from_str(&line).unwrap()
     }
 
+    async fn invoke_temporal_tool(
+        dependencies: McpDependencies,
+        name: &'static str,
+        arguments: Value,
+    ) -> Value {
+        let service = build_service(
+            dependencies,
+            McpConfig::new(vec![
+                CapabilityId::TemporalVision,
+                CapabilityId::BrowserEvents,
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+        let (client_io, server_io) = tokio::io::duplex(256 * 1024);
+        let server_task = tokio::spawn(async move {
+            let running = service.server.serve(server_io).await.unwrap();
+            running.waiting().await.unwrap();
+        });
+        let (read, mut write) = tokio::io::split(client_io);
+        let mut read = BufReader::new(read);
+        send_json(
+            &mut write,
+            json!({
+                "jsonrpc":"2.0","id":1,"method":"initialize","params":{
+                    "protocolVersion":"2025-06-18","capabilities":{},
+                    "clientInfo":{"name":"temporal-route-test","version":"1"}
+                }
+            }),
+        )
+        .await;
+        let initialized = read_json(&mut read).await;
+        assert_eq!(initialized["result"]["protocolVersion"], "2025-06-18");
+        send_json(
+            &mut write,
+            json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+        )
+        .await;
+        send_json(
+            &mut write,
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":name,"arguments":arguments}}),
+        )
+        .await;
+        let response = read_json(&mut read).await;
+        drop(write);
+        drop(read);
+        let _ = server_task.await;
+        response
+    }
+
+    #[tokio::test]
+    async fn temporal_routes_dispatch_exact_domain_requests_and_reject_invalid_input_before_calls()
+    {
+        let spy = TemporalSpy::new();
+        let bundle = bundle_request();
+        let bundle_wire = serde_json::to_value(&bundle).unwrap();
+        let _ = invoke_temporal_tool(
+            dependencies_with_spy(Arc::new(UnusedConnector), Arc::clone(&spy)),
+            "temporal_debug_bundle",
+            bundle_wire.clone(),
+        )
+        .await;
+        assert_eq!(spy.bundle_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            spy.bundle_request.lock().unwrap().as_ref(),
+            Some(&bundle_wire)
+        );
+
+        let range = resolved_range();
+        let progressive = krometrail_core::ProgressiveEvidenceRequest::QueryPinState(
+            krometrail_core::ResolvedRangeEvidenceRequest::new(range.clone()).unwrap(),
+        );
+        let progressive_value = serde_json::to_value(&progressive).unwrap();
+        let progressive_wire = progressive_value["request"].clone();
+        let _ = invoke_temporal_tool(
+            dependencies_with_spy(Arc::new(UnusedConnector), Arc::clone(&spy)),
+            "query_pin_state",
+            progressive_wire.clone(),
+        )
+        .await;
+        assert_eq!(spy.progressive_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            spy.progressive_request.lock().unwrap().as_ref(),
+            Some(&serde_json::to_value(&progressive).unwrap())
+        );
+
+        let detail = BrowserEventDetailRequest::new(
+            range,
+            None,
+            BrowserEventFilter::default(),
+            1,
+            None,
+            vec![],
+        )
+        .unwrap();
+        let detail_wire = serde_json::to_value(&detail).unwrap();
+        let _ = invoke_temporal_tool(
+            dependencies_with_spy(Arc::new(UnusedConnector), Arc::clone(&spy)),
+            "query_browser_events",
+            detail_wire.clone(),
+        )
+        .await;
+        assert_eq!(spy.context_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            spy.context_request.lock().unwrap().as_ref(),
+            Some(&serde_json::to_value(detail.context_request()).unwrap())
+        );
+
+        let invalid = invoke_temporal_tool(
+            dependencies_with_spy(Arc::new(UnusedConnector), Arc::clone(&spy)),
+            "query_browser_events",
+            json!({"unexpected": true}),
+        )
+        .await;
+        assert!(invalid["result"]["isError"].as_bool().unwrap_or(false));
+        assert_eq!(spy.context_calls.load(Ordering::SeqCst), 1);
+    }
+
     #[tokio::test]
     async fn in_memory_json_rpc_initializes_lists_calls_validates_and_closes() {
         let execute_calls = Arc::new(AtomicUsize::new(0));
@@ -369,7 +701,7 @@ mod tests {
             stop_calls: Arc::clone(&stop_calls),
         });
         let service = build_service(
-            Arc::new(ProtocolConnector { session }),
+            dependencies(Arc::new(ProtocolConnector { session })),
             McpConfig::new(vec![CapabilityId::Control]).unwrap(),
         )
         .unwrap();
