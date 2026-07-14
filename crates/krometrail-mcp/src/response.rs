@@ -13,6 +13,7 @@ use rmcp::model::{CallToolResult, Content, RawResource};
 use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::{Value, json};
+use temporal_vision::ArtifactKind;
 
 use crate::resources::{ResourceKind, ResourceProjection};
 
@@ -603,7 +604,7 @@ pub(crate) async fn map_temporal_bundle_result(
             else {
                 continue;
             };
-            let rank = artifact_kind_rank(artifact.manifest.artifact_kind().as_str());
+            let rank = artifact_kind_rank(artifact.manifest.artifact_kind());
             if rank >= 3 {
                 continue;
             }
@@ -873,11 +874,11 @@ fn internal_mapping_error() -> KrometrailError {
     )
 }
 
-fn artifact_kind_rank(kind: &str) -> u8 {
+fn artifact_kind_rank(kind: ArtifactKind) -> u8 {
     match kind {
-        "before_during_after" => 0,
-        "storyboard" => 1,
-        "difference_map" => 2,
+        ArtifactKind::BeforeDuringAfter => 0,
+        ArtifactKind::Storyboard => 1,
+        ArtifactKind::DifferenceMap => 2,
         _ => 3,
     }
 }

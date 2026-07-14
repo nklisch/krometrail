@@ -1,7 +1,7 @@
 ---
 id: refactor-use-typed-artifact-kind-ranking
 kind: story
-stage: implementing
+stage: review
 tags: [refactor, agent-ux, visual]
 parent: null
 depends_on: [epic-temporal-debugging-workflow-mcp-investigation-surface]
@@ -99,3 +99,14 @@ helper. No resource, cache, or compatibility rollback is required.
 - **Project conventions**: no `.agents/skills/refactor-conventions/` catalog is
   present. This finding uses the project-wide single-source-of-truth principle.
 - `.work/bin/work-view` and current epic/feature stages were preserved.
+
+## Implementation notes
+
+- Execution capability: direct inline implementation; the private response projection and its typed artifact contract were fully identified by local reads.
+- Review weight: standard, with the bounded standalone-story review still pending.
+- Files changed: `crates/krometrail-mcp/Cargo.toml` and `crates/krometrail-mcp/src/response.rs`.
+- Tests added/removed: none; existing MCP response/resource coverage remains the equivalence evidence.
+- Simplification: ranked the authoritative `temporal_vision::ArtifactKind` variants directly instead of duplicating their serialized names at the MCP boundary; promoted the existing workspace dependency to the production dependency set because the mapper now names the type.
+- Discrepancies from design: none; no registry, serialized name, cache identity, resource, or response changes were made.
+- Adjacent issues parked: none.
+- Focused verification (Rust 1.85.0, locked): `cargo fmt --all -- --check`; `cargo check -p krometrail-mcp --locked --all-targets`; `cargo test -p krometrail-mcp --locked` (19 passed); `cargo clippy -p krometrail-mcp --locked --all-targets -- -D warnings`.
