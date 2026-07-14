@@ -706,7 +706,7 @@ fn draw_legend<F: Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
         MUTED,
     )?;
 
-    let swatch_width = legend.width().saturating_sub(8).min(256).max(1);
+    let swatch_width = legend.width().saturating_sub(8).clamp(1, 256);
     let swatch = PixelRect::new(legend.x() + 4, legend.y() + 36, swatch_width, 8)?;
     for x in 0..swatch.width() {
         let position = if swatch.width() == 1 {
@@ -1080,6 +1080,43 @@ mod tests {
                 .unwrap_err()
                 .code,
             ErrorCode::ResourceLimitExceeded
+        );
+    }
+
+    #[test]
+    fn frequency_modes_scale_count_magnitude_and_comparable_pairs() {
+        fn data(frequency_mode: FrequencyMode) -> DifferenceMapData {
+            DifferenceMapData {
+                accumulators: DifferenceAccumulators {
+                    dimensions: PixelDimensions::new(3, 1).unwrap(),
+                    analysis_mask: None,
+                    change_count: vec![2, 1, 0].into_boxed_slice(),
+                    comparable_count: vec![2, 4, 0].into_boxed_slice(),
+                    magnitude_sum: vec![100, 50, 0].into_boxed_slice(),
+                    weighted_time_sum: vec![1_000, 500, 0].into_boxed_slice(),
+                    first_change_offset: vec![1, 1, 0].into_boxed_slice(),
+                    last_change_offset: vec![9, 1, 0].into_boxed_slice(),
+                },
+                range_start: Timestamp::ZERO,
+                range_duration_ns: 10,
+                effective_separation_ns: 5,
+                frequency_mode,
+                max_change_count: 2,
+                max_magnitude: 100,
+            }
+        }
+
+        assert_eq!(
+            [0, 1, 2].map(|pixel| data(FrequencyMode::Count).frequency_value(pixel)),
+            [Some(255), Some(127), None]
+        );
+        assert_eq!(
+            [0, 1, 2].map(|pixel| data(FrequencyMode::Magnitude).frequency_value(pixel)),
+            [Some(255), Some(127), None]
+        );
+        assert_eq!(
+            [0, 1, 2].map(|pixel| data(FrequencyMode::NormalizedFrequency).frequency_value(pixel)),
+            [Some(255), Some(63), None]
         );
     }
 }

@@ -523,21 +523,43 @@ mod tests {
 
         let at_floor = normalized(vec![(1, 1, [0, 0, 0, 255]), (2, 2, [1, 1, 1, 255])]);
         let delta = at_floor.frames()[1].linear_rgb16()[0];
-        let ComparisonOutcome::Measured(vector) =
-            measure_pair(&at_floor, 0, 1, MeasurementParameters::new(delta))
+        let before: &[u16; 3] = at_floor.frames()[0].linear_rgb16().try_into().unwrap();
+        let after: &[u16; 3] = at_floor.frames()[1].linear_rgb16().try_into().unwrap();
+        let at_threshold = MeasurementParameters::new(delta);
+        let one_over_threshold = MeasurementParameters::new(delta - 1);
+        assert!(
+            !classify_pixel_change(before, after, at_threshold)
                 .unwrap()
-                .outcome
+                .changed
+        );
+        assert!(
+            classify_pixel_change(before, after, one_over_threshold)
+                .unwrap()
+                .changed
+        );
+        let ComparisonOutcome::Measured(vector) =
+            measure_pair(&at_floor, 0, 1, at_threshold).unwrap().outcome
         else {
             panic!("unexpected gap")
         };
         assert_eq!(vector.changed_pixel_proportion().changed(), 0);
-        let ComparisonOutcome::Measured(vector) =
-            measure_pair(&at_floor, 0, 1, MeasurementParameters::new(delta - 1))
-                .unwrap()
-                .outcome
+        let ComparisonOutcome::Measured(vector) = measure_pair(&at_floor, 0, 1, one_over_threshold)
+            .unwrap()
+            .outcome
         else {
             panic!("unexpected gap")
         };
         assert_eq!(vector.changed_pixel_proportion().changed(), 1);
+
+        let gap =
+            crate::TimeRange::new(Timestamp::from_nanos(2), Timestamp::from_nanos(3)).unwrap();
+        assert_eq!(
+            intersecting_gap_count(&[gap], Timestamp::from_nanos(1), Timestamp::from_nanos(2)),
+            1
+        );
+        assert_eq!(
+            intersecting_gap_count(&[gap], Timestamp::from_nanos(4), Timestamp::from_nanos(5)),
+            0
+        );
     }
 }

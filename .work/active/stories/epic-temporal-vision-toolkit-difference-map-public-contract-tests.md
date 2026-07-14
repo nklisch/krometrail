@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-vision-toolkit-difference-map-public-contract-tests
 kind: story
-stage: implementing
+stage: done
 tags: [visual]
 parent: epic-temporal-vision-toolkit-difference-map
 depends_on: [epic-temporal-vision-toolkit-difference-map-panel-rendering]
@@ -53,3 +53,13 @@ No full-image snapshot tests, no trivial accessor tests, no font glyph enumerati
 ## Ordering constraints
 
 Depends on `panel-rendering`. This is the final checkpoint before feature review.
+
+## Implementation notes
+
+- Execution capability: raised/high; the tests pin deterministic bytes, provenance, and load-bearing integer semantics without browser/runtime dependencies.
+- Review weight: standard (autopilot caller).
+- Files changed: `crates/temporal-vision/tests/difference_map.rs`, with focused colocated regressions in `src/difference_map.rs` and `src/measure.rs`.
+- Tests added/removed: browser-free render/manifest/hash/JSON/panel/gap/output-bound contract, canonical classifier/gap equivalence, all frequency modes, and exact accumulation regressions; no full-image snapshots or accessor-only tests.
+- Simplification: decoded only a few semantic pixels and the gap band instead of maintaining a brittle whole-image golden.
+- Discrepancies from design: public assertions follow the shared `GeneratedArtifact::image()` seam and manifest-owned SHA-256 hash.
+- Adjacent issues parked: none.
