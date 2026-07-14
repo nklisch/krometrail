@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-operation-mcp-control-surface-generated-contracts-and-sdk
 kind: story
-stage: drafting
+stage: implementing
 tags: [browser, agent-ux]
 parent: epic-agent-browser-operation-mcp-control-surface
 depends_on: [bug-restore-rust-1-85-contract]
@@ -15,7 +15,7 @@ updated: 2026-07-14
 
 ## Checkpoint
 
-Qualify exact `rmcp 2.2.0` against the workspace's Rust 1.85 contract and make the existing domain request types the generated JSON-schema source for MCP. Extend the one operation declaration with capability membership and descriptions; do not register handlers or add an MCP-only request/action enum.
+Qualify exact official `rmcp 0.11.0` against the restored workspace Rust 1.85 contract and make the existing domain request types the generated JSON-schema source for MCP. Extend the one operation declaration with capability membership and descriptions; do not register handlers or add an MCP-only request/action enum.
 
 ## Likely files
 
@@ -28,8 +28,8 @@ Qualify exact `rmcp 2.2.0` against the workspace's Rust 1.85 contract and make t
 
 ## Acceptance evidence
 
-- `rmcp = "=2.2.0"` uses minimal server/stdio/image features; macros, client, and HTTP transports are disabled. The intentional lock update is committed.
-- `cargo +1.85.0 check --workspace --all-targets --locked` passes. A failure keeps this checkpoint open and does not raise workspace MSRV or silently change SDK versions.
+- `rmcp = "=0.11.0"` uses its required default server/macros/base64 features plus `transport-io`; the adapter does not use generated tool macros, and client/HTTP transports remain disabled. The intentional lock update is committed.
+- `PATH=/home/nathan/.cargo/bin:$PATH cargo +1.85.0 check --workspace --all-targets --locked` passes. A failure keeps this checkpoint open and does not raise workspace MSRV, patch/vendor the SDK, or silently change SDK versions.
 - All 24 `BROWSER_OPERATION_REGISTRY` entries have one nonempty description, `CapabilityId::Control`, existing stable metadata, and an object-root input schema generated from the declared request type.
 - Custom validated Serde contracts delegate `JsonSchema` to their private wire forms so integer-millisecond wait/batch fields and tagged unions are exact. `ListPagesRequest` accepts `{}` as an object input without an adapter special case.
 - Representative request/schema checks cover a simple operation, validated interaction, wait, and recursive batch. Constructor/Serde validation remains authoritative for semantic constraints.
@@ -49,4 +49,12 @@ The hard Rust 1.85 qualification gate invalidated the exact-SDK design on 2026-0
 - The rmcp failure is in an unconditionally compiled model module; the selected minimal features do not remove it. Exact official rmcp 2.2.0 therefore cannot satisfy the workspace's declared Rust 1.85 contract without changing one of the design's forbidden constraints (SDK version, vendoring/patching the SDK, or workspace MSRV).
 - All temporary manifest, lock, schema, and test changes were reverted. The unrelated `.work/bin/work-view` modification remains untouched.
 
-Per the feature's design-flaw escape hatch, this checkpoint returns to `drafting`. The newly promoted `bug-restore-rust-1-85-contract` first restores the declared workspace baseline; this checkpoint now depends on that verified fix before SDK selection resumes. The workspace MSRV was not raised and the SDK version was not silently changed.
+Per the feature's design-flaw escape hatch, this checkpoint returned to `drafting`. `bug-restore-rust-1-85-contract` restored the declared workspace baseline and is now terminal; this checkpoint depends on that verified fix. The workspace MSRV was not raised and the SDK version was not silently changed.
+
+## Redesign resolution (2026-07-14)
+
+A descending official-release probe established exact rmcp 0.11.0 as the newest version that compiles under Rust 1.85 with a usable server/stdio configuration. Releases 0.12.0 through 2.2.0 failed the same gate. Version 0.11.0 retains every required boundary for this feature: dynamic `ToolRoute::new_dyn` registration, typed schemas, structured content, image blocks, request cancellation, stdio transport, and running-service cancellation/waiting. It supports MCP 2025-06-18; later task metadata is not required by the feature.
+
+Version 0.11.0 requires its default macros feature for its own server/Schemars implementation to compile even though Krometrail uses dynamic routes. The dependency therefore keeps defaults and adds only `transport-io`. Registration must sort `tools/list` by stable name because this release's router returns `HashMap` iteration order. Response mapping must assign public `structured_content` after constructing bounded summary/image content, and root shutdown must use the actual 0.11.0 running-service API.
+
+The parent feature's `## SDK compatibility redesign` section is authoritative for the remaining accepted advisory corrections. This checkpoint is redesigned and returns to `implementing`; downstream order is unchanged.

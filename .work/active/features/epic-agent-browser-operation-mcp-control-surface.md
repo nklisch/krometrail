@@ -49,7 +49,7 @@ Direct local reads were sufficient. The caller prohibited nested agents and peer
 
 ## Design decisions
 
-- **Transport and SDK:** Pin `rmcp = "=2.2.0"` with only `server`, `transport-io`, and the image-supporting `base64` feature needed by this adapter; do not enable macros, client, or HTTP transports. The router is built with `ToolRouter::add_route` and `ToolRoute::new_dyn`, and stdio runs through `ServiceExt::serve(rmcp::transport::stdio())`.
+- **Transport and SDK:** Pin official `rmcp = "=0.11.0"` with its required default server/macros/base64 feature set plus `transport-io`; the adapter does not use the macros, but this SDK release's server implementation does not compile when they are disabled. Client and HTTP transports remain disabled. The router is built with `ToolRouter::add_route` and `ToolRoute::new_dyn`, and stdio runs through `ServiceExt::serve(rmcp::transport::stdio())`.
 - **Tool topology:** Expose the 24 existing operation variants as 24 standalone tools using their registry stable names (the `batch` variant is the ordered batch tool), plus four fixed lifecycle tools: `start_browser`, `attach_browser`, `browser_status`, and `stop_browser`. Lifecycle uses the existing connector/session lifecycle ports; it is not a second browser-operation or action enum.
 - **Generated request contracts:** Add `schemars::JsonSchema` to the existing Serde wire contracts and generate each operation's schema from its request type in the operation macro. For validated custom deserializers, `JsonSchema` delegates to the already-existing private wire type so duration and tagged-union shapes cannot drift from deserialization.
 - **Batch schema composition:** Generate the batch schema from `BatchRequest`, then filter the generated `BrowserOperationRequest` union by `BROWSER_OPERATION_REGISTRY.batchable` and enabled capability membership. Do not hand-copy the step variants. Runtime `BatchRequest` deserialization remains authoritative for semantic invariants.
@@ -131,7 +131,7 @@ The macro continues to emit kind/request/result/registry together. Each declarat
 
 ```toml
 # workspace
-rmcp = { version = "=2.2.0", default-features = false, features = ["server", "transport-io", "base64"] }
+rmcp = { version = "=0.11.0", features = ["transport-io"] }
 schemars = "1"
 tokio-util = "0.7"
 ```
@@ -143,7 +143,7 @@ tokio-util = "0.7"
 - Every one of the 24 registry entries has exactly one nonempty description, `Control` membership, object-root request schema, and the existing stable metadata.
 - Representative valid JSON values deserialize through the domain request and satisfy the generated schema shape; malformed duration, locator, batch, and validated scalar values still fail at Serde/constructor boundaries.
 - Generated batch request schema can be inspected without infinite recursion.
-- rmcp 2.2.0 compiles with the minimal features on Rust 1.85 using the committed lock.
+- rmcp 0.11.0 compiles with its required default features plus `transport-io` on Rust 1.85 using the committed lock.
 
 ### Unit 2: Cancellable browser-session execution boundary
 
@@ -448,7 +448,7 @@ The six stories are dependency/verification checkpoints for one cohesive feature
 
 ## Pre-mortem and risks
 
-- **Unknown rmcp MSRV:** rmcp 2.2.0 declares edition 2024 but no `rust-version`. A transitive release could fail Rust 1.85 despite compiling on the host's newer toolchain. The first checkpoint exact-pins rmcp, updates the lock intentionally, and runs the real 1.85 toolchain. If it fails, implementation stops at that checkpoint and evaluates a source-compatible official SDK version; the workspace MSRV is not raised implicitly.
+- **Qualified older official SDK:** Exact rmcp 2.2.0 and every probed release through 0.12.0 failed Rust 1.85; 0.11.0 is the newest probed official release that passes. It supports the needed dynamic routes, structured content, images, request cancellation, stdio, and MCP 2025-06-18 contracts but not later task metadata. The adapter exact-pins 0.11.0 and explicitly qualifies the real workspace lock under Rust 1.85.
 - **Schema/Serde divergence:** Deriving schemas directly on Rust fields would misdescribe custom integer-millisecond durations and validated transparent values. Delegating `JsonSchema` to existing private wire structs and schema-vs-deserialization tests is the fallback-safe design.
 - **Recursive batch schema drift:** Schemars layout is not a stable API. The filter must identify operation branches by their generated `operation.const` values, verify exact registry coverage, and fail server startup on an unexpected layout rather than publish a permissive or stale schema. Runtime domain validation remains the safety net.
 - **Cancellation after dispatch:** Dropping the MCP future without a port signal could allow a hidden mutation. The explicit cancellation context is therefore required before dynamic calls ship; returning early while execution continues is not an allowed fallback.
@@ -460,9 +460,9 @@ The six stories are dependency/verification checkpoints for one cohesive feature
 Verified against current local source on 2026-07-14:
 
 - Official SDK repository: <https://github.com/modelcontextprotocol/rust-sdk>
-- rmcp 2.2.0 documentation: <https://docs.rs/rmcp/2.2.0/rmcp/>
-- MCP specification targeted by the SDK: <https://modelcontextprotocol.io/specification/2025-11-25>
-- Local crate source: `/home/nathan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rmcp-2.2.0/`
+- rmcp 0.11.0 documentation: <https://docs.rs/rmcp/0.11.0/rmcp/>
+- MCP specification supported by the selected SDK: <https://modelcontextprotocol.io/specification/2025-06-18>
+- Local crate source: `/home/nathan/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rmcp-0.11.0/`
 - Exact APIs inspected: `src/handler/server/router/tool.rs` (`ToolRouter::add_route`, `ToolRoute::new_dyn`), `src/handler/server.rs` (visible tool failures versus protocol errors), `src/model/tool.rs` (input/output schemas and annotations), `src/model/content.rs` and `src/model.rs` (text/image/structured results), `src/transport/io.rs` (`stdio`), and `src/service.rs` (`ServiceExt::serve`, running-service cancellation/waiting).
 - The published crate metadata has no declared `rust-version`; Rust 1.85 compatibility is therefore an implementation qualification gate, not an assumption.
 
@@ -482,3 +482,21 @@ Verified against current local source on 2026-07-14:
 - Review weight: `standard` from the autopilot default. This pass designs the feature; implementation receives the later feature-level independent review.
 - Intentional lifecycle exception: start/attach/status/stop use their existing connector/session lifecycle ports and fixed typed descriptors. The 24 operation handlers each validate once and invoke exactly one cancellable `BrowserSessionPort::execute`; lifecycle is not forced into a fake operation enum merely to make the call graph uniform.
 - Intentional resource omission: the brief's resource-reference shape is honored only when a readable resource implementation exists. This feature returns current screenshot images directly and does not promise temporal or durable resource URIs.
+
+## SDK compatibility redesign (2026-07-14)
+
+The first implementation checkpoint proved that exact rmcp 2.2.0 cannot satisfy the declared Rust 1.85 contract. A bounded descending probe found 0.11.0 to be the newest official release that compiles on Rust 1.85 with its usable server/stdio feature set. `bug-restore-rust-1-85-contract` separately restored the workspace baseline and is now terminal; this feature does not hide that pre-existing incompatibility inside its SDK lock update.
+
+The selected 0.11.0 API preserves the design's load-bearing seams: `ToolRouter::add_route`, `ToolRoute::new_dyn`, typed input/output schemas, `CallToolResult.structured_content`, image content, request cancellation tokens, `ServiceExt::serve`, stdio transport, and running-service cancellation/waiting. The adapter explicitly advertises/negotiates the supported 2025-06-18 protocol contract and does not claim 2025-11-25 task support. Because 0.11.0's `ToolRouter::list_all` iterates a `HashMap`, the server sorts definitions by stable tool name before returning `tools/list`.
+
+Implementation must also apply the accepted advisory corrections:
+
+- Construct tool results from `CallToolResult::success` or `error`, replace content with the bounded summary/images, and assign `structured_content` directly so rmcp's convenience constructors cannot duplicate full JSON into text.
+- Add an explicit per-request view/wrapper around session-shared operation cancellation. Cancellation is guaranteed before dispatch and between CDP round trips, waits, child steps, and post-action observation; an already-sent single CDP command cannot be unsent and may complete.
+- Generate lifecycle schemas for `LaunchBrowser`, `AttachBrowser`, `ManagedProfile`, and `ProfileIdentity` through their validated wire shapes.
+- Keep MCP on the existing full `Runtime` composition root because controlled browser capture needs recording and retention assembly even though handlers do not use storage directly.
+- Expose each tool's inner request object to callers; inject the tagged `{operation, request}` envelope only inside the route handler.
+- Return rmcp-compatible `Arc<JsonObject>` input schemas. Keep `BatchRequest<Vec<BrowserOperationRequest>>` as the one domain contract, with fail-closed Schemars layout assertions and committed-lock tests; do not add a second public step enum without concrete evidence.
+- Use 0.11.0's actual running-service cancellation/waiting APIs rather than later SDK-only lifecycle helpers.
+
+This compatibility revision changes only the SDK/protocol implementation choice. The 24 operation routes, four lifecycle routes, schema single-source policy, response semantics, stdio command, child dependency chain, and feature acceptance boundary remain unchanged.
