@@ -148,7 +148,9 @@ mod tests {
         assert_eq!(names, expected);
         assert!(names.windows(2).all(|pair| pair[0] < pair[1]));
 
+        let output_schema = tools[0].output_schema.clone().unwrap();
         for tool in tools {
+            assert_eq!(tool.output_schema.as_ref(), Some(&output_schema));
             let annotations = tool.annotations.unwrap();
             assert_eq!(annotations.open_world_hint, Some(true));
             if let Some(definition) = BROWSER_OPERATION_REGISTRY

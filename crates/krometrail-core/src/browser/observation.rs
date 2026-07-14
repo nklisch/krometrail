@@ -72,7 +72,7 @@ pub struct NodeReference {
     pub node_id: SnapshotNodeId,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct ObservationContext {
     pub session_id: SessionId,
     pub target_id: TargetId,
@@ -577,7 +577,7 @@ impl<'de> Deserialize<'de> for ScreenshotRequest {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct ScreenshotMetadata {
     pub context: ObservationContext,
     pub requested_target: ScreenshotTarget,

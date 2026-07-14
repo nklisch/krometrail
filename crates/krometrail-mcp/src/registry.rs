@@ -16,7 +16,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     config::McpConfig,
-    response::{provisional_success, visible_error},
+    response::{
+        ToolResponse, into_call_tool_result, map_lifecycle_result, map_operation_result,
+        visible_error,
+    },
     schema::{operation_input_schema, type_input_schema},
     server::KrometrailMcpServer,
 };
@@ -86,7 +89,8 @@ pub(crate) fn build_router(config: &McpConfig) -> Result<ToolRouter<KrometrailMc
         let name = definition.stable_name;
         let input_schema = operation_input_schema(kind, config)?;
         let annotations = operation_annotations(definition.mutability);
-        let tool = Tool::new(name, definition.description, input_schema).annotate(annotations);
+        let mut tool = Tool::new(name, definition.description, input_schema).annotate(annotations);
+        tool.output_schema = Some(type_input_schema::<ToolResponse>()?);
         router.add_route(ToolRoute::new_dyn(tool, move |context| {
             async move { call_operation(context, kind, name).await }.boxed()
         }));
@@ -117,7 +121,8 @@ fn lifecycle_route(tool: LifecycleTool) -> Result<ToolRoute<KrometrailMcpServer>
             .idempotent(false)
             .open_world(true),
     };
-    let route = Tool::new(tool.name, tool.description, schema).annotate(annotations);
+    let mut route = Tool::new(tool.name, tool.description, schema).annotate(annotations);
+    route.output_schema = Some(type_input_schema::<ToolResponse>()?);
     Ok(ToolRoute::new_dyn(route, move |context| {
         async move { call_lifecycle(context, tool).await }.boxed()
     }))
@@ -148,10 +153,11 @@ async fn call_operation(
         )
         .await
     {
-        Ok(result) => Ok(provisional_success(
-            name,
-            json!({"operation": result.kind().stable_name()}),
-        )),
+        Ok(result) => map_operation_result(name, result)
+            .map_err(|_| {
+                rmcp::ErrorData::internal_error("browser tool response mapping failed", None)
+            })
+            .and_then(into_call_tool_result),
         Err(error) => Ok(visible_error(name, error)),
     }
 }
@@ -193,10 +199,14 @@ async fn call_lifecycle(
             .await
             .and_then(serializable),
     };
-    Ok(match result {
-        Ok(value) => provisional_success(tool.name, value),
-        Err(error) => visible_error(tool.name, error),
-    })
+    match result {
+        Ok(value) => map_lifecycle_result(tool.name, value)
+            .map_err(|_| {
+                rmcp::ErrorData::internal_error("lifecycle tool response mapping failed", None)
+            })
+            .and_then(into_call_tool_result),
+        Err(error) => Ok(visible_error(tool.name, error)),
+    }
 }
 
 fn tagged_request(

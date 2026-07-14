@@ -19,7 +19,7 @@ pub enum ImageFormat {
     Png,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct PixelDimensions {
     width: NonZeroU32,
     height: NonZeroU32,
@@ -61,7 +61,7 @@ impl<'de> Deserialize<'de> for PixelDimensions {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(transparent)]
 pub struct DeviceScaleFactor(f64);
 

@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-operation-mcp-control-surface-response-mapping
 kind: story
-stage: implementing
+stage: done
 tags: [browser, agent-ux]
 parent: epic-agent-browser-operation-mcp-control-surface
 depends_on: [epic-agent-browser-operation-mcp-control-surface-registry-and-session]
@@ -36,3 +36,18 @@ Implement the one stable structured/text/error/image translator for lifecycle an
 ## Out of scope
 
 No image resize/transcode/crop/analysis, artifact persistence, temporal resources, interaction-resource persistence, raw source errors, or duplicate full JSON text content.
+
+## Implementation notes
+
+- Execution capability: highest from the autopilot caller for stable public structured/error/image semantics.
+- Review weight: `standard` from the autopilot caller; child checkpoint advances directly to done.
+- Files changed: MCP response projector and registry output wiring; core JSON-schema derives for interaction anchors and screenshot metadata; MCP dependency/lock metadata.
+- Tests added: bounded visible errors, PNG/JPEG byte separation, degradation, wait timeout, page anchor/failure, partial batch failure, and common output-schema assertions.
+- Simplification: one exhaustive `BrowserOperationResult` projection owns all result-family translation; repeated page/interaction/live-observation helpers avoid route or capability duplication.
+- Discrepancies from design: image MIME is derived from the authoritative encoded-byte signature because the existing result contract retains screenshot target metadata but not the requested encoding field. Unsupported signatures fail internally rather than being mislabeled.
+- Adjacent issues parked: none.
+
+## Completion evidence
+
+- `PATH=/home/nathan/.cargo/bin:$PATH cargo +1.85.0 test -p krometrail-mcp --locked` passed all 8 focused MCP tests.
+- Tool results are constructed from bounded success/error content and then assigned `structured_content` directly; full JSON is not duplicated into text, and encoded bytes occur only in image blocks.

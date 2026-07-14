@@ -183,7 +183,7 @@ pub struct GoForwardRequest {
     pub target: PageSelection,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct InteractionTiming {
     pub started_at: SessionTime,
     pub dispatched_at: SessionTime,
@@ -229,7 +229,7 @@ impl<'de> Deserialize<'de> for InteractionTiming {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct InteractionAnchor {
     pub interaction_id: InteractionId,
     pub session_id: SessionId,
