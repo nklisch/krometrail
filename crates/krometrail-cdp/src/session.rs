@@ -132,6 +132,7 @@ struct CaptureAssembly {
     clock: Arc<dyn MonotonicClock>,
     ids: Arc<dyn IdSource>,
     sink: Arc<dyn krometrail_core::RecordingSink>,
+    retention: Arc<dyn krometrail_core::RetentionStore>,
     config: CaptureConfig,
 }
 
@@ -167,6 +168,7 @@ impl ProductionBrowserConnector {
         clock: Arc<dyn MonotonicClock>,
         ids: Arc<dyn IdSource>,
         sink: Arc<dyn krometrail_core::RecordingSink>,
+        retention: Arc<dyn krometrail_core::RetentionStore>,
         config: CaptureConfig,
     ) -> Self {
         self.clock = Arc::clone(&clock);
@@ -175,6 +177,7 @@ impl ProductionBrowserConnector {
             clock,
             ids,
             sink,
+            retention,
             config,
         });
         self
@@ -280,6 +283,7 @@ impl BrowserConnector for ProductionBrowserConnector {
                             clock: Arc::clone(&assembly.clock),
                             ids: Arc::clone(&assembly.ids),
                             sink: Arc::clone(&assembly.sink),
+                            retention: Arc::clone(&assembly.retention),
                         },
                         observer,
                     )
@@ -291,6 +295,7 @@ impl BrowserConnector for ProductionBrowserConnector {
                         clock: assembly.clock,
                         session_id,
                         session_origin,
+                        retention: assembly.retention,
                         shutdown_timeout: assembly.config.shutdown_timeout,
                     }))
                 })
@@ -375,6 +380,7 @@ struct CaptureRuntime {
     clock: Arc<dyn MonotonicClock>,
     session_id: SessionId,
     session_origin: SessionOrigin,
+    retention: Arc<dyn krometrail_core::RetentionStore>,
     shutdown_timeout: Duration,
 }
 
@@ -443,40 +449,58 @@ impl BrowserSessionPort for ProductionSession {
     }
 
     fn status(&self) -> PortFuture<'_, Result<BrowserStatus>> {
-        let state = self.shared.state.lock().expect("session state lock");
-        let selected_target_id = if state.session_state == BrowserSessionState::Ended {
-            None
-        } else {
-            state
-                .selected_target_key
-                .as_deref()
-                .and_then(|key| state.targets_by_key.get(key))
-                .map(|target| target.target.target.id())
+        let (session_state, compatibility, selected_target_id, pages) = {
+            let state = self.shared.state.lock().expect("session state lock");
+            let selected_target_id = if state.session_state == BrowserSessionState::Ended {
+                None
+            } else {
+                state
+                    .selected_target_key
+                    .as_deref()
+                    .and_then(|key| state.targets_by_key.get(key))
+                    .map(|target| target.target.target.id())
+            };
+            let pages = state
+                .targets()
+                .into_iter()
+                .map(|target| PageStatus {
+                    selected: Some(target.target.id()) == selected_target_id,
+                    target,
+                })
+                .collect();
+            (
+                state.session_state,
+                state.compatibility.clone(),
+                selected_target_id,
+                pages,
+            )
         };
-        let pages = state
-            .targets()
-            .into_iter()
-            .map(|target| PageStatus {
-                selected: Some(target.target.id()) == selected_target_id,
-                target,
-            })
-            .collect();
-        let status = BrowserStatus::new(
-            self.shared.session_id,
-            state.session_state,
-            self.shared.ownership,
-            self.shared.profile.clone(),
-            state.compatibility.clone(),
-            selected_target_id,
-            pages,
-            self.shared
-                .capture
+        let session_id = self.shared.session_id;
+        let ownership = self.shared.ownership;
+        let profile = self.shared.profile.clone();
+        let capture = self.shared.capture.clone();
+        Box::pin(async move {
+            let capture_statuses = capture
                 .as_ref()
-                .map_or_else(Vec::new, |capture| capture.coordinator.statuses()),
-            krometrail_core::RetentionStatus::empty(krometrail_core::DiskBudgetBytes::default()),
-        );
-        drop(state);
-        Box::pin(std::future::ready(status))
+                .map_or_else(Vec::new, |runtime| runtime.coordinator.statuses());
+            let retention = match capture.as_ref() {
+                Some(runtime) => runtime.retention.status().await?,
+                None => krometrail_core::RetentionStatus::empty(
+                    krometrail_core::DiskBudgetBytes::default(),
+                ),
+            };
+            BrowserStatus::new(
+                session_id,
+                session_state,
+                ownership,
+                profile,
+                compatibility,
+                selected_target_id,
+                pages,
+                capture_statuses,
+                retention,
+            )
+        })
     }
 
     fn subscribe(&self) -> PortFuture<'_, Result<Box<dyn BrowserSessionEvents>>> {
@@ -3225,6 +3249,57 @@ mod tests {
         }
     }
 
+    impl krometrail_core::RetentionStore for ShutdownTestSink {
+        fn pin_range(
+            &self,
+            request: krometrail_core::RetentionRange,
+        ) -> PortFuture<'_, krometrail_core::Result<krometrail_core::PinChange>> {
+            Box::pin(std::future::ready(Ok(krometrail_core::PinChange {
+                request,
+                protected_segments: Vec::new(),
+                pinned_usage_bytes: 0,
+            })))
+        }
+
+        fn unpin_range(
+            &self,
+            request: krometrail_core::RetentionRange,
+        ) -> PortFuture<'_, krometrail_core::Result<krometrail_core::PinChange>> {
+            self.pin_range(request)
+        }
+
+        fn enforce_budget(
+            &self,
+        ) -> PortFuture<'_, krometrail_core::Result<krometrail_core::RetentionStatus>> {
+            self.status()
+        }
+
+        fn status(
+            &self,
+        ) -> PortFuture<'_, krometrail_core::Result<krometrail_core::RetentionStatus>> {
+            Box::pin(std::future::ready(Ok(
+                krometrail_core::RetentionStatus::empty(krometrail_core::DiskBudgetBytes::default()),
+            )))
+        }
+
+        fn delete_session(
+            &self,
+            session_id: SessionId,
+        ) -> PortFuture<'_, krometrail_core::Result<krometrail_core::SessionDeletion>> {
+            Box::pin(std::future::ready(Ok(krometrail_core::SessionDeletion {
+                session_id,
+                removed_segments: 0,
+                removed_frames: 0,
+                removed_artifacts: 0,
+                removed_bytes: 0,
+            })))
+        }
+
+        fn wait_until_recording_allowed(&self) -> PortFuture<'_, krometrail_core::Result<()>> {
+            Box::pin(std::future::ready(Ok(())))
+        }
+    }
+
     struct ConsumingShutdownClock {
         current: Mutex<tokio::time::Instant>,
         step: Duration,
@@ -3274,6 +3349,7 @@ mod tests {
         let sink = Arc::new(ShutdownTestSink {
             log: Arc::clone(&log),
         });
+        let retention = Arc::clone(&sink) as Arc<dyn krometrail_core::RetentionStore>;
         let coordinator = Arc::new(
             CaptureCoordinator::new(
                 CaptureConfig::default(),
@@ -3281,6 +3357,7 @@ mod tests {
                     clock: Arc::new(ShutdownTestClock),
                     ids: Arc::new(ShutdownTestIds),
                     sink,
+                    retention: Arc::clone(&retention),
                 },
                 Arc::new(ShutdownTestObserver),
             )
@@ -3343,6 +3420,7 @@ mod tests {
             clock: Arc::new(ShutdownTestClock),
             session_id,
             session_origin: SessionOrigin::new(krometrail_core::ObservedTime::from_nanos(0)),
+            retention,
             shutdown_timeout: timeout,
         });
         let mut connection = Some(connection);

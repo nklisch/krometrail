@@ -4,9 +4,9 @@ use std::{
 };
 
 use krometrail_core::{
-    BrowserConnector, CaptureGapStore, ErrorCode, FrameSource, IdSource, IdValue, KrometrailError,
-    MonotonicClock, NonEmptyText, RecordingCatalog, RecordingSink, Result, TimelineStore,
-    WallClock,
+    BrowserConnector, CaptureGapStore, DiskBudgetBytes, ErrorCode, FrameSource, IdSource, IdValue,
+    KrometrailError, MonotonicClock, NonEmptyText, RecordingCatalog, RecordingSink, Result,
+    RetentionStore, TimelineStore, WallClock,
 };
 use uuid::Uuid;
 
@@ -18,7 +18,7 @@ use krometrail_cdp::{
 };
 use krometrail_mcp as _;
 use krometrail_store::{
-    IndexStoreConfig, IndexedRecordingSink, RotationConfig, SegmentStoreConfig, SegmentWriter,
+    IndexStoreConfig, RecordingStore, RotationConfig, SegmentStoreConfig, SegmentWriter,
     SqliteIndex, recover,
 };
 use temporal_vision as _;
@@ -31,6 +31,7 @@ pub(crate) struct RuntimeDependencies {
     pub ids: Arc<dyn IdSource>,
     pub browser: Arc<dyn BrowserConnector>,
     pub recording: Arc<dyn RecordingSink>,
+    pub retention: Arc<dyn RetentionStore>,
     pub timeline: Arc<dyn TimelineStore>,
     pub catalog: Arc<dyn RecordingCatalog>,
     pub gaps: Arc<dyn CaptureGapStore>,
@@ -39,6 +40,7 @@ pub(crate) struct RuntimeDependencies {
 
 struct StorageDependencies {
     recording: Arc<dyn RecordingSink>,
+    retention: Arc<dyn RetentionStore>,
     timeline: Arc<dyn TimelineStore>,
     catalog: Arc<dyn RecordingCatalog>,
     gaps: Arc<dyn CaptureGapStore>,
@@ -66,6 +68,7 @@ impl Runtime {
                 let _ = self.dependencies.ids.next();
                 let _ = (
                     &self.dependencies.recording,
+                    &self.dependencies.retention,
                     &self.dependencies.timeline,
                     &self.dependencies.catalog,
                     &self.dependencies.gaps,
@@ -88,7 +91,7 @@ pub(crate) fn build_runtime() -> Result<Runtime> {
     });
     let ids: Arc<dyn IdSource> = Arc::new(ProcessIdSource);
     let data_directory = data_directory();
-    let storage = open_storage(&data_directory)?;
+    let storage = open_storage_with_budget(&data_directory, configured_disk_budget()?)?;
     let profile_root = std::env::var_os("KROMETRAIL_PROFILE_ROOT")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| data_directory.join("browser-profiles"));
@@ -104,6 +107,7 @@ pub(crate) fn build_runtime() -> Result<Runtime> {
             Arc::clone(&clock),
             Arc::clone(&ids),
             Arc::clone(&storage.recording),
+            Arc::clone(&storage.retention),
             CaptureConfig::default(),
         ),
     );
@@ -113,6 +117,7 @@ pub(crate) fn build_runtime() -> Result<Runtime> {
         ids,
         browser,
         recording: storage.recording,
+        retention: storage.retention,
         timeline: storage.timeline,
         catalog: storage.catalog,
         gaps: storage.gaps,
@@ -120,7 +125,10 @@ pub(crate) fn build_runtime() -> Result<Runtime> {
     }))
 }
 
-fn open_storage(data_directory: &std::path::Path) -> Result<StorageDependencies> {
+fn open_storage_with_budget(
+    data_directory: &std::path::Path,
+    budget: DiskBudgetBytes,
+) -> Result<StorageDependencies> {
     let segments_directory = data_directory.join("segments");
     // Open and migrate metadata before capture infrastructure can accept writes.
     let index = Arc::new(SqliteIndex::open(IndexStoreConfig {
@@ -141,13 +149,44 @@ fn open_storage(data_directory: &std::path::Path) -> Result<StorageDependencies>
         frames_removed = recovery.frames_removed,
         "recording store recovery complete"
     );
+    let store = Arc::new(RecordingStore::with_budget(
+        segments,
+        Arc::clone(&index),
+        budget,
+    )?);
     Ok(StorageDependencies {
-        recording: Arc::new(IndexedRecordingSink::new(segments, Arc::clone(&index))),
+        recording: Arc::clone(&store) as Arc<dyn RecordingSink>,
+        retention: store as Arc<dyn RetentionStore>,
         timeline: Arc::clone(&index) as Arc<dyn TimelineStore>,
         catalog: Arc::clone(&index) as Arc<dyn RecordingCatalog>,
         gaps: Arc::clone(&index) as Arc<dyn CaptureGapStore>,
         frames: index as Arc<dyn FrameSource>,
     })
+}
+
+fn configured_disk_budget() -> Result<DiskBudgetBytes> {
+    parse_disk_budget(std::env::var_os("KROMETRAIL_DISK_BUDGET_BYTES").as_deref())
+}
+
+fn parse_disk_budget(value: Option<&std::ffi::OsStr>) -> Result<DiskBudgetBytes> {
+    let Some(value) = value else {
+        return Ok(DiskBudgetBytes::default());
+    };
+    let value = value.to_str().ok_or_else(invalid_disk_budget)?;
+    let bytes = value.parse::<u64>().map_err(|_| invalid_disk_budget())?;
+    DiskBudgetBytes::new(bytes).map_err(|_| invalid_disk_budget())
+}
+
+fn invalid_disk_budget() -> KrometrailError {
+    KrometrailError::new(
+        ErrorCode::InvalidInput,
+        NonEmptyText::new("KROMETRAIL_DISK_BUDGET_BYTES must be a positive integer")
+            .expect("static budget error is non-empty"),
+    )
+    .with_recovery(
+        NonEmptyText::new("set KROMETRAIL_DISK_BUDGET_BYTES to a positive decimal byte count")
+            .expect("static budget recovery is non-empty"),
+    )
 }
 
 fn data_directory() -> std::path::PathBuf {
@@ -255,7 +294,8 @@ mod tests {
         });
         let recording_directory =
             std::env::temp_dir().join(format!("krometrail-doctor-test-{}", Uuid::new_v4()));
-        let storage = open_storage(&recording_directory).unwrap();
+        let storage =
+            open_storage_with_budget(&recording_directory, DiskBudgetBytes::default()).unwrap();
         let runtime = Runtime::new(RuntimeDependencies {
             clock: Arc::new(ProcessMonotonicClock {
                 origin: Instant::now(),
@@ -264,6 +304,7 @@ mod tests {
             ids: Arc::new(ProcessIdSource),
             browser: Arc::clone(&browser) as Arc<dyn BrowserConnector>,
             recording: storage.recording,
+            retention: storage.retention,
             timeline: storage.timeline,
             catalog: storage.catalog,
             gaps: storage.gaps,
@@ -278,7 +319,7 @@ mod tests {
     #[tokio::test]
     async fn storage_composition_shares_lossless_gap_metadata_and_fails_before_runtime() {
         let root = std::env::temp_dir().join(format!("krometrail-storage-test-{}", Uuid::new_v4()));
-        let storage = open_storage(&root).unwrap();
+        let storage = open_storage_with_budget(&root, DiskBudgetBytes::default()).unwrap();
         let session = krometrail_core::SessionId::from_uuid(Uuid::from_u128(1));
         let target = krometrail_core::TargetId::from_uuid(Uuid::from_u128(2));
         let gap = krometrail_core::CaptureGap::new(
@@ -319,8 +360,27 @@ mod tests {
         let occupied =
             std::env::temp_dir().join(format!("krometrail-storage-file-{}", Uuid::new_v4()));
         std::fs::write(&occupied, b"not a data directory").unwrap();
-        assert!(open_storage(&occupied).is_err());
+        assert!(open_storage_with_budget(&occupied, DiskBudgetBytes::default()).is_err());
         std::fs::remove_file(occupied).unwrap();
+    }
+
+    #[test]
+    fn disk_budget_configuration_defaults_and_rejects_invalid_boundaries() {
+        assert_eq!(parse_disk_budget(None).unwrap(), DiskBudgetBytes::default());
+        assert_eq!(
+            parse_disk_budget(Some(std::ffi::OsStr::new("12345")))
+                .unwrap()
+                .get(),
+            12_345
+        );
+        for invalid in ["", "0", "-1", "1.5", "ten"] {
+            let error = parse_disk_budget(Some(std::ffi::OsStr::new(invalid))).unwrap_err();
+            assert_eq!(error.code, ErrorCode::InvalidInput);
+            assert_eq!(
+                error.message.as_str(),
+                "KROMETRAIL_DISK_BUDGET_BYTES must be a positive integer"
+            );
+        }
     }
 
     #[test]

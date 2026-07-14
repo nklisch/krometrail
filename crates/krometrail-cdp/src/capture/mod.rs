@@ -127,6 +127,7 @@ pub(crate) struct CaptureDependencies {
     pub(crate) clock: Arc<dyn krometrail_core::MonotonicClock>,
     pub(crate) ids: Arc<dyn krometrail_core::IdSource>,
     pub(crate) sink: Arc<dyn krometrail_core::RecordingSink>,
+    pub(crate) retention: Arc<dyn krometrail_core::RetentionStore>,
 }
 
 #[derive(Clone, Debug)]
@@ -219,7 +220,11 @@ impl CaptureCoordinator {
                 .retain(|key, runtime| {
                     key.target_id != target.target_id
                         || key.attachment_generation >= target.attachment_generation
-                        || runtime.state() == krometrail_core::CaptureStreamState::Capturing
+                        || matches!(
+                            runtime.state(),
+                            krometrail_core::CaptureStreamState::Capturing
+                                | krometrail_core::CaptureStreamState::PausedBudget
+                        )
                 });
         }
         result

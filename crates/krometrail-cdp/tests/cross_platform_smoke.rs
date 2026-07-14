@@ -615,7 +615,13 @@ async fn connect_managed(
     let factory = krometrail_cdp::transport::CdpkitTransportFactory::new()
         .with_command_timeout(Duration::from_secs(4));
     let connector = ProductionBrowserConnector::new(Arc::new(launcher), Arc::new(factory))
-        .with_capture(clock.clone(), ids.clone(), sink.clone(), config);
+        .with_capture(
+            clock.clone(),
+            ids.clone(),
+            sink.clone(),
+            Arc::new(support::retention::AlwaysAvailableRetention),
+            config,
+        );
     let session = connector
         .connect(BrowserConnectRequest::Launch(request))
         .await

@@ -9,13 +9,13 @@ use std::{
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use krometrail_core::{
     CaptureGap, CaptureGapReason, CaptureOrdinal, CaptureStatistics, CaptureStreamState,
-    CaptureTimingSummary, CaptureWarning, CapturedFrame, DeviceScaleFactor, EncodedFrame, FrameId,
-    GapId, ImageFormat, PixelDimensions, SessionRange, SessionTime, SourceTime,
+    CaptureTimingSummary, CaptureWarning, CapturedFrame, DeviceScaleFactor, EncodedFrame,
+    ErrorCode, FrameId, GapId, ImageFormat, PixelDimensions, SessionRange, SessionTime, SourceTime,
     TargetCaptureStatus,
 };
 use serde_json::{Value, json};
 use tokio::{
-    sync::mpsc,
+    sync::{Notify, mpsc},
     task::JoinHandle,
     time::{self, Instant},
 };
@@ -138,6 +138,7 @@ pub(super) struct StreamRuntime {
     observer: Arc<dyn CaptureObserver>,
     transport: Arc<dyn CdpTransport>,
     accepting: AtomicBool,
+    stop_notification: Notify,
     state: Mutex<RuntimeState>,
     control: Mutex<ControlHandles>,
 }
@@ -151,6 +152,7 @@ struct ControlHandles {
 
 struct RuntimeState {
     state: CaptureStreamState,
+    visible: bool,
     statistics: CaptureStatistics,
     queue_capacity: usize,
     queue_depth: usize,
@@ -198,6 +200,9 @@ pub(super) enum Transition {
     ActualFrame,
     Suspend,
     Resume,
+    PauseBudget,
+    ResumeBudgetVisible,
+    ResumeBudgetHidden,
     Stop,
     Drained,
     Deadline,
@@ -221,8 +226,10 @@ impl StreamRuntime {
             observer,
             transport,
             accepting: AtomicBool::new(true),
+            stop_notification: Notify::new(),
             state: Mutex::new(RuntimeState {
                 state: CaptureStreamState::Starting,
+                visible: true,
                 statistics: CaptureStatistics::default(),
                 queue_capacity: config.queue_capacity.get(),
                 queue_depth: 0,
@@ -270,6 +277,7 @@ impl StreamRuntime {
 
     fn close_acceptance(&self) {
         self.accepting.store(false, Ordering::Release);
+        self.stop_notification.notify_waiters();
         self.control
             .lock()
             .expect("capture control lock poisoned")
@@ -297,6 +305,11 @@ impl StreamRuntime {
     fn transition(&self, transition: Transition) -> bool {
         let status = {
             let mut state = self.state.lock().expect("capture state lock poisoned");
+            match transition {
+                Transition::Hide => state.visible = false,
+                Transition::Show | Transition::ActualFrame => state.visible = true,
+                _ => {}
+            }
             let next = next_state(state.state, transition);
             let Some(next) = next else { return false };
             if next == state.state {
@@ -314,6 +327,35 @@ impl StreamRuntime {
             .lock()
             .expect("capture state lock poisoned")
             .state
+    }
+
+    fn resume_budget_transition(&self) -> Transition {
+        if self
+            .state
+            .lock()
+            .expect("capture state lock poisoned")
+            .visible
+        {
+            Transition::ResumeBudgetVisible
+        } else {
+            Transition::ResumeBudgetHidden
+        }
+    }
+
+    async fn wait_until_recording_allowed(&self) -> bool {
+        if !self.accepting.load(Ordering::Acquire) {
+            return false;
+        }
+        let stopped = self.stop_notification.notified();
+        tokio::pin!(stopped);
+        stopped.as_mut().enable();
+        if !self.accepting.load(Ordering::Acquire) {
+            return false;
+        }
+        tokio::select! {
+            result = self.dependencies.retention.wait_until_recording_allowed() => result.is_ok(),
+            () = &mut stopped => false,
+        }
     }
 
     pub(super) fn record_received(&self) {
@@ -519,6 +561,7 @@ pub(super) async fn start_target(
                     runtime.state(),
                     CaptureStreamState::Starting
                         | CaptureStreamState::Capturing
+                        | CaptureStreamState::PausedBudget
                         | CaptureStreamState::Hidden
                         | CaptureStreamState::Draining
                 )
@@ -736,6 +779,24 @@ async fn worker_loop(runtime: Arc<StreamRuntime>, mut receiver: mpsc::Receiver<R
                 Ok(_address) => {
                     runtime.persisted();
                     runtime.complete_processing();
+                }
+                Err(error) if error.code == ErrorCode::BudgetExhausted => {
+                    runtime.complete_processing();
+                    runtime.declare_gap(
+                        CaptureGapReason::PersistenceRejected,
+                        raw.session_time,
+                        Some(1),
+                        Some("disk budget paused capture"),
+                    );
+                    runtime.transition(Transition::PauseBudget);
+                    if !runtime.wait_until_recording_allowed().await {
+                        break;
+                    }
+                    if !persist_pending_gaps(&runtime).await {
+                        runtime.fail();
+                        break;
+                    }
+                    runtime.transition(runtime.resume_budget_transition());
                 }
                 Err(_) => {
                     runtime.complete_processing();
@@ -1053,10 +1114,20 @@ pub(super) fn next_state(
         (Starting, Transition::Stop) => Some(Draining),
         (Starting, Transition::Failure) => Some(Failed),
         (Capturing, Transition::Hide) => Some(Hidden),
+        (Capturing, Transition::PauseBudget) => Some(PausedBudget),
         (Capturing, Transition::Suspend) => Some(Suspended),
         (Capturing, Transition::Stop) => Some(Draining),
         (Capturing, Transition::Failure) => Some(Failed),
+        (PausedBudget, Transition::Hide | Transition::Show | Transition::ActualFrame) => {
+            Some(PausedBudget)
+        }
+        (PausedBudget, Transition::ResumeBudgetVisible) => Some(Capturing),
+        (PausedBudget, Transition::ResumeBudgetHidden) => Some(Hidden),
+        (PausedBudget, Transition::Suspend) => Some(Suspended),
+        (PausedBudget, Transition::Stop) => Some(Draining),
+        (PausedBudget, Transition::Failure) => Some(Failed),
         (Hidden, Transition::Show | Transition::ActualFrame) => Some(Capturing),
+        (Hidden, Transition::PauseBudget) => Some(PausedBudget),
         (Hidden, Transition::Suspend) => Some(Suspended),
         (Hidden, Transition::Stop) => Some(Draining),
         (Hidden, Transition::Failure) => Some(Failed),

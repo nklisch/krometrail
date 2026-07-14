@@ -168,6 +168,7 @@ async fn opt_in_real_chrome_capture_isolates_two_targets_and_records_visibility_
             clock,
             ids,
             sink.clone(),
+            Arc::new(support::retention::AlwaysAvailableRetention),
             capture_config(4, Duration::from_secs(5)),
         );
     let session = connector
@@ -499,6 +500,7 @@ async fn opt_in_real_chrome_capture_fences_one_disconnect_and_resets_generation_
             clock,
             ids,
             sink.clone(),
+            Arc::new(support::retention::AlwaysAvailableRetention),
             capture_config(4, Duration::from_secs(5)),
         );
     let session = connector
@@ -657,7 +659,13 @@ async fn connect_managed(
     let factory = krometrail_cdp::transport::CdpkitTransportFactory::new()
         .with_command_timeout(Duration::from_secs(4));
     let connector = ProductionBrowserConnector::new(Arc::new(launcher), Arc::new(factory))
-        .with_capture(clock.clone(), ids.clone(), sink.clone(), config);
+        .with_capture(
+            clock.clone(),
+            ids.clone(),
+            sink.clone(),
+            Arc::new(support::retention::AlwaysAvailableRetention),
+            config,
+        );
     let session = connector
         .connect(BrowserConnectRequest::Launch(request))
         .await

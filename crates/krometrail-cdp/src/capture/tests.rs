@@ -1,9 +1,10 @@
 use super::*;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use krometrail_core::{
-    ByteOffset, CaptureGapReason, CaptureStreamState, EncodedFrame, FrameAddress, IdValue,
-    ImageFormat, MonotonicClock, ObservedTime, PortFuture, RecordingSink, SegmentId, SessionId,
-    SessionOrigin, TargetId,
+    ByteOffset, CaptureGapReason, CaptureStreamState, DiskBudgetBytes, EncodedFrame, ErrorCode,
+    FrameAddress, IdValue, ImageFormat, KrometrailError, MonotonicClock, NonEmptyText,
+    ObservedTime, PinChange, PortFuture, RecordingSink, RetentionRange, RetentionStatus,
+    RetentionStore, SegmentId, SessionDeletion, SessionId, SessionOrigin, TargetId,
 };
 use std::{
     collections::HashMap,
@@ -62,6 +63,14 @@ fn transition_table_keeps_terminals_terminal() {
         Some(Capturing)
     );
     assert_eq!(next_state(Capturing, Transition::Hide), Some(Hidden));
+    assert_eq!(
+        next_state(Hidden, Transition::PauseBudget),
+        Some(PausedBudget)
+    );
+    assert_eq!(
+        next_state(PausedBudget, Transition::ResumeBudgetHidden),
+        Some(Hidden)
+    );
     assert_eq!(next_state(Hidden, Transition::ActualFrame), Some(Capturing));
     assert_eq!(next_state(Capturing, Transition::Suspend), Some(Suspended));
     assert_eq!(next_state(Suspended, Transition::Resume), Some(Starting));
@@ -91,7 +100,7 @@ fn logarithmic_histogram_is_fixed_size_and_nearest_rank_is_deterministic() {
 
 #[test]
 fn stable_capture_names_and_gap_reasons_are_registry_backed() {
-    assert_eq!(CaptureStreamState::ALL.len(), 7);
+    assert_eq!(CaptureStreamState::ALL.len(), 8);
     assert_eq!(
         CaptureGapReason::ALL.last().unwrap().as_str(),
         "frame_rejected"
@@ -178,6 +187,7 @@ impl krometrail_core::IdSource for TestIds {
 struct TestObserver {
     statuses: Mutex<Vec<krometrail_core::TargetCaptureStatus>>,
     gaps: Mutex<Vec<krometrail_core::CaptureGap>>,
+    visibility: Mutex<Vec<krometrail_core::TargetVisibility>>,
 }
 
 impl CaptureObserver for TestObserver {
@@ -187,6 +197,96 @@ impl CaptureObserver for TestObserver {
 
     fn gap_declared(&self, gap: krometrail_core::CaptureGap) {
         self.gaps.lock().unwrap().push(gap);
+    }
+
+    fn visibility_changed(
+        &self,
+        _target_id: TargetId,
+        visibility: krometrail_core::TargetVisibility,
+    ) {
+        self.visibility.lock().unwrap().push(visibility);
+    }
+}
+
+#[derive(Debug, Default)]
+struct TestRetention {
+    allowed: AtomicBool,
+    changed: Notify,
+}
+
+impl TestRetention {
+    fn available() -> Self {
+        Self {
+            allowed: AtomicBool::new(true),
+            changed: Notify::new(),
+        }
+    }
+
+    fn pause(&self) {
+        self.allowed.store(false, Ordering::Release);
+    }
+
+    fn resume(&self) {
+        self.allowed.store(true, Ordering::Release);
+        self.changed.notify_waiters();
+    }
+}
+
+impl RetentionStore for TestRetention {
+    fn pin_range(
+        &self,
+        request: RetentionRange,
+    ) -> PortFuture<'_, krometrail_core::Result<PinChange>> {
+        Box::pin(std::future::ready(Ok(PinChange {
+            request,
+            protected_segments: Vec::new(),
+            pinned_usage_bytes: 0,
+        })))
+    }
+
+    fn unpin_range(
+        &self,
+        request: RetentionRange,
+    ) -> PortFuture<'_, krometrail_core::Result<PinChange>> {
+        self.pin_range(request)
+    }
+
+    fn enforce_budget(&self) -> PortFuture<'_, krometrail_core::Result<RetentionStatus>> {
+        self.status()
+    }
+
+    fn status(&self) -> PortFuture<'_, krometrail_core::Result<RetentionStatus>> {
+        Box::pin(std::future::ready(Ok(RetentionStatus::empty(
+            DiskBudgetBytes::default(),
+        ))))
+    }
+
+    fn delete_session(
+        &self,
+        session_id: SessionId,
+    ) -> PortFuture<'_, krometrail_core::Result<SessionDeletion>> {
+        Box::pin(std::future::ready(Ok(SessionDeletion {
+            session_id,
+            removed_segments: 0,
+            removed_frames: 0,
+            removed_artifacts: 0,
+            removed_bytes: 0,
+        })))
+    }
+
+    fn wait_until_recording_allowed(&self) -> PortFuture<'_, krometrail_core::Result<()>> {
+        Box::pin(async move {
+            while !self.allowed.load(Ordering::Acquire) {
+                let changed = self.changed.notified();
+                tokio::pin!(changed);
+                changed.as_mut().enable();
+                if self.allowed.load(Ordering::Acquire) {
+                    break;
+                }
+                changed.await;
+            }
+            Ok(())
+        })
     }
 }
 
@@ -251,6 +351,58 @@ impl RecordingSink for TestSink {
 
     fn flush(&self, _session_id: SessionId) -> PortFuture<'_, krometrail_core::Result<()>> {
         self.flushes.fetch_add(1, Ordering::Relaxed);
+        Box::pin(std::future::ready(Ok(())))
+    }
+}
+
+#[derive(Debug)]
+struct BudgetSink {
+    blocked: AtomicBool,
+    frames: AtomicU64,
+    gaps: Mutex<Vec<krometrail_core::CaptureGap>>,
+}
+
+impl BudgetSink {
+    fn new_blocked() -> Self {
+        Self {
+            blocked: AtomicBool::new(true),
+            frames: AtomicU64::new(0),
+            gaps: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn resume(&self) {
+        self.blocked.store(false, Ordering::Release);
+    }
+}
+
+impl RecordingSink for BudgetSink {
+    fn append_frame(
+        &self,
+        _frame: EncodedFrame,
+    ) -> PortFuture<'_, krometrail_core::Result<FrameAddress>> {
+        if self.blocked.load(Ordering::Acquire) {
+            return Box::pin(std::future::ready(Err(KrometrailError::new(
+                ErrorCode::BudgetExhausted,
+                NonEmptyText::new("disk budget paused capture").unwrap(),
+            ))));
+        }
+        let position = self.frames.fetch_add(1, Ordering::AcqRel) + 1;
+        Box::pin(std::future::ready(Ok(FrameAddress::new(
+            SegmentId::from_uuid(uuid::Uuid::from_u128(99)),
+            ByteOffset::new(position),
+        ))))
+    }
+
+    fn append_gap(
+        &self,
+        gap: krometrail_core::CaptureGap,
+    ) -> PortFuture<'_, krometrail_core::Result<()>> {
+        self.gaps.lock().unwrap().push(gap);
+        Box::pin(std::future::ready(Ok(())))
+    }
+
+    fn flush(&self, _session_id: SessionId) -> PortFuture<'_, krometrail_core::Result<()>> {
         Box::pin(std::future::ready(Ok(())))
     }
 }
@@ -489,7 +641,17 @@ fn coordinator(
     sink: Arc<TestSink>,
     observer: Arc<TestObserver>,
 ) -> CaptureCoordinator {
-    CaptureCoordinator::new(config, CaptureDependencies { clock, ids, sink }, observer).unwrap()
+    CaptureCoordinator::new(
+        config,
+        CaptureDependencies {
+            clock,
+            ids,
+            sink,
+            retention: Arc::new(TestRetention::available()),
+        },
+        observer,
+    )
+    .unwrap()
 }
 
 #[tokio::test]
@@ -668,6 +830,154 @@ async fn saturated_queue_drops_after_ack_without_waiting_for_blocked_sink() {
 }
 
 #[tokio::test]
+async fn budget_pause_keeps_acknowledging_records_loss_and_resumes_hidden_state() {
+    let ack_completed = Arc::new(AtomicBool::new(false));
+    let transport =
+        TestTransport::new(Arc::clone(&ack_completed), Arc::new(Mutex::new(Vec::new())));
+    let sink = Arc::new(BudgetSink::new_blocked());
+    let retention = Arc::new(TestRetention::available());
+    retention.pause();
+    let observer = Arc::new(TestObserver::default());
+    let coordinator = CaptureCoordinator::new(
+        CaptureConfig {
+            queue_capacity: NonZeroUsize::new(1).unwrap(),
+            ..CaptureConfig::default()
+        },
+        CaptureDependencies {
+            clock: Arc::new(TestClock::new()),
+            ids: Arc::new(TestIds::new()),
+            sink: Arc::clone(&sink) as Arc<dyn RecordingSink>,
+            retention: Arc::clone(&retention) as Arc<dyn RetentionStore>,
+        },
+        Arc::clone(&observer) as Arc<dyn CaptureObserver>,
+    )
+    .unwrap();
+    let capture_target = target();
+    coordinator
+        .start_target(
+            capture_target.clone(),
+            Arc::clone(&transport) as Arc<dyn CdpTransport>,
+        )
+        .await
+        .unwrap();
+
+    transport.frame(1).await;
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while coordinator.statuses()[0].state() != CaptureStreamState::PausedBudget {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    transport.frame(2).await;
+    transport.frame(3).await;
+    transport.wait_for_acks(3).await;
+    transport.visibility(false).await;
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while observer.visibility.lock().unwrap().is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        coordinator.statuses()[0].state(),
+        CaptureStreamState::PausedBudget
+    );
+
+    sink.resume();
+    retention.resume();
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            let status = coordinator.statuses().remove(0);
+            if status.state() == CaptureStreamState::Hidden
+                && status.statistics().persisted_frames() == 1
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+
+    let status = coordinator.statuses().remove(0);
+    assert_eq!(status.statistics().acknowledged_frames(), 3);
+    assert_eq!(status.statistics().accepted_frames(), 2);
+    assert_eq!(status.statistics().dropped_frames(), 1);
+    assert_eq!(status.statistics().gap_count(), 2);
+    let persisted = sink.gaps.lock().unwrap();
+    assert!(persisted.iter().any(|gap| {
+        gap.reason() == &CaptureGapReason::PersistenceRejected
+            && gap.detail() == Some("disk budget paused capture")
+    }));
+    assert!(
+        persisted
+            .iter()
+            .any(|gap| gap.reason() == &CaptureGapReason::IngestionQueueSaturated)
+    );
+    drop(persisted);
+
+    let outcome = coordinator
+        .stop_target(
+            &capture_target,
+            CaptureStopReason::TargetClosed,
+            tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+        )
+        .await;
+    assert!(outcome.complete);
+}
+
+#[tokio::test]
+async fn stopping_while_budget_paused_cancels_the_wait() {
+    let ack_completed = Arc::new(AtomicBool::new(false));
+    let transport =
+        TestTransport::new(Arc::clone(&ack_completed), Arc::new(Mutex::new(Vec::new())));
+    let sink = Arc::new(BudgetSink::new_blocked());
+    let retention = Arc::new(TestRetention::available());
+    retention.pause();
+    let coordinator = CaptureCoordinator::new(
+        CaptureConfig::default(),
+        CaptureDependencies {
+            clock: Arc::new(TestClock::new()),
+            ids: Arc::new(TestIds::new()),
+            sink: sink as Arc<dyn RecordingSink>,
+            retention: retention as Arc<dyn RetentionStore>,
+        },
+        Arc::new(TestObserver::default()),
+    )
+    .unwrap();
+    let capture_target = target();
+    coordinator
+        .start_target(
+            capture_target.clone(),
+            Arc::clone(&transport) as Arc<dyn CdpTransport>,
+        )
+        .await
+        .unwrap();
+    transport.frame(1).await;
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while coordinator.statuses()[0].state() != CaptureStreamState::PausedBudget {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_millis(200),
+        coordinator.stop_target(
+            &capture_target,
+            CaptureStopReason::Cancelled,
+            tokio::time::Instant::now() + std::time::Duration::from_millis(150),
+        ),
+    )
+    .await
+    .expect("paused stop must not wait for budget availability");
+    assert!(outcome.complete);
+}
+
+#[tokio::test]
 async fn failed_ack_never_enters_accepted_or_dropped_accounting() {
     let ack_completed = Arc::new(AtomicBool::new(false));
     let transport =
@@ -798,6 +1108,7 @@ fn equal_or_backwards_clock_samples_are_clamped_without_reordering() {
             clock: Arc::new(TestClock::new()),
             ids: Arc::new(TestIds::new()),
             sink,
+            retention: Arc::new(TestRetention::available()),
         },
         observer,
         transport,
