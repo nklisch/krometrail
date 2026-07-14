@@ -742,6 +742,7 @@ name = "krometrail-mcp"
 version = "0.2.20"
 dependencies = [
  "base64",
+ "futures-util",
  "krometrail-core",
  "rmcp",
  "schemars",
