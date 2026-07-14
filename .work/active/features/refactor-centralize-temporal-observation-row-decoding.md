@@ -1,7 +1,7 @@
 ---
 id: refactor-centralize-temporal-observation-row-decoding
 kind: feature
-stage: drafting
+stage: implementing
 tags: [refactor, storage]
 parent: null
 depends_on: []
@@ -13,54 +13,84 @@ updated: 2026-07-14
 
 # Centralize temporal observation row decoding
 
-## Brief
+## Refactor Overview
 
-The SQLite temporal-anchor queries in `crates/krometrail-store/src/index/range.rs` construct the same `RawObservation` from the same seven selected columns independently at lines 156-165 and 195-204. `crates/krometrail-store/src/index/timeline.rs:161-171` already owns the identical row decoder used by timeline queries and replay checks, but it is private, so the range-anchor implementation cannot reuse it.
+The temporal index has three exact copies of the same seven-column `RawObservation` decoder: the two `query_row` callbacks in `index/range.rs`, plus the `query_map` callback in `TimelineStore::range` in `index/timeline.rs`. The existing private `raw_observation` function in `timeline.rs` is already used by timeline replay checks and is the correct single owner.
 
-Make the existing timeline row decoder `pub(crate)` and pass it directly to both range-anchor `query_row` calls. Keep the SQL predicates, ordering, optional-row behavior, error messages, and `decode_observation` path unchanged. This is a structural ownership cleanup only; it must not merge the two anchor queries or alter scope/payload validation.
+This is a high-value, low-risk pure refactor: one crate-private decoder makes the selected-column order auditable and prevents timeline, replay, and anchor reads from drifting. It changes no SQL, validation, error mapping, ordering, or optional-row semantics.
 
-**Source lens**: elimination / duplicated domain mapping
+**Black-box purity**: for every durable timeline row and invalid/corrupt row, `observation_for_payload`, `latest_observation`, and `TimelineStore::range` retain the same observation, `None`, ordering, or persistence error. `pub(crate)` changes only an internal module boundary; no external API changes.
 
-**Rationale**: removes one duplicated persistence-to-domain mapping and leaves the selected-column order represented by one auditable decoder, preventing timeline and anchor reads from drifting if `RawObservation` evolves.
+**Scope guard**: direct-read only; no nested agents or peeragent. Implementation must not edit tests, schemas, docs, artifact/browser-event work, or `.work/bin/work-view`.
 
-**Black-box classification**: pure refactor. For every stored timeline row, `observation_for_payload` and `latest_observation` must return the same observation, `None`, or persistence error as before, with identical query scope, ordering, and validation behavior.
+## Refactor Steps
 
-## Evidence and target
+### Step 1: Reuse one temporal row decoder everywhere
 
-- `crates/krometrail-store/src/index/range.rs:148-170` — first inline `RawObservation` row mapping.
-- `crates/krometrail-store/src/index/range.rs:183-210` — second inline `RawObservation` row mapping.
-- `crates/krometrail-store/src/index/timeline.rs:161-171` — existing equivalent `raw_observation` decoder.
-- `crates/krometrail-store/src/index/timeline.rs:173-181` — shared `RawObservation` representation.
+**Priority**: High
+**Risk**: Low
+**Source Lens**: elimination / missing abstraction (duplicated domain mapping)
+**Files**: `crates/krometrail-store/src/index/timeline.rs`, `crates/krometrail-store/src/index/range.rs`
+**Story**: `refactor-centralize-temporal-observation-row-decoding-step-1`
 
-**Target state**:
+**Current State**:
 
-- `raw_observation` is `pub(crate)` in `index/timeline.rs`.
-- `index/range.rs` imports and supplies `raw_observation` to both `query_row` calls.
-- No duplicate `RawObservation { ... row.get(...) }` construction remains in the temporal index modules.
+- `timeline.rs::raw_observation` is private and is used by replay validation; `TimelineStore::range` independently constructs `RawObservation` in its `query_map` callback.
+- `range.rs::SqliteIndex::observation_for_payload` and `latest_observation` independently construct the same seven fields in their `query_row` callbacks.
+- Every copy reads columns in this exact order: `session_id`, `target_id`, `session_time_be`, `source_time_be`, `observed_time_be`, `kind`, `payload_json`.
 
-## Acceptance criteria
+**Target State**:
 
-- [ ] `range.rs` uses the existing `timeline::raw_observation` function for both anchor queries; no second decoder or copied field mapping is introduced.
-- [ ] The two SQL predicates, sort directions, `LIMIT 1`, `OptionalExtension` behavior, and existing error messages remain unchanged.
-- [ ] Marker/navigation kind and payload validation remains before database access, and returned observations still pass through `decode_observation`.
-- [ ] Existing temporal range, timeline, and SQLite schema/index tests pass without weakening or expanding assertions.
-- [ ] `cargo fmt --all -- --check`, locked workspace check/test, and Clippy gates pass.
+```rust
+// crates/krometrail-store/src/index/timeline.rs
+pub(crate) fn raw_observation(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<RawObservation> { /* existing seven row.get calls unchanged */ }
 
-## Risk and rollback
+// TimelineStore::range query_map callback
+raw_observation
+```
 
-**Risk**: Low. The decoder already serves the same selected column shape in `timeline.rs`; the only new coupling is crate-private reuse. The main risk is accidentally changing a query's selected-column order or replacing one query's error mapping while editing the call sites.
+```rust
+// crates/krometrail-store/src/index/range.rs
+use super::{
+    SqliteIndex, codec,
+    timeline::{decode_observation, raw_observation},
+};
 
-**Rollback**: Revert the implementation commit, restore a private timeline decoder, and restore the two inline range-query closures. No schema, data, public API, validation, ordering, retention, or error contract migration is required.
+// Both existing query_row calls
+raw_observation
+```
 
-## Dependencies and coordination
+No `RawObservation { ... row.get(...) }` construction remains outside `timeline.rs::raw_observation` in the temporal index modules.
 
-- Dependencies: none. The change is confined to the committed temporal index row shape and does not depend on artifact generation or browser-event behavior.
-- Do not edit active artifact-generation or browser-event work, schemas, tests, docs, or `.work/bin/work-view` while implementing this item.
-- This item is deliberately separate from the completed MCP projection and reconnect rejection refactors; neither is re-proposed.
+**Implementation Notes**:
 
-## Discovery notes
+- Change only `raw_observation` visibility from private to `pub(crate)`; keep its signature and all seven `row.get` calls unchanged.
+- Replace the `TimelineStore::range` `query_map` closure with the function item `raw_observation`.
+- In `range.rs`, replace both inline callbacks with the imported `raw_observation`; remove the now-unused `RawObservation` import.
+- Keep the `observation_for_payload` and `latest_observation` SQL text, parameters, predicates, sort directions, `LIMIT 1`, `.optional()`, error strings, pre-query marker/navigation validation, and `decode_observation` calls unchanged. Keep `TimelineStore::range` preparation/query/read error mapping and final decode order unchanged.
+- The existing replay-check call sites in `append_observation_tx` continue using the same decoder and require no semantic edits.
 
-- **Scope**: committed source diffs in `5d51e28..c1a76f5`, excluding work-item/archive changes, current uncommitted `.work/bin/work-view`, and future/uncommitted artifact/browser-event work. Reviewed the temporal-query core/ports, interaction and operation paths, store schema/migration/index/recording paths, CDP session evidence/operation/reconnect paths, MCP response boundary, root composition, and their temporal/CDP/store tests.
-- **Dispatch**: direct-read only; no agents or peeragent.
-- **Value**: high-confidence, low-risk elimination of an exact duplicated domain mapping in the newly implemented temporal query path.
-- **Implementation shape**: one cohesive two-module edit; no child story is needed at discovery. Keep the feature at `stage: drafting` for the normal refactor-design implementation checkpoint.
+**Acceptance Criteria / Test and Gate Evidence**:
+
+- [ ] `raw_observation` is the sole `RawObservation` row construction in `index/timeline.rs` and `index/range.rs`; `range.rs` supplies it to both anchor `query_row` calls and `timeline.rs::range` supplies it to `query_map`.
+- [ ] A diff confirms all three SQL statements, query parameters, ordering, optional behavior, error messages, validation order, and `decode_observation` paths are unchanged.
+- [ ] Existing `crates/krometrail-store/tests/sqlite_timeline.rs`, `temporal_query_index.rs`, and `temporal_queries.rs` coverage remains unchanged and passes.
+- [ ] `cargo fmt --all -- --check` passes.
+- [ ] `cargo check --workspace --all-targets --locked`, `cargo test --workspace --all-targets --locked`, and `cargo clippy --workspace --all-targets --locked -- -D warnings` pass.
+
+**Rollback**: Revert the one implementation commit, restore `raw_observation` to private, restore the `RawObservation` import and all three inline callbacks. No schema, data, migration, public API, or compatibility rollback is required.
+
+**Atomicity**: The visibility and call-site substitutions form one small, buildable step. There is no public API or schema migration and no irreversible operation.
+
+## Alternatives Rejected
+
+- **Extract a new helper in `range.rs`**: rejected because it would leave the third identical decoder in `TimelineStore::range` and split ownership away from the existing replay decoder.
+- **Add a trait/generic row-decoding abstraction**: rejected as speculative indirection for one concrete SQLite row shape; `pub(crate) fn raw_observation` is the shortest clear boundary.
+- **Merge or rewrite the SQL queries**: rejected because query scope, ordering, optional semantics, and error mapping are explicitly out of scope.
+- **Add or alter tests**: rejected for this structural substitution; existing SQLite/timeline/range tests are the appropriate black-box evidence.
+
+## Implementation Order
+
+1. `refactor-centralize-temporal-observation-row-decoding-step-1` — make the existing decoder crate-visible and route all three temporal index callbacks through it; verify the full Rust quality gate.
