@@ -101,6 +101,36 @@ impl CaptureStatistics {
         self.gap_count
     }
 
+    pub fn record_received(mut self) -> Result<Self> {
+        self.received_frames = self.received_frames.saturating_add(1);
+        self.validate()
+    }
+
+    pub fn record_acknowledged(mut self) -> Result<Self> {
+        self.acknowledged_frames = self.acknowledged_frames.saturating_add(1);
+        self.validate()
+    }
+
+    pub fn record_accepted(mut self) -> Result<Self> {
+        self.accepted_frames = self.accepted_frames.saturating_add(1);
+        self.validate()
+    }
+
+    pub fn record_dropped(mut self) -> Result<Self> {
+        self.dropped_frames = self.dropped_frames.saturating_add(1);
+        self.validate()
+    }
+
+    pub fn record_persisted(mut self) -> Result<Self> {
+        self.persisted_frames = self.persisted_frames.saturating_add(1);
+        self.validate()
+    }
+
+    pub fn record_gap(mut self) -> Result<Self> {
+        self.gap_count = self.gap_count.saturating_add(1);
+        self.validate()
+    }
+
     /// Replace all counters atomically, leaving the previous valid value intact on error.
     pub fn update(
         &mut self,

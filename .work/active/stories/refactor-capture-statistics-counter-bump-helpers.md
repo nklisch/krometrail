@@ -1,10 +1,10 @@
 ---
 id: refactor-capture-statistics-counter-bump-helpers
 kind: story
-stage: implementing
+stage: review
 tags: [refactor, browser]
 parent: null
-depends_on: []
+depends_on: [refactor-delete-unused-declare-gap-range]
 release_binding: null
 gate_origin: refactor-design
 created: 2026-07-13
@@ -66,19 +66,24 @@ caller-observable behavior changes.
 
 ## Acceptance criteria
 
-- [ ] `CaptureStatistics` exposes one `Result<Self>` helper per counter that performs `saturating_add(1)` and re-validates.
-- [ ] All six live rebuild sites in `crates/krometrail-cdp/src/capture/pipeline.rs` (`record_received`, `record_ack`, `handoff` Ok arm, `dropped`, `persisted`, `declare_gap`) use the new helpers.
-- [ ] Each call site preserves its existing `.expect(...)` invariant message.
-- [ ] `cargo fmt --all -- --check` passes.
-- [ ] `cargo test --workspace --all-targets --locked` passes, including capture counter and statistics-validation coverage.
-- [ ] `cargo clippy --workspace --all-targets --locked -- -D warnings` passes.
+- [x] `CaptureStatistics` exposes one `Result<Self>` helper per counter that performs `saturating_add(1)` and re-validates.
+- [x] All six live rebuild sites in `crates/krometrail-cdp/src/capture/pipeline.rs` (`record_received`, `record_ack`, `handoff` Ok arm, `dropped`, `persisted`, `declare_gap`) use the new helpers.
+- [x] Each call site preserves its existing `.expect(...)` invariant message.
+- [x] `cargo fmt --all -- --check` passes.
+- [x] `cargo test --workspace --all-targets --locked` passes, including capture counter and statistics-validation coverage.
+- [x] `cargo clippy --workspace --all-targets --locked -- -D warnings` passes.
 
 ## Implementation notes
 
-- Files changed: `crates/krometrail-core/src/recording/session.rs` (add helpers near `update`); `crates/krometrail-cdp/src/capture/pipeline.rs` (six call-site collapses); this story file.
-- Tests added: none required — existing capture tests exercise every counter through the ingestion pipeline and the validation invariants are covered by `recording/session.rs` tests. Add a unit test only if a counter's bump path is not otherwise exercised.
-- The helpers should consume `self` (the struct is `Copy`) and return `Result<Self>` so callers can keep the existing `.expect(...)` panic-message contract.
-- Land after `refactor-delete-unused-declare-gap-range` so the dead `declare_gap_range` rebuild site is already gone and only the six live sites are updated.
+- Execution capability: raised — inherited from the active autopilot run; the change is bounded but preserves capture-accounting invariants across core and CDP boundaries.
+- Review weight: standard (source: autopilot default).
+- Files changed: `crates/krometrail-core/src/recording/session.rs`; `crates/krometrail-cdp/src/capture/pipeline.rs`; this story file.
+- Tests added/removed: none — existing core invariant tests and capture pipeline tests exercise the stable accounting contract.
+- Simplification: added six consuming per-counter helpers and replaced all six constructor-shaped single-counter rebuilds with direct helper calls.
+- Discrepancies from design: the frontmatter omitted the dependency stated in the brief and caller instructions; `depends_on` now explicitly names `refactor-delete-unused-declare-gap-range`.
+- Adjacent issues parked: none.
+- Semantics preserved: every helper uses the same `saturating_add(1)` operation followed by the existing `validate()` path, and every CDP call site retains its exact `.expect(...)` message.
+- Verification: focused locked core tests passed in the shared tree (59 tests). Locked workspace format, check, test, and Clippy gates passed in an isolated clean worktree at `a8976ca` with both sequential refactor patches applied; the target capture and statistics sources were otherwise byte-identical to the current base. Concurrent browser-control and storage work was excluded rather than modified.
 
 ## Risk and rollback
 

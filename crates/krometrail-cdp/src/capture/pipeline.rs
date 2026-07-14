@@ -318,16 +318,10 @@ impl StreamRuntime {
 
     pub(super) fn record_received(&self) {
         let mut state = self.state.lock().expect("capture state lock poisoned");
-        let statistics = CaptureStatistics::new(
-            state.statistics.received_frames().saturating_add(1),
-            state.statistics.acknowledged_frames(),
-            state.statistics.accepted_frames(),
-            state.statistics.dropped_frames(),
-            state.statistics.persisted_frames(),
-            state.statistics.gap_count(),
-        )
-        .expect("capture counters cannot overflow in a bounded process");
-        state.statistics = statistics;
+        state.statistics = state
+            .statistics
+            .record_received()
+            .expect("capture counters cannot overflow in a bounded process");
     }
 
     fn session_time_for(&self, observed: krometrail_core::ObservedTime) -> SessionTime {
@@ -369,15 +363,10 @@ impl StreamRuntime {
         state.previous_observed = Some(observed);
         state.last_frame_session_time = Some(session);
         state.ack_latency.record(latency_nanos);
-        state.statistics = CaptureStatistics::new(
-            state.statistics.received_frames(),
-            state.statistics.acknowledged_frames().saturating_add(1),
-            state.statistics.accepted_frames(),
-            state.statistics.dropped_frames(),
-            state.statistics.persisted_frames(),
-            state.statistics.gap_count(),
-        )
-        .expect("capture counters cannot overflow in a bounded process");
+        state.statistics = state
+            .statistics
+            .record_acknowledged()
+            .expect("capture counters cannot overflow in a bounded process");
         (observed, session)
     }
 
@@ -396,15 +385,10 @@ impl StreamRuntime {
                 let mut state = self.state.lock().expect("capture state lock poisoned");
                 state.queue_depth = state.queue_depth.saturating_add(1);
                 state.gaps.close_saturation();
-                state.statistics = CaptureStatistics::new(
-                    state.statistics.received_frames(),
-                    state.statistics.acknowledged_frames(),
-                    state.statistics.accepted_frames().saturating_add(1),
-                    state.statistics.dropped_frames(),
-                    state.statistics.persisted_frames(),
-                    state.statistics.gap_count(),
-                )
-                .expect("capture counters cannot overflow in a bounded process");
+                state.statistics = state
+                    .statistics
+                    .record_accepted()
+                    .expect("capture counters cannot overflow in a bounded process");
             }
             Err(mpsc::error::TrySendError::Full(raw)) => {
                 self.dropped(CaptureGapReason::IngestionQueueSaturated, raw.session_time);
@@ -418,15 +402,10 @@ impl StreamRuntime {
     fn dropped(&self, reason: CaptureGapReason, at: SessionTime) {
         let _ = self.declare_gap(reason, at, Some(1), None);
         let mut state = self.state.lock().expect("capture state lock poisoned");
-        state.statistics = CaptureStatistics::new(
-            state.statistics.received_frames(),
-            state.statistics.acknowledged_frames(),
-            state.statistics.accepted_frames(),
-            state.statistics.dropped_frames().saturating_add(1),
-            state.statistics.persisted_frames(),
-            state.statistics.gap_count(),
-        )
-        .expect("capture counters cannot overflow in a bounded process");
+        state.statistics = state
+            .statistics
+            .record_dropped()
+            .expect("capture counters cannot overflow in a bounded process");
     }
 
     fn begin_processing(&self) {
@@ -442,15 +421,10 @@ impl StreamRuntime {
 
     fn persisted(&self) {
         let mut state = self.state.lock().expect("capture state lock poisoned");
-        state.statistics = CaptureStatistics::new(
-            state.statistics.received_frames(),
-            state.statistics.acknowledged_frames(),
-            state.statistics.accepted_frames(),
-            state.statistics.dropped_frames(),
-            state.statistics.persisted_frames().saturating_add(1),
-            state.statistics.gap_count(),
-        )
-        .expect("persisted count cannot exceed accepted count");
+        state.statistics = state
+            .statistics
+            .record_persisted()
+            .expect("persisted count cannot exceed accepted count");
     }
 
     fn declare_gap(
@@ -473,15 +447,10 @@ impl StreamRuntime {
         .ok()?;
         let notified = {
             let mut state = self.state.lock().expect("capture state lock poisoned");
-            state.statistics = CaptureStatistics::new(
-                state.statistics.received_frames(),
-                state.statistics.acknowledged_frames(),
-                state.statistics.accepted_frames(),
-                state.statistics.dropped_frames(),
-                state.statistics.persisted_frames(),
-                state.statistics.gap_count().saturating_add(1),
-            )
-            .expect("gap count cannot overflow in a bounded process");
+            state.statistics = state
+                .statistics
+                .record_gap()
+                .expect("gap count cannot overflow in a bounded process");
             state.gaps.push(gap)
         };
         self.observer.gap_declared(notified.clone());
