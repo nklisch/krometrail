@@ -200,6 +200,7 @@ fn payload_sort_key(payload: &ObservationPayloadRef) -> Vec<u8> {
         ObservationPayloadRef::Navigation(value) => codec::id(value.as_uuid()).to_vec(),
         ObservationPayloadRef::Gap(value) => codec::id(value.as_uuid()).to_vec(),
         ObservationPayloadRef::Marker(value) => codec::id(value.as_uuid()).to_vec(),
+        ObservationPayloadRef::BrowserEvent(value) => codec::id(value.as_uuid()).to_vec(),
         ObservationPayloadRef::External(value) => value.as_bytes().to_vec(),
     }
 }

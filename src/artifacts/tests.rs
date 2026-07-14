@@ -10,7 +10,10 @@ use uuid::Uuid;
 
 use super::{
     decode::{DECODER_PROFILE, DecodeLimits, decode_frame},
-    epoch::{ADAPTER_VERSION, AdaptationLimits, WorkCancellation, validate_and_partition},
+    epoch::{
+        ADAPTER_VERSION, AdaptationLimits, WorkCancellation, validate_and_partition,
+        validate_and_plan,
+    },
 };
 
 const JPEG: &[u8] = include_bytes!("../../tests/fixtures/artifacts/chrome-rgb.jpg");
@@ -216,6 +219,14 @@ fn epochs_preserve_ties_formats_gaps_markers_and_exact_geometry_boundaries() {
             NonEmptyText::new("first").unwrap(),
         ),
     ];
+    let plans = validate_and_plan(
+        &resolved,
+        frames.clone(),
+        &markers,
+        adaptation_limits(),
+        &WorkCancellation::default(),
+    )
+    .unwrap();
     let epochs = validate_and_partition(
         &resolved,
         frames,
@@ -225,14 +236,14 @@ fn epochs_preserve_ties_formats_gaps_markers_and_exact_geometry_boundaries() {
     )
     .unwrap();
     assert_eq!(epochs.len(), 3);
-    assert_eq!(epochs[0].source_fingerprints.len(), 2);
-    assert_eq!(epochs[0].cache_sources.len(), 2);
+    assert_eq!(plans[0].source_fingerprints.len(), 2);
+    assert_eq!(plans[0].cache_sources.len(), 2);
     assert_eq!(
-        epochs[0].source_fingerprints[0],
-        epochs[0].cache_sources[0].store_fingerprint()
+        plans[0].source_fingerprints[0],
+        plans[0].cache_sources[0].store_fingerprint()
     );
     assert_eq!(
-        epochs[0].descriptor.frame_ids,
+        plans[0].descriptor.frame_ids,
         [
             FrameId::from_uuid(Uuid::from_u128(1)),
             FrameId::from_uuid(Uuid::from_u128(2))
@@ -253,10 +264,10 @@ fn epochs_preserve_ties_formats_gaps_markers_and_exact_geometry_boundaries() {
             .get(),
         2
     );
-    assert_eq!(epochs[1].descriptor.viewport.width(), 3);
+    assert_eq!(plans[1].descriptor.viewport.width(), 3);
     assert_ne!(
-        epochs[1].descriptor.device_scale_factor.get().to_bits(),
-        epochs[2].descriptor.device_scale_factor.get().to_bits(),
+        plans[1].descriptor.device_scale_factor.get().to_bits(),
+        plans[2].descriptor.device_scale_factor.get().to_bits(),
     );
 }
 

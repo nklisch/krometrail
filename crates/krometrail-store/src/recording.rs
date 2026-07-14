@@ -514,6 +514,7 @@ impl ArtifactStore for RecordingStore {
                     row.artifact_id,
                     Arc::clone(&publication.encoded_bytes),
                     publication_guard.cancellation(),
+                    publication.cancellation().cloned(),
                 )
                 .await
             {
@@ -524,7 +525,12 @@ impl ArtifactStore for RecordingStore {
 
             let finalized = {
                 let _mutation = self.mutations.lock().await;
-                if publication_guard.is_cancelled() || self.is_deleted(publication.session_id) {
+                if publication_guard.is_cancelled()
+                    || publication
+                        .cancellation()
+                        .is_some_and(|signal| signal.is_cancelled())
+                    || self.is_deleted(publication.session_id)
+                {
                     self.invalidate_artifact_row(row.clone()).await?;
                     return Err(cancelled_publication_error());
                 }

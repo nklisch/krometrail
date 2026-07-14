@@ -4,15 +4,20 @@ use std::{
 };
 
 use krometrail_core::{
-    BrowserConnector, CaptureGapStore, DiskBudgetBytes, ErrorCode, FrameSource, IdSource, IdValue,
-    InteractionEvidenceSink, KrometrailError, MonotonicClock, NonEmptyText, RecordingCatalog,
-    RecordingSink, Result, RetentionStore, TemporalQuery, TimelineStore, WallClock,
+    ArtifactGeneration, ArtifactStore, BrowserConnector, CaptureGapStore, DiskBudgetBytes,
+    ErrorCode, FrameSource, IdSource, IdValue, InteractionEvidenceSink, KrometrailError,
+    MonotonicClock, NonEmptyText, RecordingCatalog, RecordingSink, Result, RetentionStore,
+    TemporalQuery, TimelineStore, WallClock,
 };
 use uuid::Uuid;
 
 // These imports make the root's assembly boundary explicit. Implementations will
 // move into these inward-dependent crates as their capabilities land; this root
 // remains the only place allowed to choose and connect them.
+use crate::{
+    artifacts::{ArtifactWorkLimits, TemporalVisionArtifactService},
+    cli::Command,
+};
 use krometrail_cdp::{
     CaptureConfig, LauncherConfig, ProductionBrowserConnector, SystemChromeLauncher,
 };
@@ -21,9 +26,6 @@ use krometrail_store::{
     IndexStoreConfig, RecordingStore, RotationConfig, SegmentStoreConfig, SegmentWriter,
     SqliteIndex, recover,
 };
-use temporal_vision as _;
-
-use crate::cli::Command;
 
 pub(crate) struct RuntimeDependencies {
     pub clock: Arc<dyn MonotonicClock>,
@@ -37,6 +39,7 @@ pub(crate) struct RuntimeDependencies {
     pub gaps: Arc<dyn CaptureGapStore>,
     pub frames: Arc<dyn FrameSource>,
     pub temporal_queries: Arc<dyn TemporalQuery>,
+    pub artifact_generation: Arc<dyn ArtifactGeneration>,
 }
 
 struct StorageDependencies {
@@ -48,6 +51,7 @@ struct StorageDependencies {
     gaps: Arc<dyn CaptureGapStore>,
     frames: Arc<dyn FrameSource>,
     temporal_queries: Arc<dyn TemporalQuery>,
+    artifacts: Arc<dyn ArtifactStore>,
 }
 
 pub(crate) struct Runtime {
@@ -77,6 +81,7 @@ impl Runtime {
                     &self.dependencies.gaps,
                     &self.dependencies.frames,
                     &self.dependencies.temporal_queries,
+                    &self.dependencies.artifact_generation,
                 );
                 let installations = self.dependencies.browser.installations().await?;
                 if installations.is_empty() {
@@ -107,6 +112,13 @@ pub(crate) fn build_runtime() -> Result<Runtime> {
     let profile_root = std::env::var_os("KROMETRAIL_PROFILE_ROOT")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| data_directory.join("browser-profiles"));
+    let artifact_generation: Arc<dyn ArtifactGeneration> =
+        Arc::new(TemporalVisionArtifactService::new(
+            Arc::clone(&storage.frames),
+            Arc::clone(&storage.artifacts),
+            Arc::clone(&ids),
+            ArtifactWorkLimits::default(),
+        )?);
     let browser: Arc<dyn BrowserConnector> = Arc::new(
         ProductionBrowserConnector::new(
             Arc::new(SystemChromeLauncher::new(LauncherConfig::new(profile_root))),
@@ -136,6 +148,7 @@ pub(crate) fn build_runtime() -> Result<Runtime> {
         gaps: storage.gaps,
         frames: storage.frames,
         temporal_queries: storage.temporal_queries,
+        artifact_generation,
     }))
 }
 
@@ -173,7 +186,8 @@ fn open_storage_with_budget(
         recording: Arc::clone(&store) as Arc<dyn RecordingSink>,
         retention: Arc::clone(&store) as Arc<dyn RetentionStore>,
         timeline: Arc::clone(&store) as Arc<dyn TimelineStore>,
-        temporal_queries: store as Arc<dyn TemporalQuery>,
+        temporal_queries: Arc::clone(&store) as Arc<dyn TemporalQuery>,
+        artifacts: Arc::clone(&store) as Arc<dyn ArtifactStore>,
         catalog: Arc::clone(&index) as Arc<dyn RecordingCatalog>,
         gaps: Arc::clone(&index) as Arc<dyn CaptureGapStore>,
         frames: index as Arc<dyn FrameSource>,
@@ -312,12 +326,22 @@ mod tests {
             std::env::temp_dir().join(format!("krometrail-doctor-test-{}", Uuid::new_v4()));
         let storage =
             open_storage_with_budget(&recording_directory, DiskBudgetBytes::default()).unwrap();
+        let ids: Arc<dyn IdSource> = Arc::new(ProcessIdSource);
+        let artifact_generation: Arc<dyn ArtifactGeneration> = Arc::new(
+            TemporalVisionArtifactService::new(
+                Arc::clone(&storage.frames),
+                Arc::clone(&storage.artifacts),
+                Arc::clone(&ids),
+                ArtifactWorkLimits::default(),
+            )
+            .unwrap(),
+        );
         let runtime = Runtime::new(RuntimeDependencies {
             clock: Arc::new(ProcessMonotonicClock {
                 origin: Instant::now(),
             }),
             wall_clock: Arc::new(SystemWallClock),
-            ids: Arc::new(ProcessIdSource),
+            ids,
             browser: Arc::clone(&browser) as Arc<dyn BrowserConnector>,
             recording: storage.recording,
             retention: storage.retention,
@@ -326,6 +350,7 @@ mod tests {
             gaps: storage.gaps,
             frames: storage.frames,
             temporal_queries: storage.temporal_queries,
+            artifact_generation,
         });
         let error = runtime.run(Command::Doctor).await.unwrap_err();
         assert_eq!(error.code, ErrorCode::BrowserNotFound);

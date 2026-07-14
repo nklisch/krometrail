@@ -3,7 +3,8 @@ use std::sync::Arc;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    ArtifactId, ArtifactManifest, FrameId, NonEmptyText, PortFuture, Result, SessionId, TargetId,
+    ArtifactId, ArtifactManifest, CancellationSignal, FrameId, NonEmptyText, PortFuture, Result,
+    SessionId, TargetId,
     error::{ErrorCode, KrometrailError},
 };
 
@@ -38,7 +39,7 @@ pub struct ArtifactCacheMetadata {
     pub generator_version: NonEmptyText,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone)]
 pub struct ArtifactPublication {
     pub session_id: SessionId,
     pub target_id: TargetId,
@@ -47,6 +48,7 @@ pub struct ArtifactPublication {
     pub manifest: ArtifactManifest,
     pub media_type: NonEmptyText,
     pub encoded_bytes: Arc<[u8]>,
+    cancellation: Option<Arc<dyn CancellationSignal>>,
 }
 
 impl ArtifactPublication {
@@ -102,7 +104,17 @@ impl ArtifactPublication {
             manifest,
             media_type,
             encoded_bytes,
+            cancellation: None,
         })
+    }
+
+    pub fn with_cancellation(mut self, cancellation: Arc<dyn CancellationSignal>) -> Self {
+        self.cancellation = Some(cancellation);
+        self
+    }
+
+    pub fn cancellation(&self) -> Option<&Arc<dyn CancellationSignal>> {
+        self.cancellation.as_ref()
     }
 }
 

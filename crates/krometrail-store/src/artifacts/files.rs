@@ -9,7 +9,7 @@ use std::{
     },
 };
 
-use krometrail_core::{ArtifactId, ErrorCode, KrometrailError, NonEmptyText};
+use krometrail_core::{ArtifactId, CancellationSignal, ErrorCode, KrometrailError, NonEmptyText};
 use tokio::sync::oneshot;
 
 use crate::persistence_error;
@@ -26,6 +26,7 @@ enum Command {
         artifact_id: ArtifactId,
         bytes: Arc<[u8]>,
         cancellation: Arc<AtomicBool>,
+        external_cancellation: Option<Arc<dyn CancellationSignal>>,
         fail_after: Option<PublicationPhase>,
         reply: oneshot::Sender<krometrail_core::Result<()>>,
     },
@@ -63,9 +64,16 @@ impl ArtifactFiles {
         artifact_id: ArtifactId,
         bytes: Arc<[u8]>,
         cancellation: Arc<AtomicBool>,
+        external_cancellation: Option<Arc<dyn CancellationSignal>>,
     ) -> krometrail_core::Result<()> {
-        self.publish_with_failpoint(artifact_id, bytes, cancellation, None)
-            .await
+        self.publish_with_failpoint(
+            artifact_id,
+            bytes,
+            cancellation,
+            external_cancellation,
+            None,
+        )
+        .await
     }
 
     async fn publish_with_failpoint(
@@ -73,6 +81,7 @@ impl ArtifactFiles {
         artifact_id: ArtifactId,
         bytes: Arc<[u8]>,
         cancellation: Arc<AtomicBool>,
+        external_cancellation: Option<Arc<dyn CancellationSignal>>,
         fail_after: Option<PublicationPhase>,
     ) -> krometrail_core::Result<()> {
         let (reply, response) = oneshot::channel();
@@ -81,6 +90,7 @@ impl ArtifactFiles {
                 artifact_id,
                 bytes,
                 cancellation,
+                external_cancellation,
                 fail_after,
                 reply,
             })
@@ -123,6 +133,7 @@ fn run(directory: PathBuf, receiver: mpsc::Receiver<Command>) {
                 artifact_id,
                 bytes,
                 cancellation,
+                external_cancellation,
                 fail_after,
                 reply,
             } => {
@@ -131,6 +142,7 @@ fn run(directory: PathBuf, receiver: mpsc::Receiver<Command>) {
                     artifact_id,
                     &bytes,
                     &cancellation,
+                    external_cancellation.as_deref(),
                     fail_after,
                 ));
             }
@@ -149,9 +161,10 @@ fn publish_file(
     artifact_id: ArtifactId,
     bytes: &[u8],
     cancellation: &AtomicBool,
+    external_cancellation: Option<&dyn CancellationSignal>,
     fail_after: Option<PublicationPhase>,
 ) -> krometrail_core::Result<()> {
-    if cancellation.load(Ordering::Acquire) {
+    if is_cancelled(cancellation, external_cancellation) {
         return Err(cancelled_error());
     }
     let temp = directory.join(format!("{artifact_id}.tmp"));
@@ -173,7 +186,7 @@ fn publish_file(
     if fail_after == Some(PublicationPhase::TempSync) {
         return Err(injected_error());
     }
-    if cancellation.load(Ordering::Acquire) {
+    if is_cancelled(cancellation, external_cancellation) {
         drop(file);
         let _ = fs::remove_file(&temp);
         return Err(cancelled_error());
@@ -189,6 +202,10 @@ fn publish_file(
         return Err(injected_error());
     }
     Ok(())
+}
+
+fn is_cancelled(session: &AtomicBool, external: Option<&dyn CancellationSignal>) -> bool {
+    session.load(Ordering::Acquire) || external.is_some_and(CancellationSignal::is_cancelled)
 }
 
 fn read_file(directory: &Path, relative_path: &str) -> krometrail_core::Result<Arc<[u8]>> {
@@ -249,6 +266,7 @@ mod tests {
                         id,
                         Arc::from(&b"png"[..]),
                         Arc::new(AtomicBool::new(false)),
+                        None,
                         Some(phase)
                     )
                     .await

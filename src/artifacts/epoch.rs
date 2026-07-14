@@ -1,6 +1,9 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+use std::{
+    ops::Range,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use krometrail_core::{
@@ -37,15 +40,23 @@ impl AdaptationLimits {
     }
 }
 
+#[derive(Default)]
+struct CancellationState {
+    cancelled: AtomicBool,
+    notify: tokio::sync::Notify,
+}
+
 #[derive(Clone, Default)]
-pub(crate) struct WorkCancellation(Arc<AtomicBool>);
+pub(crate) struct WorkCancellation(Arc<CancellationState>);
 
 impl WorkCancellation {
     pub(crate) fn cancel(&self) {
-        self.0.store(true, Ordering::Release);
+        if !self.0.cancelled.swap(true, Ordering::AcqRel) {
+            self.0.notify.notify_waiters();
+        }
     }
     pub(crate) fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::Acquire)
+        self.0.cancelled.load(Ordering::Acquire)
     }
     pub(crate) fn check(&self) -> Result<()> {
         if self.is_cancelled() {
@@ -60,22 +71,50 @@ impl WorkCancellation {
     }
 }
 
-#[derive(Debug)]
-pub(crate) struct EpochInput {
+impl krometrail_core::CancellationSignal for WorkCancellation {
+    fn is_cancelled(&self) -> bool {
+        WorkCancellation::is_cancelled(self)
+    }
+
+    fn cancelled(&self) -> krometrail_core::PortFuture<'_, ()> {
+        Box::pin(async move {
+            loop {
+                let notified = self.0.notify.notified();
+                if self.is_cancelled() {
+                    return;
+                }
+                notified.await;
+            }
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct EpochPlan {
     pub descriptor: VisualEpoch,
     pub source_fingerprints: Vec<ArtifactSourceFingerprint>,
     pub cache_sources: Vec<SourceFingerprint>,
+    pub frames: Vec<EncodedFrame>,
+    pub markers: Vec<Marker<ArtifactMarkerId>>,
+    pub gaps: Vec<DeclaredGap<krometrail_core::GapId>>,
+    pub decoded_bytes: usize,
+}
+
+#[derive(Debug)]
+pub(crate) struct EpochInput {
     pub sequence:
         OwnedFrameSequence<krometrail_core::FrameId, ArtifactMarkerId, krometrail_core::GapId>,
 }
 
-pub(crate) fn validate_and_partition(
+/// Validate exact retained identities and build geometry/annotation plans without decoding.
+/// This lets cache hits avoid image work and lets single-flight leaders own decode exactly once.
+pub(crate) fn validate_and_plan(
     range: &ResolvedRange,
     frames: Vec<EncodedFrame>,
     markers: &[ArtifactMarker],
     limits: AdaptationLimits,
     cancellation: &WorkCancellation,
-) -> Result<Vec<EpochInput>> {
+) -> Result<Vec<EpochPlan>> {
     cancellation.check()?;
     if frames.len() != range.frame_ids.len() || frames.is_empty() {
         return Err(source_error(
@@ -116,15 +155,8 @@ pub(crate) fn validate_and_partition(
                 "frame source order, scope, or metadata contradicts the resolved range",
             ));
         }
-        let pixels = usize::try_from(
-            u64::from(metadata.image().width()) * u64::from(metadata.image().height()),
-        )
-        .map_err(|_| limit_error("decoded frame pixel count exceeds this platform"))?;
-        let bytes = pixels
-            .checked_mul(4)
-            .ok_or_else(|| limit_error("decoded frame byte count overflows"))?;
         decoded_total = decoded_total
-            .checked_add(bytes)
+            .checked_add(decoded_len(frame)?)
             .ok_or_else(|| limit_error("decoded sequence byte count overflows"))?;
     }
     if decoded_total > limits.max_decoded_bytes {
@@ -142,31 +174,72 @@ pub(crate) fn validate_and_partition(
         }
     }
     spans.push(start..frames.len());
+    spans
+        .into_iter()
+        .enumerate()
+        .map(|(epoch_index, span)| plan_epoch(range, &frames, markers, epoch_index, span))
+        .collect()
+}
 
-    let mut epochs = Vec::with_capacity(spans.len());
-    for (epoch_index, span) in spans.into_iter().enumerate() {
+pub(crate) fn decode_plan(
+    plan: EpochPlan,
+    limits: AdaptationLimits,
+    cancellation: &WorkCancellation,
+) -> Result<EpochInput> {
+    let mut decoded = Vec::with_capacity(plan.frames.len());
+    for frame in &plan.frames {
         cancellation.check()?;
-        let epoch_frames = &frames[span.clone()];
-        let first = epoch_frames
-            .first()
-            .expect("epoch span is non-empty")
-            .metadata();
-        let last = epoch_frames
-            .last()
-            .expect("epoch span is non-empty")
-            .metadata();
-        let start_time = first.session_time();
-        let end_time = last.session_time();
-        let mut decoded = Vec::with_capacity(epoch_frames.len());
-        let mut cache_sources = Vec::with_capacity(epoch_frames.len());
-        for frame in epoch_frames {
-            cancellation.check()?;
-            decoded.push(decode_frame(frame, limits.decode_limits())?);
-            cache_sources.push(SourceFingerprint::from_frame(frame));
-        }
-        let epoch_markers = clipped_markers(markers, start_time.as_nanos(), end_time.as_nanos())?;
-        let epoch_gaps = clipped_gaps(range, start_time.as_nanos(), end_time.as_nanos())?;
-        let descriptor = VisualEpoch {
+        decoded.push(decode_frame(frame, limits.decode_limits())?);
+    }
+    let sequence =
+        temporal_vision::FrameSequence::new(decoded, plan.markers, plan.gaps, None, None)
+            .map_err(vision_error)?;
+    Ok(EpochInput { sequence })
+}
+
+#[cfg(test)]
+pub(crate) fn validate_and_partition(
+    range: &ResolvedRange,
+    frames: Vec<EncodedFrame>,
+    markers: &[ArtifactMarker],
+    limits: AdaptationLimits,
+    cancellation: &WorkCancellation,
+) -> Result<Vec<EpochInput>> {
+    validate_and_plan(range, frames, markers, limits, cancellation)?
+        .into_iter()
+        .map(|plan| decode_plan(plan, limits, cancellation))
+        .collect()
+}
+
+fn plan_epoch(
+    range: &ResolvedRange,
+    frames: &[EncodedFrame],
+    markers: &[ArtifactMarker],
+    epoch_index: usize,
+    span: Range<usize>,
+) -> Result<EpochPlan> {
+    let epoch_frames = frames[span].to_vec();
+    let first = epoch_frames
+        .first()
+        .expect("epoch span is non-empty")
+        .metadata();
+    let last = epoch_frames
+        .last()
+        .expect("epoch span is non-empty")
+        .metadata();
+    let start_time = first.session_time();
+    let end_time = last.session_time();
+    let cache_sources: Vec<_> = epoch_frames
+        .iter()
+        .map(SourceFingerprint::from_frame)
+        .collect();
+    let decoded_bytes = epoch_frames.iter().try_fold(0_usize, |total, frame| {
+        total
+            .checked_add(decoded_len(frame)?)
+            .ok_or_else(|| limit_error("epoch decoded bytes overflow"))
+    })?;
+    Ok(EpochPlan {
+        descriptor: VisualEpoch {
             index: u32::try_from(epoch_index)
                 .map_err(|_| limit_error("visual epoch count exceeds the result format"))?,
             frame_ids: epoch_frames
@@ -176,22 +249,27 @@ pub(crate) fn validate_and_partition(
             image: first.image(),
             viewport: first.viewport(),
             device_scale_factor: first.device_scale_factor(),
-        };
-        let source_fingerprints = cache_sources
+        },
+        source_fingerprints: cache_sources
             .iter()
             .map(SourceFingerprint::store_fingerprint)
-            .collect();
-        let sequence =
-            temporal_vision::FrameSequence::new(decoded, epoch_markers, epoch_gaps, None, None)
-                .map_err(vision_error)?;
-        epochs.push(EpochInput {
-            descriptor,
-            source_fingerprints,
-            cache_sources,
-            sequence,
-        });
-    }
-    Ok(epochs)
+            .collect(),
+        cache_sources,
+        frames: epoch_frames,
+        markers: clipped_markers(markers, start_time.as_nanos(), end_time.as_nanos())?,
+        gaps: clipped_gaps(range, start_time.as_nanos(), end_time.as_nanos())?,
+        decoded_bytes,
+    })
+}
+
+fn decoded_len(frame: &EncodedFrame) -> Result<usize> {
+    let metadata = frame.metadata();
+    let pixels =
+        usize::try_from(u64::from(metadata.image().width()) * u64::from(metadata.image().height()))
+            .map_err(|_| limit_error("decoded frame pixel count exceeds this platform"))?;
+    pixels
+        .checked_mul(4)
+        .ok_or_else(|| limit_error("decoded frame byte count overflows"))
 }
 
 fn same_epoch(
@@ -268,14 +346,12 @@ fn vision_error(error: temporal_vision::VisionError) -> KrometrailError {
         error.message
     ))
 }
-
 fn source_error(message: impl Into<String>) -> KrometrailError {
     KrometrailError::new(
         ErrorCode::ArtifactGenerationFailed,
         NonEmptyText::new(message).expect("adaptation errors are non-empty"),
     )
 }
-
 fn limit_error(message: impl Into<String>) -> KrometrailError {
     KrometrailError::new(
         ErrorCode::ResourceLimitExceeded,
