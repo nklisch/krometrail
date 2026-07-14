@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Temporal interaction target</title>
+    <link rel="stylesheet" href="benchmark.css">
+  </head>
+  <body>
+    <main class="surface">
+      <section class="stage" id="stage" aria-label="Visual interaction stage">
+        <div class="panel" id="panel">
+          <div class="panel-heading">Account</div>
+          <div class="panel-line"></div>
+          <div class="panel-line short"></div>
+        </div>
+        <div class="status-card" id="status-card">
+          <div class="status-dot" aria-hidden="true"></div>
+          <span id="status-text">Ready</span>
+          <div class="spinner" id="spinner" aria-hidden="true"></div>
+        </div>
+        <div class="content-block" id="content-block">
+          <div class="content-heading"></div>
+          <div class="content-line"></div>
+          <div class="content-line"></div>
+          <div class="content-line short"></div>
+        </div>
+        <div class="notice" id="notice" aria-hidden="true"> </div>
+        <div class="scroll-box" id="scroll-box" aria-label="Scrollable content">
+          <div class="scroll-content">
+            <div class="content-line"></div>
+            <div class="content-line"></div>
+            <div class="content-line"></div>
+            <div class="content-line"></div>
+            <div class="content-line"></div>
+            <div class="content-line"></div>
+          </div>
+        </div>
+        <canvas id="visual-surface" width="320" height="160" aria-label="Visual surface"></canvas>
+        <div class="field" aria-label="Text field">
+          <span>Ready</span><span class="caret" id="caret" aria-hidden="true"></span>
+        </div>
+        <button id="run" type="button">Run interaction</button>
+      </section>
+    </main>
+    <script src="benchmark.js"></script>
+  </body>
+</html>

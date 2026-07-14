@@ -1,7 +1,7 @@
 ---
 id: epic-prove-temporal-advantage-benchmark-corpus-and-manifest-contracts-corpus
 kind: story
-stage: implementing
+stage: done
 tags: [testing, visual, browser]
 parent: epic-prove-temporal-advantage-benchmark-corpus-and-manifest-contracts
 depends_on: []
@@ -63,17 +63,38 @@ settle intervals. Stable controls are run through the same matrix but remain int
 
 ## Acceptance evidence
 
-- [ ] The target renders all canonical case IDs with no network or framework dependency and the
+- [x] The target renders all canonical case IDs with no network or framework dependency and the
       route cannot select an undeclared case or duration.
-- [ ] The committed definition is canonical UTF-8 JSON, has ordered fixture file identities and
+- [x] The committed definition is canonical UTF-8 JSON, has ordered fixture file identities and
       SHA-256 digests, and validates against the generated definition schema.
-- [ ] A test proves the phase boundaries and final state declared in the definition agree with
+- [x] A test proves the phase boundaries and final state declared in the definition agree with
       the fixture's case registry; no ground-truth value is read from a Krometrail frame or
       artifact.
-- [ ] Tests prove the target uses no wall-clock or random source and that each reset/run starts
+- [x] Tests prove the target uses no wall-clock or random source and that each reset/run starts
       from the same baseline.
-- [ ] The definition's defect/control and family registries are exhaustive and have no duplicate
+- [x] The definition's defect/control and family registries are exhaustive and have no duplicate
       case IDs, phase IDs, anchors, or duration values.
+
+## Implementation notes
+
+- **Execution capability**: inline feature-owning worker with direct-read integration mapping; the
+  story is a cohesive fixture/contract slice and does not need delegated ownership.
+- **Review weight**: standard, inherited from project default; child stories advance directly to
+  `done` after verification and do not enter review.
+- **Files changed**: added the `temporal-evaluation` workspace crate and corpus contract,
+  generated-definition tool, canonical definition/schema, fixture target assets, and focused
+  contract tests; updated `Cargo.toml`/`Cargo.lock` for the workspace member.
+- **Tests added**: nine Rust contract tests cover canonical loading, generated schema equality,
+  SHA-256 fixture identity, exact case/phase/duration/final-state invariants, invalid edits,
+  static no-network/no-wall-clock/no-random checks, reset ordering, neutral agent-facing markup,
+  and canonical JSON rejection; `node --check` validates the fixture script.
+- **Simplification**: kept the target dependency-free and local, with no launcher, server,
+  framework instrumentation, product command, model client, manifest, or compatibility alias.
+- **Discrepancies from design**: none; the initial contract crate is limited to corpus/definition
+  types and does not implement later prompts, conditions, run manifests, or CI output handling.
+- **Adjacent issues parked**: none.
+- **Verification**: Rust 1.85 `cargo fmt --all -- --check`, locked workspace check/test/clippy,
+  plus fixture-specific static checks all pass.
 
 ## Ordering
 

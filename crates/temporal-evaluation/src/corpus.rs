@@ -1,0 +1,968 @@
+use std::collections::BTreeSet;
+
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+use crate::{ContractError, Result, canonical};
+
+pub const BENCHMARK_SCHEMA_VERSION: u16 = 1;
+pub const BENCHMARK_ID: &str = "temporal-advantage-corpus-v1";
+pub const FIXTURE_NAME: &str = "temporal-benchmark";
+pub const FIXTURE_ROOT: &str = "tests/fixtures/browser/temporal-benchmark";
+pub const VIEWPORT_WIDTH: u32 = 800;
+pub const VIEWPORT_HEIGHT: u32 = 450;
+pub const DEVICE_SCALE_FACTOR_MILLI: u16 = 1_000;
+pub const DURATIONS_MS: [u16; 5] = [16, 33, 50, 100, 200];
+
+const FIXTURE_FILES: [&str; 4] = ["README.md", "benchmark.css", "benchmark.js", "index.html"];
+
+// These hashes are part of the current v1 definition. Contract tests recompute them from the
+// committed target files, so changing a fixture requires an intentional definition update.
+const FIXTURE_FILE_SHA256: [&str; 4] = [
+    "sha256:068ae8b4bb771580d64d251bdc0832a121699acfa64a3286bd43712b93244c57",
+    "sha256:e098d0c7eb95f9f3dd2d268ed820197820242dbb7c15f900cacffb9b4a9c7d2c",
+    "sha256:80bd7b56ddf603b5dd552eecced8506e5cf75f08b553bcccdeb4a8d4272f7278",
+    "sha256:23da2695cb0b0e164b2a181e5436f31cd59ee42696933f7c7015bccd4648cabb",
+];
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CaseFamily {
+    MovementReversal,
+    Flicker,
+    TransientLayout,
+    DomOpaqueMotion,
+    StableControl,
+}
+
+impl CaseFamily {
+    pub const ALL: [Self; 5] = [
+        Self::MovementReversal,
+        Self::Flicker,
+        Self::TransientLayout,
+        Self::DomOpaqueMotion,
+        Self::StableControl,
+    ];
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CaseIntent {
+    Defect,
+    Intentional,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DurationMode {
+    DefectInterval,
+    TransitionInterval,
+    ObservationWindow,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PhaseBoundary {
+    Zero,
+    OffsetMs { value: u32 },
+    OffsetPlusDurationMs { offset_ms: u32 },
+    End,
+}
+
+impl PhaseBoundary {
+    pub fn resolve_for_duration(self, duration_ms: u16) -> Option<u32> {
+        match self {
+            Self::Zero => Some(0),
+            Self::OffsetMs { value } => Some(value),
+            Self::OffsetPlusDurationMs { offset_ms } => Some(offset_ms + u32::from(duration_ms)),
+            Self::End => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PhaseDefinition {
+    pub id: String,
+    pub state_id: String,
+    pub start: PhaseBoundary,
+    pub end: PhaseBoundary,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TimeInterval {
+    pub start: PhaseBoundary,
+    pub end: PhaseBoundary,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Rect {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TimingDefinition {
+    pub lead_in_ms: u32,
+    pub settle_ms: u32,
+    pub duration_mode: DurationMode,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CaseDefinition {
+    pub case_id: String,
+    pub family: CaseFamily,
+    pub intent: CaseIntent,
+    pub variant: String,
+    pub anchor_id: String,
+    pub timing: TimingDefinition,
+    pub phases: Vec<PhaseDefinition>,
+    pub defect_interval: Option<TimeInterval>,
+    pub affected_region: Rect,
+    pub final_state_id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FixtureFile {
+    pub path: String,
+    pub sha256: String,
+}
+
+impl FixtureFile {
+    pub fn from_bytes(path: impl Into<String>, bytes: &[u8]) -> Result<Self> {
+        let path = path.into();
+        validate_relative_file_path(&path)?;
+        Ok(Self {
+            path,
+            sha256: crate::sha256_prefixed(bytes),
+        })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FixtureIdentity {
+    pub name: String,
+    pub root_relative_path: String,
+    pub files: Vec<FixtureFile>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BenchmarkDefinition {
+    pub schema_version: u16,
+    pub benchmark_id: String,
+    pub fixture: FixtureIdentity,
+    pub viewport_width: u32,
+    pub viewport_height: u32,
+    pub device_scale_factor_milli: u16,
+    pub duration_ms: Vec<u16>,
+    pub cases: Vec<CaseDefinition>,
+}
+
+impl BenchmarkDefinition {
+    pub fn canonical() -> Self {
+        Self {
+            schema_version: BENCHMARK_SCHEMA_VERSION,
+            benchmark_id: BENCHMARK_ID.into(),
+            fixture: expected_fixture(),
+            viewport_width: VIEWPORT_WIDTH,
+            viewport_height: VIEWPORT_HEIGHT,
+            device_scale_factor_milli: DEVICE_SCALE_FACTOR_MILLI,
+            duration_ms: DURATIONS_MS.to_vec(),
+            cases: expected_cases(),
+        }
+    }
+
+    pub fn from_canonical_json(bytes: &[u8]) -> Result<Self> {
+        let definition: Self = serde_json::from_slice(bytes)?;
+        definition.validate()?;
+        canonical::require_canonical(bytes, &definition)?;
+        Ok(definition)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.schema_version != BENCHMARK_SCHEMA_VERSION {
+            return Err(ContractError::new(format!(
+                "schema_version must be {BENCHMARK_SCHEMA_VERSION}"
+            )));
+        }
+        if self.benchmark_id != BENCHMARK_ID {
+            return Err(ContractError::new(format!(
+                "benchmark_id must be {BENCHMARK_ID}"
+            )));
+        }
+        if self.viewport_width != VIEWPORT_WIDTH || self.viewport_height != VIEWPORT_HEIGHT {
+            return Err(ContractError::new("viewport must be exactly 800x450"));
+        }
+        if self.device_scale_factor_milli != DEVICE_SCALE_FACTOR_MILLI {
+            return Err(ContractError::new(
+                "device_scale_factor_milli must be exactly 1000",
+            ));
+        }
+        if self.duration_ms != DURATIONS_MS {
+            return Err(ContractError::new(
+                "duration_ms must be exactly [16, 33, 50, 100, 200]",
+            ));
+        }
+        validate_fixture(&self.fixture)?;
+
+        let expected = expected_cases();
+        if self.cases != expected {
+            return Err(ContractError::new(
+                "cases do not match the current canonical case and phase registry",
+            ));
+        }
+        for case in &self.cases {
+            validate_case(case, &self.duration_ms)?;
+        }
+        Ok(())
+    }
+
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>> {
+        self.validate()?;
+        canonical::canonical_json(self)
+    }
+
+    pub fn definition_digest(&self) -> Result<String> {
+        Ok(crate::sha256_prefixed(&self.canonical_bytes()?))
+    }
+
+    pub fn case(&self, case_id: &str) -> Option<&CaseDefinition> {
+        self.cases.iter().find(|case| case.case_id == case_id)
+    }
+
+    pub fn supports_duration(&self, duration_ms: u16) -> bool {
+        self.duration_ms.contains(&duration_ms)
+    }
+}
+
+fn validate_fixture(fixture: &FixtureIdentity) -> Result<()> {
+    if fixture.name != FIXTURE_NAME || fixture.root_relative_path != FIXTURE_ROOT {
+        return Err(ContractError::new(
+            "fixture identity does not match the canonical target",
+        ));
+    }
+    if fixture.files.len() != FIXTURE_FILES.len() {
+        return Err(ContractError::new(
+            "fixture file identity list has the wrong length",
+        ));
+    }
+    let mut paths = BTreeSet::new();
+    for (index, file) in fixture.files.iter().enumerate() {
+        validate_relative_file_path(&file.path)?;
+        validate_sha256(&file.sha256)?;
+        if !paths.insert(&file.path) {
+            return Err(ContractError::new("fixture file paths must be unique"));
+        }
+        if file.path != FIXTURE_FILES[index] || file.sha256 != FIXTURE_FILE_SHA256[index] {
+            return Err(ContractError::new(
+                "fixture file identities do not match the current canonical target",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_case(case: &CaseDefinition, durations: &[u16]) -> Result<()> {
+    if case.anchor_id != "run" {
+        return Err(ContractError::new(format!(
+            "{} must use the run interaction anchor",
+            case.case_id
+        )));
+    }
+    if case.phases.is_empty() {
+        return Err(ContractError::new(format!(
+            "{} must declare at least one phase",
+            case.case_id
+        )));
+    }
+    let mut phase_ids = BTreeSet::new();
+    let mut state_ids = BTreeSet::new();
+    for phase in &case.phases {
+        if phase.id.is_empty() || phase.state_id.is_empty() {
+            return Err(ContractError::new(format!(
+                "{} has an empty phase or state ID",
+                case.case_id
+            )));
+        }
+        if !phase_ids.insert(&phase.id) {
+            return Err(ContractError::new(format!(
+                "{} phase IDs must be unique",
+                case.case_id
+            )));
+        }
+        state_ids.insert(&phase.state_id);
+    }
+    if !state_ids.contains(&case.final_state_id) {
+        return Err(ContractError::new(format!(
+            "{} final state is not declared by a phase",
+            case.case_id
+        )));
+    }
+
+    for duration_ms in durations {
+        let first = case.phases.first().expect("non-empty phases");
+        if first.start.resolve_for_duration(*duration_ms) != Some(0) {
+            return Err(ContractError::new(format!(
+                "{} phases must start at zero",
+                case.case_id
+            )));
+        }
+        for (index, phase) in case.phases.iter().enumerate() {
+            let start = phase.start.resolve_for_duration(*duration_ms);
+            let end = phase.end.resolve_for_duration(*duration_ms);
+            if end.is_none() && index + 1 != case.phases.len() {
+                return Err(ContractError::new(format!(
+                    "{} may use an open-ended phase only at the end",
+                    case.case_id
+                )));
+            }
+            if let (Some(start), Some(end)) = (start, end)
+                && end <= start
+            {
+                return Err(ContractError::new(format!(
+                    "{} phase {} is not a positive interval",
+                    case.case_id, phase.id
+                )));
+            }
+            if let Some(next) = case.phases.get(index + 1)
+                && end != next.start.resolve_for_duration(*duration_ms)
+            {
+                return Err(ContractError::new(format!(
+                    "{} phase intervals are not contiguous",
+                    case.case_id
+                )));
+            }
+        }
+
+        if let Some(interval) = &case.defect_interval {
+            let Some(start) = interval.start.resolve_for_duration(*duration_ms) else {
+                return Err(ContractError::new(format!(
+                    "{} defect interval cannot start at the end",
+                    case.case_id
+                )));
+            };
+            let Some(end) = interval.end.resolve_for_duration(*duration_ms) else {
+                return Err(ContractError::new(format!(
+                    "{} defect interval must have a finite end",
+                    case.case_id
+                )));
+            };
+            if end <= start {
+                return Err(ContractError::new(format!(
+                    "{} defect interval is not positive",
+                    case.case_id
+                )));
+            }
+        }
+    }
+
+    match (case.intent, case.defect_interval.is_some()) {
+        (CaseIntent::Defect, true) => {}
+        (CaseIntent::Defect, false) => {
+            return Err(ContractError::new(format!(
+                "defect case {} must declare a defect interval",
+                case.case_id
+            )));
+        }
+        (CaseIntent::Intentional, false) => {}
+        (CaseIntent::Intentional, true) => {
+            return Err(ContractError::new(format!(
+                "intentional case {} cannot declare a defect interval",
+                case.case_id
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_relative_file_path(path: &str) -> Result<()> {
+    if path.is_empty()
+        || path.starts_with('/')
+        || path.contains('\\')
+        || path
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+    {
+        return Err(ContractError::new(format!(
+            "fixture path is not a relative POSIX path: {path}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_sha256(value: &str) -> Result<()> {
+    let Some(hex) = value.strip_prefix("sha256:") else {
+        return Err(ContractError::new(
+            "fixture hashes must use sha256:<64 hex>",
+        ));
+    };
+    if hex.len() != 64 || hex.bytes().any(|byte| !byte.is_ascii_hexdigit()) {
+        return Err(ContractError::new(
+            "fixture hashes must use 64 hexadecimal characters",
+        ));
+    }
+    if hex.bytes().any(|byte| byte.is_ascii_uppercase()) {
+        return Err(ContractError::new(
+            "fixture hashes must use lowercase hexadecimal",
+        ));
+    }
+    Ok(())
+}
+
+fn expected_fixture() -> FixtureIdentity {
+    FixtureIdentity {
+        name: FIXTURE_NAME.into(),
+        root_relative_path: FIXTURE_ROOT.into(),
+        files: FIXTURE_FILES
+            .into_iter()
+            .zip(FIXTURE_FILE_SHA256)
+            .map(|(path, sha256)| FixtureFile {
+                path: path.into(),
+                sha256: sha256.into(),
+            })
+            .collect(),
+    }
+}
+
+fn phase(id: &str, state_id: &str, start: PhaseBoundary, end: PhaseBoundary) -> PhaseDefinition {
+    PhaseDefinition {
+        id: id.into(),
+        state_id: state_id.into(),
+        start,
+        end,
+    }
+}
+
+fn defect_interval(start: u32) -> TimeInterval {
+    TimeInterval {
+        start: PhaseBoundary::OffsetMs { value: start },
+        end: PhaseBoundary::OffsetPlusDurationMs { offset_ms: start },
+    }
+}
+
+// The canonical registry is deliberately explicit: each field makes one part of a case's
+// externally validated contract visible at the call site.
+#[allow(clippy::too_many_arguments)]
+fn case(
+    case_id: &str,
+    family: CaseFamily,
+    intent: CaseIntent,
+    variant: &str,
+    duration_mode: DurationMode,
+    lead_in_ms: u32,
+    settle_ms: u32,
+    phases: Vec<PhaseDefinition>,
+    defect_interval: Option<TimeInterval>,
+    affected_region: Rect,
+    final_state_id: &str,
+) -> CaseDefinition {
+    CaseDefinition {
+        case_id: case_id.into(),
+        family,
+        intent,
+        variant: variant.into(),
+        anchor_id: "run".into(),
+        timing: TimingDefinition {
+            lead_in_ms,
+            settle_ms,
+            duration_mode,
+        },
+        phases,
+        defect_interval,
+        affected_region,
+        final_state_id: final_state_id.into(),
+    }
+}
+
+fn expected_cases() -> Vec<CaseDefinition> {
+    use CaseFamily::{DomOpaqueMotion, Flicker, MovementReversal, StableControl, TransientLayout};
+    use CaseIntent::{Defect, Intentional};
+    use DurationMode::{DefectInterval, ObservationWindow, TransitionInterval};
+    use PhaseBoundary::{End, OffsetMs, OffsetPlusDurationMs, Zero};
+
+    vec![
+        case(
+            "movement-reversal/basic",
+            MovementReversal,
+            Defect,
+            "basic",
+            DefectInterval,
+            100,
+            100,
+            vec![
+                phase(
+                    "baseline",
+                    "movement.baseline",
+                    Zero,
+                    OffsetMs { value: 100 },
+                ),
+                phase(
+                    "forward",
+                    "movement.forward",
+                    OffsetMs { value: 100 },
+                    OffsetMs { value: 200 },
+                ),
+                phase(
+                    "reversal",
+                    "movement.reversal",
+                    OffsetMs { value: 200 },
+                    OffsetPlusDurationMs { offset_ms: 200 },
+                ),
+                phase(
+                    "correction",
+                    "movement.correction",
+                    OffsetPlusDurationMs { offset_ms: 200 },
+                    OffsetPlusDurationMs { offset_ms: 300 },
+                ),
+                phase(
+                    "stable",
+                    "movement.stable",
+                    OffsetPlusDurationMs { offset_ms: 300 },
+                    End,
+                ),
+            ],
+            Some(defect_interval(200)),
+            Rect {
+                x: 48,
+                y: 72,
+                width: 240,
+                height: 120,
+            },
+            "movement.stable",
+        ),
+        case(
+            "flicker/visibility",
+            Flicker,
+            Defect,
+            "visibility",
+            DefectInterval,
+            100,
+            100,
+            vec![
+                phase(
+                    "baseline",
+                    "flicker.visibility.baseline",
+                    Zero,
+                    OffsetMs { value: 100 },
+                ),
+                phase(
+                    "incorrect-visibility",
+                    "flicker.visibility.absent",
+                    OffsetMs { value: 100 },
+                    OffsetPlusDurationMs { offset_ms: 100 },
+                ),
+                phase(
+                    "stable",
+                    "flicker.visibility.ready",
+                    OffsetPlusDurationMs { offset_ms: 100 },
+                    End,
+                ),
+            ],
+            Some(defect_interval(100)),
+            Rect {
+                x: 360,
+                y: 72,
+                width: 240,
+                height: 120,
+            },
+            "flicker.visibility.ready",
+        ),
+        case(
+            "flicker/color",
+            Flicker,
+            Defect,
+            "color",
+            DefectInterval,
+            100,
+            100,
+            vec![
+                phase(
+                    "baseline",
+                    "flicker.color.neutral",
+                    Zero,
+                    OffsetMs { value: 100 },
+                ),
+                phase(
+                    "incorrect-color",
+                    "flicker.color.incorrect",
+                    OffsetMs { value: 100 },
+                    OffsetPlusDurationMs { offset_ms: 100 },
+                ),
+                phase(
+                    "stable",
+                    "flicker.color.neutral",
+                    OffsetPlusDurationMs { offset_ms: 100 },
+                    End,
+                ),
+            ],
+            Some(defect_interval(100)),
+            Rect {
+                x: 360,
+                y: 72,
+                width: 240,
+                height: 120,
+            },
+            "flicker.color.neutral",
+        ),
+        case(
+            "flicker/text",
+            Flicker,
+            Defect,
+            "text",
+            DefectInterval,
+            100,
+            100,
+            vec![
+                phase(
+                    "baseline",
+                    "flicker.text.ready",
+                    Zero,
+                    OffsetMs { value: 100 },
+                ),
+                phase(
+                    "incorrect-text",
+                    "flicker.text.stale",
+                    OffsetMs { value: 100 },
+                    OffsetPlusDurationMs { offset_ms: 100 },
+                ),
+                phase(
+                    "stable",
+                    "flicker.text.ready",
+                    OffsetPlusDurationMs { offset_ms: 100 },
+                    End,
+                ),
+            ],
+            Some(defect_interval(100)),
+            Rect {
+                x: 360,
+                y: 72,
+                width: 240,
+                height: 120,
+            },
+            "flicker.text.ready",
+        ),
+        case(
+            "layout/width",
+            TransientLayout,
+            Defect,
+            "width",
+            DefectInterval,
+            100,
+            100,
+            vec![
+                phase(
+                    "baseline",
+                    "layout.width.stable",
+                    Zero,
+                    OffsetMs { value: 100 },
+                ),
+                phase(
+                    "incorrect-width",
+                    "layout.width.narrow",
+                    OffsetMs { value: 100 },
+                    OffsetPlusDurationMs { offset_ms: 100 },
+                ),
+                phase(
+                    "stable",
+                    "layout.width.stable",
+                    OffsetPlusDurationMs { offset_ms: 100 },
+                    End,
+                ),
+            ],
+            Some(defect_interval(100)),
+            Rect {
+                x: 48,
+                y: 240,
+                width: 640,
+                height: 160,
+            },
+            "layout.width.stable",
+        ),
+        case(
+            "layout/content-shift",
+            TransientLayout,
+            Defect,
+            "content_shift",
+            DefectInterval,
+            100,
+            100,
+            vec![
+                phase(
+                    "baseline",
+                    "layout.content_shift.stable",
+                    Zero,
+                    OffsetMs { value: 100 },
+                ),
+                phase(
+                    "incorrect-shift",
+                    "layout.content_shift.notice",
+                    OffsetMs { value: 100 },
+                    OffsetPlusDurationMs { offset_ms: 100 },
+                ),
+                phase(
+                    "stable",
+                    "layout.content_shift.stable",
+                    OffsetPlusDurationMs { offset_ms: 100 },
+                    End,
+                ),
+            ],
+            Some(defect_interval(100)),
+            Rect {
+                x: 48,
+                y: 240,
+                width: 640,
+                height: 160,
+            },
+            "layout.content_shift.stable",
+        ),
+        case(
+            "layout/scroll-position",
+            TransientLayout,
+            Defect,
+            "scroll_position",
+            DefectInterval,
+            100,
+            100,
+            vec![
+                phase(
+                    "baseline",
+                    "layout.scroll_position.top",
+                    Zero,
+                    OffsetMs { value: 100 },
+                ),
+                phase(
+                    "incorrect-scroll",
+                    "layout.scroll_position.jumped",
+                    OffsetMs { value: 100 },
+                    OffsetPlusDurationMs { offset_ms: 100 },
+                ),
+                phase(
+                    "stable",
+                    "layout.scroll_position.top",
+                    OffsetPlusDurationMs { offset_ms: 100 },
+                    End,
+                ),
+            ],
+            Some(defect_interval(100)),
+            Rect {
+                x: 48,
+                y: 240,
+                width: 320,
+                height: 120,
+            },
+            "layout.scroll_position.top",
+        ),
+        case(
+            "dom-opaque/path-reversal",
+            DomOpaqueMotion,
+            Defect,
+            "path_reversal",
+            DefectInterval,
+            100,
+            100,
+            vec![
+                phase(
+                    "baseline",
+                    "dom_opaque.path.baseline",
+                    Zero,
+                    OffsetMs { value: 100 },
+                ),
+                phase(
+                    "forward",
+                    "dom_opaque.path.forward",
+                    OffsetMs { value: 100 },
+                    OffsetMs { value: 200 },
+                ),
+                phase(
+                    "reversal",
+                    "dom_opaque.path.reversal",
+                    OffsetMs { value: 200 },
+                    OffsetPlusDurationMs { offset_ms: 200 },
+                ),
+                phase(
+                    "correction",
+                    "dom_opaque.path.correction",
+                    OffsetPlusDurationMs { offset_ms: 200 },
+                    OffsetPlusDurationMs { offset_ms: 300 },
+                ),
+                phase(
+                    "stable",
+                    "dom_opaque.path.final",
+                    OffsetPlusDurationMs { offset_ms: 300 },
+                    End,
+                ),
+            ],
+            Some(defect_interval(200)),
+            Rect {
+                x: 400,
+                y: 240,
+                width: 320,
+                height: 160,
+            },
+            "dom_opaque.path.final",
+        ),
+        case(
+            "dom-opaque/teleport",
+            DomOpaqueMotion,
+            Defect,
+            "teleport",
+            DefectInterval,
+            100,
+            100,
+            vec![
+                phase(
+                    "baseline",
+                    "dom_opaque.teleport.baseline",
+                    Zero,
+                    OffsetMs { value: 100 },
+                ),
+                phase(
+                    "incorrect-teleport",
+                    "dom_opaque.teleport.wrong",
+                    OffsetMs { value: 100 },
+                    OffsetPlusDurationMs { offset_ms: 100 },
+                ),
+                phase(
+                    "stable",
+                    "dom_opaque.teleport.final",
+                    OffsetPlusDurationMs { offset_ms: 100 },
+                    End,
+                ),
+            ],
+            Some(defect_interval(100)),
+            Rect {
+                x: 400,
+                y: 240,
+                width: 320,
+                height: 160,
+            },
+            "dom_opaque.teleport.final",
+        ),
+        case(
+            "dom-opaque/sprite",
+            DomOpaqueMotion,
+            Defect,
+            "sprite",
+            DefectInterval,
+            100,
+            100,
+            vec![
+                phase(
+                    "baseline",
+                    "dom_opaque.sprite.baseline",
+                    Zero,
+                    OffsetMs { value: 100 },
+                ),
+                phase(
+                    "incorrect-sprite",
+                    "dom_opaque.sprite.wrong",
+                    OffsetMs { value: 100 },
+                    OffsetPlusDurationMs { offset_ms: 100 },
+                ),
+                phase(
+                    "stable",
+                    "dom_opaque.sprite.final",
+                    OffsetPlusDurationMs { offset_ms: 100 },
+                    End,
+                ),
+            ],
+            Some(defect_interval(100)),
+            Rect {
+                x: 400,
+                y: 240,
+                width: 320,
+                height: 160,
+            },
+            "dom_opaque.sprite.final",
+        ),
+        case(
+            "stable/smooth-panel",
+            StableControl,
+            Intentional,
+            "smooth_panel",
+            TransitionInterval,
+            0,
+            0,
+            vec![
+                phase(
+                    "transition",
+                    "stable.smooth_panel.moving",
+                    Zero,
+                    OffsetPlusDurationMs { offset_ms: 0 },
+                ),
+                phase(
+                    "stable",
+                    "stable.smooth_panel.final",
+                    OffsetPlusDurationMs { offset_ms: 0 },
+                    End,
+                ),
+            ],
+            None,
+            Rect {
+                x: 48,
+                y: 72,
+                width: 240,
+                height: 120,
+            },
+            "stable.smooth_panel.final",
+        ),
+        case(
+            "stable/loading-indicator",
+            StableControl,
+            Intentional,
+            "loading_indicator",
+            TransitionInterval,
+            0,
+            0,
+            vec![
+                phase(
+                    "loading",
+                    "stable.loading_indicator.loading",
+                    Zero,
+                    OffsetPlusDurationMs { offset_ms: 0 },
+                ),
+                phase(
+                    "stable",
+                    "stable.loading_indicator.final",
+                    OffsetPlusDurationMs { offset_ms: 0 },
+                    End,
+                ),
+            ],
+            None,
+            Rect {
+                x: 360,
+                y: 72,
+                width: 240,
+                height: 120,
+            },
+            "stable.loading_indicator.final",
+        ),
+        case(
+            "stable/caret",
+            StableControl,
+            Intentional,
+            "caret",
+            ObservationWindow,
+            0,
+            0,
+            vec![phase("ready", "stable.caret.ready", Zero, End)],
+            None,
+            Rect {
+                x: 48,
+                y: 240,
+                width: 300,
+                height: 48,
+            },
+            "stable.caret.ready",
+        ),
+    ]
+}

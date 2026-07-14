@@ -1310,6 +1310,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "temporal-evaluation"
+version = "0.2.20"
+dependencies = [
+ "schemars",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+]
+
+[[package]]
 name = "temporal-vision"
 version = "0.2.20"
 dependencies = [

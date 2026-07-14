@@ -1,0 +1,344 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BenchmarkDefinition",
+  "type": "object",
+  "properties": {
+    "benchmark_id": {
+      "type": "string"
+    },
+    "cases": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/CaseDefinition"
+      }
+    },
+    "device_scale_factor_milli": {
+      "type": "integer",
+      "format": "uint16",
+      "maximum": 65535,
+      "minimum": 0
+    },
+    "duration_ms": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "format": "uint16",
+        "maximum": 65535,
+        "minimum": 0
+      }
+    },
+    "fixture": {
+      "$ref": "#/$defs/FixtureIdentity"
+    },
+    "schema_version": {
+      "type": "integer",
+      "format": "uint16",
+      "maximum": 65535,
+      "minimum": 0
+    },
+    "viewport_height": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "viewport_width": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "benchmark_id",
+    "fixture",
+    "viewport_width",
+    "viewport_height",
+    "device_scale_factor_milli",
+    "duration_ms",
+    "cases"
+  ],
+  "$defs": {
+    "CaseDefinition": {
+      "type": "object",
+      "properties": {
+        "affected_region": {
+          "$ref": "#/$defs/Rect"
+        },
+        "anchor_id": {
+          "type": "string"
+        },
+        "case_id": {
+          "type": "string"
+        },
+        "defect_interval": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TimeInterval"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "family": {
+          "$ref": "#/$defs/CaseFamily"
+        },
+        "final_state_id": {
+          "type": "string"
+        },
+        "intent": {
+          "$ref": "#/$defs/CaseIntent"
+        },
+        "phases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PhaseDefinition"
+          }
+        },
+        "timing": {
+          "$ref": "#/$defs/TimingDefinition"
+        },
+        "variant": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "case_id",
+        "family",
+        "intent",
+        "variant",
+        "anchor_id",
+        "timing",
+        "phases",
+        "affected_region",
+        "final_state_id"
+      ]
+    },
+    "CaseFamily": {
+      "type": "string",
+      "enum": [
+        "movement_reversal",
+        "flicker",
+        "transient_layout",
+        "dom_opaque_motion",
+        "stable_control"
+      ]
+    },
+    "CaseIntent": {
+      "type": "string",
+      "enum": [
+        "defect",
+        "intentional"
+      ]
+    },
+    "DurationMode": {
+      "type": "string",
+      "enum": [
+        "defect_interval",
+        "transition_interval",
+        "observation_window"
+      ]
+    },
+    "FixtureFile": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256"
+      ]
+    },
+    "FixtureIdentity": {
+      "type": "object",
+      "properties": {
+        "files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FixtureFile"
+          }
+        },
+        "name": {
+          "type": "string"
+        },
+        "root_relative_path": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "root_relative_path",
+        "files"
+      ]
+    },
+    "PhaseBoundary": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "zero"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "offset_ms"
+            },
+            "value": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "offset_plus_duration_ms"
+            },
+            "offset_ms": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "kind",
+            "offset_ms"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "end"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
+    "PhaseDefinition": {
+      "type": "object",
+      "properties": {
+        "end": {
+          "$ref": "#/$defs/PhaseBoundary"
+        },
+        "id": {
+          "type": "string"
+        },
+        "start": {
+          "$ref": "#/$defs/PhaseBoundary"
+        },
+        "state_id": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "state_id",
+        "start",
+        "end"
+      ]
+    },
+    "Rect": {
+      "type": "object",
+      "properties": {
+        "height": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "width": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "x": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "y": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "x",
+        "y",
+        "width",
+        "height"
+      ]
+    },
+    "TimeInterval": {
+      "type": "object",
+      "properties": {
+        "end": {
+          "$ref": "#/$defs/PhaseBoundary"
+        },
+        "start": {
+          "$ref": "#/$defs/PhaseBoundary"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "start",
+        "end"
+      ]
+    },
+    "TimingDefinition": {
+      "type": "object",
+      "properties": {
+        "duration_mode": {
+          "$ref": "#/$defs/DurationMode"
+        },
+        "lead_in_ms": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "settle_ms": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "lead_in_ms",
+        "settle_ms",
+        "duration_mode"
+      ]
+    }
+  }
+}

@@ -1,0 +1,856 @@
+{
+  "benchmark_id": "temporal-advantage-corpus-v1",
+  "cases": [
+    {
+      "affected_region": {
+        "height": 120,
+        "width": 240,
+        "x": 48,
+        "y": 72
+      },
+      "anchor_id": "run",
+      "case_id": "movement-reversal/basic",
+      "defect_interval": {
+        "end": {
+          "kind": "offset_plus_duration_ms",
+          "offset_ms": 200
+        },
+        "start": {
+          "kind": "offset_ms",
+          "value": 200
+        }
+      },
+      "family": "movement_reversal",
+      "final_state_id": "movement.stable",
+      "intent": "defect",
+      "phases": [
+        {
+          "end": {
+            "kind": "offset_ms",
+            "value": 100
+          },
+          "id": "baseline",
+          "start": {
+            "kind": "zero"
+          },
+          "state_id": "movement.baseline"
+        },
+        {
+          "end": {
+            "kind": "offset_ms",
+            "value": 200
+          },
+          "id": "forward",
+          "start": {
+            "kind": "offset_ms",
+            "value": 100
+          },
+          "state_id": "movement.forward"
+        },
+        {
+          "end": {
+            "kind": "offset_plus_duration_ms",
+            "offset_ms": 200
+          },
+          "id": "reversal",
+          "start": {
+            "kind": "offset_ms",
+            "value": 200
+          },
+          "state_id": "movement.reversal"
+        },
+        {
+          "end": {
+            "kind": "offset_plus_duration_ms",
+            "offset_ms": 300
+          },
+          "id": "correction",
+          "start": {
+            "kind": "offset_plus_duration_ms",
+            "offset_ms": 200
+          },
+          "state_id": "movement.correction"
+        },
+        {
+          "end": {
+            "kind": "end"
+          },
+          "id": "stable",
+          "start": {
+            "kind": "offset_plus_duration_ms",
+            "offset_ms": 300
+          },
+          "state_id": "movement.stable"
+        }
+      ],
+      "timing": {
+        "duration_mode": "defect_interval",
+        "lead_in_ms": 100,
+        "settle_ms": 100
+      },
+      "variant": "basic"
+    },
+    {
+      "affected_region": {
+        "height": 120,
+        "width": 240,
+        "x": 360,
+        "y": 72
+      },
+      "anchor_id": "run",
+      "case_id": "flicker/visibility",
+      "defect_interval": {
+        "end": {
+          "kind": "offset_plus_duration_ms",
+          "offset_ms": 100
+        },
+        "start": {
+          "kind": "offset_ms",
+          "value": 100
+        }
+      },
+      "family": "flicker",
+      "final_state_id": "flicker.visibility.ready",
+      "intent": "defect",
+      "phases": [
+        {
+          "end": {
+            "kind": "offset_ms",
+            "value": 100
+          },
+          "id": "baseline",
+          "start": {
+            "kind": "zero"
+          },
+          "state_id": "flicker.visibility.baseline"
+        },
+        {
+          "end": {
+            "kind": "offset_plus_duration_ms",
+            "offset_ms": 100
+          },
+          "id": "incorrect-visibility",
+          "start": {
+            "kind": "offset_ms",
+            "value": 100
+          },
+          "state_id": "flicker.visibility.absent"
+        },
+        {
+          "end": {
+            "kind": "end"
+          },
+          "id": "stable",
+          "start": {
+            "kind": "offset_plus_duration_ms",
+            "offset_ms": 100
+          },
+          "state_id": "flicker.visibility.ready"
+        }
+      ],
+      "timing": {
+        "duration_mode": "defect_interval",
+        "lead_in_ms": 100,
+        "settle_ms": 100
+      },
+      "variant": "visibility"
+    },
+    {
+      "affected_region": {
+        "height": 120,
+        "width": 240,
+        "x": 360,
+        "y": 72
+      },
+      "anchor_id": "run",
+      "case_id": "flicker/color",
+      "defect_interval": {
+        "end": {
+          "kind": "offset_plus_duration_ms",
+          "offset_ms": 100
+        },
+        "start": {
+          "kind": "offset_ms",
+          "value": 100
+        }
+      },
+      "family": "flicker",
+      "final_state_id": "flicker.color.neutral",
+      "intent": "defect",
+      "phases": [
+        {
+          "end": {
+            "kind": "offset_ms",
+            "value": 100
+          },
+          "id": "baseline",
+          "start": {
+            "kind": "zero"
+          },
+          "state_id": "flicker.color.neutral"
+        },
+        {
+          "end": {
+            "kind": "offset_plus_duration_ms",
+            "offset_ms": 100
+          },
+          "id": "incorrect-color",
+          "start": {
+            "kind": "offset_ms",
+            "value": 100
+          },
+          "state_id": "flicker.color.incorrect"
+        },
+        {
+          "end": {
+            "kind": "end"
+          },
+          "id": "stable",
+          "start": {
+            "kind": "offset_plus_duration_ms",
+            "offset_ms": 100
+          },
+          "state_id": "flicker.color.neutral"
+        }
+      ],
+      "timing": {
+        "duration_mode": "defect_interval",
+        "lead_in_ms": 100,
+        "settle_ms": 100
+      },
+      "variant": "color"
+    },
+    {
+      "affected_region": {
+        "height": 120,
+        "width": 240,
+        "x": 360,
+        "y": 72
+      },
+      "anchor_id": "run",
+      "case_id": "flicker/text",
+      "defect_interval": {
+        "end": {
+          "kind": "offset_plus_duration_ms",
+          "offset_ms": 100
+        },
+        "start": {
+          "kind": "offset_ms",
+          "value": 100
+        }
+      },
+      "family": "flicker",
+      "final_state_id": "flicker.text.ready",
+      "intent": "defect",
+      "phases": [
+        {
+          "end": {
+            "kind": "offset_ms",
+            "value": 100
+          },
+          "id": "baseline",
+          "start": {
+            "kind": "zero"
+          },
+          "state_id": "flicker.text.ready"
+        },
+        {
+          "end": {
+            "kind": "offset_plus_duration_ms",
+            "offset_ms": 100
+          },
+          "id": "incorrect-text",
+          "start": {
+            "kind": "offset_ms",
+            "value": 100
+          },
+          "state_id": "flicker.text.stale"
+        },
+        {
+          "end": {
+            "kind": "end"
+          },
+          "id": "stable",
+          "start": {
+            "kind": "offset_plus_duration_ms",
+            "offset_ms": 100
+          },
+          "state_id": "flicker.text.ready"
+        }
+      ],
+      "timing": {
+        "duration_mode": "defect_interval",
+        "lead_in_ms": 100,
+        "settle_ms": 100
+      },
+      "variant": "text"
+    },
+    {
+      "affected_region": {
+        "height": 160,
+        "width": 640,
+        "x": 48,
+        "y": 240
+      },
+      "anchor_id": "run",
+      "case_id": "layout/width",
+      "defect_interval": {
+        "end": {
+          "kind": "offset_plus_duration_ms",
+          "offset_ms": 100
+        },
+        "start": {
+          "kind": "offset_ms",
+          "value": 100
+        }
+      },
+      "family": "transient_layout",
+      "final_state_id": "layout.width.stable",
+      "intent": "defect",
+      "phases": [
+        {
+          "end": {
+            "kind": "offset_ms",
+            "value": 100
+          },
+          "id": "baseline",
+          "start": {
+            "kind": "zero"
+          },
+          "state_id": "layout.width.stable"
+        },
+        {
+          "end": {
+            "kind": "offset_plus_duration_ms",
+            "offset_ms": 100
+          },
+          "id": "incorrect-width",
+          "start": {
+            "kind": "offset_ms",
+            "value": 100
+          },
+          "state_id": "layout.width.narrow"
+        },
+        {
+          "end": {
+            "kind": "end"
+          },
+          "id": "stable",
+          "start": {
+            "kind": "offset_plus_duration_ms",
+            "offset_ms": 100
+          },
+          "state_id": "layout.width.stable"
+        }
+      ],
+      "timing": {
+        "duration_mode": "defect_interval",
+        "lead_in_ms": 100,
+        "settle_ms": 100
+      },
+      "variant": "width"
+    },
+    {
+      "affected_region": {
+        "height": 160,
+        "width": 640,
+        "x": 48,
+        "y": 240
+      },
+      "anchor_id": "run",
+      "case_id": "layout/content-shift",
+      "defect_interval": {
+        "end": {
+          "kind": "offset_plus_duration_ms",
+          "offset_ms": 100
+        },
+        "start": {
+          "kind": "offset_ms",
+          "value": 100
+        }
+      },
+      "family": "transient_layout",
+      "final_state_id": "layout.content_shift.stable",
+      "intent": "defect",
+      "phases": [
+        {
+          "end": {
+            "kind": "offset_ms",
+            "value": 100
+          },
+          "id": "baseline",
+          "start": {
+            "kind": "zero"
+          },
+          "state_id": "layout.content_shift.stable"
+        },
+        {
+          "end": {
+            "kind": "offset_plus_duration_ms",
+            "offset_ms": 100
+          },
+          "id": "incorrect-shift",
+          "start": {
+            "kind": "offset_ms",
+            "value": 100
+          },
+          "state_id": "layout.content_shift.notice"
+        },
+        {
+          "end": {
+            "kind": "end"
+          },
+          "id": "stable",
+          "start": {
+            "kind": "offset_plus_duration_ms",
+            "offset_ms": 100
+          },
+          "state_id": "layout.content_shift.stable"
+        }
+      ],
+      "timing": {
+        "duration_mode": "defect_interval",
+        "lead_in_ms": 100,
+        "settle_ms": 100
+      },
+      "variant": "content_shift"
+    },
+    {
+      "affected_region": {
+        "height": 120,
+        "width": 320,
+        "x": 48,
+        "y": 240
+      },
+      "anchor_id": "run",
+      "case_id": "layout/scroll-position",
+      "defect_interval": {
+        "end": {
+          "kind": "offset_plus_duration_ms",
+          "offset_ms": 100
+        },
+        "start": {
+          "kind": "offset_ms",
+          "value": 100
+        }
+      },
+      "family": "transient_layout",
+      "final_state_id": "layout.scroll_position.top",
+      "intent": "defect",
+      "phases": [
+        {
+          "end": {
+            "kind": "offset_ms",
+            "value": 100
+          },
+          "id": "baseline",
+          "start": {
+            "kind": "zero"
+          },
+          "state_id": "layout.scroll_position.top"
+        },
+        {
+          "end": {
+            "kind": "offset_plus_duration_ms",
+            "offset_ms": 100
+          },
+          "id": "incorrect-scroll",
+          "start": {
+            "kind": "offset_ms",
+            "value": 100
+          },
+          "state_id": "layout.scroll_position.jumped"
+        },
+        {
+          "end": {
+            "kind": "end"
+          },
+          "id": "stable",
+          "start": {
+            "kind": "offset_plus_duration_ms",
+            "offset_ms": 100
+          },
+          "state_id": "layout.scroll_position.top"
+        }
+      ],
+      "timing": {
+        "duration_mode": "defect_interval",
+        "lead_in_ms": 100,
+        "settle_ms": 100
+      },
+      "variant": "scroll_position"
+    },
+    {
+      "affected_region": {
+        "height": 160,
+        "width": 320,
+        "x": 400,
+        "y": 240
+      },
+      "anchor_id": "run",
+      "case_id": "dom-opaque/path-reversal",
+      "defect_interval": {
+        "end": {
+          "kind": "offset_plus_duration_ms",
+          "offset_ms": 200
+        },
+        "start": {
+          "kind": "offset_ms",
+          "value": 200
+        }
+      },
+      "family": "dom_opaque_motion",
+      "final_state_id": "dom_opaque.path.final",
+      "intent": "defect",
+      "phases": [
+        {
+          "end": {
+            "kind": "offset_ms",
+            "value": 100
+          },
+          "id": "baseline",
+          "start": {
+            "kind": "zero"
+          },
+          "state_id": "dom_opaque.path.baseline"
+        },
+        {
+          "end": {
+            "kind": "offset_ms",
+            "value": 200
+          },
+          "id": "forward",
+          "start": {
+            "kind": "offset_ms",
+            "value": 100
+          },
+          "state_id": "dom_opaque.path.forward"
+        },
+        {
+          "end": {
+            "kind": "offset_plus_duration_ms",
+            "offset_ms": 200
+          },
+          "id": "reversal",
+          "start": {
+            "kind": "offset_ms",
+            "value": 200
+          },
+          "state_id": "dom_opaque.path.reversal"
+        },
+        {
+          "end": {
+            "kind": "offset_plus_duration_ms",
+            "offset_ms": 300
+          },
+          "id": "correction",
+          "start": {
+            "kind": "offset_plus_duration_ms",
+            "offset_ms": 200
+          },
+          "state_id": "dom_opaque.path.correction"
+        },
+        {
+          "end": {
+            "kind": "end"
+          },
+          "id": "stable",
+          "start": {
+            "kind": "offset_plus_duration_ms",
+            "offset_ms": 300
+          },
+          "state_id": "dom_opaque.path.final"
+        }
+      ],
+      "timing": {
+        "duration_mode": "defect_interval",
+        "lead_in_ms": 100,
+        "settle_ms": 100
+      },
+      "variant": "path_reversal"
+    },
+    {
+      "affected_region": {
+        "height": 160,
+        "width": 320,
+        "x": 400,
+        "y": 240
+      },
+      "anchor_id": "run",
+      "case_id": "dom-opaque/teleport",
+      "defect_interval": {
+        "end": {
+          "kind": "offset_plus_duration_ms",
+          "offset_ms": 100
+        },
+        "start": {
+          "kind": "offset_ms",
+          "value": 100
+        }
+      },
+      "family": "dom_opaque_motion",
+      "final_state_id": "dom_opaque.teleport.final",
+      "intent": "defect",
+      "phases": [
+        {
+          "end": {
+            "kind": "offset_ms",
+            "value": 100
+          },
+          "id": "baseline",
+          "start": {
+            "kind": "zero"
+          },
+          "state_id": "dom_opaque.teleport.baseline"
+        },
+        {
+          "end": {
+            "kind": "offset_plus_duration_ms",
+            "offset_ms": 100
+          },
+          "id": "incorrect-teleport",
+          "start": {
+            "kind": "offset_ms",
+            "value": 100
+          },
+          "state_id": "dom_opaque.teleport.wrong"
+        },
+        {
+          "end": {
+            "kind": "end"
+          },
+          "id": "stable",
+          "start": {
+            "kind": "offset_plus_duration_ms",
+            "offset_ms": 100
+          },
+          "state_id": "dom_opaque.teleport.final"
+        }
+      ],
+      "timing": {
+        "duration_mode": "defect_interval",
+        "lead_in_ms": 100,
+        "settle_ms": 100
+      },
+      "variant": "teleport"
+    },
+    {
+      "affected_region": {
+        "height": 160,
+        "width": 320,
+        "x": 400,
+        "y": 240
+      },
+      "anchor_id": "run",
+      "case_id": "dom-opaque/sprite",
+      "defect_interval": {
+        "end": {
+          "kind": "offset_plus_duration_ms",
+          "offset_ms": 100
+        },
+        "start": {
+          "kind": "offset_ms",
+          "value": 100
+        }
+      },
+      "family": "dom_opaque_motion",
+      "final_state_id": "dom_opaque.sprite.final",
+      "intent": "defect",
+      "phases": [
+        {
+          "end": {
+            "kind": "offset_ms",
+            "value": 100
+          },
+          "id": "baseline",
+          "start": {
+            "kind": "zero"
+          },
+          "state_id": "dom_opaque.sprite.baseline"
+        },
+        {
+          "end": {
+            "kind": "offset_plus_duration_ms",
+            "offset_ms": 100
+          },
+          "id": "incorrect-sprite",
+          "start": {
+            "kind": "offset_ms",
+            "value": 100
+          },
+          "state_id": "dom_opaque.sprite.wrong"
+        },
+        {
+          "end": {
+            "kind": "end"
+          },
+          "id": "stable",
+          "start": {
+            "kind": "offset_plus_duration_ms",
+            "offset_ms": 100
+          },
+          "state_id": "dom_opaque.sprite.final"
+        }
+      ],
+      "timing": {
+        "duration_mode": "defect_interval",
+        "lead_in_ms": 100,
+        "settle_ms": 100
+      },
+      "variant": "sprite"
+    },
+    {
+      "affected_region": {
+        "height": 120,
+        "width": 240,
+        "x": 48,
+        "y": 72
+      },
+      "anchor_id": "run",
+      "case_id": "stable/smooth-panel",
+      "defect_interval": null,
+      "family": "stable_control",
+      "final_state_id": "stable.smooth_panel.final",
+      "intent": "intentional",
+      "phases": [
+        {
+          "end": {
+            "kind": "offset_plus_duration_ms",
+            "offset_ms": 0
+          },
+          "id": "transition",
+          "start": {
+            "kind": "zero"
+          },
+          "state_id": "stable.smooth_panel.moving"
+        },
+        {
+          "end": {
+            "kind": "end"
+          },
+          "id": "stable",
+          "start": {
+            "kind": "offset_plus_duration_ms",
+            "offset_ms": 0
+          },
+          "state_id": "stable.smooth_panel.final"
+        }
+      ],
+      "timing": {
+        "duration_mode": "transition_interval",
+        "lead_in_ms": 0,
+        "settle_ms": 0
+      },
+      "variant": "smooth_panel"
+    },
+    {
+      "affected_region": {
+        "height": 120,
+        "width": 240,
+        "x": 360,
+        "y": 72
+      },
+      "anchor_id": "run",
+      "case_id": "stable/loading-indicator",
+      "defect_interval": null,
+      "family": "stable_control",
+      "final_state_id": "stable.loading_indicator.final",
+      "intent": "intentional",
+      "phases": [
+        {
+          "end": {
+            "kind": "offset_plus_duration_ms",
+            "offset_ms": 0
+          },
+          "id": "loading",
+          "start": {
+            "kind": "zero"
+          },
+          "state_id": "stable.loading_indicator.loading"
+        },
+        {
+          "end": {
+            "kind": "end"
+          },
+          "id": "stable",
+          "start": {
+            "kind": "offset_plus_duration_ms",
+            "offset_ms": 0
+          },
+          "state_id": "stable.loading_indicator.final"
+        }
+      ],
+      "timing": {
+        "duration_mode": "transition_interval",
+        "lead_in_ms": 0,
+        "settle_ms": 0
+      },
+      "variant": "loading_indicator"
+    },
+    {
+      "affected_region": {
+        "height": 48,
+        "width": 300,
+        "x": 48,
+        "y": 240
+      },
+      "anchor_id": "run",
+      "case_id": "stable/caret",
+      "defect_interval": null,
+      "family": "stable_control",
+      "final_state_id": "stable.caret.ready",
+      "intent": "intentional",
+      "phases": [
+        {
+          "end": {
+            "kind": "end"
+          },
+          "id": "ready",
+          "start": {
+            "kind": "zero"
+          },
+          "state_id": "stable.caret.ready"
+        }
+      ],
+      "timing": {
+        "duration_mode": "observation_window",
+        "lead_in_ms": 0,
+        "settle_ms": 0
+      },
+      "variant": "caret"
+    }
+  ],
+  "device_scale_factor_milli": 1000,
+  "duration_ms": [
+    16,
+    33,
+    50,
+    100,
+    200
+  ],
+  "fixture": {
+    "files": [
+      {
+        "path": "README.md",
+        "sha256": "sha256:068ae8b4bb771580d64d251bdc0832a121699acfa64a3286bd43712b93244c57"
+      },
+      {
+        "path": "benchmark.css",
+        "sha256": "sha256:e098d0c7eb95f9f3dd2d268ed820197820242dbb7c15f900cacffb9b4a9c7d2c"
+      },
+      {
+        "path": "benchmark.js",
+        "sha256": "sha256:80bd7b56ddf603b5dd552eecced8506e5cf75f08b553bcccdeb4a8d4272f7278"
+      },
+      {
+        "path": "index.html",
+        "sha256": "sha256:23da2695cb0b0e164b2a181e5436f31cd59ee42696933f7c7015bccd4648cabb"
+      }
+    ],
+    "name": "temporal-benchmark",
+    "root_relative_path": "tests/fixtures/browser/temporal-benchmark"
+  },
+  "schema_version": 1,
+  "viewport_height": 450,
+  "viewport_width": 800
+}
