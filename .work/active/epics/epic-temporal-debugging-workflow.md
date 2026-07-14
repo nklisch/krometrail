@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-debugging-workflow
 kind: epic
-stage: review
+stage: done
 tags: [visual, storage, agent-ux]
 parent: null
 depends_on: [epic-temporal-vision-toolkit, epic-durable-browser-memory, epic-agent-browser-operation]
@@ -79,4 +79,8 @@ The epic is split by delivered investigation capability. Resolved temporal queri
 
 All six child features are reviewed and `done`: resolved temporal queries; bounded artifact generation/cache; sanitized capture and browser-event context; the primary temporal debug bundle; progressive evidence and pinning; and the MCP investigation surface. The integrated runtime now resolves one natural anchor, generates/cache-validates traceable visual evidence, correlates bounded observed browser context, supports focused retained-evidence reads and pins, and presents the workflow through strict MCP 2025-06-18 tools/resources without paths or unsupported task/subscription semantics.
 
-Every feature completed its Rust 1.85 locked format, workspace check/test, and Clippy-with-warnings-denied gates. Feature reviews repaired material findings including artifact waiter lost wakeups, browser-event collection recovery, bundle permit cancellation, unavailable-evidence wording, marker-anchor identity, and chronological event schema exactness. The epic advances to `review` for its required deeper aggregate pass; no epic approval has yet been performed.
+Every feature completed its Rust 1.85 locked format, workspace check/test, and Clippy-with-warnings-denied gates. Feature reviews repaired material findings including artifact waiter lost wakeups, browser-event collection recovery, bundle permit cancellation, unavailable-evidence wording, marker-anchor identity, and chronological event schema exactness.
+
+## Aggregate review decision
+
+**Approved.** A fresh-context `zai/glm-5.2` reviewer performed the required deeper aggregate standard pass across all six features and found no material current-cycle blockers. It re-verified singular range/store/resource authorities, persistence and deletion fences, cache/manifest consistency, privacy and non-diagnostic posture, capability filtering, prepublic contract cleanliness, honest qualification boundaries, and the complete Rust 1.85 workspace gate. The observations about the preserved `work-view` binary and ambiguous CDP evidence-version wording are non-material and require no current-cycle item. Per standard review policy, no repeat review was run. The epic advances to `done`.
