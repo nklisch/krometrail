@@ -214,12 +214,12 @@ impl PageControl {
                 super::pointer::scroll(transport, bound, request, resolved, cancel, generation)
                     .await
             }
-            BrowserOperationRequest::UploadFiles(_) | BrowserOperationRequest::HandleDialog(_) => {
-                Err(operation_error(
-                    ErrorCode::Unsupported,
-                    bound.target_id,
-                    "upload and dialog interactions are not available",
-                ))
+            BrowserOperationRequest::UploadFiles(request) => {
+                super::upload::upload_files(transport, bound, request, resolved, cancel, generation)
+                    .await
+            }
+            BrowserOperationRequest::HandleDialog(request) => {
+                super::dialog::handle_dialog(transport, bound, request, cancel, generation).await
             }
             _ => Err(interaction_error(
                 bound.target_id,

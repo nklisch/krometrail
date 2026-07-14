@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-operation-verified-interactions-upload-and-dialog
 kind: story
-stage: implementing
+stage: done
 tags: [browser, agent-ux]
 parent: epic-agent-browser-operation-verified-interactions
 depends_on: [epic-agent-browser-operation-verified-interactions-dispatch-and-pointer-actions]
@@ -42,3 +42,11 @@ Implement `UploadFiles` and `HandleDialog` in `crates/krometrail-cdp/src/control
 
 - Real-Chrome qualification and the standalone fixture (next story).
 - Durable persistence of the upload's file metadata (owned by `epic-durable-browser-memory`).
+
+## Implementation notes
+
+- Added upload and dialog action families behind the same executor and post-action evidence path.
+- Upload accepts only core-validated absolute paths, canonicalizes and proves regular-file readability on a blocking worker rather than the single-writer async actor, then sends all canonical UTF-8 paths in one `DOM.setFileInputFiles` call against the resolver-verified file input.
+- Path failures expose only a quoted basename plus `upload_path_missing` or `upload_path_unreadable`; records retain only basenames and count. Canonical symlink targets are accepted under the local user's authority, matching the parent feature's final risk decision.
+- Dialog handling sends only the declared accept/dismiss/prompt fields. Because the transport intentionally redacts Chrome source text, this command's ordinary rejection maps to `dialog_not_open`; protocol and connection categories remain distinct. Sanitization retains only action and prompt length.
+- Verification passed: formatting, locked all-target CDP check, 80 CDP library tests, and locked all-target CDP Clippy with warnings denied. Filesystem/CDP payload and real-dialog behavior are consolidated in qualification.

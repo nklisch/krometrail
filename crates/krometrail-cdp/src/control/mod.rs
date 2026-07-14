@@ -14,6 +14,7 @@ use crate::{
     transport::{CdpTransport, CommandScope, TransportError, TransportSessionId},
 };
 
+mod dialog;
 mod evaluation;
 mod form;
 mod interaction;
@@ -23,6 +24,7 @@ mod pages;
 mod pointer;
 mod screenshot;
 mod snapshot;
+mod upload;
 
 use navigation::NavigationConfig;
 use snapshot::SnapshotRegistry;
