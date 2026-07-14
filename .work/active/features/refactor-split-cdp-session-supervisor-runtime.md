@@ -1,7 +1,7 @@
 ---
 id: refactor-split-cdp-session-supervisor-runtime
 kind: feature
-stage: review
+stage: done
 tags: [refactor, browser]
 parent: null
 depends_on: []
@@ -344,6 +344,20 @@ pub(super) async fn run_supervisor(
 - The file-to-directory rename in Step 1 is inherently atomic; landing submodules without the module-root move would break Rust module resolution.
 - Steps 2 through 4 are independently reversible because each extracts one cohesive responsibility and keeps the root-level call sites unchanged apart from module qualification.
 - Highest-risk seam: reconnect/shutdown interaction. Keep reconnect-exhausted shutdown semantics and no-replay cancellation behavior under the existing tests before accepting later cleanup.
+
+## Implementation summary
+
+The four ordered checkpoints landed as pure moves: `session.rs` became `session/mod.rs`, and operation dispatch, shutdown, reconnect, and steady-state runtime plumbing moved into focused private modules. The root retains connector/session shell, shared state, stable error mapping, tests, and crate-local re-exports. Rust 1.85 format, locked all-target workspace check, 418 tests, and Clippy with warnings denied passed; no tests changed or were deleted. Real-browser opt-in was not enabled and is not claimed.
+
+## Review (2026-07-14)
+
+**Verdict**: Approve
+
+**Blockers**: none
+**Important**: none
+**Nits**: one documented `#[allow(unused_imports)]` preserves the existing crate-local `VisibilityProbeError` path; removal was tested and would fail Clippy. No follow-up is required unless that stable path is deliberately retired later.
+
+**Evidence**: Independent cross-model standard review compared every top-level item against pre-split `session.rs`, found 53 of 61 bodies byte-identical and proved the remaining apparent differences were extraction artifacts only. The complete 860-line session test module was byte-identical. `execute_operation`, reducer/effect ordering, reconnect, shutdown, connection setup, pumps, process watch, parsers, stable errors/logs, and feature gates had no statement or policy changes. The reviewer also passed format, locked workspace check, 418 tests, and Clippy with warnings denied. Acceptance criteria are met; standard weight requires no re-review.
 
 ## Implementation notes
 
