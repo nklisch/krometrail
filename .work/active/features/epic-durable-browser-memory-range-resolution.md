@@ -1,7 +1,7 @@
 ---
 id: epic-durable-browser-memory-range-resolution
 kind: feature
-stage: implementing
+stage: review
 tags: [storage, browser]
 parent: epic-durable-browser-memory
 depends_on: [epic-durable-browser-memory-sqlite-index]
@@ -443,3 +443,14 @@ Do not add a test per trivial accessor, SQL statement, or enum derive. Tests pro
 - `epic-temporal-debugging-workflow` consumes `ResolvedRange` unchanged for bundle generation, source references, pin controls, and progressive retrieval.
 - `epic-temporal-vision-toolkit` receives ordered frame IDs and gap records; it does not resolve natural anchors.
 - Browser-operation features own durable interaction-anchor, navigation, and marker writers. They should target the ports and timeline observations documented here rather than adding another range interpretation path.
+
+## Implementation summary
+
+- Execution capability: raised/high, implemented as one cohesive feature owner under autopilot. Review weight remains standard; this implementation pass stops at `stage: review` without self-review.
+- Child checkpoints completed directly: core contracts, focused SQLite queries, resolver semantics, and qualification/handoff.
+- Commits: `9650d3f` (core contracts), `c0f6fc4` (store queries), `3f6d519` (resolver semantics), and `dc7461c` (qualification and handoff).
+- Delivered one registry-backed `TemporalRangeAnchor`/`ResolvedRange` contract, domain-only resolver ports, checked session/wall-clock arithmetic, inclusive capture-ordinal source-frame ranges, generic marker/navigation lookup, explicit retention/gap policies, and honest absence of durable interaction anchors.
+- SQLite metadata and frame reads remain source-safe and reuse the established address/CRC path. Anchor lookup intentionally returns the payload record before resolver scope validation so wrong-session/target anchors produce `InvalidInput` rather than being misreported as missing data.
+- Qualification evidence: `crates/krometrail-store/tests/range_resolution.rs` covers explicit, wall-clock, source-frame, marker, navigation, interaction absence, retention, gaps, boundaries, overflow, and scope failures.
+- Verification: locked workspace format check, check, tests (379 passed across 37 suites), and Clippy with warnings denied all pass; focused range tests pass (8 tests).
+- Honest deviation: durable interaction/latest-interaction resolution remains `NotFound` until browser-operation persistence implements `InteractionAnchorSource`; no interaction, navigation, marker, pin, or artifact tables were invented here.
