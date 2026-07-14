@@ -1,7 +1,7 @@
 ---
 id: epic-durable-browser-memory-retention
 kind: feature
-stage: implementing
+stage: review
 tags: [storage, browser]
 parent: epic-durable-browser-memory
 depends_on:
@@ -400,3 +400,26 @@ One feature owner should carry the five checkpoints. The linear chain protects c
 - **Paused capture can accumulate bounded loss.** CDP frames remain acknowledged and bounded queues can drop while storage is blocked; every known loss is an explicit gap. Stopping screencast instead would hide browser-side continuity and complicate restart semantics.
 - **Session deletion of an active recording is destructive by definition.** The deleting tombstone and shared gate prevent resurrection, and the live stream fails explicitly. Callers should normally stop first, but correctness does not depend on them doing so.
 - **SQLite-index feature is at review, not terminal done.** Its implemented contracts are present and dependency-ready. If review changes maintenance/schema assumptions, this design must be reconciled before Unit 2 rather than forked.
+
+## Implementation roll-up
+
+All five checkpoints are implemented and the qualification child is complete:
+
+- `23c6ef3` — core retention contracts and budget-aware capture vocabulary.
+- `a043d74` — SQLite sequence, usage, pin, provenance, and deletion-journal contracts.
+- `a7e0eb7` — `RecordingStore`, bounded removal worker, eviction, pause/resume, and session deletion.
+- `d1df912` — CDP pause/resume and root storage composition.
+- `6944c63` — small-budget qualification, mixed-source artifact survival/invalidation, journal replay usage assertions, session-survivor deletion, unpolled behavior, source-safe budget errors, and the CDP test lint hardening needed for the locked gate.
+
+Qualification evidence covers deterministic oldest-unpinned eviction across sessions, overlapping pins, all-pinned pause and unpin resume, one-open-segment bounded overhead, provenance invalidation, both prepared/metadata-removed journal replay phases with pending-byte accounting, complete scoped deletion with a surviving session, unpolled append semantics, and CDP acknowledgment/gap/state/shutdown behavior. No production retention defect was exposed by the final qualification; the only adjacent fix was scoping a CDP test mutex guard so Clippy's `await_holding_lock` gate remains green.
+
+Focused gates passed:
+
+- `cargo test -p krometrail-store --test retention_small_budget --locked -- --nocapture` — 7 passed.
+- `cargo test -p krometrail-store --lib --locked -- --nocapture` — 21 passed.
+- `cargo test -p krometrail-cdp --lib capture::tests --locked -- --nocapture` — 26 passed.
+
+Isolated clean-worktree gates at `6944c63` passed:
+`cargo fmt --all -- --check`, `cargo check --workspace --all-targets --locked`, `cargo test --workspace --all-targets --locked` (all suites green), and `cargo clippy --workspace --all-targets --locked -- -D warnings`.
+
+The primary checkout's unrelated verified-interactions WIP and `.work/bin/work-view` remain untouched and un-staged. The qualification story advances directly to `done`; this feature is now at `review` for the required integrated review boundary.
