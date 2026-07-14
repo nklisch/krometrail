@@ -30,7 +30,7 @@ Establish the one-request temporal debug-bundle boundary, complete `ResolvedRang
 - Add `ResolvedAnchorReference` and `ResolvedAnchor { reference, requested_time, effective_time }` to the existing `ResolvedRange`. Explicit/wall-clock/source-frame intervals use their documented midpoint; interaction/latest use exact dispatch and resolved `InteractionId`; navigation/marker use exact observation time/ID; final resolution clamps only to retained bounds and reports both times.
 - Add `TemporalDebugBundleRequest`, context, exact requested/resolved/effective result types, component availability/degradation/warning types, and object-safe `TemporalDebugBundles::bundle`. The only request owns `TemporalQueryRequest`; no method accepts `ResolvedRange`.
 - Evolve `StoryboardSelection` with `StoryboardVisualSummary` containing first change, peak baseline change, and peak adjacent changed-area moments from existing comparisons. Add the validated selection as optional typed data on the existing generic `ArtifactManifest`.
-- Bump storyboard/orientation descriptor to `1.1.0`; old trace-less manifests remain backward-readable as old-version evidence, while new storyboard/orientation manifests require a valid trace. Other generator versions and PNG rendering remain unchanged.
+- Bump storyboard/orientation descriptor to `1.1.0`; every storyboard/orientation manifest requires a valid trace. The project is prepublic, so trace-less unpublished manifests receive no compatibility path and regenerate from retained sources. Other generator versions and PNG rendering remain unchanged.
 
 ## Acceptance evidence
 
@@ -38,7 +38,7 @@ Establish the one-request temporal debug-bundle boundary, complete `ResolvedRang
 - Bundle request/result values revalidate nested query/marker bounds and expose exact existing evidence contracts without bytes, paths, URIs, or copied artifact/context types.
 - First/peak/adjacent visual summaries reuse selector measurements, never cross declared gaps, preserve exact source IDs/indexes/timestamps/outcomes, and use deterministic ties.
 - Storyboard and orientation manifests validate trace/source/selected/role agreement; difference-map/filmstrip/motion manifests reject a storyboard trace.
-- Descriptor `1.1.0` changes storyboard/orientation cache identity, leaves other kinds unchanged, and preserves existing storyboard/orientation PNG golden bytes.
+- Descriptor `1.1.0` changes storyboard/orientation cache identity, leaves other kinds unchanged, rejects trace-less storyboard/orientation manifests, and preserves existing storyboard/orientation PNG golden bytes.
 
 ## Ordering
 

@@ -395,7 +395,7 @@ fn public_generator_returns_traceable_deterministic_pngs_and_manifests() {
 }
 
 #[test]
-fn manifest_trace_is_kind_role_and_version_validated_with_backward_read() {
+fn manifest_trace_is_required_and_kind_role_validated() {
     let (source, normalized) = fixture();
     let artifacts = generate_storyboard(
         ArtifactId("storyboard-trace".into()),
@@ -417,9 +417,7 @@ fn manifest_trace_is_kind_role_and_version_validated_with_backward_read() {
         .remove("storyboard_selection");
     assert!(decode_manifest_value(current_without_trace.clone()).is_err());
     current_without_trace["algorithm"]["version"] = serde_json::json!("1.0.0");
-    let old: ArtifactManifest<ArtifactId, FrameId, MarkerId, GapId> =
-        serde_json::from_slice(&serde_json::to_vec(&current_without_trace).unwrap()).unwrap();
-    assert_eq!(old.storyboard_selection(), None);
+    assert!(decode_manifest_value(current_without_trace).is_err());
 
     let mut wrong_kind = serde_json::to_value(artifacts.storyboard().manifest()).unwrap();
     wrong_kind["artifact_kind"] = serde_json::json!("difference_map");

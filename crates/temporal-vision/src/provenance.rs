@@ -400,7 +400,6 @@ pub struct ArtifactManifest<ArtifactId, FrameId, MarkerId, GapId> {
     algorithm: Box<AlgorithmDescriptor>,
     source_frame_ids: Box<[FrameId]>,
     selected_frame_ids: Box<[FrameId]>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     storyboard_selection: Option<Box<StoryboardSelection<FrameId>>>,
     source_frame_count: u64,
     omitted_frame_count: u64,
@@ -627,15 +626,11 @@ impl<A, F: Clone + Eq, M: Clone + Eq, G: Clone + Eq> ArtifactManifest<A, F, M, G
             self.artifact_kind,
             ArtifactKind::Storyboard | ArtifactKind::BeforeDuringAfter
         );
-        let descriptor = generator_descriptor(self.artifact_kind);
-        let current_storyboard = storyboard_kind
-            && self.algorithm.name() == descriptor.name
-            && self.algorithm.version() == descriptor.version;
         let Some(selection) = self.storyboard_selection.as_ref() else {
-            if current_storyboard {
+            if storyboard_kind {
                 return Err(VisionError::new(
                     ErrorCode::InvalidManifest,
-                    "current storyboard manifests require their selection trace",
+                    "storyboard manifests require their selection trace",
                 ));
             }
             return Ok(());
@@ -876,7 +871,6 @@ where
             algorithm: AlgorithmDescriptor,
             source_frame_ids: Box<[F]>,
             selected_frame_ids: Box<[F]>,
-            #[serde(default)]
             storyboard_selection: Option<Box<StoryboardSelection<F>>>,
             source_frame_count: u64,
             omitted_frame_count: u64,

@@ -120,9 +120,9 @@ fn browser_free_consumer_builds_deterministic_complete_manifest() {
     ];
     let manifest = ArtifactManifest::from_sequence(
         ArtifactId([9; 16]),
-        ArtifactKind::Storyboard,
+        ArtifactKind::DifferenceMap,
         EvidenceClass::SourceDerived,
-        AlgorithmDescriptor::new("synthetic-storyboard", "1.0.0").unwrap(),
+        AlgorithmDescriptor::new("synthetic-difference-map", "1.0.0").unwrap(),
         &sequence,
         vec![FrameId([1; 16]), FrameId([3; 16])],
         normalization,
