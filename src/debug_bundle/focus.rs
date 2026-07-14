@@ -77,7 +77,7 @@ impl PartialOrd for FocusCandidate {
 pub(crate) fn extract_focus_times(outcomes: &[ArtifactOutcome]) -> Vec<SessionTime> {
     let mut candidates = BTreeSet::new();
 
-    // Rank 0..=2: the three visual-summary moments, across all epochs in order.
+    // Add both candidate families while reading each storyboard selection once.
     for outcome in outcomes {
         let ArtifactOutcome::Available {
             epoch_index,
@@ -93,8 +93,10 @@ pub(crate) fn extract_focus_times(outcomes: &[ArtifactOutcome]) -> Vec<SessionTi
         let Some(selection) = artifact.manifest.storyboard_selection() else {
             continue;
         };
-        let summary = selection.visual_summary();
         let epoch_index = *epoch_index;
+
+        // Ranks 0..=2: the three visual-summary moments.
+        let summary = selection.visual_summary();
         push_moment(
             &mut candidates,
             summary.first_change(),
@@ -113,25 +115,8 @@ pub(crate) fn extract_focus_times(outcomes: &[ArtifactOutcome]) -> Vec<SessionTi
             RANK_PEAK_ADJACENT,
             epoch_index,
         );
-    }
 
-    // Rank 3: selected frames carrying a major-change reason, across all epochs.
-    for outcome in outcomes {
-        let ArtifactOutcome::Available {
-            epoch_index,
-            artifact,
-            ..
-        } = outcome
-        else {
-            continue;
-        };
-        if artifact.manifest.artifact_kind() != ArtifactKind::Storyboard {
-            continue;
-        }
-        let Some(selection) = artifact.manifest.storyboard_selection() else {
-            continue;
-        };
-        let epoch_index = *epoch_index;
+        // Rank 3: selected frames carrying a major-change reason.
         for frame in selection.selected_frames() {
             let has_major = frame
                 .reasons()

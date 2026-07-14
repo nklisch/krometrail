@@ -1,7 +1,7 @@
 ---
 id: refactor-consolidate-storyboard-focus-outcome-scan
 kind: story
-stage: implementing
+stage: review
 tags: [refactor, visual]
 parent: null
 depends_on: [epic-temporal-debugging-workflow-temporal-debug-bundle]
@@ -83,3 +83,14 @@ passes. No artifact, manifest, cache, or compatibility rollback is needed.
 - **Project conventions**: no project refactor-convention catalog exists; the
   built-in duplication and single-source-of-truth lenses were applied.
 - `.work/bin/work-view` and current epic/feature stages were not changed.
+
+## Implementation notes
+
+- Execution capability: direct inline implementation; the extractor is a single bounded pure function with a fully specified write set.
+- Review weight: standard, with the bounded standalone-story review still pending.
+- Files changed: `src/debug_bundle/focus.rs`.
+- Tests added/removed: none; the existing focus extractor cases cover changed, unchanged, unavailable, multi-epoch tie, duplicate-time, gap, and cap behavior.
+- Simplification: merged the two outcome traversals so each eligible storyboard selection is obtained once while retaining both candidate families and the existing `BTreeSet` policy ordering.
+- Discrepancies from design: none.
+- Adjacent issues parked: none.
+- Focused verification (Rust 1.85.0, locked): `cargo fmt --all -- --check`; `cargo check --locked --all-targets`; `cargo test --locked debug_bundle::focus` (8 passed); `cargo clippy --locked --all-targets -- -D warnings`.
