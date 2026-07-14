@@ -1,9 +1,15 @@
-use std::num::NonZeroUsize;
+use std::{collections::BTreeMap, num::NonZeroUsize};
 
 use crate::{
-    BinaryMask, ErrorCode, MeasurementParameters, NormalizedSequence, PixelDimensions, Result,
-    Rgb8, Timestamp, VisionError,
-    measure::{classify_pixel_change, intersecting_gap_count},
+    AlgorithmDescriptor, ArtifactKind, ArtifactManifest, BinaryMask, EncodedImage, ErrorCode,
+    EvidenceClass, FrameSequence, GeneratedArtifact, MeasurementParameters, NormalizationKind,
+    NormalizationStep, NormalizedSequence, ParameterValue, Parameters, PixelDimensions, PixelRect,
+    Result, Rgb8, Timestamp, VisionError,
+    measure::{classify_pixel_change, intersecting_gap_count, linear_luminance},
+    render::{
+        canvas::{BLACK, Canvas, MUTED, PANEL, WARNING, WHITE, canvas_limit_error},
+        font::{CELL_WIDTH, draw_text, ellipsize},
+    },
 };
 
 const DEFAULT_MAX_BYTES: usize = 256 * 1024 * 1024;
@@ -350,6 +356,623 @@ fn accumulator_limit_error() -> VisionError {
         ErrorCode::ResourceLimitExceeded,
         "difference-map accumulation exceeds configured integer or memory limits",
     )
+}
+
+const ALGORITHM_NAME: &str = "temporal-difference-map";
+const ALGORITHM_VERSION: &str = "v1";
+const MARGIN: u32 = 16;
+const INTER_PANEL_GAP: u32 = 16;
+const HEADER_HEIGHT: u32 = 56;
+const PANEL_LABEL_HEIGHT: u32 = 28;
+const LEGEND_HEIGHT: u32 = 120;
+const SECTION_GAP: u32 = 12;
+const REPEATED_COLOR: [u8; 3] = [255, 78, 142];
+const UNAVAILABLE_COLOR: [u8; 3] = [62, 68, 79];
+const PALETTE_STOPS: [(u8, [u8; 3]); 3] = [
+    (0, [40, 104, 224]),
+    (128, [190, 66, 174]),
+    (255, [250, 190, 48]),
+];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct DifferenceMapLayout {
+    image: PixelDimensions,
+    header: PixelRect,
+    reference_panel: PixelRect,
+    frequency_panel: PixelRect,
+    timing_panel: PixelRect,
+    reference_label: PixelRect,
+    frequency_label: PixelRect,
+    timing_label: PixelRect,
+    legend: PixelRect,
+}
+
+impl DifferenceMapLayout {
+    pub(crate) fn new(panel: PixelDimensions) -> Result<Self> {
+        let image_width = MARGIN
+            .checked_mul(2)
+            .and_then(|value| value.checked_add(panel.width().checked_mul(3)?))
+            .and_then(|value| value.checked_add(INTER_PANEL_GAP.checked_mul(2)?))
+            .ok_or_else(canvas_limit_error)?;
+        let image_height = MARGIN
+            .checked_mul(2)
+            .and_then(|value| value.checked_add(HEADER_HEIGHT))
+            .and_then(|value| value.checked_add(SECTION_GAP))
+            .and_then(|value| value.checked_add(PANEL_LABEL_HEIGHT))
+            .and_then(|value| value.checked_add(panel.height()))
+            .and_then(|value| value.checked_add(SECTION_GAP))
+            .and_then(|value| value.checked_add(LEGEND_HEIGHT))
+            .ok_or_else(canvas_limit_error)?;
+        let image =
+            PixelDimensions::new(image_width, image_height).map_err(|_| canvas_limit_error())?;
+        let label_y = MARGIN + HEADER_HEIGHT + SECTION_GAP;
+        let panel_y = label_y + PANEL_LABEL_HEIGHT;
+        let reference_x = MARGIN;
+        let frequency_x = reference_x
+            .checked_add(panel.width())
+            .and_then(|value| value.checked_add(INTER_PANEL_GAP))
+            .ok_or_else(canvas_limit_error)?;
+        let timing_x = frequency_x
+            .checked_add(panel.width())
+            .and_then(|value| value.checked_add(INTER_PANEL_GAP))
+            .ok_or_else(canvas_limit_error)?;
+        let legend_y = panel_y
+            .checked_add(panel.height())
+            .and_then(|value| value.checked_add(SECTION_GAP))
+            .ok_or_else(canvas_limit_error)?;
+        Ok(Self {
+            image,
+            header: PixelRect::new(MARGIN, MARGIN, image_width - 2 * MARGIN, HEADER_HEIGHT)?,
+            reference_panel: PixelRect::new(reference_x, panel_y, panel.width(), panel.height())?,
+            frequency_panel: PixelRect::new(frequency_x, panel_y, panel.width(), panel.height())?,
+            timing_panel: PixelRect::new(timing_x, panel_y, panel.width(), panel.height())?,
+            reference_label: PixelRect::new(
+                reference_x,
+                label_y,
+                panel.width(),
+                PANEL_LABEL_HEIGHT,
+            )?,
+            frequency_label: PixelRect::new(
+                frequency_x,
+                label_y,
+                panel.width(),
+                PANEL_LABEL_HEIGHT,
+            )?,
+            timing_label: PixelRect::new(timing_x, label_y, panel.width(), PANEL_LABEL_HEIGHT)?,
+            legend: PixelRect::new(MARGIN, legend_y, image_width - 2 * MARGIN, LEGEND_HEIGHT)?,
+        })
+    }
+}
+
+/// Difference-map artifact using the crate-wide encoded-image and manifest seam.
+pub type DifferenceMapArtifact<ArtifactId, FrameId, MarkerId, GapId> =
+    GeneratedArtifact<ArtifactId, FrameId, MarkerId, GapId>;
+
+/// Render one deterministic, source-derived temporal difference map.
+pub fn render_difference_map<A, F, M, G, P>(
+    artifact_id: A,
+    sequence: &FrameSequence<F, M, G, P>,
+    normalized: &NormalizedSequence<F>,
+    parameters: DifferenceMapParameters,
+) -> Result<DifferenceMapArtifact<A, F, M, G>>
+where
+    F: Clone + Eq,
+    M: Clone + Eq,
+    G: Clone + Eq,
+    P: AsRef<[u8]>,
+{
+    validate_normalized_source(sequence, normalized, parameters.reference_frame_index)?;
+    let data = DifferenceMapData::build(normalized, parameters)?;
+    let layout = DifferenceMapLayout::new(data.dimensions())?;
+    let canvas_bytes = layout
+        .image
+        .pixel_count()?
+        .checked_mul(3)
+        .ok_or_else(canvas_limit_error)?;
+    if canvas_bytes > parameters.limits.max_output_bytes() {
+        return Err(canvas_limit_error());
+    }
+
+    let mut canvas = Canvas::new(
+        layout.image,
+        parameters.background.channels(),
+        parameters.limits.max_output_bytes(),
+    )?;
+    draw_composite(&mut canvas, layout, sequence, normalized, parameters, &data)?;
+    let (bytes, hash) = crate::encode::encode_png(
+        layout.image,
+        canvas.pixels(),
+        parameters.limits.max_output_bytes(),
+    )?;
+
+    let mut normalization = normalized.normalization_steps().to_vec();
+    normalization.push(parameters.measurement.provenance_step()?);
+    normalization.push(display_step()?);
+    let manifest = ArtifactManifest::from_sequence(
+        artifact_id,
+        ArtifactKind::DifferenceMap,
+        EvidenceClass::SourceDerived,
+        AlgorithmDescriptor::new(ALGORITHM_NAME, ALGORITHM_VERSION)?,
+        sequence,
+        vec![
+            sequence.frames()[parameters.reference_frame_index]
+                .id()
+                .clone(),
+        ],
+        normalization,
+        manifest_parameters(parameters, &data)?,
+        layout.image,
+        hash,
+    )?;
+    Ok(GeneratedArtifact::new(
+        EncodedImage::new(layout.image, bytes),
+        manifest,
+    ))
+}
+
+fn validate_normalized_source<F: Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
+    source: &FrameSequence<F, M, G, P>,
+    normalized: &NormalizedSequence<F>,
+    reference_frame_index: usize,
+) -> Result<()> {
+    if reference_frame_index >= normalized.frames().len()
+        || source.frames().len() != normalized.frames().len()
+        || source
+            .frames()
+            .iter()
+            .zip(normalized.frames())
+            .any(|(source, normalized)| {
+                source.id() != normalized.id() || source.timestamp() != normalized.timestamp()
+            })
+    {
+        return Err(VisionError::new(
+            ErrorCode::InvalidParameter,
+            "normalized frames do not match the source sequence or reference index",
+        ));
+    }
+    Ok(())
+}
+
+fn draw_composite<F: Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
+    canvas: &mut Canvas,
+    layout: DifferenceMapLayout,
+    source: &FrameSequence<F, M, G, P>,
+    normalized: &NormalizedSequence<F>,
+    parameters: DifferenceMapParameters,
+    data: &DifferenceMapData,
+) -> Result<()> {
+    canvas.fill_rect(
+        layout.header.x(),
+        layout.header.y(),
+        layout.header.width(),
+        layout.header.height(),
+        BLACK,
+    )?;
+    draw_clipped_text(
+        canvas,
+        layout.header.x(),
+        layout.header.y() + 4,
+        layout.header.width(),
+        "TEMPORAL DIFFERENCE MAP",
+        WHITE,
+    )?;
+    let range = format!(
+        "RANGE {} - {} | TIME ->",
+        format_time(source.range().start()),
+        format_time(source.range().end())
+    );
+    draw_clipped_text(
+        canvas,
+        layout.header.x(),
+        layout.header.y() + 18,
+        layout.header.width(),
+        &range,
+        MUTED,
+    )?;
+    draw_clipped_text(
+        canvas,
+        layout.reference_label.x(),
+        layout.reference_label.y() + 8,
+        layout.reference_label.width(),
+        "REFERENCE",
+        WHITE,
+    )?;
+    draw_clipped_text(
+        canvas,
+        layout.frequency_label.x(),
+        layout.frequency_label.y() + 8,
+        layout.frequency_label.width(),
+        "CHANGE FREQUENCY",
+        WHITE,
+    )?;
+    draw_clipped_text(
+        canvas,
+        layout.timing_label.x(),
+        layout.timing_label.y() + 8,
+        layout.timing_label.width(),
+        "CHANGE TIMING",
+        WHITE,
+    )?;
+
+    draw_reference_panel(
+        canvas,
+        layout.reference_panel,
+        &normalized.frames()[parameters.reference_frame_index],
+    )?;
+    draw_frequency_panel(canvas, layout.frequency_panel, data)?;
+    draw_timing_panel(
+        canvas,
+        layout.timing_panel,
+        data,
+        parameters.background.channels(),
+    )?;
+    draw_legend(canvas, layout.legend, source, parameters, data)
+}
+
+fn draw_reference_panel<F>(
+    canvas: &mut Canvas,
+    panel: PixelRect,
+    frame: &crate::NormalizedFrame<F>,
+) -> Result<()> {
+    for (index, pixel) in frame.linear_rgb16().chunks_exact(3).enumerate() {
+        let luminance = linear_luminance(pixel)?;
+        let byte =
+            u8::try_from((luminance * 255 + 32_767) / 65_535).map_err(|_| canvas_limit_error())?;
+        set_panel_pixel(canvas, panel, index, [byte; 3])?;
+    }
+    Ok(())
+}
+
+fn draw_frequency_panel(
+    canvas: &mut Canvas,
+    panel: PixelRect,
+    data: &DifferenceMapData,
+) -> Result<()> {
+    for pixel in 0..data.dimensions().pixel_count()? {
+        let color = data
+            .frequency_value(pixel)
+            .map_or(UNAVAILABLE_COLOR, |value| [value as u8; 3]);
+        set_panel_pixel(canvas, panel, pixel, color)?;
+    }
+    Ok(())
+}
+
+fn draw_timing_panel(
+    canvas: &mut Canvas,
+    panel: PixelRect,
+    data: &DifferenceMapData,
+    background: [u8; 3],
+) -> Result<()> {
+    for pixel in 0..data.dimensions().pixel_count()? {
+        let color = if data.is_repeated_change(pixel) {
+            REPEATED_COLOR
+        } else if let Some(offset) = data.timing_offset(pixel) {
+            palette_color(offset, data.range_duration_ns())
+        } else if data.accumulators.comparable_count[pixel] == 0 {
+            UNAVAILABLE_COLOR
+        } else {
+            background
+        };
+        set_panel_pixel(canvas, panel, pixel, color)?;
+    }
+    Ok(())
+}
+
+fn set_panel_pixel(
+    canvas: &mut Canvas,
+    panel: PixelRect,
+    index: usize,
+    color: [u8; 3],
+) -> Result<()> {
+    let width = usize::try_from(panel.width()).map_err(|_| canvas_limit_error())?;
+    let x = u32::try_from(index % width).map_err(|_| canvas_limit_error())?;
+    let y = u32::try_from(index / width).map_err(|_| canvas_limit_error())?;
+    canvas.set_pixel(panel.x() + x, panel.y() + y, color)
+}
+
+fn draw_legend<F: Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
+    canvas: &mut Canvas,
+    legend: PixelRect,
+    source: &FrameSequence<F, M, G, P>,
+    parameters: DifferenceMapParameters,
+    data: &DifferenceMapData,
+) -> Result<()> {
+    canvas.fill_rect(
+        legend.x(),
+        legend.y(),
+        legend.width(),
+        legend.height(),
+        PANEL,
+    )?;
+    let frequency = match parameters.frequency_mode {
+        FrequencyMode::Count => format!("FREQUENCY: COUNT | MAX {}", data.max_change_count()),
+        FrequencyMode::Magnitude => format!("FREQUENCY: MAGNITUDE | MAX {}", data.max_magnitude()),
+        FrequencyMode::NormalizedFrequency => "FREQUENCY: NORMALIZED | 0 - 100 PERCENT".to_owned(),
+    };
+    draw_clipped_text(
+        canvas,
+        legend.x() + 4,
+        legend.y() + 6,
+        legend.width().saturating_sub(8),
+        &frequency,
+        WHITE,
+    )?;
+    draw_clipped_text(
+        canvas,
+        legend.x() + 4,
+        legend.y() + 20,
+        legend.width().saturating_sub(8),
+        "NO CHANGE -> BRIGHTER MEANS MORE CHANGE",
+        MUTED,
+    )?;
+
+    let swatch_width = legend.width().saturating_sub(8).min(256).max(1);
+    let swatch = PixelRect::new(legend.x() + 4, legend.y() + 36, swatch_width, 8)?;
+    for x in 0..swatch.width() {
+        let position = if swatch.width() == 1 {
+            0
+        } else {
+            u64::from(x) * 255 / u64::from(swatch.width() - 1)
+        };
+        for y in 0..swatch.height() {
+            canvas.set_pixel(swatch.x() + x, swatch.y() + y, palette_color(position, 255))?;
+        }
+    }
+    let timing = format!(
+        "TIMING: EARLY {} | MID {} | LATE {}",
+        format_time(data.range_start()),
+        format_time(Timestamp::from_nanos(
+            data.range_start().as_nanos() + data.range_duration_ns() / 2
+        )),
+        format_time(Timestamp::from_nanos(
+            data.range_start().as_nanos() + data.range_duration_ns()
+        ))
+    );
+    draw_clipped_text(
+        canvas,
+        legend.x() + 4,
+        legend.y() + 50,
+        legend.width().saturating_sub(8),
+        &timing,
+        MUTED,
+    )?;
+    canvas.fill_rect(legend.x() + 4, legend.y() + 66, 12, 8, REPEATED_COLOR)?;
+    let repeated = format!(
+        "REPEATED CHANGE | SEPARATION >= {} NS",
+        data.effective_separation_ns()
+    );
+    draw_clipped_text(
+        canvas,
+        legend.x() + 20,
+        legend.y() + 65,
+        legend.width().saturating_sub(24),
+        &repeated,
+        WHITE,
+    )?;
+    draw_clipped_text(
+        canvas,
+        legend.x() + 4,
+        legend.y() + 82,
+        legend.width().saturating_sub(8),
+        "SOURCE-DERIVED CHANGE; NO CAUSE OR DIRECTION INFERRED",
+        MUTED,
+    )?;
+    if !source.gaps().is_empty() {
+        canvas.fill_rect(legend.x(), legend.y() + 98, legend.width(), 18, WARNING)?;
+        draw_clipped_text(
+            canvas,
+            legend.x() + 4,
+            legend.y() + 102,
+            legend.width().saturating_sub(8),
+            "GAP - UNSEEN BEHAVIOR MAY HAVE OCCURRED",
+            BLACK,
+        )?;
+    }
+    Ok(())
+}
+
+fn draw_clipped_text(
+    canvas: &mut Canvas,
+    x: u32,
+    y: u32,
+    width: u32,
+    text: &str,
+    color: [u8; 3],
+) -> Result<()> {
+    let cells = usize::try_from(width / CELL_WIDTH).unwrap_or(0);
+    if cells == 0 {
+        return Ok(());
+    }
+    draw_text(canvas, x, y, &ellipsize(text, cells), color)
+}
+
+fn palette_color(offset: u64, duration: u64) -> [u8; 3] {
+    let position = if duration == 0 {
+        0
+    } else {
+        u8::try_from((u128::from(offset.min(duration)) * 255) / u128::from(duration))
+            .expect("normalized palette position is at most 255")
+    };
+    let (start_position, start, end_position, end) = if position <= 128 {
+        (
+            PALETTE_STOPS[0].0,
+            PALETTE_STOPS[0].1,
+            PALETTE_STOPS[1].0,
+            PALETTE_STOPS[1].1,
+        )
+    } else {
+        (
+            PALETTE_STOPS[1].0,
+            PALETTE_STOPS[1].1,
+            PALETTE_STOPS[2].0,
+            PALETTE_STOPS[2].1,
+        )
+    };
+    let span = u32::from(end_position - start_position);
+    let position = u32::from(position - start_position);
+    std::array::from_fn(|channel| {
+        let before = u32::from(start[channel]);
+        let after = u32::from(end[channel]);
+        let value = if after >= before {
+            before + (after - before) * position / span
+        } else {
+            before - (before - after) * position / span
+        };
+        value as u8
+    })
+}
+
+fn format_time(timestamp: Timestamp) -> String {
+    let milliseconds = timestamp.as_nanos() / 1_000_000;
+    let micros = timestamp.as_nanos() % 1_000_000 / 1_000;
+    format!("{milliseconds}.{micros:03} MS")
+}
+
+fn display_step() -> Result<NormalizationStep> {
+    NormalizationStep::new(
+        NormalizationKind::ColorSpaceConversion,
+        "difference-map-display-rgb8-v1",
+        parameters([
+            (
+                "reference",
+                ParameterValue::Text("linear16_luminance_to_rgb8".into()),
+            ),
+            ("frequency", ParameterValue::Text("grayscale_rgb8".into())),
+            (
+                "timing",
+                ParameterValue::Text("spectral_integer_palette".into()),
+            ),
+        ])?,
+    )
+}
+
+fn manifest_parameters(
+    request: DifferenceMapParameters,
+    data: &DifferenceMapData,
+) -> Result<Parameters> {
+    parameters([
+        (
+            "algorithm_version",
+            ParameterValue::Text(ALGORITHM_VERSION.into()),
+        ),
+        (
+            "frequency_mode",
+            ParameterValue::Text(request.frequency_mode.as_str().into()),
+        ),
+        (
+            "time_palette",
+            ParameterValue::Text(request.time_palette.as_str().into()),
+        ),
+        (
+            "reference_frame_index",
+            unsigned_usize(request.reference_frame_index)?,
+        ),
+        (
+            "effective_repeated_separation_nanos",
+            ParameterValue::Unsigned(data.effective_separation_ns()),
+        ),
+        (
+            "max_change_count",
+            ParameterValue::Unsigned(u64::from(data.max_change_count())),
+        ),
+        (
+            "max_magnitude",
+            ParameterValue::Unsigned(data.max_magnitude()),
+        ),
+        (
+            "background_rgb8",
+            ParameterValue::List(
+                request
+                    .background
+                    .channels()
+                    .into_iter()
+                    .map(|channel| ParameterValue::Unsigned(u64::from(channel)))
+                    .collect(),
+            ),
+        ),
+        (
+            "palette_stops",
+            ParameterValue::List(
+                PALETTE_STOPS
+                    .into_iter()
+                    .map(|(position, rgb)| {
+                        ParameterValue::Object(
+                            [
+                                (
+                                    "position".into(),
+                                    ParameterValue::Unsigned(u64::from(position)),
+                                ),
+                                (
+                                    "rgb8".into(),
+                                    ParameterValue::List(
+                                        rgb.into_iter()
+                                            .map(|channel| {
+                                                ParameterValue::Unsigned(u64::from(channel))
+                                            })
+                                            .collect(),
+                                    ),
+                                ),
+                            ]
+                            .into_iter()
+                            .collect(),
+                        )
+                    })
+                    .collect(),
+            ),
+        ),
+        (
+            "layout",
+            ParameterValue::Text("fixed_three_panel_v1".into()),
+        ),
+        ("margin", ParameterValue::Unsigned(u64::from(MARGIN))),
+        (
+            "inter_panel_gap",
+            ParameterValue::Unsigned(u64::from(INTER_PANEL_GAP)),
+        ),
+        (
+            "header_height",
+            ParameterValue::Unsigned(u64::from(HEADER_HEIGHT)),
+        ),
+        (
+            "panel_label_height",
+            ParameterValue::Unsigned(u64::from(PANEL_LABEL_HEIGHT)),
+        ),
+        (
+            "legend_height",
+            ParameterValue::Unsigned(u64::from(LEGEND_HEIGHT)),
+        ),
+        (
+            "section_gap",
+            ParameterValue::Unsigned(u64::from(SECTION_GAP)),
+        ),
+        (
+            "encoding",
+            ParameterValue::Text("png-0.17.16-rgb8-best-no_filter-no_chunks".into()),
+        ),
+        (
+            "max_accumulator_bytes",
+            unsigned_usize(request.limits.max_accumulator_bytes())?,
+        ),
+        (
+            "max_output_bytes",
+            unsigned_usize(request.limits.max_output_bytes())?,
+        ),
+    ])
+}
+
+fn parameters<const N: usize>(entries: [(&'static str, ParameterValue); N]) -> Result<Parameters> {
+    Parameters::new(
+        entries
+            .into_iter()
+            .map(|(key, value)| (key.into(), value))
+            .collect::<BTreeMap<_, _>>(),
+    )
+}
+
+fn unsigned_usize(value: usize) -> Result<ParameterValue> {
+    Ok(ParameterValue::Unsigned(
+        u64::try_from(value).map_err(|_| accumulator_limit_error())?,
+    ))
 }
 
 #[cfg(test)]

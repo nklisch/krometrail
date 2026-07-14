@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-vision-toolkit-difference-map-panel-rendering
 kind: story
-stage: implementing
+stage: done
 tags: [visual]
 parent: epic-temporal-vision-toolkit-difference-map
 depends_on: [epic-temporal-vision-toolkit-difference-map-change-accumulation]
@@ -101,3 +101,13 @@ Every rectangle is a pure function of `panel` plus these constants.
 ## Ordering constraints
 
 Depends on `change-accumulation`. The public-contract-tests story depends on this one.
+
+## Implementation notes
+
+- Execution capability: raised/high; deterministic rendering and provenance form a public evidence contract.
+- Review weight: standard (autopilot caller).
+- Files changed: `crates/temporal-vision/src/difference_map.rs`, `crates/temporal-vision/src/render.rs`, `crates/temporal-vision/src/lib.rs`.
+- Tests added/removed: no low-value image snapshot; existing package tests remain green and the public end-to-end regression belongs to the next checkpoint.
+- Simplification: one fixed RGB8 three-panel layout reuses storyboard's canvas, font, encoder, `GeneratedArtifact`, and manifest construction path; no panel framework or duplicate artifact type was added.
+- Discrepancies from design: the public `DifferenceMapArtifact` is a type alias for the shared `GeneratedArtifact`, so callers use `image()` and the manifest-owned output hash rather than a second `rendered()` wrapper. Canvas modules became crate-visible for reuse; storyboard behavior is unchanged.
+- Adjacent issues parked: none.

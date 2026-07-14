@@ -71,7 +71,8 @@ mod sequence;
 
 pub use artifact::{EncodedImage, GeneratedArtifact};
 pub use difference_map::{
-    DifferenceMapLimits, DifferenceMapParameters, FrequencyMode, TimePalette,
+    DifferenceMapArtifact, DifferenceMapLimits, DifferenceMapParameters, FrequencyMode,
+    TimePalette, render_difference_map,
 };
 pub use error::{ErrorCode, Result, VisionError};
 pub use frame::{BorrowedFrame, Frame, OwnedFrame, PixelDimensions, PixelFormat, Timestamp};

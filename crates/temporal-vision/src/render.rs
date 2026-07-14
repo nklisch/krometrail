@@ -1,5 +1,5 @@
-mod canvas;
-mod font;
+pub(crate) mod canvas;
+pub(crate) mod font;
 
 use std::{
     collections::BTreeMap,
