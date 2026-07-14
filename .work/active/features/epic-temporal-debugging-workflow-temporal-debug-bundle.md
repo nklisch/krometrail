@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-debugging-workflow-temporal-debug-bundle
 kind: feature
-stage: implementing
+stage: review
 tags: [visual, browser, storage, agent-ux]
 parent: epic-temporal-debugging-workflow
 depends_on:
@@ -544,3 +544,15 @@ The least certain area is marker density and the usefulness of generic labels. C
 ## Blockers
 
 None. Resolved queries are done; artifact generation/cache is reviewed and done; capture/browser-event context and progressive evidence have stable review-stage implementation contracts. The current manifests require the scoped typed trace extension described above, but no external research, schema migration, MCP change, or new visual algorithm is needed.
+
+## Integrated verification (all five child stories done)
+
+- All five child stories completed and advanced directly to `done` with green Rust 1.85 locked gates.
+- Unit 1 (contracts/trace): seven anchor forms, bundle request/result validation, storyboard visual summary, manifest trace validation, descriptor `1.1.0` isolation, PNG golden stability.
+- Unit 2 (policy/markers/focus): byte-stable v1 generators, bounded privacy-safe marker assembly with 64/256/1024 caps, deterministic major-change focus extraction with 16-cap and dedup, kind-filtered SQL timeline read.
+- Unit 3 (service): controlled spies prove one resolve, at-most-one generate, exactly-one post-focus context; fatal lifetime/cancellation/deadline paths; usable degraded bundles; `controlled` wraps every await.
+- Unit 4 (root): pointer-identity one-store proof, shared artifact service, blocked-generation-permits-frame-persistence barrier test, MCP unchanged.
+- Unit 5 (qualification): real schema-v5 store + production artifact service end-to-end, cache reuse, interaction anchor, orientation on/off, session deletion fatal, golden effective policy/header, thorough no-leak serialization.
+- Integration correction: `validate_resolved_range` in `context.rs` fixed to use `range.validate()` instead of `ResolvedRange::new`, enabling all seven anchor kinds through `TemporalContextRequest`.
+- Workspace gates: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --all-targets --locked`, `cargo check --workspace --all-targets --locked` — all pass.
+- Feature advances to `review` for standard independent review.

@@ -638,10 +638,10 @@ mod tests {
     async fn blocked_artifact_generation_permits_frame_persistence() {
         use krometrail_core::{
             ArtifactGenerationContext, ArtifactGenerationRequest, ArtifactGenerationResult,
-            CaptureOrdinal, DeviceScaleFactor, EncodedFrame, FrameId,
-            ObservedTime, OrientationPolicy, PixelDimensions, PortFuture, SessionRange,
-            SessionTime, TemporalDebugBundleContext, TemporalDebugBundleRequest,
-            TemporalRangeAnchor, VisualEpoch,
+            CaptureOrdinal, DeviceScaleFactor, EncodedFrame, FrameId, ObservedTime,
+            OrientationPolicy, PixelDimensions, PortFuture, SessionRange, SessionTime,
+            TemporalDebugBundleContext, TemporalDebugBundleRequest, TemporalRangeAnchor,
+            VisualEpoch,
         };
         use tokio::sync::Notify;
 

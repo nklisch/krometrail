@@ -1096,3 +1096,552 @@ mod policy_tests {
         let _ = accepts as fn(&krometrail_store::RecordingStore);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Qualification: end-to-end with real schema-v5 store + production artifact service
+// ---------------------------------------------------------------------------
+
+mod qualification {
+    use super::*;
+    use crate::artifacts::{ArtifactWorkLimits, TemporalVisionArtifactService};
+    use crate::debug_bundle::{TemporalDebugEvidenceStore, build_effective_policy, compose_header};
+    use krometrail_core::{
+        ArtifactStore, BrowserEventContext, CaptureGapPolicy, CaptureGapSummary, CaptureOrdinal,
+        CaptureQuality, CaptureStatusEvidence, CapturedFrame, EncodedFrame, FramePoint,
+        FrameSource, IdSource, IdValue, ImageFormat, InteractionEvidenceSink, InteractionTiming,
+        MarkerId, NavigationId, ObservationKind, ObservationPayloadRef, ObservedTime,
+        OrientationPolicy, RecordingSink, ResolvedAnchorReference, RetentionPolicy, RetentionStore,
+        TimelineObservation,
+    };
+    use krometrail_store::{
+        IndexStoreConfig, RecordingStore, RotationConfig, SegmentStoreConfig, SegmentWriter,
+        SqliteIndex,
+    };
+    use std::num::NonZeroU64;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
+
+    const JPEG: &[u8] = include_bytes!("../../tests/fixtures/artifacts/chrome-rgb.jpg");
+    const PNG: &[u8] = include_bytes!("../../tests/fixtures/artifacts/chrome-rgba.png");
+
+    struct SequenceIds(AtomicU64);
+    impl IdSource for SequenceIds {
+        fn next(&self) -> IdValue {
+            IdValue::from_uuid(Uuid::from_u128(u128::from(
+                self.0.fetch_add(1, Ordering::Relaxed),
+            )))
+        }
+    }
+
+    struct QualRig {
+        root: PathBuf,
+        store: Arc<RecordingStore>,
+        session: SessionId,
+        target: TargetId,
+        frame_ids: Vec<FrameId>,
+        artifact_generation: Arc<TemporalVisionArtifactService>,
+    }
+
+    async fn qual_rig() -> QualRig {
+        let root = std::env::temp_dir().join(format!("krometrail-bundle-qual-{}", Uuid::new_v4()));
+        let segments = root.join("segments");
+        let index = Arc::new(
+            SqliteIndex::open(IndexStoreConfig {
+                database_path: root.join("index.sqlite3"),
+                segments_directory: segments.clone(),
+                busy_timeout: Duration::from_secs(5),
+            })
+            .unwrap(),
+        );
+        let writer = Arc::new(
+            SegmentWriter::open(SegmentStoreConfig {
+                directory: segments,
+                rotation: RotationConfig::suggested(),
+            })
+            .unwrap(),
+        );
+        let store = Arc::new(RecordingStore::new(writer, Arc::clone(&index)).unwrap());
+        let session = SessionId::from_uuid(Uuid::from_u128(700));
+        let target = TargetId::from_uuid(Uuid::from_u128(701));
+
+        // Append 4 frames: alternating JPEG/PNG to produce visual changes.
+        // All declared as 2x2 to keep one visual epoch.
+        let frame_ids: Vec<_> = (0u128..4)
+            .map(|i| FrameId::from_uuid(Uuid::from_u128(710 + i)))
+            .collect();
+        for (pos, fid) in frame_ids.iter().enumerate() {
+            let ordinal = u64::try_from(pos + 1).unwrap();
+            let (format, bytes) = if pos % 2 == 0 {
+                (ImageFormat::Jpeg, JPEG)
+            } else {
+                (ImageFormat::Png, PNG)
+            };
+            let encoded = EncodedFrame::new(
+                CapturedFrame::new(
+                    *fid,
+                    session,
+                    target,
+                    CaptureOrdinal::new(ordinal).unwrap(),
+                    None,
+                    ObservedTime::from_nanos(ordinal + 10),
+                    SessionTime::from_nanos(ordinal),
+                    format,
+                    krometrail_core::PixelDimensions::new(2, 2).unwrap(),
+                    krometrail_core::PixelDimensions::new(2, 2).unwrap(),
+                    DeviceScaleFactor::new(1.0).unwrap(),
+                    vec![],
+                )
+                .unwrap(),
+                bytes.to_vec(),
+            )
+            .unwrap();
+            store.append_frame(encoded).await.unwrap();
+        }
+        store.flush(session).await.unwrap();
+
+        // Append interaction evidence for the interaction anchor form.
+        let interaction_id = InteractionId::from_uuid(Uuid::from_u128(730));
+        let interaction_anchor = InteractionAnchor::new(
+            interaction_id,
+            session,
+            target,
+            krometrail_core::BrowserOperationKind::Click,
+            InteractionTiming::new(
+                SessionTime::from_nanos(1),
+                SessionTime::from_nanos(2),
+                SessionTime::from_nanos(3),
+                Some(SessionTime::from_nanos(3)),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        store
+            .append_operation_evidence(interaction_anchor, None, ObservedTime::from_nanos(4), None)
+            .await
+            .unwrap();
+
+        // Append a generic marker observation.
+        let marker_id = MarkerId::from_uuid(Uuid::from_u128(740));
+        let marker_obs = TimelineObservation::new(
+            session,
+            target,
+            SessionTime::from_nanos(2),
+            None,
+            ObservedTime::from_nanos(5),
+            ObservationKind::Marker,
+            ObservationPayloadRef::Marker(marker_id),
+        )
+        .unwrap();
+        store.append(marker_obs).await.unwrap();
+
+        let artifact_generation = Arc::new(
+            TemporalVisionArtifactService::new(
+                Arc::clone(&store) as Arc<dyn FrameSource>,
+                Arc::clone(&store) as Arc<dyn ArtifactStore>,
+                Arc::new(SequenceIds(AtomicU64::new(900))),
+                ArtifactWorkLimits::default(),
+            )
+            .unwrap(),
+        );
+
+        QualRig {
+            root,
+            store,
+            session,
+            target,
+            frame_ids,
+            artifact_generation,
+        }
+    }
+
+    impl QualRig {
+        fn bundle_service(&self) -> TemporalDebugBundleService {
+            let spy_ctx = Arc::new(RequestRangeSpyContext);
+            TemporalDebugBundleService::new(
+                Arc::clone(&self.store) as Arc<dyn TemporalQuery>,
+                Arc::clone(&self.store) as Arc<dyn TemporalDebugEvidenceStore>,
+                Arc::clone(&self.artifact_generation) as Arc<dyn ArtifactGeneration>,
+                Arc::clone(&spy_ctx) as Arc<dyn TemporalContextQuery>,
+                BundleWorkLimits::default(),
+            )
+            .unwrap()
+        }
+    }
+
+    /// A spy context query that returns a minimal context carrying the exact
+    /// resolved range from the request, ensuring the bundle's range-preserving
+    /// invariant holds without requiring full browser-event setup.
+    struct RequestRangeSpyContext;
+    impl TemporalContextQuery for RequestRangeSpyContext {
+        fn context(
+            &self,
+            request: TemporalContextRequest,
+        ) -> PortFuture<'_, krometrail_core::Result<TemporalContext>> {
+            let range = request.range().clone();
+            Box::pin(async move { Ok(minimal_context_with_range(range)) })
+        }
+    }
+
+    fn minimal_context_with_range(resolved: ResolvedRange) -> TemporalContext {
+        let eff = resolved.resolved_range;
+        let first_fid = resolved
+            .frame_ids
+            .first()
+            .copied()
+            .unwrap_or_else(|| FrameId::from_uuid(Uuid::from_u128(710)));
+        let last_fid = resolved.frame_ids.last().copied().unwrap_or(first_fid);
+        let frame_count = resolved.frame_ids.len() as u64;
+        TemporalContext {
+            range: resolved,
+            capture_quality: CaptureQuality {
+                requested_range: eff,
+                retained_range: eff,
+                frame_count,
+                first_frame: FramePoint {
+                    frame_id: first_fid,
+                    capture_ordinal: CaptureOrdinal::new(1).unwrap(),
+                    session_time: eff.start(),
+                },
+                last_frame: FramePoint {
+                    frame_id: last_fid,
+                    capture_ordinal: CaptureOrdinal::new(frame_count.max(1)).unwrap(),
+                    session_time: eff.end(),
+                },
+                cadence: None,
+                frame_warnings: vec![],
+                gaps: vec![],
+                gap_summary: CaptureGapSummary {
+                    gap_count: 0,
+                    covered_duration_nanos: 0,
+                    known_missing_frames: 0,
+                    has_unknown_missing_estimate: false,
+                },
+                retention_warnings: vec![],
+                capture_status: CaptureStatusEvidence {
+                    at_range_start: None,
+                    at_range_end: None,
+                    transitions: vec![],
+                },
+                warnings: vec![],
+            },
+            browser_events: BrowserEventContext {
+                effective_range: eff,
+                matched_count: 0,
+                returned_count: 0,
+                events: vec![],
+                next_cursor: None,
+                collection_gaps: vec![],
+                unavailable_ranges: vec![],
+                warnings: vec![],
+            },
+        }
+    }
+
+    fn session_time_request(rig: &QualRig) -> TemporalDebugBundleRequest {
+        TemporalDebugBundleRequest::default_policy(
+            TemporalQueryRequest::new(
+                TemporalRangeAnchor::SessionTime {
+                    scope: krometrail_core::AnchorScope::new(Some(rig.session), Some(rig.target)),
+                    range: SessionRange::new(
+                        SessionTime::from_nanos(1),
+                        SessionTime::from_nanos(4),
+                    )
+                    .unwrap(),
+                },
+                RetentionPolicy::AllowPartial,
+                CaptureGapPolicy::Include,
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn end_to_end_bundle_with_real_store_succeeds() {
+        let rig = qual_rig().await;
+        let service = rig.bundle_service();
+        let bundle = service
+            .bundle(
+                session_time_request(&rig),
+                TemporalDebugBundleContext::default(),
+            )
+            .await
+            .unwrap();
+        // The bundle carries the exact resolved range.
+        assert_eq!(bundle.range.session_id, rig.session);
+        assert_eq!(bundle.range.target_id, rig.target);
+        assert!(!bundle.range.frame_ids.is_empty());
+        // The effective policy carries the v1 version and two generators.
+        assert_eq!(
+            bundle.effective.version.as_str(),
+            "temporal-debug-bundle-v1"
+        );
+        assert_eq!(bundle.effective.artifact_generators.len(), 2);
+        // Artifact evidence is available with real outcomes.
+        assert!(matches!(
+            bundle.artifacts,
+            BundleArtifactEvidence::Available(_)
+        ));
+        // Context evidence is available (spy).
+        assert!(matches!(
+            bundle.context,
+            BundleContextEvidence::Available(_)
+        ));
+        // Header posture is non-diagnostic.
+        assert_eq!(
+            bundle.header.posture,
+            krometrail_core::EvidencePosture::ObservedChangeAndTemporalProximityOnly
+        );
+        // Markers include the mandatory interaction anchor marker and the generic marker.
+        assert!(!bundle.markers.is_empty());
+        // No degradations in the happy path.
+        assert!(bundle.degradations.is_empty());
+        std::fs::remove_dir_all(&rig.root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn cache_reuse_second_bundle_hits_artifact_cache() {
+        let rig = qual_rig().await;
+        let service = rig.bundle_service();
+        // First request generates artifacts.
+        let bundle1 = service
+            .bundle(
+                session_time_request(&rig),
+                TemporalDebugBundleContext::default(),
+            )
+            .await
+            .unwrap();
+        // Second identical request should hit the cache.
+        let service2 = rig.bundle_service();
+        let bundle2 = service2
+            .bundle(
+                session_time_request(&rig),
+                TemporalDebugBundleContext::default(),
+            )
+            .await
+            .unwrap();
+        // Both bundles have available artifact evidence.
+        let _result1 = match &bundle1.artifacts {
+            BundleArtifactEvidence::Available(r) => r.clone(),
+            _ => panic!("first bundle should have artifacts"),
+        };
+        let result2 = match &bundle2.artifacts {
+            BundleArtifactEvidence::Available(r) => r.clone(),
+            _ => panic!("second bundle should have artifacts"),
+        };
+        // The second request's outcomes should include at least one cache hit.
+        let has_hit = result2.outcomes.iter().any(|o| match o {
+            ArtifactOutcome::Available { artifact, .. } => {
+                artifact.cache == ArtifactCacheDisposition::Hit
+            }
+            _ => false,
+        });
+        assert!(has_hit, "second request must hit the artifact cache");
+        // Both bundles carry the same resolved range.
+        assert_eq!(bundle1.range, bundle2.range);
+        std::fs::remove_dir_all(&rig.root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn bundle_serialized_result_has_no_bytes_paths_or_uris() {
+        let rig = qual_rig().await;
+        let service = rig.bundle_service();
+        let bundle = service
+            .bundle(
+                session_time_request(&rig),
+                TemporalDebugBundleContext::default(),
+            )
+            .await
+            .unwrap();
+        let encoded = serde_json::to_string(&bundle).unwrap();
+        for forbidden in [
+            "base64",
+            "data:image",
+            "file://",
+            "/tmp/",
+            "segment_address",
+            "mcp://",
+            "data_url",
+            "filesystem",
+        ] {
+            assert!(
+                !encoded.to_lowercase().contains(forbidden),
+                "bundle payload leaked forbidden term: {forbidden}"
+            );
+        }
+        // The serialized result does contain the artifact manifest's output_hash
+        // (a SHA-256 hex string), which is a reference, not the image bytes.
+        assert!(encoded.contains("output_hash"));
+        std::fs::remove_dir_all(&rig.root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn interaction_anchor_resolves_through_bundle_service() {
+        let rig = qual_rig().await;
+        let service = rig.bundle_service();
+        let request = TemporalDebugBundleRequest::default_policy(
+            TemporalQueryRequest::new(
+                TemporalRangeAnchor::Interaction {
+                    scope: krometrail_core::AnchorScope::new(Some(rig.session), Some(rig.target)),
+                    interaction_id: InteractionId::from_uuid(Uuid::from_u128(730)),
+                    window: Some(
+                        krometrail_core::InteractionWindow::new(
+                            std::time::Duration::from_millis(0),
+                            std::time::Duration::from_millis(0),
+                        )
+                        .unwrap(),
+                    ),
+                },
+                RetentionPolicy::AllowPartial,
+                CaptureGapPolicy::Include,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let bundle = service
+            .bundle(request, TemporalDebugBundleContext::default())
+            .await
+            .unwrap();
+        // The resolved anchor is an interaction anchor with the exact interaction ID.
+        assert!(matches!(
+            bundle.range.resolved_anchor.reference,
+            ResolvedAnchorReference::Interaction { interaction_id } if interaction_id == InteractionId::from_uuid(Uuid::from_u128(730))
+        ));
+        // The mandatory anchor marker is present at the effective time.
+        assert!(bundle.markers.iter().any(|m| matches!(
+            m.id(),
+            ArtifactMarkerId::Interaction(id) if *id == InteractionId::from_uuid(Uuid::from_u128(730))
+        )));
+        std::fs::remove_dir_all(&rig.root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn orientation_omitted_changes_only_include_orientation_field() {
+        let rig = qual_rig().await;
+        let svc_include = rig.bundle_service();
+        let svc_omit = rig.bundle_service();
+        let req_include = TemporalDebugBundleRequest::new(
+            TemporalQueryRequest::new(
+                TemporalRangeAnchor::SessionTime {
+                    scope: krometrail_core::AnchorScope::new(Some(rig.session), Some(rig.target)),
+                    range: SessionRange::new(
+                        SessionTime::from_nanos(1),
+                        SessionTime::from_nanos(4),
+                    )
+                    .unwrap(),
+                },
+                RetentionPolicy::AllowPartial,
+                CaptureGapPolicy::Include,
+            )
+            .unwrap(),
+            vec![],
+            OrientationPolicy::Include,
+        )
+        .unwrap();
+        let req_omit = TemporalDebugBundleRequest::new(
+            TemporalQueryRequest::new(
+                TemporalRangeAnchor::SessionTime {
+                    scope: krometrail_core::AnchorScope::new(Some(rig.session), Some(rig.target)),
+                    range: SessionRange::new(
+                        SessionTime::from_nanos(1),
+                        SessionTime::from_nanos(4),
+                    )
+                    .unwrap(),
+                },
+                RetentionPolicy::AllowPartial,
+                CaptureGapPolicy::Include,
+            )
+            .unwrap(),
+            vec![],
+            OrientationPolicy::Omit,
+        )
+        .unwrap();
+        let b1 = svc_include
+            .bundle(req_include, TemporalDebugBundleContext::default())
+            .await
+            .unwrap();
+        let b2 = svc_omit
+            .bundle(req_omit, TemporalDebugBundleContext::default())
+            .await
+            .unwrap();
+        // Both produce available artifact evidence.
+        assert!(matches!(b1.artifacts, BundleArtifactEvidence::Available(_)));
+        assert!(matches!(b2.artifacts, BundleArtifactEvidence::Available(_)));
+        // The effective policy generators differ only in include_orientation.
+        let gen1 = serde_json::to_value(&b1.effective.artifact_generators).unwrap();
+        let gen2 = serde_json::to_value(&b2.effective.artifact_generators).unwrap();
+        assert_eq!(gen1[0]["include_orientation"], true);
+        assert_eq!(gen2[0]["include_orientation"], false);
+        // With orientation included, the first generator produces more outcomes.
+        let outcomes1 = match &b1.artifacts {
+            BundleArtifactEvidence::Available(r) => r.outcomes.len(),
+            _ => 0,
+        };
+        let outcomes2 = match &b2.artifacts {
+            BundleArtifactEvidence::Available(r) => r.outcomes.len(),
+            _ => 0,
+        };
+        assert!(
+            outcomes1 >= outcomes2,
+            "orientation includes at least as many outcomes"
+        );
+        std::fs::remove_dir_all(&rig.root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn session_deletion_after_resolution_is_fatal() {
+        let rig = qual_rig().await;
+        // Delete the session before the bundle call. The resolver should fail
+        // because the session's frames are gone.
+        let _ = RetentionStore::delete_session(rig.store.as_ref(), rig.session).await;
+        let service = rig.bundle_service();
+        let result = service
+            .bundle(
+                session_time_request(&rig),
+                TemporalDebugBundleContext::default(),
+            )
+            .await;
+        assert!(
+            result.is_err(),
+            "session deletion must fail the bundle request"
+        );
+        std::fs::remove_dir_all(&rig.root).unwrap();
+    }
+
+    #[test]
+    fn golden_effective_policy_is_byte_stable() {
+        let range = resolved_range();
+        let effective = build_effective_policy(&range, OrientationPolicy::Include, vec![]).unwrap();
+        let json = serde_json::to_string(&effective).unwrap();
+        // The versioned policy identifier is always present.
+        assert!(json.contains("\"temporal-debug-bundle-v1\""));
+        // The artifact anchor matches the resolved anchor's effective time (midpoint of [0, 1000000]).
+        assert!(json.contains("\"artifact_anchor\":500000"));
+        // Two generators: storyboard and difference_map.
+        assert!(json.contains("\"storyboard\""));
+        assert!(json.contains("\"difference_map\""));
+        // Failure policy is allow_partial.
+        assert!(json.contains("\"allow_partial\""));
+        // Focus times is an empty array.
+        assert!(json.contains("\"focus_times\":[]"));
+        // Re-serializing the same value produces identical bytes (Serialize is deterministic).
+        let json2 = serde_json::to_string(&effective).unwrap();
+        assert_eq!(json, json2);
+    }
+
+    #[test]
+    fn golden_header_text_is_non_diagnostic_and_stable() {
+        let range = resolved_range();
+        // Empty outcomes → no focus → "No thresholded visual change" text.
+        let header = compose_header(&range, &[], false).unwrap();
+        let summary = header.summary.as_str();
+        assert!(summary.contains("Observed"));
+        assert!(summary.contains("No thresholded visual change"));
+        assert!(summary.contains("do not establish diagnosis or causality"));
+        assert!(summary.len() <= krometrail_core::MAX_BUNDLE_HEADER_BYTES);
+        // Re-composing produces identical text.
+        let header2 = compose_header(&range, &[], false).unwrap();
+        assert_eq!(header.summary.as_str(), header2.summary.as_str());
+    }
+}

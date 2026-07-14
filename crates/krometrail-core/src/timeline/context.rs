@@ -780,21 +780,11 @@ fn validate_resolved_range(range: &ResolvedRange) -> Result<()> {
             None,
         ));
     }
-    ResolvedRange::new(
-        range.session_id,
-        range.target_id,
-        range.anchor_kind,
-        range.requested_range,
-        range.resolved_range,
-        range.frame_ids.clone(),
-        range.interaction_ids.clone(),
-        range.navigation_ids.clone(),
-        range.marker_ids.clone(),
-        range.gaps.clone(),
-        range.retention_warnings.clone(),
-        range.options,
-    )
-    .map_err(|_| {
+    // Validate the resolved range in place rather than reconstructing it via
+    // `ResolvedRange::new`, which only accepts interval anchors. `validate()`
+    // checks the same invariants for every anchor kind, including interaction,
+    // navigation, marker, and source-frame anchors produced by the resolver.
+    range.validate().map_err(|_| {
         context_error(
             ErrorCode::InvalidInput,
             "temporal context resolved range is invalid",
