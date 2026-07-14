@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-vision-toolkit
 kind: epic
-stage: review
+stage: done
 tags: [visual]
 parent: null
 depends_on: [epic-rust-cdp-capture-foundation]
@@ -78,3 +78,21 @@ and direct measurements, and four source-derived artifact families over one shar
 and encoder seam. Motion history remains an opt-in bounded experiment pending evaluation rather
 than a default-bundle claim. The epic is ready for deeper aggregate review of cross-artifact
 contracts, deterministic evidence semantics, and browser-independent reuse.
+
+## Review (2026-07-14)
+
+**Verdict**: Approve with comments
+
+**Blockers**: none
+**Important**: none
+**Nits**: Algorithm-version formatting, validator-depth consistency, ASCII time glyphs, and one
+redundant storyboard parameter are parkable intra-crate polish.
+**Rejected**: Future evaluation, tracked-region inference, streaming, bundle assembly, and color
+reference enhancements are explicitly owned elsewhere and do not reopen this scope.
+
+**Notes**: Standard-weight cross-model aggregate review by GLM 5.2 verified one canonical change
+classifier, gap rule, luminance kernel, renderer/encoder seam, manifest projection, and registry
+pattern across all six child features. It reran 47 package tests, format/check/Clippy, dependency
+independence, and workspace check; concurrent CDP work was the only temporary workspace red. All
+artifacts are deterministic and source-derived, and motion history remains honestly opt-in pending
+evaluation. No aggregate capability or foundation-alignment blocker remains.
