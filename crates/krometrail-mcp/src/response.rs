@@ -259,14 +259,8 @@ fn project_page_operation(
     value: PageOperationResult,
 ) -> Result<Projection, ResponseInvariantError> {
     let interaction = value.interaction.clone();
-    let (observation, warnings, image) = match value.observation {
-        ObservationPart::Available(observation) => {
-            let (value, warnings, image) =
-                project_live_observation(observation, ImageRole::PostAction, None)?;
-            (json!({"available": value}), warnings, image)
-        }
-        ObservationPart::Unavailable(error) => (json!({"unavailable": error}), vec![error], None),
-    };
+    let (observation, warnings, image) =
+        project_live_observation_part(value.observation, ImageRole::PostAction)?;
     let outcome = serde_json::to_value(&value.outcome).map_err(|_| ResponseInvariantError)?;
     let mut projection = Projection::success(json!({
         "interaction": interaction,
@@ -326,14 +320,8 @@ fn project_batch(value: BatchResult) -> Result<Projection, ResponseInvariantErro
         }));
     }
 
-    let (final_observation, final_warnings, final_image) = match value.final_observation {
-        ObservationPart::Available(observation) => {
-            let (result, warnings, image) =
-                project_live_observation(observation, ImageRole::BatchFinal, None)?;
-            (json!({"available": result}), warnings, image)
-        }
-        ObservationPart::Unavailable(error) => (json!({"unavailable": error}), vec![error], None),
-    };
+    let (final_observation, final_warnings, final_image) =
+        project_live_observation_part(value.final_observation, ImageRole::BatchFinal)?;
     images.extend(final_image);
     let outcome = value.outcome;
     let mut projection = Projection::success(json!({
@@ -356,6 +344,21 @@ fn project_batch(value: BatchResult) -> Result<Projection, ResponseInvariantErro
         _ => projection.fail_with(first_step_error.unwrap_or_else(|| batch_outcome_error(outcome))),
     }
     Ok(projection)
+}
+
+fn project_live_observation_part(
+    value: ObservationPart<LiveObservation>,
+    role: ImageRole,
+) -> Result<(Value, Vec<KrometrailError>, Option<EncodedMcpImage>), ResponseInvariantError> {
+    match value {
+        ObservationPart::Available(observation) => {
+            let (value, warnings, image) = project_live_observation(observation, role, None)?;
+            Ok((json!({"available": value}), warnings, image))
+        }
+        ObservationPart::Unavailable(error) => {
+            Ok((json!({"unavailable": error}), vec![error], None))
+        }
+    }
 }
 
 fn project_live_observation(

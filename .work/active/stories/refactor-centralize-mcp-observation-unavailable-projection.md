@@ -1,7 +1,7 @@
 ---
 id: refactor-centralize-mcp-observation-unavailable-projection
 kind: story
-stage: implementing
+stage: review
 tags: [refactor, agent-ux]
 parent: null
 depends_on: []
@@ -38,6 +38,13 @@ Extract one private helper for projecting `ObservationPart<LiveObservation>` wit
 **Risk**: Low. The duplicate branches are local and currently identical, but a changed generic/helper signature could accidentally alter warning propagation or image roles.
 
 **Rollback**: Revert the implementation commit to restore the two inline `ObservationPart<LiveObservation>` matches.
+
+## Implementation notes
+
+- Execution capability: baseline inline ownership; one private-helper extraction in one response mapper.
+- `project_live_observation_part` now owns available/unavailable `ObservationPart<LiveObservation>` projection while callers supply `PostAction` or `BatchFinal` image role.
+- Direct observe-live and interaction responses retain their intentionally unwrapped observation schemas and continue using `project_live_observation` directly.
+- Target-file rustfmt check, all 9 MCP tests, MCP doc tests, and MCP all-target Clippy with warnings denied passed.
 
 ## Discovery notes
 
