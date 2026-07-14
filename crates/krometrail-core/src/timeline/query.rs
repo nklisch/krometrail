@@ -199,6 +199,44 @@ mod tests {
     }
 
     #[test]
+    fn natural_anchor_windows_accept_only_bounded_whole_milliseconds() {
+        assert!(InteractionWindow::new(Duration::from_secs(120), Duration::from_secs(120)).is_ok());
+        assert!(
+            InteractionWindow::new(
+                Duration::from_secs(120) + Duration::from_millis(1),
+                Duration::ZERO,
+            )
+            .is_err()
+        );
+        assert!(InteractionWindow::new(Duration::from_micros(1), Duration::ZERO).is_err());
+        for malformed in [
+            serde_json::json!({"before_ms": 1.5, "after_ms": 0}),
+            serde_json::json!({"before_ms": 0, "after_ms": 120_001}),
+            serde_json::json!({"before_ms": 0, "after_ms": 0, "extra": true}),
+        ] {
+            assert!(serde_json::from_value::<InteractionWindow>(malformed).is_err());
+        }
+
+        let mut anchor = serde_json::to_value(anchors().remove(4)).unwrap();
+        anchor["extra"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<TemporalRangeAnchor>(anchor).is_err());
+
+        let permissive = TemporalQueryRequest::new(
+            anchors().remove(0),
+            RetentionPolicy::AllowPartial,
+            CaptureGapPolicy::Reject,
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::from_str::<TemporalQueryRequest>(
+                &serde_json::to_string(&permissive).unwrap()
+            )
+            .unwrap(),
+            permissive
+        );
+    }
+
+    #[test]
     fn strict_options_preserve_the_exact_implicit_interaction_window() {
         let request = TemporalQueryRequest::strict(anchors().remove(2)).unwrap();
         let options = request.options();

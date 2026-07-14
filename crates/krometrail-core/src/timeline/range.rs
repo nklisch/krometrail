@@ -386,9 +386,11 @@ impl FrameAvailability {
         evicted_ranges: Vec<SessionRange>,
     ) -> Result<Self> {
         for ranges in evicted_ranges.windows(2) {
-            if ranges[0].start() > ranges[1].start() || ranges[0].end() >= ranges[1].start() {
+            if ranges[0].start() > ranges[1].start()
+                || ranges[0].end().as_nanos().saturating_add(1) >= ranges[1].start().as_nanos()
+            {
                 return Err(invalid(
-                    "evicted frame ranges must be sorted and non-overlapping",
+                    "evicted frame ranges must be sorted, disjoint, and coalesced",
                 ));
             }
         }

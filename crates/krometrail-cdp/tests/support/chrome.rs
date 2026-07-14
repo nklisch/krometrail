@@ -401,7 +401,15 @@ mod tests {
             .spawn()
             .expect("spawn reference process");
 
-        let references = process_references(&root);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        let references = loop {
+            let references = process_references(&root);
+            if !references.is_empty() || std::time::Instant::now() >= deadline {
+                break references;
+            }
+            // Process-table visibility can lag a successful spawn by a scheduler tick.
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
         assert!(!references.is_empty(), "referenced root must be reported");
         assert!(references.iter().all(|line| line.contains(&marker)));
 

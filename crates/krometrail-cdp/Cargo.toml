@@ -28,6 +28,7 @@ cdp-spike-cdpkit = ["cdp-spike", "cdpkit-transport"]
 
 [dev-dependencies]
 futures-util.workspace = true
+krometrail-store.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tokio-tungstenite.workspace = true
 

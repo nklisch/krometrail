@@ -2,16 +2,27 @@
 
 mod support;
 
-use std::sync::{Arc, Mutex};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use krometrail_cdp::{
     CdpTransport, CdpTransportFactory, ProductionBrowserConnector, TransportError, TransportFuture,
 };
 use krometrail_core::{
-    AttachBrowser, BrowserConnectRequest, BrowserConnector, BrowserOperationContext,
-    BrowserOperationRequest, BrowserOperationResult, ErrorCode, InspectPageRequest,
-    InteractionAnchor, InteractionEvidenceSink, InteractionRecord, NavigationId, ObservedTime,
-    PortFuture, RetryAdvice, SelectPageRequest,
+    AnchorScope, AttachBrowser, BatchOptions, BatchRequest, BrowserConnectRequest,
+    BrowserConnector, BrowserOperationContext, BrowserOperationRequest, BrowserOperationResult,
+    CaptureOrdinal, CapturedFrame, ClickRequest, CoordinateSpace, CssPoint, DeviceScaleFactor,
+    EncodedFrame, ErrorCode, FrameId, ImageFormat, InspectPageRequest, InteractionAnchor,
+    InteractionEvidenceSink, InteractionLocator, InteractionRecord, Modifiers, MouseButton,
+    NavigationId, ObservedTime, PageSelection, PixelDimensions, PortFuture, RecordingSink,
+    RetryAdvice, SelectPageRequest, SessionTime, TemporalQuery, TemporalQueryRequest,
+    TemporalRangeAnchor,
+};
+use krometrail_store::{
+    IndexStoreConfig, RecordingStore, RotationConfig, SegmentStoreConfig, SegmentWriter,
+    SqliteIndex,
 };
 use serde_json::{Value, json};
 use support::scripted_cdp::ScriptedCdp;
@@ -91,6 +102,34 @@ fn script_live_observation(transport: &ScriptedCdp) {
         "Page.captureScreenshot",
         json!({"data":STANDARD.encode(png)}),
     );
+}
+
+fn script_coordinate_click(transport: &ScriptedCdp) {
+    transport.push_response("Page.getLayoutMetrics", layout());
+    transport.push_response(
+        "Runtime.evaluate",
+        json!({"result":{"value":{"tagName":"BUTTON","x":10,"y":10,"width":20,"height":20}}}),
+    );
+    transport.push_response("Runtime.evaluate", json!({"result":{"value":true}}));
+    script_live_observation(transport);
+}
+
+fn coordinate_click(target: krometrail_core::TargetId) -> BrowserOperationRequest {
+    BrowserOperationRequest::Click(
+        ClickRequest::new(
+            PageSelection::Target(target),
+            InteractionLocator::coordinate(
+                CssPoint::new(20.0, 20.0).unwrap(),
+                CoordinateSpace::ViewportCss,
+            )
+            .unwrap(),
+            MouseButton::Left,
+            Modifiers::default(),
+            1,
+            false,
+        )
+        .unwrap(),
+    )
 }
 
 #[derive(Default)]
@@ -259,4 +298,188 @@ async fn publication_waits_for_commit_and_failure_reports_inspect_before_repeat_
             .iter()
             .any(|(method, _)| method == "Target.activateTarget")
     );
+}
+
+struct TemporaryStoreRoot(std::path::PathBuf);
+
+impl TemporaryStoreRoot {
+    fn new() -> Self {
+        let path = std::env::temp_dir().join(format!(
+            "krometrail-temporal-evidence-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        Self(path)
+    }
+}
+
+impl Drop for TemporaryStoreRoot {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn recording_store() -> (TemporaryStoreRoot, Arc<RecordingStore>) {
+    let root = TemporaryStoreRoot::new();
+    let segments = root.0.join("segments");
+    let index = Arc::new(
+        SqliteIndex::open(IndexStoreConfig {
+            database_path: root.0.join("index.sqlite3"),
+            segments_directory: segments.clone(),
+            busy_timeout: Duration::from_secs(1),
+        })
+        .unwrap(),
+    );
+    let writer = Arc::new(
+        SegmentWriter::open(SegmentStoreConfig {
+            directory: segments,
+            rotation: RotationConfig::suggested(),
+        })
+        .unwrap(),
+    );
+    let store = Arc::new(RecordingStore::new(writer, index).unwrap());
+    (root, store)
+}
+
+fn evidence_frame(
+    id: u128,
+    session_id: krometrail_core::SessionId,
+    target_id: krometrail_core::TargetId,
+    ordinal: u64,
+    at: Duration,
+) -> EncodedFrame {
+    EncodedFrame::new(
+        CapturedFrame::new(
+            FrameId::from_uuid(uuid::Uuid::from_u128(id)),
+            session_id,
+            target_id,
+            CaptureOrdinal::new(ordinal).unwrap(),
+            None,
+            ObservedTime::from_nanos(u64::try_from(at.as_nanos()).unwrap()),
+            SessionTime::from_nanos(u64::try_from(at.as_nanos()).unwrap()),
+            ImageFormat::Jpeg,
+            PixelDimensions::new(1, 1).unwrap(),
+            PixelDimensions::new(1, 1).unwrap(),
+            DeviceScaleFactor::new(1.0).unwrap(),
+            vec![],
+        )
+        .unwrap(),
+        vec![ordinal as u8],
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn successful_operation_is_immediately_queryable_through_the_same_recording_store() {
+    let (_root, store) = recording_store();
+    let transport = ScriptedCdp::chrome();
+    let session = build_session(
+        &transport,
+        Some(Arc::clone(&store) as Arc<dyn InteractionEvidenceSink>),
+    )
+    .await;
+    let status = session.status().await.unwrap();
+    let target = status.pages[0].target.target.id();
+    store
+        .append_frame(evidence_frame(
+            100,
+            status.session_id,
+            target,
+            1,
+            Duration::ZERO,
+        ))
+        .await
+        .unwrap();
+    store
+        .append_frame(evidence_frame(
+            101,
+            status.session_id,
+            target,
+            2,
+            Duration::from_secs(10),
+        ))
+        .await
+        .unwrap();
+
+    script_live_observation(&transport);
+    let result = session
+        .execute(
+            BrowserOperationRequest::SelectPage(SelectPageRequest { target_id: target }),
+            BrowserOperationContext::default(),
+        )
+        .await
+        .unwrap();
+    let BrowserOperationResult::SelectPage(result) = result else {
+        panic!("select-page result")
+    };
+    let interaction_id = result.interaction.interaction_id;
+    let resolved = store
+        .resolve_range(
+            TemporalQueryRequest::strict(TemporalRangeAnchor::Interaction {
+                scope: AnchorScope::new(Some(status.session_id), Some(target)),
+                interaction_id,
+                window: None,
+            })
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resolved.interaction_ids, vec![interaction_id]);
+    assert_eq!(
+        resolved.requested_range.start().as_nanos(),
+        result
+            .interaction
+            .timing
+            .started_at
+            .as_nanos()
+            .saturating_sub(150_000_000)
+    );
+    assert_eq!(
+        resolved.requested_range.end().as_nanos(),
+        result
+            .interaction
+            .timing
+            .observed_at
+            .unwrap_or(result.interaction.timing.completed_at)
+            .as_nanos()
+            .checked_add(250_000_000)
+            .unwrap()
+    );
+
+    script_coordinate_click(&transport);
+    script_coordinate_click(&transport);
+    script_live_observation(&transport);
+    let batch = BatchRequest::new(
+        PageSelection::Target(target),
+        vec![coordinate_click(target), coordinate_click(target)],
+        Duration::from_secs(5),
+        BatchOptions::default(),
+    )
+    .unwrap();
+    let BrowserOperationResult::Batch(batch) = session
+        .execute(
+            BrowserOperationRequest::Batch(batch),
+            BrowserOperationContext::default(),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("batch result")
+    };
+    for step in &batch.steps {
+        let interaction_id = step.interaction.as_ref().unwrap().interaction_id;
+        let resolved = store
+            .resolve_range(
+                TemporalQueryRequest::strict(TemporalRangeAnchor::Interaction {
+                    scope: AnchorScope::new(Some(status.session_id), Some(target)),
+                    interaction_id,
+                    window: None,
+                })
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(resolved.interaction_ids.contains(&interaction_id));
+    }
+    session.stop().await.unwrap();
 }
