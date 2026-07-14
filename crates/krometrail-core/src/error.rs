@@ -42,6 +42,8 @@ define_stable_enum! {
         CaptureRejected => "capture_rejected",
         PersistenceFailed => "persistence_failed",
         BudgetExhausted => "budget_exhausted",
+        ArtifactGenerationFailed => "artifact_generation_failed",
+        ResourceLimitExceeded => "resource_limit_exceeded",
         Internal => "internal",
     }
 }
@@ -71,7 +73,7 @@ pub struct EmptyTextError;
 
 /// A validated user-facing string. It prevents an error boundary from emitting
 /// an empty explanation or recovery action while preserving exact serde shape.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(transparent)]
 pub struct NonEmptyText(Box<str>);
 

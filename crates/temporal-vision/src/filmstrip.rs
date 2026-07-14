@@ -10,7 +10,7 @@ use crate::{
     AlgorithmDescriptor, ArtifactKind, ArtifactManifest, EncodedImage, ErrorCode, EvidenceClass,
     FrameRegion, FrameSequence, GeneratedArtifact, IntegerScale, NormalizationKind,
     NormalizationParameters, NormalizationStep, ParameterValue, Parameters, PixelDimensions,
-    PixelRect, ProcessingLimits, Result, Rgb8, Timestamp, VisionError,
+    PixelRect, ProcessingLimits, Result, Rgb8, Timestamp, VisionError, generator_descriptor,
     normalize::make_parameters,
     normalize_sequence,
     render::{
@@ -580,8 +580,6 @@ fn invalid_region_error() -> VisionError {
     )
 }
 
-const ALGORITHM_NAME: &str = "region-filmstrip";
-const ALGORITHM_VERSION: &str = "1.0.0";
 const DEFAULT_MAX_DIMENSION: u32 = 4_096;
 const DEFAULT_MAX_BYTES: usize = 64 * 1024 * 1024;
 const DEFAULT_MAX_SOURCE_FRAMES: usize = 4_096;
@@ -873,7 +871,10 @@ where
         artifact_id,
         ArtifactKind::RegionFilmstrip,
         EvidenceClass::SourceDerived,
-        AlgorithmDescriptor::new(ALGORITHM_NAME, ALGORITHM_VERSION)?,
+        {
+            let descriptor = generator_descriptor(ArtifactKind::RegionFilmstrip);
+            AlgorithmDescriptor::new(descriptor.name, descriptor.version)?
+        },
         source,
         manifest_region,
         None,
@@ -1716,7 +1717,11 @@ fn filmstrip_parameters<F: Display>(
         [
             (
                 "algorithm_version".into(),
-                ParameterValue::Text(ALGORITHM_VERSION.into()),
+                ParameterValue::Text(
+                    generator_descriptor(ArtifactKind::RegionFilmstrip)
+                        .version
+                        .into(),
+                ),
             ),
             ("region_definition".into(), region_value(request.region)?),
             (

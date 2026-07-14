@@ -99,7 +99,8 @@ pub use normalize::{
 };
 pub use provenance::{
     AlgorithmDescriptor, ArtifactKind, ArtifactManifest, EvidenceClass, FiniteNumber,
-    NormalizationKind, NormalizationStep, OutputHash, ParameterValue, Parameters,
+    GeneratorDescriptor, NormalizationKind, NormalizationStep, OutputHash, ParameterValue,
+    Parameters, generator_descriptor,
 };
 pub use render::{
     ArtifactLabels, RenderLimits, StoryboardArtifacts, StoryboardParameters, generate_storyboard,

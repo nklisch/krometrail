@@ -19,6 +19,35 @@ stable_registry! {
     }
 }
 
+/// Authoritative name/version descriptor for one generated artifact family.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GeneratorDescriptor {
+    pub name: &'static str,
+    pub version: &'static str,
+}
+
+/// One registry drives both generated manifests and callers' pre-generation cache keys.
+pub const fn generator_descriptor(kind: ArtifactKind) -> GeneratorDescriptor {
+    match kind {
+        ArtifactKind::Storyboard | ArtifactKind::BeforeDuringAfter => GeneratorDescriptor {
+            name: "temporal-storyboard",
+            version: "1.0.0",
+        },
+        ArtifactKind::DifferenceMap => GeneratorDescriptor {
+            name: "temporal-difference-map",
+            version: "v1",
+        },
+        ArtifactKind::RegionFilmstrip => GeneratorDescriptor {
+            name: "region-filmstrip",
+            version: "1.0.0",
+        },
+        ArtifactKind::MotionHistory => GeneratorDescriptor {
+            name: "motion-history",
+            version: "1.0.0",
+        },
+    }
+}
+
 stable_registry! {
     /// Relationship between an output and source observations.
     pub enum EvidenceClass {

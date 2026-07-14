@@ -700,6 +700,7 @@ dependencies = [
  "krometrail-mcp",
  "krometrail-store",
  "serde_json",
+ "sha2",
  "temporal-vision",
  "tokio",
  "tracing",
@@ -735,6 +736,8 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "sha2",
+ "temporal-vision",
  "thiserror",
  "uuid",
 ]

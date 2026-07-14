@@ -4,7 +4,7 @@ use crate::{
     AlgorithmDescriptor, ArtifactKind, ArtifactManifest, BinaryMask, EncodedImage, ErrorCode,
     EvidenceClass, FrameSequence, GeneratedArtifact, MeasurementParameters, NormalizationKind,
     NormalizationStep, NormalizedSequence, ParameterValue, Parameters, PixelDimensions, PixelRect,
-    Result, Rgb8, Timestamp, VisionError,
+    Result, Rgb8, Timestamp, VisionError, generator_descriptor,
     measure::{classify_pixel_change, intersecting_gap_count, linear_luminance},
     render::{
         canvas::{BLACK, Canvas, MUTED, PANEL, WARNING, WHITE, canvas_limit_error},
@@ -358,8 +358,6 @@ fn accumulator_limit_error() -> VisionError {
     )
 }
 
-const ALGORITHM_NAME: &str = "temporal-difference-map";
-const ALGORITHM_VERSION: &str = "v1";
 const MARGIN: u32 = 16;
 const INTER_PANEL_GAP: u32 = 16;
 const HEADER_HEIGHT: u32 = 56;
@@ -492,7 +490,10 @@ where
         artifact_id,
         ArtifactKind::DifferenceMap,
         EvidenceClass::SourceDerived,
-        AlgorithmDescriptor::new(ALGORITHM_NAME, ALGORITHM_VERSION)?,
+        {
+            let descriptor = generator_descriptor(ArtifactKind::DifferenceMap);
+            AlgorithmDescriptor::new(descriptor.name, descriptor.version)?
+        },
         sequence,
         vec![
             sequence.frames()[parameters.reference_frame_index]
@@ -853,7 +854,11 @@ fn manifest_parameters(
     parameters([
         (
             "algorithm_version",
-            ParameterValue::Text(ALGORITHM_VERSION.into()),
+            ParameterValue::Text(
+                generator_descriptor(ArtifactKind::DifferenceMap)
+                    .version
+                    .into(),
+            ),
         ),
         (
             "frequency_mode",

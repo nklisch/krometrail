@@ -4,6 +4,7 @@
 //! domain-owned values and `std` traits so the core remains usable with any
 //! executor or transport implementation.
 
+pub mod artifacts;
 pub mod browser;
 pub mod catalog;
 pub mod clock;
@@ -19,6 +20,10 @@ pub mod timeline;
 /// object-safe without selecting an async runtime or procedural macro.
 pub type PortFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
 
+pub use artifacts::{
+    ArtifactCacheKey, ArtifactCacheMetadata, ArtifactLookup, ArtifactPublication, ArtifactPublish,
+    ArtifactSourceFingerprint, ArtifactStore, StoredArtifact,
+};
 pub use browser::{
     AttachBrowser, BrowserConnectRequest, BrowserConnector, BrowserFailureKind,
     BrowserOperationContext, BrowserPageTargets, BrowserSessionEvents, BrowserSessionPort,
@@ -575,6 +580,7 @@ mod tests {
     fn core_ports_have_no_runtime_or_transport_types() {
         let sources = [
             include_str!("mod.rs"),
+            include_str!("artifacts.rs"),
             include_str!("browser.rs"),
             include_str!("catalog.rs"),
             include_str!("clock.rs"),

@@ -7,6 +7,7 @@ use crate::{
     EncodedImage, ErrorCode, EvidenceClass, FrameSequence, GeneratedArtifact,
     MeasurementParameters, NormalizationKind, NormalizationStep, NormalizedSequence,
     ParameterValue, Parameters, PixelDimensions, Result, Rgb8, TimeRange, Timestamp, VisionError,
+    generator_descriptor,
     measure::{classify_pixel_change, linear_luminance},
     measure_adjacent,
     render::{
@@ -451,8 +452,6 @@ fn set_bit(bits: &mut [u8], index: usize) {
     bits[index / 8] |= 0x80 >> (index % 8);
 }
 
-const ALGORITHM_NAME: &str = "motion-history";
-const ALGORITHM_VERSION: &str = "1.0.0";
 const HEADER_HEIGHT: u32 = 38;
 const FOOTER_HEIGHT: u32 = 94;
 const LEGEND_X: u32 = 4;
@@ -535,7 +534,10 @@ where
         artifact_id,
         ArtifactKind::MotionHistory,
         EvidenceClass::SourceDerived,
-        AlgorithmDescriptor::new(ALGORITHM_NAME, ALGORITHM_VERSION)?,
+        {
+            let descriptor = generator_descriptor(ArtifactKind::MotionHistory);
+            AlgorithmDescriptor::new(descriptor.name, descriptor.version)?
+        },
         source,
         vec![plan.reference_frame_id().clone()],
         normalization,

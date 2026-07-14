@@ -1,4 +1,5 @@
 mod app;
+mod artifacts;
 mod cli;
 
 use std::process::ExitCode;

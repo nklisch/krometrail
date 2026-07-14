@@ -12,13 +12,11 @@ use crate::{
     EvidenceClass, FrameSequence, GeneratedArtifact, Marker, MeasurementParameters,
     NormalizationKind, NormalizationStep, NormalizedSequence, ParameterValue, Parameters,
     PixelDimensions, Result, SelectionReason, StoryboardSelection, StoryboardTileLimit, Timestamp,
-    VisionError, normalize::make_parameters, select_storyboard_frames,
+    VisionError, generator_descriptor, normalize::make_parameters, select_storyboard_frames,
 };
 use canvas::{BLACK, Canvas, MUTED, PANEL, WARNING, WHITE, canvas_limit_error};
 use font::{CELL_WIDTH, draw_text, ellipsize};
 
-const ALGORITHM_NAME: &str = "temporal-storyboard";
-const ALGORITHM_VERSION: &str = "1.0.0";
 const PREFERRED_TILE_WIDTH: u32 = 240;
 const MINIMUM_TILE_WIDTH: u32 = 160;
 const HEADER_HEIGHT: u32 = 52;
@@ -744,7 +742,10 @@ where
         artifact_id,
         kind,
         EvidenceClass::SourceDerived,
-        AlgorithmDescriptor::new(ALGORITHM_NAME, ALGORITHM_VERSION)?,
+        {
+            let descriptor = generator_descriptor(kind);
+            AlgorithmDescriptor::new(descriptor.name, descriptor.version)?
+        },
         source,
         selected_ids,
         normalization,
@@ -869,7 +870,7 @@ where
     for (key, value) in [
         (
             "algorithm_version",
-            ParameterValue::Text(ALGORITHM_VERSION.into()),
+            ParameterValue::Text(generator_descriptor(kind).version.into()),
         ),
         ("artifact_kind", ParameterValue::Text(kind.as_str().into())),
         (

@@ -29,6 +29,7 @@ macro_rules! define_stable_enum {
     };
 }
 
+pub mod artifacts;
 pub mod browser;
 pub mod capabilities;
 pub mod error;
@@ -41,6 +42,14 @@ pub mod timeline;
 
 mod validation;
 
+pub use artifacts::{
+    AnalysisScale, ArtifactCacheDisposition, ArtifactFailurePolicy, ArtifactGeneration,
+    ArtifactGenerationContext, ArtifactGenerationRequest, ArtifactGenerationResult,
+    ArtifactGeneratorRequest, ArtifactHandle, ArtifactLabelsRequest, ArtifactManifest,
+    ArtifactMarker, ArtifactMarkerId, ArtifactOutcome, DifferenceMapRequest, FrameSelector,
+    MotionHistoryRequest, NormalizationRequest, OutputLimitsRequest, RegionFilmstripRequest,
+    StoryboardRequest, VisualEpoch,
+};
 pub use browser::{
     AcceptedLocator, AccessibleProperty, AccessibleValue, ActionCategory, ActionDefinition,
     ActionabilityRequirement, BROWSER_OPERATION_REGISTRY, BatchFailurePolicy, BatchOptions,
@@ -83,12 +92,13 @@ pub use ids::{
 };
 pub use lifecycle::{SessionLifecycle, TargetLifecycle};
 pub use ports::{
-    AttachBrowser, BrowserConnectRequest, BrowserConnector, BrowserFailureKind,
-    BrowserOperationContext, BrowserPageTargets, BrowserSessionEvents, BrowserSessionPort,
-    CancellationSignal, CaptureGapStore, FrameSource, IdSource, InteractionAnchorSource,
-    InteractionEvidenceSink, InteractionRecordSource, LaunchBrowser, ManagedProfile,
-    MonotonicClock, PortFuture, RecordingCatalog, RecordingSink, RetentionStore,
-    TimelineAnchorSource, TimelineStore, WallClock,
+    ArtifactCacheKey, ArtifactCacheMetadata, ArtifactLookup, ArtifactPublication, ArtifactPublish,
+    ArtifactSourceFingerprint, ArtifactStore, AttachBrowser, BrowserConnectRequest,
+    BrowserConnector, BrowserFailureKind, BrowserOperationContext, BrowserPageTargets,
+    BrowserSessionEvents, BrowserSessionPort, CancellationSignal, CaptureGapStore, FrameSource,
+    IdSource, InteractionAnchorSource, InteractionEvidenceSink, InteractionRecordSource,
+    LaunchBrowser, ManagedProfile, MonotonicClock, PortFuture, RecordingCatalog, RecordingSink,
+    RetentionStore, StoredArtifact, TimelineAnchorSource, TimelineStore, WallClock,
 };
 pub use recording::{
     ByteOffset, CaptureGap, CaptureGapReason, CaptureOrdinal, CaptureStatistics,
