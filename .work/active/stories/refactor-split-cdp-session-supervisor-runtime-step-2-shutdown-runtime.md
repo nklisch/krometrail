@@ -1,7 +1,7 @@
 ---
 id: refactor-split-cdp-session-supervisor-runtime-step-2-shutdown-runtime
 kind: story
-stage: implementing
+stage: done
 tags: [refactor, browser]
 parent: refactor-split-cdp-session-supervisor-runtime
 depends_on: [refactor-split-cdp-session-supervisor-runtime-step-1-session-module-root-and-operations]
@@ -54,3 +54,14 @@ Medium: the code is structurally separable, but shutdown ordering is load-bearin
 ## Rollback
 
 Move the shutdown types and functions back into `session/mod.rs`; do not leave split ownership of shutdown policy.
+
+## Implementation notes
+
+- Execution capability: highest; selected by the autopilot caller for the capture/process/profile cleanup boundary.
+- Review weight: standard (caller); child checkpoint review is not applicable.
+- Files changed: shutdown phases, one-deadline budget source, plan, cleanup sequence, and terminal publication moved from `session/mod.rs` to private `session/shutdown.rs`.
+- Tests added/removed: none; shutdown unit fixtures remain in the module-root test suite and access only `pub(super)` test seams.
+- Simplification: isolated the complete shutdown policy in one private module without splitting ownership or adding abstractions.
+- Discrepancies from design: shutdown tests stayed in `session/mod.rs` to avoid moving shared fixtures; no test-only public API was added.
+- Adjacent issues parked: none.
+- Verification: package all-target check; 93 library tests; capture/session-supervision/page-lifecycle suites (31 tests); package all-target Clippy with `-D warnings`; format check — all passed.
