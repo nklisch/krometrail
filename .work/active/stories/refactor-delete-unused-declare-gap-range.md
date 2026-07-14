@@ -1,7 +1,7 @@
 ---
 id: refactor-delete-unused-declare-gap-range
 kind: story
-stage: review
+stage: done
 tags: [refactor, browser]
 parent: null
 depends_on: []
@@ -71,3 +71,17 @@ serialized form is affected. The live `declare_gap` path is untouched.
 - Dispatch: direct read of `pipeline.rs` + workspace grep; no subagents, no peeragent (cadence is conservative, local-only by directive).
 - Value: medium — clean dead-weight removal of an unreachable duplicate of the live gap-declaration path; small but unambiguous.
 - Adjacent code considered and not flagged: the recurring `matches!(target.target.lifecycle, TargetLifecycle::Closed | TargetLifecycle::Failed)` guard (14 sites workspace-wide) was considered for a `TargetLifecycle::is_terminal()` helper but recorded as not-worth-it — it is a one-line idiomatic check and renaming it does not materially reduce complexity.
+
+## Review (2026-07-14)
+
+**Verdict**: Approve
+
+**Blockers**: none
+**Important**: none
+**Nits**: none
+**Rejected**: none
+
+**Notes**: Bounded inline standalone-story review. The commit deletes only the private zero-caller
+method and its duplicate body; the live `declare_gap` path is unchanged. Workspace search, isolated
+locked gates, and direct diff inspection confirm behavior preservation. No independent or
+cross-model reviewer ran, as required for standalone stories.
