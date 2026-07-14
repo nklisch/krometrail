@@ -39,6 +39,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net
 tracing = "0.1"
 cdpkit = "=0.4.0"
 futures-util = "0.3"
+image = { version = "=0.25.9", default-features = false, features = ["jpeg", "png"] }
 schemars = { version = "1", features = ["uuid1"] }
 rmcp = { version = "=0.11.0", features = ["transport-io"] }
 tokio-util = "0.7"
@@ -57,6 +58,7 @@ krometrail-cdp.workspace = true
 krometrail-store.workspace = true
 krometrail-mcp.workspace = true
 temporal-vision.workspace = true
+image.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 tokio.workspace = true

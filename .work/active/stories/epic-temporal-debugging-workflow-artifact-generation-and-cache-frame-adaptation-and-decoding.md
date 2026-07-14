@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-debugging-workflow-artifact-generation-and-cache-frame-adaptation-and-decoding
 kind: story
-stage: implementing
+stage: done
 tags: [visual, storage]
 parent: epic-temporal-debugging-workflow-artifact-generation-and-cache
 depends_on: [epic-temporal-debugging-workflow-artifact-generation-and-cache-artifact-schema-and-publication]
@@ -38,3 +38,16 @@ Use exact `image = 0.25.9` with only JPEG/PNG features; its crate metadata decla
 ## Ordering
 
 Depends on the artifact store contract so source fingerprints and publication revalidation use one shape. The bounded service consumes these epoch inputs.
+
+## Implementation notes
+
+- Execution capability: highest; decoder allocation safety and exact provenance adaptation are cache-integrity boundaries.
+- Review weight: standard from the autopilot caller; child checkpoints do not receive independent review.
+- Files changed: root `Cargo.toml`/`Cargo.lock`, `src/artifacts/{mod.rs,decode.rs,epoch.rs,tests.rs}`, and `tests/fixtures/artifacts/{chrome-rgb.jpg,chrome-rgba.png,malformed.jpg,bomb-header.png}`.
+- Tests added: exact real-fixture JPEG RGBA output with opaque alpha, exact straight-alpha PNG bytes, forced-format rejection, malformed/truncated and metadata-dimension rejection, 16-bit rejection, dimension/pixel/overflow/bomb limits, mixed-format common epochs, exact viewport/device-scale epoch splits, tied frame/marker ordering, clipped gap loss metadata, source mismatch/order loss, and cooperative cancellation.
+- Verification: `cargo fmt --all`; root all-target check; root all-target tests (18 passed); root all-target Clippy with `-D warnings` (green).
+- Decoder semantics: exact `image = 0.25.9` with JPEG/PNG features only; stored format selects the decoder; persisted dimensions/pixels/RGBA bytes are checked before decode and image crate width/height/allocation limits are installed; decoder-reported dimensions and 8-bit color type are checked before allocation; gray/gray-alpha/RGB/RGBA expand explicitly to straight RGBA8, with JPEG alpha forced opaque and PNG alpha copied unchanged. No format sniffing, EXIF orientation, profile transform, premultiplication, resize, or precision reduction occurs.
+- Epoch semantics: returned frames must exactly match resolved IDs/order/session/target/time, capture ordinals strictly increase while tied session times remain ordered, and maximal epochs split only on image/viewport dimensions or exact device-scale bits. Gaps are only declared resolved gaps clipped inclusively per epoch; markers sort by time then caller declaration position.
+- Simplification: adaptation reuses the existing `FrameSource` result shape and produces temporal-vision's exact owned sequence plus the core store source fingerprint; no reader or decoded cache was added.
+- Discrepancies from design: decoder/adaptation limits are small internal value objects in this checkpoint and will be projected from the root `ArtifactWorkLimits` in the service checkpoint. Adapter modules remain test-compiled until that production service consumes them, preventing dead production scaffolding between sequential commits.
+- Adjacent issues parked: none.
