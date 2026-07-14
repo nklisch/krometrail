@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-debugging-workflow-progressive-evidence-and-pinning
 kind: feature
-stage: implementing
+stage: review
 tags: [visual, storage, agent-ux]
 parent: epic-temporal-debugging-workflow
 depends_on:
@@ -583,3 +583,43 @@ The least certain area is CSS-to-captured-viewport compatibility across Chrome s
 ## Blockers
 
 None. Both declared dependencies have completed implementation; resolved queries are done and artifact generation is dependency-ready at feature review. The modified `.work/bin/work-view` is unrelated and remains untouched.
+
+## Integrated implementation record
+
+All five dependency-ordered checkpoints are implemented and verified:
+
+1. `9ed7958` — progressive registry, exact scoped source/artifact handles, fixed region/mask contracts, rich pin state, and stable evidence invalidation.
+2. `4e1cf7c` — coherent `RecordingStore` source/artifact reads plus exact range pin/unpin/query reporting over existing schema rows.
+3. `5b94e3d` — current-only structured-reference geometry through the existing supervised CDP session actor and `SnapshotRegistry`.
+4. `14fbce4` — one eight-operation `ProgressiveEvidenceService`, region mapping/delegation, and root composition over one shared store and artifact service.
+5. `a4903b7` — real current-schema/store/artifact-service qualification, scripted geometry, corruption/lifetime cases, pin/deletion concurrency, and no-gate persistence barriers.
+
+### As-built architecture
+
+- Core owns the exhaustive eight-operation progressive registry, validated request/result associations, exact weak handles, current-only geometry port, fixed region vocabulary, and source-segment-only pin reporting.
+- `RecordingStore` remains the only production source/artifact/retention authority. Encoded reads snapshot under the mutation gate, perform bounded file/hash work outside it, and exactly revalidate before return. Pin state is derived from existing schema rows; no migration, reader, cache, ledger, or payload table was added.
+- `ProductionSession` routes current geometry through its serialized actor. Exact snapshot, target, attachment, document, backing-node, connectedness, visibility, and finite non-zero geometry checks remain owned by `SnapshotRegistry`/CDP control. The as-built object-safe adapter uses a narrow `BrowserSessionPort` method plus blanket `CurrentReferenceGeometry` delegation rather than a trait-object supertrait, avoiding unsupported Rust 1.85 trait upcasting and unrelated adapter churn.
+- `ProgressiveEvidenceService` validates deterministic source contracts, resolves each region once against one compatible epoch, samples live geometry once before retained metadata, and delegates generic and region generation to the existing temporal-vision cache/single-flight service.
+- Root retains one concrete `Arc<RecordingStore>` and projects that allocation into frame, artifact, retention, browser-event, and progressive ports. `RuntimeDependencies` owns one `Arc<dyn ProgressiveEvidence>` and one shared `Arc<dyn ArtifactGeneration>`.
+- MCP registration, resources, schemas, URIs, browser-operation variants, raw paths, durable geometry, tracked regions, and historical element identity remain outside this feature.
+
+### Integrated acceptance evidence
+
+- Exact source scope, all/requested ordering, both positions, MIME/format, image/viewport/scale, source-observed-session timing, ordinal, hash, length, payload, count, and byte limits are covered through real store and service paths.
+- Weak source/artifact lifetime is explicit across eviction, corruption, source-link drift, and session deletion; successful reads cannot return partial or stale bytes.
+- Source, viewport CSS, selected rect/mask, and current-reference regions preserve outward rounding, padding, locator, exact mask/provenance, epoch compatibility, and cache identity. Wrong scope, stale/current lifecycle, contradictory geometry, malformed masks, and multi-epoch inputs fail before misleading generation.
+- Generic and region requests share the production artifact cache/single-flight/decode/publication path. Repetition hits exact identity; corruption regenerates from retained sources; cancellation/deadline and session deletion suppress late publication.
+- Open-segment flush, physical segment overreach, overlapping exact pins, idempotent mutation, exact unpin, partial/unavailable evidence, all-pinned pause, post-unpin recovery, concurrent deletion, and final truthful status are covered. Pins protect source segments only; artifacts and schema-v5 browser events remain independently evictable.
+- Deterministic barriers prove source/artifact file and hash work, current browser geometry, decode/render/generation, and publication do not hold the recording mutation gate while frame/event persistence proceeds.
+- Root pointer identity proves one concrete store authority. No MCP file or registration changed.
+
+### Verification and handoff
+
+Rust 1.85 locked gates pass across the complete workspace:
+
+- `cargo fmt --all -- --check`
+- `cargo check --workspace --all-targets --locked`
+- `cargo test --workspace --all-targets --locked`
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`
+
+Qualification used scripted geometry and existing deterministic CDP tests only; no live-Chrome result is claimed. Execution stayed with one feature owner across the ordered checkpoints. Effective review weight is the caller's `standard`; this transition deliberately stops at `stage: review` without independently reviewing or marking the feature done.
