@@ -1,7 +1,7 @@
 ---
 id: refactor-split-cdp-session-supervisor-runtime-step-1-session-module-root-and-operations
 kind: story
-stage: implementing
+stage: done
 tags: [refactor, browser]
 parent: refactor-split-cdp-session-supervisor-runtime
 depends_on: []
@@ -54,3 +54,14 @@ Medium: the Rust module-path move is structural but pervasive, and `control/batc
 ## Rollback
 
 Collapse `session/mod.rs` and `session/operations.rs` back into one `session.rs` file and remove the submodule declaration if the module-root conversion causes churn.
+
+## Implementation notes
+
+- Execution capability: highest; selected by the autopilot caller because this private module move crosses the session supervisor's control, cancellation, and capture paths.
+- Review weight: standard (caller); child checkpoint review is not applicable.
+- Files changed: `crates/krometrail-cdp/src/session.rs` moved to `session/mod.rs`; request dispatch and page-result helpers moved to `session/operations.rs`.
+- Tests added/removed: none; existing lifecycle, observation, interaction, and waits/batches integration suites remain the behavior contract.
+- Simplification: isolated operation dispatch without new wrappers, traits, or caller imports.
+- Discrepancies from design: none.
+- Adjacent issues parked: none.
+- Verification: `cargo check -p krometrail-cdp --all-targets --locked`; four focused integration suites (47 tests); package all-target Clippy with `-D warnings`; format check — all passed.
