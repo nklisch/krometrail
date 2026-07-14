@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-debugging-workflow-artifact-generation-and-cache-artifact-schema-and-publication
 kind: story
-stage: implementing
+stage: done
 tags: [visual, storage]
 parent: epic-temporal-debugging-workflow-artifact-generation-and-cache
 depends_on: [epic-temporal-debugging-workflow-artifact-generation-and-cache-artifact-contracts-and-cache-identity]
@@ -39,3 +39,16 @@ This checkpoint exclusively owns metadata schema migration **v4**. It purges leg
 ## Ordering
 
 Depends on the core contracts/cache identity checkpoint. The frame adapter and generation service consume this store boundary; browser-event migration work chains after this story as v5+.
+
+## Implementation notes
+
+- Execution capability: highest; durable SQLite/filesystem publication, recovery, retention, and deletion fencing are one integrity boundary.
+- Review weight: standard from the autopilot caller; child checkpoints do not receive independent review.
+- Files changed: `crates/krometrail-store/{Cargo.toml,src/artifacts/{mod.rs,files.rs,recovery.rs},src/index/{artifacts.rs,schema_v4.rs,migrations.rs,mod.rs,maintenance.rs},src/{recording.rs,lib.rs},tests/{artifact_store.rs,sqlite_schema.rs}}` and `Cargo.lock`.
+- Tests added/updated: v3→v4 legacy-derived purge with source identities retained; real artifact publication/validated lookup/corruption invalidation/exact usage; concurrent equal-key convergence; durable staging finalization, orphan cleanup, corrupt-ready invalidation, and idempotent reopen; file-phase failpoint state tests. The obsolete test-only direct artifact-row SQL fixture was removed because v4's production port now covers the retention seam without bypassing invariants.
+- Verification: `cargo fmt --all`; `cargo check -p krometrail-store --all-targets`; all store all-target tests (79 passed); store all-target Clippy with `-D warnings` (green).
+- Simplification: v4 rebuilds and purges the reserved test-era artifact tables instead of carrying a compatibility path; one `RecordingStore` implements the path-free artifact authority and reuses the deletion journal, usage ledger, mutation gate, and source links.
+- Publication semantics: one cache-key lock serializes local publishers; staging metadata/source links/exact usage commit first, a bounded file worker performs temp write + file sync + rename + directory sync outside the mutation gate, and finalization revalidates session/source/cache state before ready visibility. Lookup snapshots metadata, reads/hashes source and artifact bytes outside the gate, then revalidates before returning.
+- Recovery/retention semantics: deletion journals resume before artifact reconciliation; valid durable staging rows finalize, invalid rows use the deletion journal, managed temp/final orphans are removed, and usage is reconciled idempotently. Source maintenance purges linked derived metadata before frame rows; normal eviction journals linked staging/ready artifact files before source segments. Session deletion marks/cancels and drains active publications before acquiring the mutation gate.
+- Discrepancies from design: recovery reporting is logged during `RecordingStore` construction rather than extending the segment-only public `RecoveryReport`; artifact publication uses a dedicated bounded single-thread file worker and per-key mutex rather than exposing failpoints through public ports. Physical crash states and ready visibility remain as designed.
+- Adjacent issues parked: none.

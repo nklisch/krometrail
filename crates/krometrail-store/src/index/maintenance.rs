@@ -108,6 +108,9 @@ impl SqliteIndex {
         let transaction = connection
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|_| persistence_error("could not begin frame-index maintenance"))?;
+        // Derived artifacts are invalidated before authoritative frame rows. Their managed
+        // files are removed by artifact recovery if this maintenance runs during startup.
+        super::artifacts::purge_artifacts_for_segment_tx(&transaction, segment_id)?;
         let mut statement = transaction
             .prepare(
                 "SELECT frame_id FROM frames WHERE segment_id=?1 \

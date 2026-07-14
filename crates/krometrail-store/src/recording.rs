@@ -1,22 +1,29 @@
 use std::{
-    collections::{BTreeSet, HashSet},
+    collections::HashSet,
     sync::{Arc, Mutex as StdMutex},
 };
 
 use krometrail_core::{
-    CaptureGap, CaptureGapStore, DiskBudgetBytes, EncodedFrame, ErrorCode, ErrorContext,
-    FrameAddress, InteractionAnchor, InteractionEvidenceSink, InteractionRecord, KrometrailError,
-    NavigationId, NonEmptyText, ObservedTime, PinChange, PortFuture, RecordingBudgetState,
-    RecordingSink, ResolvedRange, RetentionRange, RetentionStatus, RetentionStore, RetryAdvice,
-    SessionDeletion, SessionId, SessionRange, StorageUsage, TargetId, TemporalQuery,
-    TemporalQueryRequest, TemporalQueryService, TemporalRangeResolver, TimelineObservation,
-    TimelineStore,
+    ArtifactCacheKey, ArtifactLookup, ArtifactPublication, ArtifactPublish,
+    ArtifactSourceFingerprint, ArtifactStore, CaptureGap, CaptureGapStore, DiskBudgetBytes,
+    EncodedFrame, ErrorCode, ErrorContext, FrameAddress, FrameSource, InteractionAnchor,
+    InteractionEvidenceSink, InteractionRecord, KrometrailError, NavigationId, NonEmptyText,
+    ObservedTime, PinChange, PortFuture, RecordingBudgetState, RecordingSink, ResolvedRange,
+    RetentionRange, RetentionStatus, RetentionStore, RetryAdvice, SessionDeletion, SessionId,
+    SessionRange, StorageUsage, StoredArtifact, TargetId, TemporalQuery, TemporalQueryRequest,
+    TemporalQueryService, TemporalRangeResolver, TimelineObservation, TimelineStore,
 };
+use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, watch};
 
 use crate::{
     SegmentRegistration, SegmentWriter, SqliteIndex,
+    artifacts::{
+        CacheLocks, PublicationRegistry, files::ArtifactFiles, recovery as artifact_recovery,
+        source_fingerprints, validate_stored_artifact,
+    },
     index::{
+        artifacts::{ArtifactRow, ArtifactState, StageArtifact},
         deletion::{DeletionKind, DeletionObject, DeletionObjectKind, DeletionState},
         frames::index_frame_tx,
         retention::{ArtifactCandidate, SegmentCandidate},
@@ -36,11 +43,13 @@ pub struct RecordingStore {
     segments: Arc<SegmentWriter>,
     index: Arc<SqliteIndex>,
     removal: RemovalWorker,
+    artifact_files: ArtifactFiles,
+    artifact_publications: PublicationRegistry,
+    artifact_cache_locks: CacheLocks,
     budget: DiskBudgetBytes,
     open_overhead_limit: u64,
     budget_state: StdMutex<RecordingBudgetState>,
     availability: watch::Sender<u64>,
-    deleted_sessions: StdMutex<BTreeSet<SessionId>>,
 }
 
 impl RecordingStore {
@@ -61,8 +70,11 @@ impl RecordingStore {
             .parent()
             .ok_or_else(|| persistence_error("recording index has no data directory"))?
             .to_path_buf();
-        let removal =
-            RemovalWorker::open(data_directory, index.segments_directory().to_path_buf())?;
+        let removal = RemovalWorker::open(
+            data_directory.clone(),
+            index.segments_directory().to_path_buf(),
+        )?;
+        let artifact_files = ArtifactFiles::open(data_directory.join("artifacts"))?;
         let (_receiver, availability) = {
             let (sender, receiver) = watch::channel(0_u64);
             (receiver, sender)
@@ -75,12 +87,15 @@ impl RecordingStore {
             segments,
             index,
             removal,
+            artifact_files,
+            artifact_publications: PublicationRegistry::new(),
+            artifact_cache_locks: CacheLocks::new(),
             budget,
             budget_state: StdMutex::new(RecordingBudgetState::Available),
             availability,
-            deleted_sessions: StdMutex::new(BTreeSet::new()),
         };
         store.resume_deletions()?;
+        store.recover_artifacts()?;
         Ok(store)
     }
 
@@ -101,10 +116,44 @@ impl RecordingStore {
     }
 
     fn is_deleted(&self, session_id: SessionId) -> bool {
-        self.deleted_sessions
-            .lock()
-            .expect("deleted session lock poisoned")
-            .contains(&session_id)
+        self.artifact_publications.is_deleted(session_id)
+    }
+
+    fn recover_artifacts(&self) -> krometrail_core::Result<()> {
+        let mut plan = artifact_recovery::plan(self.index.as_ref(), &self.artifact_files)?;
+        for candidate in plan.invalid.drain(..) {
+            self.remove_objects_blocking(
+                DeletionKind::Eviction,
+                None,
+                vec![artifact_object(candidate)],
+            )?;
+        }
+        plan.report.usage_rows_reconciled =
+            artifact_recovery::reconcile_usage(self.index.as_ref())?;
+        tracing::info!(
+            staging_finalized = plan.report.staging_finalized,
+            staging_removed = plan.report.staging_removed,
+            ready_invalidated = plan.report.ready_invalidated,
+            orphan_files_removed = plan.report.orphan_files_removed,
+            usage_rows_reconciled = plan.report.usage_rows_reconciled,
+            "artifact store recovery complete"
+        );
+        Ok(())
+    }
+
+    fn remove_objects_blocking(
+        &self,
+        kind: DeletionKind,
+        session_id: Option<SessionId>,
+        objects: Vec<DeletionObject>,
+    ) -> krometrail_core::Result<()> {
+        let batch = self.index.prepare_deletion(kind, session_id, objects)?;
+        self.removal.stage_blocking(batch.clone())?;
+        self.index.remove_deletion_metadata(&batch)?;
+        let mut committed = batch.clone();
+        committed.state = DeletionState::MetadataRemoved;
+        self.removal.finalize_blocking(committed)?;
+        self.index.finalize_deletion(&batch)
     }
 
     fn reject_deleted(&self, session_id: SessionId) -> krometrail_core::Result<()> {
@@ -120,6 +169,62 @@ impl RecordingStore {
             }));
         }
         Ok(())
+    }
+
+    async fn validate_source_payloads(
+        &self,
+        session_id: SessionId,
+        target_id: TargetId,
+        expected: &[ArtifactSourceFingerprint],
+    ) -> krometrail_core::Result<()> {
+        let frames = self
+            .index
+            .frames_by_id(expected.iter().map(|source| source.frame_id).collect())
+            .await?;
+        if frames.len() != expected.len() {
+            return Err(source_lost_error(session_id, target_id));
+        }
+        for (frame, expected) in frames.iter().zip(expected) {
+            if frame.metadata().id() != expected.frame_id
+                || frame.metadata().session_id() != session_id
+                || frame.metadata().target_id() != target_id
+                || <[u8; 32]>::from(Sha256::digest(frame.bytes())) != expected.encoded_sha256
+            {
+                return Err(source_lost_error(session_id, target_id));
+            }
+        }
+        Ok(())
+    }
+
+    async fn read_artifact_row(
+        &self,
+        row: &ArtifactRow,
+        expected: Option<&[ArtifactSourceFingerprint]>,
+    ) -> krometrail_core::Result<StoredArtifact> {
+        if row.state != ArtifactState::Ready {
+            return Err(persistence_error("artifact is not ready"));
+        }
+        let sources = self.index.artifact_sources(row.artifact_id)?;
+        let retained = source_fingerprints(&sources);
+        self.validate_source_payloads(row.session_id, row.target_id, &retained)
+            .await?;
+        let bytes = self.artifact_files.read(row.relative_path.clone()).await?;
+        validate_stored_artifact(row, &sources, bytes, expected)
+    }
+
+    async fn invalidate_artifact_row(&self, row: ArtifactRow) -> krometrail_core::Result<()> {
+        self.remove_objects(
+            DeletionKind::Eviction,
+            None,
+            vec![artifact_object(ArtifactCandidate {
+                artifact_id: row.artifact_id,
+                session_id: row.session_id,
+                relative_path: row.relative_path,
+                byte_len: row.byte_len,
+            })],
+        )
+        .await
+        .map(|_| ())
     }
 
     async fn register_segments(
@@ -320,6 +425,167 @@ impl RecordingStore {
     }
 }
 
+impl ArtifactStore for RecordingStore {
+    fn lookup_artifact(
+        &self,
+        key: ArtifactCacheKey,
+        expected_sources: Vec<ArtifactSourceFingerprint>,
+    ) -> PortFuture<'_, krometrail_core::Result<ArtifactLookup>> {
+        Box::pin(async move {
+            let row = {
+                let _mutation = self.mutations.lock().await;
+                self.index.artifact_by_cache(key, true)?
+            };
+            let Some(row) = row else {
+                return Ok(ArtifactLookup::Miss);
+            };
+            let validated = self.read_artifact_row(&row, Some(&expected_sources)).await;
+            let _mutation = self.mutations.lock().await;
+            let unchanged = self
+                .index
+                .artifact_by_cache(key, true)?
+                .is_some_and(|current| current == row);
+            if !unchanged {
+                return Ok(ArtifactLookup::Miss);
+            }
+            match validated {
+                Ok(artifact) => Ok(ArtifactLookup::Hit(Box::new(artifact))),
+                Err(_) => {
+                    self.invalidate_artifact_row(row).await?;
+                    Ok(ArtifactLookup::Invalidated)
+                }
+            }
+        })
+    }
+
+    fn publish_artifact(
+        &self,
+        publication: ArtifactPublication,
+    ) -> PortFuture<'_, krometrail_core::Result<ArtifactPublish>> {
+        Box::pin(async move {
+            let publication_guard = self.artifact_publications.begin(publication.session_id)?;
+            let cache_lock = self
+                .artifact_cache_locks
+                .for_key(publication.cache.cache_key);
+            let _cache = cache_lock.lock().await;
+
+            match self
+                .lookup_artifact(publication.cache.cache_key, publication.sources.clone())
+                .await?
+            {
+                ArtifactLookup::Hit(artifact) => return Ok(ArtifactPublish::Existing(*artifact)),
+                ArtifactLookup::Miss | ArtifactLookup::Invalidated => {}
+            }
+            self.validate_source_payloads(
+                publication.session_id,
+                publication.target_id,
+                &publication.sources,
+            )
+            .await?;
+
+            let staged = {
+                let _mutation = self.mutations.lock().await;
+                self.reject_deleted(publication.session_id)?;
+                if publication_guard.is_cancelled() {
+                    return Err(cancelled_publication_error());
+                }
+                self.index.stage_artifact(&publication)?
+            };
+            let row = match staged {
+                StageArtifact::Staged(row) => row,
+                StageArtifact::Existing(existing) if existing.state == ArtifactState::Ready => {
+                    let stored = self
+                        .read_artifact_row(&existing, Some(&publication.sources))
+                        .await?;
+                    return Ok(ArtifactPublish::Existing(stored));
+                }
+                StageArtifact::Existing(existing) => {
+                    let _mutation = self.mutations.lock().await;
+                    self.invalidate_artifact_row(existing).await?;
+                    return Err(persistence_error(
+                        "stale artifact staging state was invalidated; retry publication",
+                    ));
+                }
+            };
+
+            if let Err(error) = self
+                .artifact_files
+                .publish(
+                    row.artifact_id,
+                    Arc::clone(&publication.encoded_bytes),
+                    publication_guard.cancellation(),
+                )
+                .await
+            {
+                let _mutation = self.mutations.lock().await;
+                self.invalidate_artifact_row(row).await?;
+                return Err(error);
+            }
+
+            let finalized = {
+                let _mutation = self.mutations.lock().await;
+                if publication_guard.is_cancelled() || self.is_deleted(publication.session_id) {
+                    self.invalidate_artifact_row(row.clone()).await?;
+                    return Err(cancelled_publication_error());
+                }
+                self.index.finalize_artifact(
+                    row.artifact_id,
+                    publication.cache.cache_key,
+                    publication.session_id,
+                    publication.target_id,
+                    &publication.sources,
+                )?
+            };
+            if !finalized {
+                let _mutation = self.mutations.lock().await;
+                self.invalidate_artifact_row(row).await?;
+                return Err(persistence_error(
+                    "artifact publication did not reach ready state",
+                ));
+            }
+            let ready = self
+                .index
+                .artifact_row(*publication.manifest.artifact_id())?
+                .ok_or_else(|| persistence_error("ready artifact metadata disappeared"))?;
+            let stored = self
+                .read_artifact_row(&ready, Some(&publication.sources))
+                .await?;
+            Ok(ArtifactPublish::Published(stored))
+        })
+    }
+
+    fn artifact(
+        &self,
+        artifact_id: krometrail_core::ArtifactId,
+    ) -> PortFuture<'_, krometrail_core::Result<Option<StoredArtifact>>> {
+        Box::pin(async move {
+            let row = {
+                let _mutation = self.mutations.lock().await;
+                self.index
+                    .artifact_row(artifact_id)?
+                    .filter(|row| row.state == ArtifactState::Ready)
+            };
+            let Some(row) = row else {
+                return Ok(None);
+            };
+            match self.read_artifact_row(&row, None).await {
+                Ok(artifact) => Ok(Some(artifact)),
+                Err(_) => {
+                    let _mutation = self.mutations.lock().await;
+                    if self
+                        .index
+                        .artifact_row(artifact_id)?
+                        .is_some_and(|current| current == row)
+                    {
+                        self.invalidate_artifact_row(row).await?;
+                    }
+                    Ok(None)
+                }
+            }
+        })
+    }
+}
+
 impl RecordingSink for RecordingStore {
     fn append_frame(
         &self,
@@ -467,16 +733,11 @@ impl RetentionStore for RecordingStore {
         session_id: SessionId,
     ) -> PortFuture<'_, krometrail_core::Result<SessionDeletion>> {
         Box::pin(async move {
+            // Fence publication before waiting: no new publisher can enter, active file work
+            // observes cancellation, and the mutation gate remains available while it drains.
+            self.artifact_publications.mark_deleted(session_id);
+            self.artifact_publications.drain(session_id).await;
             let _mutation = self.mutations.lock().await;
-            if self.is_deleted(session_id) {
-                return Ok(SessionDeletion {
-                    session_id,
-                    removed_segments: 0,
-                    removed_frames: 0,
-                    removed_artifacts: 0,
-                    removed_bytes: 0,
-                });
-            }
             self.flush_session(session_id).await?;
             let session_usage = self.index.session_usage_bytes(session_id)?;
             let segments = self.index.session_segments(session_id)?;
@@ -491,10 +752,6 @@ impl RetentionStore for RecordingStore {
             }
             let mut objects: Vec<_> = artifacts.into_iter().map(artifact_object).collect();
             objects.extend(segments.into_iter().map(segment_object));
-            self.deleted_sessions
-                .lock()
-                .expect("deleted session lock poisoned")
-                .insert(session_id);
             let (removed_segments, removed_frames, removed_artifacts, object_bytes) = self
                 .remove_objects(DeletionKind::Session, Some(session_id), objects)
                 .await?;
@@ -543,6 +800,27 @@ fn segment_object(candidate: SegmentCandidate) -> DeletionObject {
     }
 }
 
+fn source_lost_error(session_id: SessionId, target_id: TargetId) -> KrometrailError {
+    KrometrailError::new(
+        ErrorCode::NotFound,
+        NonEmptyText::new("artifact source evidence is no longer retained")
+            .expect("static source error is non-empty"),
+    )
+    .with_context(ErrorContext {
+        session_id: Some(session_id),
+        target_id: Some(target_id),
+        ..Default::default()
+    })
+}
+
+fn cancelled_publication_error() -> KrometrailError {
+    KrometrailError::new(
+        ErrorCode::Cancelled,
+        NonEmptyText::new("artifact publication was cancelled")
+            .expect("static publication cancellation is non-empty"),
+    )
+}
+
 fn budget_error(session_id: SessionId, target_id: krometrail_core::TargetId) -> KrometrailError {
     KrometrailError::new(
         ErrorCode::BudgetExhausted,
@@ -565,18 +843,12 @@ mod tests {
     use std::{sync::Arc, time::Duration};
 
     use krometrail_core::{
-        ArtifactId, CaptureOrdinal, CapturedFrame, DeviceScaleFactor, EncodedFrame, FrameId,
-        FrameSource, ImageFormat, ObservedTime, PixelDimensions, RecordingSink, SessionTime,
-        TargetId,
+        CaptureOrdinal, CapturedFrame, DeviceScaleFactor, EncodedFrame, FrameId, FrameSource,
+        ImageFormat, ObservedTime, PixelDimensions, RecordingSink, SessionTime, TargetId,
     };
-    use rusqlite::params;
     use tempfile::TempDir;
     use uuid::Uuid;
 
-    use crate::index::{
-        codec,
-        maintenance::{UsageClass, UsageEntry},
-    };
     use crate::{IndexStoreConfig, RotationConfig, SegmentStoreConfig};
 
     use super::*;
@@ -625,127 +897,6 @@ mod tests {
         );
         let store = RecordingStore::new(Arc::clone(&writer), Arc::clone(&index)).unwrap();
         (index, writer, store)
-    }
-
-    #[tokio::test]
-    async fn mixed_source_artifact_is_staged_before_any_source_segment_disappears() {
-        let directory = TempDir::new().unwrap();
-        let (index, _writer, store) = fixture(&directory);
-        let first = frame(1, 2, 3, 1);
-        let second = frame(1, 2, 4, 2);
-        store.append_frame(first.clone()).await.unwrap();
-        store.append_frame(second.clone()).await.unwrap();
-        store.flush(first.metadata().session_id()).await.unwrap();
-
-        let artifact_id = ArtifactId::from_uuid(Uuid::from_u128(10));
-        let surviving_artifact_id = ArtifactId::from_uuid(Uuid::from_u128(11));
-        let artifact_path = directory.path().join("artifacts").join("mixed.png");
-        let surviving_artifact_path = directory.path().join("artifacts").join("surviving.png");
-        std::fs::write(&artifact_path, b"artifact").unwrap();
-        std::fs::write(&surviving_artifact_path, b"survives").unwrap();
-        {
-            let connection = index.connection().unwrap();
-            connection.execute(
-                "INSERT INTO artifacts(artifact_id, session_id, target_id, kind, start_time_be, \
-                 end_time_be, manifest_json, relative_path, byte_len_be) VALUES \
-                 (?1, ?2, ?3, 'storyboard', ?4, ?5, '{}', 'mixed.png', ?6)",
-                params![
-                    codec::id(artifact_id.as_uuid()).to_vec(),
-                    codec::id(first.metadata().session_id().as_uuid()).to_vec(),
-                    codec::id(first.metadata().target_id().as_uuid()).to_vec(),
-                    codec::u64_blob(1).to_vec(), codec::u64_blob(2).to_vec(),
-                    codec::u64_blob(8).to_vec(),
-                ],
-            ).unwrap();
-            for (position, id) in [first.metadata().id(), second.metadata().id()]
-                .into_iter()
-                .enumerate()
-            {
-                connection.execute(
-                    "INSERT INTO artifact_frames(artifact_id, source_position, frame_id) VALUES (?1, ?2, ?3)",
-                    params![codec::id(artifact_id.as_uuid()).to_vec(), position as i64, codec::id(id.as_uuid()).to_vec()],
-                ).unwrap();
-            }
-            connection.execute(
-                "INSERT INTO artifacts(artifact_id, session_id, target_id, kind, start_time_be, \
-                 end_time_be, manifest_json, relative_path, byte_len_be) VALUES \
-                 (?1, ?2, ?3, 'storyboard', ?4, ?5, '{}', 'surviving.png', ?6)",
-                params![
-                    codec::id(surviving_artifact_id.as_uuid()).to_vec(),
-                    codec::id(first.metadata().session_id().as_uuid()).to_vec(),
-                    codec::id(first.metadata().target_id().as_uuid()).to_vec(),
-                    codec::u64_blob(1).to_vec(), codec::u64_blob(2).to_vec(),
-                    codec::u64_blob(8).to_vec(),
-                ],
-            ).unwrap();
-            connection.execute(
-                "INSERT INTO artifact_frames(artifact_id, source_position, frame_id) VALUES (?1, 0, ?2)",
-                params![
-                    codec::id(surviving_artifact_id.as_uuid()).to_vec(),
-                    codec::id(second.metadata().id().as_uuid()).to_vec(),
-                ],
-            ).unwrap();
-        }
-        for artifact_id in [artifact_id, surviving_artifact_id] {
-            index
-                .update_usage(UsageEntry {
-                    class: UsageClass::Artifact,
-                    object_key: codec::id(artifact_id.as_uuid()).to_vec().into_boxed_slice(),
-                    session_id: Some(first.metadata().session_id()),
-                    byte_len: 8,
-                })
-                .unwrap();
-        }
-
-        let candidate = index.oldest_unpinned_segment().unwrap().unwrap();
-        let mut objects: Vec<_> = index
-            .artifacts_for_segment(candidate.segment_id)
-            .unwrap()
-            .into_iter()
-            .map(artifact_object)
-            .collect();
-        objects.push(segment_object(candidate));
-        store
-            .remove_objects(DeletionKind::Eviction, None, objects)
-            .await
-            .unwrap();
-
-        assert!(!artifact_path.exists());
-        assert!(surviving_artifact_path.exists());
-        let artifact_count: u64 = index
-            .connection()
-            .unwrap()
-            .query_row(
-                "SELECT count(*) FROM artifacts WHERE artifact_id=?1",
-                params![codec::id(artifact_id.as_uuid()).to_vec()],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(artifact_count, 0);
-        let surviving_count: u64 = index
-            .connection()
-            .unwrap()
-            .query_row(
-                "SELECT count(*) FROM artifacts WHERE artifact_id=?1",
-                params![codec::id(surviving_artifact_id.as_uuid()).to_vec()],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(surviving_count, 1);
-        assert!(
-            index
-                .frames_by_id(vec![first.metadata().id()])
-                .await
-                .is_err()
-        );
-        assert_eq!(
-            index
-                .frames_by_id(vec![second.metadata().id()])
-                .await
-                .unwrap()
-                .len(),
-            1
-        );
     }
 
     #[tokio::test]

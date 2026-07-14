@@ -2,14 +2,14 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use crate::persistence_error;
 
-use super::{schema_v1, schema_v2, schema_v3};
+use super::{schema_v1, schema_v2, schema_v3, schema_v4};
 
 pub(crate) struct Migration {
     pub version: u32,
     pub sql: &'static str,
 }
 
-pub(crate) const LATEST_SCHEMA_VERSION: u32 = 3;
+pub(crate) const LATEST_SCHEMA_VERSION: u32 = 4;
 pub(crate) const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 1,
@@ -22,6 +22,10 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 3,
         sql: schema_v3::SQL,
+    },
+    Migration {
+        version: 4,
+        sql: schema_v4::SQL,
     },
 ];
 
@@ -79,20 +83,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn v2_database_upgrades_to_v3_in_one_transaction() {
+    fn v3_database_upgrades_to_v4_in_one_transaction() {
         let mut connection = Connection::open_in_memory().unwrap();
-        migrate_with(&mut connection, &MIGRATIONS[..2], 2).unwrap();
+        migrate_with(&mut connection, &MIGRATIONS[..3], 3).unwrap();
         let before: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(before, 2);
+        assert_eq!(before, 3);
 
         migrate(&mut connection).unwrap();
         let after: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(after, 3);
-        for table in ["interactions", "evicted_frame_ranges"] {
+        assert_eq!(after, 4);
+        for table in [
+            "interactions",
+            "evicted_frame_ranges",
+            "artifacts",
+            "artifact_frames",
+        ] {
             let count: u32 = connection
                 .query_row(
                     "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?1",
@@ -102,6 +111,47 @@ mod tests {
                 .unwrap();
             assert_eq!(count, 1);
         }
+    }
+
+    #[test]
+    fn v4_purges_only_legacy_derived_artifact_state() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        migrate_with(&mut connection, &MIGRATIONS[..3], 3).unwrap();
+        let id = vec![1_u8; 16];
+        let target = vec![2_u8; 16];
+        connection
+            .execute(
+                "INSERT INTO sessions(session_id,record_json) VALUES (?1,NULL)",
+                [&id],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO targets(session_id,target_id,record_json) VALUES (?1,?2,NULL)",
+                rusqlite::params![&id, &target],
+            )
+            .unwrap();
+        connection.execute(
+            "INSERT INTO artifacts(artifact_id,session_id,target_id,kind,start_time_be,end_time_be,manifest_json,relative_path,byte_len_be)
+             VALUES (?1,?2,?3,'storyboard',?4,?4,'{}','legacy.png',?4)",
+            rusqlite::params![vec![3_u8; 16], &id, &target, vec![0_u8; 8]],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO usage(class,object_key,session_id,byte_len_be) VALUES ('artifact',?1,?2,?3)",
+            rusqlite::params![vec![3_u8; 16], &id, vec![0_u8; 8]],
+        ).unwrap();
+
+        migrate(&mut connection).unwrap();
+        let retained: (u64, u64, u64, u64) = connection
+            .query_row(
+                "SELECT (SELECT count(*) FROM sessions),(SELECT count(*) FROM targets),
+                    (SELECT count(*) FROM artifacts),
+                    (SELECT count(*) FROM usage WHERE class='artifact')",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(retained, (1, 1, 0, 0));
     }
 
     #[test]

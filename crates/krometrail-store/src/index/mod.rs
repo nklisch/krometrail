@@ -1,3 +1,4 @@
+pub(crate) mod artifacts;
 mod catalog;
 pub(crate) mod codec;
 pub(crate) mod deletion;
@@ -12,6 +13,7 @@ pub(crate) mod retention;
 mod schema_v1;
 mod schema_v2;
 mod schema_v3;
+mod schema_v4;
 pub(crate) mod segments;
 mod timeline;
 

@@ -1,5 +1,6 @@
 //! Recording persistence adapters.
 
+pub(crate) mod artifacts;
 pub mod index;
 pub mod recovery;
 pub mod segments;
