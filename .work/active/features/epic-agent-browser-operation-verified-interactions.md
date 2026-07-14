@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-operation-verified-interactions
 kind: feature
-stage: review
+stage: done
 tags: [browser, agent-ux]
 parent: epic-agent-browser-operation
 depends_on: [epic-agent-browser-operation-page-observation]
@@ -857,4 +857,15 @@ The approved initial-attach domain restoration, exact-session single-attempt dia
 - `cargo test --workspace --all-targets --locked` — 381 passed.
 - `cargo clippy --workspace --all-targets --locked -- -D warnings` — passed.
 
-Implementation has returned to `stage: review` for the caller's feature-level closure. No second review was run, and the feature is not marked done.
+Implementation returned to `stage: review` for caller-managed feature closure. No second independent review was run under the standard-weight policy.
+
+## Review closure (2026-07-14)
+
+**Verdict**: Approve
+
+**Blockers**: none — both receiver-confirmed blockers from the single standard pass were fixed and verified.
+**Important**: none — the pointer-dispatch cancellation proposal was confirmed material and corrected in the same remediation.
+**Nits**: drag layout-read sharing remains a performance nit outside this correction.
+**Rejected**: Adding `throwOnSideEffect` to the fixed, adapter-owned coordinate hit test was rejected because Chromium can conservatively refuse its bounded DOM reads without creating a meaningful security boundary.
+
+**Notes**: Standard-weight closure used fix verification only; the independent pass was not repeated. The receiver inspected commit `6efcbaf`, confirmed element box-model coordinates are qualified as viewport-relative under non-zero scroll, fill records retain only character counts, and stateful click/drag commands queue release before dialog-driven abandonment can split the gesture. Fresh focused verification passed 3 core interaction tests, 4 CDP interaction tests, and 9 verified-interactions contract tests. The implementation worker additionally reported real-Chrome qualification (9 tests), workspace check/test (381 tests), and workspace Clippy with warnings denied as green.
