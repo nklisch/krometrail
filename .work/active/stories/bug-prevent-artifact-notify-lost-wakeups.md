@@ -1,7 +1,7 @@
 ---
 id: bug-prevent-artifact-notify-lost-wakeups
 kind: story
-stage: review
+stage: done
 tags: [bug, visual, storage]
 parent: null
 depends_on: []
@@ -38,3 +38,13 @@ Focused multi-threaded coordination tests beside single-flight, work cancellatio
 - Regression tests cover completion, cancellation, and publication drop after registration but before awaiting, using Tokio's multi-threaded runtime and bounded timeouts.
 - Confirmation: the new tests pass; the full locked Rust 1.85 workspace test suite passes; format and workspace Clippy with warnings denied pass. The originally reviewed lost-permit window is removed at all three sites.
 - Parked separately: `idea-artifact-error-context` captures the review's lower-risk context-propagation nit.
+
+## Review (2026-07-14)
+
+**Verdict**: Approve
+
+**Blockers**: none
+**Important**: none
+**Nits**: none
+
+**Evidence**: Bounded standalone-story review inspected commit `4ba4214`, confirmed every reviewed state-check/notification loop registers before checking state, retained broadcast semantics for multiple listeners, and found no changes to result, timeout, cancellation, waiter-count, publication, or deletion contracts. The three focused tests and full Rust 1.85 workspace gate passed. No independent reviewer ran, as required for a standalone fix story.
