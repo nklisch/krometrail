@@ -1,7 +1,7 @@
 ---
 id: epic-durable-browser-memory-recovery-fault-injection
 kind: story
-stage: implementing
+stage: done
 tags: [storage, browser, testing]
 parent: epic-durable-browser-memory-recovery
 depends_on: [epic-durable-browser-memory-recovery-engine]
@@ -50,3 +50,14 @@ Locked workspace `cargo fmt --all --check`, `cargo check --workspace --all-targe
 - To simulate a crash aftermath, manipulate files and rows directly: `std::fs::read`/`write`/`rename`/`remove_file` for segment file states, and direct `rusqlite` statements (via `index.connection()` in test-only helpers or a small test-side connection) for index row setup. Do not add production API surface to set up fault fixtures.
 - Reuse the `IndexedRecordingSink::append_frame` / `SegmentWriter::append_indexable` / `SegmentWriter::flush_indexable` seams already covered by tests in `recording.rs` and `maintenance.rs` to produce realistic on-disk states before perturbing them.
 - The orphan-payload and dangling-row tests together are the cross-layer evidence the segment-format handoff named; keep them paired so the asymmetric invariant is visible in one read of the suite.
+
+## Implementation notes
+
+- Execution capability: highest (autopilot caller), selected because this suite is the release evidence for the record-before-index asymmetry and recovery idempotence.
+- Review weight: standard (caller/project default); child checkpoints do not self-review, and the parent feature will stop at `review` for independent review.
+- Files changed: `crates/krometrail-store/tests/recovery.rs`.
+- Tests added: 12 real-filesystem qualification cases covering orphan insertion, torn-tail removal, sealed-but-unreconciled resume, fatal quarantine, missing-file cleanup and pin-link cascade, surviving-pin trust, usage restoration and stale-row removal, empty segments, unflushed multi-target reopen/open count, both asymmetric directions in one pass, damaged sealed-footer repair, operational error mapping, and unreadable-root shutdown mapping.
+- Simplification: fixtures use the real writer/index/facade and direct aftermath manipulation; no production fault hook, recovery journal, power-loss simulation, or widened test-only API was added.
+- Discrepancies from design: the idempotence test snapshots logical index rows rather than raw SQLite/WAL bytes, because SQLite may change physical page/WAL representation without a logical mutation. The stronger contract asserted is identical segment/frame/timeline/usage metadata plus an all-zero second report.
+- Verification: focused store suite passed (49 tests across 7 suites); store Clippy passed with warnings denied; locked workspace gates and isolated startup are the parent feature's integrated gate.
+- Adjacent issues parked: none.

@@ -133,21 +133,27 @@ pub(crate) fn indexed_frames(
         .collect()
 }
 
+pub(crate) fn frame_exists(
+    connection: &Connection,
+    frame_id: FrameId,
+) -> krometrail_core::Result<bool> {
+    connection
+        .query_row(
+            "SELECT 1 FROM frames WHERE frame_id=?1",
+            params![codec::id(frame_id.as_uuid()).to_vec()],
+            |_| Ok(()),
+        )
+        .optional()
+        .map(|value| value.is_some())
+        .map_err(|_| persistence_error("could not check recovered frame metadata"))
+}
+
 pub(crate) fn upsert_recovered_frame_tx(
     transaction: &Transaction<'_>,
     frame: &EncodedFrame,
     commit: &FrameWriteCommit,
 ) -> krometrail_core::Result<bool> {
-    let exists = transaction
-        .query_row(
-            "SELECT 1 FROM frames WHERE frame_id=?1",
-            params![codec::id(frame.metadata().id().as_uuid()).to_vec()],
-            |_| Ok(()),
-        )
-        .optional()
-        .map_err(|_| persistence_error("could not check recovered frame metadata"))?
-        .is_some();
-    if exists {
+    if frame_exists(transaction, frame.metadata().id())? {
         return Ok(false);
     }
     index_frame_tx(transaction, frame, commit)?;

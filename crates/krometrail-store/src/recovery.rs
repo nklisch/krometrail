@@ -429,11 +429,21 @@ fn reconcile_segment(
         report.frames_removed += removed.len() as u64;
     }
 
-    let missing: Vec<_> = normalized
+    let mut missing: Vec<_> = normalized
         .records
         .iter()
         .filter(|record| !retained_offsets.contains(&record.span.byte_offset))
         .collect();
+    if !missing.is_empty() {
+        let connection = index.connection()?;
+        let mut insertable = Vec::with_capacity(missing.len());
+        for record in missing {
+            if !reconcile::frame_exists(&connection, record.frame.metadata().id())? {
+                insertable.push(record);
+            }
+        }
+        missing = insertable;
+    }
     let registration_matches =
         stored_registration == Some(&normalized.registration) && !immutable_registration_mismatch;
     if registration_matches && missing.is_empty() {
