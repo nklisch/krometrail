@@ -1068,6 +1068,16 @@ async fn execute_operation(
     shared: &Arc<SessionShared>,
     request: BrowserOperationRequest,
 ) -> Result<BrowserOperationResult> {
+    if request.kind().is_interaction() {
+        return page_control
+            .execute_interaction_request(
+                transport.as_ref(),
+                state,
+                request,
+                &shared.operation_cancellation,
+            )
+            .await;
+    }
     match request {
         BrowserOperationRequest::CreatePage(request) => {
             let started_at = page_control.session_time()?;

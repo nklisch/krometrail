@@ -88,10 +88,14 @@ pub(crate) struct SnapshotRegistry {
 pub(crate) enum ReferenceRequirement {
     Actionable,
     VisibleGeometry,
+    Editable,
+    Selectable,
+    FileInput,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct ResolvedNode {
+    pub(crate) backend_node_id: i64,
     pub(crate) document_quad: [f64; 8],
 }
 
@@ -354,7 +358,7 @@ async fn resolve_backend_node(
         // Keep them separate from actual visibility so screenshot-only resolution can still crop
         // a visible control. The parent walk captures inherited light-DOM inertness without a
         // selector query that Chrome's side-effect analysis may conservatively refuse.
-        "functionDeclaration": "function(){const s=getComputedStyle(this);let n=this,inert=false;while(n&&!inert){inert=n.inert===true;n=n.parentElement;}return {connected:this.isConnected,visuallyHidden:this.hidden||s.display==='none'||s.visibility==='hidden'||s.visibility==='collapse'||s.contentVisibility==='hidden',interactionBlocked:inert||this.disabled||this.getAttribute('aria-disabled')==='true'};}",
+        "functionDeclaration": "function(){const s=getComputedStyle(this);let n=this,inert=false;while(n&&!inert){inert=n.inert===true;n=n.parentElement;}const tag=this.tagName;const type=tag==='INPUT'?(this.type||'text').toLowerCase():null;return {connected:this.isConnected,visuallyHidden:this.hidden||s.display==='none'||s.visibility==='hidden'||s.visibility==='collapse'||s.contentVisibility==='hidden',interactionBlocked:inert||this.disabled||this.getAttribute('aria-disabled')==='true',tagName:tag,inputType:type,isEditable:!this.readOnly&&!this.disabled&&(this.isContentEditable||(tag==='INPUT'&&/^(text|search|url|email|tel|password|number)$/.test(type))||tag==='TEXTAREA'),isSelect:tag==='SELECT',isFileInput:tag==='INPUT'&&type==='file'};}",
         "returnByValue": true,
         "throwOnSideEffect": true,
         "silent": true,
@@ -397,7 +401,10 @@ async fn resolve_backend_node(
             "backing node has zero-area geometry",
         ));
     }
-    Ok(ResolvedNode { document_quad })
+    Ok(ResolvedNode {
+        backend_node_id,
+        document_quad,
+    })
 }
 
 fn validate_node_state(
@@ -411,12 +418,30 @@ fn validate_node_state(
     if state.get("visuallyHidden").and_then(Value::as_bool) != Some(false) {
         return Err(not_actionable(target_id, "backing node is hidden"));
     }
-    if requirement == ReferenceRequirement::Actionable
+    if requirement != ReferenceRequirement::VisibleGeometry
         && state.get("interactionBlocked").and_then(Value::as_bool) != Some(false)
     {
         return Err(not_actionable(
             target_id,
             "backing node is inert, disabled, or aria-disabled",
+        ));
+    }
+    let valid_kind = match requirement {
+        ReferenceRequirement::VisibleGeometry | ReferenceRequirement::Actionable => true,
+        ReferenceRequirement::Editable => {
+            state.get("isEditable").and_then(Value::as_bool) == Some(true)
+        }
+        ReferenceRequirement::Selectable => {
+            state.get("isSelect").and_then(Value::as_bool) == Some(true)
+        }
+        ReferenceRequirement::FileInput => {
+            state.get("isFileInput").and_then(Value::as_bool) == Some(true)
+        }
+    };
+    if !valid_kind {
+        return Err(not_actionable(
+            target_id,
+            "backing node is not valid for the requested interaction",
         ));
     }
     Ok(())
@@ -700,6 +725,9 @@ mod tests {
         for requirement in [
             ReferenceRequirement::VisibleGeometry,
             ReferenceRequirement::Actionable,
+            ReferenceRequirement::Editable,
+            ReferenceRequirement::Selectable,
+            ReferenceRequirement::FileInput,
         ] {
             let hidden = json!({
                 "connected": true,

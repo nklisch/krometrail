@@ -15,8 +15,10 @@ use crate::{
 };
 
 mod evaluation;
+mod interaction;
 pub(crate) mod navigation;
 mod pages;
+mod pointer;
 mod screenshot;
 mod snapshot;
 
@@ -139,7 +141,16 @@ impl PageControl {
             | BrowserOperationRequest::NavigatePage(_)
             | BrowserOperationRequest::ReloadPage(_)
             | BrowserOperationRequest::GoBack(_)
-            | BrowserOperationRequest::GoForward(_) => {
+            | BrowserOperationRequest::GoForward(_)
+            | BrowserOperationRequest::Click(_)
+            | BrowserOperationRequest::Fill(_)
+            | BrowserOperationRequest::PressKeys(_)
+            | BrowserOperationRequest::SelectOption(_)
+            | BrowserOperationRequest::Hover(_)
+            | BrowserOperationRequest::Drag(_)
+            | BrowserOperationRequest::Scroll(_)
+            | BrowserOperationRequest::UploadFiles(_)
+            | BrowserOperationRequest::HandleDialog(_) => {
                 unreachable!("browser/page mutations are routed before read-only dispatch")
             }
         }

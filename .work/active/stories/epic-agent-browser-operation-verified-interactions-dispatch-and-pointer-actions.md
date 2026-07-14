@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-operation-verified-interactions-dispatch-and-pointer-actions
 kind: story
-stage: implementing
+stage: done
 tags: [browser, agent-ux]
 parent: epic-agent-browser-operation-verified-interactions
 depends_on: [epic-agent-browser-operation-verified-interactions-core-contracts]
@@ -45,3 +45,12 @@ Build the shared interaction executor in `crates/krometrail-cdp/src/control/inte
 - Keyboard (`Fill`, `PressKeys`) and form (`SelectOption`) actions (next story).
 - Upload and dialog actions (story after).
 - Real-Chrome qualification and the standalone fixture (final story).
+
+## Implementation notes
+
+- Added one cancellation-aware interaction executor on the existing supervised session path. It binds the exact current flat session, allocates the session-wide interaction id, resolves once through the shared snapshot/selector/coordinate boundary, dispatches action-family mechanics, applies bounded completion, and reuses `observe_live` for the returned evidence.
+- Extended the resolver's single DOM fact query with editable/select/file facts while preserving strict actionability and screenshot-only `VisibleGeometry`. Resolved nodes now expose their private backend id only inside the adapter.
+- Pointer actions emit finite viewport-relative mouse JSON for click, hover, bounded five-step drag, offset scroll, and scroll-to-element. Coordinate input converts declared document space, performs an explicit `elementFromPoint` hit-test, and rejects empty/out-of-viewport targets.
+- Interaction dispatch races the existing generation-aware stop/disconnect signal. Navigation-aware click subscribes before dispatch and treats the bounded no-event timeout as successful input completion, never as network-idle evidence.
+- Later action-family variants return stable `unsupported` until their dependency checkpoints land; no operation is replayed by reconnect.
+- Verification passed: formatting, locked all-target CDP check, 78 CDP library tests, and locked all-target CDP Clippy with warnings denied. Exact cross-action scripted JSON and real-browser behavior are consolidated in the qualification checkpoint.
