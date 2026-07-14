@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-debugging-workflow-capture-and-browser-event-context
 kind: feature
-stage: implementing
+stage: review
 tags: [browser, storage, agent-ux]
 parent: epic-temporal-debugging-workflow
 depends_on: [epic-temporal-debugging-workflow-resolved-temporal-queries]
@@ -656,6 +656,29 @@ These are checkpoints for one future feature owner, not five implementation agen
 - **Concurrency regression:** barriers, bounded channels, and paused Tokio time prove no event sink/flood can starve capture/supervision/operations without flaky stopwatch thresholds.
 - **Root seam:** one end-to-end fake-CDP → sanitized store → same-range context query protects capability/default wiring.
 - Do not test trivial getters, every SQL statement, each event variant independently, MCP routes not owned here, or raw CDP values by snapshot.
+
+## Integrated implementation evidence
+
+All five dependency-ordered checkpoints are complete:
+
+1. Core browser-event contracts and privacy — `ea82451`.
+2. Session-domain authority and generation-fenced routing — `64e7f48`.
+3. Transactional schema v5, retention, deletion, and recovery — `f5e3056`.
+4. Deterministic resolved-range context query service — `1507e8b`.
+5. Root composition and integrated qualification — `8f866a2`.
+
+The integrated seam now has one default capability selection, one process clock and ID source shared by capture/events/control, and one concrete `RecordingStore` behind recording, retention, timeline, browser-event sink/source, artifact, temporal-query, and temporal-context ports. The connector installs browser events from the registry default; explicit capability omission selects disabled semantic collection without removing control/capture composition, and MCP consumes the same selection without gaining any new route or resource.
+
+The final scripted qualification drives two targets through two transport generations and reconnect into the real schema-v5 store, verifies target isolation, old-generation fencing, ordinal continuity, and private-field exclusion, then reads the exact retained browser events through a `TemporalContextRequest` over the same session/target/range. Existing focused suites jointly cover network fan-out/lag, bounded queue and sink stalls, frame acknowledgement ordering, supervisor/operation independence, aggregate shutdown, migration rollback/future refusal, usage, global event/segment retention, pins, session deletion, crash recovery/idempotence/corruption, deterministic query ordering/focus/cursors/truncation, and capture-quality warnings.
+
+Final locked Rust 1.85 evidence:
+
+- `cargo fmt --all -- --check` — passed.
+- `cargo check --workspace --all-targets --locked` — passed.
+- `cargo test --workspace --all-targets --locked` — passed.
+- `cargo clippy --workspace --all-targets --locked -- -D warnings` — passed.
+
+The implementation made no MCP route/resource, bundle, artifact/temporal-vision, foundation-document, or live-Chrome claim. Opt-in browser tests retained their existing no-browser skip behavior. The feature is ready for integrated review; this transition does not perform or complete that review.
 
 ## Risks and rollback
 
