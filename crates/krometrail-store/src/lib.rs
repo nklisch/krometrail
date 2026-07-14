@@ -1,7 +1,9 @@
 //! Recording persistence adapters.
 
+pub mod index;
 pub mod segments;
 
+pub use index::{IndexStoreConfig, SqliteIndex};
 pub use segments::{RotationConfig, SegmentStoreConfig, SegmentWriter};
 
 use krometrail_core::{ErrorCode, KrometrailError, NonEmptyText};

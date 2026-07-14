@@ -44,6 +44,7 @@ sha2 = "0.10"
 png = "=0.17.16"
 crc32fast = "1"
 libc = "0.2"
+rusqlite = { version = "=0.33.0", default-features = false, features = ["bundled"] }
 tokio-tungstenite = "=0.30.0"
 url = "2"
 

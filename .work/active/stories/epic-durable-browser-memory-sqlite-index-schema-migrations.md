@@ -1,7 +1,7 @@
 ---
 id: epic-durable-browser-memory-sqlite-index-schema-migrations
 kind: story
-stage: implementing
+stage: done
 tags: [storage, browser]
 parent: epic-durable-browser-memory-sqlite-index
 depends_on: [epic-durable-browser-memory-sqlite-index-core-contracts]
@@ -31,3 +31,12 @@ Depends on core contracts so schema codecs and migration tests use final stable 
 - ID/u64/i128 codecs round-trip boundary values; SQL BLOB sort order equals Rust unsigned order including values above `i64::MAX`.
 - Schema inventory matches the parent SQL exactly and has no raw browser-event payload/body/header column.
 - Adapter failures map to source-safe `PersistenceFailed`; locked workspace gates pass.
+
+## Implementation notes
+
+- Locked exact `rusqlite` 0.33.0 with bundled SQLite and disabled defaults; core remains database-free.
+- Added one file-backed connection boundary with foreign keys, WAL, FULL synchronization, caller-bounded busy timeout, and contiguous forward-only migration handling.
+- Schema v1 implements the complete strict-table and index inventory from the feature design without a raw browser-event payload path.
+- UUID, full-domain unsigned integer, and signed source-time codecs are fixed-width and boundary-tested; unsigned BLOB sorting matches Rust ordering.
+- Qualification covers settings, fresh migration, idempotent reopen, forced rollback, future-version refusal, inventory, redaction-by-omission, and source-safe startup errors.
+- Verification: 23 store tests passed; store Clippy passed with warnings denied; dependency tree resolves `rusqlite v0.33.0` exactly.
