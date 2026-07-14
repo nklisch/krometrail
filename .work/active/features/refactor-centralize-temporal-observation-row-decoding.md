@@ -1,7 +1,7 @@
 ---
 id: refactor-centralize-temporal-observation-row-decoding
 kind: feature
-stage: review
+stage: done
 tags: [refactor, storage]
 parent: null
 depends_on: []
@@ -97,4 +97,14 @@ No `RawObservation { ... row.get(...) }` construction remains outside `timeline.
 
 ## Implementation summary
 
-The one checkpoint landed in `28fe394`. `timeline::raw_observation` is crate-visible and now serves replay validation, timeline range reads, payload-anchor reads, and latest-anchor reads. The three duplicated seven-column closures were removed without changing query text, parameters, ordering, validation, optional behavior, error strings, or domain decoding. Rust 1.85 format, locked workspace all-target check/test, and Clippy with warnings denied passed in an isolated worktree; concurrent artifact work was excluded. The feature is ready for standard integrated review.
+The one checkpoint landed in `28fe394`. `timeline::raw_observation` is crate-visible and now serves replay validation, timeline range reads, payload-anchor reads, and latest-anchor reads. The three duplicated seven-column closures were removed without changing query text, parameters, ordering, validation, optional behavior, error strings, or domain decoding. Rust 1.85 format, locked workspace all-target check/test, and Clippy with warnings denied passed in an isolated worktree; concurrent artifact work was excluded.
+
+## Review (2026-07-14)
+
+**Verdict**: Approve
+
+**Blockers**: none
+**Important**: none
+**Nits**: none
+
+**Evidence**: Independent cross-model standard review confirmed one constructor remains, all four read paths select the identical seven columns and route through it, the helper body is byte-identical, and the implementation diff changes only visibility/imports/callback ownership plus substrate bookkeeping. SQL, parameters, ordering, optional behavior, validation, error mapping, decoding, schemas, and tests are untouched. A focused store check passed; the full isolated Rust 1.85 gate was already green. No re-review is required.
