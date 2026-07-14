@@ -4,7 +4,7 @@ kind: story
 stage: drafting
 tags: [browser, agent-ux]
 parent: epic-agent-browser-operation-mcp-control-surface
-depends_on: []
+depends_on: [bug-restore-rust-1-85-contract]
 release_binding: null
 gate_origin: null
 created: 2026-07-14
@@ -49,4 +49,4 @@ The hard Rust 1.85 qualification gate invalidated the exact-SDK design on 2026-0
 - The rmcp failure is in an unconditionally compiled model module; the selected minimal features do not remove it. Exact official rmcp 2.2.0 therefore cannot satisfy the workspace's declared Rust 1.85 contract without changing one of the design's forbidden constraints (SDK version, vendoring/patching the SDK, or workspace MSRV).
 - All temporary manifest, lock, schema, and test changes were reverted. The unrelated `.work/bin/work-view` modification remains untouched.
 
-Per the feature's design-flaw escape hatch, this checkpoint returns to `drafting`. Downstream MCP checkpoints remain blocked until the SDK/MSRV contract is redesigned; the workspace MSRV was not raised and the SDK version was not silently changed.
+Per the feature's design-flaw escape hatch, this checkpoint returns to `drafting`. The newly promoted `bug-restore-rust-1-85-contract` first restores the declared workspace baseline; this checkpoint now depends on that verified fix before SDK selection resumes. The workspace MSRV was not raised and the SDK version was not silently changed.
