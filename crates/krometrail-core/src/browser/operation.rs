@@ -217,7 +217,9 @@ const ACTION_DIALOG: ActionDefinition = ActionDefinition {
     category: ActionCategory::Dialog,
     actionability: ActionabilityRequirement::None,
     locator: AcceptedLocator::None,
-    completion: CompletionKind::InputAcknowledged,
+    // Chrome acknowledges the dialog command before the page's blocked callback necessarily
+    // resumes. A renderer task checkpoint is required before the live observation is trustworthy.
+    completion: CompletionKind::Settled,
     display_name: "Handle dialog",
 };
 

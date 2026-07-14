@@ -82,6 +82,23 @@ const TARGET_EVENT_NAMES: &[(&str, TargetEventKind)] = &[
     ("Target.detachedFromTarget", TargetEventKind::Detached),
 ];
 
+// These domains are required by both the first control operation and a reconstructed target. Keep
+// the order stable: Page must be enabled before its dialog events can be associated with a flat
+// session, while Runtime and Accessibility are prerequisites for visibility and live observation.
+const SESSION_RESTORE_DOMAINS: [&str; 3] =
+    ["Page.enable", "Runtime.enable", "Accessibility.enable"];
+
+async fn restore_session_domains<F, Fut, E>(mut send: F) -> std::result::Result<(), E>
+where
+    F: FnMut(&'static str) -> Fut,
+    Fut: std::future::Future<Output = std::result::Result<(), E>>,
+{
+    for method in SESSION_RESTORE_DOMAINS {
+        send(method).await?;
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug)]
 enum TargetEventKind {
     Created,
@@ -714,9 +731,8 @@ async fn apply_effects(
                         value
                             .get("sessionId")
                             .and_then(Value::as_str)
-                            .map(str::to_owned)
+                            .and_then(|session| TransportSessionId::new(session.to_owned()).ok())
                     })
-                    .and_then(|session| TransportSessionId::new(session).ok())
                     .map(|session| SupervisorInput::Attached {
                         target_key: target_key.clone(),
                         session,
@@ -736,6 +752,32 @@ async fn apply_effects(
                         serde_json::json!({"sessionId": session.as_str()}),
                     )
                     .await;
+            }
+            SupervisorEffect::RestoreSessionDomains {
+                target_key,
+                session,
+            } => {
+                let scope = CommandScope::Session(session.clone());
+                let restored = restore_session_domains(|method| async {
+                    transport
+                        .send_raw(&scope, method, Value::Object(Default::default()))
+                        .await
+                        .map(|_| ())
+                })
+                .await;
+                if restored.is_ok() {
+                    queue.push_front(SupervisorEffect::ProbeInitialVisibility {
+                        target_key,
+                        session,
+                    });
+                } else {
+                    let compatibility = state.compatibility.clone();
+                    let previous = std::mem::replace(state, SupervisorState::new(compatibility));
+                    let reduction =
+                        reduce(previous, SupervisorInput::TargetAttachFailed { target_key })?;
+                    *state = reduction.state;
+                    queue.extend(reduction.effects);
+                }
             }
             SupervisorEffect::ProbeInitialVisibility {
                 target_key,
@@ -1810,8 +1852,10 @@ async fn restore_one_target(
     sessions.insert(session.clone());
     let scope = CommandScope::Session(session.clone());
     // Restore the control/recording domains without starting a screencast. Capture is a separate,
-    // later effect and must not become an implicit side effect of reconnect supervision.
-    for method in ["Page.enable", "Runtime.enable", "Accessibility.enable"] {
+    // later effect and must not become an implicit side effect of reconnect supervision. The same
+    // ordered helper is used by initial attachment so dialog events and visibility probing have one
+    // restoration contract.
+    restore_session_domains(|method| async {
         attempt
             .command(
                 &transport,
@@ -1819,8 +1863,10 @@ async fn restore_one_target(
                 method,
                 Value::Object(Default::default()),
             )
-            .await?;
-    }
+            .await
+            .map(|_| ())
+    })
+    .await?;
     let visibility_value = attempt
         .command(
             &transport,
@@ -1917,6 +1963,7 @@ async fn stage_reconnection_effects(
                 });
             }
             SupervisorEffect::Attach { .. }
+            | SupervisorEffect::RestoreSessionDomains { .. }
             | SupervisorEffect::ProbeInitialVisibility { .. }
             | SupervisorEffect::BeginReconnect
             | SupervisorEffect::Shutdown { .. } => return Err(AttemptFailure::Failed),
@@ -2716,6 +2763,24 @@ mod tests {
         assert_eq!(
             parse_visibility_result(&serde_json::json!({"result": {}})),
             Err(VisibilityProbeError::MissingValue)
+        );
+    }
+
+    #[tokio::test]
+    async fn session_domain_restore_is_ordered_and_has_no_redundant_commands() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        restore_session_domains(|method| {
+            let calls = Arc::clone(&calls);
+            async move {
+                calls.lock().unwrap().push(method);
+                Ok::<(), ()>(())
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec!["Page.enable", "Runtime.enable", "Accessibility.enable"]
         );
     }
 

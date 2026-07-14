@@ -42,6 +42,12 @@ pub fn page_observation_fixture_url() -> String {
     format!("file://{}", path.display())
 }
 
+pub fn verified_interactions_fixture_url() -> String {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/browser/verified-interactions/index.html");
+    format!("file://{}", path.display())
+}
+
 pub fn page_lifecycle_fixture_url(page: &str) -> String {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/fixtures/browser/page-lifecycle")
@@ -218,7 +224,8 @@ pub fn cleanup_real_browser_roots() {
             || name.starts_with("krometrail-real-targets-")
             || name.starts_with("krometrail-real-reconnect-")
             || name.starts_with("krometrail-real-page-observation-")
-            || name.starts_with("krometrail-real-page-lifecycle-"))
+            || name.starts_with("krometrail-real-page-lifecycle-")
+            || name.starts_with("krometrail-real-verified-interactions-"))
             && path.is_dir()
         {
             let _ = remove_empty_root_if_unreferenced(&path);

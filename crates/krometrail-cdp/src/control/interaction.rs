@@ -20,6 +20,7 @@ use crate::{
 };
 
 const NAVIGATION_AWARE_WINDOW: std::time::Duration = std::time::Duration::from_millis(750);
+const INTERACTION_PHASE_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[derive(Clone, Debug)]
 pub(super) enum ResolvedTarget {
@@ -85,6 +86,11 @@ impl PageControl {
                 &bound,
                 plan.locator.as_ref(),
                 requirement(plan.action.actionability),
+                matches!(
+                    plan.action.category,
+                    krometrail_core::ActionCategory::Pointer
+                        | krometrail_core::ActionCategory::DragDrop
+                ),
                 cancel,
                 generation,
             )
@@ -105,33 +111,92 @@ impl PageControl {
         } else {
             None
         };
+        // Subscribe before input dispatch. A JavaScript modal can block both the command response
+        // and every subsequent observation command, so command-error classification alone cannot
+        // provide a non-deadlocking interaction boundary.
+        let mut dialog_events = if plan.kind == BrowserOperationKind::HandleDialog {
+            None
+        } else {
+            Some(
+                cancel
+                    .race(
+                        generation,
+                        bound.target_id,
+                        transport.subscribe_named(&scope, "Page.javascriptDialogOpening"),
+                    )
+                    .await?
+                    .map_err(|error| {
+                        transport_error(error, ErrorCode::InteractionFailed, bound.target_id)
+                    })?,
+            )
+        };
         let dispatch_time = self.session_time()?;
-        self.dispatch_action(transport, &bound, &request, &resolved, cancel, generation)
-            .await?;
-        self.complete_interaction(
-            transport,
-            &bound,
-            plan.action.completion,
-            navigation_events,
-            cancel,
-            generation,
-        )
-        .await?;
-
-        let observation_started = self.session_time()?;
-        let (observation, _interruption) = self
-            .observe_live(
+        let dispatch = async {
+            if let Some(events) = dialog_events.as_deref_mut() {
+                tokio::select! {
+                    result = self.dispatch_action(transport, &bound, &request, &resolved, cancel, generation) => {
+                        result?;
+                        Ok(false)
+                    }
+                    event = cancel.race(generation, bound.target_id, events.next()) => {
+                        dialog_event_opened(event, bound.target_id)
+                    }
+                }
+            } else {
+                self.dispatch_action(transport, &bound, &request, &resolved, cancel, generation)
+                    .await?;
+                Ok(false)
+            }
+        };
+        let mut observation_blocked = if plan.kind == BrowserOperationKind::HandleDialog {
+            dispatch.await?
+        } else {
+            match tokio::time::timeout(INTERACTION_PHASE_WINDOW, dispatch).await {
+                Ok(result) => result?,
+                // A modal can block the in-flight input response before cdpkit yields its named
+                // event. Preserve that blocked state for a following HandleDialog operation.
+                Err(_) => true,
+            }
+        };
+        if !observation_blocked {
+            let completion = self.complete_interaction(
                 transport,
                 &bound,
-                LiveObservationRequest {
-                    target: plan.target,
-                },
-                observation_started,
-                Some((cancel, generation)),
-            )
-            .await?;
-        let BrowserOperationResult::ObserveLive(observation) = observation else {
-            unreachable!("live observation returns its associated result")
+                plan.action.completion,
+                navigation_events,
+                dialog_events.take(),
+                cancel,
+                generation,
+            );
+            observation_blocked = if plan.kind == BrowserOperationKind::HandleDialog {
+                completion.await?
+            } else {
+                match tokio::time::timeout(INTERACTION_PHASE_WINDOW, completion).await {
+                    Ok(result) => result?,
+                    Err(_) => true,
+                }
+            };
+        }
+
+        let observation_started = self.session_time()?;
+        let observation = if observation_blocked {
+            Box::new(self.blocked_observation(&bound, started_at)?)
+        } else {
+            let (observation, _interruption) = self
+                .observe_live(
+                    transport,
+                    &bound,
+                    LiveObservationRequest {
+                        target: plan.target,
+                    },
+                    observation_started,
+                    Some((cancel, generation)),
+                )
+                .await?;
+            let BrowserOperationResult::ObserveLive(observation) = observation else {
+                unreachable!("live observation returns its associated result")
+            };
+            observation
         };
         let live_observation_time = observation.context.completed_at;
         let context = ObservationContext::new(
@@ -195,6 +260,7 @@ impl PageControl {
                         bound,
                         Some(&request.destination),
                         ReferenceRequirement::Actionable,
+                        true,
                         cancel,
                         generation,
                     )
@@ -228,12 +294,14 @@ impl PageControl {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn resolve_interaction_target(
         &self,
         transport: &dyn CdpTransport,
         bound: &BoundTarget,
         locator: Option<&InteractionLocator>,
         requirement: ReferenceRequirement,
+        require_viewport_point: bool,
         cancel: &OperationCancellation,
         generation: u64,
     ) -> Result<ResolvedTarget> {
@@ -270,22 +338,32 @@ impl PageControl {
                 };
                 let (min_x, max_x, min_y, max_y) = quad_bounds(&resolved.document_quad);
                 let document_point = CssPoint::new((min_x + max_x) / 2.0, (min_y + max_y) / 2.0)?;
-                let viewport = self
-                    .document_to_viewport(transport, bound, document_point, cancel, generation)
-                    .await?;
+                // DOM.getBoxModel quads and Input coordinates share main-frame viewport CSS
+                // space. Document-space offsets are only applied to explicitly declared document
+                // coordinates; subtracting scroll here mis-aims elements after page movement.
+                let viewport = document_point;
+                if require_viewport_point {
+                    let (_, _, width, height) = self
+                        .visual_viewport(transport, bound, cancel, generation)
+                        .await?;
+                    ensure_viewport_point(width, height, viewport, bound.target_id)?;
+                }
                 Ok(ResolvedTarget::Element {
                     node: resolved,
                     viewport_point: viewport,
                 })
             }
             InteractionLocator::Coordinate { point, space } => {
+                let (page_x, page_y, width, height) = self
+                    .visual_viewport(transport, bound, cancel, generation)
+                    .await?;
                 let viewport_point = match space {
                     CoordinateSpace::ViewportCss => *point,
                     CoordinateSpace::DocumentCss => {
-                        self.document_to_viewport(transport, bound, *point, cancel, generation)
-                            .await?
+                        CssPoint::new(point.x - page_x, point.y - page_y)?
                     }
                 };
+                let _ = (width, height); // The hit-test is the authority for declared coordinates, including outside-viewport no-hit.
                 self.hit_test_coordinate(transport, bound, viewport_point, cancel, generation)
                     .await?;
                 Ok(ResolvedTarget::Coordinate { viewport_point })
@@ -293,14 +371,13 @@ impl PageControl {
         }
     }
 
-    async fn document_to_viewport(
+    async fn visual_viewport(
         &self,
         transport: &dyn CdpTransport,
         bound: &BoundTarget,
-        point: CssPoint,
         cancel: &OperationCancellation,
         generation: u64,
-    ) -> Result<CssPoint> {
+    ) -> Result<(f64, f64, f64, f64)> {
         let layout = send_cdp(
             transport,
             bound,
@@ -318,11 +395,12 @@ impl PageControl {
             .get("cssVisualViewport")
             .or_else(|| root.get("cssLayoutViewport"))
             .ok_or_else(|| interaction_error(bound.target_id, "visual viewport is unavailable"))?;
-        let page_x = protocol_number(viewport, "pageX", bound.target_id)?;
-        let page_y = protocol_number(viewport, "pageY", bound.target_id)?;
-        let local = CssPoint::new(point.x - page_x, point.y - page_y)?;
-        ensure_viewport_point(viewport, local, bound.target_id)?;
-        Ok(local)
+        Ok((
+            protocol_number(viewport, "pageX", bound.target_id)?,
+            protocol_number(viewport, "pageY", bound.target_id)?,
+            protocol_number(viewport, "clientWidth", bound.target_id)?,
+            protocol_number(viewport, "clientHeight", bound.target_id)?,
+        ))
     }
 
     async fn hit_test_coordinate(
@@ -341,7 +419,7 @@ impl PageControl {
             transport,
             bound,
             "Runtime.evaluate",
-            json!({"expression":expression,"returnByValue":true,"throwOnSideEffect":true,"silent":true}),
+            json!({"expression":expression,"returnByValue":true,"silent":true}),
             cancel,
             generation,
         )
@@ -358,27 +436,40 @@ impl PageControl {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn complete_interaction(
         &self,
         transport: &dyn CdpTransport,
         bound: &BoundTarget,
         completion: CompletionKind,
         navigation_events: Option<Box<dyn TransportEvents>>,
+        dialog_events: Option<Box<dyn TransportEvents>>,
         cancel: &OperationCancellation,
         generation: u64,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         match completion {
-            CompletionKind::InputAcknowledged => Ok(()),
+            CompletionKind::InputAcknowledged => Ok(false),
             CompletionKind::Settled | CompletionKind::NavigationAware => {
-                send_cdp(
+                let settle = send_cdp(
                     transport,
                     bound,
                     "Runtime.evaluate",
                     json!({"expression":"Promise.resolve(true)","awaitPromise":true,"returnByValue":true,"silent":true}),
                     cancel,
                     generation,
-                )
-                .await?;
+                );
+                if let Some(mut events) = dialog_events {
+                    tokio::select! {
+                        result = settle => { result?; }
+                        event = cancel.race(generation, bound.target_id, events.next()) => {
+                            if dialog_event_opened(event, bound.target_id)? {
+                                return Ok(true);
+                            }
+                        }
+                    }
+                } else {
+                    settle.await?;
+                }
                 if let Some(mut events) = navigation_events {
                     let next = tokio::time::timeout(NAVIGATION_AWARE_WINDOW, events.next());
                     // Navigation awareness is an optional completion refinement. A bounded timeout
@@ -390,9 +481,55 @@ impl PageControl {
                         })?;
                     }
                 }
-                Ok(())
+                Ok(false)
             }
         }
+    }
+
+    fn blocked_observation(
+        &self,
+        bound: &BoundTarget,
+        started_at: krometrail_core::SessionTime,
+    ) -> Result<krometrail_core::LiveObservation> {
+        let completed_at = self.session_time()?;
+        let context = ObservationContext::new(
+            self.session_id,
+            bound.target_id,
+            bound.attachment_generation,
+            started_at,
+            completed_at,
+        )?;
+        let error = operation_error(
+            ErrorCode::PageObservationFailed,
+            bound.target_id,
+            "interaction_completion_blocked: handle any open dialog or retry after the renderer responds",
+        );
+        Ok(krometrail_core::LiveObservation {
+            context,
+            page: krometrail_core::ObservationPart::Unavailable(error.clone()),
+            snapshot: krometrail_core::ObservationPart::Unavailable(error.clone()),
+            screenshot: krometrail_core::ObservationPart::Unavailable(error),
+        })
+    }
+}
+
+fn dialog_event_opened(
+    event: Result<
+        std::result::Result<Option<crate::transport::NamedEvent>, crate::transport::TransportError>,
+    >,
+    target_id: TargetId,
+) -> Result<bool> {
+    match event? {
+        Ok(Some(event)) => Ok(event.method == "Page.javascriptDialogOpening"),
+        Ok(None) => Err(interaction_error(
+            target_id,
+            "dialog event subscription ended during interaction dispatch",
+        )),
+        Err(error) => Err(transport_error(
+            error,
+            ErrorCode::InteractionFailed,
+            target_id,
+        )),
     }
 }
 
@@ -529,9 +666,12 @@ fn protocol_number(value: &Value, field: &str, target_id: TargetId) -> Result<f6
         .filter(|value| value.is_finite())
         .ok_or_else(|| interaction_error(target_id, "viewport geometry is malformed"))
 }
-fn ensure_viewport_point(viewport: &Value, point: CssPoint, target_id: TargetId) -> Result<()> {
-    let width = protocol_number(viewport, "clientWidth", target_id)?;
-    let height = protocol_number(viewport, "clientHeight", target_id)?;
+fn ensure_viewport_point(
+    width: f64,
+    height: f64,
+    point: CssPoint,
+    target_id: TargetId,
+) -> Result<()> {
     if point.x < 0.0 || point.y < 0.0 || point.x > width || point.y > height {
         return Err(interaction_error(
             target_id,

@@ -273,6 +273,10 @@ pub enum SupervisorEffect {
     Detach {
         session: TransportSessionId,
     },
+    RestoreSessionDomains {
+        target_key: String,
+        session: TransportSessionId,
+    },
     ProbeInitialVisibility {
         target_key: String,
         session: TransportSessionId,

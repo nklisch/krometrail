@@ -721,6 +721,35 @@ mod tests {
     }
 
     #[test]
+    fn action_specific_requirements_use_the_shared_dom_fact_set() {
+        let state = json!({
+            "connected": true,
+            "visuallyHidden": false,
+            "interactionBlocked": false,
+            "isEditable": true,
+            "isSelect": false,
+            "isFileInput": false,
+        });
+        assert!(validate_node_state(&state, ReferenceRequirement::Editable, target()).is_ok());
+        assert_eq!(
+            validate_node_state(&state, ReferenceRequirement::Selectable, target())
+                .unwrap_err()
+                .code,
+            ErrorCode::ReferenceNotActionable
+        );
+        assert_eq!(
+            validate_node_state(&state, ReferenceRequirement::FileInput, target())
+                .unwrap_err()
+                .code,
+            ErrorCode::ReferenceNotActionable
+        );
+        let select = json!({"connected":true,"visuallyHidden":false,"interactionBlocked":false,"isSelect":true});
+        assert!(validate_node_state(&select, ReferenceRequirement::Selectable, target()).is_ok());
+        let file = json!({"connected":true,"visuallyHidden":false,"interactionBlocked":false,"isFileInput":true});
+        assert!(validate_node_state(&file, ReferenceRequirement::FileInput, target()).is_ok());
+    }
+
+    #[test]
     fn every_requirement_rejects_hidden_or_disconnected_nodes() {
         for requirement in [
             ReferenceRequirement::VisibleGeometry,

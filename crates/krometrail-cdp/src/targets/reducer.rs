@@ -358,7 +358,7 @@ fn attach(
     }
     effects.push(target_changed_event(target));
     if probe_visibility {
-        effects.push(SupervisorEffect::ProbeInitialVisibility {
+        effects.push(SupervisorEffect::RestoreSessionDomains {
             target_key: key,
             session,
         });

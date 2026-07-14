@@ -6,6 +6,12 @@ use super::{
 };
 use crate::transport::{CdpTransport, CommandScope, TransportError};
 
+/// Handle the dialog that is already open on this target.
+///
+/// The session restoration path enables `Page` before a target becomes visible, so Chrome routes
+/// dialog state and events to this exact flat session. There is no reliable benefit in probing,
+/// yielding, or retrying: a rejected command is either the stable "not open" boundary or a real
+/// transport/protocol failure, and retries could repeat a user-visible dialog action.
 pub(super) async fn handle_dialog(
     transport: &dyn CdpTransport,
     bound: &BoundTarget,
@@ -13,21 +19,6 @@ pub(super) async fn handle_dialog(
     cancel: &OperationCancellation,
     generation: u64,
 ) -> Result<()> {
-    let mut params = Map::new();
-    match &request.action {
-        DialogAction::Accept { prompt_text } => {
-            params.insert("accept".into(), Value::Bool(true));
-            if let Some(prompt_text) = prompt_text {
-                params.insert(
-                    "promptText".into(),
-                    Value::String(prompt_text.as_str().to_owned()),
-                );
-            }
-        }
-        DialogAction::Dismiss => {
-            params.insert("accept".into(), Value::Bool(false));
-        }
-    }
     let response = cancel
         .race(
             generation,
@@ -35,20 +26,13 @@ pub(super) async fn handle_dialog(
             transport.send_raw(
                 &CommandScope::Session(bound.transport_session.clone()),
                 "Page.handleJavaScriptDialog",
-                Value::Object(params),
+                dialog_params(&request.action),
             ),
         )
         .await?;
     match response {
         Ok(_) => Ok(()),
-        // The transport deliberately redacts Chrome's source message. For this command, Chrome's
-        // ordinary command rejection means there is no current dialog; malformed protocol and
-        // connection failures retain their distinct categories.
-        Err(TransportError::CommandFailed) => Err(operation_error(
-            ErrorCode::NotFound,
-            bound.target_id,
-            "dialog_not_open: no JavaScript dialog is currently open",
-        )),
+        Err(TransportError::CommandFailed) => Err(dialog_not_open(bound.target_id)),
         Err(
             TransportError::Disconnected
             | TransportError::Closed
@@ -63,4 +47,31 @@ pub(super) async fn handle_dialog(
             "browser rejected the dialog operation",
         )),
     }
+}
+
+fn dialog_params(action: &DialogAction) -> Value {
+    let mut params = Map::new();
+    match action {
+        DialogAction::Accept { prompt_text } => {
+            params.insert("accept".into(), Value::Bool(true));
+            if let Some(prompt_text) = prompt_text {
+                params.insert(
+                    "promptText".into(),
+                    Value::String(prompt_text.as_str().to_owned()),
+                );
+            }
+        }
+        DialogAction::Dismiss => {
+            params.insert("accept".into(), Value::Bool(false));
+        }
+    }
+    Value::Object(params)
+}
+
+fn dialog_not_open(target_id: krometrail_core::TargetId) -> krometrail_core::KrometrailError {
+    operation_error(
+        ErrorCode::NotFound,
+        target_id,
+        "dialog_not_open: no JavaScript dialog is currently open",
+    )
 }
