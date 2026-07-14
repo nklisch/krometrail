@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-operation-mcp-control-surface
 kind: feature
-stage: implementing
+stage: review
 tags: [browser, agent-ux]
 parent: epic-agent-browser-operation
 depends_on: [epic-agent-browser-operation-waits-and-batches]
@@ -500,3 +500,33 @@ Implementation must also apply the accepted advisory corrections:
 - Use 0.11.0's actual running-service cancellation/waiting APIs rather than later SDK-only lifecycle helpers.
 
 This compatibility revision changes only the SDK/protocol implementation choice. The 24 operation routes, four lifecycle routes, schema single-source policy, response semantics, stdio command, child dependency chain, and feature acceptance boundary remain unchanged.
+
+## Implementation notes
+
+- Execution capability: highest, selected by the autopilot caller because this feature establishes the public MCP/stdio contract, exact SDK lock, generated schemas, cancellation, image/error semantics, and process lifecycle. One feature owner implemented all six dependency checkpoints sequentially.
+- Review weight: `standard` from the autopilot caller. Implementation stops at `stage: review`; the caller owns the independent feature-level pass.
+- Files changed: workspace/core/CDP/MCP/root manifests and source; core/CDP/browser-control tests; MCP registry/response/protocol tests; binary runtime smoke; current runtime/MCP/configuration/privacy docs and regenerated `llms-full`.
+- Tests added: registry/schema exhaustiveness, custom wire and recursive batch shape, per-request cancellation isolation, session lifecycle races, response degradation/error/image/anchor mapping, real rmcp JSON-RPC over duplex, and real binary stdio initialize/list/EOF/help contracts.
+- Simplification: one core operation registry drives 24 names/descriptions/capabilities/schemas/routes/annotations; one session owner and one response projector replace any MCP-specific runtime/request/result mirrors.
+- Discrepancies from design: exact rmcp 0.11 performs initialization before producing `RunningService`, so pre-initialize EOF is classified from `ServerInitializeError::ConnectionClosed`. Encoded image MIME is signature-derived because the existing result retains screenshot metadata but not encoding. The in-memory protocol test is crate-local to avoid widening production server visibility.
+- Adjacent issues parked: none.
+
+## Integrated verification evidence
+
+- All six child checkpoints are `stage: done` with individual implementation evidence and commits.
+- Exact `rmcp = "=0.11.0"` plus default server/macros/base64 features and `transport-io` remains locked and compiles under Rust 1.85.
+- `PATH=/home/nathan/.cargo/bin:$PATH cargo +1.85.0 check --workspace --all-targets --locked` passed.
+- `cargo fmt --all -- --check` passed.
+- `cargo check --workspace --all-targets --locked` passed.
+- `cargo test --workspace --all-targets --locked` passed 418 tests across 38 suites.
+- `cargo clippy --workspace --all-targets --locked -- -D warnings` passed with no issues.
+- Focused MCP qualification passed 9 tests; focused binary qualification passed 5 tests. JSON-RPC negotiated 2025-06-18, listed 28 stable sorted tools, dispatched one valid generated request exactly once, rejected malformed input before dispatch, kept stdout protocol-only, and shut down on EOF.
+- `bun run docs:build` regenerated the public documentation corpus and completed the VitePress build.
+
+## Design adjudications
+
+- Kept the domain `BatchRequest<Vec<BrowserOperationRequest>>`; generated Schemars layout is filtered fail-closed against registry `batchable` metadata, with no second public step enum.
+- Kept request cancellation as a core-owned infrastructure-neutral signal and a CDP request-scoped view over session stop/disconnect. Cancellation is guaranteed before dispatch and at round-trip, loop, wait, batch-step, and observation boundaries; a CDP command already sent cannot be retracted.
+- Kept lifecycle outside the operation enum as four fixed typed routes over the existing connector/session ports.
+- Kept `krometrail mcp` on the full root runtime so capture, recording, and retention assembly remain available to controlled sessions.
+- Omitted resource links because no durable readable MCP resource exists in this feature; current PNG/JPEG bytes are image content only.
