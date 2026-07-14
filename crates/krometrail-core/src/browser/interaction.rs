@@ -847,9 +847,6 @@ fn locator_json(locator: Option<&InteractionLocator>) -> Value {
 fn modifiers_json(value: Modifiers) -> Value {
     json!({"alt":value.alt,"control":value.control,"shift":value.shift,"meta":value.meta})
 }
-fn preview(value: &str) -> String {
-    value.chars().take(32).collect()
-}
 
 impl BrowserActionRequest for ClickRequest {
     fn locator(&self) -> Option<&InteractionLocator> {
@@ -867,7 +864,7 @@ impl BrowserActionRequest for FillRequest {
     }
     fn sanitize(&self) -> SanitizedParameters {
         safe_parameters(
-            json!({"mode":self.mode,"value_length":self.value.as_str().chars().count(),"value_preview":preview(self.value.as_str()),"wait_for_navigation":self.wait_for_navigation,"locator":locator_json(self.locator())}),
+            json!({"mode":self.mode,"value_length":self.value.as_str().chars().count(),"wait_for_navigation":self.wait_for_navigation,"locator":locator_json(self.locator())}),
         )
     }
 }
@@ -1013,17 +1010,24 @@ mod tests {
             .is_err()
         );
         assert!(ValidatedFilePath::new("relative/file").is_err());
-        let fill = FillRequest::new(
-            PageSelection::Target(target()),
-            locator,
-            "abcdefghijklmnopqrstuvwxyz0123456789-secret",
-            FillMode::Replace,
-            false,
-        )
-        .unwrap();
-        let encoded = serde_json::to_string(fill.sanitize().as_json()).unwrap();
-        assert!(!encoded.contains("secret"));
-        assert!(encoded.contains("value_length"));
+        for secret in ["p@ssword", "tok_live_abc123", "482901"] {
+            let fill = FillRequest::new(
+                PageSelection::Target(target()),
+                locator.clone(),
+                secret,
+                FillMode::Replace,
+                false,
+            )
+            .unwrap();
+            let sanitized = fill.sanitize();
+            let encoded = serde_json::to_string(sanitized.as_json()).unwrap();
+            assert!(!encoded.contains(secret));
+            assert!(sanitized.as_json().get("value_preview").is_none());
+            assert_eq!(
+                sanitized.as_json()["value_length"],
+                json!(secret.chars().count())
+            );
+        }
     }
     #[test]
     fn upload_sanitization_keeps_only_basenames() {

@@ -32,10 +32,13 @@ impl CdpTransportFactory for ScriptedFactory {
 }
 
 fn layout() -> Value {
+    layout_at(10.0, 20.0)
+}
+fn layout_at(page_x: f64, page_y: f64) -> Value {
     json!({
-        "cssLayoutViewport":{"pageX":10.0,"pageY":20.0,"clientWidth":800.0,"clientHeight":600.0},
-        "cssVisualViewport":{"pageX":10.0,"pageY":20.0,"clientWidth":800.0,"clientHeight":600.0,"scale":1.0},
-        "cssContentSize":{"x":0.0,"y":0.0,"width":1000.0,"height":1800.0}
+        "cssLayoutViewport":{"pageX":page_x,"pageY":page_y,"clientWidth":800.0,"clientHeight":600.0},
+        "cssVisualViewport":{"pageX":page_x,"pageY":page_y,"clientWidth":800.0,"clientHeight":600.0,"scale":1.0},
+        "cssContentSize":{"x":0.0,"y":0.0,"width":1600.0,"height":2400.0}
     })
 }
 fn identity() -> Value {
@@ -210,22 +213,88 @@ async fn production_port_rejects_empty_coordinate_hits_and_returns_anchored_live
     session.stop().await.unwrap();
 }
 
+#[tokio::test]
+async fn element_click_uses_box_model_viewport_coordinates_after_nonzero_scroll() {
+    let transport = ScriptedCdp::chrome();
+    startup_script(&transport);
+    transport.push_response("DOM.getDocument", json!({"root":{"nodeId":1}}));
+    transport.push_response("DOM.querySelector", json!({"nodeId":2}));
+    transport.push_response("DOM.describeNode", json!({"node":{"backendNodeId":42}}));
+    transport.push_response("DOM.describeNode", json!({"node":{"backendNodeId":42}}));
+    transport.push_response(
+        "DOM.resolveNode",
+        json!({"object":{"objectId":"private-object"}}),
+    );
+    transport.push_response(
+        "Runtime.callFunctionOn",
+        json!({"result":{"value":{"connected":true,"visuallyHidden":false,"interactionBlocked":false,"tagName":"BUTTON","inputType":null,"isEditable":false,"isSelect":false,"isFileInput":false}}}),
+    );
+    // Chrome reports DOM.getBoxModel quads in viewport CSS space. The non-zero page offsets must
+    // therefore validate bounds, not be subtracted from the element center sent to Input.
+    transport.push_response(
+        "DOM.getBoxModel",
+        json!({"model":{"border":[120.0,80.0,220.0,80.0,220.0,120.0,120.0,120.0]}}),
+    );
+    transport.push_response("Page.getLayoutMetrics", layout_at(400.0, 900.0));
+    observation_script(&transport);
+    let session = scripted_session(transport.clone()).await;
+    let target = session.status().await.unwrap().pages[0].target.target.id();
+
+    session
+        .execute(BrowserOperationRequest::Click(
+            ClickRequest::new(
+                PageSelection::Target(target),
+                selector("#scrolled-click-target"),
+                MouseButton::Left,
+                Modifiers::default(),
+                1,
+                false,
+            )
+            .unwrap(),
+        ))
+        .await
+        .unwrap();
+
+    let mouse = transport
+        .command_calls()
+        .into_iter()
+        .filter(|call| {
+            call.method == "Input.dispatchMouseEvent" && call.params["x"] == json!(170.0)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(mouse.len(), 3);
+    assert!(
+        mouse
+            .iter()
+            .all(|call| call.params["x"] == json!(170.0) && call.params["y"] == json!(100.0))
+    );
+    session.stop().await.unwrap();
+}
+
 #[test]
 fn sensitive_action_sanitization_never_contains_full_secrets_or_paths() {
     let target = krometrail_core::TargetId::from_uuid(uuid::Uuid::from_u128(1));
     let locator = InteractionLocator::Element(ElementLocator::CssSelector(
         krometrail_core::NonEmptyText::new("#input").unwrap(),
     ));
-    let fill = FillRequest::new(
-        PageSelection::Target(target),
-        locator.clone(),
-        "01234567890123456789012345678901-secret",
-        FillMode::Replace,
-        false,
-    )
-    .unwrap();
-    let fill_json = serde_json::to_string(fill.sanitize().as_json()).unwrap();
-    assert!(!fill_json.contains("secret"));
+    for secret in ["p@ssword", "tok_live_abc123", "482901"] {
+        let fill = FillRequest::new(
+            PageSelection::Target(target),
+            locator.clone(),
+            secret,
+            FillMode::Replace,
+            false,
+        )
+        .unwrap();
+        let sanitized = fill.sanitize();
+        let fill_json = serde_json::to_string(sanitized.as_json()).unwrap();
+        assert!(!fill_json.contains(secret));
+        assert!(sanitized.as_json().get("value_preview").is_none());
+        assert_eq!(
+            sanitized.as_json()["value_length"],
+            json!(secret.chars().count())
+        );
+    }
     let upload = UploadFilesRequest::new(
         PageSelection::Target(target),
         locator.clone(),
@@ -703,6 +772,39 @@ async fn opt_in_real_chrome_executes_verified_interaction_families() {
         )
         .await,
         json!("dismissed")
+    );
+
+    session
+        .execute(BrowserOperationRequest::Scroll(ScrollRequest {
+            target: page,
+            delta: ScrollDelta::ToElement(match selector("#scrolled-click-target") {
+                InteractionLocator::Element(value) => value,
+                _ => unreachable!(),
+            }),
+        }))
+        .await
+        .expect("scroll distant click target into view");
+    assert_eq!(
+        evaluate(&session, target, "window.scrollY > 0").await,
+        json!(true)
+    );
+    session
+        .execute(BrowserOperationRequest::Click(
+            ClickRequest::new(
+                page,
+                selector("#scrolled-click-target"),
+                MouseButton::Left,
+                Modifiers::default(),
+                1,
+                false,
+            )
+            .unwrap(),
+        ))
+        .await
+        .expect("click element after document scroll");
+    assert_eq!(
+        evaluate(&session, target, "window.fixtureState.scrolledClicks").await,
+        json!(1)
     );
 
     session.stop().await.unwrap();

@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-operation-verified-interactions
 kind: feature
-stage: implementing
+stage: review
 tags: [browser, agent-ux]
 parent: epic-agent-browser-operation
 depends_on: [epic-agent-browser-operation-page-observation]
@@ -46,7 +46,7 @@ Use one action registry to drive variants, validation, routing, sanitized intera
 - **Interaction record before dispatch:** The adapter allocates an `InteractionId` from the session-wide `IdSource` and builds a partial `InteractionRecord` (id, context-start, action kind, sanitized params, locator summary) before any CDP input command. Dispatch, completion, and live-observation timestamps fill in as the operation progresses. Standalone records always carry `parent_batch: None`; batch (later) populates the parent. The record is returned in the result; durable persistence stays owned by `epic-durable-browser-memory` through a port this feature does not wire.
 - **Completion is owned by the adapter and derived from action kind:** Each `ActionDefinition` declares a `CompletionKind` (`InputAcknowledged` for scroll/dialog/upload, `Settled` for click/hover/fill/select/drag/press). `Click` and `PressKeys` requests accept an optional `wait_for_navigation: bool` that escalates `Settled` to bounded `NavigationAware` (subscribe to `Page.lifecycleEvent` for one bounded window). No global network-idle policy is implied; the continuous recorder stays independent.
 - **Post-action evidence reuses `observe_live`:** After completion, every standalone action runs the same internal `inspect → snapshot → viewport-screenshot` sequence used by `observe_live`, returning a full `LiveObservation` alongside the record. The freshly installed snapshot generation becomes the new active generation, exactly as a manual `observe_live` would. Honest partial-failure semantics carry over unchanged.
-- **Sanitization is per-request, driven by the registry kind:** Each interaction request implements `sanitize(&self) -> SanitizedParameters`. The constructor bounds serialized size (4 KiB), requires a JSON object, and redacts sensitive payloads to length + bounded preview (`Fill`/`Dialog` prompt text, upload file count + basenames, select value length). The registry's `ActionDefinition` carries the stable display name and category; sanitization never echoes raw CDP method names, object ids, backend node ids, or transport session ids.
+- **Sanitization is per-request, driven by the registry kind:** Each interaction request implements `sanitize(&self) -> SanitizedParameters`. The constructor bounds serialized size (4 KiB), requires a JSON object, and reduces sensitive payloads to non-sensitive metadata (`Fill` value length, dialog prompt-text length, upload file count + basenames, select value length). The registry's `ActionDefinition` carries the stable display name and category; sanitization never echoes raw CDP method names, object ids, backend node ids, transport session ids, or fill values.
 - **File/path security is local-first but explicit:** `ValidatedFilePath` is constructed in core as an absolute, normalized, UTF-8 path with no `..` components after normalization, bounded component count (32), bounded byte length (4 KiB), and a bounded file count per request (8). The adapter canonicalizes through `std::fs::canonicalize` at dispatch, verifies existence and read permission, and rejects symlinks escaping the canonical root before invoking `DOM.setFileInputFiles`. Local-agent authority is the local user; there is no remote/sandbox boundary, but no unbounded or relative path reaches Chrome.
 - **Key chord grammar is closed and validated:** `KeyChord` wraps `NonEmptyText` parsed at construction into `Modifier` (`Alt`/`Control`/`Shift`/`Meta`) plus `NamedKey` (CDP-recognized key names) plus a single Unicode `char`. Unknown multi-char tokens reject with `InvalidInput`. The adapter translates the parsed segments into the right `Input.dispatchKeyEvent` (rawKeyDown/char/keyUp) sequence; `Fill` uses `Input.insertText` for atomic value replacement.
 - **One new error code:** Add `ErrorCode::InteractionFailed` for CDP input rejection, completion timeout, no-hit-target, and upload-path dispatch failure. Stale references, actionability failures, missing dialogs, missing selectors, invalid input forms, transport loss, and cancellation reuse the existing stable codes. Default retry for `InteractionFailed` is `Safe` for `InputAcknowledged` actions and `Never` for `Settled`/`NavigationAware` actions whose effect may have partially applied.
@@ -482,7 +482,7 @@ pub trait BrowserActionRequest {
 
 Sanitization rules:
 - `Click`: `{button, modifiers, click_count, wait_for_navigation, locator: locator_summary}` (no value to redact).
-- `Fill`: `{mode, value_length, value_preview: <first 32 chars>, locator}` — never the full value.
+- `Fill`: `{mode, value_length, wait_for_navigation, locator}` — never any value content.
 - `PressKeys`: `{keys: [<chord.as_str()>], locator}` — keys are not sensitive.
 - `SelectOption`: `{value: {kind, length}, locator}` — bound label/value length.
 - `Hover`/`Drag`: `{locator, source, target}` summaries.
@@ -501,7 +501,7 @@ Add `ErrorCode::InteractionFailed` with `default_retry: Safe` and `default_recov
 - [ ] One declaration generates all fourteen operation variants (5 observation + 9 interaction), result associations, stable names, mutability/evidence metadata, action metadata, and exhaustive registry tests including `action: None` for observation and `action: Some(&ACTION_*)` for interaction.
 - [ ] Core remains runtime/transport/filesystem independent; only `serde_json` is reused for sanitized parameter values.
 - [ ] Locators, modifiers, key chords, fill modes, select values, scroll deltas, dialog actions, validated file paths, click counts, key-chord counts, file counts, sanitized parameter size, interaction record ordering, and Serde round-trip validate at constructors and Serde boundaries.
-- [ ] Each interaction request implements `BrowserActionRequest`; sanitization redacts sensitive payloads to length/bounded preview and never echoes CDP identifiers.
+- [ ] Each interaction request implements `BrowserActionRequest`; sanitization reduces sensitive payloads to non-sensitive metadata and never echoes fill values or CDP identifiers.
 - [ ] Existing observation requests, registry tests, and Serde payloads continue to round-trip unchanged.
 
 ### Unit 2: Interaction dispatch foundation and pointer actions
@@ -644,7 +644,7 @@ Form actions (`form.rs`):
 - [ ] `Fill` replaces (Replace) or appends (Append) the value of an editable control via `Input.insertText` after focusing and clearing; non-editable elements fail at the resolver with `ReferenceNotActionable` (action-specific message).
 - [ ] `PressKeys` dispatches validated key chords as `Input.dispatchKeyEvent` sequences, supports modifier chords, and accepts either an element locator (focus first) or `None` (target-wide current focus).
 - [ ] `SelectOption` sets the matched option on a `<select>` through a bounded, side-effecting `Runtime.callFunctionOn` and dispatches `input`/`change`; non-`<select>` targets fail at the resolver; unmatched values fail `InvalidInput`.
-- [ ] Keyboard/form actions carry honest completion and reuse the shared post-action `LiveObservation`; sanitized parameters redact `Fill` value to length + bounded preview and bound `SelectOption` value length.
+- [ ] Keyboard/form actions carry honest completion and reuse the shared post-action `LiveObservation`; sanitized parameters reduce `Fill` values to character count only and bound `SelectOption` value length.
 
 ### Unit 4: File upload and dialog actions
 
@@ -822,3 +822,39 @@ All five implementation checkpoints are complete and the feature is ready for re
 **Non-blocking:** Restore or explain `throwOnSideEffect` for coordinate hit testing; align final design prose with shipped field names; sharing one layout-metrics read for drag is a performance nit outside this correction.
 
 The approved initial-attach domain restoration, exact-session single-attempt dialog handling, registry/actionability/key/upload/error/record contracts, and package gates remain valid. This bounce is focused on post-scroll pointer correctness, secret-safe fill records, and the dispatch-cancellation edge above.
+
+## Review bounce 1 remediation (2026-07-14)
+
+**Dispatch:** One feature-remediation owner, as delegated by autopilot. The accepted findings share the interaction executor and qualification surface, so splitting them would add handoff risk without independent write ownership. The already-consumed standard review pass was not repeated.
+
+**Coordinate adjudication:** The existing element-pointer conversion is correct for Chrome and is now qualified rather than changed. A direct real-Chrome probe after `scrollY = 700` returned a `DOM.getBoxModel` border with `y = -620`, exactly matching `getBoundingClientRect().y = -620`, while `cssVisualViewport.pageY = 700`. The quad is therefore already viewport CSS geometry for `Input.dispatchMouseEvent`; subtracting the visual-viewport page offset would double-apply scrolling and mis-aim the action. `verified_interactions.rs` now scripts `pageX = 400` / `pageY = 900`, supplies a box center at `(170, 100)`, and asserts all three click events retain `(170, 100)`. The real fixture adds a target at document `top = 1200`; Chrome scrolls it into view, reports non-zero `window.scrollY`, and the subsequent element-targeted click changes fixture state.
+
+**Secret-safe records:** `FillRequest::sanitize` no longer emits `value_preview` or any fill content. It persists only mode, character count, navigation intent, and the redacted locator summary. Core and adapter-contract regressions cover a short password, token, and numeric code and assert both that each value is absent and that the preview field does not exist.
+
+**Dialog/cancellation adjudication:** The concern was valid. cdpkit 0.4.0 inserts a pending response sender, queues the WebSocket command, and awaits its response; dropping that future does not retract the command, and the reader later removes the pending entry when the response arrives. With the prior sequential click/drag awaits, `Page.javascriptDialogOpening` could therefore win after `mousePressed` had been queued but before `mouseReleased` was created. Click and drag now eagerly poll their bounded stateful command group together (press, moves, release) after the initial stateless move. The focused regression holds all stateful pointer responses pending, abandons the dispatch future as the dialog branch would, and proves `mouseReleased` was already queued. This preserves dialog non-deadlocking without leaving a partially dispatched gesture.
+
+**Rejected non-blocking proposal:** Coordinate hit testing intentionally does not set `throwOnSideEffect`. The expression is fixed adapter-owned code, returns by value, and only calls `elementFromPoint`/`getBoundingClientRect`; Chromium's side-effect analyzer may conservatively reject such DOM calls, which would turn valid coordinate targeting into a protocol failure without adding a security boundary. The hit-test remains bounded and accepts no executable caller input. The shipped sanitization field names above replace the superseded preview prose; drag layout-read sharing remains a performance nit outside this correction.
+
+**Files changed:**
+
+- `crates/krometrail-core/src/browser/interaction.rs`
+- `crates/krometrail-cdp/src/control/pointer.rs`
+- `crates/krometrail-cdp/src/control/tests.rs`
+- `crates/krometrail-cdp/tests/verified_interactions.rs`
+- `tests/fixtures/browser/verified-interactions/index.html`
+- `.work/active/features/epic-agent-browser-operation-verified-interactions.md`
+
+**Verification:**
+
+- `cargo test -p krometrail-core browser::interaction --locked` — 3 passed.
+- `cargo test -p krometrail-cdp --lib control::tests::interactions --locked` — 4 passed.
+- `cargo test -p krometrail-cdp --test verified_interactions --locked` — 9 passed.
+- `KROMETRAIL_REAL_CHROME_TESTS=1 cargo test -p krometrail-cdp --test verified_interactions --locked -- --nocapture` — 9 passed, including the non-zero-scroll element click against real Chrome.
+- `cargo fmt --all -- --check` — passed.
+- `cargo check -p krometrail-cdp --no-default-features --all-targets --locked` — passed.
+- `cargo clippy -p krometrail-cdp --all-targets --locked -- -D warnings` — passed.
+- `cargo check --workspace --all-targets --locked` — passed.
+- `cargo test --workspace --all-targets --locked` — 381 passed.
+- `cargo clippy --workspace --all-targets --locked -- -D warnings` — passed.
+
+Implementation has returned to `stage: review` for the caller's feature-level closure. No second review was run, and the feature is not marked done.

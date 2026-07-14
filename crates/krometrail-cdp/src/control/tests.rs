@@ -75,6 +75,7 @@ mod interactions {
         responses: Mutex<
             HashMap<String, VecDeque<std::result::Result<serde_json::Value, TransportError>>>,
         >,
+        hold_stateful_pointer_responses: Mutex<bool>,
     }
     impl RecordingTransport {
         fn push(
@@ -97,6 +98,9 @@ mod interactions {
                 .filter_map(|(candidate, value)| (candidate == method).then_some(value.clone()))
                 .collect()
         }
+        fn hold_stateful_pointer_responses(&self) {
+            *self.hold_stateful_pointer_responses.lock().unwrap() = true;
+        }
     }
     struct EmptyEvents;
     impl TransportEvents for EmptyEvents {
@@ -117,6 +121,9 @@ mod interactions {
             method: &str,
             params: serde_json::Value,
         ) -> TransportFuture<'_, std::result::Result<serde_json::Value, TransportError>> {
+            let hold = method == "Input.dispatchMouseEvent"
+                && params["type"] != "mouseMoved"
+                && *self.hold_stateful_pointer_responses.lock().unwrap();
             self.calls.lock().unwrap().push((method.to_owned(), params));
             let result = self
                 .responses
@@ -125,7 +132,11 @@ mod interactions {
                 .get_mut(method)
                 .and_then(VecDeque::pop_front)
                 .unwrap_or_else(|| Ok(json!({})));
-            Box::pin(std::future::ready(result))
+            if hold {
+                Box::pin(std::future::pending())
+            } else {
+                Box::pin(std::future::ready(result))
+            }
         }
         fn subscribe_named(
             &self,
@@ -203,6 +214,46 @@ mod interactions {
         assert_eq!(calls[1]["clickCount"], json!(2));
         assert_eq!(calls[1]["buttons"], json!(1));
         assert_eq!(calls[2]["buttons"], json!(0));
+    }
+
+    #[tokio::test]
+    async fn abandoning_pointer_dispatch_cannot_split_press_from_release() {
+        let transport = RecordingTransport::default();
+        transport.hold_stateful_pointer_responses();
+        let bound = bound();
+        let cancel = OperationCancellation::default();
+        let request = krometrail_core::ClickRequest::new(
+            PageSelection::Target(target()),
+            InteractionLocator::coordinate(
+                krometrail_core::CssPoint::new(20.0, 30.0).unwrap(),
+                krometrail_core::CoordinateSpace::ViewportCss,
+            )
+            .unwrap(),
+            MouseButton::Left,
+            Modifiers::default(),
+            1,
+            false,
+        )
+        .unwrap();
+
+        let target = ResolvedTarget::Coordinate {
+            viewport_point: krometrail_core::CssPoint::new(20.0, 30.0).unwrap(),
+        };
+        {
+            let dispatch = pointer::click(&transport, &bound, &request, &target, &cancel, 0);
+            tokio::pin!(dispatch);
+            assert!(
+                futures_util::poll!(dispatch.as_mut()).is_pending(),
+                "the simulated modal keeps pointer command acknowledgements pending"
+            );
+        }
+
+        let types = transport
+            .calls("Input.dispatchMouseEvent")
+            .into_iter()
+            .map(|call| call["type"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(types, ["mouseMoved", "mousePressed", "mouseReleased"]);
     }
 
     #[tokio::test]

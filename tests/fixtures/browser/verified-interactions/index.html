@@ -8,6 +8,7 @@
     body { margin: 0; min-height: 1400px; font: 16px sans-serif; }
     main { padding: 24px; }
     #coordinate-target { position: absolute; left: 500px; top: 80px; width: 120px; height: 80px; background: #48a; }
+    #scrolled-click-target { position: absolute; left: 500px; top: 1200px; }
     #confirm-target { position: absolute; left: 500px; top: 200px; }
     #prompt-target { position: absolute; left: 500px; top: 240px; }
     #hover-target:hover { background: rgb(0, 128, 0); }
@@ -38,9 +39,10 @@
     <button id="prompt-target">Open prompt</button>
     <output id="dialog-output">none</output>
     <div id="coordinate-target" role="button" tabindex="0">Coordinate target</div>
+    <button id="scrolled-click-target">Scrolled click target</button>
   </main>
   <script>
-    const state = { clicks: 0, changes: 0, keydowns: [], drops: 0, coordinateClicks: 0, dialogsScheduled: 0 };
+    const state = { clicks: 0, changes: 0, keydowns: [], drops: 0, coordinateClicks: 0, scrolledClicks: 0, dialogsScheduled: 0 };
     window.fixtureState = state;
     const byId = id => document.getElementById(id);
     byId('click-target').addEventListener('click', () => {
@@ -55,6 +57,10 @@
     byId('coordinate-target').addEventListener('click', () => {
       state.coordinateClicks++;
       byId('coordinate-target').textContent = 'Coordinate clicked';
+    });
+    byId('scrolled-click-target').addEventListener('click', () => {
+      state.scrolledClicks++;
+      byId('scrolled-click-target').textContent = 'Scrolled target clicked';
     });
     byId('confirm-target').addEventListener('mousedown', () => { state.dialogsScheduled++; setTimeout(() => { byId('dialog-output').value = window.confirm('Confirm fixture') ? 'accepted' : 'dismissed'; }, 0); });
     byId('prompt-target').addEventListener('mousedown', () => { state.dialogsScheduled++; setTimeout(() => { const value = window.prompt('Prompt fixture', ''); byId('dialog-output').value = value === null ? 'dismissed' : `prompt:${value}`; }, 0); });

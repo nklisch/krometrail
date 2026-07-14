@@ -37,34 +37,41 @@ pub(super) async fn click(
     )
     .await?;
     let buttons = button_mask(request.button);
-    mouse_event(
-        transport,
-        bound,
-        "mousePressed",
-        point,
-        Some(request.button),
-        buttons,
-        request.modifiers,
-        request.click_count,
-        None,
-        cancel,
-        generation,
-    )
-    .await?;
-    mouse_event(
-        transport,
-        bound,
-        "mouseReleased",
-        point,
-        Some(request.button),
-        0,
-        request.modifiers,
-        request.click_count,
-        None,
-        cancel,
-        generation,
-    )
-    .await?;
+    // The interaction executor may stop awaiting dispatch when a JavaScript dialog opens. Poll the
+    // stateful press/release pair together so cancellation can happen before the press or after the
+    // release has been queued, but never leave Chrome with only half of the gesture dispatched.
+    let results = futures_util::future::join_all([
+        mouse_event(
+            transport,
+            bound,
+            "mousePressed",
+            point,
+            Some(request.button),
+            buttons,
+            request.modifiers,
+            request.click_count,
+            None,
+            cancel,
+            generation,
+        ),
+        mouse_event(
+            transport,
+            bound,
+            "mouseReleased",
+            point,
+            Some(request.button),
+            0,
+            request.modifiers,
+            request.click_count,
+            None,
+            cancel,
+            generation,
+        ),
+    ])
+    .await;
+    for result in results {
+        result?;
+    }
     Ok(())
 }
 
@@ -117,7 +124,10 @@ pub(super) async fn drag(
         generation,
     )
     .await?;
-    mouse_event(
+    // As with click, queue the complete stateful gesture in one pollable group. The fixed bound
+    // keeps this eager staging small while preserving wire order through the transport.
+    let mut gesture = Vec::with_capacity(DRAG_STEPS + 2);
+    gesture.push(mouse_event(
         transport,
         bound,
         "mousePressed",
@@ -129,15 +139,14 @@ pub(super) async fn drag(
         None,
         cancel,
         generation,
-    )
-    .await?;
+    ));
     for step in 1..=DRAG_STEPS {
         let ratio = step as f64 / DRAG_STEPS as f64;
         let point = CssPoint::new(
             start.x + (end.x - start.x) * ratio,
             start.y + (end.y - start.y) * ratio,
         )?;
-        mouse_event(
+        gesture.push(mouse_event(
             transport,
             bound,
             "mouseMoved",
@@ -149,10 +158,9 @@ pub(super) async fn drag(
             None,
             cancel,
             generation,
-        )
-        .await?;
+        ));
     }
-    mouse_event(
+    gesture.push(mouse_event(
         transport,
         bound,
         "mouseReleased",
@@ -164,8 +172,11 @@ pub(super) async fn drag(
         None,
         cancel,
         generation,
-    )
-    .await?;
+    ));
+    let results = futures_util::future::join_all(gesture).await;
+    for result in results {
+        result?;
+    }
     Ok(())
 }
 
