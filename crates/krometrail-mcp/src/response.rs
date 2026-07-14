@@ -300,15 +300,19 @@ fn project_page_operation(
 fn project_batch(value: BatchResult) -> Result<Projection, ResponseInvariantError> {
     let mut images = Vec::new();
     let mut step_values = Vec::with_capacity(value.steps.len());
-    let mut first_error = None;
+    let mut first_step_error = None;
+    let mut step_failure_seen = false;
     for step in value.steps {
         let result = step
             .result
             .map(project_operation)
             .transpose()?
             .map(|projection| projection.result);
-        if first_error.is_none() {
-            first_error = step.error.clone();
+        if step.status != krometrail_core::BatchStepStatus::Succeeded {
+            step_failure_seen = true;
+        }
+        if first_step_error.is_none() {
+            first_step_error = step.error.clone();
         }
         let screenshot = match step.screenshot {
             ObservationPart::Available(screenshot) => {
@@ -342,12 +346,7 @@ fn project_batch(value: BatchResult) -> Result<Projection, ResponseInvariantErro
             let (result, warnings, image) = project_live_observation(observation)?;
             (json!({"available": result}), warnings, image)
         }
-        ObservationPart::Unavailable(error) => {
-            if first_error.is_none() {
-                first_error = Some(error.clone());
-            }
-            (json!({"unavailable": error}), vec![error], None)
-        }
+        ObservationPart::Unavailable(error) => (json!({"unavailable": error}), vec![error], None),
     };
     if let Some(screenshot) = final_image {
         images.push(EncodedMcpImage {
@@ -368,8 +367,13 @@ fn project_batch(value: BatchResult) -> Result<Projection, ResponseInvariantErro
     }));
     projection.images = images;
     projection.degrade_with(final_warnings);
-    if outcome != BatchOutcome::Completed {
-        projection.fail_with(first_error.unwrap_or_else(|| batch_outcome_error(outcome)));
+    match outcome {
+        BatchOutcome::Completed => {}
+        // The domain uses CompletedWithFailures for both failed steps and incomplete final live
+        // evidence. If every step succeeded, preserve the already-applied mutations and expose the
+        // missing evidence as degradation instead of encouraging callers to replay the batch.
+        BatchOutcome::CompletedWithFailures if !step_failure_seen => {}
+        _ => projection.fail_with(first_step_error.unwrap_or_else(|| batch_outcome_error(outcome))),
     }
     Ok(projection)
 }
@@ -656,6 +660,61 @@ mod tests {
             map_operation_result("batch", BrowserOperationResult::Batch(Box::new(batch))).unwrap();
         assert_eq!(batch.response.status, ToolResponseStatus::Failed);
         assert_eq!(batch.response.result["steps"].as_array().unwrap().len(), 2);
+
+        let satisfied_wait = WaitResult::new(
+            context(),
+            WaitCondition::Elapsed {
+                duration: Duration::from_millis(10),
+            },
+            WaitOutcome::Satisfied {
+                matched_at: SessionTime::from_nanos(15),
+            },
+            Some(WaitProbe::Elapsed {
+                matched: true,
+                elapsed_ms: 10,
+            }),
+        )
+        .unwrap();
+        let succeeded = BatchStepResult::new(
+            0,
+            BrowserOperationKind::Wait,
+            target_id(),
+            BatchStepStatus::Succeeded,
+            Some(SessionTime::from_nanos(10)),
+            Some(SessionTime::from_nanos(15)),
+            None,
+            Some(BrowserOperationResult::Wait(Box::new(satisfied_wait))),
+            None,
+            None,
+            ObservationPart::Unavailable(error(ErrorCode::ScreenshotFailed, "not requested")),
+        )
+        .unwrap();
+        let incomplete_evidence = error(
+            ErrorCode::PageObservationFailed,
+            "final observation unavailable",
+        );
+        let degraded_batch = BatchResult::new(
+            interaction_id(),
+            target_id(),
+            SessionTime::from_nanos(10),
+            SessionTime::from_nanos(20),
+            BatchOutcome::CompletedWithFailures,
+            vec![succeeded],
+            ObservationPart::Unavailable(incomplete_evidence),
+        )
+        .unwrap();
+        let degraded_batch = map_operation_result(
+            "batch",
+            BrowserOperationResult::Batch(Box::new(degraded_batch)),
+        )
+        .unwrap();
+        assert_eq!(degraded_batch.response.status, ToolResponseStatus::Degraded);
+        assert!(!degraded_batch.is_error);
+        assert_eq!(
+            degraded_batch.response.result["outcome"],
+            "completed_with_failures"
+        );
+        assert_eq!(degraded_batch.response.warnings.len(), 1);
     }
 
     #[test]

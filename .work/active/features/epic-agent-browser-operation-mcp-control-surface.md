@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-operation-mcp-control-surface
 kind: feature
-stage: implementing
+stage: review
 tags: [browser, agent-ux]
 parent: epic-agent-browser-operation
 depends_on: [epic-agent-browser-operation-waits-and-batches]
@@ -541,3 +541,9 @@ This compatibility revision changes only the SDK/protocol implementation choice.
 **Rejected**: Claims of duplicated registries, unsorted tools, recursive-schema nontermination, leaked queued cancellation, double stop, or foundation drift were disproved by code and tests or were outside current implemented scope.
 
 **Notes**: One standard cross-model GLM 5.2 pass reviewed `fff3cac..667bd9b` and reran Rust 1.85 workspace check/test/Clippy, focused MCP tests, binary smoke, and formatting. The receiver accepted one material current-cycle response-semantics correction, parked one lower-risk regression gap, and accepted all other implemented contracts. No second independent review will run under standard weight.
+
+## Review remediation (2026-07-14)
+
+`project_batch` now distinguishes actual step/termination failures from `BatchOutcome::CompletedWithFailures` caused only by incomplete final live evidence. It tracks whether any step failed or was skipped; when every step succeeded, final-observation warnings keep the structured domain outcome but map MCP status to `Degraded` with `isError=false`. This preserves already-applied mutations and avoids encouraging callers to replay the batch. Actual failed/stopped/cancelled/timed-out batches remain caller-visible failures.
+
+The regression constructs one successful wait step plus an unavailable final observation and asserts `Degraded`, `is_error=false`, retained `completed_with_failures`, and one warning. Formatting, the focused MCP response test, the full Rust 1.85 all-target workspace check, and MCP all-target Clippy with warnings denied passed. The feature returned to `stage: review` for standard fix-verification closure; no second independent pass is required.
