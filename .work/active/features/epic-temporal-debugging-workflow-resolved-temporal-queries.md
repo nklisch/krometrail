@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-debugging-workflow-resolved-temporal-queries
 kind: feature
-stage: implementing
+stage: review
 tags: [storage, browser, agent-ux]
 parent: epic-temporal-debugging-workflow
 depends_on: []
@@ -479,3 +479,18 @@ One feature owner should carry these checkpoints as one cohesive implementation/
 ## Pre-mortem
 
 The most likely production failure is an apparently successful click/navigation whose browser effect is visible but whose interaction anchor is absent because persistence was delayed, bypassed in a batch, or raced session deletion. That would make “inspect the last interaction” fail exactly when needed. The design attacks this at the shared execution and store-mutation boundaries: every non-batch result crosses one sink fence, batches recurse through it per step, and writes/query/deletion share one gate. The least certain area is the unavoidable crash window between browser effect and commit; no local architecture can make Chrome and SQLite one transaction. The fallback is therefore explicit uncertainty and no automatic retry, not a false atomicity claim.
+
+## Implementation notes
+
+- Execution capability: highest, explicitly selected by the autopilot caller for the cross-cutting temporal semantics, migration/retention, CDP ordering, and irreversible-effect failure boundary. One feature owner carried all five ordered checkpoints.
+- Review weight: standard, from the caller. Implementation stops at `stage: review`; no independent feature review was run by this owner.
+- Checkpoints and commits: core query contracts `27475fa`; durable anchor index `a8e3edd`; operation persistence ordering `6198b71`; query service composition `ef9bf21`; qualification `76f63e6`.
+- Files changed: core query/range contracts and ports; SQLite v3 interaction/eviction schema, reads, writes, deletion, and store authority; CDP session evidence fence and deterministic tests; root composition; focused core/store/CDP qualification tests. MCP and foundation documents are unchanged.
+- Tests added/updated: validated seven-anchor request wire; complete/partial/internal-hole/never-captured/gap policy; v2→v3 and corruption/replay/latest ordering; real removal tombstone coalescing; missing/delayed/failing sink and two-step batch ordering; same-store operation-to-query standalone/batch seam; persisted fill/dialog/upload redaction; session deletion. The obsolete “interaction anchors are always absent” assertion was replaced with durable resolution coverage.
+- Exact semantics delivered: one validated `TemporalQueryRequest` delegates to the existing resolver/result; natural windows are whole milliseconds and bounded to 120 seconds; implicit interaction context remains exactly 150 ms before start through observed-or-completed plus 250 ms; complete retention/include-gaps is default; only contiguous tombstoned edges permit explicit partial results; metadata-only frame selection preserves capture-ordinal order; typed timeline ordering stays deterministic.
+- Persistence semantics delivered: one transactional v3 projection stores the exact existing anchor and optional exact sanitized record, atomically writes distinct interaction boundaries and optional explicit-navigation points, validates idempotent replay/conflicts, orders latest ties by UUID bytes, coalesces eviction intervals before segment metadata removal, and cascades compact evidence on session deletion.
+- Browser/root semantics delivered: state-changing work without a sink is rejected before dispatch; every non-batch page/action result crosses the sink before publication; batch children cross the same fence and the outer batch is not projected; post-effect commit failure is `PersistenceFailed`, retry `Never`, with inspect-before-repeat recovery; only successful explicit navigate/reload/back/forward mint navigation IDs; root uses one concrete `RecordingStore` for recording, retention, timeline writes, interaction evidence, and coherent temporal queries while MCP still receives only browser control.
+- Simplification: reused the existing interaction/range/timeline models and registry; added no parser, result copy, action copy, navigation/marker table, production memory cache, or MCP persistence. `InteractionRecord::anchor()` and registry-derived operation decoding remove persistence copies.
+- Design deviations/rejections: v3 transaction deduplicates historical exact marker/navigation/boundary rows before unique indexes so valid v2 stores migrate; qualification directly establishes one internal-hole post-eviction fixture while the real removal worker separately proves tombstone creation/coalescing; a scheduler-racy process-table test gained a bounded wait. No external behavior decision or foundation conflict was found.
+- Adjacent issues parked: none.
+- Integrated verification: under Rust 1.85.0, format check, locked workspace all-target check, locked workspace all-target tests, and locked workspace all-target Clippy `-D warnings` all pass. No live-Chrome execution was enabled or claimed.
