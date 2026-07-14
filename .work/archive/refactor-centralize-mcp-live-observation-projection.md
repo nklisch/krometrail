@@ -1,0 +1,16 @@
+---
+id: refactor-centralize-mcp-live-observation-projection
+kind: story
+stage: done
+tags: [refactor, agent-ux]
+parent: null
+depends_on: []
+release_binding: null
+gate_origin: refactor-design
+archived_atop: v0.2.20
+git_ref: c4aeb4d
+created: 2026-07-14
+updated: 2026-07-14
+---
+
+# Centralize MCP live-observation projection for screenshot-bearing control results
