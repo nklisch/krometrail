@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-debugging-workflow-artifact-generation-and-cache
 kind: feature
-stage: review
+stage: done
 tags: [visual, storage]
 parent: epic-temporal-debugging-workflow
 depends_on: [epic-temporal-debugging-workflow-resolved-temporal-queries]
@@ -694,4 +694,19 @@ The next failure is capture starvation caused by a large decode while holding th
 - Root now forces declared JPEG/PNG decode through exact `image 0.25.9`, preserves the narrow RGBA8/epoch contract, invokes all four temporal generator families, materializes `FitLimits`, and composes one shared service. CPU work runs through bounded blocking workers under independent request/CPU/memory/generator/frame/pixel/output/deadline/cancellation ceilings; deterministic result slots and process-wide single flight preserve ordering and prevent late publication.
 - Integrated real-store qualification covers mixed formats, tied epoch boundaries, two epochs, markers/gaps, exact cache hits and deterministic bytes, corruption regeneration, limit boundaries, permit independence, last-waiter cancellation, source eviction, pin behavior, recovery, session-deletion races, and ingestion non-starvation. The ignored synthetic 24-frame 1080p workload passed when explicitly run and reports workload shape without a speed threshold or live-Chrome claim.
 - Final verification: Rust 1.85 locked workspace all-target format/check/test/Clippy `-D warnings` passed in an isolated copy that excluded another feature owner's concurrent uncommitted CDP event-transport files; focused root/core/store qualification passed again after the final retention case. No MCP, presentation, browser-event, natural-anchor, diagnosis, replay, comparison, UI, documentation, or foundation surface was added.
-- Review posture: standard feature-level review remains intentionally pending. The implementation owner advanced this feature to `review` but did not self-approve or mark it `done`.
+- Review posture: standard feature-level review was performed independently after implementation.
+
+## Review (2026-07-14)
+
+**Verdict**: Approve after fix
+
+**Blockers**: none
+
+**Important finding fixed**:
+- Three Tokio `Notify` state-check loops could lose `notify_waiters()` broadcasts before their `Notified` futures registered, delaying single-flight/cancellation waiters and theoretically hanging session-deletion publication drain. Focused story `bug-prevent-artifact-notify-lost-wakeups` pinned and enabled notifications before state checks at all three sites, added multi-threaded regression guards, passed the full Rust 1.85 workspace gate, and was reviewed/archived in commits `4ba4214`, `dae0739`, and `ace0b39`.
+
+**Nits adjudicated**:
+- Artifact errors remain source-safe but often lack scope context; this valid lower-risk improvement is parked as `idea-artifact-error-context` for the first bundle/MCP consumer.
+- Schema v4's use of the stable `artifacts`/`artifact_frames` names matches the design's rebuild intent; illustrative `_v4` names required no change.
+
+**Evidence**: Independent cross-model standard review verified all eleven material lenses: one resolved-range boundary, authoritative manifests/generator registry, complete deterministic cache identity, exact Rust-1.85 JPEG/PNG decode, epoch/gap/marker fidelity, bounded scheduling and single-flight, transactional v4 migration, source-valid atomic publication, recovery/usage/retention/session-deletion convergence, failure-policy semantics, root composition, and qualification. Focused review passed 495 tests and Clippy; the accepted concurrency fix then passed current locked Rust 1.85 format, full workspace tests, and Clippy with warnings denied. Standard weight requires no re-review.
