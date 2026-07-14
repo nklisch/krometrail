@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-operation-waits-and-batches
 kind: feature
-stage: review
+stage: done
 tags: [browser, agent-ux]
 parent: epic-agent-browser-operation
 depends_on: [epic-agent-browser-operation-browser-page-lifecycle, epic-agent-browser-operation-verified-interactions]
@@ -356,4 +356,15 @@ All four child stories are `done`, integrated and real-browser verification is g
 
 `Network.loadingFinished` and `Network.loadingFailed` now restart `quiet_since` only when they remove a request from the tracked `in_flight` set. Completions observed without a matching post-subscription start remain recorded in `completed_before_start` for cross-stream reconciliation but no longer prolong a tracked-only quiet window. The focused regression first delivers an unseen completion and proves the original quiet instant is unchanged, then proves a finite tracked request still clears and restarts the timer normally.
 
-Fix verification passed `cargo fmt --all -- --check`, the focused network-tracking regression, and `cargo clippy -p krometrail-cdp --all-targets --locked -- -D warnings`. The feature returned to `stage: review` for standard fix-verification closure; no second independent pass is required.
+Fix verification passed `cargo fmt --all -- --check`, the focused network-tracking regression, and `cargo clippy -p krometrail-cdp --all-targets --locked -- -D warnings`. The feature returned to `stage: review` for standard fix-verification closure; no second independent pass was required.
+
+## Review closure (2026-07-14)
+
+**Verdict**: Approve
+
+**Blockers**: none — the tracked-only network quiet contract is corrected and verified.
+**Important**: none.
+**Nits**: The accepted structured target-unavailable representation and operation-scoped reconciliation set remain documented limitations, not current work.
+**Rejected**: No additional outcome variants, Network-domain teardown, or duplicate observation deadlines were added.
+
+**Notes**: Standard-weight closure used the single independent pass followed by receiver adjudication, one localized correction, and fix verification. The feature is complete without a second review pass.
