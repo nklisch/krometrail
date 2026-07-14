@@ -1,7 +1,7 @@
 ---
 id: refactor-remove-unused-progressive-response-control
 kind: story
-stage: implementing
+stage: review
 tags: [refactor, agent-ux]
 parent: null
 depends_on: [epic-temporal-debugging-workflow-mcp-investigation-surface]
@@ -102,3 +102,14 @@ rollback is required.
   built-in code-economy and elimination lenses were applied. This is not a
   generic MCP handler abstraction.
 - `.work/bin/work-view` and current epic/feature stages were preserved.
+
+## Implementation notes
+
+- Execution capability: direct inline implementation; the pure mapper and its sole registry caller form one bounded private seam.
+- Review weight: standard, with the bounded standalone-story review still pending.
+- Files changed: `crates/krometrail-mcp/src/response.rs` and `crates/krometrail-mcp/src/registry.rs`.
+- Tests added/removed: none; existing progressive MCP response and resource tests remain the equivalence evidence.
+- Simplification: made `map_progressive_result` synchronous, removed its unused evidence/deadline/cancellation inputs and placeholder tuple, and removed the caller-side await while leaving execution and temporal-bundle inline retrieval control paths unchanged.
+- Discrepancies from design: none.
+- Adjacent issues parked: none.
+- Focused verification (Rust 1.85.0, locked): `cargo fmt --all -- --check`; `cargo check -p krometrail-mcp --locked --all-targets`; `cargo test -p krometrail-mcp --locked` (19 passed); `cargo clippy -p krometrail-mcp --locked --all-targets -- -D warnings`.

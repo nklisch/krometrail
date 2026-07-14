@@ -388,16 +388,11 @@ async fn call_progressive(
         ))
         .await;
     match result {
-        Ok(result) => map_progressive_result(
-            name,
-            result,
-            dependencies.progressive_evidence.as_ref(),
-            budget.deadline,
-            budget.cancellation.clone(),
-        )
-        .await
-        .map_err(|_| rmcp::ErrorData::internal_error("progressive response mapping failed", None))
-        .and_then(into_call_tool_result),
+        Ok(result) => map_progressive_result(name, result)
+            .map_err(|_| {
+                rmcp::ErrorData::internal_error("progressive response mapping failed", None)
+            })
+            .and_then(into_call_tool_result),
         Err(error) => Ok(call_error_result(name, error)),
     }
 }

@@ -662,12 +662,9 @@ pub(crate) async fn map_temporal_bundle_result(
     Ok(mapped(tool, projection, format!("{tool} succeeded")))
 }
 
-pub(crate) async fn map_progressive_result(
+pub(crate) fn map_progressive_result(
     tool: &str,
     result: ProgressiveEvidenceResult,
-    progressive: &dyn ProgressiveEvidence,
-    deadline: Instant,
-    cancellation: Arc<dyn krometrail_core::CancellationSignal>,
 ) -> Result<MappedResult, ResponseInvariantError> {
     let projection = match result {
         ProgressiveEvidenceResult::RetrieveArtifact(read) => {
@@ -735,10 +732,6 @@ pub(crate) async fn map_progressive_result(
         | ProgressiveEvidenceResult::UnpinResolvedRange(change) => serializable(*change)?,
         ProgressiveEvidenceResult::QueryPinState(state) => serializable(*state)?,
     };
-    // The only progressive result carrying request-scoped bytes is the source
-    // batch, which is projected synchronously above. The arguments remain here
-    // so all future byte-bearing families share the same deadline boundary.
-    let _ = (progressive, deadline, cancellation);
     Ok(mapped(tool, projection, format!("{tool} succeeded")))
 }
 
