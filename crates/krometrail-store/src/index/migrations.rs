@@ -2,14 +2,14 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use crate::persistence_error;
 
-use super::{schema_v1, schema_v2, schema_v3, schema_v4};
+use super::{schema_v1, schema_v2, schema_v3, schema_v4, schema_v5};
 
 pub(crate) struct Migration {
     pub version: u32,
     pub sql: &'static str,
 }
 
-pub(crate) const LATEST_SCHEMA_VERSION: u32 = 4;
+pub(crate) const LATEST_SCHEMA_VERSION: u32 = 5;
 pub(crate) const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 1,
@@ -26,6 +26,10 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 4,
         sql: schema_v4::SQL,
+    },
+    Migration {
+        version: 5,
+        sql: schema_v5::SQL,
     },
 ];
 
@@ -83,7 +87,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn v3_database_upgrades_to_v4_in_one_transaction() {
+    fn v3_database_upgrades_through_v5_in_one_transaction() {
         let mut connection = Connection::open_in_memory().unwrap();
         migrate_with(&mut connection, &MIGRATIONS[..3], 3).unwrap();
         let before: u32 = connection
@@ -95,12 +99,14 @@ mod tests {
         let after: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(after, 4);
+        assert_eq!(after, 5);
         for table in [
             "interactions",
             "evicted_frame_ranges",
             "artifacts",
             "artifact_frames",
+            "browser_events",
+            "browser_event_unavailable_ranges",
         ] {
             let count: u32 = connection
                 .query_row(
@@ -152,6 +158,49 @@ mod tests {
             )
             .unwrap();
         assert_eq!(retained, (1, 1, 0, 0));
+    }
+
+    #[test]
+    fn artifact_v4_upgrades_to_v5_without_rebuilding_v4_tables() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        migrate_with(&mut connection, &MIGRATIONS[..4], 4).unwrap();
+        connection
+            .execute(
+                "INSERT INTO sessions(session_id,record_json) VALUES (?1,NULL)",
+                [vec![1_u8; 16]],
+            )
+            .unwrap();
+
+        migrate(&mut connection).unwrap();
+        let version: u32 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        let sessions: u32 = connection
+            .query_row("SELECT count(*) FROM sessions", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!((version, sessions), (5, 1));
+    }
+
+    #[test]
+    fn failed_v5_rolls_back_to_intact_v4() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        migrate_with(&mut connection, &MIGRATIONS[..4], 4).unwrap();
+        let broken = [Migration {
+            version: 5,
+            sql: "CREATE TABLE browser_events(value INTEGER) STRICT; THIS IS NOT SQL;",
+        }];
+        assert!(migrate_with(&mut connection, &broken, 5).is_err());
+        let version: u32 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        let table_count: u32 = connection
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='browser_events'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!((version, table_count), (4, 0));
     }
 
     #[test]

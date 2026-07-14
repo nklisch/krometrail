@@ -33,47 +33,46 @@ pub(crate) struct UsageEntry {
 
 impl SqliteIndex {
     pub(crate) fn refresh_index_usage(&self) -> krometrail_core::Result<u64> {
-        const COMPONENTS: [(&str, &str); 3] = [("main", ""), ("wal", "-wal"), ("shm", "-shm")];
-        // Collapse prior WAL growth before measuring. The transaction below can
-        // create a bounded fresh WAL frame, which status reports as accounting
-        // slack instead of recursively accounting for its own write.
+        // A checkpoint makes SQLite pages, rather than transient WAL length, the
+        // accounting authority. Browser-event usage is a classified subset of
+        // those live pages and is subtracted once from the index class.
         let mut connection = self.connection()?;
-        connection
-            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+        let checkpoint_busy: i64 = connection
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))
             .map_err(|_| persistence_error("could not checkpoint index usage"))?;
-        let base = self.database_path().as_os_str().to_string_lossy();
-        let mut measured = Vec::with_capacity(COMPONENTS.len());
-        let mut total = 0_u64;
-        for (key, suffix) in COMPONENTS {
-            let path = std::path::PathBuf::from(format!("{base}{suffix}"));
-            let bytes = match std::fs::metadata(path) {
-                Ok(metadata) => metadata.len(),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
-                Err(_) => return Err(persistence_error("could not inspect index usage")),
-            };
-            total = total
-                .checked_add(bytes)
-                .ok_or_else(|| persistence_error("index usage overflow"))?;
-            measured.push((key, bytes));
+        if checkpoint_busy != 0 {
+            return Err(persistence_error("index usage checkpoint is busy"));
         }
+        let (live_bytes, _) = sqlite_page_usage(&connection)?;
+        let browser_event_bytes = class_usage(&connection, UsageClass::BrowserEvent)?;
+        let index_bytes = live_bytes
+            .checked_sub(browser_event_bytes)
+            .ok_or_else(|| persistence_error("browser event usage exceeds live index pages"))?;
         let transaction = connection
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|_| persistence_error("could not begin index usage refresh"))?;
-        for (key, bytes) in measured {
-            transaction
-                .execute(
-                    "INSERT INTO usage(class, object_key, session_id, byte_len_be) \
-                     VALUES ('index', ?1, NULL, ?2) \
-                     ON CONFLICT(class, object_key) DO UPDATE SET byte_len_be=excluded.byte_len_be \
-                     WHERE usage.byte_len_be != excluded.byte_len_be",
-                    params![key.as_bytes(), codec::u64_blob(bytes).to_vec()],
-                )
-                .map_err(|_| persistence_error("could not refresh index usage"))?;
-        }
+        transaction
+            .execute(
+                "DELETE FROM usage WHERE class='index' AND object_key!=?1",
+                params![b"live-pages".as_slice()],
+            )
+            .map_err(|_| persistence_error("could not remove legacy index usage"))?;
+        transaction
+            .execute(
+                "INSERT INTO usage(class, object_key, session_id, byte_len_be) \
+                 VALUES ('index', ?1, NULL, ?2) \
+                 ON CONFLICT(class, object_key) DO UPDATE SET byte_len_be=excluded.byte_len_be \
+                 WHERE usage.byte_len_be != excluded.byte_len_be",
+                params![
+                    b"live-pages".as_slice(),
+                    codec::u64_blob(index_bytes).to_vec()
+                ],
+            )
+            .map_err(|_| persistence_error("could not refresh index usage"))?;
         transaction
             .commit()
             .map_err(|_| persistence_error("could not commit index usage refresh"))?;
-        Ok(total)
+        Ok(live_bytes)
     }
 
     pub(crate) fn session_usage_bytes(
@@ -224,6 +223,48 @@ impl SqliteIndex {
             .map_err(|_| persistence_error("could not query usage metadata"))?;
         value.as_deref().map(codec::decode_u64).transpose()
     }
+}
+
+pub(crate) fn sqlite_page_usage(
+    connection: &rusqlite::Connection,
+) -> krometrail_core::Result<(u64, u64)> {
+    let page_count: u64 = connection
+        .pragma_query_value(None, "page_count", |row| row.get(0))
+        .map_err(|_| persistence_error("could not read index page count"))?;
+    let freelist_count: u64 = connection
+        .pragma_query_value(None, "freelist_count", |row| row.get(0))
+        .map_err(|_| persistence_error("could not read index freelist count"))?;
+    let page_size: u64 = connection
+        .pragma_query_value(None, "page_size", |row| row.get(0))
+        .map_err(|_| persistence_error("could not read index page size"))?;
+    let live = page_count
+        .checked_sub(freelist_count)
+        .and_then(|pages| pages.checked_mul(page_size))
+        .ok_or_else(|| persistence_error("index live-page usage overflow"))?;
+    let reusable = freelist_count
+        .checked_mul(page_size)
+        .ok_or_else(|| persistence_error("index freelist usage overflow"))?;
+    Ok((live, reusable))
+}
+
+fn class_usage(
+    connection: &rusqlite::Connection,
+    class: UsageClass,
+) -> krometrail_core::Result<u64> {
+    let mut statement = connection
+        .prepare("SELECT byte_len_be FROM usage WHERE class=?1 ORDER BY object_key")
+        .map_err(|_| persistence_error("could not prepare class usage lookup"))?;
+    let rows = statement
+        .query_map(params![class.as_str()], |row| row.get::<_, Vec<u8>>(0))
+        .map_err(|_| persistence_error("could not query class usage"))?;
+    let mut total = 0_u64;
+    for row in rows {
+        let raw = row.map_err(|_| persistence_error("could not read class usage"))?;
+        total = total
+            .checked_add(codec::decode_u64(&raw)?)
+            .ok_or_else(|| persistence_error("class usage overflow"))?;
+    }
+    Ok(total)
 }
 
 #[cfg(test)]

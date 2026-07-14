@@ -5,13 +5,16 @@ use std::{
 
 use krometrail_core::{
     ArtifactCacheKey, ArtifactLookup, ArtifactPublication, ArtifactPublish,
-    ArtifactSourceFingerprint, ArtifactStore, CaptureGap, CaptureGapStore, DiskBudgetBytes,
-    EncodedFrame, ErrorCode, ErrorContext, FrameAddress, FrameSource, InteractionAnchor,
-    InteractionEvidenceSink, InteractionRecord, KrometrailError, NavigationId, NonEmptyText,
-    ObservedTime, PinChange, PortFuture, RecordingBudgetState, RecordingSink, ResolvedRange,
-    RetentionRange, RetentionStatus, RetentionStore, RetryAdvice, SessionDeletion, SessionId,
-    SessionRange, StorageUsage, StoredArtifact, TargetId, TemporalQuery, TemporalQueryRequest,
-    TemporalQueryService, TemporalRangeResolver, TimelineObservation, TimelineStore,
+    ArtifactSourceFingerprint, ArtifactStore, BrowserEventBatch, BrowserEventCursor,
+    BrowserEventSelector, BrowserEventSink, BrowserEventSource, BrowserEventUnavailableRange,
+    CaptureGap, CaptureGapStore, CaptureStatusSamples, DiskBudgetBytes, EncodedFrame, ErrorCode,
+    ErrorContext, EventCandidateLimit, EventPageLimit, FrameAddress, FrameSource,
+    InteractionAnchor, InteractionEvidenceSink, InteractionRecord, KrometrailError, NavigationId,
+    NonEmptyText, ObservedTime, PinChange, PortFuture, RecordingBudgetState, RecordingSink,
+    ResolvedRange, RetentionRange, RetentionStatus, RetentionStore, RetryAdvice, SessionDeletion,
+    SessionId, SessionRange, SessionTime, StorageUsage, StoredArtifact, TargetId, TemporalQuery,
+    TemporalQueryRequest, TemporalQueryService, TemporalRangeResolver, TimelineObservation,
+    TimelineStore,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, watch};
@@ -34,7 +37,6 @@ use crate::{
 };
 
 const RECORD_ENVELOPE_ALLOWANCE: u64 = 4096;
-const SQLITE_ACCOUNTING_SLACK: u64 = 32 * 1024;
 
 /// Coordinates physical frame writes, searchable metadata, and destructive
 /// retention mutations behind one ordering gate.
@@ -96,6 +98,7 @@ impl RecordingStore {
         };
         store.resume_deletions()?;
         store.recover_artifacts()?;
+        store.recover_browser_events()?;
         Ok(store)
     }
 
@@ -137,6 +140,19 @@ impl RecordingStore {
             orphan_files_removed = plan.report.orphan_files_removed,
             usage_rows_reconciled = plan.report.usage_rows_reconciled,
             "artifact store recovery complete"
+        );
+        Ok(())
+    }
+
+    fn recover_browser_events(&self) -> krometrail_core::Result<()> {
+        let report = self.index.recover_browser_events()?;
+        tracing::info!(
+            timeline_rows_repaired = report.timeline_rows_repaired,
+            usage_rows_repaired = report.usage_rows_repaired,
+            corrupt_rows_discarded = report.corrupt_rows_discarded,
+            orphan_timeline_rows_discarded = report.orphan_timeline_rows_discarded,
+            orphan_usage_rows_removed = report.orphan_usage_rows_removed,
+            "browser event recovery complete"
         );
         Ok(())
     }
@@ -295,7 +311,7 @@ impl RecordingStore {
             snapshot.usage.artifact_bytes,
             snapshot.usage.pending_deletion_bytes,
             snapshot.usage.open_segment_bytes,
-            SQLITE_ACCOUNTING_SLACK,
+            snapshot.usage.accounting_slack_bytes,
         )?;
         RetentionStatus::new(
             self.budget,
@@ -354,24 +370,41 @@ impl RecordingStore {
 
     async fn enforce_locked(&self) -> krometrail_core::Result<RetentionStatus> {
         let mut snapshot = self.refresh_usage()?;
-        let total = snapshot.usage.total_bytes()?;
-        if total <= self.budget.get()
-            || (snapshot.open_segment_count <= 1
-                && total.saturating_sub(self.budget.get()) <= self.open_overhead_limit)
-        {
+        if self.usage_is_within_budget(&snapshot)? {
             self.set_budget_state(RecordingBudgetState::Available);
             return self.status_from_snapshot(snapshot, RecordingBudgetState::Available);
         }
         self.flush_all().await?;
         self.cleanup_to(self.budget.get()).await?;
         snapshot = self.refresh_usage()?;
-        let state = if snapshot.usage.total_bytes()? <= self.budget.get() {
+        let state = if self.usage_is_within_budget(&snapshot)? {
             RecordingBudgetState::Available
         } else {
             RecordingBudgetState::PausedBudget
         };
         self.set_budget_state(state);
         self.status_from_snapshot(snapshot, state)
+    }
+
+    fn usage_is_within_budget(
+        &self,
+        snapshot: &crate::index::retention::UsageSnapshot,
+    ) -> krometrail_core::Result<bool> {
+        let total = snapshot.usage.total_bytes()?;
+        if total <= self.budget.get() {
+            return Ok(true);
+        }
+        if snapshot.open_segment_count != 1
+            || total.saturating_sub(self.budget.get()) > self.open_overhead_limit
+        {
+            return Ok(false);
+        }
+        // The bounded open-segment allowance must not shelter older evictable
+        // evidence. It applies only after artifact/event/sealed-segment cleanup
+        // has no candidate left to reclaim.
+        Ok(self.index.oldest_artifact()?.is_none()
+            && self.index.oldest_unpinned_segment()?.is_none()
+            && self.index.oldest_browser_event()?.is_none())
     }
 
     async fn cleanup_to(&self, target_bytes: u64) -> krometrail_core::Result<()> {
@@ -388,7 +421,23 @@ impl RecordingStore {
                 .await?;
                 continue;
             }
-            let Some(segment) = self.index.oldest_unpinned_segment()? else {
+            let segment = self.index.oldest_unpinned_segment()?;
+            let event = self.index.oldest_browser_event()?;
+            let event_is_older = match (&segment, event) {
+                (_, None) => false,
+                (None, Some(_)) => true,
+                (Some(segment), Some(event)) => {
+                    event.retention_sequence < segment.retention_sequence
+                }
+            };
+            if event_is_older {
+                let before = segment.as_ref().map(|segment| segment.retention_sequence);
+                if self.index.evict_oldest_browser_events(before)? == 0 {
+                    return Ok(());
+                }
+                continue;
+            }
+            let Some(segment) = segment else {
                 return Ok(());
             };
             let mut objects: Vec<_> = self
@@ -589,6 +638,96 @@ impl ArtifactStore for RecordingStore {
                 }
             }
         })
+    }
+}
+
+impl BrowserEventSink for RecordingStore {
+    fn append_event_batch(
+        &self,
+        batch: BrowserEventBatch,
+    ) -> PortFuture<'_, krometrail_core::Result<()>> {
+        Box::pin(async move {
+            let _mutation = self.mutations.lock().await;
+            self.reject_deleted(batch.session_id())?;
+            // Measure before the immediate transaction so its budget decision starts
+            // from checkpointed live-page accounting. The transaction then considers
+            // only bounded inserts and bounded event-only evictions.
+            let managed_usage = self.refresh_usage()?.usage.total_bytes()?;
+            self.index
+                .append_browser_event_batch(batch, self.budget.get(), managed_usage)
+        })
+    }
+}
+
+impl BrowserEventSource for RecordingStore {
+    fn count_events(
+        &self,
+        selector: BrowserEventSelector,
+    ) -> PortFuture<'_, krometrail_core::Result<u64>> {
+        BrowserEventSource::count_events(self.index.as_ref(), selector)
+    }
+
+    fn chronological_events(
+        &self,
+        selector: BrowserEventSelector,
+        cursor: Option<BrowserEventCursor>,
+        limit: EventPageLimit,
+    ) -> PortFuture<'_, krometrail_core::Result<Vec<krometrail_core::BrowserEvent>>> {
+        BrowserEventSource::chronological_events(self.index.as_ref(), selector, cursor, limit)
+    }
+
+    fn priority_candidates(
+        &self,
+        selector: BrowserEventSelector,
+        limit: EventCandidateLimit,
+    ) -> PortFuture<'_, krometrail_core::Result<Vec<krometrail_core::BrowserEvent>>> {
+        BrowserEventSource::priority_candidates(self.index.as_ref(), selector, limit)
+    }
+
+    fn nearest_candidates(
+        &self,
+        selector: BrowserEventSelector,
+        focus_times: Vec<SessionTime>,
+        each_side: u8,
+    ) -> PortFuture<'_, krometrail_core::Result<Vec<krometrail_core::BrowserEvent>>> {
+        BrowserEventSource::nearest_candidates(
+            self.index.as_ref(),
+            selector,
+            focus_times,
+            each_side,
+        )
+    }
+
+    fn unavailable_ranges(
+        &self,
+        session_id: SessionId,
+        target_id: TargetId,
+        range: SessionRange,
+        limit: u16,
+    ) -> PortFuture<'_, krometrail_core::Result<Vec<BrowserEventUnavailableRange>>> {
+        BrowserEventSource::unavailable_ranges(
+            self.index.as_ref(),
+            session_id,
+            target_id,
+            range,
+            limit,
+        )
+    }
+
+    fn capture_status_samples(
+        &self,
+        session_id: SessionId,
+        target_id: TargetId,
+        range: SessionRange,
+        limit: u16,
+    ) -> PortFuture<'_, krometrail_core::Result<CaptureStatusSamples>> {
+        BrowserEventSource::capture_status_samples(
+            self.index.as_ref(),
+            session_id,
+            target_id,
+            range,
+            limit,
+        )
     }
 }
 

@@ -93,7 +93,9 @@ impl TimelineStore for SqliteIndex {
         Box::pin(async move {
             if matches!(
                 observation.kind(),
-                ObservationKind::Frame | ObservationKind::CaptureGap
+                ObservationKind::Frame
+                    | ObservationKind::CaptureGap
+                    | ObservationKind::BrowserEvent
             ) {
                 return Err(authoritative_path_required());
             }
@@ -209,7 +211,7 @@ fn authoritative_path_required() -> KrometrailError {
     KrometrailError::new(
         ErrorCode::InvalidInput,
         NonEmptyText::new(
-            "frame and capture-gap observations require their authoritative persistence path",
+            "frame, capture-gap, and browser-event observations require their authoritative persistence path",
         )
         .expect("static timeline error is non-empty"),
     )

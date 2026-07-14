@@ -30,7 +30,12 @@ pub use browser::{
     BrowserOperationContext, BrowserPageTargets, BrowserSessionEvents, BrowserSessionPort,
     CancellationSignal, LaunchBrowser, ManagedProfile,
 };
-pub use browser_events::BrowserEventSink;
+pub use browser_events::{
+    BrowserEventCursor, BrowserEventSelector, BrowserEventSink, BrowserEventSource,
+    BrowserEventUnavailableRange, BrowserEventUnavailableReason, CaptureStatusSamples,
+    EventCandidateLimit, EventPageLimit, MAX_CAPTURE_STATUS_SAMPLES, MAX_EVENT_CANDIDATE_ROWS,
+    MAX_EVENT_PAGE_ROWS, MAX_EVENT_UNAVAILABLE_RANGES,
+};
 pub use catalog::RecordingCatalog;
 pub use clock::{MonotonicClock, WallClock};
 pub use frames::FrameSource;

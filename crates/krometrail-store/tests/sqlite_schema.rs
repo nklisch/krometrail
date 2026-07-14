@@ -24,7 +24,7 @@ fn schema_migrates_reopens_and_has_the_declared_inventory() {
     let version: u32 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 4);
+    assert_eq!(version, 5);
     let mut statement = connection
         .prepare(
             "SELECT name FROM sqlite_master \
@@ -42,6 +42,14 @@ fn schema_migrates_reopens_and_has_the_declared_inventory() {
         "artifact_ready_cache_idx",
         "artifact_source_frame_idx",
         "artifacts",
+        "browser_event_filter_idx",
+        "browser_event_priority_idx",
+        "browser_event_range_idx",
+        "browser_event_retention_idx",
+        "browser_event_timeline_ref_idx",
+        "browser_event_unavailable_idx",
+        "browser_event_unavailable_ranges",
+        "browser_events",
         "frames",
         "segments",
         "sessions",
@@ -77,7 +85,7 @@ fn future_schema_is_refused_without_mutation() {
     let directory = TempDir::new().unwrap();
     let config = config(&directory);
     let connection = Connection::open(&config.database_path).unwrap();
-    connection.pragma_update(None, "user_version", 5).unwrap();
+    connection.pragma_update(None, "user_version", 6).unwrap();
     drop(connection);
 
     let error = SqliteIndex::open(config.clone()).err().unwrap();
@@ -86,7 +94,7 @@ fn future_schema_is_refused_without_mutation() {
     let version: u32 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 5);
+    assert_eq!(version, 6);
 }
 
 #[test]

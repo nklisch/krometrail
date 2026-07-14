@@ -410,7 +410,7 @@ fn usage_snapshot(connection: &Connection) -> krometrail_core::Result<UsageSnaps
         classes.get("artifact").copied().unwrap_or(0),
         pending,
         open_bytes,
-        0,
+        super::maintenance::sqlite_page_usage(connection)?.1,
     )?;
     Ok(UsageSnapshot {
         usage,

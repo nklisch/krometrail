@@ -1,9 +1,12 @@
 use std::{sync::Arc, time::Duration};
 
 use krometrail_core::{
-    CaptureOrdinal, CapturedFrame, DeviceScaleFactor, DiskBudgetBytes, EncodedFrame, ErrorCode,
-    FrameId, FrameSource, ImageFormat, ObservedTime, PixelDimensions, RecordingSink,
-    RetentionRange, RetentionStore, SessionId, SessionRange, SessionTime, TargetId,
+    BrowserEvent, BrowserEventBatch, BrowserEventClass, BrowserEventId, BrowserEventOrdinal,
+    BrowserEventPayload, BrowserEventSelector, BrowserEventSeverity, BrowserEventSink,
+    BrowserEventSource, BrowserEventUnavailableReason, CaptureOrdinal, CapturedFrame,
+    DeviceScaleFactor, DiskBudgetBytes, EncodedFrame, ErrorCode, FrameId, FrameSource, ImageFormat,
+    ObservedTime, PixelDimensions, RecordingSink, RetentionRange, RetentionStore, SessionId,
+    SessionRange, SessionTime, TargetId, TargetLifecycle, TargetLifecycleEvent,
 };
 use krometrail_store::{
     IndexStoreConfig, RecordingStore, RotationConfig, SegmentStoreConfig, SegmentWriter,
@@ -30,6 +33,33 @@ fn frame(session: u128, target: u128, id: u128, ordinal: u64, bytes: usize) -> E
         )
         .unwrap(),
         vec![7; bytes],
+    )
+    .unwrap()
+}
+
+fn browser_event(id: u128, session: u128, target: u128, ordinal: u64, time: u64) -> BrowserEvent {
+    BrowserEvent::new(
+        BrowserEventId::from_uuid(Uuid::from_u128(id)),
+        SessionId::from_uuid(Uuid::from_u128(session)),
+        TargetId::from_uuid(Uuid::from_u128(target)),
+        1,
+        BrowserEventOrdinal::new(ordinal).unwrap(),
+        SessionTime::from_nanos(time),
+        None,
+        ObservedTime::from_nanos(time + 10),
+        BrowserEventSeverity::Info,
+        BrowserEventPayload::TargetLifecycle(TargetLifecycleEvent::new(TargetLifecycle::Attached)),
+    )
+    .unwrap()
+}
+
+fn event_selector(session: SessionId, target: TargetId) -> BrowserEventSelector {
+    BrowserEventSelector::new(
+        session,
+        target,
+        SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(100)).unwrap(),
+        Vec::<BrowserEventClass>::new(),
+        BrowserEventSeverity::Debug,
     )
     .unwrap()
 }
@@ -304,5 +334,171 @@ async fn destructive_session_deletion_removes_payload_and_rejects_resurrection()
     assert_eq!(
         store.delete_session(session).await.unwrap().removed_bytes,
         0
+    );
+}
+
+#[tokio::test]
+async fn pinned_source_frames_survive_older_event_eviction_with_tombstones() {
+    let directory = TempDir::new().unwrap();
+    let (index, writer) = fixture(&directory);
+    let store = RecordingStore::new(Arc::clone(&writer), Arc::clone(&index)).unwrap();
+    let event = browser_event(401, 400, 410, 1, 1);
+    let second_event = browser_event(402, 400, 410, 2, 2);
+    let third_event = browser_event(403, 400, 410, 3, 3);
+    store
+        .append_event_batch(
+            BrowserEventBatch::new(
+                event.session_id(),
+                vec![event.clone(), second_event, third_event],
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let item = frame(400, 410, 411, 1, 150_000);
+    store.append_frame(item.clone()).await.unwrap();
+    store.flush(item.metadata().session_id()).await.unwrap();
+    let pin = RetentionRange {
+        session_id: item.metadata().session_id(),
+        target_id: item.metadata().target_id(),
+        range: SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(4)).unwrap(),
+    };
+    store.pin_range(pin).await.unwrap();
+    let status = store.status().await.unwrap();
+    let budget = DiskBudgetBytes::new(
+        status.usage.total_bytes().unwrap() - status.open_segment_overhead_limit_bytes - 1,
+    )
+    .unwrap();
+    drop(store);
+
+    let store =
+        RecordingStore::with_budget(Arc::clone(&writer), Arc::clone(&index), budget).unwrap();
+    let _ = store.enforce_budget().await.unwrap();
+    assert_eq!(
+        store
+            .count_events(event_selector(event.session_id(), event.target_id()))
+            .await
+            .unwrap(),
+        0
+    );
+    let unavailable = store
+        .unavailable_ranges(
+            event.session_id(),
+            event.target_id(),
+            SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(4)).unwrap(),
+            10,
+        )
+        .await
+        .unwrap();
+    assert_eq!(unavailable.len(), 1);
+    assert_eq!(
+        unavailable[0].reason(),
+        BrowserEventUnavailableReason::RetentionEvicted
+    );
+    assert_eq!(unavailable[0].event_count().get(), 3);
+    assert_eq!(unavailable[0].first_ordinal().unwrap().get(), 1);
+    assert_eq!(unavailable[0].last_ordinal().unwrap().get(), 3);
+    assert_eq!(
+        index
+            .frames_by_id(vec![item.metadata().id()])
+            .await
+            .unwrap()[0]
+            .metadata()
+            .id(),
+        item.metadata().id()
+    );
+}
+
+#[tokio::test]
+async fn event_append_under_file_backed_pressure_fails_without_deleting_segments() {
+    let directory = TempDir::new().unwrap();
+    let (index, writer) = fixture(&directory);
+    let store = RecordingStore::new(Arc::clone(&writer), Arc::clone(&index)).unwrap();
+    let item = frame(450, 460, 461, 1, 20_000);
+    store.append_frame(item.clone()).await.unwrap();
+    store.flush(item.metadata().session_id()).await.unwrap();
+    let status = store.status().await.unwrap();
+    let budget = DiskBudgetBytes::new(status.usage.total_bytes().unwrap() - 1).unwrap();
+    drop(store);
+
+    let store =
+        RecordingStore::with_budget(Arc::clone(&writer), Arc::clone(&index), budget).unwrap();
+    let event = browser_event(451, 450, 460, 1, 1);
+    assert_eq!(
+        store
+            .append_event_batch(
+                BrowserEventBatch::new(event.session_id(), vec![event.clone()]).unwrap()
+            )
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::BudgetExhausted
+    );
+    assert_eq!(
+        index
+            .frames_by_id(vec![item.metadata().id()])
+            .await
+            .unwrap()[0]
+            .metadata()
+            .id(),
+        item.metadata().id()
+    );
+    assert_eq!(
+        store
+            .count_events(event_selector(event.session_id(), event.target_id()))
+            .await
+            .unwrap(),
+        0
+    );
+    assert!(
+        store
+            .unavailable_ranges(
+                event.session_id(),
+                event.target_id(),
+                SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(2)).unwrap(),
+                10,
+            )
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn older_unpinned_segment_is_removed_before_newer_event() {
+    let directory = TempDir::new().unwrap();
+    let (index, writer) = fixture(&directory);
+    let store = RecordingStore::new(Arc::clone(&writer), Arc::clone(&index)).unwrap();
+    let item = frame(500, 510, 511, 1, 150_000);
+    store.append_frame(item.clone()).await.unwrap();
+    store.flush(item.metadata().session_id()).await.unwrap();
+    let event = browser_event(501, 500, 510, 1, 2);
+    store
+        .append_event_batch(
+            BrowserEventBatch::new(event.session_id(), vec![event.clone()]).unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = store.status().await.unwrap();
+    let budget = DiskBudgetBytes::new(
+        status.usage.total_bytes().unwrap() - status.open_segment_overhead_limit_bytes - 1,
+    )
+    .unwrap();
+    drop(store);
+
+    let store = RecordingStore::with_budget(writer, Arc::clone(&index), budget).unwrap();
+    let _ = store.enforce_budget().await.unwrap();
+    assert!(
+        index
+            .frames_by_id(vec![item.metadata().id()])
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        store
+            .count_events(event_selector(event.session_id(), event.target_id()))
+            .await
+            .unwrap(),
+        1
     );
 }

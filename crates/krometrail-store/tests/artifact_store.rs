@@ -574,8 +574,7 @@ async fn source_segment_eviction_removes_linked_artifact_before_frames() {
             .unwrap()
             .saturating_sub(usage.segment_bytes)
             .saturating_sub(usage.artifact_bytes)
-            + 3_000
-            + 4_096,
+            + 3_000,
     )
     .unwrap();
     drop(fixture.store);

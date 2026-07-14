@@ -1,4 +1,5 @@
 pub(crate) mod artifacts;
+pub(crate) mod browser_events;
 mod catalog;
 pub(crate) mod codec;
 pub(crate) mod deletion;
@@ -14,6 +15,7 @@ mod schema_v1;
 mod schema_v2;
 mod schema_v3;
 mod schema_v4;
+mod schema_v5;
 pub(crate) mod segments;
 mod timeline;
 

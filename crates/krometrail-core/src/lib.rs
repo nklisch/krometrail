@@ -108,12 +108,15 @@ pub use lifecycle::{SessionLifecycle, TargetLifecycle};
 pub use ports::{
     ArtifactCacheKey, ArtifactCacheMetadata, ArtifactLookup, ArtifactPublication, ArtifactPublish,
     ArtifactSourceFingerprint, ArtifactStore, AttachBrowser, BrowserConnectRequest,
-    BrowserConnector, BrowserEventSink, BrowserFailureKind, BrowserOperationContext,
-    BrowserPageTargets, BrowserSessionEvents, BrowserSessionPort, CancellationSignal,
-    CaptureGapStore, FrameSource, IdSource, InteractionAnchorSource, InteractionEvidenceSink,
-    InteractionRecordSource, LaunchBrowser, ManagedProfile, MonotonicClock, PortFuture,
-    RecordingCatalog, RecordingSink, RetentionStore, StoredArtifact, TimelineAnchorSource,
-    TimelineStore, WallClock,
+    BrowserConnector, BrowserEventCursor, BrowserEventSelector, BrowserEventSink,
+    BrowserEventSource, BrowserEventUnavailableRange, BrowserEventUnavailableReason,
+    BrowserFailureKind, BrowserOperationContext, BrowserPageTargets, BrowserSessionEvents,
+    BrowserSessionPort, CancellationSignal, CaptureGapStore, CaptureStatusSamples,
+    EventCandidateLimit, EventPageLimit, FrameSource, IdSource, InteractionAnchorSource,
+    InteractionEvidenceSink, InteractionRecordSource, LaunchBrowser, MAX_CAPTURE_STATUS_SAMPLES,
+    MAX_EVENT_CANDIDATE_ROWS, MAX_EVENT_PAGE_ROWS, MAX_EVENT_UNAVAILABLE_RANGES, ManagedProfile,
+    MonotonicClock, PortFuture, RecordingCatalog, RecordingSink, RetentionStore, StoredArtifact,
+    TimelineAnchorSource, TimelineStore, WallClock,
 };
 pub use recording::{
     ByteOffset, CaptureGap, CaptureGapReason, CaptureOrdinal, CaptureStatistics,
