@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-vision-toolkit-motion-history
 kind: feature
-stage: review
+stage: done
 tags: [visual]
 parent: epic-temporal-vision-toolkit
 depends_on: [epic-temporal-vision-toolkit-normalization-and-measurements]
@@ -403,3 +403,20 @@ None. `epic-temporal-vision-toolkit-normalization-and-measurements` has complete
 - Stats: three child checkpoints advanced directly to `done`; one new feature module and one public integration-test module; 47 temporal-vision tests and 318 workspace tests green.
 - Adjacent issues parked: none.
 - Blockers: none.
+
+## Review (2026-07-14)
+
+**Verdict**: Approve with comments
+
+**Blockers**: none
+**Important**: none
+**Nits**: Duplicate alignment validation, truncating legend blend, and the cleaner `NonZeroU8::MIN`
+const construction are harmless implementation details.
+**Rejected**: none
+
+**Notes**: Standard-weight fresh-context GLM 5.2 review verified deterministic decay/live-window
+boundaries, canonical change/gap reuse, saturating per-segment accumulation and max composition,
+outline, integer blend, legends and no-direction posture, limits, manifest/hash, 47 package tests,
+Clippy, and formatting. Workspace verification was independently green at implementation time with
+318 tests; concurrent CDP work did not affect this crate. Technical correctness is approved while
+artifact usefulness remains explicitly owned by evaluation.
