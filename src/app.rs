@@ -8,7 +8,7 @@ use krometrail_core::{
     CaptureGapStore, DiskBudgetBytes, ErrorCode, FrameSource, IdSource, IdValue,
     InteractionEvidenceSink, KrometrailError, MonotonicClock, NonEmptyText, ProgressiveEvidence,
     ProgressiveEvidenceStore, RecordingCatalog, RecordingSink, Result, RetentionStore,
-    TemporalContextQuery, TemporalQuery, TimelineStore, WallClock,
+    TemporalContextQuery, TemporalDebugBundles, TemporalQuery, TimelineStore, WallClock,
 };
 use uuid::Uuid;
 
@@ -18,6 +18,7 @@ use uuid::Uuid;
 use crate::{
     artifacts::{ArtifactWorkLimits, TemporalVisionArtifactService},
     cli::Command,
+    debug_bundle::{BundleWorkLimits, TemporalDebugBundleService, TemporalDebugEvidenceStore},
     progressive::ProgressiveEvidenceService,
 };
 use krometrail_cdp::{
@@ -45,6 +46,7 @@ pub(crate) struct RuntimeDependencies {
     pub temporal_context: Arc<dyn TemporalContextQuery>,
     pub artifact_generation: Arc<dyn ArtifactGeneration>,
     pub progressive_evidence: Arc<dyn ProgressiveEvidence>,
+    pub temporal_debug_bundles: Arc<dyn TemporalDebugBundles>,
     pub mcp_config: McpConfig,
 }
 
@@ -92,6 +94,7 @@ impl Runtime {
                     &self.dependencies.temporal_context,
                     &self.dependencies.artifact_generation,
                     &self.dependencies.progressive_evidence,
+                    &self.dependencies.temporal_debug_bundles,
                 );
                 let installations = self.dependencies.browser.installations().await?;
                 if installations.is_empty() {
@@ -142,6 +145,18 @@ pub(crate) fn build_runtime() -> Result<Runtime> {
             Arc::clone(&storage.store) as Arc<dyn ProgressiveEvidenceStore>,
             Arc::clone(&artifact_generation),
         ));
+    // One bundle service over the same concrete store (temporal query, timeline/
+    // interaction evidence, temporal context) and the shared artifact service.
+    // The two-request/20-second limits bound orchestration independently of the
+    // artifact service's own scheduler/cache/single-flight permits.
+    let temporal_debug_bundles: Arc<dyn TemporalDebugBundles> =
+        Arc::new(TemporalDebugBundleService::new(
+            Arc::clone(&storage.temporal_queries),
+            Arc::clone(&storage.store) as Arc<dyn TemporalDebugEvidenceStore>,
+            Arc::clone(&artifact_generation),
+            Arc::clone(&storage.temporal_context),
+            BundleWorkLimits::default(),
+        )?);
     let browser: Arc<dyn BrowserConnector> = Arc::new(
         ProductionBrowserConnector::new(
             Arc::new(SystemChromeLauncher::new(LauncherConfig::new(profile_root))),
@@ -180,6 +195,7 @@ pub(crate) fn build_runtime() -> Result<Runtime> {
         temporal_context: storage.temporal_context,
         artifact_generation,
         progressive_evidence,
+        temporal_debug_bundles,
         mcp_config,
     }))
 }
@@ -383,6 +399,16 @@ mod tests {
                 Arc::clone(&storage.store) as Arc<dyn ProgressiveEvidenceStore>,
                 Arc::clone(&artifact_generation),
             ));
+        let temporal_debug_bundles: Arc<dyn TemporalDebugBundles> = Arc::new(
+            TemporalDebugBundleService::new(
+                Arc::clone(&storage.temporal_queries),
+                Arc::clone(&storage.store) as Arc<dyn TemporalDebugEvidenceStore>,
+                Arc::clone(&artifact_generation),
+                Arc::clone(&storage.temporal_context),
+                BundleWorkLimits::default(),
+            )
+            .unwrap(),
+        );
         let runtime = Runtime::new(RuntimeDependencies {
             clock: Arc::new(ProcessMonotonicClock {
                 origin: Instant::now(),
@@ -400,6 +426,7 @@ mod tests {
             temporal_context: storage.temporal_context,
             artifact_generation,
             progressive_evidence,
+            temporal_debug_bundles,
             mcp_config: McpConfig::default(),
         });
         let error = runtime.run(Command::Doctor).await.unwrap_err();
@@ -545,5 +572,312 @@ mod tests {
         let id = ProcessIdSource.next();
         assert_eq!(id.as_uuid().get_version_num(), 4);
         assert_eq!(id.as_uuid().get_variant(), uuid::Variant::RFC4122);
+    }
+
+    #[tokio::test]
+    async fn bundle_composition_shares_one_store_and_one_artifact_service() {
+        let root =
+            std::env::temp_dir().join(format!("krometrail-bundle-composition-{}", Uuid::new_v4()));
+        let storage = open_storage_with_budget(&root, DiskBudgetBytes::default()).unwrap();
+        let concrete = Arc::as_ptr(&storage.store) as *const ();
+        // Every store projection the bundle service receives points at the one
+        // concrete RecordingStore.
+        assert_eq!(
+            concrete,
+            Arc::as_ptr(&storage.temporal_queries) as *const (),
+            "bundle temporal query must use the one recording store",
+        );
+        assert_eq!(
+            concrete,
+            Arc::as_ptr(&storage.temporal_context) as *const (),
+            "bundle temporal context must use the one recording store",
+        );
+        let bundle_evidence: Arc<dyn TemporalDebugEvidenceStore> =
+            Arc::clone(&storage.store) as Arc<dyn TemporalDebugEvidenceStore>;
+        assert_eq!(
+            concrete,
+            Arc::as_ptr(&bundle_evidence) as *const (),
+            "bundle timeline/interaction evidence must use the one recording store",
+        );
+        // The shared artifact service is constructed once and cloned to both
+        // progressive and bundle paths.
+        let ids: Arc<dyn IdSource> = Arc::new(ProcessIdSource);
+        let artifact_generation: Arc<dyn ArtifactGeneration> = Arc::new(
+            TemporalVisionArtifactService::new(
+                Arc::clone(&storage.frames),
+                Arc::clone(&storage.artifacts),
+                Arc::clone(&ids),
+                ArtifactWorkLimits::default(),
+            )
+            .unwrap(),
+        );
+        let artifact_ptr = Arc::as_ptr(&artifact_generation) as *const ();
+        let _progressive = ProgressiveEvidenceService::new(
+            Arc::clone(&storage.store) as Arc<dyn ProgressiveEvidenceStore>,
+            Arc::clone(&artifact_generation),
+        );
+        let _bundle = TemporalDebugBundleService::new(
+            Arc::clone(&storage.temporal_queries),
+            bundle_evidence,
+            Arc::clone(&artifact_generation),
+            Arc::clone(&storage.temporal_context),
+            BundleWorkLimits::default(),
+        )
+        .unwrap();
+        // The original Arc and its clones all point to the same artifact service.
+        assert_eq!(
+            artifact_ptr,
+            Arc::as_ptr(&artifact_generation) as *const (),
+            "progressive and bundle paths share one artifact service",
+        );
+        drop(storage);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn blocked_artifact_generation_permits_frame_persistence() {
+        use krometrail_core::{
+            ArtifactGenerationContext, ArtifactGenerationRequest, ArtifactGenerationResult,
+            CaptureOrdinal, DeviceScaleFactor, EncodedFrame, FrameId,
+            ObservedTime, OrientationPolicy, PixelDimensions, PortFuture, SessionRange,
+            SessionTime, TemporalDebugBundleContext, TemporalDebugBundleRequest,
+            TemporalRangeAnchor, VisualEpoch,
+        };
+        use tokio::sync::Notify;
+
+        let root = std::env::temp_dir().join(format!("krometrail-bundle-gate-{}", Uuid::new_v4()));
+        let storage = open_storage_with_budget(&root, DiskBudgetBytes::default()).unwrap();
+        let session = krometrail_core::SessionId::from_uuid(Uuid::from_u128(1));
+        let target = krometrail_core::TargetId::from_uuid(Uuid::from_u128(2));
+
+        // Append one frame so range resolution succeeds.
+        let frame_id = FrameId::from_uuid(Uuid::from_u128(10));
+        let metadata = krometrail_core::CapturedFrame::new(
+            frame_id,
+            session,
+            target,
+            CaptureOrdinal::new(1).unwrap(),
+            None,
+            ObservedTime::from_nanos(2),
+            SessionTime::from_nanos(1),
+            krometrail_core::ImageFormat::Png,
+            PixelDimensions::new(2, 2).unwrap(),
+            PixelDimensions::new(2, 2).unwrap(),
+            DeviceScaleFactor::new(1.0).unwrap(),
+            vec![],
+        )
+        .unwrap();
+        let frame = EncodedFrame::new(metadata, vec![0_u8, 1, 2]).unwrap();
+        storage.recording.append_frame(frame).await.unwrap();
+
+        // Spy artifact service that blocks during generate.
+        let block = Arc::new(Notify::new());
+        let reached = Arc::new(Notify::new());
+        struct BlockingGeneration {
+            block: Arc<Notify>,
+            reached: Arc<Notify>,
+            range: krometrail_core::ResolvedRange,
+            frame_id: FrameId,
+        }
+        impl ArtifactGeneration for BlockingGeneration {
+            fn generate(
+                &self,
+                _request: ArtifactGenerationRequest,
+                _ctx: ArtifactGenerationContext,
+            ) -> PortFuture<'_, krometrail_core::Result<ArtifactGenerationResult>> {
+                let block = Arc::clone(&self.block);
+                let reached = Arc::clone(&self.reached);
+                let range = self.range.clone();
+                let frame_id = self.frame_id;
+                Box::pin(async move {
+                    reached.notify_one();
+                    block.notified().await;
+                    Ok(ArtifactGenerationResult {
+                        range,
+                        epochs: vec![VisualEpoch {
+                            index: 0,
+                            frame_ids: vec![frame_id],
+                            image: PixelDimensions::new(2, 2).unwrap(),
+                            viewport: PixelDimensions::new(2, 2).unwrap(),
+                            device_scale_factor: DeviceScaleFactor::new(1.0).unwrap(),
+                        }],
+                        outcomes: vec![],
+                    })
+                })
+            }
+        }
+        // Resolve the range once to feed the spy's result.
+        let resolved = storage
+            .temporal_queries
+            .resolve_range(
+                krometrail_core::TemporalQueryRequest::strict(TemporalRangeAnchor::SessionTime {
+                    scope: krometrail_core::AnchorScope::new(Some(session), Some(target)),
+                    range: SessionRange::new(
+                        SessionTime::from_nanos(1),
+                        SessionTime::from_nanos(1),
+                    )
+                    .unwrap(),
+                })
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let spy_generation = Arc::new(BlockingGeneration {
+            block: Arc::clone(&block),
+            reached: Arc::clone(&reached),
+            range: resolved.clone(),
+            frame_id,
+        });
+
+        // Spy context query that returns a minimal context without touching the store.
+        struct SpyContext {
+            range: krometrail_core::ResolvedRange,
+        }
+        impl krometrail_core::TemporalContextQuery for SpyContext {
+            fn context(
+                &self,
+                _request: krometrail_core::TemporalContextRequest,
+            ) -> PortFuture<'_, krometrail_core::Result<krometrail_core::TemporalContext>>
+            {
+                let range = self.range.clone();
+                Box::pin(async move { Ok(minimal_temporal_context(range)) })
+            }
+        }
+        let spy_context = Arc::new(SpyContext {
+            range: resolved.clone(),
+        });
+
+        let bundle_service = TemporalDebugBundleService::new(
+            Arc::clone(&storage.temporal_queries),
+            Arc::clone(&storage.store) as Arc<dyn TemporalDebugEvidenceStore>,
+            Arc::clone(&spy_generation) as Arc<dyn ArtifactGeneration>,
+            Arc::clone(&spy_context) as Arc<dyn krometrail_core::TemporalContextQuery>,
+            BundleWorkLimits::default(),
+        )
+        .unwrap();
+
+        let request = TemporalDebugBundleRequest::new(
+            krometrail_core::TemporalQueryRequest::strict(TemporalRangeAnchor::SessionTime {
+                scope: krometrail_core::AnchorScope::new(Some(session), Some(target)),
+                range: SessionRange::new(SessionTime::from_nanos(1), SessionTime::from_nanos(1))
+                    .unwrap(),
+            })
+            .unwrap(),
+            vec![],
+            OrientationPolicy::Include,
+        )
+        .unwrap();
+
+        // Start the bundle in a background task.
+        let handle = tokio::spawn(async move {
+            bundle_service
+                .bundle(request, TemporalDebugBundleContext::default())
+                .await
+        });
+
+        // Wait for artifact generation to start — all store reads have completed
+        // and the mutation gate has been released.
+        reached.notified().await;
+
+        // While artifact generation is blocked, append another frame. This must
+        // succeed because the recording mutation gate is not held across visual work.
+        let second_metadata = krometrail_core::CapturedFrame::new(
+            FrameId::from_uuid(Uuid::from_u128(11)),
+            session,
+            target,
+            CaptureOrdinal::new(2).unwrap(),
+            None,
+            ObservedTime::from_nanos(4),
+            SessionTime::from_nanos(3),
+            krometrail_core::ImageFormat::Png,
+            PixelDimensions::new(2, 2).unwrap(),
+            PixelDimensions::new(2, 2).unwrap(),
+            DeviceScaleFactor::new(1.0).unwrap(),
+            vec![],
+        )
+        .unwrap();
+        let second_frame = EncodedFrame::new(second_metadata, vec![3_u8, 4, 5]).unwrap();
+        let append_result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            storage.recording.append_frame(second_frame),
+        )
+        .await;
+        assert!(
+            append_result.is_ok(),
+            "frame persistence must acquire the mutation gate during blocked artifact work"
+        );
+        assert!(append_result.unwrap().is_ok());
+
+        // Unblock artifact generation and verify the bundle completes.
+        block.notify_one();
+        let _bundle = handle.await.unwrap().unwrap();
+
+        drop(storage);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    fn minimal_temporal_context(
+        range: krometrail_core::ResolvedRange,
+    ) -> krometrail_core::TemporalContext {
+        use krometrail_core::{
+            BrowserEventContext, CaptureGapSummary, CaptureQuality, CaptureStatusEvidence,
+            FramePoint,
+        };
+        krometrail_core::TemporalContext {
+            range,
+            capture_quality: CaptureQuality {
+                requested_range: krometrail_core::SessionRange::new(
+                    krometrail_core::SessionTime::ZERO,
+                    krometrail_core::SessionTime::from_nanos(1),
+                )
+                .unwrap(),
+                retained_range: krometrail_core::SessionRange::new(
+                    krometrail_core::SessionTime::ZERO,
+                    krometrail_core::SessionTime::from_nanos(1),
+                )
+                .unwrap(),
+                frame_count: 1,
+                first_frame: FramePoint {
+                    frame_id: krometrail_core::FrameId::from_uuid(Uuid::from_u128(10)),
+                    capture_ordinal: krometrail_core::CaptureOrdinal::new(1).unwrap(),
+                    session_time: krometrail_core::SessionTime::from_nanos(1),
+                },
+                last_frame: FramePoint {
+                    frame_id: krometrail_core::FrameId::from_uuid(Uuid::from_u128(10)),
+                    capture_ordinal: krometrail_core::CaptureOrdinal::new(1).unwrap(),
+                    session_time: krometrail_core::SessionTime::from_nanos(1),
+                },
+                cadence: None,
+                frame_warnings: vec![],
+                gaps: vec![],
+                gap_summary: CaptureGapSummary {
+                    gap_count: 0,
+                    covered_duration_nanos: 0,
+                    known_missing_frames: 0,
+                    has_unknown_missing_estimate: false,
+                },
+                retention_warnings: vec![],
+                capture_status: CaptureStatusEvidence {
+                    at_range_start: None,
+                    at_range_end: None,
+                    transitions: vec![],
+                },
+                warnings: vec![],
+            },
+            browser_events: BrowserEventContext {
+                effective_range: krometrail_core::SessionRange::new(
+                    krometrail_core::SessionTime::ZERO,
+                    krometrail_core::SessionTime::from_nanos(1),
+                )
+                .unwrap(),
+                matched_count: 0,
+                returned_count: 0,
+                events: vec![],
+                next_cursor: None,
+                collection_gaps: vec![],
+                unavailable_ranges: vec![],
+                warnings: vec![],
+            },
+        }
     }
 }

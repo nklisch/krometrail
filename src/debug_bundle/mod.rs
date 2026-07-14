@@ -10,7 +10,7 @@
 //! `TemporalDebugBundleService` (Unit 3 — bounded composition). They are
 //! exercised by focused tests until the service wires them into `RuntimeDependencies`.
 
-#![allow(dead_code)]
+#![allow(dead_code, unused_imports)]
 
 mod error;
 mod focus;
@@ -34,16 +34,12 @@ use policy::policy_version;
 
 // Re-exported for the upcoming `TemporalDebugBundleService` (Unit 3). They are
 // exercised by focused tests until the service wires them into composition.
-#[allow(unused_imports)]
 pub(crate) use error::controlled;
-#[allow(unused_imports)]
 pub(crate) use focus::extract_focus_times;
-#[allow(unused_imports)]
 pub(crate) use header::compose_header;
-#[allow(unused_imports)]
 pub(crate) use markers::{AssembledMarkers, MarkerEvidence, assemble_markers};
-#[allow(unused_imports)]
 pub(crate) use policy::{default_artifact_request, default_generators};
+pub(crate) use service::{BundleWorkLimits, TemporalDebugBundleService};
 
 /// The zero-method intersection of the three evidence-reading ports the bundle
 /// service projects over one concrete store. It introduces no facade methods;
