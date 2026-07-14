@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-debugging-workflow-progressive-evidence-and-pinning-contracts-and-region-semantics
 kind: story
-stage: implementing
+stage: done
 tags: [visual, storage, agent-ux]
 parent: epic-temporal-debugging-workflow-progressive-evidence-and-pinning
 depends_on: []
@@ -41,3 +41,23 @@ Extend temporal-vision's existing fixed-region contract rather than copying its 
 ## Ordering
 
 This checkpoint has no sibling dependency. Coherent store and current-browser checkpoints consume these contracts. It is a design checkpoint for one feature owner, not an independent worker assignment.
+
+## Implementation notes
+
+- Execution capability: highest, selected by the caller because these contracts define future public evidence, geometry, provenance, and retention boundaries; direct-read only with no nested agent.
+- Review weight: standard from the caller; review is not applicable at this child-story checkpoint and remains feature-scoped.
+- Files changed: `.work/active/stories/epic-temporal-debugging-workflow-progressive-evidence-and-pinning-contracts-and-region-semantics.md`; `crates/krometrail-core/src/{progressive.rs,error.rs,lib.rs}`; `crates/krometrail-core/src/ports/{browser.rs,mod.rs,progressive.rs}`; `crates/temporal-vision/src/{geometry.rs,filmstrip.rs}`; `crates/temporal-vision/tests/filmstrip.rs`.
+- Tests added: exhaustive eight-operation registry/wire pairing; malformed scope/selection/limit/resolved-range/region/mask coverage; source-handle privacy and payload-integrity coverage; exact single-epoch and locator validation; pin availability/union/overlap/idempotence invariants; fractional outward rounding and overflow; canonical rational viewport mapping; mask bounds, dimensions, application, legend, manifest, parameter identity, deterministic pixels, and no-mask golden preservation.
+- Simplification: the progressive store is a zero-method intersection of the three existing ports; generic artifact generation is wrapped only to revalidate its resolved range and does not copy generator variants; viewport/source scaling and mask crop/application stay entirely in temporal-vision.
+- Decisions: progressive direct-read resources use `ArtifactEvidenceHandle` and `SourceFrameHandle`, while request-scoped byte containers intentionally have no Serde implementation. Rich `progressive::PinChange`/`PinState` coexist with the currently implemented recording-store `PinChange` until the next coherent-store checkpoint migrates the existing retention methods and adapters.
+- Discrepancies from design: existing generic-generation `ArtifactHandle`, `StoredArtifact`, and `RetentionStore` signatures were not changed in this checkpoint because doing so would require forbidden root/store/CDP writes. The progressive boundary nevertheless carries exact scoped artifact/source handles and rich pin reports; the already-designed consuming checkpoints perform the adapter migration without a compatibility facade or duplicate method set.
+- Adjacent issues parked: none.
+
+## Verification evidence
+
+- `rustup run 1.85.0 cargo fmt --all -- --check` — passed.
+- `rustup run 1.85.0 cargo check -p krometrail-core -p temporal-vision --all-targets --locked` — passed.
+- `rustup run 1.85.0 cargo test -p krometrail-core -p temporal-vision --all-targets --locked` — passed, 146 tests across eight suites.
+- `rustup run 1.85.0 cargo clippy -p krometrail-core -p temporal-vision --all-targets --locked -- -D warnings` — passed.
+- `rustup run 1.85.0 cargo check --workspace --all-targets --locked` — passed as an additional reverse-dependency check.
+- Existing no-mask filmstrip output remains byte-identical under its exact SHA-256 golden; masked output changes deterministically with mask identity and records the full validated mask in provenance.

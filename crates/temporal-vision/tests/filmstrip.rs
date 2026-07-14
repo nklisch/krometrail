@@ -4,11 +4,12 @@ use png::{ColorType, Decoder};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use temporal_vision::{
-    ArtifactKind, ArtifactManifest, DeclaredGap, ErrorCode, EvidenceClass, FilmstripTileLimit,
-    Frame, FrameRegion, FrameSequence, IntegerScale, Marker, ParameterValue, PixelDimensions,
-    PixelFormat, PixelRect, RationalScale, RegionDefinition, RegionFilmstripLabels,
-    RegionFilmstripParameters, RegionFilmstripRenderLimits, Rgb8, SignedPixelRect, TimeRange,
-    Timestamp, ViewportMapping, generate_region_filmstrip, plan_region_filmstrip,
+    ArtifactKind, ArtifactManifest, BinaryMask, DeclaredGap, ErrorCode, EvidenceClass,
+    FilmstripTileLimit, Frame, FrameRegion, FrameSequence, IntegerScale, Marker, ParameterValue,
+    PixelDimensions, PixelFormat, PixelRect, RationalScale, RegionDefinition,
+    RegionFilmstripLabels, RegionFilmstripParameters, RegionFilmstripRenderLimits, Rgb8,
+    SignedPixelRect, TimeRange, Timestamp, ViewportMapping, generate_region_filmstrip,
+    plan_region_filmstrip,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -379,6 +380,157 @@ fn generator_renders_traceable_padding_locator_gaps_and_deterministic_manifest()
         Some(&ParameterValue::Unsigned(2))
     );
     assert_eq!(explicit_locator.plan().omitted_frame_count(), 2);
+}
+
+#[test]
+fn fractional_bounds_and_canonical_viewport_mapping_round_outward_without_overflow() {
+    let outward = SignedPixelRect::from_outward_f64_bounds(-0.25, 1.1, 2.25, 4.2).unwrap();
+    assert_eq!(
+        (outward.x(), outward.y(), outward.width(), outward.height()),
+        (-1, 1, 4, 4)
+    );
+    assert!(SignedPixelRect::from_outward_f64_bounds(0.0, 0.0, f64::INFINITY, 1.0).is_err());
+    assert!(
+        SignedPixelRect::from_outward_f64_bounds(
+            i64::MAX as f64,
+            0.0,
+            (i64::MAX as f64) + 1.0,
+            1.0,
+        )
+        .is_err()
+    );
+    assert!(
+        SignedPixelRect::from_outward_f64_bounds(0.0, 0.0, u32::MAX as f64 + 2.0, 1.0).is_err()
+    );
+
+    let mapping = ViewportMapping::for_source(
+        PixelDimensions::new(6, 4).unwrap(),
+        PixelDimensions::new(8, 6).unwrap(),
+    );
+    assert_eq!(
+        (
+            mapping.scale_x().numerator(),
+            mapping.scale_x().denominator()
+        ),
+        (4, 3)
+    );
+    assert_eq!(
+        (
+            mapping.scale_y().numerator(),
+            mapping.scale_y().denominator()
+        ),
+        (3, 2)
+    );
+}
+
+#[test]
+fn fixed_mask_bounds_pixels_legend_manifest_and_identity_are_deterministic() {
+    let source = fixture();
+    // Selected source pixels are (1,1), (2,1), and (1,2). The fourth pixel in
+    // their 2x2 bounds remains visibly excluded in every tile.
+    let mask = BinaryMask::new(PixelDimensions::new(4, 4).unwrap(), [0x06, 0x40]).unwrap();
+    assert_eq!(
+        mask.bounds().unwrap(),
+        Some(PixelRect::new(1, 1, 2, 2).unwrap())
+    );
+    let parameters = request(
+        RegionDefinition::FixedSourceImage {
+            rect: rect(0, 0, 4, 4),
+        },
+        IntegerScale::IDENTITY,
+        RegionFilmstripRenderLimits::default(),
+    )
+    .with_mask(mask.clone())
+    .unwrap();
+    let first = generate_region_filmstrip(ArtifactId("masked".into()), &source, parameters.clone())
+        .unwrap();
+    let second =
+        generate_region_filmstrip(ArtifactId("masked".into()), &source, parameters).unwrap();
+    assert_eq!(first, second);
+    assert_eq!(first.plan().resolved_source_region(), rect(1, 1, 2, 2));
+    assert_eq!(first.manifest().mask(), Some(&mask));
+    assert_eq!(
+        first.manifest().region(),
+        Some(FrameRegion::new(PixelRect::new(1, 1, 2, 2).unwrap(), source.dimensions()).unwrap())
+    );
+    assert!(matches!(
+        first.manifest().parameters().get("mask"),
+        Some(ParameterValue::Object(_))
+    ));
+    assert!(
+        first
+            .manifest()
+            .normalization()
+            .iter()
+            .any(|step| step.algorithm_version() == "fixed-binary-mask-v1")
+    );
+
+    let (dimensions, pixels) = decode_rgb(first.image().bytes());
+    assert_eq!(rgb_at(&pixels, dimensions, 307, 76), [5, 30, 100]);
+    assert_eq!(rgb_at(&pixels, dimensions, 308, 77), [7, 11, 13]);
+    // The dedicated mask legend occupies the final header line; this band is
+    // muted in the no-mask rendering and warning-colored only for a mask.
+    assert!(region_has_color(
+        &pixels,
+        dimensions,
+        0,
+        49,
+        600,
+        15,
+        [255, 196, 64]
+    ));
+
+    let changed_mask = BinaryMask::new(PixelDimensions::new(4, 4).unwrap(), [0x06, 0x60]).unwrap();
+    let changed = generate_region_filmstrip(
+        ArtifactId("masked".into()),
+        &source,
+        request(
+            RegionDefinition::FixedSourceImage {
+                rect: rect(0, 0, 4, 4),
+            },
+            IntegerScale::IDENTITY,
+            RegionFilmstripRenderLimits::default(),
+        )
+        .with_mask(changed_mask)
+        .unwrap(),
+    )
+    .unwrap();
+    assert_ne!(
+        first.manifest().parameters(),
+        changed.manifest().parameters()
+    );
+    assert_ne!(first.image().bytes(), changed.image().bytes());
+
+    assert!(
+        request(
+            RegionDefinition::FixedSourceImage {
+                rect: rect(0, 0, 4, 4),
+            },
+            IntegerScale::IDENTITY,
+            RegionFilmstripRenderLimits::default(),
+        )
+        .with_mask(BinaryMask::new(PixelDimensions::new(2, 2).unwrap(), [0]).unwrap())
+        .is_err()
+    );
+    let wrong_dimensions = BinaryMask::new(PixelDimensions::new(2, 2).unwrap(), [0x80]).unwrap();
+    assert_eq!(
+        generate_region_filmstrip(
+            ArtifactId("wrong-mask".into()),
+            &source,
+            request(
+                RegionDefinition::FixedSourceImage {
+                    rect: rect(0, 0, 4, 4),
+                },
+                IntegerScale::IDENTITY,
+                RegionFilmstripRenderLimits::default(),
+            )
+            .with_mask(wrong_dimensions)
+            .unwrap(),
+        )
+        .unwrap_err()
+        .code,
+        ErrorCode::InvalidMask
+    );
 }
 
 #[test]

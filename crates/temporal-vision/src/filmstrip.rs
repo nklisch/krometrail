@@ -5,10 +5,11 @@ use std::{
 };
 
 use serde::{Deserialize, Deserializer, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::{
-    AlgorithmDescriptor, ArtifactKind, ArtifactManifest, EncodedImage, ErrorCode, EvidenceClass,
-    FrameRegion, FrameSequence, GeneratedArtifact, IntegerScale, NormalizationKind,
+    AlgorithmDescriptor, ArtifactKind, ArtifactManifest, BinaryMask, EncodedImage, ErrorCode,
+    EvidenceClass, FrameRegion, FrameSequence, GeneratedArtifact, IntegerScale, NormalizationKind,
     NormalizationParameters, NormalizationStep, ParameterValue, Parameters, PixelDimensions,
     PixelRect, ProcessingLimits, Result, Rgb8, Timestamp, VisionError, generator_descriptor,
     normalize::make_parameters,
@@ -47,6 +48,57 @@ impl SignedPixelRect {
         rect.right_exclusive()?;
         rect.bottom_exclusive()?;
         Ok(rect)
+    }
+
+    /// Converts finite fractional bounds to the smallest containing pixel rect.
+    /// Left/top round down and right/bottom round up, including below zero.
+    pub fn from_outward_f64_bounds(left: f64, top: f64, right: f64, bottom: f64) -> Result<Self> {
+        if ![left, top, right, bottom]
+            .iter()
+            .all(|value| value.is_finite())
+            || right <= left
+            || bottom <= top
+        {
+            return Err(VisionError::new(
+                ErrorCode::InvalidRegion,
+                "fractional region bounds must be finite and non-empty",
+            ));
+        }
+        const I64_UPPER_EXCLUSIVE: f64 = 9_223_372_036_854_775_808.0;
+        let convert = |value: f64, round: fn(f64) -> f64| {
+            let value = round(value);
+            if value < i64::MIN as f64 || value >= I64_UPPER_EXCLUSIVE {
+                Err(VisionError::new(
+                    ErrorCode::InvalidRegion,
+                    "fractional region exceeds the supported coordinate space",
+                ))
+            } else {
+                Ok(value as i64)
+            }
+        };
+        let left = convert(left, f64::floor)?;
+        let top = convert(top, f64::floor)?;
+        let right = convert(right, f64::ceil)?;
+        let bottom = convert(bottom, f64::ceil)?;
+        let width = u32::try_from(i128::from(right) - i128::from(left))
+            .ok()
+            .and_then(NonZeroU32::new)
+            .ok_or_else(|| {
+                VisionError::new(
+                    ErrorCode::InvalidRegion,
+                    "fractional region width exceeds the supported coordinate space",
+                )
+            })?;
+        let height = u32::try_from(i128::from(bottom) - i128::from(top))
+            .ok()
+            .and_then(NonZeroU32::new)
+            .ok_or_else(|| {
+                VisionError::new(
+                    ErrorCode::InvalidRegion,
+                    "fractional region height exceeds the supported coordinate space",
+                )
+            })?;
+        Self::new(left, top, width, height)
     }
 
     pub const fn x(self) -> i64 {
@@ -94,6 +146,7 @@ impl<'de> Deserialize<'de> for SignedPixelRect {
         D: Deserializer<'de>,
     {
         #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
         struct Wire {
             x: i64,
             y: i64,
@@ -148,6 +201,33 @@ impl ViewportMapping {
             scale_x,
             scale_y,
         }
+    }
+
+    /// Builds the canonical exact viewport-to-source rational mapping.
+    pub fn for_source(
+        viewport_dimensions: PixelDimensions,
+        source_dimensions: PixelDimensions,
+    ) -> Self {
+        fn reduced(numerator: u32, denominator: u32) -> RationalScale {
+            fn gcd(mut left: u32, mut right: u32) -> u32 {
+                while right != 0 {
+                    let remainder = left % right;
+                    left = right;
+                    right = remainder;
+                }
+                left
+            }
+            let divisor = gcd(numerator, denominator);
+            RationalScale::new(
+                NonZeroU32::new(numerator / divisor).expect("source dimension is non-zero"),
+                NonZeroU32::new(denominator / divisor).expect("viewport dimension is non-zero"),
+            )
+        }
+        Self::new(
+            viewport_dimensions,
+            reduced(source_dimensions.width(), viewport_dimensions.width()),
+            reduced(source_dimensions.height(), viewport_dimensions.height()),
+        )
     }
 
     pub const fn viewport_dimensions(self) -> PixelDimensions {
@@ -700,6 +780,7 @@ impl Default for RegionFilmstripRenderLimits {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RegionFilmstripParameters {
     region: RegionDefinition,
+    mask: Option<BinaryMask>,
     anchor: Timestamp,
     tile_limit: FilmstripTileLimit,
     locator_frame_index: Option<usize>,
@@ -724,6 +805,7 @@ impl RegionFilmstripParameters {
     ) -> Self {
         Self {
             region,
+            mask: None,
             anchor,
             tile_limit,
             locator_frame_index: None,
@@ -740,8 +822,24 @@ impl RegionFilmstripParameters {
         self
     }
 
+    /// Applies one immutable full-frame mask at identical source coordinates.
+    pub fn with_mask(mut self, mask: BinaryMask) -> Result<Self> {
+        if mask.bounds()?.is_none() {
+            return Err(VisionError::new(
+                ErrorCode::InvalidMask,
+                "filmstrip mask must select at least one source pixel",
+            ));
+        }
+        self.mask = Some(mask);
+        Ok(self)
+    }
+
     pub const fn region(&self) -> RegionDefinition {
         self.region
+    }
+
+    pub const fn mask(&self) -> Option<&BinaryMask> {
+        self.mask.as_ref()
     }
 
     pub const fn anchor(&self) -> Timestamp {
@@ -813,9 +911,33 @@ where
     if source.frames().len() > parameters.limits.max_source_frames() {
         return Err(render_limit_error());
     }
+    let effective_region = if let Some(mask) = parameters.mask.as_ref() {
+        if mask.dimensions() != source.dimensions() {
+            return Err(VisionError::new(
+                ErrorCode::InvalidMask,
+                "filmstrip mask dimensions must match every source frame",
+            ));
+        }
+        let bounds = mask.bounds()?.ok_or_else(|| {
+            VisionError::new(
+                ErrorCode::InvalidMask,
+                "filmstrip mask must select at least one source pixel",
+            )
+        })?;
+        RegionDefinition::FixedSourceImage {
+            rect: SignedPixelRect::new(
+                i64::from(bounds.x()),
+                i64::from(bounds.y()),
+                NonZeroU32::new(bounds.width()).expect("mask bounds are non-empty"),
+                NonZeroU32::new(bounds.height()).expect("mask bounds are non-empty"),
+            )?,
+        }
+    } else {
+        parameters.region
+    };
     let plan = plan_region_filmstrip(
         source,
-        parameters.region,
+        effective_region,
         parameters.anchor,
         parameters.tile_limit,
         parameters.locator_frame_index,
@@ -847,6 +969,9 @@ where
     let mut normalization = normalized.normalization_steps().to_vec();
     normalization.push(display_conversion_step()?);
     normalization.push(region_padding_step(&plan, parameters.padding_color)?);
+    if let Some(mask) = parameters.mask.as_ref() {
+        normalization.push(mask_application_step(mask, &plan)?);
+    }
     if !parameters.display_scale.is_identity() {
         normalization.push(display_scale_step(
             parameters.display_scale,
@@ -866,7 +991,7 @@ where
         .iter()
         .map(|index| source.frames()[*index].id().clone())
         .collect();
-    let manifest_region = manifest_region(parameters.region, source.dimensions())?;
+    let manifest_region = manifest_region(effective_region, source.dimensions())?;
     let manifest = ArtifactManifest::from_sequence_with_domain(
         artifact_id,
         ArtifactKind::RegionFilmstrip,
@@ -877,7 +1002,7 @@ where
         },
         source,
         manifest_region,
-        None,
+        parameters.mask.clone(),
         selected_ids,
         normalization,
         filmstrip_parameters(
@@ -1141,8 +1266,16 @@ fn draw_header<F: Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
         4,
         50,
         width,
-        "FIXED VISUAL REGION; NO LOGICAL ELEMENT FOLLOWING",
-        MUTED,
+        if parameters.mask.is_some() {
+            "MASK APPLIED | SELECTED PIXELS SHOWN | EXCLUDED PIXELS HATCHED"
+        } else {
+            "FIXED VISUAL REGION; NO LOGICAL ELEMENT FOLLOWING"
+        },
+        if parameters.mask.is_some() {
+            WARNING
+        } else {
+            MUTED
+        },
     )
 }
 
@@ -1274,6 +1407,7 @@ fn draw_tile<F: Display>(
             let (color, padding) = scaled_region_pixel(
                 frame,
                 tile,
+                parameters.mask.as_ref(),
                 parameters.padding_color.channels(),
                 parameters.display_scale,
                 x,
@@ -1347,8 +1481,16 @@ fn draw_tile<F: Display>(
         slot.x() + 3,
         annotation_y + 38,
         text_width,
-        "FIXED REGION | TRACKING NONE",
-        MUTED,
+        if parameters.mask.is_some() {
+            "FIXED MASK | TRACKING NONE"
+        } else {
+            "FIXED REGION | TRACKING NONE"
+        },
+        if parameters.mask.is_some() {
+            WARNING
+        } else {
+            MUTED
+        },
     )?;
     if tile.gap_after() {
         let hatch_x = slot.right_exclusive()?.saturating_sub(6);
@@ -1368,6 +1510,7 @@ fn draw_tile<F: Display>(
 fn scaled_region_pixel<F>(
     frame: &crate::NormalizedFrame<F>,
     tile: &FilmstripTilePlan<F>,
+    mask: Option<&BinaryMask>,
     padding_color: [u8; 3],
     scale: IntegerScale,
     output_x: u32,
@@ -1385,7 +1528,7 @@ fn scaled_region_pixel<F>(
         } else {
             output_y
         };
-        return region_pixel(frame, tile, padding_color, source_x, source_y);
+        return region_pixel(frame, tile, mask, padding_color, source_x, source_y);
     }
 
     let mut sums = [0_u64; 3];
@@ -1395,6 +1538,7 @@ fn scaled_region_pixel<F>(
             let (pixel, generated) = region_pixel(
                 frame,
                 tile,
+                mask,
                 padding_color,
                 output_x * factor + dx,
                 output_y * factor + dy,
@@ -1415,6 +1559,7 @@ fn scaled_region_pixel<F>(
 fn region_pixel<F>(
     frame: &crate::NormalizedFrame<F>,
     tile: &FilmstripTilePlan<F>,
+    mask: Option<&BinaryMask>,
     padding_color: [u8; 3],
     x: u32,
     y: u32,
@@ -1432,6 +1577,9 @@ fn region_pixel<F>(
     }
     let source_x = source_rect.x() + visible_x.expect("checked above");
     let source_y = source_rect.y() + visible_y.expect("checked above");
+    if mask.is_some_and(|mask| mask.includes(source_x, source_y) != Some(true)) {
+        return Ok((padding_color, true));
+    }
     let index = usize::try_from(source_y)
         .ok()
         .and_then(|row| row.checked_mul(usize::try_from(frame.dimensions().width()).ok()?))
@@ -1604,6 +1752,31 @@ fn region_padding_step<F>(
     )
 }
 
+fn mask_application_step<F>(
+    mask: &BinaryMask,
+    plan: &RegionFilmstripPlan<F>,
+) -> Result<NormalizationStep> {
+    NormalizationStep::new(
+        NormalizationKind::FixedCrop,
+        "fixed-binary-mask-v1",
+        make_parameters([
+            ("mask_dimensions", dimensions_value(mask.dimensions())?),
+            (
+                "mask_bounds",
+                signed_rect_value(plan.resolved_source_region())?,
+            ),
+            (
+                "excluded_pixels",
+                ParameterValue::Text("padding_color_with_warning_hatch".into()),
+            ),
+            (
+                "mask_sha256",
+                ParameterValue::Text(mask_sha256(mask).into()),
+            ),
+        ])?,
+    )
+}
+
 fn display_scale_step(
     scale: IntegerScale,
     dimensions: PixelDimensions,
@@ -1702,8 +1875,8 @@ fn filmstrip_parameters<F: Display>(
         })
         .collect::<Result<Vec<_>>>()?;
     let gap_warning_count = plan.tiles().iter().filter(|tile| tile.gap_after()).count();
-    let mapping = match request.region {
-        RegionDefinition::FixedViewport { mapping, .. } => object([
+    let mapping = match (request.mask.as_ref(), request.region) {
+        (None, RegionDefinition::FixedViewport { mapping, .. }) => object([
             (
                 "viewport_dimensions",
                 dimensions_value(mapping.viewport_dimensions())?,
@@ -1711,8 +1884,29 @@ fn filmstrip_parameters<F: Display>(
             ("scale_x", rational_value(mapping.scale_x())?),
             ("scale_y", rational_value(mapping.scale_y())?),
         ])?,
-        RegionDefinition::FixedSourceImage { .. } => ParameterValue::Text("not_applicable".into()),
+        _ => ParameterValue::Text("not_applicable".into()),
     };
+    let effective_region = if request.mask.is_some() {
+        RegionDefinition::FixedSourceImage {
+            rect: plan.resolved_source_region(),
+        }
+    } else {
+        request.region
+    };
+    let mask = request.mask.as_ref().map_or_else(
+        || Ok(ParameterValue::Text("none".into())),
+        |mask| {
+            object([
+                ("dimensions", dimensions_value(mask.dimensions())?),
+                ("bounds", signed_rect_value(plan.resolved_source_region())?),
+                ("sha256", ParameterValue::Text(mask_sha256(mask).into())),
+                (
+                    "encoding",
+                    ParameterValue::Text("row_major_msb_first_one_bit".into()),
+                ),
+            ])
+        },
+    )?;
     Parameters::new(
         [
             (
@@ -1723,7 +1917,8 @@ fn filmstrip_parameters<F: Display>(
                         .into(),
                 ),
             ),
-            ("region_definition".into(), region_value(request.region)?),
+            ("region_definition".into(), region_value(effective_region)?),
+            ("mask".into(), mask),
             (
                 "coordinate_space".into(),
                 ParameterValue::Text(plan.coordinate_space().as_str().into()),
@@ -1941,6 +2136,18 @@ fn dimensions_value(dimensions: PixelDimensions) -> Result<ParameterValue> {
             ParameterValue::Unsigned(u64::from(dimensions.height())),
         ),
     ])
+}
+
+fn mask_sha256(mask: &BinaryMask) -> String {
+    let mut digest = Sha256::new();
+    digest.update(mask.dimensions().width().to_be_bytes());
+    digest.update(mask.dimensions().height().to_be_bytes());
+    digest.update(mask.bits());
+    digest
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn rgb_value(color: Rgb8) -> ParameterValue {

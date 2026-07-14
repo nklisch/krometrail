@@ -36,6 +36,7 @@ pub mod error;
 pub mod ids;
 pub mod lifecycle;
 pub mod ports;
+pub mod progressive;
 pub mod recording;
 pub mod time;
 pub mod timeline;
@@ -112,11 +113,24 @@ pub use ports::{
     BrowserEventSource, BrowserEventUnavailableRange, BrowserEventUnavailableReason,
     BrowserFailureKind, BrowserOperationContext, BrowserPageTargets, BrowserSessionEvents,
     BrowserSessionPort, CancellationSignal, CaptureGapStore, CaptureStatusSamples,
-    DEFAULT_EVENT_PAGE_ROWS, EventCandidateLimit, EventPageLimit, FrameSource, IdSource,
-    InteractionAnchorSource, InteractionEvidenceSink, InteractionRecordSource, LaunchBrowser,
-    MAX_CAPTURE_STATUS_SAMPLES, MAX_EVENT_CANDIDATE_ROWS, MAX_EVENT_PAGE_ROWS,
-    MAX_EVENT_UNAVAILABLE_RANGES, ManagedProfile, MonotonicClock, PortFuture, RecordingCatalog,
-    RecordingSink, RetentionStore, StoredArtifact, TimelineAnchorSource, TimelineStore, WallClock,
+    CurrentReferenceGeometry, CurrentReferenceGeometryRequest, DEFAULT_EVENT_PAGE_ROWS,
+    EventCandidateLimit, EventPageLimit, FrameSource, IdSource, InteractionAnchorSource,
+    InteractionEvidenceSink, InteractionRecordSource, LaunchBrowser, MAX_CAPTURE_STATUS_SAMPLES,
+    MAX_EVENT_CANDIDATE_ROWS, MAX_EVENT_PAGE_ROWS, MAX_EVENT_UNAVAILABLE_RANGES, ManagedProfile,
+    MonotonicClock, PortFuture, ProgressiveEvidenceStore, RecordingCatalog, RecordingSink,
+    ResolvedReferenceGeometry, RetentionStore, StoredArtifact, TimelineAnchorSource, TimelineStore,
+    WallClock,
+};
+pub use progressive::{
+    ArtifactEvidenceHandle, ArtifactRead, CallerRegionShape, EvidenceScope,
+    GenerateArtifactsRequest, PROGRESSIVE_EVIDENCE_REGISTRY, PinChange as ProgressivePinChange,
+    PinProtectionScope, PinState, ProgressiveEvidence, ProgressiveEvidenceContext,
+    ProgressiveEvidenceOperationDefinition, ProgressiveEvidenceOperationKind,
+    ProgressiveEvidenceRequest, ProgressiveEvidenceResult, ProgressiveRegion, ProtectedSegment,
+    RangeEvidenceAvailability, RegionFilmstripEvidence, RegionFilmstripEvidenceRequest,
+    ResolvedProgressiveRegion, ResolvedRangeEvidenceRequest, RetentionPinRequest,
+    RetrieveArtifactRequest, Sha256Digest, SourceFrameBatch, SourceFrameHandle, SourceFrameList,
+    SourceFrameRead, SourceFrameSelection, SourceFramesRequest, SourceReadLimitsRequest,
 };
 pub use recording::{
     ByteOffset, CaptureGap, CaptureGapReason, CaptureOrdinal, CaptureStatistics,

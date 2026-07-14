@@ -79,6 +79,7 @@ impl<'de> Deserialize<'de> for PixelRect {
         D: Deserializer<'de>,
     {
         #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
         struct Wire {
             x: u32,
             y: u32,
@@ -118,6 +119,7 @@ impl<'de> Deserialize<'de> for FrameRegion {
         D: Deserializer<'de>,
     {
         #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
         struct Wire {
             rect: PixelRect,
         }
@@ -178,6 +180,37 @@ impl BinaryMask {
         let byte = self.bits[index / 8];
         Some(byte & (0x80 >> (index % 8)) != 0)
     }
+
+    /// Returns the smallest source-frame rectangle containing every selected bit.
+    ///
+    /// The mask always remains full-frame; this rectangle is only a crop plan and
+    /// does not change the mask coordinate space.
+    pub fn bounds(&self) -> Result<Option<PixelRect>> {
+        let mut left = self.dimensions.width();
+        let mut top = self.dimensions.height();
+        let mut right = 0_u32;
+        let mut bottom = 0_u32;
+        let mut selected = false;
+        for y in 0..self.dimensions.height() {
+            for x in 0..self.dimensions.width() {
+                if self.includes(x, y) == Some(true) {
+                    selected = true;
+                    left = left.min(x);
+                    top = top.min(y);
+                    right = right.max(x.checked_add(1).ok_or_else(|| {
+                        VisionError::new(ErrorCode::InvalidMask, "mask bounds overflow")
+                    })?);
+                    bottom = bottom.max(y.checked_add(1).ok_or_else(|| {
+                        VisionError::new(ErrorCode::InvalidMask, "mask bounds overflow")
+                    })?);
+                }
+            }
+        }
+        if !selected {
+            return Ok(None);
+        }
+        Ok(Some(PixelRect::new(left, top, right - left, bottom - top)?))
+    }
 }
 
 impl<'de> Deserialize<'de> for BinaryMask {
@@ -186,6 +219,7 @@ impl<'de> Deserialize<'de> for BinaryMask {
         D: Deserializer<'de>,
     {
         #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
         struct Wire {
             dimensions: PixelDimensions,
             bits: Box<[u8]>,
@@ -212,5 +246,16 @@ mod tests {
         assert_eq!(mask.includes(0, 0), Some(true));
         assert_eq!(mask.includes(1, 0), Some(false));
         assert_eq!(mask.includes(3, 0), None);
+        assert_eq!(
+            mask.bounds().unwrap(),
+            Some(PixelRect::new(0, 0, 1, 1).unwrap())
+        );
+        assert_eq!(
+            BinaryMask::new(dimensions, [0x00, 0x00])
+                .unwrap()
+                .bounds()
+                .unwrap(),
+            None
+        );
     }
 }

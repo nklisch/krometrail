@@ -12,6 +12,7 @@ pub mod clock;
 pub mod frames;
 pub mod gaps;
 pub mod ids;
+pub mod progressive;
 pub mod range;
 pub mod recording;
 pub mod retention;
@@ -28,7 +29,8 @@ pub use artifacts::{
 pub use browser::{
     AttachBrowser, BrowserConnectRequest, BrowserConnector, BrowserFailureKind,
     BrowserOperationContext, BrowserPageTargets, BrowserSessionEvents, BrowserSessionPort,
-    CancellationSignal, LaunchBrowser, ManagedProfile,
+    CancellationSignal, CurrentReferenceGeometry, CurrentReferenceGeometryRequest, LaunchBrowser,
+    ManagedProfile, ResolvedReferenceGeometry,
 };
 pub use browser_events::{
     BrowserEventCursor, BrowserEventSelector, BrowserEventSink, BrowserEventSource,
@@ -41,6 +43,7 @@ pub use clock::{MonotonicClock, WallClock};
 pub use frames::FrameSource;
 pub use gaps::CaptureGapStore;
 pub use ids::IdSource;
+pub use progressive::ProgressiveEvidenceStore;
 pub use range::{
     InteractionAnchorSource, InteractionEvidenceSink, InteractionRecordSource, TimelineAnchorSource,
 };
@@ -595,6 +598,7 @@ mod tests {
             include_str!("frames.rs"),
             include_str!("gaps.rs"),
             include_str!("ids.rs"),
+            include_str!("progressive.rs"),
             include_str!("recording.rs"),
             include_str!("retention.rs"),
             include_str!("timeline.rs"),

@@ -5,10 +5,11 @@ use serde::{Deserialize, Serialize};
 use crate::{
     browser::{
         BrowserInstallation, BrowserOperationRequest, BrowserOperationResult, BrowserSessionEvent,
-        BrowserStatus, BrowserStopOutcome, PageTarget,
+        BrowserStatus, BrowserStopOutcome, CssRect, NodeReference, PageTarget,
     },
     error::{Result, invalid},
-    time::SessionOrigin,
+    ids::{SessionId, TargetId},
+    time::{SessionOrigin, SessionTime},
     validation::{delegate_json_schema, deserialize_validated},
 };
 
@@ -139,6 +140,123 @@ impl BrowserFailureKind {
 pub trait CancellationSignal: Send + Sync {
     fn is_cancelled(&self) -> bool;
     fn cancelled(&self) -> PortFuture<'_, ()>;
+}
+
+/// A current-only snapshot reference lookup. It makes no historical or tracking claim.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct CurrentReferenceGeometryRequest {
+    pub session_id: SessionId,
+    pub reference: NodeReference,
+}
+
+impl CurrentReferenceGeometryRequest {
+    pub fn new(session_id: SessionId, reference: NodeReference) -> Result<Self> {
+        if session_id.as_uuid().is_nil() || reference.target_id.as_uuid().is_nil() {
+            return Err(invalid(
+                "current-reference geometry requires non-nil session and target ids",
+            ));
+        }
+        Ok(Self {
+            session_id,
+            reference,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for CurrentReferenceGeometryRequest {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            session_id: SessionId,
+            reference: NodeReference,
+        }
+        deserialize_validated(deserializer, |wire: Wire| {
+            Self::new(wire.session_id, wire.reference)
+        })
+    }
+}
+
+/// Geometry sampled from the one currently active snapshot generation.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ResolvedReferenceGeometry {
+    pub session_id: SessionId,
+    pub target_id: TargetId,
+    pub reference: NodeReference,
+    pub attachment_generation: u64,
+    pub resolved_at: SessionTime,
+    pub viewport_css_rect: CssRect,
+}
+
+impl ResolvedReferenceGeometry {
+    pub fn new(
+        request: CurrentReferenceGeometryRequest,
+        target_id: TargetId,
+        attachment_generation: u64,
+        resolved_at: SessionTime,
+        viewport_css_rect: CssRect,
+    ) -> Result<Self> {
+        if target_id != request.reference.target_id {
+            return Err(invalid(
+                "resolved current geometry target must match its exact reference",
+            ));
+        }
+        if attachment_generation == 0 {
+            return Err(invalid(
+                "resolved current geometry requires an attached target generation",
+            ));
+        }
+        CssRect::new(viewport_css_rect.origin, viewport_css_rect.size)?;
+        if !viewport_css_rect.right().is_finite() || !viewport_css_rect.bottom().is_finite() {
+            return Err(invalid(
+                "resolved current geometry bounds must remain finite",
+            ));
+        }
+        Ok(Self {
+            session_id: request.session_id,
+            target_id,
+            reference: request.reference,
+            attachment_generation,
+            resolved_at,
+            viewport_css_rect,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for ResolvedReferenceGeometry {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            session_id: SessionId,
+            target_id: TargetId,
+            reference: NodeReference,
+            attachment_generation: u64,
+            resolved_at: SessionTime,
+            viewport_css_rect: CssRect,
+        }
+        deserialize_validated(deserializer, |wire: Wire| {
+            Self::new(
+                CurrentReferenceGeometryRequest::new(wire.session_id, wire.reference)?,
+                wire.target_id,
+                wire.attachment_generation,
+                wire.resolved_at,
+                wire.viewport_css_rect,
+            )
+        })
+    }
+}
+
+/// Narrow inward port supplied only by the active browser-session owner.
+pub trait CurrentReferenceGeometry: Send + Sync {
+    fn current_reference_geometry(
+        &self,
+        request: CurrentReferenceGeometryRequest,
+    ) -> PortFuture<'_, Result<ResolvedReferenceGeometry>>;
 }
 
 #[derive(Clone, Default)]

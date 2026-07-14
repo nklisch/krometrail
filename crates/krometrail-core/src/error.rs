@@ -43,6 +43,7 @@ define_stable_enum! {
         PersistenceFailed => "persistence_failed",
         BudgetExhausted => "budget_exhausted",
         ArtifactGenerationFailed => "artifact_generation_failed",
+        EvidenceInvalidated => "evidence_invalidated",
         ResourceLimitExceeded => "resource_limit_exceeded",
         Internal => "internal",
     }
@@ -220,6 +221,9 @@ impl ErrorCode {
             }
             Self::BudgetExhausted => {
                 Some("unpin or delete retained evidence, or increase the disk budget")
+            }
+            Self::EvidenceInvalidated => {
+                Some("regenerate the artifact from its original request if sources remain")
             }
             _ => None,
         }
