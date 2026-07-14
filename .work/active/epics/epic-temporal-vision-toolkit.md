@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-vision-toolkit
 kind: epic
-stage: implementing
+stage: review
 tags: [visual]
 parent: null
 depends_on: [epic-rust-cdp-capture-foundation]
@@ -61,6 +61,20 @@ The epic is split into six capability-shaped features. The first two are foundat
 - **No browser fixtures yet:** The crate will be validated with deterministic synthetic sequences. Cross-browser evaluation waits for `epic-prove-temporal-advantage` and `epic-temporal-debugging-workflow`, so the design must keep adapters outside the crate.
 - **Motion-history value unproven:** `EVALUATION.md` warns that an artifact that consistently harms interpretation should be removed from the default bundle. This feature is explicitly framed as a bounded experiment; the default debug bundle may omit it.
 
-## Child features ready for design
+## Child features reviewed and complete
 
-All six child features are at `stage: drafting` and ready for the feature-design family.
+All six capability features reached `done` with green package/integration verification and
+feature-level review:
+
+- `epic-temporal-vision-toolkit-frame-sequence-contracts`
+- `epic-temporal-vision-toolkit-normalization-and-measurements`
+- `epic-temporal-vision-toolkit-storyboard`
+- `epic-temporal-vision-toolkit-difference-map`
+- `epic-temporal-vision-toolkit-region-filmstrip`
+- `epic-temporal-vision-toolkit-motion-history`
+
+The crate now provides generic validated frame/provenance contracts, deterministic normalization
+and direct measurements, and four source-derived artifact families over one shared bounded renderer
+and encoder seam. Motion history remains an opt-in bounded experiment pending evaluation rather
+than a default-bundle claim. The epic is ready for deeper aggregate review of cross-artifact
+contracts, deterministic evidence semantics, and browser-independent reuse.
