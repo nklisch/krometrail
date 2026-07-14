@@ -19,11 +19,12 @@ use krometrail_core::{
     AttachBrowser, BrowserCompatibility, BrowserConnectRequest, BrowserConnector, BrowserEventSink,
     BrowserInstallation, BrowserOperationContext, BrowserOperationRequest, BrowserOperationResult,
     BrowserOperationScope, BrowserOwnership, BrowserSessionEvent, BrowserSessionEvents,
-    BrowserSessionPort, BrowserSessionState, BrowserStatus, BrowserStopOutcome, ErrorCode,
-    IdSource, IdValue, InteractionAnchor, InteractionTiming, KrometrailError, MonotonicClock,
-    NonEmptyText, ObservationPart, PageChange, PageOperationOutcome, PageOperationResult,
-    PageSelection, PageStatus, PortFuture, ProfileRef, Result, SessionId, SessionOrigin,
-    TargetCaptureStatus, TargetVisibility,
+    BrowserSessionPort, BrowserSessionState, BrowserStatus, BrowserStopOutcome,
+    CurrentReferenceGeometryRequest, ErrorCode, IdSource, IdValue, InteractionAnchor,
+    InteractionTiming, KrometrailError, MonotonicClock, NonEmptyText, ObservationPart, PageChange,
+    PageOperationOutcome, PageOperationResult, PageSelection, PageStatus, PortFuture, ProfileRef,
+    ResolvedReferenceGeometry, Result, SessionId, SessionOrigin, TargetCaptureStatus,
+    TargetVisibility,
 };
 use serde_json::Value;
 use tokio::{
@@ -498,6 +499,10 @@ pub(crate) struct SessionShared {
 #[derive(Debug)]
 enum SupervisorCommand {
     Input(SupervisorInput),
+    CurrentReferenceGeometry(
+        CurrentReferenceGeometryRequest,
+        oneshot::Sender<Result<ResolvedReferenceGeometry>>,
+    ),
     Execute(
         BrowserOperationRequest,
         BrowserOperationContext,
@@ -514,6 +519,34 @@ struct ProductionSession {
 impl BrowserSessionPort for ProductionSession {
     fn session_origin(&self) -> SessionOrigin {
         self.shared.session_origin
+    }
+
+    fn resolve_current_reference_geometry(
+        &self,
+        request: CurrentReferenceGeometryRequest,
+    ) -> PortFuture<'_, Result<ResolvedReferenceGeometry>> {
+        let shared = Arc::clone(&self.shared);
+        Box::pin(async move {
+            let (sender, receiver) = oneshot::channel();
+            shared
+                .command_tx
+                .send(SupervisorCommand::CurrentReferenceGeometry(request, sender))
+                .await
+                .map_err(|_| {
+                    crate::control::current_reference_error(
+                        request,
+                        ErrorCode::StaleReference,
+                        "browser session no longer owns the current reference",
+                    )
+                })?;
+            receiver.await.map_err(|_| {
+                crate::control::current_reference_error(
+                    request,
+                    ErrorCode::StaleReference,
+                    "current reference geometry ended without a result",
+                )
+            })?
+        })
     }
 
     fn status(&self) -> PortFuture<'_, Result<BrowserStatus>> {

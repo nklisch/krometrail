@@ -579,6 +579,25 @@ pub(super) async fn run_supervisor(
                     }
                 }
             }
+            SupervisorCommand::CurrentReferenceGeometry(request, sender) => {
+                let result = match connection.as_ref() {
+                    Some(connection) => {
+                        page_control
+                            .current_reference_geometry(
+                                connection.transport.as_ref(),
+                                &state,
+                                request,
+                            )
+                            .await
+                    }
+                    None => Err(crate::control::current_reference_error(
+                        request,
+                        ErrorCode::StaleReference,
+                        "browser session has no current reference generation",
+                    )),
+                };
+                let _ = sender.send(result);
+            }
             SupervisorCommand::Execute(request, context, sender) => {
                 let target_id = direct_request_target(&request);
                 let cancellation = shared.operation_cancellation.for_request(&context);

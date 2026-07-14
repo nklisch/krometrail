@@ -3,7 +3,10 @@
 mod support;
 
 use std::{
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Duration,
 };
 
@@ -13,12 +16,13 @@ use krometrail_cdp::{
 use krometrail_core::{
     AnchorScope, AttachBrowser, BatchOptions, BatchRequest, BrowserConnectRequest,
     BrowserConnector, BrowserOperationContext, BrowserOperationRequest, BrowserOperationResult,
-    CaptureOrdinal, CapturedFrame, ClickRequest, CoordinateSpace, CssPoint, DeviceScaleFactor,
-    EncodedFrame, ErrorCode, FrameId, ImageFormat, InspectPageRequest, InteractionAnchor,
-    InteractionEvidenceSink, InteractionLocator, InteractionRecord, Modifiers, MouseButton,
-    NavigationId, ObservedTime, PageSelection, PixelDimensions, PortFuture, RecordingSink,
-    RetryAdvice, SelectPageRequest, SessionTime, TemporalQuery, TemporalQueryRequest,
-    TemporalRangeAnchor,
+    CaptureOrdinal, CapturedFrame, ClickRequest, CoordinateSpace, CssPoint,
+    CurrentReferenceGeometry, CurrentReferenceGeometryRequest, DeviceScaleFactor, EncodedFrame,
+    ErrorCode, FrameId, ImageFormat, InspectPageRequest, InteractionAnchor,
+    InteractionEvidenceSink, InteractionLocator, InteractionRecord, Modifiers, MonotonicClock,
+    MouseButton, NavigationId, NodeReference, ObservedTime, PageSelection, PixelDimensions,
+    PortFuture, RecordingSink, RetryAdvice, SelectPageRequest, SessionId, SessionTime,
+    SnapshotPageRequest, TemporalQuery, TemporalQueryRequest, TemporalRangeAnchor,
 };
 use krometrail_store::{
     IndexStoreConfig, RecordingStore, RotationConfig, SegmentStoreConfig, SegmentWriter,
@@ -55,11 +59,81 @@ fn script_initial(transport: &ScriptedCdp) {
 }
 
 fn layout() -> Value {
+    layout_at(0.0, 0.0)
+}
+
+fn layout_at(page_x: f64, page_y: f64) -> Value {
     json!({
-        "cssLayoutViewport":{"pageX":0.0,"pageY":0.0,"clientWidth":800.0,"clientHeight":600.0},
-        "cssVisualViewport":{"pageX":0.0,"pageY":0.0,"clientWidth":800.0,"clientHeight":600.0,"scale":1.0},
-        "cssContentSize":{"x":0.0,"y":0.0,"width":800.0,"height":600.0}
+        "cssLayoutViewport":{"pageX":page_x,"pageY":page_y,"clientWidth":800.0,"clientHeight":600.0},
+        "cssVisualViewport":{"pageX":page_x,"pageY":page_y,"clientWidth":800.0,"clientHeight":600.0,"scale":1.0},
+        "cssContentSize":{"x":0.0,"y":0.0,"width":1200.0,"height":1000.0}
     })
+}
+
+fn script_snapshot(transport: &ScriptedCdp, loader_id: &str) {
+    transport.push_response(
+        "Page.getFrameTree",
+        json!({"frameTree":{"frame":{"id":"main","loaderId":loader_id,"url":"http://fixture/"}}}),
+    );
+    transport.push_response(
+        "Accessibility.getFullAXTree",
+        json!({"nodes":[
+            {"nodeId":"root","ignored":false,"role":{"value":"document"},"childIds":["button"]},
+            {"nodeId":"button","ignored":false,"role":{"value":"button"},"name":{"value":"Current target"},"backendDOMNodeId":42,"properties":[{"name":"focusable","value":{"value":true}}]}
+        ]}),
+    );
+}
+
+async fn current_reference(
+    session: &Arc<dyn krometrail_core::BrowserSessionPort>,
+    transport: &ScriptedCdp,
+    target: krometrail_core::TargetId,
+    loader_id: &str,
+) -> NodeReference {
+    script_snapshot(transport, loader_id);
+    let BrowserOperationResult::SnapshotPage(snapshot) = session
+        .execute(
+            BrowserOperationRequest::SnapshotPage(SnapshotPageRequest::new(target)),
+            BrowserOperationContext::default(),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("snapshot result")
+    };
+    snapshot
+        .nodes
+        .iter()
+        .find_map(|node| node.reference)
+        .expect("fixture button reference")
+}
+
+fn script_current_reference_state(transport: &ScriptedCdp, loader_id: &str, node_state: Value) {
+    transport.push_response(
+        "Page.getFrameTree",
+        json!({"frameTree":{"frame":{"id":"main","loaderId":loader_id,"url":"http://fixture/"}}}),
+    );
+    transport.push_response("DOM.describeNode", json!({"node":{"backendNodeId":42}}));
+    transport.push_response(
+        "DOM.resolveNode",
+        json!({"object":{"objectId":"private-runtime-object"}}),
+    );
+    transport.push_response(
+        "Runtime.callFunctionOn",
+        json!({"result":{"value":node_state}}),
+    );
+}
+
+fn script_current_geometry(
+    transport: &ScriptedCdp,
+    loader_id: &str,
+    node_state: Value,
+    border: Value,
+    layout: Value,
+) {
+    script_current_reference_state(transport, loader_id, node_state);
+    transport.push_response("DOM.getBoxModel", json!({"model":{"border":border}}));
+    transport.push_response("Page.getLayoutMetrics", layout);
 }
 
 fn script_inspection(transport: &ScriptedCdp) {
@@ -177,9 +251,42 @@ impl InteractionEvidenceSink for ControlledSink {
     }
 }
 
+struct CountingClock {
+    next_nanos: AtomicU64,
+    calls: AtomicU64,
+}
+
+impl CountingClock {
+    fn new(first_nanos: u64) -> Arc<Self> {
+        Arc::new(Self {
+            next_nanos: AtomicU64::new(first_nanos),
+            calls: AtomicU64::new(0),
+        })
+    }
+
+    fn calls(&self) -> u64 {
+        self.calls.load(Ordering::Acquire)
+    }
+}
+
+impl MonotonicClock for CountingClock {
+    fn now(&self) -> ObservedTime {
+        self.calls.fetch_add(1, Ordering::AcqRel);
+        ObservedTime::from_nanos(self.next_nanos.fetch_add(10, Ordering::AcqRel))
+    }
+}
+
 async fn build_session(
     transport: &ScriptedCdp,
     sink: Option<Arc<dyn InteractionEvidenceSink>>,
+) -> Arc<dyn krometrail_core::BrowserSessionPort> {
+    build_session_with_clock(transport, sink, None).await
+}
+
+async fn build_session_with_clock(
+    transport: &ScriptedCdp,
+    sink: Option<Arc<dyn InteractionEvidenceSink>>,
+    clock: Option<Arc<dyn MonotonicClock>>,
 ) -> Arc<dyn krometrail_core::BrowserSessionPort> {
     script_initial(transport);
     let mut connector = ProductionBrowserConnector::new(
@@ -191,12 +298,247 @@ async fn build_session(
     if let Some(sink) = sink {
         connector = connector.with_interaction_evidence(sink);
     }
+    if let Some(clock) = clock {
+        connector = connector.with_clock(clock);
+    }
     connector
         .connect(BrowserConnectRequest::Attach(
             AttachBrowser::new("ws://127.0.0.1:9222/devtools/browser/evidence").unwrap(),
         ))
         .await
         .unwrap()
+}
+
+fn assert_fresh_snapshot_error(error: &krometrail_core::KrometrailError, code: ErrorCode) {
+    assert_eq!(error.code, code);
+    assert!(
+        error
+            .recovery
+            .as_ref()
+            .is_some_and(|value| value.as_str().contains("new structured snapshot"))
+    );
+    let wire = serde_json::to_string(error).unwrap();
+    assert!(!wire.contains("private-runtime-object"));
+    assert!(!wire.contains("session-a"));
+    assert!(!wire.contains("backendNodeId"));
+}
+
+#[tokio::test]
+async fn current_geometry_samples_visible_blocked_reference_once_without_historical_identity() {
+    let transport = ScriptedCdp::chrome();
+    let clock = CountingClock::new(1_000);
+    let session = build_session_with_clock(
+        &transport,
+        None,
+        Some(Arc::clone(&clock) as Arc<dyn MonotonicClock>),
+    )
+    .await;
+    let status = session.status().await.unwrap();
+    let target = status.pages[0].target.target.id();
+    let reference = current_reference(&session, &transport, target, "loader-1").await;
+    script_current_geometry(
+        &transport,
+        "loader-1",
+        json!({
+            "connected": true,
+            "visuallyHidden": false,
+            "interactionBlocked": true,
+            "tagName": "BUTTON",
+            "inputType": null,
+            "isEditable": false,
+            "isSelect": false,
+            "isFileInput": false
+        }),
+        json!([90.0, 180.0, 150.0, 180.0, 150.0, 220.0, 90.0, 220.0]),
+        json!({"result": layout_at(100.0, 200.0)}),
+    );
+
+    let calls_before = clock.calls();
+    let request = CurrentReferenceGeometryRequest::new(status.session_id, reference).unwrap();
+    let geometry = CurrentReferenceGeometry::current_reference_geometry(session.as_ref(), request)
+        .await
+        .unwrap();
+    assert_eq!(clock.calls(), calls_before + 1);
+    assert_eq!(geometry.session_id, status.session_id);
+    assert_eq!(geometry.target_id, target);
+    assert_eq!(geometry.reference, reference);
+    assert_eq!(geometry.attachment_generation, 1);
+    assert_eq!(
+        geometry.resolved_at,
+        session
+            .session_origin()
+            .normalize(geometry.observed_at)
+            .unwrap()
+    );
+    assert_eq!(geometry.viewport_css_rect.origin.x, -10.0);
+    assert_eq!(geometry.viewport_css_rect.origin.y, -20.0);
+    assert_eq!(geometry.viewport_css_rect.size.width, 60.0);
+    assert_eq!(geometry.viewport_css_rect.size.height, 40.0);
+
+    let result_wire = serde_json::to_string(&geometry).unwrap();
+    assert!(!result_wire.contains("frame_id"));
+    assert!(!result_wire.contains("source_frame"));
+    assert!(!result_wire.contains("private-runtime-object"));
+    assert!(!result_wire.contains("session-a"));
+    let commands = transport.commands();
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|(method, _)| method == "DOM.getBoxModel")
+            .count(),
+        1
+    );
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|(method, _)| method == "Page.getLayoutMetrics")
+            .count(),
+        1
+    );
+    assert!(commands.iter().all(|(method, _)| {
+        method != "Page.captureScreenshot" && method != "DOM.querySelector"
+    }));
+}
+
+#[tokio::test]
+async fn current_geometry_rejects_hidden_detached_zero_area_and_malformed_protocol_values() {
+    let transport = ScriptedCdp::chrome();
+    let session = build_session(&transport, None).await;
+    let status = session.status().await.unwrap();
+    let target = status.pages[0].target.target.id();
+    let reference = current_reference(&session, &transport, target, "loader-1").await;
+    let request = CurrentReferenceGeometryRequest::new(status.session_id, reference).unwrap();
+
+    script_current_reference_state(
+        &transport,
+        "loader-1",
+        json!({"connected":true,"visuallyHidden":true,"interactionBlocked":false}),
+    );
+    let hidden = CurrentReferenceGeometry::current_reference_geometry(session.as_ref(), request)
+        .await
+        .unwrap_err();
+    assert_fresh_snapshot_error(&hidden, ErrorCode::ReferenceNotActionable);
+
+    script_current_reference_state(
+        &transport,
+        "loader-1",
+        json!({"connected":false,"visuallyHidden":false,"interactionBlocked":false}),
+    );
+    let detached = CurrentReferenceGeometry::current_reference_geometry(session.as_ref(), request)
+        .await
+        .unwrap_err();
+    assert_fresh_snapshot_error(&detached, ErrorCode::StaleReference);
+
+    script_current_reference_state(
+        &transport,
+        "loader-1",
+        json!({"connected":true,"visuallyHidden":false,"interactionBlocked":false}),
+    );
+    transport.push_response(
+        "DOM.getBoxModel",
+        json!({"model":{"border":[10.0,20.0,10.0,20.0,10.0,20.0,10.0,20.0]}}),
+    );
+    let zero_area = CurrentReferenceGeometry::current_reference_geometry(session.as_ref(), request)
+        .await
+        .unwrap_err();
+    assert_fresh_snapshot_error(&zero_area, ErrorCode::ReferenceNotActionable);
+
+    script_current_reference_state(
+        &transport,
+        "loader-1",
+        json!({"connected":true,"visuallyHidden":false,"interactionBlocked":false}),
+    );
+    transport.push_response(
+        "DOM.getBoxModel",
+        json!({"model":{"border":[10.0,20.0,30.0,20.0]}}),
+    );
+    let malformed_quad =
+        CurrentReferenceGeometry::current_reference_geometry(session.as_ref(), request)
+            .await
+            .unwrap_err();
+    assert_fresh_snapshot_error(&malformed_quad, ErrorCode::ReferenceNotActionable);
+
+    script_current_geometry(
+        &transport,
+        "loader-1",
+        json!({"connected":true,"visuallyHidden":false,"interactionBlocked":false}),
+        json!([10.0, 20.0, 30.0, 20.0, 30.0, 40.0, 10.0, 40.0]),
+        json!({"cssLayoutViewport":{"pageY":0.0}}),
+    );
+    let malformed_layout =
+        CurrentReferenceGeometry::current_reference_geometry(session.as_ref(), request)
+            .await
+            .unwrap_err();
+    assert_fresh_snapshot_error(&malformed_layout, ErrorCode::PageObservationFailed);
+}
+
+#[tokio::test]
+async fn current_geometry_rejects_wrong_scope_navigation_refresh_and_closed_session() {
+    let transport = ScriptedCdp::chrome();
+    let session = build_session(&transport, None).await;
+    let status = session.status().await.unwrap();
+    let target = status.pages[0].target.target.id();
+    let reference = current_reference(&session, &transport, target, "loader-1").await;
+
+    let commands_before = transport.commands().len();
+    let wrong_session = CurrentReferenceGeometry::current_reference_geometry(
+        session.as_ref(),
+        CurrentReferenceGeometryRequest::new(
+            SessionId::from_uuid(uuid::Uuid::from_u128(999)),
+            reference,
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap_err();
+    assert_fresh_snapshot_error(&wrong_session, ErrorCode::StaleReference);
+    assert_eq!(transport.commands().len(), commands_before);
+
+    let wrong_target_reference = NodeReference {
+        target_id: krometrail_core::TargetId::from_uuid(uuid::Uuid::from_u128(998)),
+        ..reference
+    };
+    let wrong_target = CurrentReferenceGeometry::current_reference_geometry(
+        session.as_ref(),
+        CurrentReferenceGeometryRequest::new(status.session_id, wrong_target_reference).unwrap(),
+    )
+    .await
+    .unwrap_err();
+    assert_fresh_snapshot_error(&wrong_target, ErrorCode::StaleReference);
+    assert_eq!(transport.commands().len(), commands_before);
+
+    transport.push_response(
+        "Page.getFrameTree",
+        json!({"frameTree":{"frame":{"id":"main","loaderId":"loader-after-navigation","url":"http://fixture/next"}}}),
+    );
+    let navigated = CurrentReferenceGeometry::current_reference_geometry(
+        session.as_ref(),
+        CurrentReferenceGeometryRequest::new(status.session_id, reference).unwrap(),
+    )
+    .await
+    .unwrap_err();
+    assert_fresh_snapshot_error(&navigated, ErrorCode::StaleReference);
+
+    let refreshed = current_reference(&session, &transport, target, "loader-2").await;
+    let before_old_reference = transport.commands().len();
+    let old_generation = CurrentReferenceGeometry::current_reference_geometry(
+        session.as_ref(),
+        CurrentReferenceGeometryRequest::new(status.session_id, reference).unwrap(),
+    )
+    .await
+    .unwrap_err();
+    assert_fresh_snapshot_error(&old_generation, ErrorCode::StaleReference);
+    assert_eq!(transport.commands().len(), before_old_reference);
+    assert_ne!(refreshed.generation, reference.generation);
+
+    session.stop().await.unwrap();
+    let closed = CurrentReferenceGeometry::current_reference_geometry(
+        session.as_ref(),
+        CurrentReferenceGeometryRequest::new(status.session_id, refreshed).unwrap(),
+    )
+    .await
+    .unwrap_err();
+    assert_fresh_snapshot_error(&closed, ErrorCode::StaleReference);
 }
 
 #[tokio::test]

@@ -31,6 +31,7 @@ mod wait;
 
 use navigation::NavigationConfig;
 use snapshot::SnapshotRegistry;
+pub(crate) use snapshot::current_reference_error;
 
 #[derive(Clone, Debug)]
 pub(crate) struct PageControlConfig {
@@ -80,15 +81,7 @@ impl PageControl {
         }
     }
 
-    pub(crate) async fn execute(
-        &mut self,
-        transport: &dyn CdpTransport,
-        browser_events: &SessionDomainAuthority,
-        state: &SupervisorState,
-        request: BrowserOperationRequest,
-        cancel: &navigation::OperationCancellation,
-        parent_deadline: Option<tokio::time::Instant>,
-    ) -> Result<BrowserOperationResult> {
+    pub(crate) fn retain_live_snapshot_targets(&mut self, state: &SupervisorState) {
         self.snapshots.retain_targets(
             state
                 .targets_by_key
@@ -101,6 +94,18 @@ impl PageControl {
                 })
                 .map(|target| target.target.target.id()),
         );
+    }
+
+    pub(crate) async fn execute(
+        &mut self,
+        transport: &dyn CdpTransport,
+        browser_events: &SessionDomainAuthority,
+        state: &SupervisorState,
+        request: BrowserOperationRequest,
+        cancel: &navigation::OperationCancellation,
+        parent_deadline: Option<tokio::time::Instant>,
+    ) -> Result<BrowserOperationResult> {
+        self.retain_live_snapshot_targets(state);
         if matches!(&request, BrowserOperationRequest::ListPages(_)) {
             let selected = state
                 .selected_target()

@@ -9,7 +9,7 @@ use crate::{
     },
     error::{Result, invalid},
     ids::{SessionId, TargetId},
-    time::{SessionOrigin, SessionTime},
+    time::{ObservedTime, SessionOrigin, SessionTime},
     validation::{delegate_json_schema, deserialize_validated},
 };
 
@@ -179,13 +179,18 @@ impl<'de> Deserialize<'de> for CurrentReferenceGeometryRequest {
     }
 }
 
-/// Geometry sampled from the one currently active snapshot generation.
+/// Geometry sampled once from the one currently active snapshot generation.
+///
+/// This is current browser provenance only: it carries no source-frame identity and makes no
+/// historical or element-tracking claim. `observed_at` and normalized `resolved_at` preserve the
+/// two current clocks without implying that either time belongs to a retained frame.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ResolvedReferenceGeometry {
     pub session_id: SessionId,
     pub target_id: TargetId,
     pub reference: NodeReference,
     pub attachment_generation: u64,
+    pub observed_at: ObservedTime,
     pub resolved_at: SessionTime,
     pub viewport_css_rect: CssRect,
 }
@@ -195,6 +200,7 @@ impl ResolvedReferenceGeometry {
         request: CurrentReferenceGeometryRequest,
         target_id: TargetId,
         attachment_generation: u64,
+        observed_at: ObservedTime,
         resolved_at: SessionTime,
         viewport_css_rect: CssRect,
     ) -> Result<Self> {
@@ -219,6 +225,7 @@ impl ResolvedReferenceGeometry {
             target_id,
             reference: request.reference,
             attachment_generation,
+            observed_at,
             resolved_at,
             viewport_css_rect,
         })
@@ -236,6 +243,7 @@ impl<'de> Deserialize<'de> for ResolvedReferenceGeometry {
             target_id: TargetId,
             reference: NodeReference,
             attachment_generation: u64,
+            observed_at: ObservedTime,
             resolved_at: SessionTime,
             viewport_css_rect: CssRect,
         }
@@ -244,6 +252,7 @@ impl<'de> Deserialize<'de> for ResolvedReferenceGeometry {
                 CurrentReferenceGeometryRequest::new(wire.session_id, wire.reference)?,
                 wire.target_id,
                 wire.attachment_generation,
+                wire.observed_at,
                 wire.resolved_at,
                 wire.viewport_css_rect,
             )
@@ -306,6 +315,30 @@ pub trait BrowserConnector: Send + Sync {
 
 pub trait BrowserSessionPort: Send + Sync {
     fn session_origin(&self) -> SessionOrigin;
+
+    /// Adapter seam used by the narrow [`CurrentReferenceGeometry`] view.
+    ///
+    /// Session implementations that do not own a live snapshot registry remain explicitly
+    /// unavailable; this is not a browser-operation registry entry.
+    fn resolve_current_reference_geometry(
+        &self,
+        _request: CurrentReferenceGeometryRequest,
+    ) -> PortFuture<'_, Result<ResolvedReferenceGeometry>> {
+        Box::pin(std::future::ready(Err(crate::KrometrailError::new(
+            crate::ErrorCode::InvalidLifecycleTransition,
+            crate::NonEmptyText::new(
+                "current-reference geometry is unavailable for this browser session",
+            )
+            .expect("static current-reference error is non-empty"),
+        )
+        .with_recovery(
+            crate::NonEmptyText::new(
+                "request a structured snapshot from an active supervised browser session",
+            )
+            .expect("static current-reference recovery is non-empty"),
+        ))))
+    }
+
     fn status(&self) -> PortFuture<'_, Result<BrowserStatus>>;
     fn subscribe(&self) -> PortFuture<'_, Result<Box<dyn BrowserSessionEvents>>>;
     fn execute(
@@ -314,6 +347,18 @@ pub trait BrowserSessionPort: Send + Sync {
         context: BrowserOperationContext,
     ) -> PortFuture<'_, Result<BrowserOperationResult>>;
     fn stop(&self) -> PortFuture<'_, Result<BrowserStopOutcome>>;
+}
+
+impl<T> CurrentReferenceGeometry for T
+where
+    T: BrowserSessionPort + ?Sized,
+{
+    fn current_reference_geometry(
+        &self,
+        request: CurrentReferenceGeometryRequest,
+    ) -> PortFuture<'_, Result<ResolvedReferenceGeometry>> {
+        self.resolve_current_reference_geometry(request)
+    }
 }
 
 // Kept as a named contract for adapter code that still deals in the raw page

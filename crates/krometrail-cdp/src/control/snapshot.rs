@@ -1,9 +1,10 @@
 use std::collections::{HashMap, HashSet};
 
 use krometrail_core::{
-    AccessibleProperty, AccessibleValue, BrowserOperationResult, ErrorCode, NodeReference,
-    ObservationContext, PageSnapshot, Result, SnapshotGeneration, SnapshotNode, SnapshotNodeId,
-    SnapshotPageRequest, TargetId,
+    AccessibleProperty, AccessibleValue, BrowserOperationResult, CssPoint, CssRect, CssSize,
+    CurrentReferenceGeometryRequest, ErrorCode, ErrorContext, NodeReference, NonEmptyText,
+    ObservationContext, PageSnapshot, ResolvedReferenceGeometry, Result, SnapshotGeneration,
+    SnapshotNode, SnapshotNodeId, SnapshotPageRequest, TargetId,
 };
 use serde_json::{Value, json};
 
@@ -100,6 +101,104 @@ pub(crate) struct ResolvedNode {
 }
 
 impl PageControl {
+    pub(crate) async fn current_reference_geometry(
+        &mut self,
+        transport: &dyn CdpTransport,
+        state: &crate::SupervisorState,
+        request: CurrentReferenceGeometryRequest,
+    ) -> Result<ResolvedReferenceGeometry> {
+        if request.session_id != self.session_id {
+            return Err(current_reference_error(
+                request,
+                ErrorCode::StaleReference,
+                "reference belongs to another browser session",
+            ));
+        }
+
+        self.retain_live_snapshot_targets(state);
+        let bound = super::bind_target(
+            state,
+            krometrail_core::PageSelection::Target(request.reference.target_id),
+        )
+        .map_err(|_| {
+            current_reference_error(
+                request,
+                ErrorCode::StaleReference,
+                "reference target is not attached to the current browser session",
+            )
+        })?;
+        let resolved = self
+            .snapshots
+            .resolve(
+                transport,
+                &bound,
+                request.reference,
+                ReferenceRequirement::VisibleGeometry,
+            )
+            .await
+            .map_err(|error| current_reference_context(error, request))?;
+
+        // Box quads are document CSS coordinates. Read the layout origin after resolving the
+        // exact backing node, then subtract it once without viewport clipping. This samples a
+        // fixed current region; it does not turn the reference into historical identity.
+        let scope = CommandScope::Session(bound.transport_session.clone());
+        let layout = transport
+            .send_raw(&scope, "Page.getLayoutMetrics", json!({}))
+            .await
+            .map_err(|error| {
+                current_reference_context(
+                    transport_error(error, ErrorCode::PageObservationFailed, bound.target_id),
+                    request,
+                )
+            })?;
+        let layout_root = layout
+            .get("result")
+            .filter(|value| value.get("cssLayoutViewport").is_some())
+            .unwrap_or(&layout);
+        let viewport_origin = super::rect_from_viewport(
+            layout_root.get("cssLayoutViewport"),
+            "layout viewport",
+            bound.target_id,
+        )
+        .map_err(|error| current_reference_context(error, request))?
+        .origin;
+        let (min_x, max_x, min_y, max_y) = quad_bounds(&resolved.document_quad);
+        let viewport_css_rect = CssRect::new(
+            CssPoint::new(min_x - viewport_origin.x, min_y - viewport_origin.y).map_err(|_| {
+                current_reference_context(malformed_current_geometry(bound.target_id), request)
+            })?,
+            CssSize::new(max_x - min_x, max_y - min_y).map_err(|_| {
+                current_reference_context(malformed_current_geometry(bound.target_id), request)
+            })?,
+        )
+        .map_err(|_| {
+            current_reference_context(malformed_current_geometry(bound.target_id), request)
+        })?;
+        let observed_at = self.clock.now();
+        let resolved_at = self.session_origin.normalize(observed_at).map_err(|_| {
+            current_reference_error(
+                request,
+                ErrorCode::PageObservationFailed,
+                "current reference geometry timing is unavailable",
+            )
+        })?;
+        ResolvedReferenceGeometry::new(
+            request,
+            bound.target_id,
+            bound.attachment_generation,
+            observed_at,
+            resolved_at,
+            viewport_css_rect,
+        )
+        .map_err(|_| {
+            current_reference_error(
+                request,
+                ErrorCode::PageObservationFailed,
+                "current reference geometry is malformed",
+            )
+        })
+    }
+
     pub(super) async fn snapshot(
         &mut self,
         transport: &dyn CdpTransport,
@@ -237,6 +336,23 @@ impl SnapshotRegistry {
         bound: &BoundTarget,
         reference: NodeReference,
     ) -> Result<i64> {
+        let (document, backend) = self.active_reference_backend(bound, reference)?;
+        let scope = CommandScope::Session(bound.transport_session.clone());
+        let current = document_fingerprint(transport, &scope, bound.target_id).await?;
+        if current != *document {
+            return Err(stale(
+                bound.target_id,
+                "document changed after the snapshot",
+            ));
+        }
+        Ok(backend)
+    }
+
+    fn active_reference_backend(
+        &self,
+        bound: &BoundTarget,
+        reference: NodeReference,
+    ) -> Result<(&DocumentFingerprint, i64)> {
         if reference.target_id != bound.target_id {
             return Err(stale(
                 bound.target_id,
@@ -260,15 +376,7 @@ impl SnapshotRegistry {
                 "target attachment changed after the snapshot",
             ));
         }
-        let scope = CommandScope::Session(bound.transport_session.clone());
-        let current = document_fingerprint(transport, &scope, bound.target_id).await?;
-        if current != active.document {
-            return Err(stale(
-                bound.target_id,
-                "document changed after the snapshot",
-            ));
-        }
-        active
+        let backend = active
             .bindings
             .get(&reference.node_id)
             .map(|binding| binding.backend_node_id)
@@ -277,7 +385,8 @@ impl SnapshotRegistry {
                     bound.target_id,
                     "snapshot node has no backing document node",
                 )
-            })
+            })?;
+        Ok((&active.document, backend))
     }
 }
 
@@ -513,6 +622,46 @@ pub(crate) fn quad_bounds(quad: &[f64; 8]) -> (f64, f64, f64, f64) {
         xs.into_iter().fold(f64::NEG_INFINITY, f64::max),
         ys.into_iter().fold(f64::INFINITY, f64::min),
         ys.into_iter().fold(f64::NEG_INFINITY, f64::max),
+    )
+}
+
+fn malformed_current_geometry(target_id: TargetId) -> krometrail_core::KrometrailError {
+    operation_error(
+        ErrorCode::PageObservationFailed,
+        target_id,
+        "current layout viewport geometry is malformed",
+    )
+    .with_recovery(
+        NonEmptyText::new("request a new structured snapshot and retry with its reference")
+            .expect("static current-reference recovery is non-empty"),
+    )
+}
+
+fn current_reference_context(
+    error: krometrail_core::KrometrailError,
+    request: CurrentReferenceGeometryRequest,
+) -> krometrail_core::KrometrailError {
+    error
+        .with_context(ErrorContext {
+            session_id: Some(request.session_id),
+            target_id: Some(request.reference.target_id),
+            interaction_id: None,
+            range: None,
+        })
+        .with_recovery(
+            NonEmptyText::new("request a new structured snapshot and retry with its reference")
+                .expect("static current-reference recovery is non-empty"),
+        )
+}
+
+pub(crate) fn current_reference_error(
+    request: CurrentReferenceGeometryRequest,
+    code: ErrorCode,
+    message: &'static str,
+) -> krometrail_core::KrometrailError {
+    current_reference_context(
+        operation_error(code, request.reference.target_id, message),
+        request,
     )
 }
 
@@ -846,6 +995,110 @@ mod tests {
         assert_eq!(
             quad_bounds(&[10.0, 20.0, 20.0, 10.0, 30.0, 20.0, 20.0, 30.0]),
             (10.0, 30.0, 10.0, 30.0)
+        );
+    }
+
+    #[test]
+    fn exact_reference_authority_rejects_refresh_reconnect_close_scope_and_backing_drift() {
+        let generation = SnapshotGeneration::new(1).unwrap();
+        let node_id = SnapshotNodeId::new(1).unwrap();
+        let reference = NodeReference {
+            target_id: target(),
+            generation,
+            node_id,
+        };
+        let bound = BoundTarget {
+            target_id: target(),
+            attachment_generation: 4,
+            transport_session: crate::transport::TransportSessionId::new("session-a").unwrap(),
+        };
+        let active = || ActiveSnapshot {
+            generation,
+            attachment_generation: 4,
+            document: DocumentFingerprint {
+                frame_id: "main".into(),
+                loader_id: "loader".into(),
+            },
+            bindings: HashMap::from([(
+                node_id,
+                NodeBinding {
+                    backend_node_id: 42,
+                },
+            )]),
+        };
+        let assert_stale = |error: krometrail_core::KrometrailError| {
+            assert_eq!(error.code, ErrorCode::StaleReference);
+            assert!(
+                error
+                    .recovery
+                    .as_ref()
+                    .is_some_and(|value| value.as_str().contains("new structured snapshot"))
+            );
+        };
+
+        let mut registry = SnapshotRegistry::default();
+        registry.install(target(), active());
+        assert_eq!(
+            registry
+                .active_reference_backend(&bound, reference)
+                .unwrap()
+                .1,
+            42
+        );
+
+        let wrong_target = NodeReference {
+            target_id: TargetId::from_uuid(uuid::Uuid::from_u128(99)),
+            ..reference
+        };
+        assert_stale(
+            registry
+                .active_reference_backend(&bound, wrong_target)
+                .unwrap_err(),
+        );
+
+        let mut reattached = bound.clone();
+        reattached.attachment_generation += 1;
+        assert_stale(
+            registry
+                .active_reference_backend(&reattached, reference)
+                .unwrap_err(),
+        );
+
+        let refreshed_generation = SnapshotGeneration::new(2).unwrap();
+        registry.install(
+            target(),
+            ActiveSnapshot {
+                generation: refreshed_generation,
+                ..active()
+            },
+        );
+        assert_stale(
+            registry
+                .active_reference_backend(&bound, reference)
+                .unwrap_err(),
+        );
+
+        let refreshed = NodeReference {
+            generation: refreshed_generation,
+            ..reference
+        };
+        assert_stale(
+            registry
+                .active_reference_backend(
+                    &bound,
+                    NodeReference {
+                        node_id: SnapshotNodeId::new(2).unwrap(),
+                        ..refreshed
+                    },
+                )
+                .unwrap_err(),
+        );
+
+        registry.invalidate_target(target());
+        assert_stale(
+            registry
+                .active_reference_backend(&bound, refreshed)
+                .unwrap_err(),
         );
     }
 }

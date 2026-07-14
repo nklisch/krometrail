@@ -491,6 +491,17 @@ async fn reconstruct_connection(
     })
 }
 
+fn reject_current_geometry_during_reconnect(
+    request: krometrail_core::CurrentReferenceGeometryRequest,
+    sender: oneshot::Sender<Result<krometrail_core::ResolvedReferenceGeometry>>,
+) {
+    let _ = sender.send(Err(crate::control::current_reference_error(
+        request,
+        ErrorCode::StaleReference,
+        "browser reconnected after the referenced snapshot generation",
+    )));
+}
+
 fn reject_operation_during_reconnect(
     request: BrowserOperationRequest,
     sender: oneshot::Sender<Result<BrowserOperationResult>>,
@@ -524,6 +535,9 @@ pub(super) async fn reconnect_loop_transactional(
                         Some(SupervisorCommand::Stop(sender)) => {
                             let _ = finish_interrupted_reconnect(shared, state, connection, runtime, SupervisorInput::StopRequested, Some(sender)).await;
                             return true;
+                        }
+                        Some(SupervisorCommand::CurrentReferenceGeometry(request, sender)) => {
+                            reject_current_geometry_during_reconnect(request, sender);
                         }
                         Some(SupervisorCommand::Execute(request, _context, sender)) => {
                             reject_operation_during_reconnect(request, sender);
@@ -604,6 +618,10 @@ pub(super) async fn reconnect_loop_transactional(
                 command = commands.recv() => {
                     let interrupt = match command {
                         Some(SupervisorCommand::Stop(sender)) => Some(ReconnectInterrupt::Stop(sender)),
+                        Some(SupervisorCommand::CurrentReferenceGeometry(request, sender)) => {
+                            reject_current_geometry_during_reconnect(request, sender);
+                            None
+                        }
                         Some(SupervisorCommand::Execute(request, _context, sender)) => {
                             reject_operation_during_reconnect(request, sender);
                             None
@@ -733,4 +751,40 @@ pub(super) async fn reconnect_loop_transactional(
         finish_state(shared, state);
     }
     true
+}
+
+#[cfg(test)]
+mod current_geometry_tests {
+    use super::*;
+    use krometrail_core::{
+        CurrentReferenceGeometryRequest, NodeReference, SessionId, SnapshotGeneration,
+        SnapshotNodeId, TargetId,
+    };
+    use uuid::Uuid;
+
+    #[test]
+    fn reconnect_rejects_current_geometry_without_replay_or_transport_identity() {
+        let request = CurrentReferenceGeometryRequest::new(
+            SessionId::from_uuid(Uuid::from_u128(1)),
+            NodeReference {
+                target_id: TargetId::from_uuid(Uuid::from_u128(2)),
+                generation: SnapshotGeneration::new(3).unwrap(),
+                node_id: SnapshotNodeId::new(4).unwrap(),
+            },
+        )
+        .unwrap();
+        let (sender, mut receiver) = oneshot::channel();
+        reject_current_geometry_during_reconnect(request, sender);
+        let error = receiver.try_recv().unwrap().unwrap_err();
+        assert_eq!(error.code, ErrorCode::StaleReference);
+        assert!(
+            error
+                .recovery
+                .as_ref()
+                .is_some_and(|value| value.as_str().contains("new structured snapshot"))
+        );
+        let wire = serde_json::to_string(&error).unwrap();
+        assert!(!wire.contains("transport"));
+        assert!(!wire.contains("session-a"));
+    }
 }

@@ -60,8 +60,9 @@ mod tests {
         CaptureGap, CaptureGapReason, CapturedFrame, DeviceScaleFactor, EncodedFrame, ErrorCode,
         FrameAddress, ImageFormat, ObservationKind, ObservationPayloadRef, ObservedTime,
         PageTarget, PixelDimensions, ProfileIdentity, ProfileRef, RendererCapability, SegmentId,
-        SessionId, SessionOrigin, SessionRange, SessionTime, SourceTime, SupervisedTarget,
-        TargetId, TargetLifecycle, TargetVisibility, TimelineObservation,
+        SessionId, SessionOrigin, SessionRange, SessionTime, SnapshotGeneration, SnapshotNodeId,
+        SourceTime, SupervisedTarget, TargetId, TargetLifecycle, TargetVisibility,
+        TimelineObservation,
     };
     use std::{
         collections::VecDeque,
@@ -486,6 +487,20 @@ mod tests {
         assert_eq!(status.pages.len(), 1);
         let mut events = block_on(session.subscribe()).unwrap();
         assert!(block_on(events.next()).unwrap().is_none());
+        let geometry_error = block_on(CurrentReferenceGeometry::current_reference_geometry(
+            session.as_ref(),
+            CurrentReferenceGeometryRequest::new(
+                status.session_id,
+                crate::NodeReference {
+                    target_id: status.pages[0].target.target.id(),
+                    generation: SnapshotGeneration::new(1).unwrap(),
+                    node_id: SnapshotNodeId::new(1).unwrap(),
+                },
+            )
+            .unwrap(),
+        ))
+        .unwrap_err();
+        assert_eq!(geometry_error.code, ErrorCode::InvalidLifecycleTransition);
         assert_eq!(
             block_on(session.stop()).unwrap(),
             BrowserStopOutcome::ManagedBrowserClosed
