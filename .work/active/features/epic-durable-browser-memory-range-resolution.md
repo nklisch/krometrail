@@ -1,7 +1,7 @@
 ---
 id: epic-durable-browser-memory-range-resolution
 kind: feature
-stage: review
+stage: done
 tags: [storage, browser]
 parent: epic-durable-browser-memory
 depends_on: [epic-durable-browser-memory-sqlite-index]
@@ -454,3 +454,14 @@ Do not add a test per trivial accessor, SQL statement, or enum derive. Tests pro
 - Qualification evidence: `crates/krometrail-store/tests/range_resolution.rs` covers explicit, wall-clock, source-frame, marker, navigation, interaction absence, retention, gaps, boundaries, overflow, and scope failures.
 - Verification: locked workspace format check, check, tests (379 passed across 37 suites), and Clippy with warnings denied all pass; focused range tests pass (8 tests).
 - Honest deviation: durable interaction/latest-interaction resolution remains `NotFound` until browser-operation persistence implements `InteractionAnchorSource`; no interaction, navigation, marker, pin, or artifact tables were invented here.
+
+## Review (2026-07-14)
+
+**Verdict:** Approve with comments
+
+**Blockers:** none
+**Important:** none
+**Nits:** One unused latest-observation port method and a one-use error-context helper are modest speculative abstractions; absent catalog rows and unscoped payload lookup would benefit from intent comments; zero-width default marker/navigation windows should be documented for callers.
+**Rejected:** O(n²) bounded observation deduplication, absent speculative latest-anchor variants, and `NotFound` for pre-session wall time are not current defects.
+
+Fresh-context standard review verified one registry/resolver/result authority, inclusive endpoint and capture-ordinal ordering, checked session/wall-clock conversion, exact scope errors, explicit gap/partial-retention policies, source-safe errors, reuse of the established frame-read authority, validated object-safe ports, and honest `NotFound` interaction anchors. Locked format/check/Clippy and 379 workspace tests passed, including eight focused integration tests. No material current-cycle risk remains.
