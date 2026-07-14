@@ -84,7 +84,8 @@ async fn scripted_session(transport: ScriptedCdp) -> Arc<dyn krometrail_core::Br
             krometrail_cdp::LauncherConfig::default(),
         )),
         Arc::new(ScriptedFactory(transport)),
-    );
+    )
+    .with_interaction_evidence(support::evidence_sink());
     connector
         .connect(BrowserConnectRequest::Attach(
             krometrail_core::AttachBrowser::new("ws://127.0.0.1:9222/devtools/browser/scripted")
@@ -393,7 +394,8 @@ async fn opt_in_real_chrome_synchronizes_dialog_open_and_close() {
             krometrail_cdp::transport::CdpkitTransportFactory::new()
                 .with_command_timeout(std::time::Duration::from_secs(15)),
         ),
-    );
+    )
+    .with_interaction_evidence(support::evidence_sink());
     let session = connector
         .connect(BrowserConnectRequest::Launch(
             krometrail_core::LaunchBrowser {
@@ -469,7 +471,8 @@ async fn opt_in_real_chrome_executes_verified_interaction_families() {
             krometrail_cdp::transport::CdpkitTransportFactory::new()
                 .with_command_timeout(std::time::Duration::from_secs(15)),
         ),
-    );
+    )
+    .with_interaction_evidence(support::evidence_sink());
     let session = connector
         .connect(BrowserConnectRequest::Launch(
             krometrail_core::LaunchBrowser {

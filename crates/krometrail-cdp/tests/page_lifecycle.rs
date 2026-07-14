@@ -154,7 +154,8 @@ async fn scripted_session(transport: &ScriptedCdp) -> Arc<dyn krometrail_core::B
             krometrail_cdp::LauncherConfig::default(),
         )),
         Arc::new(ScriptedFactory(transport.clone())),
-    );
+    )
+    .with_interaction_evidence(support::evidence_sink());
     connector
         .connect(BrowserConnectRequest::Attach(
             AttachBrowser::new("ws://127.0.0.1:9222/devtools/browser/lifecycle").unwrap(),
@@ -967,7 +968,8 @@ async fn opt_in_real_chrome_runs_complete_managed_page_lifecycle() {
             krometrail_cdp::transport::CdpkitTransportFactory::new()
                 .with_command_timeout(std::time::Duration::from_secs(15)),
         ),
-    );
+    )
+    .with_interaction_evidence(support::evidence_sink());
     let first_url = support::chrome::page_lifecycle_fixture_url("index.html");
     let second_url = support::chrome::page_lifecycle_fixture_url("second.html");
     let session = connector
@@ -1193,7 +1195,8 @@ async fn opt_in_real_chrome_reopens_named_profile_state() {
         krometrail_cdp::transport::CdpkitTransportFactory::new()
             .with_command_timeout(std::time::Duration::from_secs(15)),
     );
-    let connector = ProductionBrowserConnector::new(launcher, factory);
+    let connector = ProductionBrowserConnector::new(launcher, factory)
+        .with_interaction_evidence(support::evidence_sink());
     let profile = ManagedProfile::Reusable {
         name: ProfileIdentity::new("lifecycle-named").unwrap(),
     };

@@ -54,6 +54,7 @@ use crate::{
     },
 };
 
+mod evidence;
 mod operations;
 mod reconnect;
 mod runtime;
@@ -108,6 +109,7 @@ pub struct ProductionBrowserConnector {
     clock: Arc<dyn MonotonicClock>,
     ids: Arc<dyn IdSource>,
     capture: Option<CaptureAssembly>,
+    interaction_evidence: Option<Arc<dyn krometrail_core::InteractionEvidenceSink>>,
 }
 
 #[derive(Clone)]
@@ -133,6 +135,7 @@ impl ProductionBrowserConnector {
             }),
             ids: Arc::new(AdapterIdSource),
             capture: None,
+            interaction_evidence: None,
         }
     }
 
@@ -163,6 +166,14 @@ impl ProductionBrowserConnector {
             retention,
             config,
         });
+        self
+    }
+
+    pub fn with_interaction_evidence(
+        mut self,
+        sink: Arc<dyn krometrail_core::InteractionEvidenceSink>,
+    ) -> Self {
+        self.interaction_evidence = Some(sink);
         self
     }
 
@@ -208,6 +219,7 @@ impl BrowserConnector for ProductionBrowserConnector {
         let transport_factory = Arc::clone(&self.transport_factory);
         let config = self.config.clone();
         let capture_assembly = self.capture.clone();
+        let interaction_evidence = self.interaction_evidence.clone();
         let control_clock = Arc::clone(&self.clock);
         let ids = Arc::clone(&self.ids);
         Box::pin(async move {
@@ -325,6 +337,7 @@ impl BrowserConnector for ProductionBrowserConnector {
                 session_id,
                 session_origin,
                 capture: capture.clone(),
+                interaction_evidence,
                 operation_cancellation: OperationCancellation::default(),
                 stop_result: Mutex::new(None),
             });
@@ -407,6 +420,7 @@ pub(crate) struct SessionShared {
     session_id: SessionId,
     session_origin: SessionOrigin,
     capture: Option<Arc<CaptureRuntime>>,
+    interaction_evidence: Option<Arc<dyn krometrail_core::InteractionEvidenceSink>>,
     pub(crate) operation_cancellation: OperationCancellation,
     stop_result: Mutex<Option<Result<BrowserStopOutcome>>>,
 }
@@ -904,6 +918,7 @@ mod tests {
             session_id: SessionId::from_uuid(Uuid::new_v4()),
             session_origin: SessionOrigin::new(krometrail_core::ObservedTime::from_nanos(0)),
             capture: None,
+            interaction_evidence: None,
             operation_cancellation: OperationCancellation::default(),
             stop_result: Mutex::new(None),
         });

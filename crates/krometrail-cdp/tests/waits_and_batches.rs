@@ -2,7 +2,10 @@
 
 mod support;
 
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use krometrail_cdp::{
@@ -12,8 +15,9 @@ use krometrail_core::{
     AttachBrowser, BatchFailurePolicy, BatchOptions, BatchOutcome, BatchRequest, BatchSkipReason,
     BatchStepStatus, BrowserConnectRequest, BrowserConnector, BrowserOperationRequest,
     BrowserOperationResult, ClickRequest, CoordinateSpace, CssPoint, DocumentReadiness,
-    ElementLocator, ElementState, ErrorCode, EvaluationValue, InteractionLocator, LaunchBrowser,
-    ManagedProfile, Modifiers, MouseButton, ObservationPart, PageSelection,
+    ElementLocator, ElementState, ErrorCode, EvaluationValue, InteractionAnchor,
+    InteractionEvidenceSink, InteractionLocator, InteractionRecord, LaunchBrowser, ManagedProfile,
+    Modifiers, MouseButton, NavigationId, ObservationPart, ObservedTime, PageSelection, PortFuture,
     ReadOnlyEvaluationRequest, SnapshotPageRequest, UrlMatch, WaitCondition, WaitOutcome,
     WaitPresence, WaitProbe, WaitRequest, WaitTextMatch,
 };
@@ -83,7 +87,10 @@ fn live_observation_script(transport: &ScriptedCdp) {
     transport.push_response("Page.captureScreenshot", json!({"data":png_base64()}));
 }
 
-async fn scripted_session(transport: ScriptedCdp) -> Arc<dyn krometrail_core::BrowserSessionPort> {
+async fn scripted_session_with_sink(
+    transport: ScriptedCdp,
+    sink: Arc<dyn InteractionEvidenceSink>,
+) -> Arc<dyn krometrail_core::BrowserSessionPort> {
     startup_script(&transport);
     ProductionBrowserConnector::new(
         Arc::new(krometrail_cdp::SystemChromeLauncher::new(
@@ -91,11 +98,16 @@ async fn scripted_session(transport: ScriptedCdp) -> Arc<dyn krometrail_core::Br
         )),
         Arc::new(ScriptedFactory(transport)),
     )
+    .with_interaction_evidence(sink)
     .connect(BrowserConnectRequest::Attach(
         AttachBrowser::new("ws://127.0.0.1:9222/devtools/browser/waits-batches").unwrap(),
     ))
     .await
     .unwrap()
+}
+
+async fn scripted_session(transport: ScriptedCdp) -> Arc<dyn krometrail_core::BrowserSessionPort> {
+    scripted_session_with_sink(transport, support::evidence_sink()).await
 }
 
 fn page_wait(target: krometrail_core::TargetId, expression: &str) -> BrowserOperationRequest {
@@ -107,6 +119,85 @@ fn page_wait(target: krometrail_core::TargetId, expression: &str) -> BrowserOper
             },
             std::time::Duration::from_millis(100),
             std::time::Duration::from_millis(10),
+        )
+        .unwrap(),
+    )
+}
+
+struct GateEvidenceSink {
+    calls: AtomicUsize,
+    started: tokio::sync::Notify,
+    releases: tokio::sync::Semaphore,
+    fail: bool,
+}
+
+impl GateEvidenceSink {
+    fn new(fail: bool) -> Arc<Self> {
+        Arc::new(Self {
+            calls: AtomicUsize::new(0),
+            started: tokio::sync::Notify::new(),
+            releases: tokio::sync::Semaphore::new(0),
+            fail,
+        })
+    }
+
+    async fn wait_for_calls(&self, expected: usize) {
+        loop {
+            let notified = self.started.notified();
+            if self.calls.load(Ordering::Acquire) >= expected {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+impl InteractionEvidenceSink for GateEvidenceSink {
+    fn append_operation_evidence(
+        &self,
+        _anchor: InteractionAnchor,
+        _record: Option<InteractionRecord>,
+        _persisted_at: ObservedTime,
+        _navigation_id: Option<NavigationId>,
+    ) -> PortFuture<'_, krometrail_core::Result<()>> {
+        Box::pin(async move {
+            self.calls.fetch_add(1, Ordering::AcqRel);
+            self.started.notify_waiters();
+            if self.fail {
+                return Err(krometrail_core::KrometrailError::new(
+                    ErrorCode::PersistenceFailed,
+                    krometrail_core::NonEmptyText::new("deliberate evidence failure").unwrap(),
+                ));
+            }
+            self.releases.acquire().await.unwrap().forget();
+            Ok(())
+        })
+    }
+}
+
+fn script_coordinate_click(transport: &ScriptedCdp) {
+    transport.push_response("Page.getLayoutMetrics", layout());
+    transport.push_response(
+        "Runtime.evaluate",
+        json!({"result":{"value":{"tagName":"BUTTON","x":10,"y":10,"width":20,"height":20}}}),
+    );
+    transport.push_response("Runtime.evaluate", json!({"result":{"value":true}}));
+    live_observation_script(transport);
+}
+
+fn coordinate_click(target: krometrail_core::TargetId) -> BrowserOperationRequest {
+    BrowserOperationRequest::Click(
+        ClickRequest::new(
+            PageSelection::Target(target),
+            InteractionLocator::coordinate(
+                CssPoint::new(20.0, 20.0).unwrap(),
+                CoordinateSpace::ViewportCss,
+            )
+            .unwrap(),
+            MouseButton::Left,
+            Modifiers::default(),
+            1,
+            false,
         )
         .unwrap(),
     )
@@ -181,6 +272,121 @@ async fn sequential_batch_reuses_dispatcher_and_propagates_parent_anchor() {
         "one child live screenshot and exactly one final live observation"
     );
     session.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn each_batch_step_crosses_the_evidence_fence_before_the_next_dispatch() {
+    let transport = ScriptedCdp::chrome();
+    let sink = GateEvidenceSink::new(false);
+    let session = scripted_session_with_sink(
+        transport.clone(),
+        Arc::clone(&sink) as Arc<dyn InteractionEvidenceSink>,
+    )
+    .await;
+    let target = session.status().await.unwrap().selected_target_id.unwrap();
+    script_coordinate_click(&transport);
+    script_coordinate_click(&transport);
+    live_observation_script(&transport);
+    let request = BatchRequest::new(
+        PageSelection::Target(target),
+        vec![coordinate_click(target), coordinate_click(target)],
+        std::time::Duration::from_secs(5),
+        BatchOptions::default(),
+    )
+    .unwrap();
+    let task = {
+        let session = Arc::clone(&session);
+        tokio::spawn(async move {
+            session
+                .execute(
+                    BrowserOperationRequest::Batch(request),
+                    krometrail_core::BrowserOperationContext::default(),
+                )
+                .await
+        })
+    };
+
+    sink.wait_for_calls(1).await;
+    assert_eq!(
+        transport
+            .command_calls()
+            .iter()
+            .filter(|call| call.method == "Input.dispatchMouseEvent")
+            .count(),
+        4
+    );
+    sink.releases.add_permits(1);
+    sink.wait_for_calls(2).await;
+    assert_eq!(
+        transport
+            .command_calls()
+            .iter()
+            .filter(|call| call.method == "Input.dispatchMouseEvent")
+            .count(),
+        7
+    );
+    sink.releases.add_permits(1);
+    let BrowserOperationResult::Batch(result) = task.await.unwrap().unwrap() else {
+        panic!("batch result")
+    };
+    assert_eq!(result.outcome, BatchOutcome::Completed);
+    assert!(
+        result
+            .steps
+            .iter()
+            .all(|step| step.status == BatchStepStatus::Succeeded)
+    );
+
+    let failing_transport = ScriptedCdp::chrome();
+    let failing_sink = GateEvidenceSink::new(true);
+    let failed_session = scripted_session_with_sink(
+        failing_transport.clone(),
+        failing_sink as Arc<dyn InteractionEvidenceSink>,
+    )
+    .await;
+    let failed_target = failed_session
+        .status()
+        .await
+        .unwrap()
+        .selected_target_id
+        .unwrap();
+    script_coordinate_click(&failing_transport);
+    live_observation_script(&failing_transport);
+    let failed = BatchRequest::new(
+        PageSelection::Target(failed_target),
+        vec![
+            coordinate_click(failed_target),
+            coordinate_click(failed_target),
+        ],
+        std::time::Duration::from_secs(5),
+        BatchOptions::default(),
+    )
+    .unwrap();
+    let BrowserOperationResult::Batch(failed) = failed_session
+        .execute(
+            BrowserOperationRequest::Batch(failed),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("failed batch result")
+    };
+    assert_eq!(failed.outcome, BatchOutcome::StoppedOnFailure);
+    assert_eq!(failed.steps[0].status, BatchStepStatus::Failed);
+    assert_eq!(failed.steps[1].status, BatchStepStatus::Skipped);
+    assert_eq!(
+        failed.steps[0].error.as_ref().unwrap().code,
+        ErrorCode::PersistenceFailed
+    );
+    assert_eq!(
+        failing_transport
+            .command_calls()
+            .iter()
+            .filter(|call| call.method == "Input.dispatchMouseEvent")
+            .count(),
+        4
+    );
 }
 
 #[tokio::test]
@@ -617,7 +823,8 @@ async fn launch_real_fixture(
             krometrail_cdp::transport::CdpkitTransportFactory::new()
                 .with_command_timeout(std::time::Duration::from_secs(15)),
         ),
-    );
+    )
+    .with_interaction_evidence(support::evidence_sink());
     let session = connector
         .connect(BrowserConnectRequest::Launch(LaunchBrowser {
             executable: None,

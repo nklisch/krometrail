@@ -1,4 +1,6 @@
 use super::*;
+use crate::session::evidence::persist_result_evidence;
+use krometrail_core::{BROWSER_OPERATION_REGISTRY, OperationMutability, RetryAdvice};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct OperationExecutionContext {
@@ -7,6 +9,60 @@ pub(crate) struct OperationExecutionContext {
 }
 
 pub(crate) async fn execute_operation(
+    page_control: &mut PageControl,
+    state: &mut SupervisorState,
+    transport: Arc<dyn CdpTransport>,
+    shared: &Arc<SessionShared>,
+    request: BrowserOperationRequest,
+    cancellation: &OperationCancellation,
+    context: OperationExecutionContext,
+) -> Result<BrowserOperationResult> {
+    if cancellation.request_is_cancelled() {
+        return Err(request_operation_error(
+            ErrorCode::Cancelled,
+            direct_request_target(&request),
+            "browser operation was cancelled before dispatch",
+        ));
+    }
+    let kind = request.kind();
+    let state_changing = BROWSER_OPERATION_REGISTRY
+        .iter()
+        .find(|definition| definition.kind == kind)
+        .is_some_and(|definition| definition.mutability == OperationMutability::StateChanging);
+    if state_changing && shared.interaction_evidence.is_none() {
+        return Err(missing_evidence_sink(
+            shared.session_id,
+            direct_request_target(&request),
+        ));
+    }
+    let outer_batch = matches!(request, BrowserOperationRequest::Batch(_));
+    let result = execute_operation_unfenced(
+        page_control,
+        state,
+        transport,
+        shared,
+        request,
+        cancellation,
+        context,
+    )
+    .await?;
+    if state_changing && !outer_batch {
+        let sink = shared
+            .interaction_evidence
+            .as_deref()
+            .expect("state-changing dispatch requires an evidence sink");
+        persist_result_evidence(
+            &result,
+            sink,
+            page_control.clock.as_ref(),
+            page_control.ids.as_ref(),
+        )
+        .await?;
+    }
+    Ok(result)
+}
+
+async fn execute_operation_unfenced(
     page_control: &mut PageControl,
     state: &mut SupervisorState,
     transport: Arc<dyn CdpTransport>,
@@ -504,4 +560,25 @@ fn transport_page_error(
     target_id: krometrail_core::TargetId,
 ) -> KrometrailError {
     crate::control::transport_error(error, fallback, target_id)
+}
+
+fn missing_evidence_sink(
+    session_id: SessionId,
+    target_id: Option<krometrail_core::TargetId>,
+) -> KrometrailError {
+    KrometrailError::new(
+        ErrorCode::PersistenceFailed,
+        NonEmptyText::new("state-changing browser operations require durable temporal evidence")
+            .expect("static evidence error is non-empty"),
+    )
+    .with_context(krometrail_core::ErrorContext {
+        session_id: Some(session_id),
+        target_id,
+        ..krometrail_core::ErrorContext::default()
+    })
+    .with_retry(RetryAdvice::Never)
+    .with_recovery(
+        NonEmptyText::new("restore the recording store before dispatching browser changes")
+            .expect("static evidence recovery is non-empty"),
+    )
 }

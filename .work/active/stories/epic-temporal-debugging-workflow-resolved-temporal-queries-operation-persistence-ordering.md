@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-debugging-workflow-resolved-temporal-queries-operation-persistence-ordering
 kind: story
-stage: implementing
+stage: done
 tags: [storage, browser, agent-ux]
 parent: epic-temporal-debugging-workflow-resolved-temporal-queries
 depends_on: [epic-temporal-debugging-workflow-resolved-temporal-queries-durable-anchor-index]
@@ -35,3 +35,15 @@ Wire one `InteractionEvidenceSink` into the production CDP session and centraliz
 ## Ordering
 
 Depends on the durable store implementation so the integration is designed against the real transaction boundary, not a temporary production cache.
+
+## Implementation notes
+
+- Execution capability: highest; retained by caller because browser effects, batch cancellation/deadlines, and durable publication form one failure-sensitive ordering boundary.
+- Review weight: standard, from the autopilot caller; child checkpoint review is not applicable.
+- Files changed: `crates/krometrail-cdp/src/session/{evidence.rs,mod.rs,operations.rs}` and focused CDP test/support files, including `tests/temporal_evidence.rs` and batch ordering coverage.
+- Tests added/updated: missing-sink pre-dispatch rejection with read-only availability; delayed standalone sink publication fence; post-effect sink failure remapping; two-step batch gate proving step 2 input cannot dispatch before step 1 commit; default batch stop on persistence failure; successful explicit navigation ID qualification; all existing scripted and opt-in state-changing fixtures now inject deliberate test evidence sinks.
+- Semantics delivered: one shared non-batch fence; exact page anchor/action record projection; no outer-batch row; successful explicit navigate/reload/back/forward navigation IDs only; failure context includes session/target/interaction with retry `Never` and inspect-before-repeat recovery; no sink means no state-changing CDP dispatch.
+- Simplification: evidence projection is centralized once after non-batch dispatch, rather than duplicated across page/action families or MCP; exhaustive `BrowserOperationResult` matching keeps new variants compile-visible.
+- Discrepancies from design: persistence is awaited directly rather than detached or outboxed. Existing batch cancellation/deadline can stop publication while never advancing another step; this preserves the designed synchronous fence and avoids a second eventual-consistency mechanism.
+- Adjacent issues parked: none.
+- Verification: `cargo fmt --all -- --check`; `cargo test -p krometrail-cdp --all-targets --locked` (221 passed across 19 suites); `cargo clippy -p krometrail-cdp --all-targets --locked -- -D warnings`. No opt-in live-Chrome run was claimed.
