@@ -465,6 +465,7 @@ impl StreamRuntime {
             self.target.session_id,
             self.target.target_id,
             SessionRange::new(at, at).expect("equal range is valid"),
+            self.dependencies.clock.now(),
             reason,
             estimated.and_then(std::num::NonZeroU64::new),
             detail.map(str::to_owned),
@@ -500,6 +501,7 @@ impl StreamRuntime {
             self.target.session_id,
             self.target.target_id,
             SessionRange::new(start.min(end), start.max(end)).expect("ordered range is valid"),
+            self.dependencies.clock.now(),
             reason,
             estimated.and_then(std::num::NonZeroU64::new),
             detail.map(str::to_owned),
@@ -1271,6 +1273,7 @@ fn conservative_merge_gaps(first: &CaptureGap, second: &CaptureGap) -> CaptureGa
                 first.range().end().max(second.range().end()),
             )
             .expect("ordered coalesced range is valid"),
+            first.observed_time().max(second.observed_time()),
             *first.reason(),
             estimated,
             Some("coalesced bounded capture gap".to_owned()),
@@ -1304,6 +1307,7 @@ fn merge_gaps(first: &CaptureGap, second: &CaptureGap) -> Option<CaptureGap> {
             first.range().end().max(second.range().end()),
         )
         .ok()?,
+        first.observed_time().max(second.observed_time()),
         *first.reason(),
         estimated,
         first.detail().map(str::to_owned),

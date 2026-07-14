@@ -323,6 +323,7 @@ fn capture_events_expose_no_transport_or_page_privacy_fields() {
         SessionId::from_uuid(SESSION_UUID.parse().unwrap()),
         target_id,
         SessionRange::new(SessionTime::ZERO, SessionTime::ZERO).unwrap(),
+        krometrail_core::ObservedTime::from_nanos(1),
         CaptureGapReason::BrowserDisconnected,
         NonZeroU64::new(1),
         Some("transport suspended".into()),

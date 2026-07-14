@@ -5,7 +5,10 @@
 //! executor or transport implementation.
 
 pub mod browser;
+pub mod catalog;
 pub mod clock;
+pub mod frames;
+pub mod gaps;
 pub mod ids;
 pub mod recording;
 pub mod timeline;
@@ -18,7 +21,10 @@ pub use browser::{
     AttachBrowser, BrowserConnectRequest, BrowserConnector, BrowserFailureKind, BrowserPageTargets,
     BrowserSessionEvents, BrowserSessionPort, LaunchBrowser, ManagedProfile,
 };
+pub use catalog::RecordingCatalog;
 pub use clock::{MonotonicClock, WallClock};
+pub use frames::FrameSource;
+pub use gaps::CaptureGapStore;
 pub use ids::IdSource;
 pub use recording::RecordingSink;
 pub use timeline::TimelineStore;
@@ -500,6 +506,7 @@ mod tests {
             session_id,
             target_id,
             SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(1)).unwrap(),
+            ObservedTime::from_nanos(1),
             CaptureGapReason::CaptureStopped,
             NonZeroU64::new(1),
             None,
@@ -560,7 +567,10 @@ mod tests {
         let sources = [
             include_str!("mod.rs"),
             include_str!("browser.rs"),
+            include_str!("catalog.rs"),
             include_str!("clock.rs"),
+            include_str!("frames.rs"),
+            include_str!("gaps.rs"),
             include_str!("ids.rs"),
             include_str!("recording.rs"),
             include_str!("timeline.rs"),

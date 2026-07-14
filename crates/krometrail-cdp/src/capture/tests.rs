@@ -950,6 +950,7 @@ fn gap_ledger_coalesces_without_growing_with_loss_count() {
                 krometrail_core::SessionTime::from_nanos(at),
             )
             .unwrap(),
+            krometrail_core::ObservedTime::from_nanos(at),
             CaptureGapReason::IngestionQueueSaturated,
             std::num::NonZeroU64::new(1),
             None,

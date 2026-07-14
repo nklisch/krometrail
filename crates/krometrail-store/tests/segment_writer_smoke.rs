@@ -197,6 +197,7 @@ async fn gap_routing_is_explicit_and_does_not_modify_segments() {
         session_id,
         target_id,
         SessionRange::new(SessionTime::from_nanos(1), SessionTime::from_nanos(2)).unwrap(),
+        ObservedTime::from_nanos(2),
         CaptureGapReason::IngestionQueueSaturated,
         None,
         None,

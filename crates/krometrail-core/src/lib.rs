@@ -74,8 +74,9 @@ pub use ids::{
 pub use lifecycle::{SessionLifecycle, TargetLifecycle};
 pub use ports::{
     AttachBrowser, BrowserConnectRequest, BrowserConnector, BrowserFailureKind, BrowserPageTargets,
-    BrowserSessionEvents, BrowserSessionPort, IdSource, LaunchBrowser, ManagedProfile,
-    MonotonicClock, PortFuture, RecordingSink, TimelineStore, WallClock,
+    BrowserSessionEvents, BrowserSessionPort, CaptureGapStore, FrameSource, IdSource,
+    LaunchBrowser, ManagedProfile, MonotonicClock, PortFuture, RecordingCatalog, RecordingSink,
+    TimelineStore, WallClock,
 };
 pub use recording::{
     ByteOffset, CaptureGap, CaptureGapReason, CaptureOrdinal, CaptureStatistics,

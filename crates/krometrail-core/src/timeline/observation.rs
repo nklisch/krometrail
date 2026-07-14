@@ -8,21 +8,21 @@ use crate::{
 };
 
 macro_rules! define_observation_contract {
-    ($( $kind:ident => $payload_spec:tt ),+ $(,)?) => {
-        define_observation_contract!(@collect [] [] [] [] ; $( $kind => $payload_spec ),+);
+    ($( $kind:ident => ($stable_name:literal, $payload_spec:tt) ),+ $(,)?) => {
+        define_observation_contract!(@collect [] [] [] [] [] ; $( $kind => ($stable_name, $payload_spec) ),+);
     };
 
     (@collect
         [$($kind:ident,)*]
+        [$($stable_name:literal,)*]
         [$($payload_variant:tt)*]
         [$($payload_pattern:tt)*]
         [$($test_payload:tt)*]
         ;
     ) => {
         #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-        #[serde(rename_all = "snake_case")]
         pub enum ObservationKind {
-            $($kind,)*
+            $(#[serde(rename = $stable_name)] $kind,)*
         }
 
         #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -33,15 +33,27 @@ macro_rules! define_observation_contract {
         }
 
         impl ObservationKind {
+            pub const ALL: &'static [Self] = &[$(Self::$kind),*];
+
+            pub const fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$kind => $stable_name,)*
+                }
+            }
+
+            pub fn from_stable_name(value: &str) -> Option<Self> {
+                match value {
+                    $($stable_name => Some(Self::$kind),)*
+                    _ => None,
+                }
+            }
+
             fn matches_payload(self, payload: &ObservationPayloadRef) -> bool {
                 match (self, payload) {
                     $($payload_pattern)*
                     _ => false,
                 }
             }
-
-            #[cfg(test)]
-            const ALL: &'static [Self] = &[$(Self::$kind),*];
         }
 
         #[cfg(test)]
@@ -60,7 +72,7 @@ macro_rules! define_observation_contract {
             }
 
             #[test]
-            fn all_registered_observation_pairs_are_compatible() {
+            fn all_registered_observation_pairs_and_names_are_compatible() {
                 let payloads = payloads();
                 for kind in ObservationKind::ALL {
                     let compatible = payloads
@@ -68,61 +80,68 @@ macro_rules! define_observation_contract {
                         .filter(|payload| kind.matches_payload(payload))
                         .count();
                     assert_eq!(compatible, 1, "unexpected payload contract for {kind:?}");
+                    assert_eq!(ObservationKind::from_stable_name(kind.as_str()), Some(*kind));
+                    assert_eq!(serde_json::to_string(kind).unwrap(), format!("\"{}\"", kind.as_str()));
                 }
+                assert_eq!(ObservationKind::from_stable_name("unknown"), None);
             }
         }
     };
 
     (@collect
         [$($kind:ident,)*]
+        [$($stable_name:literal,)*]
         [$($payload_variant:tt)*]
         [$($payload_pattern:tt)*]
         [$($test_payload:tt)*]
         ;
-        $next_kind:ident => (typed($payload:ident, $payload_type:ty))
-        $(, $rest_kind:ident => $rest_spec:tt)*
+        $next_kind:ident => ($next_name:literal, (typed($payload:ident, $payload_type:ty)))
+        $(, $rest_kind:ident => ($rest_name:literal, $rest_spec:tt))*
     ) => {
         define_observation_contract!(@collect
             [$($kind,)* $next_kind,]
+            [$($stable_name,)* $next_name,]
             [$($payload_variant)* $payload($payload_type),]
             [$($payload_pattern)* (ObservationKind::$next_kind, ObservationPayloadRef::$payload(_)) => true,]
             [$($test_payload)* Some(ObservationPayloadRef::$payload(<$payload_type>::from_uuid(UUID.parse().unwrap()))),]
-            ; $( $rest_kind => $rest_spec ),*
+            ; $( $rest_kind => ($rest_name, $rest_spec) ),*
         );
     };
 
     (@collect
         [$($kind:ident,)*]
+        [$($stable_name:literal,)*]
         [$($payload_variant:tt)*]
         [$($payload_pattern:tt)*]
         [$($test_payload:tt)*]
         ;
-        $next_kind:ident => (external)
-        $(, $rest_kind:ident => $rest_spec:tt)*
+        $next_kind:ident => ($next_name:literal, external)
+        $(, $rest_kind:ident => ($rest_name:literal, $rest_spec:tt))*
     ) => {
         define_observation_contract!(@collect
             [$($kind,)* $next_kind,]
+            [$($stable_name,)* $next_name,]
             [$($payload_variant)*]
             [$($payload_pattern)* (ObservationKind::$next_kind, ObservationPayloadRef::External(_)) => true,]
             [$($test_payload)* None,]
-            ; $( $rest_kind => $rest_spec ),*
+            ; $( $rest_kind => ($rest_name, $rest_spec) ),*
         );
     };
 }
 
-// Keep the public observation taxonomy and its payload compatibility contract in
-// one declaration. External observations intentionally share one payload variant.
+// Keep stable names, the public taxonomy, and payload compatibility in one declaration.
+// External observations intentionally share one payload variant.
 define_observation_contract! {
-    Frame => (typed(Frame, FrameId)),
-    InteractionBoundary => (typed(Interaction, InteractionId)),
-    Navigation => (typed(Navigation, NavigationId)),
-    TargetLifecycle => (external),
-    VisibilityChange => (external),
-    CaptureGap => (typed(Gap, GapId)),
-    ConsoleMessage => (external),
-    JavascriptException => (external),
-    NetworkLifecycle => (external),
-    Marker => (typed(Marker, MarkerId)),
+    Frame => ("frame", (typed(Frame, FrameId))),
+    InteractionBoundary => ("interaction_boundary", (typed(Interaction, InteractionId))),
+    Navigation => ("navigation", (typed(Navigation, NavigationId))),
+    TargetLifecycle => ("target_lifecycle", external),
+    VisibilityChange => ("visibility_change", external),
+    CaptureGap => ("capture_gap", (typed(Gap, GapId))),
+    ConsoleMessage => ("console_message", external),
+    JavascriptException => ("javascript_exception", external),
+    NetworkLifecycle => ("network_lifecycle", external),
+    Marker => ("marker", (typed(Marker, MarkerId))),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]

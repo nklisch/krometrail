@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     error::{Result, invalid},
     ids::{GapId, SessionId, TargetId},
-    time::SessionRange,
+    time::{ObservedTime, SessionRange},
     validation::deserialize_validated,
 };
 
@@ -28,6 +28,7 @@ pub struct CaptureGap {
     session_id: SessionId,
     target_id: TargetId,
     range: SessionRange,
+    observed_time: ObservedTime,
     reason: CaptureGapReason,
     estimated_missing_frames: Option<NonZeroU64>,
     detail: Option<String>,
@@ -39,6 +40,7 @@ struct CaptureGapWire {
     session_id: SessionId,
     target_id: TargetId,
     range: SessionRange,
+    observed_time: ObservedTime,
     reason: CaptureGapReason,
     estimated_missing_frames: Option<NonZeroU64>,
     detail: Option<String>,
@@ -51,6 +53,7 @@ impl CaptureGap {
         session_id: SessionId,
         target_id: TargetId,
         range: SessionRange,
+        observed_time: ObservedTime,
         reason: CaptureGapReason,
         estimated_missing_frames: Option<NonZeroU64>,
         detail: Option<String>,
@@ -60,6 +63,7 @@ impl CaptureGap {
             session_id,
             target_id,
             range,
+            observed_time,
             reason,
             estimated_missing_frames,
             detail,
@@ -80,6 +84,9 @@ impl CaptureGap {
     pub const fn range(&self) -> SessionRange {
         self.range
     }
+    pub const fn observed_time(&self) -> ObservedTime {
+        self.observed_time
+    }
     pub const fn reason(&self) -> &CaptureGapReason {
         &self.reason
     }
@@ -91,6 +98,11 @@ impl CaptureGap {
     }
 
     fn validate(&self) -> Result<()> {
+        if self.range.end().as_nanos() > self.observed_time.as_nanos() {
+            return Err(invalid(
+                "capture gap range must not end after its declaration time",
+            ));
+        }
         if self
             .detail
             .as_deref()
@@ -115,6 +127,7 @@ impl<'de> Deserialize<'de> for CaptureGap {
                 wire.session_id,
                 wire.target_id,
                 wire.range,
+                wire.observed_time,
                 wire.reason,
                 wire.estimated_missing_frames,
                 wire.detail,
@@ -157,6 +170,7 @@ mod tests {
                 session,
                 target,
                 range,
+                ObservedTime::from_nanos(1),
                 CaptureGapReason::CaptureStopped,
                 None,
                 Some(" ".into())
@@ -169,6 +183,7 @@ mod tests {
                 session,
                 target,
                 range,
+                ObservedTime::from_nanos(1),
                 CaptureGapReason::CaptureStopped,
                 NonZeroU64::new(2),
                 None
@@ -181,13 +196,13 @@ mod tests {
     fn rejects_malformed_serialized_gap_details_and_ranges() {
         let value = serde_json::json!({
             "id": UUID, "session_id": UUID, "target_id": UUID,
-            "range": {"start": 2, "end": 1}, "reason": "capture_stopped",
+            "range": {"start": 2, "end": 1}, "observed_time": 2, "reason": "capture_stopped",
             "estimated_missing_frames": null, "detail": null
         });
         assert!(serde_json::from_value::<CaptureGap>(value).is_err());
         let value = serde_json::json!({
             "id": UUID, "session_id": UUID, "target_id": UUID,
-            "range": {"start": 1, "end": 2}, "reason": "capture_stopped",
+            "range": {"start": 1, "end": 2}, "observed_time": 2, "reason": "capture_stopped",
             "estimated_missing_frames": null, "detail": " "
         });
         assert!(serde_json::from_value::<CaptureGap>(value).is_err());
@@ -196,11 +211,25 @@ mod tests {
             SessionId::from_uuid(UUID.parse().unwrap()),
             TargetId::from_uuid(UUID.parse().unwrap()),
             SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(1)).unwrap(),
+            ObservedTime::from_nanos(1),
             CaptureGapReason::CaptureStopped,
             NonZeroU64::new(2),
             Some("browser stopped capture".into()),
         )
         .unwrap();
+        assert!(
+            CaptureGap::new(
+                valid.id(),
+                valid.session_id(),
+                valid.target_id(),
+                SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(2)).unwrap(),
+                ObservedTime::from_nanos(1),
+                CaptureGapReason::CaptureStopped,
+                None,
+                None,
+            )
+            .is_err()
+        );
         let encoded = serde_json::to_string(&valid).unwrap();
         assert_eq!(serde_json::from_str::<CaptureGap>(&encoded).unwrap(), valid);
     }
