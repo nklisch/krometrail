@@ -1,7 +1,7 @@
 ---
 id: refactor-remove-temporal-debug-bundle-dead-scaffolding
 kind: story
-stage: review
+stage: done
 tags: [refactor, visual, agent-ux]
 parent: null
 depends_on: [epic-temporal-debugging-workflow-temporal-debug-bundle]
@@ -101,3 +101,7 @@ allowance. No data, schema, migration, or compatibility rollback is needed.
 - Discrepancies from design: none; the compiler also identified stale test-only imports/fixture state that had been hidden by the removed blanket allowance, so those were deleted without changing test behavior.
 - Adjacent issues parked: none.
 - Focused verification (Rust 1.85.0, locked): `cargo fmt --all -- --check`; `cargo check --locked --all-targets`; `cargo test --locked debug_bundle` (55 passed); `cargo clippy --locked --all-targets -- -D warnings`.
+
+## Review decision
+
+**Approved.** A fresh-context `openai-codex/gpt-5.6-luna` bounded standalone-story review confirmed that every deleted symbol lacked production callers, live marker/service wiring remained unchanged, and no tests or behavior were removed. Full Rust 1.85 workspace gates passed. The story advances to `done`.
