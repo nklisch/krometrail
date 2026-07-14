@@ -112,11 +112,11 @@ pub use ports::{
     BrowserEventSource, BrowserEventUnavailableRange, BrowserEventUnavailableReason,
     BrowserFailureKind, BrowserOperationContext, BrowserPageTargets, BrowserSessionEvents,
     BrowserSessionPort, CancellationSignal, CaptureGapStore, CaptureStatusSamples,
-    EventCandidateLimit, EventPageLimit, FrameSource, IdSource, InteractionAnchorSource,
-    InteractionEvidenceSink, InteractionRecordSource, LaunchBrowser, MAX_CAPTURE_STATUS_SAMPLES,
-    MAX_EVENT_CANDIDATE_ROWS, MAX_EVENT_PAGE_ROWS, MAX_EVENT_UNAVAILABLE_RANGES, ManagedProfile,
-    MonotonicClock, PortFuture, RecordingCatalog, RecordingSink, RetentionStore, StoredArtifact,
-    TimelineAnchorSource, TimelineStore, WallClock,
+    DEFAULT_EVENT_PAGE_ROWS, EventCandidateLimit, EventPageLimit, FrameSource, IdSource,
+    InteractionAnchorSource, InteractionEvidenceSink, InteractionRecordSource, LaunchBrowser,
+    MAX_CAPTURE_STATUS_SAMPLES, MAX_EVENT_CANDIDATE_ROWS, MAX_EVENT_PAGE_ROWS,
+    MAX_EVENT_UNAVAILABLE_RANGES, ManagedProfile, MonotonicClock, PortFuture, RecordingCatalog,
+    RecordingSink, RetentionStore, StoredArtifact, TimelineAnchorSource, TimelineStore, WallClock,
 };
 pub use recording::{
     ByteOffset, CaptureGap, CaptureGapReason, CaptureOrdinal, CaptureStatistics,
@@ -127,8 +127,15 @@ pub use recording::{
 };
 pub use time::{ObservedTime, SessionOrigin, SessionRange, SessionTime, SourceTime};
 pub use timeline::{
-    AnchorScope, CaptureGapPolicy, FrameAvailability, InteractionWindow, MAX_NATURAL_ANCHOR_WINDOW,
-    ObservationKind, ObservationPayloadRef, RangeResolutionOptions, ResolvedRange, RetentionPolicy,
-    RetentionWarning, TemporalQuery, TemporalQueryRequest, TemporalQueryService,
-    TemporalRangeAnchor, TemporalRangeAnchorKind, TemporalRangeResolver, TimelineObservation,
+    AnchorScope, BrowserEventContext, BrowserEventFilter, BrowserEventSelection,
+    BrowserEventSelectionReason, CadenceSummary, CaptureGapPolicy, CaptureGapSummary,
+    CaptureQuality, CaptureQualityWarning, CaptureStatusEvidence, CaptureStatusPoint,
+    CaptureWarningSummary, DEFAULT_CHRONOLOGICAL_EVENT_LIMIT, DEFAULT_COMPACT_EVENT_LIMIT,
+    EventCompactLimit, EventQueryWarning, FrameAvailability, FramePoint, InteractionWindow,
+    MAX_CAPTURE_QUALITY_FRAMES, MAX_COMPACT_EVENT_LIMIT, MAX_FOCUS_TIMES,
+    MAX_NATURAL_ANCHOR_WINDOW, ObservationKind, ObservationPayloadRef, RangeResolutionOptions,
+    ResolvedRange, RetentionPolicy, RetentionWarning, SelectedBrowserEvent, TemporalContext,
+    TemporalContextQuery, TemporalContextRequest, TemporalContextService, TemporalQuery,
+    TemporalQueryRequest, TemporalQueryService, TemporalRangeAnchor, TemporalRangeAnchorKind,
+    TemporalRangeResolver, TimelineObservation,
 };

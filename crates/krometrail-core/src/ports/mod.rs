@@ -33,8 +33,8 @@ pub use browser::{
 pub use browser_events::{
     BrowserEventCursor, BrowserEventSelector, BrowserEventSink, BrowserEventSource,
     BrowserEventUnavailableRange, BrowserEventUnavailableReason, CaptureStatusSamples,
-    EventCandidateLimit, EventPageLimit, MAX_CAPTURE_STATUS_SAMPLES, MAX_EVENT_CANDIDATE_ROWS,
-    MAX_EVENT_PAGE_ROWS, MAX_EVENT_UNAVAILABLE_RANGES,
+    DEFAULT_EVENT_PAGE_ROWS, EventCandidateLimit, EventPageLimit, MAX_CAPTURE_STATUS_SAMPLES,
+    MAX_EVENT_CANDIDATE_ROWS, MAX_EVENT_PAGE_ROWS, MAX_EVENT_UNAVAILABLE_RANGES,
 };
 pub use catalog::RecordingCatalog;
 pub use clock::{MonotonicClock, WallClock};

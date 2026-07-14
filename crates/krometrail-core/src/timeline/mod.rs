@@ -1,9 +1,19 @@
 //! Timeline observation and temporal-range contracts.
 
+mod context;
 mod observation;
 mod query;
 pub mod range;
 
+pub use context::{
+    BrowserEventContext, BrowserEventFilter, BrowserEventSelection, BrowserEventSelectionReason,
+    CadenceSummary, CaptureGapSummary, CaptureQuality, CaptureQualityWarning,
+    CaptureStatusEvidence, CaptureStatusPoint, CaptureWarningSummary,
+    DEFAULT_CHRONOLOGICAL_EVENT_LIMIT, DEFAULT_COMPACT_EVENT_LIMIT, EventCompactLimit,
+    EventQueryWarning, FramePoint, MAX_CAPTURE_QUALITY_FRAMES, MAX_COMPACT_EVENT_LIMIT,
+    MAX_FOCUS_TIMES, SelectedBrowserEvent, TemporalContext, TemporalContextQuery,
+    TemporalContextRequest, TemporalContextService,
+};
 pub use observation::{ObservationKind, ObservationPayloadRef, TimelineObservation};
 pub use query::{TemporalQuery, TemporalQueryRequest, TemporalQueryService};
 pub use range::{

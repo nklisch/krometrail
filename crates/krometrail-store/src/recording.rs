@@ -12,7 +12,8 @@ use krometrail_core::{
     InteractionAnchor, InteractionEvidenceSink, InteractionRecord, KrometrailError, NavigationId,
     NonEmptyText, ObservedTime, PinChange, PortFuture, RecordingBudgetState, RecordingSink,
     ResolvedRange, RetentionRange, RetentionStatus, RetentionStore, RetryAdvice, SessionDeletion,
-    SessionId, SessionRange, SessionTime, StorageUsage, StoredArtifact, TargetId, TemporalQuery,
+    SessionId, SessionRange, SessionTime, StorageUsage, StoredArtifact, TargetId, TemporalContext,
+    TemporalContextQuery, TemporalContextRequest, TemporalContextService, TemporalQuery,
     TemporalQueryRequest, TemporalQueryService, TemporalRangeResolver, TimelineObservation,
     TimelineStore,
 };
@@ -834,6 +835,22 @@ impl TemporalQuery for RecordingStore {
     }
 }
 
+impl TemporalContextQuery for RecordingStore {
+    fn context(
+        &self,
+        request: TemporalContextRequest,
+    ) -> PortFuture<'_, krometrail_core::Result<TemporalContext>> {
+        Box::pin(async move {
+            let _mutation = self.mutations.lock().await;
+            self.reject_deleted(request.range().session_id)
+                .map_err(|_| context_query_not_found(request.range()))?;
+            TemporalContextService::new(Arc::clone(&self.index), Arc::clone(&self.index))
+                .context(request)
+                .await
+        })
+    }
+}
+
 impl RetentionStore for RecordingStore {
     fn pin_range(
         &self,
@@ -943,6 +960,25 @@ fn segment_object(candidate: SegmentCandidate) -> DeletionObject {
         byte_len: candidate.file_bytes,
         session_id: candidate.session_id,
     }
+}
+
+fn context_query_not_found(range: &ResolvedRange) -> KrometrailError {
+    KrometrailError::new(
+        ErrorCode::NotFound,
+        NonEmptyText::new("temporal context source range is no longer retained")
+            .expect("static context error is non-empty"),
+    )
+    .with_context(ErrorContext {
+        session_id: Some(range.session_id),
+        target_id: Some(range.target_id),
+        range: Some(range.resolved_range),
+        ..ErrorContext::default()
+    })
+    .with_retry(RetryAdvice::AfterRecovery)
+    .with_recovery(
+        NonEmptyText::new("resolve the temporal range again before requesting context")
+            .expect("static context recovery is non-empty"),
+    )
 }
 
 fn source_lost_error(session_id: SessionId, target_id: TargetId) -> KrometrailError {

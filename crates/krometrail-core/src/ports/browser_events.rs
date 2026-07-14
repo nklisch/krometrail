@@ -1,13 +1,20 @@
-use std::num::{NonZeroU16, NonZeroU64};
+use std::{
+    num::{NonZeroU16, NonZeroU64},
+    sync::Arc,
+};
+
+use serde::{Deserialize, Serialize};
 
 use crate::{
     BrowserEvent, BrowserEventBatch, BrowserEventClass, BrowserEventId, BrowserEventOrdinal,
     BrowserEventSeverity, SessionId, SessionRange, SessionTime, TargetId,
     error::{Result, invalid},
+    validation::deserialize_validated,
 };
 
 use super::PortFuture;
 
+pub const DEFAULT_EVENT_PAGE_ROWS: u16 = 100;
 pub const MAX_EVENT_PAGE_ROWS: u16 = 1_000;
 pub const MAX_EVENT_CANDIDATE_ROWS: u16 = 256;
 pub const MAX_EVENT_UNAVAILABLE_RANGES: u16 = 1_000;
@@ -22,8 +29,19 @@ pub trait BrowserEventSink: Send + Sync {
     fn append_event_batch(&self, batch: BrowserEventBatch) -> PortFuture<'_, Result<()>>;
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct BrowserEventSelector {
+    session_id: SessionId,
+    target_id: TargetId,
+    range: SessionRange,
+    classes: Vec<BrowserEventClass>,
+    minimum_severity: BrowserEventSeverity,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BrowserEventSelectorWire {
     session_id: SessionId,
     target_id: TargetId,
     range: SessionRange,
@@ -77,8 +95,35 @@ impl BrowserEventSelector {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+impl<'de> Deserialize<'de> for BrowserEventSelector {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserialize_validated(deserializer, |wire: BrowserEventSelectorWire| {
+            Self::new(
+                wire.session_id,
+                wire.target_id,
+                wire.range,
+                wire.classes,
+                wire.minimum_severity,
+            )
+        })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct BrowserEventCursor {
+    selector: BrowserEventSelector,
+    session_time: SessionTime,
+    ordinal: BrowserEventOrdinal,
+    event_id: BrowserEventId,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BrowserEventCursorWire {
     selector: BrowserEventSelector,
     session_time: SessionTime,
     ordinal: BrowserEventOrdinal,
@@ -120,7 +165,24 @@ impl BrowserEventCursor {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+impl<'de> Deserialize<'de> for BrowserEventCursor {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserialize_validated(deserializer, |wire: BrowserEventCursorWire| {
+            Self::new(
+                wire.selector,
+                wire.session_time,
+                wire.ordinal,
+                wire.event_id,
+            )
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
 pub struct EventPageLimit(NonZeroU16);
 
 impl EventPageLimit {
@@ -136,7 +198,23 @@ impl EventPageLimit {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+impl Default for EventPageLimit {
+    fn default() -> Self {
+        Self::new(DEFAULT_EVENT_PAGE_ROWS).expect("default browser event page limit is valid")
+    }
+}
+
+impl<'de> Deserialize<'de> for EventPageLimit {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserialize_validated(deserializer, Self::new)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
 pub struct EventCandidateLimit(NonZeroU16);
 
 impl EventCandidateLimit {
@@ -152,7 +230,17 @@ impl EventCandidateLimit {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+impl<'de> Deserialize<'de> for EventCandidateLimit {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserialize_validated(deserializer, Self::new)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum BrowserEventUnavailableReason {
     RetentionEvicted,
     CorruptDiscarded,
@@ -175,8 +263,21 @@ impl BrowserEventUnavailableReason {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct BrowserEventUnavailableRange {
+    session_id: SessionId,
+    target_id: TargetId,
+    range: SessionRange,
+    first_ordinal: Option<BrowserEventOrdinal>,
+    last_ordinal: Option<BrowserEventOrdinal>,
+    event_count: NonZeroU64,
+    reason: BrowserEventUnavailableReason,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BrowserEventUnavailableRangeWire {
     session_id: SessionId,
     target_id: TargetId,
     range: SessionRange,
@@ -242,6 +343,25 @@ impl BrowserEventUnavailableRange {
     }
     pub const fn reason(&self) -> BrowserEventUnavailableReason {
         self.reason
+    }
+}
+
+impl<'de> Deserialize<'de> for BrowserEventUnavailableRange {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserialize_validated(deserializer, |wire: BrowserEventUnavailableRangeWire| {
+            Self::new(
+                wire.session_id,
+                wire.target_id,
+                wire.range,
+                wire.first_ordinal,
+                wire.last_ordinal,
+                wire.event_count,
+                wire.reason,
+            )
+        })
     }
 }
 
@@ -317,6 +437,58 @@ pub trait BrowserEventSource: Send + Sync {
     ) -> PortFuture<'_, Result<CaptureStatusSamples>>;
 }
 
+impl<T: BrowserEventSource + ?Sized> BrowserEventSource for Arc<T> {
+    fn count_events(&self, selector: BrowserEventSelector) -> PortFuture<'_, Result<u64>> {
+        (**self).count_events(selector)
+    }
+
+    fn chronological_events(
+        &self,
+        selector: BrowserEventSelector,
+        cursor: Option<BrowserEventCursor>,
+        limit: EventPageLimit,
+    ) -> PortFuture<'_, Result<Vec<BrowserEvent>>> {
+        (**self).chronological_events(selector, cursor, limit)
+    }
+
+    fn priority_candidates(
+        &self,
+        selector: BrowserEventSelector,
+        limit: EventCandidateLimit,
+    ) -> PortFuture<'_, Result<Vec<BrowserEvent>>> {
+        (**self).priority_candidates(selector, limit)
+    }
+
+    fn nearest_candidates(
+        &self,
+        selector: BrowserEventSelector,
+        focus_times: Vec<SessionTime>,
+        each_side: u8,
+    ) -> PortFuture<'_, Result<Vec<BrowserEvent>>> {
+        (**self).nearest_candidates(selector, focus_times, each_side)
+    }
+
+    fn unavailable_ranges(
+        &self,
+        session_id: SessionId,
+        target_id: TargetId,
+        range: SessionRange,
+        limit: u16,
+    ) -> PortFuture<'_, Result<Vec<BrowserEventUnavailableRange>>> {
+        (**self).unavailable_ranges(session_id, target_id, range, limit)
+    }
+
+    fn capture_status_samples(
+        &self,
+        session_id: SessionId,
+        target_id: TargetId,
+        range: SessionRange,
+        limit: u16,
+    ) -> PortFuture<'_, Result<CaptureStatusSamples>> {
+        (**self).capture_status_samples(session_id, target_id, range, limit)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -351,6 +523,23 @@ mod tests {
                 BrowserEventId::from_uuid(Uuid::from_u128(4)),
             )
             .is_err()
+        );
+        let unavailable = BrowserEventUnavailableRange::new(
+            SessionId::from_uuid(Uuid::from_u128(1)),
+            TargetId::from_uuid(Uuid::from_u128(2)),
+            SessionRange::new(SessionTime::from_nanos(3), SessionTime::from_nanos(4)).unwrap(),
+            Some(BrowserEventOrdinal::new(5).unwrap()),
+            Some(BrowserEventOrdinal::new(6).unwrap()),
+            NonZeroU64::new(2).unwrap(),
+            BrowserEventUnavailableReason::RetentionEvicted,
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::from_str::<BrowserEventUnavailableRange>(
+                &serde_json::to_string(&unavailable).unwrap()
+            )
+            .unwrap(),
+            unavailable
         );
     }
 
