@@ -524,6 +524,211 @@ async fn fit_limits_materializes_smallest_exact_divisor_in_manifest() {
     );
 }
 
+fn one_generator_request(
+    rig: &TestRig,
+    generator: ArtifactGeneratorRequest,
+    markers: Vec<krometrail_core::ArtifactMarker>,
+) -> ArtifactGenerationRequest {
+    ArtifactGenerationRequest::new(
+        rig.request.range().clone(),
+        markers,
+        vec![generator],
+        ArtifactFailurePolicy::RequireAll,
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn resource_limits_accept_exact_boundaries_and_reject_the_next_unit() {
+    let exact_source_bytes = PNG.len() * 3;
+    let exact = ArtifactWorkLimits {
+        max_source_frames: NonZeroUsize::new(3).unwrap(),
+        max_encoded_source_bytes: NonZeroUsize::new(exact_source_bytes).unwrap(),
+        max_dimension: NonZeroU32::new(4096).unwrap(),
+        max_pixels_per_frame: NonZeroUsize::new(4).unwrap(),
+        max_decoded_bytes: NonZeroUsize::new(48).unwrap(),
+        max_normalized_bytes: NonZeroUsize::new(192).unwrap(),
+        ..ArtifactWorkLimits::default()
+    };
+    let exact_rig = rig(false, exact);
+    let generator = exact_rig.request.generators()[1].clone();
+    exact_rig
+        .service
+        .generate(
+            one_generator_request(&exact_rig, generator, vec![]),
+            ArtifactGenerationContext::default(),
+        )
+        .await
+        .unwrap();
+
+    for limited in [
+        ArtifactWorkLimits {
+            max_source_frames: NonZeroUsize::new(2).unwrap(),
+            ..ArtifactWorkLimits::default()
+        },
+        ArtifactWorkLimits {
+            max_encoded_source_bytes: NonZeroUsize::new(exact_source_bytes - 1).unwrap(),
+            ..ArtifactWorkLimits::default()
+        },
+        ArtifactWorkLimits {
+            max_dimension: NonZeroU32::new(1).unwrap(),
+            ..ArtifactWorkLimits::default()
+        },
+        ArtifactWorkLimits {
+            max_pixels_per_frame: NonZeroUsize::new(3).unwrap(),
+            ..ArtifactWorkLimits::default()
+        },
+        ArtifactWorkLimits {
+            max_decoded_bytes: NonZeroUsize::new(47).unwrap(),
+            ..ArtifactWorkLimits::default()
+        },
+        ArtifactWorkLimits {
+            max_normalized_bytes: NonZeroUsize::new(191).unwrap(),
+            ..ArtifactWorkLimits::default()
+        },
+    ] {
+        let limited_rig = rig(false, limited);
+        let generator = limited_rig.request.generators()[1].clone();
+        let error = limited_rig
+            .service
+            .generate(
+                one_generator_request(&limited_rig, generator, vec![]),
+                ArtifactGenerationContext::default(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.code,
+            krometrail_core::ErrorCode::ResourceLimitExceeded
+        );
+    }
+
+    let markers = vec![
+        krometrail_core::ArtifactMarker::new(
+            krometrail_core::ArtifactMarkerId::Caller(NonEmptyText::new("one").unwrap()),
+            SessionTime::from_nanos(2),
+            NonEmptyText::new("test").unwrap(),
+            NonEmptyText::new("one").unwrap(),
+        ),
+        krometrail_core::ArtifactMarker::new(
+            krometrail_core::ArtifactMarkerId::Caller(NonEmptyText::new("two").unwrap()),
+            SessionTime::from_nanos(2),
+            NonEmptyText::new("test").unwrap(),
+            NonEmptyText::new("two").unwrap(),
+        ),
+    ];
+    let marker_limits = ArtifactWorkLimits {
+        max_markers: NonZeroUsize::new(1).unwrap(),
+        ..ArtifactWorkLimits::default()
+    };
+    let marker_rig = rig(false, marker_limits);
+    let generator = marker_rig.request.generators()[1].clone();
+    marker_rig
+        .service
+        .generate(
+            one_generator_request(&marker_rig, generator.clone(), vec![markers[0].clone()]),
+            ArtifactGenerationContext::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        marker_rig
+            .service
+            .generate(
+                one_generator_request(&marker_rig, generator, markers),
+                ArtifactGenerationContext::default(),
+            )
+            .await
+            .unwrap_err()
+            .code,
+        krometrail_core::ErrorCode::ResourceLimitExceeded
+    );
+
+    let output_limits = ArtifactWorkLimits {
+        max_outputs: NonZeroUsize::new(5).unwrap(),
+        max_output_bytes_each: NonZeroUsize::new(16 * 1024 * 1024).unwrap(),
+        max_output_bytes_total: NonZeroUsize::new(5 * 16 * 1024 * 1024).unwrap(),
+        ..ArtifactWorkLimits::default()
+    };
+    let output_rig = rig(false, output_limits);
+    output_rig
+        .service
+        .generate(
+            output_rig.request.clone(),
+            ArtifactGenerationContext::default(),
+        )
+        .await
+        .unwrap();
+    for limited in [
+        ArtifactWorkLimits {
+            max_outputs: NonZeroUsize::new(4).unwrap(),
+            ..output_limits
+        },
+        ArtifactWorkLimits {
+            max_output_bytes_each: NonZeroUsize::new(16 * 1024 * 1024 - 1).unwrap(),
+            ..output_limits
+        },
+    ] {
+        let limited_rig = rig(false, limited);
+        assert_eq!(
+            limited_rig
+                .service
+                .generate(
+                    limited_rig.request.clone(),
+                    ArtifactGenerationContext::default(),
+                )
+                .await
+                .unwrap_err()
+                .code,
+            krometrail_core::ErrorCode::ResourceLimitExceeded
+        );
+    }
+
+    let mut memory_generator = exact_rig.request.generators()[0].clone();
+    let ArtifactGeneratorRequest::Storyboard(parameters) = &mut memory_generator else {
+        unreachable!()
+    };
+    parameters.include_orientation = false;
+    parameters.output = OutputLimitsRequest::new(4096, 4096, 1024 * 1024).unwrap();
+    let exact_memory = 1024 * 1024 + 48 + 72;
+    let memory_limits = ArtifactWorkLimits {
+        max_decoded_bytes: NonZeroUsize::new(48).unwrap(),
+        max_normalized_bytes: NonZeroUsize::new(72).unwrap(),
+        max_combined_request_bytes: NonZeroUsize::new(exact_memory).unwrap(),
+        max_output_bytes_each: NonZeroUsize::new(1024 * 1024).unwrap(),
+        max_output_bytes_total: NonZeroUsize::new(1024 * 1024).unwrap(),
+        ..ArtifactWorkLimits::default()
+    };
+    let memory_rig = rig(false, memory_limits);
+    memory_rig
+        .service
+        .generate(
+            one_generator_request(&memory_rig, memory_generator.clone(), vec![]),
+            ArtifactGenerationContext::default(),
+        )
+        .await
+        .unwrap();
+    let limited_rig = rig(
+        false,
+        ArtifactWorkLimits {
+            max_combined_request_bytes: NonZeroUsize::new(exact_memory - 1).unwrap(),
+            ..memory_limits
+        },
+    );
+    assert_eq!(
+        limited_rig
+            .service
+            .generate(
+                one_generator_request(&limited_rig, memory_generator, vec![]),
+                ArtifactGenerationContext::default(),
+            )
+            .await
+            .unwrap_err()
+            .code,
+        krometrail_core::ErrorCode::ResourceLimitExceeded
+    );
+}
+
 fn test_error(
     code: krometrail_core::ErrorCode,
     message: &'static str,

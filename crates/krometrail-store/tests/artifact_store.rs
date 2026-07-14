@@ -6,10 +6,10 @@ use std::{
 
 use krometrail_core::{
     ArtifactCacheKey, ArtifactCacheMetadata, ArtifactLookup, ArtifactMarkerId, ArtifactPublication,
-    ArtifactPublish, ArtifactSourceFingerprint, ArtifactStore, CaptureOrdinal, CapturedFrame,
-    DeviceScaleFactor, EncodedFrame, FrameId, ImageFormat, NonEmptyText, ObservedTime,
-    PixelDimensions as CoreDimensions, RecordingSink, RetentionStore, SessionId, SessionTime,
-    TargetId,
+    ArtifactPublish, ArtifactSourceFingerprint, ArtifactStore, CancellationSignal, CaptureOrdinal,
+    CapturedFrame, DeviceScaleFactor, DiskBudgetBytes, EncodedFrame, FrameId, FrameSource,
+    ImageFormat, NonEmptyText, ObservedTime, PixelDimensions as CoreDimensions, PortFuture,
+    RecordingSink, RetentionRange, RetentionStore, SessionId, SessionRange, SessionTime, TargetId,
 };
 use krometrail_store::{
     IndexStoreConfig, RecordingStore, RotationConfig, SegmentStoreConfig, SegmentWriter,
@@ -35,6 +35,13 @@ struct Fixture {
 }
 
 fn open_store(directory: &std::path::Path) -> Arc<RecordingStore> {
+    open_store_with_budget(directory, None)
+}
+
+fn open_store_with_budget(
+    directory: &std::path::Path,
+    budget: Option<DiskBudgetBytes>,
+) -> Arc<RecordingStore> {
     let segments = directory.join("segments");
     let index = Arc::new(
         SqliteIndex::open(IndexStoreConfig {
@@ -44,14 +51,25 @@ fn open_store(directory: &std::path::Path) -> Arc<RecordingStore> {
         })
         .unwrap(),
     );
+    let rotation = if budget.is_some() {
+        RotationConfig {
+            max_duration: Duration::from_secs(60),
+            max_size: 1,
+        }
+    } else {
+        RotationConfig::suggested()
+    };
     let writer = Arc::new(
         SegmentWriter::open(SegmentStoreConfig {
             directory: segments,
-            rotation: RotationConfig::suggested(),
+            rotation,
         })
         .unwrap(),
     );
-    Arc::new(RecordingStore::new(writer, index).unwrap())
+    Arc::new(match budget {
+        Some(budget) => RecordingStore::with_budget(writer, index, budget).unwrap(),
+        None => RecordingStore::new(writer, index).unwrap(),
+    })
 }
 
 async fn fixture() -> Fixture {
@@ -239,6 +257,113 @@ async fn publication_lookup_corruption_and_usage_share_one_authority() {
 }
 
 #[tokio::test]
+async fn malformed_manifest_hash_and_source_links_are_invalidated_as_misses() {
+    for corruption in [
+        "manifest",
+        "manifest_hash",
+        "source_link",
+        "source_hash",
+        "output_hash",
+    ] {
+        let fixture = fixture().await;
+        let publication = publication(&fixture, 25, 26);
+        fixture
+            .store
+            .publish_artifact(publication.clone())
+            .await
+            .unwrap();
+        let connection =
+            rusqlite::Connection::open(fixture.directory.path().join("index.sqlite3")).unwrap();
+        match corruption {
+            "manifest" => {
+                connection
+                    .execute(
+                        "UPDATE artifacts SET manifest_json='{}' WHERE artifact_id=?1",
+                        [publication
+                            .manifest
+                            .artifact_id()
+                            .as_uuid()
+                            .as_bytes()
+                            .to_vec()],
+                    )
+                    .unwrap();
+            }
+            "manifest_hash" => {
+                connection
+                    .execute(
+                        "UPDATE artifacts SET manifest_hash=?1 WHERE artifact_id=?2",
+                        rusqlite::params![
+                            vec![0_u8; 32],
+                            publication
+                                .manifest
+                                .artifact_id()
+                                .as_uuid()
+                                .as_bytes()
+                                .to_vec()
+                        ],
+                    )
+                    .unwrap();
+            }
+            "source_link" => {
+                connection
+                    .execute(
+                        "DELETE FROM artifact_frames WHERE artifact_id=?1 AND source_position=1",
+                        [publication
+                            .manifest
+                            .artifact_id()
+                            .as_uuid()
+                            .as_bytes()
+                            .to_vec()],
+                    )
+                    .unwrap();
+            }
+            "source_hash" => {
+                connection
+                    .execute(
+                        "UPDATE artifact_frames SET encoded_hash=?1 WHERE artifact_id=?2 AND source_position=1",
+                        rusqlite::params![
+                            vec![0_u8; 32],
+                            publication.manifest.artifact_id().as_uuid().as_bytes().to_vec()
+                        ],
+                    )
+                    .unwrap();
+            }
+            "output_hash" => {
+                connection
+                    .execute(
+                        "UPDATE artifacts SET output_hash=?1 WHERE artifact_id=?2",
+                        rusqlite::params![
+                            vec![0_u8; 32],
+                            publication
+                                .manifest
+                                .artifact_id()
+                                .as_uuid()
+                                .as_bytes()
+                                .to_vec()
+                        ],
+                    )
+                    .unwrap();
+            }
+            _ => unreachable!(),
+        }
+        drop(connection);
+        assert_eq!(
+            fixture
+                .store
+                .lookup_artifact(publication.cache.cache_key, publication.sources)
+                .await
+                .unwrap(),
+            ArtifactLookup::Invalidated,
+            "{corruption} must not survive hit validation"
+        );
+        assert_eq!(
+            fixture.store.status().await.unwrap().usage.artifact_bytes,
+            0
+        );
+    }
+}
+
+#[tokio::test]
 async fn equal_cache_key_publications_have_one_ready_winner() {
     let fixture = fixture().await;
     let publication = publication(&fixture, 30, 31);
@@ -327,6 +452,202 @@ async fn startup_finalizes_durable_staging_and_invalidates_corruption_idempotent
     let second_pass = open_store(fixture.directory.path());
     assert_eq!(
         second_pass
+            .lookup_artifact(publication.cache.cache_key, publication.sources)
+            .await
+            .unwrap(),
+        ArtifactLookup::Miss
+    );
+}
+
+struct AlreadyCancelled;
+
+impl CancellationSignal for AlreadyCancelled {
+    fn is_cancelled(&self) -> bool {
+        true
+    }
+
+    fn cancelled(&self) -> PortFuture<'_, ()> {
+        Box::pin(std::future::ready(()))
+    }
+}
+
+#[tokio::test]
+async fn cancelled_publication_never_creates_visible_or_accounted_state() {
+    let fixture = fixture().await;
+    let publication = publication(&fixture, 50, 51).with_cancellation(Arc::new(AlreadyCancelled));
+    assert_eq!(
+        fixture
+            .store
+            .publish_artifact(publication.clone())
+            .await
+            .unwrap_err()
+            .code,
+        krometrail_core::ErrorCode::Cancelled
+    );
+    assert_eq!(
+        fixture
+            .store
+            .lookup_artifact(publication.cache.cache_key, publication.sources)
+            .await
+            .unwrap(),
+        ArtifactLookup::Miss
+    );
+    assert_eq!(
+        fixture.store.status().await.unwrap().usage.artifact_bytes,
+        0
+    );
+    let directory = fixture.directory.path().join("artifacts");
+    assert!(!directory.exists() || std::fs::read_dir(directory).unwrap().next().is_none());
+}
+
+#[tokio::test]
+async fn pins_protect_sources_not_regenerable_artifacts() {
+    let fixture = fixture().await;
+    let publication = publication(&fixture, 60, 61);
+    fixture
+        .store
+        .publish_artifact(publication.clone())
+        .await
+        .unwrap();
+    let retained = RetentionRange {
+        session_id: fixture.session,
+        target_id: fixture.target,
+        range: SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(4)).unwrap(),
+    };
+    fixture.store.pin_range(retained).await.unwrap();
+    let before = fixture.store.status().await.unwrap();
+    let budget = DiskBudgetBytes::new(
+        before.usage.total_bytes().unwrap() - publication.encoded_bytes.len() as u64,
+    )
+    .unwrap();
+    drop(fixture.store);
+
+    let store = open_store_with_budget(fixture.directory.path(), Some(budget));
+    store.enforce_budget().await.unwrap();
+    assert!(
+        store
+            .artifact(*publication.manifest.artifact_id())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        store.status().await.unwrap().pinned_usage_bytes,
+        before.pinned_usage_bytes
+    );
+    let source = SqliteIndex::open(IndexStoreConfig {
+        database_path: fixture.directory.path().join("index.sqlite3"),
+        segments_directory: fixture.directory.path().join("segments"),
+        busy_timeout: Duration::from_secs(1),
+    })
+    .unwrap();
+    assert_eq!(
+        source
+            .frames_by_id(fixture.frame_ids.clone())
+            .await
+            .unwrap()
+            .len(),
+        fixture.frame_ids.len()
+    );
+
+    store.publish_artifact(publication).await.unwrap();
+    store.enforce_budget().await.unwrap();
+    assert_eq!(
+        store.status().await.unwrap().pinned_usage_bytes,
+        before.pinned_usage_bytes
+    );
+}
+
+#[tokio::test]
+async fn source_segment_eviction_removes_linked_artifact_before_frames() {
+    let fixture = fixture().await;
+    let publication = publication(&fixture, 65, 66);
+    fixture
+        .store
+        .publish_artifact(publication.clone())
+        .await
+        .unwrap();
+    let usage = fixture.store.status().await.unwrap().usage;
+    let budget = DiskBudgetBytes::new(
+        usage
+            .total_bytes()
+            .unwrap()
+            .saturating_sub(usage.segment_bytes)
+            .saturating_sub(usage.artifact_bytes)
+            + 3_000
+            + 4_096,
+    )
+    .unwrap();
+    drop(fixture.store);
+    let store = open_store_with_budget(fixture.directory.path(), Some(budget));
+    let replacement = EncodedFrame::new(
+        CapturedFrame::new(
+            FrameId::from_uuid(Uuid::from_u128(650)),
+            SessionId::from_uuid(Uuid::from_u128(651)),
+            TargetId::from_uuid(Uuid::from_u128(652)),
+            CaptureOrdinal::new(1).unwrap(),
+            None,
+            ObservedTime::from_nanos(1),
+            SessionTime::from_nanos(1),
+            ImageFormat::Jpeg,
+            CoreDimensions::new(1, 1).unwrap(),
+            CoreDimensions::new(1, 1).unwrap(),
+            DeviceScaleFactor::new(1.0).unwrap(),
+            vec![],
+        )
+        .unwrap(),
+        vec![7; 3_000],
+    )
+    .unwrap();
+    store.append_frame(replacement).await.unwrap();
+    assert!(
+        store
+            .artifact(*publication.manifest.artifact_id())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let source = SqliteIndex::open(IndexStoreConfig {
+        database_path: fixture.directory.path().join("index.sqlite3"),
+        segments_directory: fixture.directory.path().join("segments"),
+        busy_timeout: Duration::from_secs(1),
+    })
+    .unwrap();
+    assert!(source.frames_by_id(fixture.frame_ids).await.is_err());
+}
+
+#[tokio::test]
+async fn session_deletion_removes_artifact_links_files_and_usage() {
+    let fixture = fixture().await;
+    let publication = publication(&fixture, 70, 71);
+    fixture
+        .store
+        .publish_artifact(publication.clone())
+        .await
+        .unwrap();
+    let path = fixture
+        .directory
+        .path()
+        .join("artifacts")
+        .join(format!("{}.png", publication.manifest.artifact_id()));
+    let deleted = fixture.store.delete_session(fixture.session).await.unwrap();
+    assert_eq!(deleted.removed_artifacts, 1);
+    assert!(!path.exists());
+    assert_eq!(
+        fixture.store.status().await.unwrap().usage.artifact_bytes,
+        0
+    );
+    assert!(
+        fixture
+            .store
+            .artifact(*publication.manifest.artifact_id())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        fixture
+            .store
             .lookup_artifact(publication.cache.cache_key, publication.sources)
             .await
             .unwrap(),

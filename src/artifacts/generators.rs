@@ -470,10 +470,19 @@ fn encoded_limit(
 }
 
 fn vision_error(error: temporal_vision::VisionError) -> KrometrailError {
-    generation_error(format!(
-        "temporal visual generation failed: {}",
-        error.message
-    ))
+    let code = if error.code == temporal_vision::ErrorCode::ResourceLimitExceeded {
+        ErrorCode::ResourceLimitExceeded
+    } else {
+        ErrorCode::ArtifactGenerationFailed
+    };
+    KrometrailError::new(
+        code,
+        NonEmptyText::new(format!(
+            "temporal visual generation failed: {}",
+            error.message
+        ))
+        .expect("generation errors are non-empty"),
+    )
 }
 fn generation_error(message: impl Into<String>) -> KrometrailError {
     KrometrailError::new(
