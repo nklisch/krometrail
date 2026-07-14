@@ -127,7 +127,9 @@ pub(crate) struct RawObservation {
     pub(crate) payload_json: String,
 }
 
-pub(crate) fn decode_observation(raw: RawObservation) -> krometrail_core::Result<TimelineObservation> {
+pub(crate) fn decode_observation(
+    raw: RawObservation,
+) -> krometrail_core::Result<TimelineObservation> {
     let kind = ObservationKind::from_stable_name(&raw.kind)
         .ok_or_else(|| persistence_error("stored observation kind is unknown"))?;
     let payload: ObservationPayloadRef = serde_json::from_str(&raw.payload_json)

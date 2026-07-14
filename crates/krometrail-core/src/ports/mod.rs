@@ -580,6 +580,7 @@ mod tests {
             include_str!("recording.rs"),
             include_str!("retention.rs"),
             include_str!("timeline.rs"),
+            include_str!("range.rs"),
         ];
         for source in sources {
             for forbidden in [

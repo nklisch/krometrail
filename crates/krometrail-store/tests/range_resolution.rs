@@ -17,10 +17,17 @@ use krometrail_store::{
 use tempfile::TempDir;
 use uuid::Uuid;
 
+type RangeResolver = TemporalRangeResolver<
+    Arc<SqliteIndex>,
+    Arc<SqliteIndex>,
+    Arc<SqliteIndex>,
+    Arc<SqliteIndex>,
+    Arc<SqliteIndex>,
+>;
+
 struct Fixture {
     _directory: TempDir,
     index: Arc<SqliteIndex>,
-    sink: Arc<RecordingStore>,
     session: SessionId,
     target: TargetId,
     frames: Vec<EncodedFrame>,
@@ -57,7 +64,7 @@ impl Fixture {
                     target,
                     CaptureOrdinal::new(ordinal).unwrap(),
                     None,
-                    ObservedTime::from_nanos(at + 1),
+                    ObservedTime::from_nanos(at),
                     SessionTime::from_nanos(at),
                     ImageFormat::Jpeg,
                     krometrail_core::PixelDimensions::new(2, 2).unwrap(),
@@ -101,22 +108,13 @@ impl Fixture {
         Self {
             _directory: directory,
             index,
-            sink,
             session,
             target,
             frames,
         }
     }
 
-    fn resolver(
-        &self,
-    ) -> TemporalRangeResolver<
-        Arc<SqliteIndex>,
-        Arc<SqliteIndex>,
-        Arc<SqliteIndex>,
-        Arc<SqliteIndex>,
-        Arc<SqliteIndex>,
-    > {
+    fn resolver(&self) -> RangeResolver {
         TemporalRangeResolver::new(
             Arc::clone(&self.index),
             Arc::clone(&self.index),
@@ -134,7 +132,7 @@ impl Fixture {
                     self.target,
                     SessionTime::from_nanos(at),
                     None,
-                    ObservedTime::from_nanos(at + 1),
+                    ObservedTime::from_nanos(at),
                     kind,
                     payload,
                 )
@@ -337,6 +335,97 @@ async fn source_frame_scope_mismatch_is_invalid_input() {
                 scope: AnchorScope::new(Some(fixture.session), Some(wrong_target)),
                 start_frame_id: fixture.frames[0].metadata().id(),
                 end_frame_id: fixture.frames[0].metadata().id(),
+            },
+            RangeResolutionOptions::DEFAULT,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::InvalidInput);
+}
+
+#[tokio::test]
+async fn wall_clock_before_session_and_empty_target_are_not_found() {
+    let fixture = Fixture::new().await;
+    let scope = AnchorScope::new(Some(fixture.session), Some(fixture.target));
+    let before = fixture
+        .resolver()
+        .resolve(
+            TemporalRangeAnchor::WallClock {
+                scope,
+                start: SystemTime::UNIX_EPOCH - Duration::from_nanos(1),
+                end: SystemTime::UNIX_EPOCH,
+            },
+            RangeResolutionOptions::DEFAULT,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(before.code, ErrorCode::NotFound);
+
+    let empty_target = TargetId::from_uuid(Uuid::from_u128(88));
+    let error = fixture
+        .resolver()
+        .resolve(
+            TemporalRangeAnchor::SessionTime {
+                scope: AnchorScope::new(Some(fixture.session), Some(empty_target)),
+                range: SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(10)).unwrap(),
+            },
+            RangeResolutionOptions::DEFAULT,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::NotFound);
+}
+
+#[tokio::test]
+async fn anchor_window_overflow_is_invalid_time_before_frame_lookup() {
+    let fixture = Fixture::new().await;
+    let marker = MarkerId::from_uuid(Uuid::from_u128(90));
+    fixture
+        .observation(
+            u64::MAX,
+            ObservationPayloadRef::Marker(marker),
+            ObservationKind::Marker,
+        )
+        .await;
+    let error = fixture
+        .resolver()
+        .resolve(
+            TemporalRangeAnchor::Marker {
+                scope: AnchorScope::new(Some(fixture.session), Some(fixture.target)),
+                marker_id: marker,
+                window: Some(krometrail_core::InteractionWindow::new(
+                    Duration::ZERO,
+                    Duration::from_nanos(1),
+                )),
+            },
+            RangeResolutionOptions::DEFAULT,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::InvalidTime);
+}
+
+#[tokio::test]
+async fn marker_scope_mismatch_is_invalid_input_not_missing_data() {
+    let fixture = Fixture::new().await;
+    let marker = MarkerId::from_uuid(Uuid::from_u128(91));
+    fixture
+        .observation(
+            5,
+            ObservationPayloadRef::Marker(marker),
+            ObservationKind::Marker,
+        )
+        .await;
+    let error = fixture
+        .resolver()
+        .resolve(
+            TemporalRangeAnchor::Marker {
+                scope: AnchorScope::new(
+                    Some(fixture.session),
+                    Some(TargetId::from_uuid(Uuid::from_u128(92))),
+                ),
+                marker_id: marker,
+                window: None,
             },
             RangeResolutionOptions::DEFAULT,
         )

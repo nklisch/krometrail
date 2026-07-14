@@ -2,9 +2,9 @@ use std::fs::File;
 
 use krometrail_core::{
     ByteOffset, CaptureOrdinal, CaptureWarning, CapturedFrame, DeviceScaleFactor, EncodedFrame,
-    ErrorCode, FrameAddress, FrameId, FrameSource, ImageFormat,
-    KrometrailError, NonEmptyText, ObservationKind, ObservationPayloadRef, PortFuture, SessionId,
-    SessionRange, TargetId, TimelineObservation,
+    ErrorCode, FrameAddress, FrameId, FrameSource, ImageFormat, KrometrailError, NonEmptyText,
+    ObservationKind, ObservationPayloadRef, PortFuture, SessionId, SessionRange, TargetId,
+    TimelineObservation,
 };
 use rusqlite::{OptionalExtension, Transaction, params};
 
@@ -125,9 +125,9 @@ impl FrameSource for SqliteIndex {
             let connection = self.connection()?;
             let mut statement = connection
                 .prepare(
-                    "SELECT frame_id, session_id, target_id, capture_ordinal_be, source_time_be,\
-                            observed_time_be, session_time_be, format, image_width, image_height,\
-                            viewport_width, viewport_height, device_scale, warnings_json\
+                    "SELECT frame_id, session_id, target_id, capture_ordinal_be, source_time_be, \
+                            observed_time_be, session_time_be, format, image_width, image_height, \
+                            viewport_width, viewport_height, device_scale, warnings_json \
                      FROM frames WHERE frame_id=?1",
                 )
                 .map_err(|_| persistence_error("could not prepare frame metadata lookup"))?;
@@ -135,7 +135,10 @@ impl FrameSource for SqliteIndex {
                 .into_iter()
                 .map(|frame_id| {
                     let raw = statement
-                        .query_row(params![codec::id(frame_id.as_uuid()).to_vec()], raw_metadata)
+                        .query_row(
+                            params![codec::id(frame_id.as_uuid()).to_vec()],
+                            raw_metadata,
+                        )
                         .optional()
                         .map_err(|_| persistence_error("could not query frame metadata"))?
                         .ok_or_else(frame_not_found)?;
@@ -208,11 +211,11 @@ impl FrameSource for SqliteIndex {
                 let connection = self.connection()?;
                 let mut statement = connection
                     .prepare(
-                        "SELECT f.frame_id, f.session_id, f.target_id, f.segment_id,\
-                                f.byte_offset_be, s.relative_path\
-                         FROM frames f JOIN segments s USING(segment_id)\
-                         WHERE f.session_id=?1 AND f.target_id=?2\
-                           AND f.capture_ordinal_be>=?3 AND f.capture_ordinal_be<=?4\
+                        "SELECT f.frame_id, f.session_id, f.target_id, f.segment_id, \
+                                f.byte_offset_be, s.relative_path \
+                         FROM frames f JOIN segments s USING(segment_id) \
+                         WHERE f.session_id=?1 AND f.target_id=?2 \
+                           AND f.capture_ordinal_be>=?3 AND f.capture_ordinal_be<=?4 \
                          ORDER BY f.capture_ordinal_be ASC, f.session_time_be ASC, f.frame_id ASC",
                     )
                     .map_err(|_| persistence_error("could not prepare frame ordinal lookup"))?;
@@ -285,8 +288,10 @@ fn decode_metadata(raw: RawMetadata) -> krometrail_core::Result<CapturedFrame> {
         _ => return Err(persistence_error("stored frame format is unknown")),
     };
     let dimensions = |width: i64, height: i64| {
-        let width = u32::try_from(width).map_err(|_| persistence_error("stored frame dimensions are malformed"))?;
-        let height = u32::try_from(height).map_err(|_| persistence_error("stored frame dimensions are malformed"))?;
+        let width = u32::try_from(width)
+            .map_err(|_| persistence_error("stored frame dimensions are malformed"))?;
+        let height = u32::try_from(height)
+            .map_err(|_| persistence_error("stored frame dimensions are malformed"))?;
         krometrail_core::PixelDimensions::new(width, height)
             .map_err(|_| persistence_error("stored frame dimensions are invalid"))
     };

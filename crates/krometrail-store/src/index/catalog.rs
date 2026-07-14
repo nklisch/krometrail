@@ -1,4 +1,6 @@
-use krometrail_core::{PageTarget, PortFuture, RecordingCatalog, RecordingSession, SessionId, TargetId};
+use krometrail_core::{
+    PageTarget, PortFuture, RecordingCatalog, RecordingSession, SessionId, TargetId,
+};
 use rusqlite::{OptionalExtension, params};
 
 use super::{SqliteIndex, codec, ensure_session};
@@ -43,7 +45,9 @@ impl RecordingCatalog for SqliteIndex {
             let session: RecordingSession = serde_json::from_str(&json)
                 .map_err(|_| persistence_error("stored session metadata is malformed"))?;
             if session.id() != session_id {
-                return Err(persistence_error("stored session metadata has the wrong identity"));
+                return Err(persistence_error(
+                    "stored session metadata has the wrong identity",
+                ));
             }
             Ok(Some(session))
         })
@@ -72,7 +76,9 @@ impl RecordingCatalog for SqliteIndex {
             let target: PageTarget = serde_json::from_str(&json)
                 .map_err(|_| persistence_error("stored target metadata is malformed"))?;
             if target.id() != target_id {
-                return Err(persistence_error("stored target metadata has the wrong identity"));
+                return Err(persistence_error(
+                    "stored target metadata has the wrong identity",
+                ));
             }
             Ok(Some(target))
         })
