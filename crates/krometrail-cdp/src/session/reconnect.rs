@@ -437,6 +437,18 @@ async fn reconstruct_connection(
     })
 }
 
+fn reject_operation_during_reconnect(
+    request: BrowserOperationRequest,
+    sender: oneshot::Sender<Result<BrowserOperationResult>>,
+) {
+    let target_id = direct_request_target(&request);
+    let _ = sender.send(Err(request_operation_error(
+        ErrorCode::BrowserDisconnected,
+        target_id,
+        "browser is reconnecting; operation was not replayed",
+    )));
+}
+
 pub(super) async fn reconnect_loop_transactional(
     shared: &Arc<SessionShared>,
     state: &mut SupervisorState,
@@ -460,12 +472,7 @@ pub(super) async fn reconnect_loop_transactional(
                             return true;
                         }
                         Some(SupervisorCommand::Execute(request, _context, sender)) => {
-                            let target_id = direct_request_target(&request);
-                            let _ = sender.send(Err(request_operation_error(
-                                ErrorCode::BrowserDisconnected,
-                                target_id,
-                                "browser is reconnecting; operation was not replayed",
-                            )));
+                            reject_operation_during_reconnect(request, sender);
                         }
                         Some(SupervisorCommand::Input(input)) => {
                             let input = match input {
@@ -543,12 +550,7 @@ pub(super) async fn reconnect_loop_transactional(
                     let interrupt = match command {
                         Some(SupervisorCommand::Stop(sender)) => Some(ReconnectInterrupt::Stop(sender)),
                         Some(SupervisorCommand::Execute(request, _context, sender)) => {
-                            let target_id = direct_request_target(&request);
-                            let _ = sender.send(Err(request_operation_error(
-                                ErrorCode::BrowserDisconnected,
-                                target_id,
-                                "browser is reconnecting; operation was not replayed",
-                            )));
+                            reject_operation_during_reconnect(request, sender);
                             None
                         }
                         Some(SupervisorCommand::Input(input)) => {
