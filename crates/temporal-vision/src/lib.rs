@@ -64,6 +64,7 @@ mod filmstrip;
 mod frame;
 mod geometry;
 mod measure;
+mod motion_history;
 mod normalize;
 mod provenance;
 mod render;
@@ -87,6 +88,9 @@ pub use geometry::{BinaryMask, FrameRegion, PixelRect};
 pub use measure::{
     ChangedPixelProportion, ComparisonOutcome, FrameComparison, MeasurementParameters,
     MeasurementVector, measure_adjacent, measure_pair,
+};
+pub use motion_history::{
+    MotionDecay, MotionHistoryParameters, MotionHistoryPlan, build_motion_history_plan,
 };
 pub use normalize::{
     IntegerScale, NormalizationParameters, NormalizedFrame, NormalizedSequence, ProcessingLimits,

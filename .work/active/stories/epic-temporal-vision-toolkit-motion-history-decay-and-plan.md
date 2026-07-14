@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-vision-toolkit-motion-history-decay-and-plan
 kind: story
-stage: implementing
+stage: done
 tags: [visual]
 parent: epic-temporal-vision-toolkit-motion-history
 depends_on: []
@@ -73,3 +73,15 @@ the shared render seam.
 Rendering, PNG encoding, manifest construction, and integration tests — those belong to
 `epic-temporal-vision-toolkit-motion-history-rendering` and
 `epic-temporal-vision-toolkit-motion-history-public-contract-tests`.
+
+## Implementation evidence
+
+- Added the public integer-only decay, parameters, serializable plan, and bounded gap-aware accumulation API in `crates/temporal-vision/src/motion_history.rs`; exported it additively from `src/lib.rs`.
+- Reused `measure_adjacent` for segment boundaries and the canonical `classify_pixel_change` for per-pixel classification. Zero-weight old changes still enter `ever_changed`, while per-segment accumulation max-composes without crossing gaps.
+- Checked working-set arithmetic before accumulator/mask allocation and derived a deterministic 4-connected boundary mask.
+- Focused tests cover exact decay ranks, saturating repeated changes, max composition across a declared gap, analysis-mask exclusion, outline geometry, and tiny-memory rejection.
+- Verification: `cargo test -p temporal-vision --lib --locked` (30 passed) and `cargo clippy -p temporal-vision --lib --locked -- -D warnings` passed.
+- Execution capability: raised/high because integer image evidence, gap semantics, and provenance-facing determinism are public contracts.
+- Review weight: standard (autopilot caller).
+- Discrepancies: an out-of-bounds image neighbor is treated as unchanged for outline purposes so an isolated edge or 1×1 changed pixel remains its own outline, satisfying the acceptance contract.
+- Blockers and adjacent issues: none.
