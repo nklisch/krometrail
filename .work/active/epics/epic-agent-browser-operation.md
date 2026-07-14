@@ -1,14 +1,14 @@
 ---
 id: epic-agent-browser-operation
 kind: epic
-stage: implementing
+stage: review
 tags: [browser, agent-ux]
 parent: null
 depends_on: [epic-rust-cdp-capture-foundation]
 release_binding: null
 gate_origin: null
 created: 2026-07-11
-updated: 2026-07-13
+updated: 2026-07-14
 ---
 
 # Agent Browser Operation
@@ -69,3 +69,9 @@ The epic is split by agent capability rather than implementation layer: first ma
 - The interaction capability is broad enough to invite per-action architecture. Keep one executor shape with action-specific completion policies and split implementation into stories only when CDP mechanics differ materially.
 - Browser control creates interaction records that durable memory later persists. Keep emission behind core ports and test with in-memory adapters so this epic neither blocks on storage nor invents a temporary production store.
 - MCP lands last and can expose contract inconsistencies late. Generated schemas and thin handlers limit that risk; feature-level design must verify standalone and batch tools derive from the same registry rather than repairing divergence at the adapter.
+
+## Aggregate implementation roll-up
+
+All five child features are reviewed and complete: page observation, browser/page lifecycle, verified interactions, explicit waits and ordered batches, and the MCP control surface. The implemented boundary now forms one ordinary agent-browser workflow: the root runtime owns one controlled browser session, the core operation/capability registries define typed behavior once, CDP executes through the supervised exact-session path with request-aware cancellation, every state-changing operation returns honest current-state evidence and an interaction anchor, and MCP exposes 24 generated control tools plus four lifecycle tools over protocol-only stdio.
+
+The aggregate implementation remains within the epic boundary: durable interaction persistence, temporal queries/artifacts, browser-event inspection tools, page/framework state, remote transports, replay, rollback, and cross-target batches are not claimed here. Rust 1.85, locked workspace gates, real Chrome control qualification, MCP protocol/binary qualification, and current runtime documentation are green. The epic is ready for deeper aggregate review focused on end-to-end capability completeness, cross-feature contracts, operational shutdown/cancellation, and foundation alignment rather than repeating child-feature line review.
