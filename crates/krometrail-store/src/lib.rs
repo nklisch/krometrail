@@ -3,8 +3,14 @@
 pub mod index;
 pub mod segments;
 
+mod recording;
+
 pub use index::{IndexStoreConfig, SqliteIndex};
-pub use segments::{RotationConfig, SegmentStoreConfig, SegmentWriter};
+pub use recording::IndexedRecordingSink;
+pub use segments::{
+    FrameWriteCommit, RotationConfig, SegmentRegistration, SegmentState, SegmentStoreConfig,
+    SegmentWriter,
+};
 
 use krometrail_core::{ErrorCode, KrometrailError, NonEmptyText};
 

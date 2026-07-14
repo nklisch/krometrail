@@ -1,3 +1,5 @@
+use std::io::{Cursor, Read, Seek, SeekFrom};
+
 use crc32fast::Hasher;
 use krometrail_core::{ByteOffset, EncodedFrame, FrameAddress};
 
@@ -181,30 +183,61 @@ fn looks_like_footer(bytes: &[u8]) -> bool {
     compared > 0 && bytes[..compared] == SEALED_FOOTER_MAGIC[..compared]
 }
 
-/// Reads one frame from a complete segment buffer using its absolute file address.
-pub fn read_frame_at(
-    segment_bytes: &[u8],
+/// Reads only the addressed record from a seekable segment source.
+pub fn read_frame_from<R: Read + Seek>(
+    reader: &mut R,
     address: FrameAddress,
 ) -> krometrail_core::Result<EncodedFrame> {
-    let header_bytes = segment_bytes
-        .get(..SEGMENT_HEADER_LEN)
-        .ok_or_else(|| persistence_error("segment is shorter than its header"))?;
-    let header = SegmentHeader::decode(header_bytes)?;
+    if address.byte_offset.get() < SEGMENT_HEADER_LEN as u64 {
+        return Err(persistence_error(
+            "frame address points inside the segment header",
+        ));
+    }
+    reader
+        .seek(SeekFrom::Start(0))
+        .map_err(|_| persistence_error("could not seek to the segment header"))?;
+    let mut header_bytes = [0_u8; SEGMENT_HEADER_LEN];
+    reader
+        .read_exact(&mut header_bytes)
+        .map_err(|_| persistence_error("could not read the segment header"))?;
+    let header = SegmentHeader::decode(&header_bytes)?;
     if header.segment_id != address.segment_id {
         return Err(persistence_error(
             "frame address segment identifier does not match the segment header",
         ));
     }
-    let offset = usize_from_u64(address.byte_offset.get())?;
-    if offset < SEGMENT_HEADER_LEN {
-        return Err(persistence_error(
-            "frame address points inside the segment header",
-        ));
+
+    reader
+        .seek(SeekFrom::Start(address.byte_offset.get()))
+        .map_err(|_| persistence_error("could not seek to the frame record"))?;
+    let mut prefix = [0_u8; FRAME_RECORD_PREFIX_LEN];
+    reader
+        .read_exact(&mut prefix)
+        .map_err(|_| persistence_error("could not read the frame record prefix"))?;
+    let mut fields = WireReader::new(&prefix);
+    if fields.read_u8()? != FRAME_RECORD_KIND {
+        return Err(persistence_error("segment record kind is not a frame"));
     }
-    let record_bytes = segment_bytes
-        .get(offset..)
-        .ok_or_else(|| persistence_error("frame address exceeds the segment length"))?;
-    Ok(decode_frame_record(&header, record_bytes)?.frame)
+    let header_len = fields.read_u32()? as usize;
+    let payload_len = usize_from_u64(fields.read_u64()?)?;
+    let tail_len = header_len
+        .checked_add(payload_len)
+        .ok_or_else(|| persistence_error("frame record length overflow"))?;
+    let mut encoded = Vec::with_capacity(FRAME_RECORD_PREFIX_LEN + tail_len);
+    encoded.extend_from_slice(&prefix);
+    encoded.resize(FRAME_RECORD_PREFIX_LEN + tail_len, 0);
+    reader
+        .read_exact(&mut encoded[FRAME_RECORD_PREFIX_LEN..])
+        .map_err(|_| persistence_error("could not read the complete frame record"))?;
+    Ok(decode_frame_record(&header, &encoded)?.frame)
+}
+
+/// Reads one frame from a complete segment buffer using its absolute file address.
+pub fn read_frame_at(
+    segment_bytes: &[u8],
+    address: FrameAddress,
+) -> krometrail_core::Result<EncodedFrame> {
+    read_frame_from(&mut Cursor::new(segment_bytes), address)
 }
 
 #[cfg(test)]

@@ -1,8 +1,10 @@
 mod catalog;
 mod codec;
+pub(crate) mod frames;
 mod gaps;
 mod migrations;
 mod schema_v1;
+pub(crate) mod segments;
 mod timeline;
 
 use std::{

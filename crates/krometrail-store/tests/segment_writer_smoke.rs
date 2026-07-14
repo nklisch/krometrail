@@ -1,9 +1,9 @@
 use std::{fs, sync::Arc, time::Duration};
 
 use krometrail_core::{
-    CaptureGap, CaptureGapReason, CaptureOrdinal, CapturedFrame, DeviceScaleFactor, EncodedFrame,
-    ErrorCode, FrameAddress, FrameId, GapId, ImageFormat, ObservedTime, PixelDimensions,
-    RecordingSink, SessionId, SessionRange, SessionTime, SourceTime, TargetId,
+    CaptureOrdinal, CapturedFrame, DeviceScaleFactor, EncodedFrame, ErrorCode, FrameAddress,
+    FrameId, ImageFormat, ObservedTime, PixelDimensions, SessionId, SessionTime, SourceTime,
+    TargetId,
 };
 use krometrail_store::{
     RotationConfig, SegmentStoreConfig, SegmentWriter,
@@ -82,9 +82,9 @@ async fn real_writes_round_trip_two_target_streams_by_address() {
 
     let mut addresses = Vec::new();
     for value in expected.iter().cloned() {
-        addresses.push(sink.append_frame(value).await.unwrap());
+        addresses.push(sink.append_indexable(value).await.unwrap().address);
     }
-    sink.flush(session_id).await.unwrap();
+    sink.flush_indexable(session_id).await.unwrap();
 
     assert_ne!(addresses[0].segment_id, addresses[1].segment_id);
     assert_eq!(addresses[0].segment_id, addresses[2].segment_id);
@@ -114,13 +114,15 @@ async fn rotates_before_triggering_frame_for_duration_or_size() {
         let session_id = SessionId::from_uuid(Uuid::new_v4());
         let target_id = TargetId::from_uuid(Uuid::new_v4());
         let first = sink
-            .append_frame(frame(session_id, target_id, 1, 0, &[1, 2, 3]))
+            .append_indexable(frame(session_id, target_id, 1, 0, &[1, 2, 3]))
             .await
-            .unwrap();
+            .unwrap()
+            .address;
         let second = sink
-            .append_frame(frame(session_id, target_id, 2, 10, &[4, 5, 6]))
+            .append_indexable(frame(session_id, target_id, 2, 10, &[4, 5, 6]))
             .await
-            .unwrap();
+            .unwrap()
+            .address;
         assert_ne!(first.segment_id, second.segment_id);
         let first_bytes = sealed_bytes(&directory, first);
         assert_eq!(footer(&first_bytes).record_count, 1);
@@ -129,7 +131,7 @@ async fn rotates_before_triggering_frame_for_duration_or_size() {
             &[1, 2, 3]
         );
 
-        sink.flush(session_id).await.unwrap();
+        sink.flush_indexable(session_id).await.unwrap();
         let second_bytes = sealed_bytes(&directory, second);
         assert_eq!(footer(&second_bytes).record_count, 1);
         assert_eq!(
@@ -150,11 +152,12 @@ async fn flush_seals_all_session_targets_with_accurate_footer_summaries() {
     let sink_a = Arc::clone(&sink);
     let a = tokio::spawn(async move {
         let first = sink_a
-            .append_frame(frame(session_id, target_a, 1, 5, &[1, 2]))
+            .append_indexable(frame(session_id, target_a, 1, 5, &[1, 2]))
             .await
-            .unwrap();
+            .unwrap()
+            .address;
         sink_a
-            .append_frame(frame(session_id, target_a, 2, 8, &[3, 4, 5]))
+            .append_indexable(frame(session_id, target_a, 2, 8, &[3, 4, 5]))
             .await
             .unwrap();
         first
@@ -162,12 +165,13 @@ async fn flush_seals_all_session_targets_with_accurate_footer_summaries() {
     let sink_b = Arc::clone(&sink);
     let b = tokio::spawn(async move {
         sink_b
-            .append_frame(frame(session_id, target_b, 1, 6, &[6]))
+            .append_indexable(frame(session_id, target_b, 1, 6, &[6]))
             .await
             .unwrap()
+            .address
     });
     let (address_a, address_b) = (a.await.unwrap(), b.await.unwrap());
-    sink.flush(session_id).await.unwrap();
+    sink.flush_indexable(session_id).await.unwrap();
 
     let footer_a = footer(&sealed_bytes(&directory, address_a));
     assert_eq!(footer_a.record_count, 2);
@@ -180,48 +184,6 @@ async fn flush_seals_all_session_targets_with_accurate_footer_summaries() {
     assert_eq!(footer_b.total_payload, 1);
     assert_eq!(footer_b.first_session_time, SessionTime::from_nanos(6));
     assert_eq!(footer_b.last_session_time, SessionTime::from_nanos(6));
-}
-
-#[tokio::test]
-async fn gap_routing_is_explicit_and_does_not_modify_segments() {
-    let directory = TempDir::new().unwrap();
-    let sink = writer(&directory, RotationConfig::suggested());
-    let session_id = SessionId::from_uuid(Uuid::from_u128(40));
-    let target_id = TargetId::from_uuid(Uuid::from_u128(41));
-    sink.append_frame(frame(session_id, target_id, 1, 1, &[1]))
-        .await
-        .unwrap();
-    let sizes_before = file_sizes(directory.path());
-    let gap = CaptureGap::new(
-        GapId::from_uuid(Uuid::from_u128(42)),
-        session_id,
-        target_id,
-        SessionRange::new(SessionTime::from_nanos(1), SessionTime::from_nanos(2)).unwrap(),
-        ObservedTime::from_nanos(2),
-        CaptureGapReason::IngestionQueueSaturated,
-        None,
-        None,
-    )
-    .unwrap();
-    let error = sink.append_gap(gap).await.unwrap_err();
-    assert_eq!(error.code, ErrorCode::Unsupported);
-    assert_eq!(
-        error.message.as_str(),
-        "capture-gap persistence is owned by the SQLite metadata feature and is not yet wired"
-    );
-    assert_eq!(file_sizes(directory.path()), sizes_before);
-}
-
-fn file_sizes(directory: &std::path::Path) -> Vec<(std::ffi::OsString, u64)> {
-    let mut files: Vec<_> = fs::read_dir(directory)
-        .unwrap()
-        .map(|entry| {
-            let entry = entry.unwrap();
-            (entry.file_name(), entry.metadata().unwrap().len())
-        })
-        .collect();
-    files.sort_by(|left, right| left.0.cmp(&right.0));
-    files
 }
 
 #[test]

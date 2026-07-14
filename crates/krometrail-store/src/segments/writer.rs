@@ -8,8 +8,8 @@ use std::{
 };
 
 use krometrail_core::{
-    ByteOffset, CaptureGap, EncodedFrame, ErrorCode, FrameAddress, KrometrailError, NonEmptyText,
-    ObservedTime, PortFuture, RecordingSink, SegmentId, SessionId, SessionTime, TargetId,
+    ByteOffset, EncodedFrame, FrameAddress, KrometrailError, ObservedTime, SegmentId, SessionId,
+    SessionTime, TargetId,
 };
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
@@ -61,7 +61,43 @@ pub struct SegmentStoreConfig {
     pub rotation: RotationConfig,
 }
 
-/// Async recording port backed by one dedicated blocking filesystem worker.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SegmentState {
+    Open,
+    Sealed,
+}
+
+impl SegmentState {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Sealed => "sealed",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SegmentRegistration {
+    pub segment_id: SegmentId,
+    pub session_id: SessionId,
+    pub target_id: TargetId,
+    pub state: SegmentState,
+    pub relative_path: PathBuf,
+    pub start_time: SessionTime,
+    pub end_time: Option<SessionTime>,
+    pub file_bytes: u64,
+    pub payload_bytes: u64,
+    pub record_count: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FrameWriteCommit {
+    pub address: FrameAddress,
+    pub active_segment: SegmentRegistration,
+    pub sealed_segment: Option<SegmentRegistration>,
+}
+
+/// Async payload primitive backed by one dedicated blocking filesystem worker.
 ///
 /// The bounded channel applies backpressure without running file operations on
 /// the caller's executor thread. Once a command enters the channel, cancellation
@@ -93,11 +129,11 @@ struct OpenSegment {
 enum WriterCommand {
     Append {
         frame: EncodedFrame,
-        reply: oneshot::Sender<krometrail_core::Result<FrameAddress>>,
+        reply: oneshot::Sender<krometrail_core::Result<FrameWriteCommit>>,
     },
     Flush {
         session_id: SessionId,
-        reply: oneshot::Sender<krometrail_core::Result<()>>,
+        reply: oneshot::Sender<krometrail_core::Result<Vec<SegmentRegistration>>>,
     },
 }
 
@@ -153,44 +189,33 @@ impl SegmentWriter {
     }
 }
 
-impl RecordingSink for SegmentWriter {
-    fn append_frame(
+impl SegmentWriter {
+    pub async fn append_indexable(
         &self,
         frame: EncodedFrame,
-    ) -> PortFuture<'_, krometrail_core::Result<FrameAddress>> {
-        Box::pin(async move {
-            let (reply, response) = oneshot::channel();
-            self.commands
-                .send(WriterCommand::Append { frame, reply })
-                .await
-                .map_err(|_| worker_unavailable("append a frame"))?;
-            response
-                .await
-                .map_err(|_| worker_unavailable("receive the frame append result"))?
-        })
+    ) -> krometrail_core::Result<FrameWriteCommit> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WriterCommand::Append { frame, reply })
+            .await
+            .map_err(|_| worker_unavailable("append a frame"))?;
+        response
+            .await
+            .map_err(|_| worker_unavailable("receive the frame append result"))?
     }
 
-    fn append_gap(&self, _gap: CaptureGap) -> PortFuture<'_, krometrail_core::Result<()>> {
-        Box::pin(std::future::ready(Err(KrometrailError::new(
-            ErrorCode::Unsupported,
-            NonEmptyText::new(
-                "capture-gap persistence is owned by the SQLite metadata feature and is not yet wired",
-            )
-            .expect("static gap-persistence message is non-empty"),
-        ))))
-    }
-
-    fn flush(&self, session_id: SessionId) -> PortFuture<'_, krometrail_core::Result<()>> {
-        Box::pin(async move {
-            let (reply, response) = oneshot::channel();
-            self.commands
-                .send(WriterCommand::Flush { session_id, reply })
-                .await
-                .map_err(|_| worker_unavailable("flush a recording session"))?;
-            response
-                .await
-                .map_err(|_| worker_unavailable("receive the recording flush result"))?
-        })
+    pub async fn flush_indexable(
+        &self,
+        session_id: SessionId,
+    ) -> krometrail_core::Result<Vec<SegmentRegistration>> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WriterCommand::Flush { session_id, reply })
+            .await
+            .map_err(|_| worker_unavailable("flush a recording session"))?;
+        response
+            .await
+            .map_err(|_| worker_unavailable("receive the recording flush result"))?
     }
 }
 
@@ -232,17 +257,25 @@ impl WorkerState {
         }
     }
 
-    fn append(&mut self, frame: EncodedFrame) -> krometrail_core::Result<FrameAddress> {
+    fn append(&mut self, frame: EncodedFrame) -> krometrail_core::Result<FrameWriteCommit> {
         let key = (frame.metadata().session_id(), frame.metadata().target_id());
-        if let Some(open) = self.open_segments.get(&key)
-            && open.should_rotate(&frame, self.rotation)
+        let sealed_segment = if self
+            .open_segments
+            .get(&key)
+            .is_some_and(|open| open.should_rotate(&frame, self.rotation))
         {
             let open = self
                 .open_segments
                 .remove(&key)
                 .expect("checked open segment exists");
-            seal_segment(&self.directory, self.directory_sync.as_ref(), open)?;
-        }
+            Some(seal_segment(
+                &self.directory,
+                self.directory_sync.as_ref(),
+                open,
+            )?)
+        } else {
+            None
+        };
         let open = match self.open_segments.entry(key) {
             std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
             std::collections::hash_map::Entry::Vacant(entry) => entry.insert(open_segment(
@@ -252,28 +285,60 @@ impl WorkerState {
                 &frame,
             )?),
         };
-        open.append(frame)
+        let address = open.append(frame)?;
+        Ok(FrameWriteCommit {
+            address,
+            active_segment: open.registration(SegmentState::Open),
+            sealed_segment,
+        })
     }
 
-    fn flush_session(&mut self, session_id: SessionId) -> krometrail_core::Result<()> {
+    fn flush_session(
+        &mut self,
+        session_id: SessionId,
+    ) -> krometrail_core::Result<Vec<SegmentRegistration>> {
         let keys: Vec<_> = self
             .open_segments
             .keys()
             .filter(|(candidate, _)| *candidate == session_id)
             .copied()
             .collect();
+        let mut registrations = Vec::with_capacity(keys.len());
         for key in keys {
             let open = self
                 .open_segments
                 .remove(&key)
                 .expect("collected key exists");
-            seal_segment(&self.directory, self.directory_sync.as_ref(), open)?;
+            registrations.push(seal_segment(
+                &self.directory,
+                self.directory_sync.as_ref(),
+                open,
+            )?);
         }
-        Ok(())
+        Ok(registrations)
     }
 }
 
 impl OpenSegment {
+    fn registration(&self, state: SegmentState) -> SegmentRegistration {
+        let extension = match state {
+            SegmentState::Open => OPEN_SEGMENT_EXTENSION,
+            SegmentState::Sealed => SEALED_SEGMENT_EXTENSION,
+        };
+        SegmentRegistration {
+            segment_id: self.header.segment_id,
+            session_id: self.header.session_id,
+            target_id: self.header.target_id,
+            state,
+            relative_path: PathBuf::from(format!("{}.{extension}", self.header.segment_id)),
+            start_time: self.header.start_session_time,
+            end_time: (state == SegmentState::Sealed).then_some(self.last_session_time),
+            file_bytes: self.file_len,
+            payload_bytes: self.total_payload,
+            record_count: self.record_count,
+        }
+    }
+
     fn should_rotate(&self, frame: &EncodedFrame, rotation: RotationConfig) -> bool {
         if self.record_count == 0 {
             return false;
@@ -383,7 +448,7 @@ fn seal_segment(
     directory: &Path,
     directory_sync: &dyn DirectorySync,
     mut open: OpenSegment,
-) -> krometrail_core::Result<()> {
+) -> krometrail_core::Result<SegmentRegistration> {
     let footer = SealedFooter::new(
         open.header.segment_id,
         open.record_count,
@@ -392,8 +457,9 @@ fn seal_segment(
         open.last_session_time,
         open.last_observed_time,
     );
+    let footer_bytes = footer.encode();
     open.writer
-        .write_all(&footer.encode())
+        .write_all(&footer_bytes)
         .map_err(|error| io_error("write a sealed segment footer", error))?;
     open.writer
         .flush()
@@ -402,6 +468,11 @@ fn seal_segment(
         .get_ref()
         .sync_data()
         .map_err(|error| io_error("sync a sealed segment", error))?;
+    open.file_len = open
+        .file_len
+        .checked_add(footer_bytes.len() as u64)
+        .ok_or_else(|| persistence_error("sealed segment file length overflow"))?;
+    let registration = open.registration(SegmentState::Sealed);
     drop(open.writer);
     fs::rename(
         open_segment_path(directory, open.header.segment_id),
@@ -411,7 +482,7 @@ fn seal_segment(
     directory_sync
         .sync(directory)
         .map_err(|error| io_error("sync the sealed-segment publication", error))?;
-    Ok(())
+    Ok(registration)
 }
 
 pub fn open_segment_path(directory: &Path, segment_id: SegmentId) -> PathBuf {
@@ -536,9 +607,11 @@ mod tests {
         let sync = Arc::new(CountingDirectorySync::default());
         let sink = SegmentWriter::open_with_worker(config(&directory), 4, sync.clone()).unwrap();
         let session_id = SessionId::from_uuid(Uuid::from_u128(1));
-        sink.append_frame(test_frame(session_id, 1)).await.unwrap();
+        sink.append_indexable(test_frame(session_id, 1))
+            .await
+            .unwrap();
         assert_eq!(sync.calls.load(Ordering::SeqCst), 1);
-        sink.flush(session_id).await.unwrap();
+        sink.flush_indexable(session_id).await.unwrap();
         assert_eq!(sync.calls.load(Ordering::SeqCst), 2);
 
         let initial_failure = TempDir::new().unwrap();
@@ -552,7 +625,7 @@ mod tests {
         )
         .unwrap();
         let error = sink
-            .append_frame(test_frame(SessionId::from_uuid(Uuid::from_u128(2)), 1))
+            .append_indexable(test_frame(SessionId::from_uuid(Uuid::from_u128(2)), 1))
             .await
             .unwrap_err();
         assert!(error.message.as_str().contains("initial open-segment"));
@@ -568,8 +641,10 @@ mod tests {
         )
         .unwrap();
         let session_id = SessionId::from_uuid(Uuid::from_u128(3));
-        sink.append_frame(test_frame(session_id, 1)).await.unwrap();
-        let error = sink.flush(session_id).await.unwrap_err();
+        sink.append_indexable(test_frame(session_id, 1))
+            .await
+            .unwrap();
+        let error = sink.flush_indexable(session_id).await.unwrap_err();
         assert!(error.message.as_str().contains("sealed-segment"));
     }
 
@@ -607,9 +682,9 @@ mod tests {
         )
         .unwrap();
         let session_id = SessionId::from_uuid(Uuid::from_u128(4));
-        let mut first = sink.append_frame(test_frame(session_id, 1));
-        let mut second = sink.append_frame(test_frame(session_id, 2));
-        let mut cancelled = sink.append_frame(test_frame(session_id, 3));
+        let mut first = Box::pin(sink.append_indexable(test_frame(session_id, 1)));
+        let mut second = Box::pin(sink.append_indexable(test_frame(session_id, 2)));
+        let mut cancelled = Box::pin(sink.append_indexable(test_frame(session_id, 3)));
         let waker = Waker::from(Arc::new(NoopWaker));
         let mut context = Context::from_waker(&waker);
 
@@ -636,7 +711,7 @@ mod tests {
             .unwrap();
         runtime.block_on(async {
             second.await.unwrap();
-            sink.flush(session_id).await.unwrap();
+            sink.flush_indexable(session_id).await.unwrap();
         });
 
         let sealed = fs::read_dir(directory.path())
