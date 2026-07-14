@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-operation-browser-page-lifecycle
 kind: feature
-stage: review
+stage: done
 tags: [browser, agent-ux]
 parent: epic-agent-browser-operation
 depends_on: [epic-agent-browser-operation-page-observation]
@@ -605,3 +605,20 @@ verification.
   14 page-lifecycle tests under real Chrome in 6.80 seconds. All final gates passed.
 - **Deviations/blockers:** none. No core public contract or foundation assertion changed, and no
   unrelated store, temporal-vision, root-app, or `work-view` file was edited or staged.
+
+## Review (2026-07-14)
+
+**Verdict**: Approve with comments
+
+**Blockers**: none
+**Important**: none
+**Nits**: Bounded snapshot lookup, unused history URLs, completion timestamp proxy, and historical
+test-count drift remain non-material cleanup.
+**Rejected**: none
+
+**Notes**: Standard fresh-context review initially bounced three contract gaps. Remediation
+`639b879` preserved all post-allocation CreatePage anchors, introduced marker-backed stable-loader
+reload freshness, and raced each post-operation observation component against generation-aware
+cancellation. Focused GLM 5.2 re-review traced all three fixes and their regressions to a `ready`
+verdict. The implementation supplied green locked workspace format/check/318 tests/Clippy,
+no-default CDP check, and 14 real-Chrome lifecycle tests.
