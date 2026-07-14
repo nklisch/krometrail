@@ -280,9 +280,7 @@ impl PageControl {
                 .inspect(
                     transport,
                     bound,
-                    InspectPageRequest {
-                        target_id: bound.target_id,
-                    },
+                    InspectPageRequest::new(bound.target_id),
                     part_started,
                 )
                 .await
@@ -300,9 +298,7 @@ impl PageControl {
                 .snapshot(
                     transport,
                     bound,
-                    SnapshotPageRequest {
-                        target_id: bound.target_id,
-                    },
+                    SnapshotPageRequest::new(bound.target_id),
                     part_started,
                 )
                 .await

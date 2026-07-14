@@ -43,7 +43,7 @@ async fn opt_in_managed_session_stops_without_retaining_temporary_profile() {
         .await
         .expect("opt-in Chrome should launch and pass compatibility");
     assert_eq!(
-        session.ownership(),
+        session.status().await.unwrap().ownership,
         krometrail_core::BrowserOwnership::Managed
     );
     let outcome = session.stop().await.expect("managed stop");
@@ -98,12 +98,12 @@ async fn opt_in_managed_launch_attach_targets_and_external_survival() {
         ))
         .await
         .expect("attached supervision session");
-    let targets = session.targets().await.unwrap();
-    assert!(targets.len() >= 3, "expected initial plus two page targets");
+    let pages = session.status().await.unwrap().pages;
+    assert!(pages.len() >= 3, "expected initial plus two page targets");
     assert!(target_keys.iter().all(|key| {
-        targets
+        pages
             .iter()
-            .any(|target| target.target.browser_target_key() == key)
+            .any(|page| page.target.target.browser_target_key() == key)
     }));
 
     let mut events = session.subscribe().await.unwrap();
@@ -111,11 +111,12 @@ async fn opt_in_managed_launch_attach_targets_and_external_survival() {
     let mut observed = false;
     for _ in 0..40 {
         if session
-            .targets()
+            .status()
             .await
             .unwrap()
+            .pages
             .iter()
-            .any(|target| target.target.browser_target_key() == created_key)
+            .any(|page| page.target.target.browser_target_key() == created_key)
         {
             observed = true;
             break;
@@ -207,10 +208,14 @@ async fn opt_in_electron_renderer_endpoint_uses_capability_probe() {
         ))
         .await
         .expect("explicit Electron renderer endpoint should be compatible");
+    let status = session.status().await.unwrap();
     assert_eq!(
-        session.compatibility().version.product,
+        status.compatibility.version.product,
         krometrail_core::BrowserProduct::ElectronRenderer
     );
+    assert_eq!(status.ownership, krometrail_core::BrowserOwnership::Attached);
+    assert_eq!(status.profile, krometrail_core::ProfileRef::External);
+    assert!(status.selected_target_id.is_some());
     assert_eq!(session.stop().await.unwrap(), BrowserStopOutcome::Detached);
 }
 

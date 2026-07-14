@@ -160,6 +160,12 @@ impl SnapshotRegistry {
         self.targets.retain(|target, _| live.contains(target));
     }
 
+    pub(crate) fn invalidate_target(&mut self, target_id: TargetId) {
+        if let Some(target) = self.targets.get_mut(&target_id) {
+            target.active = None;
+        }
+    }
+
     pub(crate) async fn resolve(
         &self,
         transport: &dyn CdpTransport,

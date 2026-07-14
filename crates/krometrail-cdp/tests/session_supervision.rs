@@ -93,7 +93,7 @@ async fn production_supervisor_rebuilds_after_a_transport_event_stream_closes() 
         }
     }
     assert!(saw_ready, "reconnect did not publish Ready");
-    assert_eq!(session.targets().await.unwrap().len(), 1);
+    assert_eq!(session.status().await.unwrap().pages.len(), 1);
     assert_eq!(session.stop().await.unwrap(), BrowserStopOutcome::Detached);
 
     let terminal_count = tokio::time::timeout(Duration::from_secs(1), async {
@@ -165,10 +165,12 @@ async fn opt_in_real_chrome_reconnects_through_a_new_physical_proxy_connection()
     let initial_proxy_path = proxy.websocket_path();
 
     let initial = session
-        .targets()
+        .status()
         .await
         .unwrap()
+        .pages
         .into_iter()
+        .map(|page| page.target)
         .find(|target| target.lifecycle == TargetLifecycle::Attached)
         .expect("real Chrome should expose an attached page target");
     let initial_key = initial.target.browser_target_key().to_owned();
@@ -238,10 +240,12 @@ async fn opt_in_real_chrome_reconnects_through_a_new_physical_proxy_connection()
     assert!(launched.process.is_alive());
 
     let restored = session
-        .targets()
+        .status()
         .await
         .unwrap()
+        .pages
         .into_iter()
+        .map(|page| page.target)
         .find(|target| target.target.browser_target_key() == initial_key)
         .expect("reconnected target should remain discoverable");
     assert_eq!(restored.target.id(), initial_target_id);
@@ -385,10 +389,12 @@ async fn opt_in_real_chrome_reconnects_through_a_new_physical_proxy_connection()
     // A late event from the severed generation must not undo the restored exact-key state while
     // the new connection is processing this target event.
     let restored_after_post_event = session
-        .targets()
+        .status()
         .await
         .unwrap()
+        .pages
         .into_iter()
+        .map(|page| page.target)
         .find(|target| target.target.browser_target_key() == initial_key)
         .expect("restored target should survive post-rebuild events");
     assert_eq!(restored_after_post_event.target.id(), initial_target_id);

@@ -4,8 +4,9 @@
 //! information. The reducer below is the sole owner of target identity and lifecycle state.
 
 use krometrail_core::{
-    BrowserCompatibility, BrowserSessionEvent, BrowserSessionState, PageTarget, Result,
-    SupervisedTarget, TargetId, TargetLifecycle, TargetVisibility,
+    BrowserCompatibility, BrowserSessionEvent, BrowserSessionState, ErrorCode, KrometrailError,
+    NonEmptyText, PageSelection, PageTarget, Result, SupervisedTarget, TargetId, TargetLifecycle,
+    TargetVisibility,
 };
 
 use crate::transport::{TransportClose, TransportSessionId};
@@ -121,6 +122,7 @@ pub struct SupervisorState {
     pub compatibility: BrowserCompatibility,
     pub targets_by_key: std::collections::HashMap<String, SupervisorTargetState>,
     pub target_key_by_session: std::collections::HashMap<TransportSessionId, String>,
+    pub selected_target_key: Option<String>,
 }
 
 impl SupervisorState {
@@ -132,6 +134,7 @@ impl SupervisorState {
             compatibility,
             targets_by_key: std::collections::HashMap::new(),
             target_key_by_session: std::collections::HashMap::new(),
+            selected_target_key: None,
         }
     }
 
@@ -153,6 +156,49 @@ impl SupervisorState {
 
     pub fn target(&self, key: &str) -> Option<&SupervisorTargetState> {
         self.targets_by_key.get(key)
+    }
+
+    pub fn selected_target(&self) -> Option<&SupervisorTargetState> {
+        self.selected_target_key
+            .as_deref()
+            .and_then(|key| self.targets_by_key.get(key))
+            .filter(|target| {
+                target.transport_session.is_some()
+                    && !matches!(
+                        target.target.lifecycle,
+                        TargetLifecycle::Closed
+                            | TargetLifecycle::Failed
+                            | TargetLifecycle::Suspended
+                    )
+            })
+    }
+
+    pub fn resolve_selection(&self, selection: PageSelection) -> Result<&SupervisorTargetState> {
+        let target = match selection {
+            PageSelection::Selected => self.selected_target(),
+            PageSelection::Target(id) => self
+                .targets_by_key
+                .values()
+                .find(|target| target.target.target.id() == id),
+        }
+        .ok_or_else(|| {
+            KrometrailError::new(
+                ErrorCode::NotFound,
+                NonEmptyText::new("selected browser page was not found").unwrap(),
+            )
+        })?;
+        if target.transport_session.is_none()
+            || matches!(
+                target.target.lifecycle,
+                TargetLifecycle::Closed | TargetLifecycle::Failed | TargetLifecycle::Suspended
+            )
+        {
+            return Err(KrometrailError::from_browser_failure(
+                ErrorCode::TargetFailed,
+                NonEmptyText::new("browser page is not currently attached").unwrap(),
+            ));
+        }
+        Ok(target)
     }
 }
 
@@ -197,6 +243,9 @@ pub enum SupervisorInput {
     CaptureVisibilityChanged {
         target_id: TargetId,
         visibility: TargetVisibility,
+    },
+    SelectTarget {
+        target_key: String,
     },
     ConnectionLost(TransportClose),
     BrowserProcessTerminated {

@@ -54,11 +54,10 @@ async fn opt_in_real_chrome_capture_records_fidelity_and_managed_cleanup() {
     )
     .await;
 
-    assert_eq!(
-        session.ownership(),
-        krometrail_core::BrowserOwnership::Managed
-    );
-    assert_eq!(session.state(), BrowserSessionState::Ready);
+    let browser_status = session.status().await.expect("browser status");
+    assert_eq!(browser_status.ownership, krometrail_core::BrowserOwnership::Managed);
+    assert_eq!(browser_status.state, BrowserSessionState::Ready);
+    let session_id = browser_status.session_id;
     let origin = session.session_origin().observed().as_nanos();
     let target_id = first_target(&session).await;
     assert_initial_capture_ready(&session, target_id).await;
@@ -74,7 +73,7 @@ async fn opt_in_real_chrome_capture_records_fidelity_and_managed_cleanup() {
             .iter()
             .all(|frame| frame.metadata().target_id() == target_id)
     );
-    assert_frame_fidelity(&frames, origin, session.session_id(), target_id);
+    assert_frame_fidelity(&frames, origin, session_id, target_id);
     assert_strict_ordinals_by_target(&frames);
 
     let status = status_for(&session, target_id).await;
@@ -113,7 +112,7 @@ async fn opt_in_real_chrome_capture_records_fidelity_and_managed_cleanup() {
     assert!(
         sink.gaps()
             .iter()
-            .all(|gap| gap.session_id() == session.session_id())
+            .all(|gap| gap.session_id() == session_id)
     );
 
     let stopped = terminal_capture_status(&mut events, target_id, STOP_TIMEOUT)
@@ -179,11 +178,10 @@ async fn opt_in_real_chrome_capture_isolates_two_targets_and_records_visibility_
         ))
         .await
         .expect("attached capture session");
-    assert_eq!(
-        session.ownership(),
-        krometrail_core::BrowserOwnership::Attached
-    );
-    assert_eq!(session.state(), BrowserSessionState::Ready);
+    let browser_status = session.status().await.expect("browser status");
+    assert_eq!(browser_status.ownership, krometrail_core::BrowserOwnership::Attached);
+    assert_eq!(browser_status.state, BrowserSessionState::Ready);
+    let session_id = browser_status.session_id;
     let mut events = session
         .subscribe()
         .await
@@ -212,9 +210,10 @@ async fn opt_in_real_chrome_capture_isolates_two_targets_and_records_visibility_
         .await;
     let extra_keys = [first_extra_key, second_extra_key];
 
-    let targets = session.targets().await.expect("target snapshot");
-    let expected: HashMap<_, _> = targets
+    let pages = session.status().await.expect("browser status").pages;
+    let expected: HashMap<_, _> = pages
         .iter()
+        .map(|page| &page.target)
         .filter(|target| {
             target.attachment_generation > 0
                 && target.visibility != krometrail_core::TargetVisibility::Unknown
@@ -268,11 +267,11 @@ async fn opt_in_real_chrome_capture_isolates_two_targets_and_records_visibility_
     assert_frame_fidelity_by_target(
         &frames,
         session.session_origin().observed().as_nanos(),
-        session.session_id(),
+        session_id,
         &expected_ids,
     );
     assert_strict_ordinals_by_target(&frames);
-    let statuses = session.capture_statuses().await.expect("capture statuses");
+    let statuses = session.status().await.expect("browser status").capture;
     for status in statuses
         .iter()
         .filter(|status| expected_ids.contains(&status.target_id()))
@@ -506,8 +505,9 @@ async fn opt_in_real_chrome_capture_fences_one_disconnect_and_resets_generation_
         ))
         .await
         .expect("proxy-backed capture session");
+    let session_id = session.status().await.expect("browser status").session_id;
     assert_eq!(
-        session.ownership(),
+        session.status().await.expect("browser status").ownership,
         krometrail_core::BrowserOwnership::Attached
     );
     let target_id = first_target(&session).await;
@@ -527,7 +527,7 @@ async fn opt_in_real_chrome_capture_fences_one_disconnect_and_resets_generation_
     assert_frame_fidelity(
         &old_target_frames,
         session.session_origin().observed().as_nanos(),
-        session.session_id(),
+        session_id,
         target_id,
     );
     assert_strict_ordinals_by_target(&old_target_frames);
@@ -581,7 +581,7 @@ async fn opt_in_real_chrome_capture_fences_one_disconnect_and_resets_generation_
     assert_frame_fidelity(
         &all_target_frames,
         session.session_origin().observed().as_nanos(),
-        session.session_id(),
+        session_id,
         target_id,
     );
     eprintln!(
@@ -665,10 +665,12 @@ async fn connect_managed(
 
 async fn first_target(session: &Arc<dyn BrowserSessionPort>) -> TargetId {
     session
-        .targets()
+        .status()
         .await
-        .expect("target snapshot")
+        .expect("browser status")
+        .pages
         .into_iter()
+        .map(|page| page.target)
         .find(|target| {
             target.lifecycle == krometrail_core::TargetLifecycle::Attached
                 && target.target.url() != "about:blank"
@@ -682,9 +684,10 @@ async fn status_for(
     target_id: TargetId,
 ) -> TargetCaptureStatus {
     session
-        .capture_statuses()
+        .status()
         .await
-        .expect("capture statuses")
+        .expect("browser status")
+        .capture
         .into_iter()
         .find(|status| status.target_id() == target_id)
         .expect("target capture status")
@@ -692,10 +695,12 @@ async fn status_for(
 
 async fn assert_initial_capture_ready(session: &Arc<dyn BrowserSessionPort>, target_id: TargetId) {
     let target = session
-        .targets()
+        .status()
         .await
-        .expect("initial target snapshot")
+        .expect("browser status")
+        .pages
         .into_iter()
+        .map(|page| page.target)
         .find(|target| target.target.id() == target_id)
         .expect("initial capture target");
     assert_eq!(
@@ -917,10 +922,12 @@ async fn wait_for_session_target(session: &Arc<dyn BrowserSessionPort>, key: &st
     tokio::time::timeout(CAPTURE_TIMEOUT, async {
         loop {
             let ready = session
-                .targets()
+                .status()
                 .await
-                .expect("target snapshot")
+                .expect("browser status")
+                .pages
                 .into_iter()
+                .map(|page| page.target)
                 .any(|target| {
                     target.target.browser_target_key() == key
                         && target.attachment_generation > 0
@@ -945,10 +952,12 @@ async fn target_id_for_key(session: &Arc<dyn BrowserSessionPort>, key: &str) -> 
     tokio::time::timeout(CAPTURE_TIMEOUT, async {
         loop {
             if let Some(target) = session
-                .targets()
+                .status()
                 .await
-                .expect("target snapshot")
+                .expect("browser status")
+                .pages
                 .into_iter()
+                .map(|page| page.target)
                 .find(|target| target.target.browser_target_key() == key)
             {
                 return target.target.id();
@@ -1133,9 +1142,10 @@ async fn wait_for_visibility_cycle(
             if let Some(target_id) = hidden_target {
                 if hidden_gap_targets.contains(&target_id) && visible_again {
                     let visible_target_is_capturing = session
-                        .capture_statuses()
+                        .status()
                         .await
-                        .expect("capture statuses")
+                        .expect("browser status")
+                        .capture
                         .iter()
                         .any(|status| {
                             status.target_id() == target_id
@@ -1176,9 +1186,10 @@ async fn wait_for_visibility_cycle(
         }
         let visible_target_is_capturing = if let Some(target_id) = hidden_target {
             session
-                .capture_statuses()
+                .status()
                 .await
-                .expect("capture statuses")
+                .expect("browser status")
+                .capture
                 .iter()
                 .any(|status| {
                     status.target_id() == target_id
@@ -1217,9 +1228,10 @@ async fn wait_for_reconnect(
         let mut browser_disconnected = false;
         loop {
             let restored = session
-                .capture_statuses()
+                .status()
                 .await
-                .expect("capture statuses")
+                .expect("browser status")
+                .capture
                 .into_iter()
                 .find(|status| {
                     status.target_id() == target_id

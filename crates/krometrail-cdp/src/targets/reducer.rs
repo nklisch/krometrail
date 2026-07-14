@@ -44,6 +44,7 @@ pub fn reduce(mut state: SupervisorState, input: SupervisorInput) -> Result<Redu
                 | SupervisorInput::TargetDestroyed { .. }
                 | SupervisorInput::VisibilityChanged { .. }
                 | SupervisorInput::CaptureVisibilityChanged { .. }
+                | SupervisorInput::SelectTarget { .. }
         )
     {
         // Events from the disconnected transport can still be queued in another task. They are
@@ -70,6 +71,7 @@ pub fn reduce(mut state: SupervisorState, input: SupervisorInput) -> Result<Redu
                     "initial reconciliation cannot become ready with unresolved target visibility",
                 ));
             }
+            reconcile_selection(&mut state, &mut effects);
             set_session_state(&mut state, BrowserSessionState::Ready, &mut effects)?;
         }
         SupervisorInput::TargetCreated(info) => {
@@ -108,6 +110,7 @@ pub fn reduce(mut state: SupervisorState, input: SupervisorInput) -> Result<Redu
                     },
                     &mut effects,
                 );
+                reconcile_selection(&mut state, &mut effects);
             }
         }
         SupervisorInput::CaptureStartFailed { target_key } => {
@@ -138,6 +141,9 @@ pub fn reduce(mut state: SupervisorState, input: SupervisorInput) -> Result<Redu
             {
                 visibility_changed(&mut state, &target_key, visibility, &mut effects)?;
             }
+        }
+        SupervisorInput::SelectTarget { target_key } => {
+            select_target(&mut state, &target_key, &mut effects)?;
         }
         SupervisorInput::ConnectionLost(close) => {
             if matches!(
@@ -394,6 +400,7 @@ fn detach_failed(
         },
         effects,
     );
+    reconcile_selection(state, effects);
     Ok(())
 }
 
@@ -436,6 +443,7 @@ fn initial_visibility_probe_failed(
         },
         effects,
     );
+    reconcile_selection(state, effects);
     Ok(())
 }
 
@@ -461,6 +469,72 @@ fn destroy(
             .transition(TargetLifecycle::Closed)?;
     }
     effects.push(close_event(target));
+    reconcile_selection(state, effects);
+    Ok(())
+}
+
+fn selection_candidate(state: &SupervisorState, key: &str) -> bool {
+    state.targets_by_key.get(key).is_some_and(|target| {
+        target.transport_session.is_some()
+            && !matches!(
+                target.target.lifecycle,
+                TargetLifecycle::Closed | TargetLifecycle::Failed | TargetLifecycle::Suspended
+            )
+    })
+}
+
+fn selected_id(state: &SupervisorState, key: Option<&str>) -> Option<krometrail_core::TargetId> {
+    key.and_then(|key| state.targets_by_key.get(key))
+        .map(|target| target.target.target.id())
+}
+
+fn set_selection(
+    state: &mut SupervisorState,
+    selected: Option<String>,
+    effects: &mut Vec<SupervisorEffect>,
+) {
+    if state.selected_target_key == selected {
+        return;
+    }
+    let previous = selected_id(state, state.selected_target_key.as_deref());
+    let next = selected_id(state, selected.as_deref());
+    state.selected_target_key = selected;
+    publish(
+        state,
+        BrowserSessionEvent::SelectedTargetChanged {
+            previous,
+            selected: next,
+        },
+        effects,
+    );
+}
+
+fn reconcile_selection(state: &mut SupervisorState, effects: &mut Vec<SupervisorEffect>) {
+    if state
+        .selected_target_key
+        .as_deref()
+        .is_some_and(|key| selection_candidate(state, key))
+    {
+        return;
+    }
+    let selected = state
+        .targets_by_key
+        .keys()
+        .filter(|key| selection_candidate(state, key))
+        .min()
+        .cloned();
+    set_selection(state, selected, effects);
+}
+
+fn select_target(
+    state: &mut SupervisorState,
+    target_key: &str,
+    effects: &mut Vec<SupervisorEffect>,
+) -> Result<()> {
+    if !selection_candidate(state, target_key) {
+        return Err(target_error());
+    }
+    set_selection(state, Some(target_key.to_owned()), effects);
     Ok(())
 }
 
@@ -531,6 +605,7 @@ fn reconnect(
     for restored in recordable {
         reconcile_restored(state, restored, effects)?;
     }
+    reconcile_selection(state, effects);
     set_session_state(state, BrowserSessionState::Ready, effects)?;
     Ok(())
 }
@@ -765,6 +840,7 @@ fn capture_start_failed(
         },
         effects,
     );
+    reconcile_selection(state, effects);
     Ok(())
 }
 
@@ -856,6 +932,7 @@ fn publish(
         | BrowserSessionEvent::TargetDiscovered { .. }
         | BrowserSessionEvent::TargetChanged { .. }
         | BrowserSessionEvent::TargetClosed { .. }
+        | BrowserSessionEvent::SelectedTargetChanged { .. }
         | BrowserSessionEvent::CaptureStateChanged { .. }
         | BrowserSessionEvent::CaptureGapDeclared { .. } => {}
     }
@@ -938,6 +1015,101 @@ mod tests {
             first.state.targets_by_key["a"].target.target.id(),
             second.state.targets_by_key["a"].target.target.id()
         );
+    }
+
+    #[test]
+    fn selection_is_initial_explicit_fallback_and_reconnect_stable_by_exact_key() {
+        let mut state = reduce(
+            SupervisorState::new(compatibility()),
+            SupervisorInput::InitialTargets(vec![
+                info("b", "https://same.test"),
+                info("a", "https://same.test"),
+            ]),
+        )
+        .unwrap()
+        .state;
+        for key in ["b", "a"] {
+            state = reduce(
+                state,
+                SupervisorInput::Attached {
+                    target_key: key.into(),
+                    session: crate::transport::TransportSessionId::new(format!("session-{key}"))
+                        .unwrap(),
+                },
+            )
+            .unwrap()
+            .state;
+            state = reduce(
+                state,
+                SupervisorInput::VisibilityChanged {
+                    target_key: key.into(),
+                    visibility: TargetVisibility::Visible,
+                },
+            )
+            .unwrap()
+            .state;
+        }
+        state = reduce(state, SupervisorInput::InitialReconciliationCompleted)
+            .unwrap()
+            .state;
+        assert_eq!(state.selected_target_key.as_deref(), Some("a"));
+        let a_id = state.targets_by_key["a"].target.target.id();
+        let b_id = state.targets_by_key["b"].target.target.id();
+
+        let selected = reduce(
+            state,
+            SupervisorInput::SelectTarget {
+                target_key: "b".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(selected.state.selected_target_key.as_deref(), Some("b"));
+        assert!(selected.effects.iter().any(|effect| matches!(
+            effect,
+            SupervisorEffect::Publish(BrowserSessionEvent::SelectedTargetChanged {
+                previous: Some(previous),
+                selected: Some(next),
+            }) if *previous == a_id && *next == b_id
+        )));
+
+        let closed = reduce(
+            selected.state,
+            SupervisorInput::TargetDestroyed {
+                target_key: "b".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(closed.state.selected_target_key.as_deref(), Some("a"));
+        assert_eq!(closed.state.selected_target().unwrap().target.target.id(), a_id);
+
+        let disconnected = reduce(
+            closed.state,
+            SupervisorInput::ConnectionLost(crate::transport::TransportClose {
+                reason: krometrail_core::NonEmptyText::new("remote").unwrap(),
+            }),
+        )
+        .unwrap()
+        .state;
+        assert_eq!(disconnected.selected_target_key.as_deref(), Some("a"));
+        let restored = reduce(
+            disconnected,
+            SupervisorInput::Reconnected(ReconnectedSnapshot {
+                connection_generation: 1,
+                compatibility: compatibility(),
+                targets: vec![ReconnectedTarget {
+                    info: info("a", "https://changed.test"),
+                    session: Some(crate::transport::TransportSessionId::new("new-a").unwrap()),
+                    visibility: TargetVisibility::Visible,
+                }],
+            }),
+        )
+        .unwrap();
+        assert_eq!(restored.state.selected_target_key.as_deref(), Some("a"));
+        assert_eq!(restored.state.selected_target().unwrap().target.target.id(), a_id);
+        assert!(!restored.effects.iter().any(|effect| matches!(
+            effect,
+            SupervisorEffect::Publish(BrowserSessionEvent::SelectedTargetChanged { .. })
+        )));
     }
 
     #[test]

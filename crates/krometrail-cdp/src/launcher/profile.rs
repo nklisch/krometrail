@@ -91,7 +91,7 @@ impl ProfileLease {
             path,
             lock_path,
             lock: Some(lock),
-            profile: ProfileRef::Managed(name.clone()),
+            profile: ProfileRef::managed(name.clone()),
             kind: ProfileLeaseKind::Reusable,
             cleanup_temporary: false,
         })
@@ -113,7 +113,7 @@ impl ProfileLease {
             path,
             lock_path,
             lock: Some(lock),
-            profile: ProfileRef::Managed(
+            profile: ProfileRef::temporary(
                 ProfileIdentity::new(format!("temporary-{sequence}"))
                     .expect("generated profile identity"),
             ),

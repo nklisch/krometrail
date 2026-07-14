@@ -1,11 +1,11 @@
 use std::{sync::Arc, time::Duration};
 
 use krometrail_core::{
-    BrowserOperationRequest, BrowserOperationResult, BrowserSessionState, CssPoint, CssRect,
-    CssSize, DeviceScaleFactor, DocumentReadiness, ErrorCode, ErrorContext, InspectPageRequest,
-    KrometrailError, MonotonicClock, NavigationState, NonEmptyText, ObservationContext, PageState,
-    Result, RetryAdvice, SessionId, SessionOrigin, SessionTime, TargetId, TargetLifecycle,
-    ViewportState,
+    BrowserOperationRequest, BrowserOperationResult, BrowserOperationScope, BrowserSessionState,
+    CssPoint, CssRect, CssSize, DeviceScaleFactor, DocumentReadiness, ErrorCode, ErrorContext,
+    IdSource, InspectPageRequest, KrometrailError, MonotonicClock, NavigationState, NonEmptyText,
+    ObservationContext, PageState, PageStatus, Result, RetryAdvice, SessionId, SessionOrigin,
+    SessionTime, TargetId, TargetLifecycle, ViewportState,
 };
 use serde_json::{Value, json};
 
@@ -15,9 +15,12 @@ use crate::{
 };
 
 mod evaluation;
+pub(crate) mod navigation;
+mod pages;
 mod screenshot;
 mod snapshot;
 
+use navigation::NavigationConfig;
 use snapshot::SnapshotRegistry;
 
 #[derive(Clone, Debug)]
@@ -35,9 +38,11 @@ impl Default for PageControlConfig {
 
 pub(crate) struct PageControl {
     pub(crate) clock: Arc<dyn MonotonicClock>,
+    pub(crate) ids: Arc<dyn IdSource>,
     pub(crate) session_id: SessionId,
     pub(crate) session_origin: SessionOrigin,
     pub(crate) config: PageControlConfig,
+    pub(crate) navigation: NavigationConfig,
     pub(crate) snapshots: SnapshotRegistry,
 }
 
@@ -51,14 +56,17 @@ pub(crate) struct BoundTarget {
 impl PageControl {
     pub(crate) fn new(
         clock: Arc<dyn MonotonicClock>,
+        ids: Arc<dyn IdSource>,
         session_id: SessionId,
         session_origin: SessionOrigin,
     ) -> Self {
         Self {
             clock,
+            ids,
             session_id,
             session_origin,
             config: PageControlConfig::default(),
+            navigation: NavigationConfig::default(),
             snapshots: SnapshotRegistry::default(),
         }
     }
@@ -73,11 +81,38 @@ impl PageControl {
             state
                 .targets_by_key
                 .values()
-                .filter(|target| target.target.lifecycle == TargetLifecycle::Attached)
+                .filter(|target| {
+                    !matches!(
+                        target.target.lifecycle,
+                        TargetLifecycle::Closed | TargetLifecycle::Failed
+                    )
+                })
                 .map(|target| target.target.target.id()),
         );
-        let target_id = request.target_id();
-        let bound = bind_target(state, target_id)?;
+        if matches!(&request, BrowserOperationRequest::ListPages(_)) {
+            let selected = state
+                .selected_target()
+                .map(|target| target.target.target.id());
+            let pages = state
+                .targets()
+                .into_iter()
+                .map(|target| PageStatus {
+                    selected: Some(target.target.id()) == selected,
+                    target,
+                })
+                .collect();
+            return Ok(BrowserOperationResult::ListPages(Box::new(pages)));
+        }
+        let selection = match request.scope() {
+            BrowserOperationScope::Page(selection) => selection,
+            BrowserOperationScope::Browser => {
+                return Err(KrometrailError::new(
+                    ErrorCode::Unsupported,
+                    NonEmptyText::new("browser mutation is not available").unwrap(),
+                ));
+            }
+        };
+        let bound = bind_target(state, selection)?;
         let started_at = self.session_time()?;
         match request {
             BrowserOperationRequest::InspectPage(request) => {
@@ -96,6 +131,16 @@ impl PageControl {
             BrowserOperationRequest::ObserveLive(request) => {
                 self.observe_live(transport, &bound, request, started_at)
                     .await
+            }
+            BrowserOperationRequest::ListPages(_)
+            | BrowserOperationRequest::CreatePage(_)
+            | BrowserOperationRequest::SelectPage(_)
+            | BrowserOperationRequest::ClosePage(_)
+            | BrowserOperationRequest::NavigatePage(_)
+            | BrowserOperationRequest::ReloadPage(_)
+            | BrowserOperationRequest::GoBack(_)
+            | BrowserOperationRequest::GoForward(_) => {
+                unreachable!("browser/page mutations are routed before read-only dispatch")
             }
         }
     }
@@ -147,36 +192,38 @@ impl PageControl {
     }
 }
 
-pub(crate) fn bind_target(state: &SupervisorState, target_id: TargetId) -> Result<BoundTarget> {
+pub(crate) fn bind_target(
+    state: &SupervisorState,
+    selection: krometrail_core::PageSelection,
+) -> Result<BoundTarget> {
     match state.session_state {
         BrowserSessionState::Ready => {}
         BrowserSessionState::Reconnecting | BrowserSessionState::Connecting => {
-            return Err(operation_error(
+            return Err(selection_error(
                 ErrorCode::BrowserDisconnected,
-                target_id,
+                state,
+                selection,
                 "browser session is not ready for page observation",
             ));
         }
         BrowserSessionState::Stopping | BrowserSessionState::Ended => {
-            return Err(operation_error(
+            return Err(selection_error(
                 ErrorCode::Cancelled,
-                target_id,
+                state,
+                selection,
                 "browser session is stopping or ended",
             ));
         }
     }
-    let target = state
-        .targets_by_key
-        .values()
-        .find(|candidate| candidate.target.target.id() == target_id)
-        .ok_or_else(|| {
-            operation_error(
-                ErrorCode::NotFound,
-                target_id,
-                "browser target was not found",
-            )
-        })?;
-    if target.target.lifecycle != TargetLifecycle::Attached {
+    let target = state.resolve_selection(selection)?;
+    let target_id = target.target.target.id();
+    if matches!(
+        target.target.lifecycle,
+        TargetLifecycle::Closed
+            | TargetLifecycle::Failed
+            | TargetLifecycle::Suspended
+            | TargetLifecycle::Discovered
+    ) {
         return Err(operation_error(
             ErrorCode::TargetFailed,
             target_id,
@@ -195,6 +242,33 @@ pub(crate) fn bind_target(state: &SupervisorState, target_id: TargetId) -> Resul
         attachment_generation: target.target.attachment_generation,
         transport_session,
     })
+}
+
+fn selection_error(
+    code: ErrorCode,
+    state: &SupervisorState,
+    selection: krometrail_core::PageSelection,
+    message: &'static str,
+) -> KrometrailError {
+    let target_id = match selection {
+        krometrail_core::PageSelection::Target(target_id) => Some(target_id),
+        krometrail_core::PageSelection::Selected => state
+            .selected_target_key
+            .as_deref()
+            .and_then(|key| state.targets_by_key.get(key))
+            .map(|target| target.target.target.id()),
+    };
+    target_id.map_or_else(
+        || {
+            let mut error = KrometrailError::new(code, NonEmptyText::new(message).unwrap())
+                .with_retry(code.default_retry());
+            if let Some(recovery) = code.default_recovery() {
+                error = error.with_recovery(NonEmptyText::new(recovery).unwrap());
+            }
+            error
+        },
+        |target_id| operation_error(code, target_id, message),
+    )
 }
 
 fn decode_page_state(

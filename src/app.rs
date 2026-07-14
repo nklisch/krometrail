@@ -13,7 +13,9 @@ use uuid::Uuid;
 // These imports make the root's assembly boundary explicit. Implementations will
 // move into these inward-dependent crates as their capabilities land; this root
 // remains the only place allowed to choose and connect them.
-use krometrail_cdp::{CaptureConfig, ProductionBrowserConnector};
+use krometrail_cdp::{
+    CaptureConfig, LauncherConfig, ProductionBrowserConnector, SystemChromeLauncher,
+};
 use krometrail_mcp as _;
 use krometrail_store::{RotationConfig, SegmentStoreConfig, SegmentWriter};
 use temporal_vision as _;
@@ -69,13 +71,24 @@ pub(crate) fn build_runtime() -> Result<Runtime> {
         directory: data_directory().join("segments"),
         rotation: RotationConfig::suggested(),
     })?);
-    let browser: Arc<dyn BrowserConnector> =
-        Arc::new(ProductionBrowserConnector::default().with_capture(
+    let profile_root = std::env::var_os("KROMETRAIL_PROFILE_ROOT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| data_directory().join("browser-profiles"));
+    let browser: Arc<dyn BrowserConnector> = Arc::new(
+        ProductionBrowserConnector::new(
+            Arc::new(SystemChromeLauncher::new(LauncherConfig::new(profile_root))),
+            Arc::new(
+                krometrail_cdp::transport::CdpkitTransportFactory::new()
+                    .with_command_timeout(std::time::Duration::from_secs(3)),
+            ),
+        )
+        .with_capture(
             Arc::clone(&clock),
             Arc::clone(&ids),
             Arc::clone(&recording),
             CaptureConfig::default(),
-        ));
+        ),
+    );
     Ok(Runtime::new(RuntimeDependencies {
         clock,
         wall_clock: Arc::new(SystemWallClock),

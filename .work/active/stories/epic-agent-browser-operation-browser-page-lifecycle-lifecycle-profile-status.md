@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-operation-browser-page-lifecycle-lifecycle-profile-status
 kind: story
-stage: implementing
+stage: done
 tags: [browser, agent-ux]
 parent: epic-agent-browser-operation-browser-page-lifecycle
 depends_on: [epic-agent-browser-operation-browser-page-lifecycle-core-control-contracts]
@@ -41,3 +41,13 @@ Implement coherent `ProductionSession::status` from one supervisor revision plus
 ## Ordering
 
 Depends on the core contract checkpoint. It establishes trustworthy start/attach/stop/status/profile behavior before page-selection mutations consume that status surface.
+
+## Implementation notes
+
+- Execution capability: highest; profile ownership, renderer acceptance, shutdown, and coherent operational status are lifecycle safety boundaries.
+- Review weight: standard (caller).
+- Files changed: managed profile lease projection, production connector/session, root composition, and status-consuming connector/capture/supervision tests.
+- Tests: default/named/temporary/external profile contracts, lease exclusivity/retention/cleanup, capability probes including Node-inspector rejection, attached/managed stop behavior, and coherent status. Focused suites passed with 19 tests; root all-target check passed.
+- Simplification: removed split session component getters from the port and migrated consumers to one coherent status snapshot; reused the one connector, launcher, compatibility path, and capture assembly.
+- Discrepancies from design: none.
+- Adjacent issues parked: none.

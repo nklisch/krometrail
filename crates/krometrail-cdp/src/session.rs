@@ -17,11 +17,13 @@ use futures_util::{StreamExt, stream::FuturesUnordered};
 
 use krometrail_core::{
     AttachBrowser, BrowserCompatibility, BrowserConnectRequest, BrowserConnector,
-    BrowserInstallation, BrowserOperationRequest, BrowserOperationResult, BrowserOwnership,
-    BrowserSessionEvent, BrowserSessionEvents, BrowserSessionPort, BrowserSessionState,
-    BrowserStopOutcome, ErrorCode, IdSource, KrometrailError, MonotonicClock, NonEmptyText,
-    PortFuture, ProfileRef, Result, SessionId, SessionOrigin, SupervisedTarget,
-    TargetCaptureStatus, TargetVisibility,
+    BrowserInstallation, BrowserOperationRequest, BrowserOperationResult, BrowserOperationScope,
+    BrowserOwnership, BrowserSessionEvent, BrowserSessionEvents, BrowserSessionPort,
+    BrowserSessionState, BrowserStatus, BrowserStopOutcome, ErrorCode, IdSource, IdValue,
+    InteractionAnchor, InteractionTiming, KrometrailError, MonotonicClock, NonEmptyText,
+    ObservationPart, PageChange, PageOperationOutcome, PageOperationResult, PageSelection,
+    PageStatus, PortFuture, ProfileRef, Result, SessionId, SessionOrigin, TargetCaptureStatus,
+    TargetVisibility,
 };
 use serde_json::Value;
 use tokio::{
@@ -36,7 +38,7 @@ use crate::{
         CaptureTarget,
     },
     compatibility::{CompatibilityProbeError, probe_compatibility_with_target_limit},
-    control::{PageControl, operation_error},
+    control::{PageControl, navigation::OperationCancellation, operation_error},
     launcher::{
         ChromeLauncher, LaunchError, LauncherConfig, ManagedChromeProcess, ProfileLease,
         SystemChromeLauncher, attach_endpoint,
@@ -61,6 +63,14 @@ impl MonotonicClock for AdapterMonotonicClock {
         krometrail_core::ObservedTime::from_nanos(
             u64::try_from(self.origin.elapsed().as_nanos()).unwrap_or(u64::MAX),
         )
+    }
+}
+
+struct AdapterIdSource;
+
+impl IdSource for AdapterIdSource {
+    fn next(&self) -> IdValue {
+        IdValue::from_uuid(Uuid::new_v4())
     }
 }
 
@@ -113,6 +123,7 @@ pub struct ProductionBrowserConnector {
     transport_factory: Arc<dyn CdpTransportFactory>,
     config: SupervisorConfig,
     clock: Arc<dyn MonotonicClock>,
+    ids: Arc<dyn IdSource>,
     capture: Option<CaptureAssembly>,
 }
 
@@ -136,12 +147,18 @@ impl ProductionBrowserConnector {
             clock: Arc::new(AdapterMonotonicClock {
                 origin: Instant::now(),
             }),
+            ids: Arc::new(AdapterIdSource),
             capture: None,
         }
     }
 
     pub fn with_clock(mut self, clock: Arc<dyn MonotonicClock>) -> Self {
         self.clock = clock;
+        self
+    }
+
+    pub fn with_ids(mut self, ids: Arc<dyn IdSource>) -> Self {
+        self.ids = ids;
         self
     }
 
@@ -153,6 +170,7 @@ impl ProductionBrowserConnector {
         config: CaptureConfig,
     ) -> Self {
         self.clock = Arc::clone(&clock);
+        self.ids = Arc::clone(&ids);
         self.capture = Some(CaptureAssembly {
             clock,
             ids,
@@ -205,6 +223,7 @@ impl BrowserConnector for ProductionBrowserConnector {
         let config = self.config.clone();
         let capture_assembly = self.capture.clone();
         let control_clock = Arc::clone(&self.clock);
+        let ids = Arc::clone(&self.ids);
         Box::pin(async move {
             // Keep a launched browser in its paired Drop guard until transport setup succeeds.
             // Splitting process/profile ownership before this point could release a temporary
@@ -247,10 +266,7 @@ impl BrowserConnector for ProductionBrowserConnector {
             };
             let subscribers = Arc::new(SubscriberRegistry::new(config.subscriber_capacity));
             let (command_tx, command_rx) = mpsc::channel(64);
-            let session_id = capture_assembly.as_ref().map_or_else(
-                || SessionId::from_uuid(Uuid::new_v4()),
-                |assembly| SessionId::from_uuid(*assembly.ids.next().as_uuid()),
-            );
+            let session_id = SessionId::from_uuid(*ids.next().as_uuid());
             let session_origin = SessionOrigin::new(control_clock.now());
             let capture = capture_assembly
                 .map(|assembly| {
@@ -321,11 +337,12 @@ impl BrowserConnector for ProductionBrowserConnector {
                 session_id,
                 session_origin,
                 capture: capture.clone(),
+                operation_cancellation: OperationCancellation::default(),
                 stop_result: Mutex::new(None),
             });
             let task_shared = Arc::clone(&shared);
             let endpoint = Arc::new(endpoint);
-            let page_control = PageControl::new(control_clock, session_id, session_origin);
+            let page_control = PageControl::new(control_clock, ids, session_id, session_origin);
             let task = tokio::spawn(run_supervisor(
                 task_shared,
                 state,
@@ -401,6 +418,7 @@ struct SessionShared {
     session_id: SessionId,
     session_origin: SessionOrigin,
     capture: Option<Arc<CaptureRuntime>>,
+    operation_cancellation: OperationCancellation,
     stop_result: Mutex<Option<Result<BrowserStopOutcome>>>,
 }
 
@@ -420,56 +438,49 @@ struct ProductionSession {
 }
 
 impl BrowserSessionPort for ProductionSession {
-    fn session_id(&self) -> SessionId {
-        self.shared.session_id
-    }
-
     fn session_origin(&self) -> SessionOrigin {
         self.shared.session_origin
     }
 
-    fn compatibility(&self) -> &BrowserCompatibility {
-        &self.shared.compatibility
-    }
-
-    fn ownership(&self) -> BrowserOwnership {
-        self.shared.ownership
-    }
-
-    fn profile(&self) -> &ProfileRef {
-        &self.shared.profile
-    }
-
-    fn state(&self) -> BrowserSessionState {
-        self.shared
-            .state
-            .lock()
-            .expect("session state lock")
-            .session_state
-    }
-
-    fn targets(&self) -> PortFuture<'_, Result<Vec<SupervisedTarget>>> {
-        let targets = self
-            .shared
-            .state
-            .lock()
-            .expect("session state lock")
-            .targets();
-        Box::pin(std::future::ready(Ok(targets)))
+    fn status(&self) -> PortFuture<'_, Result<BrowserStatus>> {
+        let state = self.shared.state.lock().expect("session state lock");
+        let selected_target_id = if state.session_state == BrowserSessionState::Ended {
+            None
+        } else {
+            state
+                .selected_target_key
+                .as_deref()
+                .and_then(|key| state.targets_by_key.get(key))
+                .map(|target| target.target.target.id())
+        };
+        let pages = state
+            .targets()
+            .into_iter()
+            .map(|target| PageStatus {
+                selected: Some(target.target.id()) == selected_target_id,
+                target,
+            })
+            .collect();
+        let status = BrowserStatus::new(
+            self.shared.session_id,
+            state.session_state,
+            self.shared.ownership,
+            self.shared.profile.clone(),
+            state.compatibility.clone(),
+            selected_target_id,
+            pages,
+            self.shared
+                .capture
+                .as_ref()
+                .map_or_else(Vec::new, |capture| capture.coordinator.statuses()),
+        );
+        drop(state);
+        Box::pin(std::future::ready(status))
     }
 
     fn subscribe(&self) -> PortFuture<'_, Result<Box<dyn BrowserSessionEvents>>> {
         let events = self.shared.subscribers.subscribe();
         Box::pin(std::future::ready(Ok(events)))
-    }
-
-    fn capture_statuses(&self) -> PortFuture<'_, Result<Vec<TargetCaptureStatus>>> {
-        let statuses = self
-            .shared
-            .capture
-            .as_ref()
-            .map_or_else(Vec::new, |capture| capture.coordinator.statuses());
-        Box::pin(std::future::ready(Ok(statuses)))
     }
 
     fn execute(
@@ -478,21 +489,21 @@ impl BrowserSessionPort for ProductionSession {
     ) -> PortFuture<'_, Result<BrowserOperationResult>> {
         let shared = Arc::clone(&self.shared);
         Box::pin(async move {
-            let target_id = request.target_id();
+            let target_id = direct_request_target(&request);
             let (sender, receiver) = oneshot::channel();
             shared
                 .command_tx
                 .send(SupervisorCommand::Execute(request, sender))
                 .await
                 .map_err(|_| {
-                    operation_error(
+                    request_operation_error(
                         ErrorCode::Cancelled,
                         target_id,
                         "browser supervision task ended",
                     )
                 })?;
             receiver.await.map_err(|_| {
-                operation_error(
+                request_operation_error(
                     ErrorCode::Cancelled,
                     target_id,
                     "browser operation ended without a result",
@@ -507,6 +518,7 @@ impl BrowserSessionPort for ProductionSession {
             if let Some(result) = shared.stop_result.lock().expect("stop result lock").clone() {
                 return result;
             }
+            shared.operation_cancellation.stop();
             let (sender, receiver) = oneshot::channel();
             shared
                 .command_tx
@@ -532,6 +544,7 @@ impl Drop for ProductionSession {
         // Detach the task rather than aborting it. The task owns the asynchronous shutdown path;
         // the process/profile guards remain alive until that path completes, while their Drop
         // implementations still provide cancellation-safe last-resort cleanup if the runtime ends.
+        self.shared.operation_cancellation.stop();
         let cancel_queued = self
             .shared
             .command_tx
@@ -557,13 +570,24 @@ struct ConnectionResources {
 }
 
 impl ConnectionResources {
-    fn restart_pumps(&mut self, sender: mpsc::Sender<SupervisorCommand>, generation: u64) {
+    fn restart_pumps(
+        &mut self,
+        sender: mpsc::Sender<SupervisorCommand>,
+        generation: u64,
+        cancellation: OperationCancellation,
+    ) {
         self.abort_pumps();
         let subscriptions = std::mem::take(&mut self.subscriptions);
         self.pump_handles = subscriptions
             .into_iter()
             .map(|(kind, events)| {
-                tokio::spawn(pump_events(kind, events, sender.clone(), generation))
+                tokio::spawn(pump_events(
+                    kind,
+                    events,
+                    sender.clone(),
+                    generation,
+                    cancellation.clone(),
+                ))
             })
             .collect();
     }
@@ -864,7 +888,11 @@ async fn run_supervisor(
 ) {
     if let Some(connection) = connection.as_mut() {
         let sender = shared.command_tx.clone();
-        connection.restart_pumps(sender, state.connection_generation);
+        connection.restart_pumps(
+            sender,
+            state.connection_generation,
+            shared.operation_cancellation.clone(),
+        );
     }
     if let Some(process) = runtime.process.clone() {
         tokio::spawn(watch_process(
@@ -952,14 +980,19 @@ async fn run_supervisor(
                 }
             }
             SupervisorCommand::Execute(request, sender) => {
-                let target_id = request.target_id();
+                let target_id = direct_request_target(&request);
                 let result = match connection.as_ref() {
                     Some(connection) => {
-                        page_control
-                            .execute(connection.transport.as_ref(), &state, request)
-                            .await
+                        execute_operation(
+                            &mut page_control,
+                            &mut state,
+                            Arc::clone(&connection.transport),
+                            &shared,
+                            request,
+                        )
+                        .await
                     }
-                    None => Err(operation_error(
+                    None => Err(request_operation_error(
                         ErrorCode::BrowserDisconnected,
                         target_id,
                         "browser transport is unavailable",
@@ -1026,6 +1059,374 @@ async fn run_supervisor(
     }
     // Dropping the connection aborts event pumps. Process/profile Arcs remain owned by this task
     // and are cleaned by the explicit shutdown path or by their guards on cancellation.
+}
+
+async fn execute_operation(
+    page_control: &mut PageControl,
+    state: &mut SupervisorState,
+    transport: Arc<dyn CdpTransport>,
+    shared: &Arc<SessionShared>,
+    request: BrowserOperationRequest,
+) -> Result<BrowserOperationResult> {
+    match request {
+        BrowserOperationRequest::CreatePage(request) => {
+            let started_at = page_control.session_time()?;
+            let interaction_id = page_control.next_interaction_id();
+            let dispatched_at = page_control.session_time()?;
+            let response = transport
+                .send_raw(
+                    &CommandScope::Browser,
+                    "Target.createTarget",
+                    serde_json::json!({"url": request.initial_url.as_ref().map_or("about:blank", |url| url.as_str())}),
+                )
+                .await
+                .map_err(|error| transport_error_to_core(error, true))?;
+            let target_key = response
+                .get("targetId")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| stable_error(ErrorCode::TargetFailed, "browser returned an invalid created target"))?
+                .to_owned();
+            let info = transport
+                .send_raw(
+                    &CommandScope::Browser,
+                    "Target.getTargetInfo",
+                    serde_json::json!({"targetId": target_key}),
+                )
+                .await
+                .map_err(|error| transport_error_to_core(error, true))?
+                .get("targetInfo")
+                .and_then(parse_target_info)
+                .ok_or_else(|| stable_error(ErrorCode::TargetFailed, "created browser target could not be reconciled"))?;
+            commit_supervisor_input(
+                state,
+                SupervisorInput::TargetCreated(info),
+                Arc::clone(&transport),
+                shared,
+            )
+            .await?;
+            let target_id = state
+                .targets_by_key
+                .get(&target_key)
+                .map(|target| target.target.target.id())
+                .ok_or_else(|| stable_error(ErrorCode::TargetFailed, "created browser target was not attached"))?;
+            let activation = transport
+                .send_raw(
+                    &CommandScope::Browser,
+                    "Target.activateTarget",
+                    serde_json::json!({"targetId": target_key}),
+                )
+                .await;
+            if let Err(error) = activation {
+                return page_failure_result(
+                    page_control,
+                    target_id,
+                    krometrail_core::BrowserOperationKind::CreatePage,
+                    interaction_id,
+                    started_at,
+                    dispatched_at,
+                    transport_page_error(error, ErrorCode::TargetFailed, target_id),
+                );
+            }
+            commit_supervisor_input(
+                state,
+                SupervisorInput::SelectTarget { target_key },
+                Arc::clone(&transport),
+                shared,
+            )
+            .await?;
+            page_success_result(
+                page_control,
+                transport.as_ref(),
+                state,
+                target_id,
+                krometrail_core::BrowserOperationKind::CreatePage,
+                interaction_id,
+                started_at,
+                dispatched_at,
+                PageChange::Created { target_id },
+                PageSelection::Target(target_id),
+            )
+            .await
+            .map(|result| BrowserOperationResult::CreatePage(Box::new(result)))
+        }
+        BrowserOperationRequest::SelectPage(request) => {
+            let target = state.resolve_selection(PageSelection::Target(request.target_id))?;
+            let target_key = target.target.target.browser_target_key().to_owned();
+            let target_id = target.target.target.id();
+            let previous = state.selected_target().map(|target| target.target.target.id());
+            let started_at = page_control.session_time()?;
+            let interaction_id = page_control.next_interaction_id();
+            let dispatched_at = page_control.session_time()?;
+            if let Err(error) = transport
+                .send_raw(
+                    &CommandScope::Browser,
+                    "Target.activateTarget",
+                    serde_json::json!({"targetId": target_key}),
+                )
+                .await
+            {
+                return page_failure_result(
+                    page_control,
+                    target_id,
+                    krometrail_core::BrowserOperationKind::SelectPage,
+                    interaction_id,
+                    started_at,
+                    dispatched_at,
+                    transport_page_error(error, ErrorCode::TargetFailed, target_id),
+                );
+            }
+            commit_supervisor_input(
+                state,
+                SupervisorInput::SelectTarget { target_key },
+                Arc::clone(&transport),
+                shared,
+            )
+            .await?;
+            page_success_result(
+                page_control,
+                transport.as_ref(),
+                state,
+                target_id,
+                krometrail_core::BrowserOperationKind::SelectPage,
+                interaction_id,
+                started_at,
+                dispatched_at,
+                PageChange::Selected { previous, selected: target_id },
+                PageSelection::Target(target_id),
+            )
+            .await
+            .map(|result| BrowserOperationResult::SelectPage(Box::new(result)))
+        }
+        BrowserOperationRequest::NavigatePage(request) => page_control
+            .navigate(
+                transport.as_ref(),
+                state,
+                request,
+                &shared.operation_cancellation,
+            )
+            .await,
+        BrowserOperationRequest::ReloadPage(request) => page_control
+            .reload(
+                transport.as_ref(),
+                state,
+                request,
+                &shared.operation_cancellation,
+            )
+            .await,
+        BrowserOperationRequest::GoBack(request) => page_control
+            .go_back(
+                transport.as_ref(),
+                state,
+                request,
+                &shared.operation_cancellation,
+            )
+            .await,
+        BrowserOperationRequest::GoForward(request) => page_control
+            .go_forward(
+                transport.as_ref(),
+                state,
+                request,
+                &shared.operation_cancellation,
+            )
+            .await,
+        BrowserOperationRequest::ClosePage(request) => {
+            let target = state.resolve_selection(request.target)?;
+            let target_key = target.target.target.browser_target_key().to_owned();
+            let target_id = target.target.target.id();
+            let started_at = page_control.session_time()?;
+            let interaction_id = page_control.next_interaction_id();
+            let dispatched_at = page_control.session_time()?;
+            let response = transport
+                .send_raw(
+                    &CommandScope::Browser,
+                    "Target.closeTarget",
+                    serde_json::json!({"targetId": target_key}),
+                )
+                .await;
+            let success = match response {
+                Ok(response) => response.get("success").and_then(Value::as_bool) == Some(true),
+                Err(error) => {
+                    return page_failure_result(
+                        page_control,
+                        target_id,
+                        krometrail_core::BrowserOperationKind::ClosePage,
+                        interaction_id,
+                        started_at,
+                        dispatched_at,
+                        transport_page_error(error, ErrorCode::TargetFailed, target_id),
+                    );
+                }
+            };
+            if !success {
+                return page_failure_result(
+                    page_control,
+                    target_id,
+                    krometrail_core::BrowserOperationKind::ClosePage,
+                    interaction_id,
+                    started_at,
+                    dispatched_at,
+                    operation_error(ErrorCode::TargetFailed, target_id, "browser did not confirm page closure"),
+                );
+            }
+            commit_supervisor_input(
+                state,
+                SupervisorInput::TargetDestroyed { target_key },
+                Arc::clone(&transport),
+                shared,
+            )
+            .await?;
+            page_control.invalidate_target_snapshot(target_id);
+            let selected = state.selected_target().map(|target| target.target.target.id());
+            let observation = match selected {
+                Some(selected) => page_control
+                    .observe_after_operation(
+                        transport.as_ref(),
+                        state,
+                        PageSelection::Target(selected),
+                    )
+                    .await?,
+                None => ObservationPart::Unavailable(KrometrailError::new(
+                    ErrorCode::NotFound,
+                    NonEmptyText::new("no browser page remains selected after closure").unwrap(),
+                )),
+            };
+            let result = build_page_result(
+                page_control,
+                target_id,
+                krometrail_core::BrowserOperationKind::ClosePage,
+                interaction_id,
+                started_at,
+                dispatched_at,
+                PageOperationOutcome::Succeeded(PageChange::Closed { closed: target_id, selected }),
+                observation,
+            )?;
+            Ok(BrowserOperationResult::ClosePage(Box::new(result)))
+        }
+        request => page_control.execute(transport.as_ref(), state, request).await,
+    }
+}
+
+async fn commit_supervisor_input(
+    state: &mut SupervisorState,
+    input: SupervisorInput,
+    transport: Arc<dyn CdpTransport>,
+    shared: &Arc<SessionShared>,
+) -> Result<()> {
+    let previous = std::mem::replace(state, SupervisorState::new(shared.compatibility.clone()));
+    let reduction = reduce(previous, input)?;
+    *state = reduction.state;
+    apply_effects(
+        state,
+        reduction.effects,
+        transport,
+        Arc::clone(&shared.subscribers),
+        shared.capture.clone(),
+        None,
+    )
+    .await?;
+    *shared.state.lock().expect("session state lock") = state.clone();
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn page_success_result(
+    page_control: &mut PageControl,
+    transport: &dyn CdpTransport,
+    state: &SupervisorState,
+    target_id: krometrail_core::TargetId,
+    operation: krometrail_core::BrowserOperationKind,
+    interaction_id: krometrail_core::InteractionId,
+    started_at: krometrail_core::SessionTime,
+    dispatched_at: krometrail_core::SessionTime,
+    change: PageChange,
+    observation_target: PageSelection,
+) -> Result<PageOperationResult> {
+    let observation = page_control
+        .observe_after_operation(transport, state, observation_target)
+        .await?;
+    build_page_result(
+        page_control,
+        target_id,
+        operation,
+        interaction_id,
+        started_at,
+        dispatched_at,
+        PageOperationOutcome::Succeeded(change),
+        observation,
+    )
+}
+
+fn page_failure_result(
+    page_control: &PageControl,
+    target_id: krometrail_core::TargetId,
+    operation: krometrail_core::BrowserOperationKind,
+    interaction_id: krometrail_core::InteractionId,
+    started_at: krometrail_core::SessionTime,
+    dispatched_at: krometrail_core::SessionTime,
+    error: KrometrailError,
+) -> Result<BrowserOperationResult> {
+    let result = build_page_result(
+        page_control,
+        target_id,
+        operation,
+        interaction_id,
+        started_at,
+        dispatched_at,
+        PageOperationOutcome::Failed(error.clone()),
+        ObservationPart::Unavailable(error),
+    )?;
+    Ok(match operation {
+        krometrail_core::BrowserOperationKind::CreatePage => BrowserOperationResult::CreatePage(Box::new(result)),
+        krometrail_core::BrowserOperationKind::SelectPage => BrowserOperationResult::SelectPage(Box::new(result)),
+        krometrail_core::BrowserOperationKind::ClosePage => BrowserOperationResult::ClosePage(Box::new(result)),
+        krometrail_core::BrowserOperationKind::NavigatePage => BrowserOperationResult::NavigatePage(Box::new(result)),
+        krometrail_core::BrowserOperationKind::ReloadPage => BrowserOperationResult::ReloadPage(Box::new(result)),
+        krometrail_core::BrowserOperationKind::GoBack => BrowserOperationResult::GoBack(Box::new(result)),
+        krometrail_core::BrowserOperationKind::GoForward => BrowserOperationResult::GoForward(Box::new(result)),
+        _ => unreachable!("only state-changing page operations produce page failures"),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_page_result(
+    page_control: &PageControl,
+    target_id: krometrail_core::TargetId,
+    operation: krometrail_core::BrowserOperationKind,
+    interaction_id: krometrail_core::InteractionId,
+    started_at: krometrail_core::SessionTime,
+    dispatched_at: krometrail_core::SessionTime,
+    outcome: PageOperationOutcome,
+    observation: ObservationPart<krometrail_core::LiveObservation>,
+) -> Result<PageOperationResult> {
+    let (completed_at, observed_at) = match &observation {
+        ObservationPart::Available(observation) => (
+            observation.context.started_at,
+            Some(observation.context.completed_at),
+        ),
+        ObservationPart::Unavailable(_) => (page_control.session_time()?, None),
+    };
+    let timing = InteractionTiming::new(started_at, dispatched_at, completed_at, observed_at)?;
+    let interaction = InteractionAnchor::new(
+        interaction_id,
+        page_control.session_id,
+        target_id,
+        operation,
+        timing,
+    )?;
+    let outcome = match outcome {
+        PageOperationOutcome::Failed(error) => PageOperationOutcome::failed(error, &interaction),
+        outcome => outcome,
+    };
+    PageOperationResult::new(interaction, outcome, observation)
+}
+
+fn transport_page_error(
+    error: TransportError,
+    fallback: ErrorCode,
+    target_id: krometrail_core::TargetId,
+) -> KrometrailError {
+    crate::control::transport_error(error, fallback, target_id)
 }
 
 async fn finish_interrupted_reconnect(
@@ -1483,9 +1884,10 @@ async fn reconnect_loop_transactional(
                             return true;
                         }
                         Some(SupervisorCommand::Execute(request, sender)) => {
-                            let _ = sender.send(Err(operation_error(
+                            let target_id = direct_request_target(&request);
+                            let _ = sender.send(Err(request_operation_error(
                                 ErrorCode::BrowserDisconnected,
-                                request.target_id(),
+                                target_id,
                                 "browser is reconnecting; operation was not replayed",
                             )));
                         }
@@ -1565,9 +1967,10 @@ async fn reconnect_loop_transactional(
                     let interrupt = match command {
                         Some(SupervisorCommand::Stop(sender)) => Some(ReconnectInterrupt::Stop(sender)),
                         Some(SupervisorCommand::Execute(request, sender)) => {
-                            let _ = sender.send(Err(operation_error(
+                            let target_id = direct_request_target(&request);
+                            let _ = sender.send(Err(request_operation_error(
                                 ErrorCode::BrowserDisconnected,
-                                request.target_id(),
+                                target_id,
                                 "browser is reconnecting; operation was not replayed",
                             )));
                             None
@@ -1625,6 +2028,7 @@ async fn reconnect_loop_transactional(
                 prepared.connection.restart_pumps(
                     shared.command_tx.clone(),
                     prepared.state.connection_generation,
+                    shared.operation_cancellation.clone(),
                 );
                 *state = prepared.state;
                 let new_transport = Arc::clone(&prepared.connection.transport);
@@ -1946,6 +2350,7 @@ async fn pump_events(
     mut events: Box<dyn TransportEvents>,
     sender: mpsc::Sender<SupervisorCommand>,
     generation: u64,
+    cancellation: OperationCancellation,
 ) {
     loop {
         match events.next().await {
@@ -1966,6 +2371,7 @@ async fn pump_events(
                 }
             }
             Ok(None) | Err(_) => {
+                cancellation.disconnect(generation);
                 let _ = sender
                     .send(SupervisorCommand::Input(
                         SupervisorInput::ForConnectionGeneration {
@@ -2087,6 +2493,27 @@ fn session_setup_error(error: CompatibilityProbeError) -> KrometrailError {
             "browser does not provide the required renderer capabilities",
         ),
     }
+}
+
+fn direct_request_target(request: &BrowserOperationRequest) -> Option<krometrail_core::TargetId> {
+    match request.scope() {
+        BrowserOperationScope::Page(krometrail_core::PageSelection::Target(target_id)) => {
+            Some(target_id)
+        }
+        BrowserOperationScope::Browser
+        | BrowserOperationScope::Page(krometrail_core::PageSelection::Selected) => None,
+    }
+}
+
+fn request_operation_error(
+    code: ErrorCode,
+    target_id: Option<krometrail_core::TargetId>,
+    message: &'static str,
+) -> KrometrailError {
+    target_id.map_or_else(
+        || stable_error(code, message),
+        |target_id| operation_error(code, target_id, message),
+    )
 }
 
 fn stable_error(code: ErrorCode, message: &'static str) -> KrometrailError {
@@ -2319,6 +2746,7 @@ mod tests {
             session_id: SessionId::from_uuid(Uuid::new_v4()),
             session_origin: SessionOrigin::new(krometrail_core::ObservedTime::from_nanos(0)),
             capture: None,
+            operation_cancellation: OperationCancellation::default(),
             stop_result: Mutex::new(None),
         });
         let runtime = SupervisorRuntime {

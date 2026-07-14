@@ -427,9 +427,11 @@ async fn run_fidelity_session(
     )
     .await;
 
-    assert_eq!(session.state(), BrowserSessionState::Ready);
-    assert_eq!(session.ownership().as_str(), "managed");
-    let version = &session.compatibility().version;
+    let browser_status = session.status().await.expect("browser status");
+    assert_eq!(browser_status.state, BrowserSessionState::Ready);
+    assert_eq!(browser_status.ownership.as_str(), "managed");
+    let session_id = browser_status.session_id;
+    let version = &browser_status.compatibility.version;
     assert_eq!(version.product(), installation.product);
     let runtime_version = RuntimeVersion {
         product: version.product().as_str().into(),
@@ -449,7 +451,7 @@ async fn run_fidelity_session(
         .filter(|frame| frame.metadata().target_id() == target_id)
         .collect();
     assert!(target_frames.len() >= MIN_FIDELITY_FRAMES);
-    assert_frame_fidelity(&target_frames, origin, session.session_id(), target_id);
+    assert_frame_fidelity(&target_frames, origin, session_id, target_id);
     assert_strict_ordinals_by_target(&target_frames);
 
     let status = status_for(&session, target_id).await;
@@ -556,7 +558,7 @@ async fn run_loss_session(
     assert_frame_fidelity(
         &target_frames,
         session.session_origin().observed().as_nanos(),
-        session.session_id(),
+        session.status().await.expect("browser status").session_id,
         target_id,
     );
     assert_strict_ordinals_by_target(&target_frames);
@@ -647,10 +649,12 @@ async fn wait_for_gap_event(
 
 async fn first_target(session: &Arc<dyn BrowserSessionPort>) -> TargetId {
     session
-        .targets()
+        .status()
         .await
-        .expect("target snapshot")
+        .expect("browser status")
+        .pages
         .into_iter()
+        .map(|page| page.target)
         .find(|target| {
             target.lifecycle == krometrail_core::TargetLifecycle::Attached
                 && target.target.url() != "about:blank"
@@ -664,9 +668,10 @@ async fn status_for(
     target_id: TargetId,
 ) -> TargetCaptureStatus {
     session
-        .capture_statuses()
+        .status()
         .await
-        .expect("capture statuses")
+        .expect("browser status")
+        .capture
         .into_iter()
         .find(|status| status.target_id() == target_id)
         .expect("target capture status")
