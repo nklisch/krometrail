@@ -1,7 +1,7 @@
 ---
 id: epic-durable-browser-memory-segment-format
 kind: feature
-stage: review
+stage: done
 tags: [storage, browser]
 parent: epic-durable-browser-memory
 depends_on: []
@@ -547,3 +547,20 @@ implementation pass does not self-approve it.
 - Deferred behavior unchanged: segments remain frame-only and capture-gap metadata remains owned by
   the SQLite feature.
 - Adjacent issues parked: none.
+
+## Review (2026-07-13)
+
+**Verdict**: Approve
+
+**Blockers**: none
+**Important**: none
+**Nits**: none
+**Rejected**: none
+
+**Notes**: Standard review initially bounced the feature for relative scanner offsets, synchronous
+filesystem work on the current-thread runtime, and missing directory-entry durability. Remediation
+`c37a4a1` introduced full-segment absolute scanning, a bounded dedicated writer thread with explicit
+cancellation/backpressure/terminal errors, and supported-platform directory sync at both
+publication points. Focused GLM 5.2 re-review verified scanner-to-address-to-read behavior, worker
+isolation and ordering, sync failure propagation, 11 store tests, and clean store gates. No
+material risk remains; gap metadata stays explicitly owned by the dependent SQLite feature.
