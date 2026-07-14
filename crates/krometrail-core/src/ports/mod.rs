@@ -29,7 +29,9 @@ pub use clock::{MonotonicClock, WallClock};
 pub use frames::FrameSource;
 pub use gaps::CaptureGapStore;
 pub use ids::IdSource;
-pub use range::{InteractionAnchorSource, TimelineAnchorSource};
+pub use range::{
+    InteractionAnchorSource, InteractionEvidenceSink, InteractionRecordSource, TimelineAnchorSource,
+};
 pub use recording::RecordingSink;
 pub use retention::RetentionStore;
 pub use timeline::TimelineStore;

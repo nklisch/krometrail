@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use crate::{
-    CaptureOrdinal, CapturedFrame, EncodedFrame, FrameId, Result, SessionId, SessionRange, TargetId,
+    CaptureOrdinal, CapturedFrame, EncodedFrame, FrameAvailability, FrameId, Result, SessionId,
+    SessionRange, TargetId,
 };
 
 use super::PortFuture;
@@ -33,6 +34,30 @@ pub trait FrameSource: Send + Sync {
         start: CaptureOrdinal,
         end: CaptureOrdinal,
     ) -> PortFuture<'_, Result<Vec<EncodedFrame>>>;
+
+    /// Returns retained metadata in capture-ordinal order without reading segment payloads.
+    fn frame_metadata_in_range(
+        &self,
+        session_id: SessionId,
+        target_id: TargetId,
+        range: SessionRange,
+    ) -> PortFuture<'_, Result<Vec<CapturedFrame>>>;
+
+    /// Returns retained metadata inclusively between capture ordinals.
+    fn frame_metadata_in_ordinal_range(
+        &self,
+        session_id: SessionId,
+        target_id: TargetId,
+        start: CaptureOrdinal,
+        end: CaptureOrdinal,
+    ) -> PortFuture<'_, Result<Vec<CapturedFrame>>>;
+
+    /// Reports retained bounds separately from durable eviction truth.
+    fn frame_availability(
+        &self,
+        session_id: SessionId,
+        target_id: TargetId,
+    ) -> PortFuture<'_, Result<FrameAvailability>>;
 }
 
 impl<T: FrameSource + ?Sized> FrameSource for Arc<T> {
@@ -61,5 +86,29 @@ impl<T: FrameSource + ?Sized> FrameSource for Arc<T> {
         end: CaptureOrdinal,
     ) -> PortFuture<'_, Result<Vec<EncodedFrame>>> {
         (**self).frames_in_ordinal_range(session_id, target_id, start, end)
+    }
+    fn frame_metadata_in_range(
+        &self,
+        session_id: SessionId,
+        target_id: TargetId,
+        range: SessionRange,
+    ) -> PortFuture<'_, Result<Vec<CapturedFrame>>> {
+        (**self).frame_metadata_in_range(session_id, target_id, range)
+    }
+    fn frame_metadata_in_ordinal_range(
+        &self,
+        session_id: SessionId,
+        target_id: TargetId,
+        start: CaptureOrdinal,
+        end: CaptureOrdinal,
+    ) -> PortFuture<'_, Result<Vec<CapturedFrame>>> {
+        (**self).frame_metadata_in_ordinal_range(session_id, target_id, start, end)
+    }
+    fn frame_availability(
+        &self,
+        session_id: SessionId,
+        target_id: TargetId,
+    ) -> PortFuture<'_, Result<FrameAvailability>> {
+        (**self).frame_availability(session_id, target_id)
     }
 }

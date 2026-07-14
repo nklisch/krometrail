@@ -2,9 +2,9 @@ use std::fs::File;
 
 use krometrail_core::{
     ByteOffset, CaptureOrdinal, CaptureWarning, CapturedFrame, DeviceScaleFactor, EncodedFrame,
-    ErrorCode, FrameAddress, FrameId, FrameSource, ImageFormat, KrometrailError, NonEmptyText,
-    ObservationKind, ObservationPayloadRef, PortFuture, SessionId, SessionRange, TargetId,
-    TimelineObservation,
+    ErrorCode, FrameAddress, FrameAvailability, FrameId, FrameSource, ImageFormat, KrometrailError,
+    NonEmptyText, ObservationKind, ObservationPayloadRef, PortFuture, SessionId, SessionRange,
+    TargetId, TimelineObservation,
 };
 use rusqlite::{OptionalExtension, Transaction, params};
 
@@ -241,6 +241,124 @@ impl FrameSource for SqliteIndex {
                 .into_iter()
                 .map(|address| self.read_address(address))
                 .collect()
+        })
+    }
+
+    fn frame_metadata_in_range(
+        &self,
+        session_id: SessionId,
+        target_id: TargetId,
+        range: SessionRange,
+    ) -> PortFuture<'_, krometrail_core::Result<Vec<CapturedFrame>>> {
+        Box::pin(async move {
+            let connection = self.connection()?;
+            let mut statement = connection
+                .prepare(
+                    "SELECT frame_id, session_id, target_id, capture_ordinal_be, source_time_be, \
+                            observed_time_be, session_time_be, format, image_width, image_height, \
+                            viewport_width, viewport_height, device_scale, warnings_json \
+                     FROM frames WHERE session_id=?1 AND target_id=?2 \
+                       AND session_time_be>=?3 AND session_time_be<=?4 \
+                     ORDER BY capture_ordinal_be ASC, session_time_be ASC, frame_id ASC",
+                )
+                .map_err(|_| persistence_error("could not prepare frame metadata range lookup"))?;
+            let rows = statement
+                .query_map(
+                    params![
+                        codec::id(session_id.as_uuid()).to_vec(),
+                        codec::id(target_id.as_uuid()).to_vec(),
+                        codec::u64_blob(range.start().as_nanos()).to_vec(),
+                        codec::u64_blob(range.end().as_nanos()).to_vec(),
+                    ],
+                    raw_metadata,
+                )
+                .map_err(|_| persistence_error("could not query frame metadata range"))?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|_| persistence_error("could not read frame metadata range"))?
+                .into_iter()
+                .map(decode_metadata)
+                .collect()
+        })
+    }
+
+    fn frame_metadata_in_ordinal_range(
+        &self,
+        session_id: SessionId,
+        target_id: TargetId,
+        start: CaptureOrdinal,
+        end: CaptureOrdinal,
+    ) -> PortFuture<'_, krometrail_core::Result<Vec<CapturedFrame>>> {
+        Box::pin(async move {
+            if start > end {
+                return Err(KrometrailError::new(
+                    ErrorCode::InvalidInput,
+                    NonEmptyText::new("frame ordinal range start must not exceed its end")
+                        .expect("static frame error is non-empty"),
+                ));
+            }
+            let connection = self.connection()?;
+            let mut statement = connection
+                .prepare(
+                    "SELECT frame_id, session_id, target_id, capture_ordinal_be, source_time_be, \
+                            observed_time_be, session_time_be, format, image_width, image_height, \
+                            viewport_width, viewport_height, device_scale, warnings_json \
+                     FROM frames WHERE session_id=?1 AND target_id=?2 \
+                       AND capture_ordinal_be>=?3 AND capture_ordinal_be<=?4 \
+                     ORDER BY capture_ordinal_be ASC, session_time_be ASC, frame_id ASC",
+                )
+                .map_err(|_| {
+                    persistence_error("could not prepare frame metadata ordinal lookup")
+                })?;
+            let rows = statement
+                .query_map(
+                    params![
+                        codec::id(session_id.as_uuid()).to_vec(),
+                        codec::id(target_id.as_uuid()).to_vec(),
+                        codec::u64_blob(start.get()).to_vec(),
+                        codec::u64_blob(end.get()).to_vec(),
+                    ],
+                    raw_metadata,
+                )
+                .map_err(|_| persistence_error("could not query frame metadata ordinal range"))?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|_| persistence_error("could not read frame metadata ordinal range"))?
+                .into_iter()
+                .map(decode_metadata)
+                .collect()
+        })
+    }
+
+    fn frame_availability(
+        &self,
+        session_id: SessionId,
+        target_id: TargetId,
+    ) -> PortFuture<'_, krometrail_core::Result<FrameAvailability>> {
+        Box::pin(async move {
+            let connection = self.connection()?;
+            let (start, end): (Option<Vec<u8>>, Option<Vec<u8>>) = connection
+                .query_row(
+                    "SELECT min(session_time_be), max(session_time_be) FROM frames \
+                     WHERE session_id=?1 AND target_id=?2",
+                    params![
+                        codec::id(session_id.as_uuid()).to_vec(),
+                        codec::id(target_id.as_uuid()).to_vec(),
+                    ],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(|_| persistence_error("could not query frame availability"))?;
+            let retained_bounds = match (start, end) {
+                (Some(start), Some(end)) => Some(
+                    SessionRange::new(
+                        krometrail_core::SessionTime::from_nanos(codec::decode_u64(&start)?),
+                        krometrail_core::SessionTime::from_nanos(codec::decode_u64(&end)?),
+                    )
+                    .map_err(|_| persistence_error("stored frame availability is invalid"))?,
+                ),
+                (None, None) => None,
+                _ => return Err(persistence_error("stored frame availability is malformed")),
+            };
+            FrameAvailability::new(retained_bounds, Vec::new())
+                .map_err(|_| persistence_error("stored frame availability is invalid"))
         })
     }
 }

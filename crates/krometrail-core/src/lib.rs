@@ -86,8 +86,9 @@ pub use ports::{
     AttachBrowser, BrowserConnectRequest, BrowserConnector, BrowserFailureKind,
     BrowserOperationContext, BrowserPageTargets, BrowserSessionEvents, BrowserSessionPort,
     CancellationSignal, CaptureGapStore, FrameSource, IdSource, InteractionAnchorSource,
-    LaunchBrowser, ManagedProfile, MonotonicClock, PortFuture, RecordingCatalog, RecordingSink,
-    RetentionStore, TimelineAnchorSource, TimelineStore, WallClock,
+    InteractionEvidenceSink, InteractionRecordSource, LaunchBrowser, ManagedProfile,
+    MonotonicClock, PortFuture, RecordingCatalog, RecordingSink, RetentionStore,
+    TimelineAnchorSource, TimelineStore, WallClock,
 };
 pub use recording::{
     ByteOffset, CaptureGap, CaptureGapReason, CaptureOrdinal, CaptureStatistics,
@@ -98,7 +99,8 @@ pub use recording::{
 };
 pub use time::{ObservedTime, SessionOrigin, SessionRange, SessionTime, SourceTime};
 pub use timeline::{
-    AnchorScope, CaptureGapPolicy, InteractionWindow, ObservationKind, ObservationPayloadRef,
-    RangeResolutionOptions, ResolvedRange, RetentionPolicy, RetentionWarning, TemporalRangeAnchor,
-    TemporalRangeAnchorKind, TemporalRangeResolver, TimelineObservation,
+    AnchorScope, CaptureGapPolicy, FrameAvailability, InteractionWindow, MAX_NATURAL_ANCHOR_WINDOW,
+    ObservationKind, ObservationPayloadRef, RangeResolutionOptions, ResolvedRange, RetentionPolicy,
+    RetentionWarning, TemporalQuery, TemporalQueryRequest, TemporalQueryService,
+    TemporalRangeAnchor, TemporalRangeAnchorKind, TemporalRangeResolver, TimelineObservation,
 };

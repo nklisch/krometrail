@@ -9,6 +9,7 @@ use crate::{
     CaptureGap, FrameId, InteractionAnchor, InteractionId, MarkerId, NavigationId, ObservationKind,
     Result, SessionId, SessionRange, SessionTime, TargetId, TimelineObservation,
     error::{ErrorCode, ErrorContext, KrometrailError, NonEmptyText, invalid, invalid_time},
+    validation::deserialize_validated,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -59,6 +60,7 @@ impl TemporalRangeAnchorKind {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AnchorScope {
     pub session_id: Option<SessionId>,
     pub target_id: Option<TargetId>,
@@ -72,21 +74,75 @@ impl AnchorScope {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub const MAX_NATURAL_ANCHOR_WINDOW: Duration = Duration::from_secs(120);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct InteractionWindow {
-    pub before: Duration,
-    pub after: Duration,
+    #[serde(rename = "before_ms")]
+    before_millis: u64,
+    #[serde(rename = "after_ms")]
+    after_millis: u64,
 }
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InteractionWindowWire {
+    before_ms: u64,
+    after_ms: u64,
+}
+
 impl InteractionWindow {
-    pub const fn new(before: Duration, after: Duration) -> Self {
-        Self { before, after }
+    pub fn new(before: Duration, after: Duration) -> Result<Self> {
+        fn whole_millis(value: Duration, side: &str) -> Result<u64> {
+            if value > MAX_NATURAL_ANCHOR_WINDOW {
+                return Err(invalid(format!(
+                    "interaction window {side} duration exceeds 120 seconds"
+                )));
+            }
+            if value.subsec_nanos() % 1_000_000 != 0 {
+                return Err(invalid(format!(
+                    "interaction window {side} duration must use whole milliseconds"
+                )));
+            }
+            u64::try_from(value.as_millis())
+                .map_err(|_| invalid_time("interaction window exceeds supported time"))
+        }
+
+        Ok(Self {
+            before_millis: whole_millis(before, "before")?,
+            after_millis: whole_millis(after, "after")?,
+        })
     }
+
+    pub const fn before(self) -> Duration {
+        Duration::from_millis(self.before_millis)
+    }
+
+    pub const fn after(self) -> Duration {
+        Duration::from_millis(self.after_millis)
+    }
+
     pub fn as_nanos(self) -> Result<(u64, u64)> {
-        let before = u64::try_from(self.before.as_nanos())
-            .map_err(|_| invalid_time("interaction window before duration exceeds session time"))?;
-        let after = u64::try_from(self.after.as_nanos())
-            .map_err(|_| invalid_time("interaction window after duration exceeds session time"))?;
-        Ok((before, after))
+        let millis_to_nanos = |value: u64| {
+            value
+                .checked_mul(1_000_000)
+                .ok_or_else(|| invalid_time("interaction window exceeds session time"))
+        };
+        Ok((
+            millis_to_nanos(self.before_millis)?,
+            millis_to_nanos(self.after_millis)?,
+        ))
+    }
+}
+
+impl<'de> Deserialize<'de> for InteractionWindow {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        deserialize_validated(d, |wire: InteractionWindowWire| {
+            Self::new(
+                Duration::from_millis(wire.before_ms),
+                Duration::from_millis(wire.after_ms),
+            )
+        })
     }
 }
 
@@ -114,13 +170,13 @@ impl RangeResolutionOptions {
         retention: RetentionPolicy::RequireComplete,
         capture_gaps: CaptureGapPolicy::Include,
         implicit_interaction_window: InteractionWindow {
-            before: Self::DEFAULT_PRE_INTERACTION_CONTEXT,
-            after: Self::DEFAULT_POST_INTERACTION_CONTEXT,
+            before_millis: 150,
+            after_millis: 250,
         },
     };
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "anchor", rename_all = "snake_case")]
 pub enum TemporalRangeAnchor {
     SessionTime {
@@ -158,6 +214,45 @@ pub enum TemporalRangeAnchor {
         end_frame_id: FrameId,
     },
 }
+#[derive(Deserialize)]
+#[serde(tag = "anchor", rename_all = "snake_case", deny_unknown_fields)]
+enum TemporalRangeAnchorWire {
+    SessionTime {
+        scope: AnchorScope,
+        range: SessionRange,
+    },
+    WallClock {
+        scope: AnchorScope,
+        start: SystemTime,
+        end: SystemTime,
+    },
+    Interaction {
+        scope: AnchorScope,
+        interaction_id: InteractionId,
+        window: Option<InteractionWindow>,
+    },
+    LatestInteraction {
+        session_id: SessionId,
+        target_id: TargetId,
+        window: Option<InteractionWindow>,
+    },
+    Navigation {
+        scope: AnchorScope,
+        navigation_id: NavigationId,
+        window: Option<InteractionWindow>,
+    },
+    Marker {
+        scope: AnchorScope,
+        marker_id: MarkerId,
+        window: Option<InteractionWindow>,
+    },
+    SourceFrame {
+        scope: AnchorScope,
+        start_frame_id: FrameId,
+        end_frame_id: FrameId,
+    },
+}
+
 impl TemporalRangeAnchor {
     pub const fn kind(&self) -> TemporalRangeAnchorKind {
         match self {
@@ -169,6 +264,146 @@ impl TemporalRangeAnchor {
             Self::Marker { .. } => TemporalRangeAnchorKind::Marker,
             Self::SourceFrame { .. } => TemporalRangeAnchorKind::SourceFrame,
         }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        match self {
+            Self::SessionTime { scope, .. } => {
+                required_scope(*scope)?;
+            }
+            Self::WallClock { scope, start, end } => {
+                required_scope(*scope)?;
+                if start > end {
+                    return Err(invalid_with_context(
+                        "wall-clock range start must not exceed its end",
+                        scope_context(*scope),
+                    ));
+                }
+            }
+            Self::Interaction { window, .. }
+            | Self::LatestInteraction { window, .. }
+            | Self::Navigation { window, .. }
+            | Self::Marker { window, .. } => {
+                if let Some(window) = window {
+                    // Re-run the public constructor so values created by future internal code
+                    // cannot bypass the same whole-millisecond boundary as Serde.
+                    InteractionWindow::new(window.before(), window.after())?;
+                }
+            }
+            Self::SourceFrame {
+                start_frame_id,
+                end_frame_id,
+                ..
+            } => {
+                if start_frame_id.as_uuid().is_nil() || end_frame_id.as_uuid().is_nil() {
+                    return Err(invalid("source-frame range endpoints must be non-nil"));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<'de> Deserialize<'de> for TemporalRangeAnchor {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        deserialize_validated(d, |wire: TemporalRangeAnchorWire| {
+            let value = match wire {
+                TemporalRangeAnchorWire::SessionTime { scope, range } => {
+                    Self::SessionTime { scope, range }
+                }
+                TemporalRangeAnchorWire::WallClock { scope, start, end } => {
+                    Self::WallClock { scope, start, end }
+                }
+                TemporalRangeAnchorWire::Interaction {
+                    scope,
+                    interaction_id,
+                    window,
+                } => Self::Interaction {
+                    scope,
+                    interaction_id,
+                    window,
+                },
+                TemporalRangeAnchorWire::LatestInteraction {
+                    session_id,
+                    target_id,
+                    window,
+                } => Self::LatestInteraction {
+                    session_id,
+                    target_id,
+                    window,
+                },
+                TemporalRangeAnchorWire::Navigation {
+                    scope,
+                    navigation_id,
+                    window,
+                } => Self::Navigation {
+                    scope,
+                    navigation_id,
+                    window,
+                },
+                TemporalRangeAnchorWire::Marker {
+                    scope,
+                    marker_id,
+                    window,
+                } => Self::Marker {
+                    scope,
+                    marker_id,
+                    window,
+                },
+                TemporalRangeAnchorWire::SourceFrame {
+                    scope,
+                    start_frame_id,
+                    end_frame_id,
+                } => Self::SourceFrame {
+                    scope,
+                    start_frame_id,
+                    end_frame_id,
+                },
+            };
+            value.validate()?;
+            Ok(value)
+        })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FrameAvailability {
+    pub retained_bounds: Option<SessionRange>,
+    pub evicted_ranges: Vec<SessionRange>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FrameAvailabilityWire {
+    retained_bounds: Option<SessionRange>,
+    evicted_ranges: Vec<SessionRange>,
+}
+
+impl FrameAvailability {
+    pub fn new(
+        retained_bounds: Option<SessionRange>,
+        evicted_ranges: Vec<SessionRange>,
+    ) -> Result<Self> {
+        for ranges in evicted_ranges.windows(2) {
+            if ranges[0].start() > ranges[1].start() || ranges[0].end() >= ranges[1].start() {
+                return Err(invalid(
+                    "evicted frame ranges must be sorted and non-overlapping",
+                ));
+            }
+        }
+        Ok(Self {
+            retained_bounds,
+            evicted_ranges,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for FrameAvailability {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        deserialize_validated(d, |wire: FrameAvailabilityWire| {
+            Self::new(wire.retained_bounds, wire.evicted_ranges)
+        })
     }
 }
 
@@ -185,6 +420,9 @@ pub enum RetentionWarning {
     PartiallyEvicted {
         requested: SessionRange,
         retained: SessionRange,
+    },
+    EvictedRanges {
+        ranges: Vec<SessionRange>,
     },
 }
 
@@ -303,7 +541,10 @@ pub(crate) fn point_range(
     at: SessionTime,
     window: Option<InteractionWindow>,
 ) -> Result<SessionRange> {
-    let window = window.unwrap_or(InteractionWindow::new(Duration::ZERO, Duration::ZERO));
+    let window = window.unwrap_or_else(|| {
+        InteractionWindow::new(Duration::ZERO, Duration::ZERO)
+            .expect("zero natural-anchor window is valid")
+    });
     let (before, after) = window.as_nanos()?;
     let start = at.as_nanos().saturating_sub(before);
     let end = at
@@ -321,7 +562,7 @@ pub(crate) fn scope_context(scope: AnchorScope) -> ErrorContext {
 }
 
 use crate::{
-    CaptureGapStore, EncodedFrame, FrameSource, InteractionAnchorSource, ObservationPayloadRef,
+    CaptureGapStore, CapturedFrame, FrameSource, InteractionAnchorSource, ObservationPayloadRef,
     PortFuture, RecordingCatalog, TimelineAnchorSource, TimelineStore,
 };
 
@@ -352,7 +593,7 @@ struct RangeSeed {
     target_id: TargetId,
     requested_range: SessionRange,
     anchor_kind: TemporalRangeAnchorKind,
-    preloaded_frames: Option<Vec<EncodedFrame>>,
+    preloaded_frames: Option<Vec<CapturedFrame>>,
 }
 
 impl<C, F, G, T, I> TemporalRangeResolver<C, F, G, T, I>
@@ -369,6 +610,7 @@ where
         options: RangeResolutionOptions,
     ) -> PortFuture<'_, Result<ResolvedRange>> {
         Box::pin(async move {
+            anchor.validate()?;
             let seed = self.seed(anchor, options).await?;
             self.finalize(seed, options).await
         })
@@ -449,7 +691,7 @@ where
                 let requested_range = SessionRange::new(start.session_time(), end.session_time())?;
                 let frames = self
                     .frames
-                    .frames_in_ordinal_range(
+                    .frame_metadata_in_ordinal_range(
                         start.session_id(),
                         start.target_id(),
                         start.capture_ordinal(),
@@ -593,100 +835,58 @@ where
 
     async fn finalize(
         &self,
-        seed: RangeSeed,
+        mut seed: RangeSeed,
         options: RangeResolutionOptions,
     ) -> Result<ResolvedRange> {
-        let frames = match seed.preloaded_frames {
+        let availability = self
+            .frames
+            .frame_availability(seed.session_id, seed.target_id)
+            .await?;
+        let frames = match seed.preloaded_frames.take() {
             Some(frames) => frames,
             None => {
                 self.frames
-                    .frames_in_range(seed.session_id, seed.target_id, seed.requested_range)
+                    .frame_metadata_in_range(seed.session_id, seed.target_id, seed.requested_range)
                     .await?
             }
         };
+        validate_frame_metadata(&seed, &frames, &availability.evicted_ranges)?;
         if frames.is_empty() {
-            return Err(not_found(
-                "requested interval has no retained source frames",
-                ErrorContext {
-                    session_id: Some(seed.session_id),
-                    target_id: Some(seed.target_id),
-                    range: Some(seed.requested_range),
-                    ..ErrorContext::default()
-                },
+            let message = if availability
+                .evicted_ranges
+                .iter()
+                .any(|range| ranges_intersect(*range, seed.requested_range))
+            {
+                "requested interval source frames were evicted"
+            } else {
+                "requested interval has no captured source frames"
+            };
+            return Err(range_not_found(message, &seed, seed.requested_range));
+        }
+
+        let (resolved_range, retention_warnings) =
+            classify_retention(&seed, &frames, &availability, options.retention)?;
+        let retained_frames: Vec<_> = frames
+            .into_iter()
+            .filter(|frame| resolved_range.contains(frame.session_time()))
+            .collect();
+        if retained_frames.is_empty() {
+            return Err(range_not_found(
+                "requested interval source frames were evicted",
+                &seed,
+                resolved_range,
             ));
         }
-        for frame in &frames {
-            if frame.metadata().session_id() != seed.session_id
-                || frame.metadata().target_id() != seed.target_id
-            {
-                return Err(persistence_range_error(
-                    "frame source returned a frame for the wrong session or target",
-                ));
-            }
-            if seed.anchor_kind != TemporalRangeAnchorKind::SourceFrame
-                && !seed
-                    .requested_range
-                    .contains(frame.metadata().session_time())
-            {
-                return Err(persistence_range_error(
-                    "frame source returned a frame outside the requested range",
-                ));
-            }
-        }
-        let first = frames
-            .first()
-            .expect("non-empty frame result")
-            .metadata()
-            .session_time();
-        let last = frames
-            .last()
-            .expect("non-empty frame result")
-            .metadata()
-            .session_time();
-        let resolved_range = SessionRange::new(first.min(last), first.max(last))?;
-        let mut retention_warnings = Vec::new();
-        if resolved_range.start() != seed.requested_range.start() {
-            retention_warnings.push(RetentionWarning::RequestedStartBeforeOldestRetained {
-                requested: seed.requested_range.start(),
-                oldest_retained: resolved_range.start(),
-            });
-        }
-        if resolved_range.end() != seed.requested_range.end() {
-            retention_warnings.push(RetentionWarning::RequestedEndAfterNewestRetained {
-                requested: seed.requested_range.end(),
-                newest_retained: resolved_range.end(),
-            });
-        }
-        if !retention_warnings.is_empty() {
-            retention_warnings.push(RetentionWarning::PartiallyEvicted {
-                requested: seed.requested_range,
-                retained: resolved_range,
-            });
-            if options.retention == RetentionPolicy::RequireComplete {
-                return Err(not_found(
-                    "requested range is not completely retained",
-                    ErrorContext {
-                        session_id: Some(seed.session_id),
-                        target_id: Some(seed.target_id),
-                        range: Some(seed.requested_range),
-                        ..ErrorContext::default()
-                    },
-                ));
-            }
-        }
+
         let gaps = self
             .gaps
             .gaps(seed.session_id, seed.target_id, resolved_range)
             .await?;
         if options.capture_gaps == CaptureGapPolicy::Reject && !gaps.is_empty() {
-            return Err(not_found(
+            return Err(range_not_found(
                 "requested range contains known capture gaps",
-                ErrorContext {
-                    session_id: Some(seed.session_id),
-                    target_id: Some(seed.target_id),
-                    range: Some(resolved_range),
-                    ..ErrorContext::default()
-                },
+                &seed,
+                resolved_range,
             ));
         }
         let observations = self
@@ -704,9 +904,9 @@ where
                 _ => {}
             }
         }
-        let frame_ids = frames
+        let frame_ids = retained_frames
             .into_iter()
-            .map(|frame| frame.metadata().id())
+            .map(|frame| frame.id())
             .collect();
         ResolvedRange::new(
             seed.session_id,
@@ -723,6 +923,192 @@ where
             options,
         )
     }
+}
+
+fn validate_frame_metadata(
+    seed: &RangeSeed,
+    frames: &[CapturedFrame],
+    evicted_ranges: &[SessionRange],
+) -> Result<()> {
+    let mut ids = HashSet::new();
+    for frame in frames {
+        if frame.session_id() != seed.session_id || frame.target_id() != seed.target_id {
+            return Err(persistence_range_error(
+                "frame source returned metadata for the wrong session or target",
+            ));
+        }
+        if !seed.requested_range.contains(frame.session_time()) {
+            return Err(persistence_range_error(
+                "frame source returned metadata outside the requested range",
+            ));
+        }
+        if !ids.insert(frame.id()) {
+            return Err(persistence_range_error(
+                "frame source returned duplicate frame metadata",
+            ));
+        }
+        if evicted_ranges
+            .iter()
+            .any(|range| range.contains(frame.session_time()))
+        {
+            return Err(persistence_range_error(
+                "retained frame metadata overlaps durable eviction truth",
+            ));
+        }
+    }
+    if frames
+        .windows(2)
+        .any(|pair| pair[0].capture_ordinal() >= pair[1].capture_ordinal())
+    {
+        return Err(persistence_range_error(
+            "frame metadata is not in capture-ordinal order",
+        ));
+    }
+    Ok(())
+}
+
+fn classify_retention(
+    seed: &RangeSeed,
+    frames: &[CapturedFrame],
+    availability: &FrameAvailability,
+    policy: RetentionPolicy,
+) -> Result<(SessionRange, Vec<RetentionWarning>)> {
+    let retained = availability.retained_bounds.ok_or_else(|| {
+        persistence_range_error("frame availability omitted bounds for retained metadata")
+    })?;
+    let intersecting: Vec<_> = availability
+        .evicted_ranges
+        .iter()
+        .copied()
+        .filter(|range| ranges_intersect(*range, seed.requested_range))
+        .map(|range| intersection(range, seed.requested_range))
+        .collect();
+
+    if intersecting.is_empty() {
+        if retained.start() > seed.requested_range.start()
+            || retained.end() < seed.requested_range.end()
+        {
+            return Err(range_not_found(
+                "requested interval extends beyond captured source-frame bounds",
+                seed,
+                seed.requested_range,
+            ));
+        }
+        return Ok((seed.requested_range, Vec::new()));
+    }
+    if policy == RetentionPolicy::RequireComplete {
+        return Err(range_not_found(
+            "requested range is not completely retained",
+            seed,
+            seed.requested_range,
+        ));
+    }
+
+    let left_evicted = intersecting
+        .iter()
+        .any(|range| range.contains(seed.requested_range.start()));
+    let right_evicted = intersecting
+        .iter()
+        .any(|range| range.contains(seed.requested_range.end()));
+    if intersecting.iter().any(|range| {
+        !range.contains(seed.requested_range.start()) && !range.contains(seed.requested_range.end())
+    }) {
+        return Err(range_not_found(
+            "requested range contains an internal eviction hole",
+            seed,
+            seed.requested_range,
+        ));
+    }
+
+    let first = frames
+        .first()
+        .expect("non-empty frame metadata")
+        .session_time();
+    let last = frames
+        .last()
+        .expect("non-empty frame metadata")
+        .session_time();
+    let start = if left_evicted {
+        first
+    } else {
+        seed.requested_range.start()
+    };
+    let end = if right_evicted {
+        last
+    } else {
+        seed.requested_range.end()
+    };
+    let resolved = SessionRange::new(start, end).map_err(|_| {
+        range_not_found(
+            "requested interval source frames were fully evicted",
+            seed,
+            seed.requested_range,
+        )
+    })?;
+    if retained.start() > resolved.start() || retained.end() < resolved.end() {
+        return Err(range_not_found(
+            "requested interval includes uncaptured evidence beyond an evicted edge",
+            seed,
+            seed.requested_range,
+        ));
+    }
+    if intersecting
+        .iter()
+        .any(|range| ranges_intersect(*range, resolved))
+    {
+        return Err(range_not_found(
+            "requested range contains an internal eviction hole",
+            seed,
+            seed.requested_range,
+        ));
+    }
+
+    let mut warnings = Vec::new();
+    if left_evicted {
+        warnings.push(RetentionWarning::RequestedStartBeforeOldestRetained {
+            requested: seed.requested_range.start(),
+            oldest_retained: resolved.start(),
+        });
+    }
+    if right_evicted {
+        warnings.push(RetentionWarning::RequestedEndAfterNewestRetained {
+            requested: seed.requested_range.end(),
+            newest_retained: resolved.end(),
+        });
+    }
+    warnings.push(RetentionWarning::PartiallyEvicted {
+        requested: seed.requested_range,
+        retained: resolved,
+    });
+    warnings.push(RetentionWarning::EvictedRanges {
+        ranges: intersecting,
+    });
+    Ok((resolved, warnings))
+}
+
+fn ranges_intersect(left: SessionRange, right: SessionRange) -> bool {
+    left.start() <= right.end() && right.start() <= left.end()
+}
+
+fn intersection(left: SessionRange, right: SessionRange) -> SessionRange {
+    SessionRange::new(left.start().max(right.start()), left.end().min(right.end()))
+        .expect("intersecting ranges form a valid intersection")
+}
+
+fn range_not_found(
+    message: &'static str,
+    seed: &RangeSeed,
+    range: SessionRange,
+) -> KrometrailError {
+    not_found(
+        message,
+        ErrorContext {
+            session_id: Some(seed.session_id),
+            target_id: Some(seed.target_id),
+            range: Some(range),
+            ..ErrorContext::default()
+        },
+    )
 }
 
 fn required_scope(scope: AnchorScope) -> Result<(SessionId, TargetId)> {
@@ -865,9 +1251,9 @@ mod tests {
             );
         }
         assert_eq!(TemporalRangeAnchorKind::from_stable_name("future"), None);
-        let (_, target, _, _, _, _) = ids();
+        let (session, target, _, _, _, _) = ids();
         let anchor = TemporalRangeAnchor::SessionTime {
-            scope: AnchorScope::new(None, Some(target)),
+            scope: AnchorScope::new(Some(session), Some(target)),
             range: SessionRange::new(SessionTime::ZERO, SessionTime::ZERO).unwrap(),
         };
         assert_eq!(
@@ -952,17 +1338,15 @@ mod tests {
             ..RangeResolutionOptions::DEFAULT
         };
         assert!(resolved(range, range, vec![], options).is_ok());
-        assert!(
-            InteractionWindow::new(Duration::MAX, Duration::ZERO)
-                .as_nanos()
-                .is_err()
-        );
+        assert!(InteractionWindow::new(Duration::MAX, Duration::ZERO).is_err());
+        let window =
+            InteractionWindow::new(Duration::from_millis(1), Duration::from_millis(2)).unwrap();
+        assert_eq!(window.as_nanos().unwrap(), (1_000_000, 2_000_000));
         assert_eq!(
-            InteractionWindow::new(Duration::from_millis(1), Duration::from_millis(2))
-                .as_nanos()
-                .unwrap(),
-            (1_000_000, 2_000_000)
+            serde_json::to_value(window).unwrap(),
+            serde_json::json!({"before_ms": 1, "after_ms": 2})
         );
+        assert!(InteractionWindow::new(Duration::from_nanos(1), Duration::ZERO).is_err());
     }
     #[test]
     fn default_interaction_window_saturates_before_zero_and_checks_overflow() {
@@ -984,19 +1368,13 @@ mod tests {
         assert_eq!(
             interaction_range(
                 &anchor,
-                InteractionWindow::new(Duration::from_nanos(100), Duration::ZERO)
+                InteractionWindow::new(Duration::from_millis(1), Duration::ZERO).unwrap()
             )
             .unwrap()
             .start(),
             SessionTime::ZERO
         );
-        assert!(
-            interaction_range(
-                &anchor,
-                InteractionWindow::new(Duration::ZERO, Duration::MAX)
-            )
-            .is_err()
-        );
+        assert!(InteractionWindow::new(Duration::ZERO, Duration::MAX).is_err());
     }
     #[test]
     fn capture_gap_values_remain_available_to_the_response_contract() {

@@ -393,10 +393,13 @@ async fn anchor_window_overflow_is_invalid_time_before_frame_lookup() {
             TemporalRangeAnchor::Marker {
                 scope: AnchorScope::new(Some(fixture.session), Some(fixture.target)),
                 marker_id: marker,
-                window: Some(krometrail_core::InteractionWindow::new(
-                    Duration::ZERO,
-                    Duration::from_nanos(1),
-                )),
+                window: Some(
+                    krometrail_core::InteractionWindow::new(
+                        Duration::ZERO,
+                        Duration::from_millis(1),
+                    )
+                    .unwrap(),
+                ),
             },
             RangeResolutionOptions::DEFAULT,
         )
