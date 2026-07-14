@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-debugging-workflow
 kind: epic
-stage: implementing
+stage: review
 tags: [visual, storage, agent-ux]
 parent: null
 depends_on: [epic-temporal-vision-toolkit, epic-durable-browser-memory, epic-agent-browser-operation]
@@ -74,3 +74,9 @@ The epic is split by delivered investigation capability. Resolved temporal queri
 - A compact bundle can overstate confidence when frames are sparse, a range is partially retained, or browser events merely occur nearby. Capture-quality warnings and non-causal language are part of the required bundle contract, not optional presentation polish.
 - MCP 0.11 currently has no resource implementation in this repository. The final feature must add readable, lifetime-checked resources without leaking filesystem paths or weakening the existing protocol-only stdout, cancellation, generated-schema, and stable-error guarantees.
 - End-to-end scenarios must prove the integrated local API workflow without becoming the separate paid model evaluation owned by `epic-prove-temporal-advantage`.
+
+## Implementation roll-up
+
+All six child features are reviewed and `done`: resolved temporal queries; bounded artifact generation/cache; sanitized capture and browser-event context; the primary temporal debug bundle; progressive evidence and pinning; and the MCP investigation surface. The integrated runtime now resolves one natural anchor, generates/cache-validates traceable visual evidence, correlates bounded observed browser context, supports focused retained-evidence reads and pins, and presents the workflow through strict MCP 2025-06-18 tools/resources without paths or unsupported task/subscription semantics.
+
+Every feature completed its Rust 1.85 locked format, workspace check/test, and Clippy-with-warnings-denied gates. Feature reviews repaired material findings including artifact waiter lost wakeups, browser-event collection recovery, bundle permit cancellation, unavailable-evidence wording, marker-anchor identity, and chronological event schema exactness. The epic advances to `review` for its required deeper aggregate pass; no epic approval has yet been performed.
