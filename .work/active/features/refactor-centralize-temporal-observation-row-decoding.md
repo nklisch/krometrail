@@ -1,7 +1,7 @@
 ---
 id: refactor-centralize-temporal-observation-row-decoding
 kind: feature
-stage: implementing
+stage: review
 tags: [refactor, storage]
 parent: null
 depends_on: []
@@ -94,3 +94,7 @@ No `RawObservation { ... row.get(...) }` construction remains outside `timeline.
 ## Implementation Order
 
 1. `refactor-centralize-temporal-observation-row-decoding-step-1` — make the existing decoder crate-visible and route all three temporal index callbacks through it; verify the full Rust quality gate.
+
+## Implementation summary
+
+The one checkpoint landed in `28fe394`. `timeline::raw_observation` is crate-visible and now serves replay validation, timeline range reads, payload-anchor reads, and latest-anchor reads. The three duplicated seven-column closures were removed without changing query text, parameters, ordering, validation, optional behavior, error strings, or domain decoding. Rust 1.85 format, locked workspace all-target check/test, and Clippy with warnings denied passed in an isolated worktree; concurrent artifact work was excluded. The feature is ready for standard integrated review.
