@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-debugging-workflow-resolved-temporal-queries
 kind: feature
-stage: review
+stage: done
 tags: [storage, browser, agent-ux]
 parent: epic-temporal-debugging-workflow
 depends_on: []
@@ -494,3 +494,17 @@ The most likely production failure is an apparently successful click/navigation 
 - Design deviations/rejections: v3 transaction deduplicates historical exact marker/navigation/boundary rows before unique indexes so valid v2 stores migrate; qualification directly establishes one internal-hole post-eviction fixture while the real removal worker separately proves tombstone creation/coalescing; a scheduler-racy process-table test gained a bounded wait. No external behavior decision or foundation conflict was found.
 - Adjacent issues parked: none.
 - Integrated verification: under Rust 1.85.0, format check, locked workspace all-target check, locked workspace all-target tests, and locked workspace all-target Clippy `-D warnings` all pass. No live-Chrome execution was enabled or claimed.
+
+## Review (2026-07-14)
+
+**Verdict**: Approve
+
+**Blockers**: none
+**Important**: none
+
+**Nits accepted without follow-up**:
+- Marker/navigation lookup uses exact typed payload JSON while uniqueness is indexed by the equivalent payload sort key; correctness is unchanged and expected volume is small.
+- Coherent queries rely on the mutation gate and durable deletion state rather than the in-process deleted-session write fence; fully deleted sessions resolve naturally as not found.
+- The latest-interaction index cannot fully satisfy the `COALESCE(observed, completed)` ordering expression and may sort per target; correctness and deterministic UUID ties are tested, so optimization remains measurement-driven.
+
+**Evidence**: Independent cross-model standard review verified the five implementation commits across contract authority, all seven anchors, retention/eviction truth, transactional v3 migration, exact interaction reconstruction, deletion/recovery, irreversible-operation fencing, batch ordering, same-store composition, privacy/redaction, and foundation scope. Focused core/store/CDP tests, delayed/failing fence tests, format, targeted checks, and Clippy with warnings denied passed. No material finding or re-review requirement remains.
