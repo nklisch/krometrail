@@ -1,7 +1,7 @@
 ---
 id: epic-durable-browser-memory
 kind: epic
-stage: review
+stage: done
 tags: [storage, browser]
 parent: null
 depends_on: [epic-rust-cdp-capture-foundation]
@@ -70,3 +70,14 @@ The epic is split into five capabilities-shaped features aligned with the `krome
 ## Aggregate implementation roll-up
 
 All five child features are reviewed and complete: segment format, SQLite index, retention, recovery, and temporal range resolution. Their verified contracts now form one durable-memory capability boundary: source frames are addressed through immutable segments and indexed metadata, retention and recovery share the same authoritative index mutations, and natural temporal anchors resolve through the core-owned `ResolvedRange` contract. The epic is ready for aggregate review focused on cross-feature storage invariants, composition wiring, and foundation alignment rather than repeating child-feature line review.
+
+## Review (2026-07-14)
+
+**Verdict**: Approve with comments
+
+**Blockers**: none
+**Important**: `idea-recording-store-operational-edges` parks the lower-risk status-serialization and recover-before-construction footguns outside the current cycle.
+**Nits**: An unused `UsageClass::Index` variant, a test-only usage helper on the production type, and a currently unused deletion-state index were noted but do not justify current changes.
+**Rejected**: The generic timeline table does not contradict the architecture's statement that SQLite contains interactions, markers, and browser events; additive `ResolvedRange` fields do not contradict the foundation subset; deferred interaction anchors and future MCP/temporal capabilities are explicitly outside this implemented epic.
+
+**Notes**: Standard-weight aggregate review used one cross-model GLM 5.2 fresh-context pass. It checked the five reviewed child features as one implemented storage boundary, including frame-address compatibility, write-before-index durability, shared maintenance primitives, recovery idempotence, deletion-journal resumption, range contracts, composition wiring, and standing foundation assertions. The receiver accepted no material current-cycle blocker, parked both lower-risk proposals together, and did not commission another pass. Reviewer verification reported 379 workspace tests passing and clean workspace Clippy with warnings denied.
