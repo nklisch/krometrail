@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-operation-mcp-control-surface
 kind: feature
-stage: review
+stage: implementing
 tags: [browser, agent-ux]
 parent: epic-agent-browser-operation
 depends_on: [epic-agent-browser-operation-waits-and-batches]
@@ -530,3 +530,14 @@ This compatibility revision changes only the SDK/protocol implementation choice.
 - Kept lifecycle outside the operation enum as four fixed typed routes over the existing connector/session ports.
 - Kept `krometrail mcp` on the full root runtime so capture, recording, and retention assembly remain available to controlled sessions.
 - Omitted resource links because no durable readable MCP resource exists in this feature; current PNG/JPEG bytes are image content only.
+
+## Review (2026-07-14)
+
+**Verdict**: Request changes
+
+**Blockers**: A batch whose steps all succeeded but whose final live observation is incomplete is represented by the domain as `CompletedWithFailures`; MCP currently promotes every such outcome to `Failed`/`isError=true`. This contradicts the feature's successful-mutation-with-incomplete-evidence contract and can prompt an agent to replay already-applied actions. Map final-observation-only degradation to `Degraded` while retaining the domain outcome; reserve `Failed` for actual step/termination failures. Standard closure needs fix verification only, not another independent pass.
+**Important**: `idea-mcp-cancellation-protocol-regression` parks the valid lower-risk cross-layer cancellation test gap without blocking current delivery.
+**Nits**: Default capability selection includes enabled capabilities without current MCP tools; no-session status remains an intentional lifecycle error; malformed screenshot bytes remain a defensive protocol error; permissive launch fields remain intentional.
+**Rejected**: Claims of duplicated registries, unsorted tools, recursive-schema nontermination, leaked queued cancellation, double stop, or foundation drift were disproved by code and tests or were outside current implemented scope.
+
+**Notes**: One standard cross-model GLM 5.2 pass reviewed `fff3cac..667bd9b` and reran Rust 1.85 workspace check/test/Clippy, focused MCP tests, binary smoke, and formatting. The receiver accepted one material current-cycle response-semantics correction, parked one lower-risk regression gap, and accepted all other implemented contracts. No second independent review will run under standard weight.
