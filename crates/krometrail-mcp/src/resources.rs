@@ -1,7 +1,5 @@
 //! Canonical temporal-evidence resource identities and reads.
 //!
-#![allow(dead_code)]
-
 //! This module is deliberately independent of the rmcp server lifecycle.  The
 //! server layer can call `read_resource` without gaining a second storage path;
 //! every successful read still goes through the progressive evidence port.
@@ -15,11 +13,48 @@ use krometrail_core::{
     ProgressiveEvidenceResult, Result, RetrieveArtifactRequest, RetrieveSourceFrameRequest,
     SessionId, TargetId,
 };
-use rmcp::model::{ReadResourceResult, ResourceContents};
+use rmcp::model::{
+    Annotated, RawResourceTemplate, ReadResourceResult, ResourceContents, ResourceTemplate,
+};
 use serde_json::json;
 
 const ARTIFACT_READ_LIMIT: u64 = 64 * 1024 * 1024;
 const SOURCE_FRAME_READ_LIMIT: u64 = 32 * 1024 * 1024;
+
+const ARTIFACT_URI_TEMPLATE: &str = "krometrail://evidence/{session}/{target}/artifacts/{id}";
+const SOURCE_FRAME_URI_TEMPLATE: &str = "krometrail://evidence/{session}/{target}/frames/{id}";
+
+/// The only resource templates exposed by this adapter. Concrete retained
+/// resources remain intentionally unlisted because storage is dynamic and may
+/// contain a large number of weak evidence handles.
+pub(crate) fn resource_templates() -> Vec<ResourceTemplate> {
+    vec![
+        Annotated::new(
+            RawResourceTemplate {
+                uri_template: ARTIFACT_URI_TEMPLATE.to_owned(),
+                name: "temporal-artifact".to_owned(),
+                title: Some("Temporal artifact evidence".to_owned()),
+                description: Some(
+                    "Read one retained generated artifact by canonical evidence URI.".to_owned(),
+                ),
+                mime_type: Some("image/png".to_owned()),
+            },
+            None,
+        ),
+        Annotated::new(
+            RawResourceTemplate {
+                uri_template: SOURCE_FRAME_URI_TEMPLATE.to_owned(),
+                name: "temporal-source-frame".to_owned(),
+                title: Some("Temporal source-frame evidence".to_owned()),
+                description: Some(
+                    "Read one retained source frame by canonical evidence URI.".to_owned(),
+                ),
+                mime_type: None,
+            },
+            None,
+        ),
+    ]
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ResourceKind {
@@ -329,12 +364,47 @@ fn deadline_error() -> KrometrailError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use krometrail_core::{
+        CaptureOrdinal, CapturedFrame, DeviceScaleFactor, ImageFormat, PixelDimensions, PortFuture,
+        SourceFrameHandle, SourceFrameRead,
+    };
+    use std::{sync::Mutex, time::Duration};
+
     fn scope() -> EvidenceScope {
         EvidenceScope::new(
             "00000000-0000-0000-0000-000000000001".parse().unwrap(),
             "00000000-0000-0000-0000-000000000002".parse().unwrap(),
         )
         .unwrap()
+    }
+
+    struct NeverCancelled;
+
+    impl CancellationSignal for NeverCancelled {
+        fn is_cancelled(&self) -> bool {
+            false
+        }
+
+        fn cancelled(&self) -> PortFuture<'_, ()> {
+            Box::pin(std::future::pending())
+        }
+    }
+
+    struct ResourceSpy {
+        result: ProgressiveEvidenceResult,
+        request: Mutex<Option<ProgressiveEvidenceRequest>>,
+    }
+
+    impl ProgressiveEvidence for ResourceSpy {
+        fn execute(
+            &self,
+            request: ProgressiveEvidenceRequest,
+            _context: ProgressiveEvidenceContext,
+        ) -> PortFuture<'_, Result<ProgressiveEvidenceResult>> {
+            *self.request.lock().unwrap() = Some(request);
+            let result = self.result.clone();
+            Box::pin(std::future::ready(Ok(result)))
+        }
     }
 
     #[test]
@@ -358,5 +428,68 @@ mod tests {
                 "{alternate}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn retained_resource_reads_return_exact_blob_mime_and_uri() {
+        let bytes: Arc<[u8]> = Arc::from(b"\x89PNG\r\n\x1a\npayload".as_slice());
+        let frame_id: FrameId = "00000000-0000-0000-0000-000000000003".parse().unwrap();
+        let frame = CapturedFrame::new(
+            frame_id,
+            scope().session_id,
+            scope().target_id,
+            CaptureOrdinal::new(1).unwrap(),
+            None,
+            krometrail_core::ObservedTime::from_nanos(1),
+            krometrail_core::SessionTime::from_nanos(1),
+            ImageFormat::Png,
+            PixelDimensions::new(1, 1).unwrap(),
+            PixelDimensions::new(1, 1).unwrap(),
+            DeviceScaleFactor::new(1.0).unwrap(),
+            Vec::new(),
+        )
+        .unwrap();
+        let handle = SourceFrameHandle::new(
+            frame_id,
+            scope(),
+            0,
+            0,
+            NonEmptyText::new("image/png").unwrap(),
+            krometrail_core::Sha256Digest::digest(&bytes),
+            bytes.len() as u64,
+            frame,
+        )
+        .unwrap();
+        let spy = ResourceSpy {
+            result: ProgressiveEvidenceResult::RetrieveSourceFrame(Box::new(
+                SourceFrameRead::new(handle, Arc::clone(&bytes)).unwrap(),
+            )),
+            request: Mutex::new(None),
+        };
+        let uri = EvidenceResourceUri::source_frame(scope(), frame_id).canonical_uri();
+        let result = read_resource(
+            &uri,
+            &spy,
+            Instant::now() + Duration::from_secs(1),
+            Arc::new(NeverCancelled),
+        )
+        .await
+        .unwrap();
+        let ResourceContents::BlobResourceContents {
+            uri: returned_uri,
+            mime_type,
+            blob,
+            ..
+        } = &result.contents[0]
+        else {
+            panic!("resource authority must return a blob");
+        };
+        assert_eq!(returned_uri, &uri);
+        assert_eq!(mime_type.as_deref(), Some("image/png"));
+        assert_eq!(STANDARD.decode(blob).unwrap().as_slice(), bytes.as_ref());
+        assert!(matches!(
+            spy.request.lock().unwrap().as_ref(),
+            Some(ProgressiveEvidenceRequest::RetrieveSourceFrame(_))
+        ));
     }
 }

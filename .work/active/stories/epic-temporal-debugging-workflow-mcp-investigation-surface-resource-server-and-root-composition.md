@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-debugging-workflow-mcp-investigation-surface-resource-server-and-root-composition
 kind: story
-stage: implementing
+stage: done
 tags: [agent-ux, browser, storage]
 parent: epic-temporal-debugging-workflow-mcp-investigation-surface
 depends_on:
@@ -45,6 +45,23 @@ Publish the resource templates through rmcp 0.11, wire all already-composed temp
 
 Depends on the response/resource projection checkpoint. Qualification cannot begin until the server has a real rmcp resource read path and root wiring.
 
+## Implementation notes
+
+- Execution capability: inline feature-owner implementation; the server/resource/root wiring is one cohesive boundary and depends on the completed response/resource authority.
+- Review weight: standard, default; verification is covered by the focused protocol and composition tests plus the locked workspace gates.
+- Files changed: `crates/krometrail-mcp/src/{server.rs,resources.rs,registry.rs}`, `src/app.rs`, and focused in-memory protocol/resource tests.
+- Tests added: exact resource blob/MIME/URI authority coverage, MCP initialize/resource-list/template/read/unsupported-subscription traffic over Tokio duplex, control-only template omission, and shared runtime/session Arc identity checks.
+- Simplification: retained the existing one-session stdio shutdown path and reused the existing request cancellation bridge; no MCP cache, decoder, payload map, subscription path, or compatibility constructor was added.
+- Discrepancies from design: none.
+- Adjacent issues parked: none.
+
+## Verification evidence
+
+- `cargo fmt --all -- --check`
+- `cargo check --workspace --all-targets --locked`
+- `cargo test --workspace --all-targets --locked` (634 passed, 1 ignored)
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`
+
 ## Out of scope
 
-No new browser operation, storage schema, resource subscription, remote transport, task API, or paid evaluation.
+No new browser operation, storage schema, resource subscription, remote transport, task API, or paid evaluation. Final integrated qualification remains deferred to the next story.

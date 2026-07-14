@@ -72,10 +72,16 @@ enum LifecycleKind {
     Stop,
 }
 
-const MCP_REQUEST_DEADLINE: Duration = Duration::from_secs(30);
+pub(crate) const MCP_REQUEST_DEADLINE: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
-struct McpCancellation(CancellationToken);
+pub(crate) struct McpCancellation(CancellationToken);
+
+impl McpCancellation {
+    pub(crate) fn new(token: CancellationToken) -> Self {
+        Self(token)
+    }
+}
 
 impl CancellationSignal for McpCancellation {
     fn is_cancelled(&self) -> bool {
@@ -95,7 +101,7 @@ struct RequestBudget {
 impl RequestBudget {
     fn new(token: CancellationToken) -> Self {
         Self {
-            cancellation: Arc::new(McpCancellation(token)),
+            cancellation: Arc::new(McpCancellation::new(token)),
             deadline: Instant::now() + MCP_REQUEST_DEADLINE,
         }
     }

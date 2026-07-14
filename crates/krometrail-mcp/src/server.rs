@@ -1,19 +1,23 @@
 use std::sync::Arc;
 
-use krometrail_core::{ErrorCode, KrometrailError, NonEmptyText, Result, RetryAdvice};
+use krometrail_core::{
+    CancellationSignal, ErrorCode, KrometrailError, NonEmptyText, Result, RetryAdvice,
+};
 use rmcp::{
     ErrorData, ServerHandler,
     handler::server::tool::{ToolCallContext, ToolRouter},
     model::{
-        CallToolRequestParam, CallToolResult, Implementation, ListToolsResult,
-        PaginatedRequestParam, ProtocolVersion, ServerCapabilities, ServerInfo,
+        CallToolRequestParam, CallToolResult, Implementation, ListResourceTemplatesResult,
+        ListResourcesResult, ListToolsResult, PaginatedRequestParam, ProtocolVersion,
+        ReadResourceRequestParam, ServerCapabilities, ServerInfo,
     },
     service::{QuitReason, RequestContext, RoleServer, ServerInitializeError, ServiceExt as _},
 };
 
 use crate::{
     config::{McpConfig, McpDependencies},
-    registry::build_router,
+    registry::{MCP_REQUEST_DEADLINE, McpCancellation, build_router},
+    resources::{read_resource, resource_templates},
     session::BrowserSessionOwner,
 };
 
@@ -21,6 +25,8 @@ use crate::{
 pub struct KrometrailMcpServer {
     sessions: Arc<BrowserSessionOwner>,
     router: Arc<ToolRouter<KrometrailMcpServer>>,
+    dependencies: Arc<McpDependencies>,
+    temporal_resources: bool,
 }
 
 impl KrometrailMcpServer {
@@ -29,8 +35,17 @@ impl KrometrailMcpServer {
         dependencies: Arc<McpDependencies>,
         config: &McpConfig,
     ) -> Result<Self> {
-        let router = Arc::new(build_router(config, dependencies, Arc::clone(&sessions))?);
-        let server = Self { sessions, router };
+        let router = Arc::new(build_router(
+            config,
+            Arc::clone(&dependencies),
+            Arc::clone(&sessions),
+        )?);
+        let server = Self {
+            sessions,
+            router,
+            dependencies,
+            temporal_resources: config.is_enabled(krometrail_core::CapabilityId::TemporalVision),
+        };
         Ok(server)
     }
 
@@ -54,6 +69,52 @@ impl ServerHandler for KrometrailMcpServer {
         Ok(ListToolsResult::with_all_items(self.tools()))
     }
 
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParam>,
+        _context: RequestContext<RoleServer>,
+    ) -> std::result::Result<ListResourcesResult, ErrorData> {
+        // Retained evidence is dynamic and potentially large. Agents discover
+        // concrete handles from tool responses and follow the strict URI back.
+        Ok(ListResourcesResult::with_all_items(Vec::new()))
+    }
+
+    async fn list_resource_templates(
+        &self,
+        _request: Option<PaginatedRequestParam>,
+        _context: RequestContext<RoleServer>,
+    ) -> std::result::Result<ListResourceTemplatesResult, ErrorData> {
+        if self.temporal_resources {
+            Ok(ListResourceTemplatesResult::with_all_items(
+                resource_templates(),
+            ))
+        } else {
+            Ok(ListResourceTemplatesResult::with_all_items(Vec::new()))
+        }
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParam,
+        context: RequestContext<RoleServer>,
+    ) -> std::result::Result<rmcp::model::ReadResourceResult, ErrorData> {
+        if !self.temporal_resources {
+            return Err(ErrorData::method_not_found::<
+                rmcp::model::ReadResourceRequestMethod,
+            >());
+        }
+        let deadline = std::time::Instant::now() + MCP_REQUEST_DEADLINE;
+        let cancellation: Arc<dyn CancellationSignal> =
+            Arc::new(McpCancellation::new(context.ct.clone()));
+        read_resource(
+            &request.uri,
+            self.dependencies.progressive_evidence.as_ref(),
+            deadline,
+            cancellation,
+        )
+        .await
+    }
+
     async fn call_tool(
         &self,
         request: CallToolRequestParam,
@@ -67,7 +128,14 @@ impl ServerHandler for KrometrailMcpServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
             protocol_version: ProtocolVersion::V_2025_06_18,
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
+            capabilities: if self.temporal_resources {
+                ServerCapabilities::builder()
+                    .enable_tools()
+                    .enable_resources()
+                    .build()
+            } else {
+                ServerCapabilities::builder().enable_tools().build()
+            },
             server_info: Implementation {
                 name: "krometrail".into(),
                 title: Some("Krometrail browser control".into()),
@@ -378,6 +446,7 @@ mod tests {
         expected.sort_unstable();
         assert_eq!(names, expected);
         assert!(names.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(service.server().get_info().capabilities.resources.is_none());
 
         let output_schema = tools[0].output_schema.clone().unwrap();
         for tool in tools {
@@ -453,6 +522,14 @@ mod tests {
                 .map(|tool| tool.name.as_ref())
                 .collect::<Vec<_>>(),
             vec!["query_browser_events"]
+        );
+        assert!(
+            events_only
+                .server()
+                .get_info()
+                .capabilities
+                .resources
+                .is_none()
         );
     }
 
@@ -706,6 +783,7 @@ mod tests {
         )
         .unwrap();
         let owner = Arc::clone(&service.sessions);
+        assert!(Arc::ptr_eq(&owner, &service.server.sessions));
         let (client_io, server_io) = tokio::io::duplex(256 * 1024);
         let server_task = tokio::spawn(async move {
             let running = service.server.serve(server_io).await.unwrap();
@@ -734,7 +812,16 @@ mod tests {
 
         send_json(
             &mut write,
-            json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
+            json!({"jsonrpc":"2.0","id":2,"method":"resources/templates/list","params":{}}),
+        )
+        .await;
+        assert_eq!(
+            read_json(&mut read).await["result"]["resourceTemplates"],
+            json!([])
+        );
+        send_json(
+            &mut write,
+            json!({"jsonrpc":"2.0","id":3,"method":"tools/list","params":{}}),
         )
         .await;
         let listed = read_json(&mut read).await;
@@ -748,13 +835,13 @@ mod tests {
 
         send_json(
             &mut write,
-            json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"start_browser","arguments":{}}}),
+            json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"start_browser","arguments":{}}}),
         )
         .await;
         assert_eq!(read_json(&mut read).await["result"]["isError"], false);
         send_json(
             &mut write,
-            json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"list_pages","arguments":{}}}),
+            json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"list_pages","arguments":{}}}),
         )
         .await;
         let valid = read_json(&mut read).await;
@@ -764,7 +851,7 @@ mod tests {
 
         send_json(
             &mut write,
-            json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"navigate_page","arguments":{"url":""}}}),
+            json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"navigate_page","arguments":{"url":""}}}),
         )
         .await;
         let invalid = read_json(&mut read).await;
@@ -780,5 +867,96 @@ mod tests {
         assert!(matches!(server_task.await.unwrap(), QuitReason::Closed));
         owner.shutdown().await.unwrap();
         assert_eq!(stop_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn temporal_resource_protocol_lists_templates_reads_strictly_and_closes_on_eof() {
+        let service = build_service(
+            dependencies(Arc::new(UnusedConnector)),
+            McpConfig::new(vec![CapabilityId::TemporalVision]).unwrap(),
+        )
+        .unwrap();
+        assert!(service.server().get_info().capabilities.resources.is_some());
+        assert!(service.server().get_info().capabilities.tools.is_some());
+        let (client_io, server_io) = tokio::io::duplex(256 * 1024);
+        let server_task = tokio::spawn(async move {
+            let running = service.server.serve(server_io).await.unwrap();
+            running.waiting().await.unwrap()
+        });
+        let (read, mut write) = tokio::io::split(client_io);
+        let mut read = BufReader::new(read);
+
+        send_json(
+            &mut write,
+            json!({
+                "jsonrpc":"2.0","id":1,"method":"initialize","params":{
+                    "protocolVersion":"2025-06-18","capabilities":{},
+                    "clientInfo":{"name":"resource-test","version":"1"}
+                }
+            }),
+        )
+        .await;
+        let initialized = read_json(&mut read).await;
+        assert_eq!(initialized["result"]["protocolVersion"], "2025-06-18");
+        assert!(initialized["result"]["capabilities"]["tools"].is_object());
+        assert!(initialized["result"]["capabilities"]["resources"].is_object());
+        assert!(initialized["result"]["capabilities"]["tasks"].is_null());
+        assert!(initialized["result"]["capabilities"]["resources"]["subscribe"].is_null());
+        assert!(initialized["result"]["capabilities"]["resources"]["listChanged"].is_null());
+        send_json(
+            &mut write,
+            json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+        )
+        .await;
+
+        send_json(
+            &mut write,
+            json!({"jsonrpc":"2.0","id":2,"method":"resources/list","params":{}}),
+        )
+        .await;
+        let resources = read_json(&mut read).await;
+        assert_eq!(resources["result"]["resources"], json!([]));
+
+        send_json(
+            &mut write,
+            json!({"jsonrpc":"2.0","id":3,"method":"resources/templates/list","params":{}}),
+        )
+        .await;
+        let templates = read_json(&mut read).await;
+        let templates = templates["result"]["resourceTemplates"].as_array().unwrap();
+        assert_eq!(templates.len(), 2);
+        assert_eq!(
+            templates[0]["uriTemplate"],
+            "krometrail://evidence/{session}/{target}/artifacts/{id}"
+        );
+        assert_eq!(templates[0]["mimeType"], "image/png");
+        assert_eq!(
+            templates[1]["uriTemplate"],
+            "krometrail://evidence/{session}/{target}/frames/{id}"
+        );
+        assert!(templates[1].get("mimeType").is_none());
+
+        send_json(
+            &mut write,
+            json!({
+                "jsonrpc":"2.0","id":4,"method":"resources/read",
+                "params":{"uri":"file:///tmp/not-an-evidence-resource"}
+            }),
+        )
+        .await;
+        let malformed = read_json(&mut read).await;
+        assert_eq!(malformed["error"]["code"], -32602);
+
+        send_json(
+            &mut write,
+            json!({"jsonrpc":"2.0","id":5,"method":"resources/subscribe","params":{"uri":"x"}}),
+        )
+        .await;
+        let unsupported = read_json(&mut read).await;
+        assert_eq!(unsupported["error"]["code"], -32601);
+
+        drop(write);
+        drop(read);
+        assert!(matches!(server_task.await.unwrap(), QuitReason::Closed));
     }
 }

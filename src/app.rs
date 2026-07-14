@@ -64,6 +64,17 @@ struct StorageDependencies {
     artifacts: Arc<dyn ArtifactStore>,
 }
 
+impl RuntimeDependencies {
+    fn mcp_dependencies(&self) -> McpDependencies {
+        McpDependencies {
+            browser: Arc::clone(&self.browser),
+            temporal_debug_bundles: Arc::clone(&self.temporal_debug_bundles),
+            progressive_evidence: Arc::clone(&self.progressive_evidence),
+            temporal_context: Arc::clone(&self.temporal_context),
+        }
+    }
+}
+
 pub(crate) struct Runtime {
     dependencies: RuntimeDependencies,
 }
@@ -107,14 +118,7 @@ impl Runtime {
                 // The complete runtime is assembled before this branch. MCP receives the
                 // already-created application ports and never constructs storage or CDP adapters.
                 build_service(
-                    McpDependencies {
-                        browser: Arc::clone(&self.dependencies.browser),
-                        temporal_debug_bundles: Arc::clone(
-                            &self.dependencies.temporal_debug_bundles,
-                        ),
-                        progressive_evidence: Arc::clone(&self.dependencies.progressive_evidence),
-                        temporal_context: Arc::clone(&self.dependencies.temporal_context),
-                    },
+                    self.dependencies.mcp_dependencies(),
                     self.dependencies.mcp_config.clone(),
                 )?
                 .serve_stdio()
@@ -415,7 +419,7 @@ mod tests {
             )
             .unwrap(),
         );
-        let runtime = Runtime::new(RuntimeDependencies {
+        let runtime_dependencies = RuntimeDependencies {
             clock: Arc::new(ProcessMonotonicClock {
                 origin: Instant::now(),
             }),
@@ -434,7 +438,25 @@ mod tests {
             progressive_evidence,
             temporal_debug_bundles,
             mcp_config: McpConfig::default(),
-        });
+        };
+        let mcp_dependencies = runtime_dependencies.mcp_dependencies();
+        assert!(Arc::ptr_eq(
+            &mcp_dependencies.browser,
+            &runtime_dependencies.browser
+        ));
+        assert!(Arc::ptr_eq(
+            &mcp_dependencies.temporal_context,
+            &runtime_dependencies.temporal_context,
+        ));
+        assert!(Arc::ptr_eq(
+            &mcp_dependencies.progressive_evidence,
+            &runtime_dependencies.progressive_evidence,
+        ));
+        assert!(Arc::ptr_eq(
+            &mcp_dependencies.temporal_debug_bundles,
+            &runtime_dependencies.temporal_debug_bundles,
+        ));
+        let runtime = Runtime::new(runtime_dependencies);
         let error = runtime.run(Command::Doctor).await.unwrap_err();
         assert_eq!(error.code, ErrorCode::BrowserNotFound);
         assert_eq!(browser.installations_calls.load(Ordering::SeqCst), 1);
