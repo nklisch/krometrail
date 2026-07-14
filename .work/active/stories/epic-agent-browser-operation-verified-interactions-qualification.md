@@ -48,3 +48,17 @@ Add `crates/krometrail-cdp/tests/verified_interactions.rs` covering every action
 
 - macOS/high-DPI specific qualification (carry forward the page-observation policy: report measured scale honestly; do not invent unavailable display modes).
 - MCP/CLI exposure of the interaction operations.
+
+## Implementation blocker (2026-07-14)
+
+Real-Chrome dialog qualification exposed a hard contract/transport blocker; the story remains `implementing` and is not marked done.
+
+- The default deterministic interaction suite is green (8 `verified_interactions` tests), and the opt-in production-port workflow exercised click, fill replace/append, key chords, selection, hover, drag dispatch, offset/element scrolling, upload, coordinate success/no-hit, and stale references before the dialog boundary.
+- The fixture can reproducibly open a modal from a production-port coordinate click. Evidence that the modal is active is that subsequent same-session `Runtime.evaluate` commands block until the transport command timeout.
+- Despite the active modal, `Page.handleJavaScriptDialog` sent through the exact current flat target session returns Chrome protocol error `-32602: No dialog is showing`. Sending the command at browser scope returns `-32601` (method unavailable), confirming that browser scope is not a valid workaround.
+- `Page.javascriptDialogOpening`/`Page.javascriptDialogClosed` named subscriptions did not provide a usable synchronization signal through the selected cdpkit raw event path in this scenario. Pre-dispatch subscription, bounded command/event races, renderer task checkpoints, and cancellation-aware retries were attempted without making the command observe the active dialog.
+- No sleeps, assertion weakening, direct transport bypass in qualification, fake success, or MCP/batch expansion was accepted. Temporary source-error and pointer diagnostics were removed.
+
+The blocked design assumption is that an active JavaScript modal opened while a flat-session input command is in flight can always be handled by a subsequent raw `Page.handleJavaScriptDialog` call on that same cdpkit session. The next pass must determine whether this is a cdpkit pending-command/session-routing limitation, requires persistent dialog state/event ownership in the supervisor, or needs a different qualified transport command path. Until that is proven against real Chrome, dialog handling cannot honestly satisfy the feature contract and the feature cannot advance to review.
+
+Full workspace gates were not claimed: concurrent durable-memory work currently leaves `krometrail-store/src/index/deletion.rs` absent during `cargo fmt --all`, and a pre-existing capture registry test still expects 7 stream states after `PausedBudget` made the registry length 8. Neither unrelated area was edited.
