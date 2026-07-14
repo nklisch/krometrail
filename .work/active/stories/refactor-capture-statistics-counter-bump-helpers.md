@@ -1,7 +1,7 @@
 ---
 id: refactor-capture-statistics-counter-bump-helpers
 kind: story
-stage: review
+stage: done
 tags: [refactor, browser]
 parent: null
 depends_on: [refactor-delete-unused-declare-gap-range]
@@ -97,3 +97,18 @@ caller-observable behavior changes.
 - Dispatch: direct read of `pipeline.rs` + `recording/session.rs`; no subagents, no peeragent (cadence is conservative, local-only by directive).
 - Value: medium — removes a real single-source-of-truth violation across six live call sites that must track a six-field constructor by hand; not merely cosmetic.
 - Existing `refactor-centralize-recording-session-end-state-invariant` (done) covered `SessionLifecycle`/end-time validation in the same file and does not overlap this counter-bump finding.
+
+## Review (2026-07-14)
+
+**Verdict**: Approve
+
+**Blockers**: none
+**Important**: none
+**Nits**: none
+**Rejected**: none
+
+**Notes**: Bounded inline standalone-story review. Each consuming helper bumps exactly one matching
+field with `saturating_add(1)`, invokes the unchanged validation path, and replaces the corresponding
+constructor rebuild while preserving the existing call-site invariant message. Focused core tests,
+isolated locked workspace gates, and direct diff inspection confirm behavior preservation. No
+independent or cross-model reviewer ran, as required for standalone stories.
