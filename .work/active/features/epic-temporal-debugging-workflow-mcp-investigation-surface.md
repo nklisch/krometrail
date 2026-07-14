@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-debugging-workflow-mcp-investigation-surface
 kind: feature
-stage: review
+stage: done
 tags: [agent-ux, visual, browser, storage]
 parent: epic-temporal-debugging-workflow
 depends_on:
@@ -533,3 +533,7 @@ Nonblocking advisory comments retained for later consideration, not expanded in 
 - Named constants for existing literals.
 - The unreachable `u32` size conversion path.
 - The stale test name.
+
+## Review decision
+
+**Approved.** The single standard independent review was performed by `zai/glm-5.2` after implementation by `openai-codex/gpt-5.6-luna`. The chronological-schema finding was accepted and fixed in `245fb1f`; focused regressions and the complete Rust 1.85 workspace gate verify the repair. The remaining comments are non-material current-cycle observations and do not block completion. Per standard review policy, no repeat review was run. The feature advances to `done`.
