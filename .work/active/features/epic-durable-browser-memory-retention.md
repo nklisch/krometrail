@@ -1,7 +1,7 @@
 ---
 id: epic-durable-browser-memory-retention
 kind: feature
-stage: review
+stage: done
 tags: [storage, browser]
 parent: epic-durable-browser-memory
 depends_on:
@@ -423,3 +423,14 @@ Isolated clean-worktree gates at `6944c63` passed:
 `cargo fmt --all -- --check`, `cargo check --workspace --all-targets --locked`, `cargo test --workspace --all-targets --locked` (all suites green), and `cargo clippy --workspace --all-targets --locked -- -D warnings`.
 
 The primary checkout's unrelated verified-interactions WIP and `.work/bin/work-view` remain untouched and un-staged. The qualification story advances directly to `done`; this feature is now at `review` for the required integrated review boundary.
+
+## Review (2026-07-14)
+
+**Verdict:** Approve
+
+**Blockers:** none
+**Important:** none
+**Nits:** The fixed SQLite accounting-slack bound and defensive session-deletion byte calculation could be documented more explicitly; the intentional mutation-gate serialization may affect status latency; retained frame bounds necessarily use insertion order rather than segment retention sequence.
+**Rejected/uncertain:** none
+
+Fresh-context standard review verified core/Serde/port invariants, transactional v2 migration and stable sequence allocation, exact pin overlap and global eviction order, open-segment tolerance, provenance-safe artifact invalidation, crash-replayable deletion, complete session deletion and resurrection prevention, blocking-I/O isolation, capture pause/acknowledgment/gap/resume/shutdown behavior, recovery ordering, and root composition. A clean tree at `9885655` passed 353 tests plus locked format and Clippy gates. No material current-cycle risk remains.
