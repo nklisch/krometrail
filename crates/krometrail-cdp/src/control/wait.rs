@@ -688,6 +688,7 @@ impl PageControl {
     }
 }
 
+#[derive(Debug)]
 enum Controlled<T> {
     Value(T),
     TimedOut,
@@ -889,5 +890,41 @@ mod tests {
         assert_eq!(readiness_rank(DocumentReadiness::Loading), 0);
         assert_eq!(readiness_rank(DocumentReadiness::Interactive), 1);
         assert_eq!(readiness_rank(DocumentReadiness::Complete), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn absolute_deadline_uses_the_runtime_monotonic_clock_without_wall_time() {
+        let cancellation = OperationCancellation::default();
+        let target_id = krometrail_core::TargetId::from_uuid(uuid::Uuid::from_u128(1));
+        let started = tokio::time::Instant::now();
+        let deadline = started + Duration::from_secs(5);
+        let outcome = controlled(
+            &cancellation,
+            0,
+            target_id,
+            deadline,
+            std::future::pending::<Result<()>>(),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(outcome, Controlled::TimedOut));
+        assert_eq!(tokio::time::Instant::now(), deadline);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancellation_wins_when_deadline_and_work_are_also_ready() {
+        let cancellation = OperationCancellation::default();
+        cancellation.stop();
+        let target_id = krometrail_core::TargetId::from_uuid(uuid::Uuid::from_u128(1));
+        let error = controlled(
+            &cancellation,
+            0,
+            target_id,
+            tokio::time::Instant::now(),
+            std::future::ready(Ok(())),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Cancelled);
     }
 }

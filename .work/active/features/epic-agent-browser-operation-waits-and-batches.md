@@ -1,14 +1,14 @@
 ---
 id: epic-agent-browser-operation-waits-and-batches
 kind: feature
-stage: implementing
+stage: review
 tags: [browser, agent-ux]
 parent: epic-agent-browser-operation
 depends_on: [epic-agent-browser-operation-browser-page-lifecycle, epic-agent-browser-operation-verified-interactions]
 release_binding: null
 gate_origin: null
 created: 2026-07-13
-updated: 2026-07-13
+updated: 2026-07-14
 ---
 
 # Explicit Waits and Ordered Batches
@@ -309,3 +309,34 @@ It does not persist interaction records, add SQLite tables, expose temporal anch
 - Simplification: one registry, one resolver, one standalone executor, one cancellation/deadline path, and one live-observation seam are extended rather than duplicated.
 - Intentional deviation from a generic “batch all operations” design: browser-scoped mutations, close, nested batch, and child live observation are excluded so the one-target/final-observation invariant remains enforceable. Explicit screenshots remain available through the existing screenshot contract.
 - Adjacent storage, temporal, MCP, and cross-target ordering concerns remain explicitly out of scope.
+
+## Integrated implementation roll-up
+
+- Worker ownership: one highest-capability feature owner carried the four dependency-ordered checkpoints because the operation registry, page-control dispatcher, single-writer session actor, cancellation path, and qualification tests are one overlapping write set. No nested delegation or peer mechanism was used.
+- `core-contracts` (`abbe53f`) added the validated integer-millisecond wait/batch domain, recursive request/result associations, registry-derived batchability, stable timeout error, and public exports.
+- `wait-executor` (`b4bec85`) added all six explicit wait strategies, shared snapshot/selector resolution, monotonic absolute deadlines, cancellation/disconnect precedence, lifecycle wake hints, and operation-scoped named network tracking.
+- `batch-coordinator` (`6ccd2c3`) added the shared private execution context, sequential standalone dispatch, target stability, parent correlation/anchors, stop/continue and terminal skip policy, optional screenshots, and one final live observation.
+- `qualification-and-wiring` (`976de46`) added scripted and real-Chrome production-port evidence plus the dependency-free fixture. Qualification fixed cross-stream event cancellation/order loss with bounded operation-scoped pumps and made final component degradation produce `CompletedWithFailures`.
+- Integrated contract is one registry, one target/session owner, one child dispatcher, one shared deadline/cancellation path, and one final live-observation seam. No MCP, storage, temporal, replay, rollback, implicit network-idle, or cross-target behavior was introduced.
+
+### Verification evidence
+
+- `cargo fmt --all -- --check` — passed.
+- `cargo check --workspace --all-targets --locked` — passed.
+- `cargo test --workspace --all-targets --locked` — 405 passed across 38 suites.
+- `cargo clippy --workspace --all-targets --locked -- -D warnings` — passed.
+- `cargo check -p krometrail-cdp --no-default-features --all-targets --locked` — passed.
+- `cargo test -p krometrail-cdp --no-default-features --all-targets --locked` — 35 passed across 18 suites.
+- Paused Tokio-clock tests verify the absolute monotonic deadline and biased cancellation precedence without wall-clock sleeps.
+- Linux Chrome `149.0.7827.155`: waits/batches real qualification passed 2 tests in 109.04s; existing page-lifecycle, page-observation, and verified-interaction real qualification passed 31 tests in 168.61s.
+- macOS real-Chrome execution was unavailable from this Linux worker; the platform-neutral opt-in suite remains wired into the existing macOS-capable path.
+
+### Implementation adjudications
+
+- Skipped steps use optional execution times. This resolves the design's conflicting non-optional field sketch and explicit prohibition on fabricated timing; every executed step still has constructor-validated monotonic times.
+- Recursive `BatchResult`/`BatchStepResult` remain non-wire domain values because the exact `BrowserOperationResult` is preserved and the settled design assigns stable response translation to the later MCP boundary.
+- A child wait's own timeout is an ordinary failed step and obeys stop/continue. `BatchOutcome::TimedOut` is reserved for exhaustion of the shared batch deadline.
+- Network quiet means no tracked finite request observed after subscription. Request ids remain private, WebSocket/EventSource and pre-subscription limitations are explicit in the bounded probe, and independent named streams are reconciled without claiming global idle.
+- Per-step or final observation degradation never rewrites successful browser state. It remains explicit in `ObservationPart`; degraded final observation selects `CompletedWithFailures`.
+
+All four child stories are `done`, integrated and real-browser verification is green, and the feature is ready for its standard independent review pass.
