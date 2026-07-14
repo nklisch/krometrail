@@ -8,6 +8,7 @@
 
 use std::{
     collections::BTreeMap,
+    num::NonZeroUsize,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -635,6 +636,67 @@ async fn non_fatal_artifact_failure_degrades_but_context_remains_useful() {
             .iter()
             .any(|d| matches!(d, BundleDegradation::ArtifactRequestUnavailable))
     );
+    // The artifact request produced no storyboard trace, so the service must
+    // not summarize that absence as a measured no-change result.
+    let summary = bundle.header.summary.as_str();
+    assert!(summary.contains("storyboard evidence was unavailable"));
+    assert!(!summary.contains("No thresholded visual change"));
+    // Context was available but selected no events; co-occurrence is not
+    // asserted merely because the context component succeeded.
+    assert!(summary.contains("No browser events matched"));
+    assert!(!summary.contains("Browser events co-occurred"));
+}
+
+#[tokio::test]
+async fn context_unavailable_with_available_artifact_does_not_claim_cooccurrence() {
+    let log = Arc::new(CallLog::default());
+    let range = resolved_range();
+    let generation = Arc::new(SpyGeneration {
+        log: Arc::clone(&log),
+        result: generation_result(&range),
+        error: None,
+        block: None,
+        reached: None,
+    });
+    let context = Arc::new(SpyContext {
+        log: Arc::clone(&log),
+        context: temporal_context(&range),
+        error: Some(ErrorCode::PersistenceFailed),
+    });
+    let evidence = Arc::new(SpyEvidenceStore {
+        log: Arc::clone(&log),
+        timeline: empty_slice(),
+        interactions: BTreeMap::new(),
+        timeline_error: None,
+    });
+    let service = TemporalDebugBundleService::new(
+        Arc::new(SpyQuery {
+            log: Arc::clone(&log),
+            range: range.clone(),
+            error: None,
+        }),
+        evidence,
+        Arc::clone(&generation) as Arc<dyn ArtifactGeneration>,
+        Arc::clone(&context) as Arc<dyn TemporalContextQuery>,
+        BundleWorkLimits::default(),
+    )
+    .unwrap();
+    let bundle = service
+        .bundle(request(), TemporalDebugBundleContext::default())
+        .await
+        .unwrap();
+    assert!(matches!(
+        bundle.context,
+        BundleContextEvidence::Unavailable { .. }
+    ));
+    assert!(matches!(
+        bundle.artifacts,
+        BundleArtifactEvidence::Available(_)
+    ));
+    let summary = bundle.header.summary.as_str();
+    assert!(summary.contains("Browser events were unavailable"));
+    assert!(!summary.contains("Browser events co-occurred"));
+    assert!(summary.contains("no co-occurrence is asserted"));
 }
 
 #[tokio::test]
@@ -928,6 +990,173 @@ async fn two_permits_bound_concurrent_orchestration() {
     h2.await.unwrap().unwrap();
 }
 
+#[tokio::test]
+async fn queued_second_request_times_out_under_max_active_requests_one() {
+    // With max_active_requests=1, a second request that arrives while the
+    // first holds the permit must time out at its bundle deadline — without
+    // first waiting for the in-flight bundle to release. The first request
+    // still owns the permit when the second one fails.
+    let log = Arc::new(CallLog::default());
+    let range = resolved_range();
+    let block_first = Arc::new(Notify::new());
+    let reached_first = Arc::new(Notify::new());
+    let generation = Arc::new(SpyGeneration {
+        log: Arc::clone(&log),
+        result: generation_result(&range),
+        error: None,
+        block: Some(Arc::clone(&block_first)),
+        reached: Some(Arc::clone(&reached_first)),
+    });
+    let evidence = Arc::new(SpyEvidenceStore {
+        log: Arc::new(CallLog::default()),
+        timeline: empty_slice(),
+        interactions: BTreeMap::new(),
+        timeline_error: None,
+    });
+    let limits = BundleWorkLimits {
+        max_active_requests: NonZeroUsize::new(1).unwrap(),
+        max_wall_time: Duration::from_secs(20),
+    };
+    let service = TemporalDebugBundleService::new(
+        Arc::new(SpyQuery {
+            log: Arc::clone(&log),
+            range: range.clone(),
+            error: None,
+        }),
+        evidence,
+        Arc::clone(&generation) as Arc<dyn ArtifactGeneration>,
+        Arc::new(SpyContext {
+            log: Arc::new(CallLog::default()),
+            context: temporal_context(&range),
+            error: None,
+        }) as Arc<dyn TemporalContextQuery>,
+        limits,
+    )
+    .unwrap();
+
+    // Start the first request; it acquires the sole permit and blocks in
+    // artifact generation.
+    let svc_first = service.clone();
+    let h_first = tokio::spawn(async move {
+        svc_first
+            .bundle(request(), TemporalDebugBundleContext::default())
+            .await
+    });
+    reached_first.notified().await;
+
+    // Start the second request with a short bundle deadline. It queues for the
+    // permit, the deadline elapses inside the controlled permit acquire, and
+    // the request fails as cancelled — while the first request still holds
+    // the permit. The test signal is only a barrier proving the second request
+    // reached the controlled wait; it is never cancelled, so the deadline is
+    // the observed termination path.
+    let second_control = TestCancellation::new();
+    let second_signal = second_control.signal();
+    let svc_second = service.clone();
+    let short_deadline = Instant::now() + Duration::from_millis(50);
+    let h_second = tokio::spawn(async move {
+        svc_second
+            .bundle(
+                request(),
+                TemporalDebugBundleContext {
+                    deadline: Some(short_deadline),
+                    cancellation: Some(second_signal),
+                },
+            )
+            .await
+    });
+    second_control.wait_until_observed().await;
+    let second_err = h_second.await.unwrap().unwrap_err();
+    assert_eq!(second_err.code, ErrorCode::Cancelled);
+
+    // The first request was never blocked and still owns the permit; release it
+    // so the test can finish cleanly.
+    block_first.notify_one();
+    h_first.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn queued_second_request_cancels_under_max_active_requests_one() {
+    // Same setup, but the second request is cancelled through its cancellation
+    // signal while queued for the permit. It must fail as cancelled without
+    // first waiting for the in-flight bundle to release.
+    let log = Arc::new(CallLog::default());
+    let range = resolved_range();
+    let block_first = Arc::new(Notify::new());
+    let reached_first = Arc::new(Notify::new());
+    let generation = Arc::new(SpyGeneration {
+        log: Arc::clone(&log),
+        result: generation_result(&range),
+        error: None,
+        block: Some(Arc::clone(&block_first)),
+        reached: Some(Arc::clone(&reached_first)),
+    });
+    let evidence = Arc::new(SpyEvidenceStore {
+        log: Arc::new(CallLog::default()),
+        timeline: empty_slice(),
+        interactions: BTreeMap::new(),
+        timeline_error: None,
+    });
+    let limits = BundleWorkLimits {
+        max_active_requests: NonZeroUsize::new(1).unwrap(),
+        max_wall_time: Duration::from_secs(20),
+    };
+    let service = TemporalDebugBundleService::new(
+        Arc::new(SpyQuery {
+            log: Arc::clone(&log),
+            range: range.clone(),
+            error: None,
+        }),
+        evidence,
+        Arc::clone(&generation) as Arc<dyn ArtifactGeneration>,
+        Arc::new(SpyContext {
+            log: Arc::new(CallLog::default()),
+            context: temporal_context(&range),
+            error: None,
+        }) as Arc<dyn TemporalContextQuery>,
+        limits,
+    )
+    .unwrap();
+
+    // First request acquires the permit and blocks in generation.
+    let svc_first = service.clone();
+    let h_first = tokio::spawn(async move {
+        svc_first
+            .bundle(request(), TemporalDebugBundleContext::default())
+            .await
+    });
+    reached_first.notified().await;
+
+    // Second request carries a long deadline but a cancellation signal that
+    // fires while the permit acquire is pending; the queued acquire must
+    // observe it and fail.
+    let cancel = TestCancellation::new();
+    let signal = cancel.signal();
+    let svc_second = service.clone();
+    let h_second = tokio::spawn(async move {
+        svc_second
+            .bundle(
+                request(),
+                TemporalDebugBundleContext {
+                    deadline: None,
+                    cancellation: Some(signal),
+                },
+            )
+            .await
+    });
+    // The signal's observed barrier proves the second request is inside the
+    // controlled permit wait (rather than merely passing the pre-check), then
+    // cancellation terminates that pending acquire.
+    cancel.wait_until_observed().await;
+    cancel.cancel();
+    let second_err = h_second.await.unwrap().unwrap_err();
+    assert_eq!(second_err.code, ErrorCode::Cancelled);
+
+    // The first request still owns the permit; release it and finish.
+    block_first.notify_one();
+    h_first.await.unwrap().unwrap();
+}
+
 // ---------------------------------------------------------------------------
 // Test cancellation signal
 // ---------------------------------------------------------------------------
@@ -935,25 +1164,35 @@ async fn two_permits_bound_concurrent_orchestration() {
 struct TestCancellation {
     tx: tokio::sync::watch::Sender<bool>,
     _rx: tokio::sync::watch::Receiver<bool>,
+    observed: Arc<Notify>,
 }
 
 impl TestCancellation {
     fn new() -> Self {
         let (tx, rx) = tokio::sync::watch::channel(false);
-        Self { tx, _rx: rx }
+        Self {
+            tx,
+            _rx: rx,
+            observed: Arc::new(Notify::new()),
+        }
     }
     fn cancel(&self) {
         let _ = self.tx.send(true);
     }
+    async fn wait_until_observed(&self) {
+        self.observed.notified().await;
+    }
     fn signal(&self) -> Arc<dyn CancellationSignal> {
         Arc::new(TestCancellationSignal {
             rx: self.tx.subscribe(),
+            observed: Arc::clone(&self.observed),
         })
     }
 }
 
 struct TestCancellationSignal {
     rx: tokio::sync::watch::Receiver<bool>,
+    observed: Arc<Notify>,
 }
 
 impl CancellationSignal for TestCancellationSignal {
@@ -962,7 +1201,11 @@ impl CancellationSignal for TestCancellationSignal {
     }
     fn cancelled(&self) -> PortFuture<'_, ()> {
         let mut rx = self.rx.clone();
+        let observed = Arc::clone(&self.observed);
         Box::pin(async move {
+            // This is a test-only synchronization point: production callers
+            // cannot observe whether the controlled wrapper reached a port wait.
+            observed.notify_one();
             while !*rx.borrow_and_update() {
                 if rx.changed().await.is_err() {
                     return;
@@ -1104,7 +1347,10 @@ mod policy_tests {
 mod qualification {
     use super::*;
     use crate::artifacts::{ArtifactWorkLimits, TemporalVisionArtifactService};
-    use crate::debug_bundle::{TemporalDebugEvidenceStore, build_effective_policy, compose_header};
+    use crate::debug_bundle::{
+        BrowserEventEvidenceState, TemporalDebugEvidenceStore, VisualEvidenceState,
+        build_effective_policy, compose_header,
+    };
     use krometrail_core::{
         ArtifactStore, BrowserEventContext, CaptureGapPolicy, CaptureGapSummary, CaptureOrdinal,
         CaptureQuality, CaptureStatusEvidence, CapturedFrame, EncodedFrame, FramePoint,
@@ -1634,14 +1880,26 @@ mod qualification {
     fn golden_header_text_is_non_diagnostic_and_stable() {
         let range = resolved_range();
         // Empty outcomes → no focus → "No thresholded visual change" text.
-        let header = compose_header(&range, &[], false).unwrap();
+        let header = compose_header(
+            &range,
+            &[],
+            VisualEvidenceState::MeasuredNoChange,
+            BrowserEventEvidenceState::Available { selected: 0 },
+        )
+        .unwrap();
         let summary = header.summary.as_str();
         assert!(summary.contains("Observed"));
         assert!(summary.contains("No thresholded visual change"));
         assert!(summary.contains("do not establish diagnosis or causality"));
         assert!(summary.len() <= krometrail_core::MAX_BUNDLE_HEADER_BYTES);
         // Re-composing produces identical text.
-        let header2 = compose_header(&range, &[], false).unwrap();
+        let header2 = compose_header(
+            &range,
+            &[],
+            VisualEvidenceState::MeasuredNoChange,
+            BrowserEventEvidenceState::Available { selected: 0 },
+        )
+        .unwrap();
         assert_eq!(header.summary.as_str(), header2.summary.as_str());
     }
 }

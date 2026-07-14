@@ -12,18 +12,51 @@ use krometrail_core::{
 };
 use temporal_vision::{ArtifactKind, StoryboardVisualSummary};
 
-/// Composes the deterministic header from the resolved range and available
-/// artifact outcomes.
+/// Typed visual evidence state observed for the resolved range.
 ///
-/// `has_focus` indicates whether focus extraction produced any major-change
-/// times; the summary states honestly when no thresholded change was measured.
+/// Replacing a boolean `has_focus` flag with this enum lets the header describe
+/// the three genuinely different visual outcomes: a measured change, a measured
+/// no-change, and the absence of any usable storyboard trace. Without this
+/// distinction an unavailable storyboard would be reported as "no visual
+/// change", which asserts a measurement the bundle never made.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum VisualEvidenceState {
+    /// A storyboard trace was available and thresholded visual change was measured.
+    MeasuredChange,
+    /// A storyboard trace was available but no thresholded change was measured.
+    MeasuredNoChange,
+    /// No storyboard trace was available for the resolved range.
+    Unavailable,
+}
+
+/// Typed browser-event evidence state observed for the resolved range.
+///
+/// The header may only assert co-occurrence between browser events and visual
+/// moments when context is available and selected events exist. When context is
+/// unavailable, no co-occurrence is asserted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BrowserEventEvidenceState {
+    /// Context was available; carries the compact selected event count.
+    Available { selected: u64 },
+    /// Context was unavailable.
+    Unavailable,
+}
+
+/// Composes the deterministic header from the resolved range, available
+/// artifact outcomes, and the typed visual/browser-event evidence state.
+///
+/// `visual` distinguishes measured change, measured no-change, and unavailable
+/// storyboard evidence; `browser_events` distinguishes available (with selected
+/// count) from unavailable context. The summary asserts only what evidence
+/// supports and never claims co-occurrence when context is unavailable or empty.
 pub(crate) fn compose_header(
     range: &ResolvedRange,
     outcomes: &[ArtifactOutcome],
-    has_focus: bool,
+    visual: VisualEvidenceState,
+    browser_events: BrowserEventEvidenceState,
 ) -> Result<TemporalDebugHeader> {
     let visual_summaries = extract_epoch_summaries(outcomes);
-    let summary = compose_summary(range, has_focus)?;
+    let summary = compose_summary(range, visual, browser_events)?;
     TemporalDebugHeader::new(summary, visual_summaries)
 }
 
@@ -55,20 +88,41 @@ fn extract_epoch_summaries(outcomes: &[ArtifactOutcome]) -> Vec<BundleEpochVisua
     summaries
 }
 
-fn compose_summary(range: &ResolvedRange, has_focus: bool) -> Result<NonEmptyText> {
+fn compose_summary(
+    range: &ResolvedRange,
+    visual: VisualEvidenceState,
+    browser_events: BrowserEventEvidenceState,
+) -> Result<NonEmptyText> {
     let frame_count = range.frame_ids.len();
     let start = range.resolved_range.start().as_nanos();
     let end = range.resolved_range.end().as_nanos();
-    let change = if has_focus {
-        "Visual changes measured at selected storyboard moments."
-    } else {
-        "No thresholded visual change was measured in retained comparable frames."
+    let change = match visual {
+        VisualEvidenceState::MeasuredChange => {
+            "Visual changes measured at selected storyboard moments."
+        }
+        VisualEvidenceState::MeasuredNoChange => {
+            "No thresholded visual change was measured in retained comparable frames."
+        }
+        VisualEvidenceState::Unavailable => {
+            "Visual change was not measured; storyboard evidence was unavailable."
+        }
+    };
+    let events_clause = match browser_events {
+        BrowserEventEvidenceState::Available { selected: 0 } => {
+            "No browser events matched the resolved range."
+        }
+        BrowserEventEvidenceState::Available { .. } => {
+            "Browser events co-occurred nearest by session-time distance."
+        }
+        BrowserEventEvidenceState::Unavailable => {
+            "Browser events were unavailable; no co-occurrence is asserted."
+        }
     };
     let text = format!(
         "Observed target {} from {} to {} ns. {} source frames retained. {} \
-         Browser events co-occurred nearest by session-time distance. \
+         {} \
          Measurements and proximity do not establish diagnosis or causality.",
-        range.target_id, start, end, frame_count, change
+        range.target_id, start, end, frame_count, change, events_clause
     );
     if text.len() > MAX_BUNDLE_HEADER_BYTES {
         return Err(krometrail_core::KrometrailError::new(
@@ -229,7 +283,13 @@ mod tests {
     fn header_with_focus_uses_only_approved_language() {
         let range = resolved_range();
         let outcomes = vec![changed_outcome(0, 100)];
-        let header = compose_header(&range, &outcomes, true).unwrap();
+        let header = compose_header(
+            &range,
+            &outcomes,
+            VisualEvidenceState::MeasuredChange,
+            BrowserEventEvidenceState::Available { selected: 3 },
+        )
+        .unwrap();
         assert_eq!(
             header.posture,
             krometrail_core::EvidencePosture::ObservedChangeAndTemporalProximityOnly
@@ -258,16 +318,50 @@ mod tests {
     }
 
     #[test]
-    fn header_without_focus_states_no_thresholded_change() {
+    fn header_measured_no_change_states_no_thresholded_change() {
         let range = resolved_range();
         let outcomes: Vec<ArtifactOutcome> = vec![];
-        let header = compose_header(&range, &outcomes, false).unwrap();
+        let header = compose_header(
+            &range,
+            &outcomes,
+            VisualEvidenceState::MeasuredNoChange,
+            BrowserEventEvidenceState::Available { selected: 0 },
+        )
+        .unwrap();
         assert!(
             header
                 .summary
                 .as_str()
                 .contains("No thresholded visual change")
         );
+        // Available context with no events does not assert co-occurrence.
+        assert!(
+            header
+                .summary
+                .as_str()
+                .contains("No browser events matched the resolved range")
+        );
+    }
+
+    #[test]
+    fn header_unavailable_storyboard_does_not_claim_no_change() {
+        let range = resolved_range();
+        let outcomes: Vec<ArtifactOutcome> = vec![unavailable_outcome(0)];
+        let header = compose_header(
+            &range,
+            &outcomes,
+            VisualEvidenceState::Unavailable,
+            BrowserEventEvidenceState::Unavailable,
+        )
+        .unwrap();
+        let summary = header.summary.as_str();
+        // Never claims "no thresholded visual change" when no storyboard trace
+        // was available — that would assert a measurement the bundle never made.
+        assert!(!summary.contains("No thresholded visual change"));
+        assert!(summary.contains("storyboard evidence was unavailable"));
+        // No browser-event co-occurrence is asserted when context is unavailable.
+        assert!(!summary.contains("Browser events co-occurred"));
+        assert!(summary.contains("Browser events were unavailable"));
     }
 
     #[test]
@@ -278,7 +372,13 @@ mod tests {
             changed_outcome(1, 200),
             unavailable_outcome(2),
         ];
-        let header = compose_header(&range, &outcomes, true).unwrap();
+        let header = compose_header(
+            &range,
+            &outcomes,
+            VisualEvidenceState::MeasuredChange,
+            BrowserEventEvidenceState::Available { selected: 1 },
+        )
+        .unwrap();
         assert_eq!(header.visual_summaries.len(), 2);
         assert_eq!(header.visual_summaries[0].epoch_index, 0);
         assert_eq!(header.visual_summaries[1].epoch_index, 1);

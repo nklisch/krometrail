@@ -27,8 +27,8 @@ use std::num::NonZeroU16;
 use tokio::sync::Semaphore;
 
 use super::{
-    TemporalDebugEvidenceStore, assemble_markers, compose_header, controlled,
-    default_artifact_request,
+    BrowserEventEvidenceState, TemporalDebugEvidenceStore, VisualEvidenceState, assemble_markers,
+    compose_header, controlled, default_artifact_request,
     error::{cancelled_error, evidence_lifetime_error, no_useful_evidence_error, permit_error},
     extract_focus_times,
 };
@@ -83,10 +83,13 @@ impl TemporalDebugBundleService {
         request: TemporalDebugBundleRequest,
         context: TemporalDebugBundleContext,
     ) -> Result<TemporalDebugBundle> {
-        // Step 1: acquire a permit, compute the absolute deadline, and check
-        // immediate cancellation. The permit bounds concurrent orchestration
-        // independently of the artifact service's own permits.
-        let _permit = self.permits.acquire().await.map_err(|_| permit_error())?;
+        // Step 1: compute the effective absolute deadline, check immediate
+        // cancellation, and acquire one of the global active-bundle permits
+        // through the same controlled cancellation/deadline wrapper that
+        // guards every later await. The permit bounds concurrent orchestration
+        // independently of the artifact service's own permits. Acquiring the
+        // permit through `controlled` lets a queued request time out or be
+        // cancelled without waiting for an in-flight bundle to release first.
         let now = Instant::now();
         let wall_deadline = now + self.limits.max_wall_time;
         let bundle_deadline = context
@@ -97,6 +100,14 @@ impl TemporalDebugBundleService {
             return Err(cancelled_error());
         }
         let cancellation = context.cancellation.as_ref();
+        let permit = controlled(self.permits.acquire(), bundle_deadline, cancellation).await;
+        let _permit = match permit {
+            Ok(Ok(acquired)) => acquired,
+            // The semaphore was closed; this is fatal but not cancellation.
+            Ok(Err(_)) => return Err(permit_error()),
+            // Controlled wrapper fired cancellation or the bundle deadline.
+            Err(controlled_error) => return Err(controlled_error),
+        };
 
         // Step 2: resolve the range exactly once. Range failure is whole-request
         // failure; the owned query is cloned so the original can be returned in
@@ -249,7 +260,19 @@ impl TemporalDebugBundleService {
             return Err(no_useful_evidence_error(&range));
         }
 
-        let header = compose_header(&range, &artifact_outcomes, has_focus)?;
+        let visual_state = classify_visual_evidence(&artifact_outcomes, has_focus);
+        let browser_event_state = match &context_evidence {
+            BundleContextEvidence::Available(context) => BrowserEventEvidenceState::Available {
+                selected: context.browser_events.returned_count,
+            },
+            BundleContextEvidence::Unavailable { .. } => BrowserEventEvidenceState::Unavailable,
+        };
+        let header = compose_header(
+            &range,
+            &artifact_outcomes,
+            visual_state,
+            browser_event_state,
+        )?;
         let mut warnings = Vec::new();
         if range.resolved_anchor.requested_time != range.resolved_anchor.effective_time {
             warnings.push(BundleWarning::AnchorAdjustedForRetention {
@@ -361,6 +384,32 @@ fn is_fatal_after_resolution(error: &krometrail_core::KrometrailError, deadline:
         return true;
     }
     Instant::now() >= deadline
+}
+
+/// Classifies the typed visual evidence state from the available storyboard
+/// outcomes and whether focus extraction produced any major-change times.
+///
+/// This replaces a boolean `has_focus` flag at the header boundary so an
+/// unavailable storyboard is never reported as "no visual change" — that would
+/// assert a measurement the bundle never made. Only an available storyboard
+/// trace without measured change may be reported as `MeasuredNoChange`.
+fn classify_visual_evidence(outcomes: &[ArtifactOutcome], has_focus: bool) -> VisualEvidenceState {
+    let has_storyboard_trace = outcomes.iter().any(|outcome| match outcome {
+        ArtifactOutcome::Available { artifact, .. }
+            if artifact.manifest.artifact_kind() == temporal_vision::ArtifactKind::Storyboard =>
+        {
+            artifact.manifest.storyboard_selection().is_some()
+        }
+        _ => false,
+    });
+    if !has_storyboard_trace {
+        return VisualEvidenceState::Unavailable;
+    }
+    if has_focus {
+        VisualEvidenceState::MeasuredChange
+    } else {
+        VisualEvidenceState::MeasuredNoChange
+    }
 }
 
 impl TemporalDebugBundles for TemporalDebugBundleService {

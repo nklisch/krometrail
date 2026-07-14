@@ -36,7 +36,7 @@ use policy::policy_version;
 // exercised by focused tests until the service wires them into composition.
 pub(crate) use error::controlled;
 pub(crate) use focus::extract_focus_times;
-pub(crate) use header::compose_header;
+pub(crate) use header::{BrowserEventEvidenceState, VisualEvidenceState, compose_header};
 pub(crate) use markers::{AssembledMarkers, MarkerEvidence, assemble_markers};
 pub(crate) use policy::{default_artifact_request, default_generators};
 pub(crate) use service::{BundleWorkLimits, TemporalDebugBundleService};

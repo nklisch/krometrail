@@ -273,7 +273,7 @@ pub enum BundleWarning {
         returned_count: u64,
         limit: u16,
     },
-    MarkerLabelUnavailable { marker_id: MarkerId },
+    MarkerLabelUnavailable { marker_id: ArtifactMarkerId },
     NoMajorVisualChangeFocus,
 }
 
@@ -525,7 +525,7 @@ One feature owner should carry these checkpoints as a cohesive implementation an
 
 ## Risks and rollback
 
-- **Manifest evolution can invalidate cache unexpectedly.** The explicit storyboard `1.1.0` bump makes invalidation intentional; old manifests deserialize without the trace and remain progressively readable. If trace validation is faulty, disable bundle focus extraction and regenerate only storyboard `1.1.0` artifacts after correction; never parse parameters or recompute in the bundle.
+- **Manifest evolution can invalidate cache unexpectedly.** The explicit storyboard `1.1.0` bump makes invalidation intentional; prepublic policy rejects trace-less storyboard/orientation manifests at deserialization (and at construction), so any stale cache row invalidates and regenerates from retained sources rather than remaining readable. If trace validation is faulty, disable bundle focus extraction and regenerate only storyboard `1.1.0` artifacts after correction; never parse parameters or recompute in the bundle.
 - **A 20-second sequential bundle may be slower than parallel fan-out.** Context depends on visual focus by contract, so one artifact call then one context call is the honest path. Artifact cache hits keep repeated queries fast. If measured latency is poor, optimize the existing artifact/context services or add a precomputed trace behind their ports; do not add a second context query.
 - **Timeline marker volume can be high.** Kind-filtered SQL, 1024-row source cap, 256 artifact cap, and explicit truncation bound it. If evaluation needs broader marker coverage, raise validated limits or add cursor-based progressive marker retrieval later rather than silently dropping caps.
 - **Synthetic generic-marker labels are less informative.** They are explicitly flagged and contain only typed IDs. Exact caller labels remain available when supplied. A future owned marker-payload contract may enrich the generic timeline, but this feature does not invent a store/schema.
@@ -556,3 +556,14 @@ None. Resolved queries are done; artifact generation/cache is reviewed and done;
 - Integration correction: `validate_resolved_range` in `context.rs` fixed to use `range.validate()` instead of `ResolvedRange::new`, enabling all seven anchor kinds through `TemporalContextRequest`.
 - Workspace gates: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --all-targets --locked`, `cargo check --workspace --all-targets --locked` — all pass.
 - Feature advances to `review` for standard independent review.
+
+## Standard review — accepted findings and fix verification
+
+The standard independent review returned four accepted findings. All four are implemented and verified; the feature remains at `stage: review` for host approval (no re-review requested).
+
+1. **Controlled permit acquisition (`src/debug_bundle/service.rs`).** The effective absolute deadline is now computed first and the global active-bundle permit is acquired through the same `controlled()` wrapper that guards every later await, instead of being acquired before cancellation/deadline control. A queued request can therefore time out or be cancelled without first waiting for an in-flight bundle to release its permit. Two max-active-request tests cover the queued-second-request timeout path (caller-supplied short bundle deadline) and the queued-second-request cancellation path; a cancellation-signal barrier proves both requests reached the controlled permit wait before the second one fails, while the first still owns the permit.
+2. **Typed visual evidence state (`src/debug_bundle/header.rs`, `service.rs`).** Boolean `has_focus` was replaced with a typed `VisualEvidenceState` (`MeasuredChange`, `MeasuredNoChange`, `Unavailable`) and `BrowserEventEvidenceState` (`Available { selected }`, `Unavailable`). The summary no longer claims "no thresholded visual change" when no storyboard trace was available, and no longer asserts browser-event co-occurrence when context is unavailable or selected-count is zero. Header and service-path tests cover unavailable artifact evidence, measured no-change with zero selected events, and unavailable context.
+3. **ID-aware anchor marker assembly (`src/debug_bundle/markers.rs`, `crates/krometrail-core/src/debug_bundle.rs`).** `BundleWarning::MarkerLabelUnavailable` now carries an `ArtifactMarkerId` instead of a `MarkerId` so the warning can name any anchor kind. Anchor marker assembly enforces three rules: (a) a caller marker carrying the anchor's exact typed ID with a matching session time merges (caller's kind/label wins; the synthesized anchor marker is suppressed — one marker, not two); (b) a caller marker with the same typed ID but a different session time fails explicitly with `InvalidInput` ("caller marker session time conflicts with the resolved anchor at the same identifier") rather than silently masking inconsistent typed identity/time; (c) a synthetic fallback anchor label (the anchor's authoritative evidence is no longer retained) emits `MarkerLabelUnavailable` with the anchor's typed ID. Generic marker anchors now follow the same fallback-warning rule. New marker tests cover merge/dedupe, real conflict failure, interaction/generic fallback warnings, caller-suppresses-synthetic-warning, and caps/order/privacy preservation.
+4. **Stale compatibility prose (this feature body).** The Risks bullet previously claimed trace-less manifests "remain progressively readable"; aligned with the committed prepublic policy and the actual rejection/regeneration behavior, the bullet now states trace-less storyboard/orientation manifests are rejected at deserialization and construction so stale cache rows invalidate and regenerate from retained sources.
+
+Fix verification: Rust 1.85.0 `cargo fmt --all -- --check`, `cargo check --workspace --all-targets --locked`, `cargo test --workspace --all-targets --locked` (622 passed, 1 ignored), and `cargo clippy --workspace --all-targets --locked -- -D warnings` — all green. The added service-path and generic-anchor tests reproduce the accepted evidence-state and fallback-warning findings.

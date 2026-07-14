@@ -11,8 +11,8 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::{
     ArtifactFailurePolicy, ArtifactGenerationRequest, ArtifactGenerationResult,
     ArtifactGeneratorRequest, ArtifactMarker, ArtifactMarkerId, BrowserEventFilter,
-    BrowserEventSelection, CancellationSignal, FrameId, KrometrailError, MarkerId, NonEmptyText,
-    PortFuture, ResolvedAnchorReference, ResolvedRange, Result, SessionTime, TemporalContext,
+    BrowserEventSelection, CancellationSignal, FrameId, KrometrailError, NonEmptyText, PortFuture,
+    ResolvedAnchorReference, ResolvedRange, Result, SessionTime, TemporalContext,
     TemporalContextRequest, TemporalQueryRequest, TemporalRangeAnchor, error::invalid,
     timeline::MAX_FOCUS_TIMES, validation::deserialize_validated,
 };
@@ -101,13 +101,7 @@ fn validate_caller_markers(markers: &[ArtifactMarker]) -> Result<()> {
     }
     let mut ids = HashSet::with_capacity(markers.len());
     for marker in markers {
-        let id_valid = match marker.id() {
-            ArtifactMarkerId::Interaction(id) => !id.as_uuid().is_nil(),
-            ArtifactMarkerId::Navigation(id) => !id.as_uuid().is_nil(),
-            ArtifactMarkerId::Marker(id) => !id.as_uuid().is_nil(),
-            ArtifactMarkerId::Caller(_) => true,
-        };
-        if !id_valid || !ids.insert(marker.id().clone()) {
+        if artifact_marker_id_is_nil(marker.id()) || !ids.insert(marker.id().clone()) {
             return Err(invalid(
                 "bundle caller marker identifiers must be non-nil and unique",
             ));
@@ -119,6 +113,17 @@ fn validate_caller_markers(markers: &[ArtifactMarker]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// True when a typed marker identifier is a nil UUID. Caller-supplied text
+/// identifiers cannot be nil and are always valid at this layer.
+fn artifact_marker_id_is_nil(id: &ArtifactMarkerId) -> bool {
+    match id {
+        ArtifactMarkerId::Interaction(id) => id.as_uuid().is_nil(),
+        ArtifactMarkerId::Navigation(id) => id.as_uuid().is_nil(),
+        ArtifactMarkerId::Marker(id) => id.as_uuid().is_nil(),
+        ArtifactMarkerId::Caller(_) => false,
+    }
 }
 
 #[derive(Clone, Default)]
@@ -309,7 +314,7 @@ pub enum BundleWarning {
         limit: u16,
     },
     MarkerLabelUnavailable {
-        marker_id: MarkerId,
+        marker_id: ArtifactMarkerId,
     },
     NoMajorVisualChangeFocus,
 }
@@ -495,7 +500,9 @@ fn validate_warning(warning: &BundleWarning) -> Result<()> {
                 ));
             }
         }
-        BundleWarning::MarkerLabelUnavailable { marker_id } if marker_id.as_uuid().is_nil() => {
+        BundleWarning::MarkerLabelUnavailable { marker_id }
+            if artifact_marker_id_is_nil(marker_id) =>
+        {
             return Err(invalid(
                 "bundle marker-label warning requires a non-nil marker id",
             ));
