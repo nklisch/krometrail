@@ -1,7 +1,9 @@
-#[allow(dead_code)] // The next checkpoint consumes these schema boundary codecs.
+mod catalog;
 mod codec;
+mod gaps;
 mod migrations;
 mod schema_v1;
+mod timeline;
 
 use std::{
     fs,
@@ -10,7 +12,8 @@ use std::{
     time::Duration,
 };
 
-use rusqlite::{Connection, OpenFlags};
+use krometrail_core::{SessionId, TargetId};
+use rusqlite::{Connection, OpenFlags, Transaction, params};
 
 use crate::persistence_error;
 
@@ -23,7 +26,6 @@ pub struct IndexStoreConfig {
 
 /// File-backed searchable metadata authority.
 pub struct SqliteIndex {
-    #[allow(dead_code)] // Timeline/index adapters land in the next checkpoint.
     connection: Mutex<Connection>,
     #[allow(dead_code)] // Address-backed frame reads land after timeline indexing.
     segments_directory: PathBuf,
@@ -88,7 +90,6 @@ impl SqliteIndex {
         })
     }
 
-    #[allow(dead_code)]
     pub(crate) fn connection(&self) -> krometrail_core::Result<MutexGuard<'_, Connection>> {
         self.connection
             .lock()
@@ -99,6 +100,38 @@ impl SqliteIndex {
     pub(crate) fn segments_directory(&self) -> &std::path::Path {
         &self.segments_directory
     }
+}
+
+pub(crate) fn ensure_session(
+    transaction: &Transaction<'_>,
+    session_id: SessionId,
+) -> krometrail_core::Result<()> {
+    transaction
+        .execute(
+            "INSERT OR IGNORE INTO sessions(session_id, record_json) VALUES (?1, NULL)",
+            params![codec::id(session_id.as_uuid()).to_vec()],
+        )
+        .map_err(|_| persistence_error("could not ensure session identity"))?;
+    Ok(())
+}
+
+pub(crate) fn ensure_identity(
+    transaction: &Transaction<'_>,
+    session_id: SessionId,
+    target_id: TargetId,
+) -> krometrail_core::Result<()> {
+    ensure_session(transaction, session_id)?;
+    transaction
+        .execute(
+            "INSERT OR IGNORE INTO targets(session_id, target_id, record_json) \
+             VALUES (?1, ?2, NULL)",
+            params![
+                codec::id(session_id.as_uuid()).to_vec(),
+                codec::id(target_id.as_uuid()).to_vec()
+            ],
+        )
+        .map_err(|_| persistence_error("could not ensure target identity"))?;
+    Ok(())
 }
 
 #[cfg(test)]

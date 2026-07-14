@@ -1,7 +1,7 @@
 ---
 id: epic-durable-browser-memory-sqlite-index-timeline-catalog
 kind: story
-stage: implementing
+stage: done
 tags: [storage, browser]
 parent: epic-durable-browser-memory-sqlite-index
 depends_on: [epic-durable-browser-memory-sqlite-index-schema-migrations]
@@ -32,3 +32,12 @@ Depends on migrated schema and boundary codecs. It proves generic metadata behav
 - Gap structured/timeline rows commit or roll back together, preserve all fields, and overlap a query even when the gap begins before it.
 - No event content, headers, cookies, auth values, or bodies are persisted through the generic path.
 - Failures remain source-safe and locked workspace gates pass.
+
+## Implementation notes
+
+- Implemented the three focused adapters on the shared SQLite index: catalog upserts, generic timeline metadata, and structured capture-gap persistence.
+- First metadata writes create identity-only placeholders; later session/target upserts store and round-trip only validated core JSON contracts.
+- Generic timeline append rejects frame and gap observations so authoritative frame/gap rows cannot detach. Inclusive range ordering follows session time, frame-presence/ordinal, observed time, registry name, payload key, and insertion id.
+- Capture gaps and their generic timeline anchors share one immediate transaction; overlap reads preserve declaration time and every structured field.
+- Database decode and query failures expose only stable source-safe persistence errors.
+- Verification: 27 store tests passed across schema, catalog, timeline, gaps, and segment suites; store Clippy passed with warnings denied.
