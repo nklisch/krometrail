@@ -278,6 +278,13 @@ fn rig(two_epochs: bool, limits: ArtifactWorkLimits) -> TestRig {
                 )
                 .unwrap(),
             },
+            mask: Some(
+                temporal_vision::BinaryMask::new(
+                    temporal_vision::PixelDimensions::new(2, 2).unwrap(),
+                    [0x80],
+                )
+                .unwrap(),
+            ),
             anchor: SessionTime::from_nanos(2),
             tile_limit: 3,
             locator: None,
@@ -357,6 +364,13 @@ async fn all_generator_families_are_ordered_deterministic_and_cached() {
             temporal_vision::ArtifactKind::MotionHistory,
         ]
     );
+    assert!(first.outcomes.iter().any(|outcome| matches!(
+        outcome,
+        ArtifactOutcome::Available { artifact, .. }
+            if artifact.manifest.artifact_kind()
+                == temporal_vision::ArtifactKind::RegionFilmstrip
+                && artifact.manifest.mask().is_some()
+    )));
     let ids: Vec<_> = first
         .outcomes
         .iter()

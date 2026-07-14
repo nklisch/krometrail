@@ -218,6 +218,9 @@ pub(crate) fn generate(
                         })?,
                 );
             }
+            if let Some(mask) = &request.mask {
+                parameters = parameters.with_mask(mask.clone()).map_err(vision_error)?;
+            }
             let generated = temporal_vision::generate_region_filmstrip(
                 artifact_ids[0],
                 &epoch.sequence,

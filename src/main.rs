@@ -1,6 +1,7 @@
 mod app;
 mod artifacts;
 mod cli;
+mod progressive;
 
 use std::process::ExitCode;
 

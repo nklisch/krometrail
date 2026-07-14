@@ -235,6 +235,7 @@ pub struct DifferenceMapRequest {
 #[serde(deny_unknown_fields)]
 pub struct RegionFilmstripRequest {
     pub region: temporal_vision::RegionDefinition,
+    pub mask: Option<temporal_vision::BinaryMask>,
     pub anchor: SessionTime,
     pub tile_limit: u8,
     pub locator: Option<FrameId>,
@@ -314,6 +315,27 @@ impl ArtifactGeneratorRequest {
                 request.display_scale.validate()?;
                 if request.display_scale == AnalysisScale::FitLimits {
                     return Err(invalid("filmstrip display scale must be explicit"));
+                }
+                if let Some(mask) = &request.mask {
+                    let bounds = mask
+                        .bounds()
+                        .map_err(|error| invalid(error.to_string()))?
+                        .ok_or_else(|| {
+                            invalid("filmstrip mask must select at least one source pixel")
+                        })?;
+                    let matching_source_region = matches!(
+                        &request.region,
+                        temporal_vision::RegionDefinition::FixedSourceImage { rect }
+                            if rect.x() == i64::from(bounds.x())
+                                && rect.y() == i64::from(bounds.y())
+                                && rect.width() == bounds.width()
+                                && rect.height() == bounds.height()
+                    );
+                    if !matching_source_region {
+                        return Err(invalid(
+                            "filmstrip mask requires its exact fixed source-image bounds",
+                        ));
+                    }
                 }
                 Ok(())
             }

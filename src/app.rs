@@ -6,9 +6,9 @@ use std::{
 use krometrail_core::{
     ArtifactGeneration, ArtifactStore, BrowserConnector, BrowserEventSink, CapabilityId,
     CaptureGapStore, DiskBudgetBytes, ErrorCode, FrameSource, IdSource, IdValue,
-    InteractionEvidenceSink, KrometrailError, MonotonicClock, NonEmptyText, RecordingCatalog,
-    RecordingSink, Result, RetentionStore, TemporalContextQuery, TemporalQuery, TimelineStore,
-    WallClock,
+    InteractionEvidenceSink, KrometrailError, MonotonicClock, NonEmptyText, ProgressiveEvidence,
+    ProgressiveEvidenceStore, RecordingCatalog, RecordingSink, Result, RetentionStore,
+    TemporalContextQuery, TemporalQuery, TimelineStore, WallClock,
 };
 use uuid::Uuid;
 
@@ -18,6 +18,7 @@ use uuid::Uuid;
 use crate::{
     artifacts::{ArtifactWorkLimits, TemporalVisionArtifactService},
     cli::Command,
+    progressive::ProgressiveEvidenceService,
 };
 use krometrail_cdp::{
     BrowserEventConfig, CaptureConfig, LauncherConfig, ProductionBrowserConnector,
@@ -43,6 +44,7 @@ pub(crate) struct RuntimeDependencies {
     pub temporal_queries: Arc<dyn TemporalQuery>,
     pub temporal_context: Arc<dyn TemporalContextQuery>,
     pub artifact_generation: Arc<dyn ArtifactGeneration>,
+    pub progressive_evidence: Arc<dyn ProgressiveEvidence>,
     pub mcp_config: McpConfig,
 }
 
@@ -89,6 +91,7 @@ impl Runtime {
                     &self.dependencies.temporal_queries,
                     &self.dependencies.temporal_context,
                     &self.dependencies.artifact_generation,
+                    &self.dependencies.progressive_evidence,
                 );
                 let installations = self.dependencies.browser.installations().await?;
                 if installations.is_empty() {
@@ -134,6 +137,11 @@ pub(crate) fn build_runtime() -> Result<Runtime> {
             Arc::clone(&ids),
             ArtifactWorkLimits::default(),
         )?);
+    let progressive_evidence: Arc<dyn ProgressiveEvidence> =
+        Arc::new(ProgressiveEvidenceService::new(
+            Arc::clone(&storage.store) as Arc<dyn ProgressiveEvidenceStore>,
+            Arc::clone(&artifact_generation),
+        ));
     let browser: Arc<dyn BrowserConnector> = Arc::new(
         ProductionBrowserConnector::new(
             Arc::new(SystemChromeLauncher::new(LauncherConfig::new(profile_root))),
@@ -171,6 +179,7 @@ pub(crate) fn build_runtime() -> Result<Runtime> {
         temporal_queries: storage.temporal_queries,
         temporal_context: storage.temporal_context,
         artifact_generation,
+        progressive_evidence,
         mcp_config,
     }))
 }
@@ -223,7 +232,7 @@ fn open_storage_with_budget(
         artifacts: Arc::clone(&store) as Arc<dyn ArtifactStore>,
         catalog: Arc::clone(&index) as Arc<dyn RecordingCatalog>,
         gaps: Arc::clone(&index) as Arc<dyn CaptureGapStore>,
-        frames: index as Arc<dyn FrameSource>,
+        frames: store as Arc<dyn FrameSource>,
     })
 }
 
@@ -369,6 +378,11 @@ mod tests {
             )
             .unwrap(),
         );
+        let progressive_evidence: Arc<dyn ProgressiveEvidence> =
+            Arc::new(ProgressiveEvidenceService::new(
+                Arc::clone(&storage.store) as Arc<dyn ProgressiveEvidenceStore>,
+                Arc::clone(&artifact_generation),
+            ));
         let runtime = Runtime::new(RuntimeDependencies {
             clock: Arc::new(ProcessMonotonicClock {
                 origin: Instant::now(),
@@ -385,6 +399,7 @@ mod tests {
             temporal_queries: storage.temporal_queries,
             temporal_context: storage.temporal_context,
             artifact_generation,
+            progressive_evidence,
             mcp_config: McpConfig::default(),
         });
         let error = runtime.run(Command::Doctor).await.unwrap_err();
@@ -414,6 +429,21 @@ mod tests {
             concrete,
             Arc::as_ptr(&storage.temporal_context) as *const (),
             "temporal context must use the one recording store",
+        );
+        assert_eq!(
+            concrete,
+            Arc::as_ptr(&storage.frames) as *const (),
+            "progressive and artifact frame reads must use the one recording store",
+        );
+        assert_eq!(
+            concrete,
+            Arc::as_ptr(&storage.retention) as *const (),
+            "progressive pin operations must use the one recording store",
+        );
+        assert_eq!(
+            concrete,
+            Arc::as_ptr(&storage.artifacts) as *const (),
+            "artifact reads and publication must use the one recording store",
         );
         let session = krometrail_core::SessionId::from_uuid(Uuid::from_u128(1));
         let target = krometrail_core::TargetId::from_uuid(Uuid::from_u128(2));
