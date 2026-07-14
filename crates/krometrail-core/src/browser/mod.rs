@@ -1,12 +1,18 @@
 //! Browser and page-target domain contracts.
 
+mod batch;
 mod control;
 mod interaction;
 mod observation;
 mod operation;
 mod session;
 mod target;
+mod wait;
 
+pub use batch::{
+    BatchFailurePolicy, BatchOptions, BatchOutcome, BatchRequest, BatchResult, BatchSkipReason,
+    BatchStepResult, BatchStepStatus, wait_timeout_error,
+};
 pub use control::{
     BrowserStatus, ClosePageRequest, CreatePageRequest, DEFAULT_MANAGED_PROFILE_NAME,
     GoBackRequest, GoForwardRequest, InteractionAnchor, InteractionTiming, ListPagesRequest,
@@ -43,4 +49,9 @@ pub use target::{
     BrowserInstallation, BrowserInstallationSource, BrowserProduct, BrowserProductVersion,
     BrowserVersion, ManagedProfilePersistence, ManagedProfileRef, PageTarget, ProfileIdentity,
     ProfileRef,
+};
+pub(crate) use wait::validate_operation_timeout;
+pub use wait::{
+    ElementState, MAX_OPERATION_TIMEOUT, MAX_WAIT_POLL_INTERVAL, MIN_WAIT_POLL_INTERVAL, UrlMatch,
+    WaitCondition, WaitOutcome, WaitPresence, WaitProbe, WaitRequest, WaitResult, WaitTextMatch,
 };

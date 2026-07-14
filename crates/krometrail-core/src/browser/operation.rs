@@ -1,14 +1,15 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
-    AcceptedLocator, ActionCategory, ActionDefinition, ActionabilityRequirement, ClickRequest,
-    ClosePageRequest, CompletionKind, CreatePageRequest, DragRequest, EncodedScreenshot,
-    EvaluationResult, FillRequest, GoBackRequest, GoForwardRequest, HandleDialogRequest,
-    HoverRequest, InspectPageRequest, InteractionResult, ListPagesRequest, LiveObservation,
-    LiveObservationRequest, NavigatePageRequest, PageOperationResult, PageSelection, PageSnapshot,
-    PageState, PageStatus, PressKeysRequest, ReadOnlyEvaluationRequest, ReloadPageRequest,
-    ScreenshotRequest, ScrollRequest, SelectOptionRequest, SelectPageRequest, SnapshotPageRequest,
-    UploadFilesRequest,
+    AcceptedLocator, ActionCategory, ActionDefinition, ActionabilityRequirement, BatchRequest,
+    BatchResult, ClickRequest, ClosePageRequest, CompletionKind, CreatePageRequest, DragRequest,
+    EncodedScreenshot, EvaluationResult, FillRequest, GoBackRequest, GoForwardRequest,
+    HandleDialogRequest, HoverRequest, InspectPageRequest, InteractionResult, ListPagesRequest,
+    LiveObservation, LiveObservationRequest, NavigatePageRequest, PageOperationResult,
+    PageSelection, PageSnapshot, PageState, PageStatus, PressKeysRequest,
+    ReadOnlyEvaluationRequest, ReloadPageRequest, ScreenshotRequest, ScrollRequest,
+    SelectOptionRequest, SelectPageRequest, SnapshotPageRequest, UploadFilesRequest, WaitRequest,
+    WaitResult,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -45,6 +46,7 @@ pub struct BrowserOperationDefinition {
     pub mutability: OperationMutability,
     pub evidence: OperationEvidence,
     pub scope: BrowserOperationScopeKind,
+    pub batchable: bool,
     pub action: Option<&'static ActionDefinition>,
 }
 
@@ -80,6 +82,8 @@ selected_field!(DragRequest, target);
 selected_field!(ScrollRequest, target);
 selected_field!(UploadFilesRequest, target);
 selected_field!(HandleDialogRequest, target);
+selected_field!(WaitRequest, target);
+selected_field!(BatchRequest, target);
 
 macro_rules! operation_scope {
     (Browser, $request:ident) => {{
@@ -98,6 +102,7 @@ macro_rules! define_browser_operations {
             mutability: $mutability:ident,
             evidence: $evidence:ident,
             scope: $scope:ident,
+            batchable: $batchable:literal,
             action: $action:expr,
         }
     ),+ $(,)?) => {
@@ -151,6 +156,7 @@ macro_rules! define_browser_operations {
                 mutability: OperationMutability::$mutability,
                 evidence: OperationEvidence::$evidence,
                 scope: BrowserOperationScopeKind::$scope,
+                batchable: $batchable,
                 action: $action,
             }),+
         ];
@@ -225,70 +231,76 @@ const ACTION_DIALOG: ActionDefinition = ActionDefinition {
 
 define_browser_operations! {
     InspectPage(InspectPageRequest) => PageState {
-        stable_name: "inspect_page", mutability: ReadOnly, evidence: RequestedOnly, scope: Page, action: None,
+        stable_name: "inspect_page", mutability: ReadOnly, evidence: RequestedOnly, scope: Page, batchable: true, action: None,
     },
     SnapshotPage(SnapshotPageRequest) => PageSnapshot {
-        stable_name: "snapshot_page", mutability: ReadOnly, evidence: RequestedOnly, scope: Page, action: None,
+        stable_name: "snapshot_page", mutability: ReadOnly, evidence: RequestedOnly, scope: Page, batchable: true, action: None,
     },
     TakeScreenshot(ScreenshotRequest) => EncodedScreenshot {
-        stable_name: "take_screenshot", mutability: ReadOnly, evidence: RequestedOnly, scope: Page, action: None,
+        stable_name: "take_screenshot", mutability: ReadOnly, evidence: RequestedOnly, scope: Page, batchable: true, action: None,
     },
     EvaluatePage(ReadOnlyEvaluationRequest) => EvaluationResult {
-        stable_name: "evaluate_page", mutability: ReadOnly, evidence: RequestedOnly, scope: Page, action: None,
+        stable_name: "evaluate_page", mutability: ReadOnly, evidence: RequestedOnly, scope: Page, batchable: true, action: None,
     },
     ObserveLive(LiveObservationRequest) => LiveObservation {
-        stable_name: "observe_live", mutability: ReadOnly, evidence: LiveObservation, scope: Page, action: None,
+        stable_name: "observe_live", mutability: ReadOnly, evidence: LiveObservation, scope: Page, batchable: false, action: None,
     },
     ListPages(ListPagesRequest) => Vec<PageStatus> {
-        stable_name: "list_pages", mutability: ReadOnly, evidence: RequestedOnly, scope: Browser, action: None,
+        stable_name: "list_pages", mutability: ReadOnly, evidence: RequestedOnly, scope: Browser, batchable: false, action: None,
     },
     CreatePage(CreatePageRequest) => PageOperationResult {
-        stable_name: "create_page", mutability: StateChanging, evidence: LiveObservation, scope: Browser, action: None,
+        stable_name: "create_page", mutability: StateChanging, evidence: LiveObservation, scope: Browser, batchable: false, action: None,
     },
     SelectPage(SelectPageRequest) => PageOperationResult {
-        stable_name: "select_page", mutability: StateChanging, evidence: LiveObservation, scope: Browser, action: None,
+        stable_name: "select_page", mutability: StateChanging, evidence: LiveObservation, scope: Browser, batchable: false, action: None,
     },
     ClosePage(ClosePageRequest) => PageOperationResult {
-        stable_name: "close_page", mutability: StateChanging, evidence: LiveObservation, scope: Page, action: None,
+        stable_name: "close_page", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: false, action: None,
     },
     NavigatePage(NavigatePageRequest) => PageOperationResult {
-        stable_name: "navigate_page", mutability: StateChanging, evidence: LiveObservation, scope: Page, action: None,
+        stable_name: "navigate_page", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: None,
     },
     ReloadPage(ReloadPageRequest) => PageOperationResult {
-        stable_name: "reload_page", mutability: StateChanging, evidence: LiveObservation, scope: Page, action: None,
+        stable_name: "reload_page", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: None,
     },
     GoBack(GoBackRequest) => PageOperationResult {
-        stable_name: "go_back", mutability: StateChanging, evidence: LiveObservation, scope: Page, action: None,
+        stable_name: "go_back", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: None,
     },
     GoForward(GoForwardRequest) => PageOperationResult {
-        stable_name: "go_forward", mutability: StateChanging, evidence: LiveObservation, scope: Page, action: None,
+        stable_name: "go_forward", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: None,
     },
     Click(ClickRequest) => InteractionResult {
-        stable_name: "click", mutability: StateChanging, evidence: LiveObservation, scope: Page, action: Some(&ACTION_CLICK),
+        stable_name: "click", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: Some(&ACTION_CLICK),
     },
     Fill(FillRequest) => InteractionResult {
-        stable_name: "fill", mutability: StateChanging, evidence: LiveObservation, scope: Page, action: Some(&ACTION_FILL),
+        stable_name: "fill", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: Some(&ACTION_FILL),
     },
     PressKeys(PressKeysRequest) => InteractionResult {
-        stable_name: "press_keys", mutability: StateChanging, evidence: LiveObservation, scope: Page, action: Some(&ACTION_PRESS_KEYS),
+        stable_name: "press_keys", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: Some(&ACTION_PRESS_KEYS),
     },
     SelectOption(SelectOptionRequest) => InteractionResult {
-        stable_name: "select_option", mutability: StateChanging, evidence: LiveObservation, scope: Page, action: Some(&ACTION_SELECT),
+        stable_name: "select_option", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: Some(&ACTION_SELECT),
     },
     Hover(HoverRequest) => InteractionResult {
-        stable_name: "hover", mutability: StateChanging, evidence: LiveObservation, scope: Page, action: Some(&ACTION_HOVER),
+        stable_name: "hover", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: Some(&ACTION_HOVER),
     },
     Drag(DragRequest) => InteractionResult {
-        stable_name: "drag", mutability: StateChanging, evidence: LiveObservation, scope: Page, action: Some(&ACTION_DRAG),
+        stable_name: "drag", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: Some(&ACTION_DRAG),
     },
     Scroll(ScrollRequest) => InteractionResult {
-        stable_name: "scroll", mutability: StateChanging, evidence: LiveObservation, scope: Page, action: Some(&ACTION_SCROLL),
+        stable_name: "scroll", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: Some(&ACTION_SCROLL),
     },
     UploadFiles(UploadFilesRequest) => InteractionResult {
-        stable_name: "upload_files", mutability: StateChanging, evidence: LiveObservation, scope: Page, action: Some(&ACTION_UPLOAD),
+        stable_name: "upload_files", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: Some(&ACTION_UPLOAD),
     },
     HandleDialog(HandleDialogRequest) => InteractionResult {
-        stable_name: "handle_dialog", mutability: StateChanging, evidence: LiveObservation, scope: Page, action: Some(&ACTION_DIALOG),
+        stable_name: "handle_dialog", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: Some(&ACTION_DIALOG),
+    },
+    Wait(WaitRequest) => WaitResult {
+        stable_name: "wait", mutability: ReadOnly, evidence: RequestedOnly, scope: Page, batchable: true, action: None,
+    },
+    Batch(BatchRequest) => BatchResult {
+        stable_name: "batch", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: false, action: None,
     },
 }
 
@@ -304,7 +316,7 @@ mod tests {
 
     #[test]
     fn declaration_is_the_complete_operation_registry() {
-        assert_eq!(BrowserOperationKind::ALL.len(), 22);
+        assert_eq!(BrowserOperationKind::ALL.len(), 24);
         assert_eq!(
             BROWSER_OPERATION_REGISTRY.len(),
             BrowserOperationKind::ALL.len()
@@ -317,17 +329,40 @@ mod tests {
             assert_eq!(definition.stable_name, kind.stable_name());
             assert_eq!(definition.action.is_some(), kind.is_interaction());
         }
-        assert!(
+        assert_eq!(
             BROWSER_OPERATION_REGISTRY
                 .iter()
-                .take(13)
-                .all(|definition| definition.action.is_none())
+                .filter(|definition| definition.action.is_some())
+                .count(),
+            9
         );
         assert!(
             BROWSER_OPERATION_REGISTRY
                 .iter()
-                .skip(13)
-                .all(|definition| definition.action.is_some())
+                .filter(|definition| matches!(
+                    definition.kind,
+                    BrowserOperationKind::ObserveLive
+                        | BrowserOperationKind::ListPages
+                        | BrowserOperationKind::CreatePage
+                        | BrowserOperationKind::SelectPage
+                        | BrowserOperationKind::ClosePage
+                        | BrowserOperationKind::Batch
+                ))
+                .all(|definition| !definition.batchable)
+        );
+        assert!(
+            BROWSER_OPERATION_REGISTRY
+                .iter()
+                .filter(|definition| !matches!(
+                    definition.kind,
+                    BrowserOperationKind::ObserveLive
+                        | BrowserOperationKind::ListPages
+                        | BrowserOperationKind::CreatePage
+                        | BrowserOperationKind::SelectPage
+                        | BrowserOperationKind::ClosePage
+                        | BrowserOperationKind::Batch
+                ))
+                .all(|definition| definition.batchable)
         );
         assert_eq!(
             BROWSER_OPERATION_REGISTRY[5].scope,

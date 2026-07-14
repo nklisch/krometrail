@@ -35,6 +35,7 @@ define_stable_enum! {
         EvaluationFailed => "evaluation_failed",
         NavigationFailed => "navigation_failed",
         InteractionFailed => "interaction_failed",
+        WaitTimedOut => "wait_timed_out",
         ReconnectExhausted => "reconnect_exhausted",
         Cancelled => "cancelled",
         ShutdownIncomplete => "shutdown_incomplete",
@@ -165,7 +166,8 @@ impl ErrorCode {
             | Self::PageObservationFailed
             | Self::ScreenshotFailed
             | Self::NavigationFailed
-            | Self::InteractionFailed => RetryAdvice::Safe,
+            | Self::InteractionFailed
+            | Self::WaitTimedOut => RetryAdvice::Safe,
             Self::StaleReference | Self::ReferenceNotActionable | Self::BudgetExhausted => {
                 RetryAdvice::AfterRecovery
             }
@@ -201,6 +203,9 @@ impl ErrorCode {
             }
             Self::InteractionFailed => {
                 Some("retry against a current target, or refresh the snapshot if the page changed")
+            }
+            Self::WaitTimedOut => {
+                Some("inspect the current page state or increase the explicit wait timeout")
             }
             Self::ReconnectExhausted => Some("check the browser and start a new session"),
             Self::Cancelled => Some("start the operation again if it is still needed"),

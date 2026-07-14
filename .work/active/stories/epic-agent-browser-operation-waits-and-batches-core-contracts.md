@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-operation-waits-and-batches-core-contracts
 kind: story
-stage: implementing
+stage: done
 tags: [browser, agent-ux]
 parent: epic-agent-browser-operation-waits-and-batches
 depends_on: []
@@ -37,3 +37,10 @@ Define the infrastructure-free public contracts for explicit waits and ordered p
 ## Implementation notes
 
 Reuse `NonEmptyText`, `ElementLocator`, `PageSelection`, `DocumentReadiness`, `ObservationContext`, `ObservationPart`, `LiveObservation`, `EncodedScreenshot`, `KrometrailError`, and `InteractionAnchor`. Use private wire structs and `deserialize_validated`; do not expose Tokio instants, CDP ids, backend node ids, or transport session ids.
+
+- Added infrastructure-free wait and batch contracts in `crates/krometrail-core/src/browser/wait.rs` and `batch.rs`, including validated integer-millisecond wire forms, the 120-second operation ceiling, 10 ms–5 second polling bounds, 1–64 step admission, and bounded diagnostic projections.
+- Extended the single macro-backed operation declaration in `browser/operation.rs` with `batchable` metadata and the `wait`/`batch` request-result associations. Existing page/browser/action variants remain declared in the same registry.
+- Added `wait_timed_out` to the stable core error vocabulary with safe retry/recovery guidance, and re-exported the new public contracts through `browser/mod.rs` and `lib.rs`.
+- Represented skipped-step timing as `Option<SessionTime>` because the design simultaneously required non-optional fields and prohibited fabricated timing. Executed steps remain constructor-validated as monotonic; skipped steps retain no execution interval.
+- Kept `BatchResult` and `BatchStepResult` as domain values without direct Serde, matching the settled requirement that the later MCP boundary translate the exact recursive `BrowserOperationResult` rather than serializing a second response enum.
+- Verification: `cargo fmt --all`; `cargo test -p krometrail-core --all-targets` (70 passed); `cargo check -p krometrail-core --all-targets --locked` (passed).
