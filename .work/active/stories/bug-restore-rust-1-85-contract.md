@@ -1,7 +1,7 @@
 ---
 id: bug-restore-rust-1-85-contract
 kind: story
-stage: implementing
+stage: review
 tags: [bug, infra, testing]
 parent: null
 depends_on: []
@@ -33,3 +33,12 @@ Replace unstable let chains with direct nested conditions rather than introducin
 ## Origin
 
 Promoted from `idea-restore-rust-1-85-contract` after MCP checkpoint qualification reproduced the declared-MSRV failure. This is a current implemented-work blocker, not future MCP scope.
+
+## Implementation notes
+
+- Execution capability: highest, inherited from autopilot because the fix restores a workspace-wide compiler contract and dependency lock rather than one package-local syntax detail.
+- Review weight: standard from the autopilot default; as a standalone story this receives the bounded inline review lane and no independent reviewer.
+- Dependency correction: `idna_adapter` is locked to 1.1.0, removing the Rust-1.86-only ICU 2.2 family and selecting its Rust-1.85-compatible Unicode mapping dependencies. No direct dependency or workspace MSRV changed.
+- Source correction: unstable let-chain expressions were rewritten as direct nested conditions in temporal provenance, browser batch/control/observation/retention validation, process cleanup, network tracking, and session-supervision test code. No compatibility helper, conditional compilation, or behavior change was introduced.
+- Verification: `cargo fmt --all -- --check`; `PATH=/home/nathan/.cargo/bin:$PATH cargo +1.85.0 check --workspace --all-targets --locked`; normal locked workspace check/test; and workspace Clippy with `-D warnings` all passed.
+- Adjacent SDK finding: official `rmcp` versions 0.12.0 through 2.2.0 do not satisfy the same Rust 1.85 probe under their usable feature sets; exact 0.11.0 is the newest probed official release that passes. SDK selection remains owned by the dependent MCP checkpoint.

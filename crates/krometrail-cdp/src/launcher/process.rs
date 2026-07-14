@@ -236,10 +236,10 @@ impl ManagedChromeProcess {
     }
 
     fn kill_direct_if_alive(&mut self) {
-        if let Some(child) = self.child.as_mut()
-            && matches!(child.try_wait(), Ok(None))
-        {
-            let _ = child.kill();
+        if let Some(child) = self.child.as_mut() {
+            if matches!(child.try_wait(), Ok(None)) {
+                let _ = child.kill();
+            }
         }
     }
 

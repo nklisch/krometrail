@@ -779,12 +779,13 @@ fn update_network_state(
                     kind.eq_ignore_ascii_case("websocket")
                         || kind.eq_ignore_ascii_case("eventsource")
                 });
-            if !long_lived
-                && let Some(request_id) = event.params.get("requestId").and_then(Value::as_str)
-                && !completed_before_start.remove(request_id)
-            {
-                in_flight.insert(request_id.to_owned());
-                *quiet_since = None;
+            if !long_lived {
+                if let Some(request_id) = event.params.get("requestId").and_then(Value::as_str) {
+                    if !completed_before_start.remove(request_id) {
+                        in_flight.insert(request_id.to_owned());
+                        *quiet_since = None;
+                    }
+                }
             }
         }
         "Network.loadingFinished" | "Network.loadingFailed" => {

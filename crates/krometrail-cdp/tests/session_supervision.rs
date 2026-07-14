@@ -376,10 +376,12 @@ async fn opt_in_real_chrome_reconnects_through_a_new_physical_proxy_connection()
                 .expect("production event stream should not end after rebuild");
             if let BrowserSessionEvent::TargetChanged { target }
             | BrowserSessionEvent::TargetDiscovered { target } = event
-                && target.target.browser_target_key() == created_key
-                && target.lifecycle == TargetLifecycle::Attached
             {
-                break target;
+                if target.target.browser_target_key() == created_key
+                    && target.lifecycle == TargetLifecycle::Attached
+                {
+                    break target;
+                }
             }
         }
     })

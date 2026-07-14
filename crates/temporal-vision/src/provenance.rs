@@ -513,13 +513,13 @@ impl<A, F: Clone + Eq, M: Clone + Eq, G: Clone + Eq> ArtifactManifest<A, F, M, G
         }
         validate_markers(&self.markers, self.range).map_err(as_manifest_error)?;
         validate_gaps(&self.gaps, self.range).map_err(as_manifest_error)?;
-        if let (Some(region), Some(mask)) = (self.region, self.mask.as_ref())
-            && !region.rect().fits_within(mask.dimensions())
-        {
-            return Err(VisionError::new(
-                ErrorCode::InvalidManifest,
-                "manifest region does not fit its source mask dimensions",
-            ));
+        if let (Some(region), Some(mask)) = (self.region, self.mask.as_ref()) {
+            if !region.rect().fits_within(mask.dimensions()) {
+                return Err(VisionError::new(
+                    ErrorCode::InvalidManifest,
+                    "manifest region does not fit its source mask dimensions",
+                ));
+            }
         }
         Ok(())
     }
