@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-vision-toolkit-region-filmstrip-region-plan
 kind: story
-stage: implementing
+stage: done
 tags: [visual]
 parent: epic-temporal-vision-toolkit-region-filmstrip
 depends_on: []
@@ -37,3 +37,11 @@ Tile selection is chronological and deterministic. Select all frames when they f
 ## Ordering
 
 First checkpoint. It establishes the evidence semantics that rendering and tests must consume without reinterpretation.
+
+## Implementation notes
+
+- Added the complete fixed source-image/viewport planning contract in `crates/temporal-vision/src/filmstrip.rs` and explicit exports in `src/lib.rs`.
+- Viewport conversion uses signed integer floor/ceiling with exact rational scales and rejects mappings whose outward-rounded viewport extent differs from the source dimensions.
+- Crop plans preserve signed declarations, exact visible intersections, explicit padding, anchor offsets, gap boundaries, locator choice, and deterministic source-order thinning.
+- A one-tile limit selects the first frame when thinning because a single tile cannot preserve both distinct endpoints; limits of two or more preserve first and final.
+- Verification: `cargo test -p temporal-vision --lib filmstrip --locked` (2 passed).

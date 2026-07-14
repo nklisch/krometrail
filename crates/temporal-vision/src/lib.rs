@@ -60,6 +60,7 @@ mod artifact;
 mod difference_map;
 mod encode;
 mod error;
+mod filmstrip;
 mod frame;
 mod geometry;
 mod measure;
@@ -75,6 +76,10 @@ pub use difference_map::{
     TimePalette, render_difference_map,
 };
 pub use error::{ErrorCode, Result, VisionError};
+pub use filmstrip::{
+    FilmstripTileLimit, FilmstripTilePlan, PaddingInsets, RationalScale, RegionCoordinateSpace,
+    RegionDefinition, RegionFilmstripPlan, SignedPixelRect, ViewportMapping, plan_region_filmstrip,
+};
 pub use frame::{BorrowedFrame, Frame, OwnedFrame, PixelDimensions, PixelFormat, Timestamp};
 pub use geometry::{BinaryMask, FrameRegion, PixelRect};
 pub use measure::{
