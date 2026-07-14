@@ -1,12 +1,20 @@
 ---
 title: Configuration
-description: Current configuration status and the intended Rust runtime contracts.
+description: Current Rust runtime configuration and intended precedence.
 ---
 
 # Configuration
 
-The current executable has no user configuration file, environment-variable configuration, browser launch options, or MCP configuration surface. The only available command is `doctor`, which reports that browser transport is not yet available.
+Krometrail currently has no user configuration file or browser-control CLI flags. MCP lifecycle tool inputs select managed launch versus explicit local attachment, profiles, initial URLs, executables, and endpoints through their generated schemas.
 
-Do not copy configuration examples from the historical runtime. When configuration is implemented, startup validation and precedence will follow the contracts in [`SPEC.md`](../SPEC.md) and [`ARCHITECTURE.md`](../ARCHITECTURE.md): command-line arguments, environment variables, user configuration, then built-in defaults.
+The root runtime recognizes these environment variables:
 
-The intended configuration areas include the browser endpoint or launch profile, data directory and disk budget, capture settings, enabled capabilities, concurrency, and logging. They are not current options and should not be passed to the binary today.
+| Variable | Behavior |
+| --- | --- |
+| `KROMETRAIL_DATA_DIR` | Overrides the local recording/index and managed-profile data root. |
+| `KROMETRAIL_DISK_BUDGET_BYTES` | Sets the positive global recording budget in decimal bytes. |
+| `KROMETRAIL_PROFILE_ROOT` | Overrides the managed-browser profile directory. |
+
+Invalid disk-budget input prevents startup with a structured error. Built-in platform data directories and the default 10 GB budget apply when variables are absent.
+
+The broader configuration precedence remains command-line arguments, environment variables, user configuration, then built-in defaults as defined in [`SPEC.md`](../SPEC.md) and [`ARCHITECTURE.md`](../ARCHITECTURE.md). Capture settings, capability selection, concurrency, logging, and a user configuration file are not yet public configuration surfaces.

@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use krometrail_core::{BrowserConnector, Result};
+use krometrail_core::{
+    BrowserConnector, ErrorCode, KrometrailError, NonEmptyText, Result, RetryAdvice,
+};
 use rmcp::{
     ErrorData, ServerHandler,
     handler::server::tool::{ToolCallContext, ToolRouter},
@@ -8,7 +10,7 @@ use rmcp::{
         CallToolRequestParam, CallToolResult, Implementation, ListToolsResult,
         PaginatedRequestParam, ProtocolVersion, ServerCapabilities, ServerInfo,
     },
-    service::{RequestContext, RoleServer},
+    service::{QuitReason, RequestContext, RoleServer, ServerInitializeError, ServiceExt as _},
 };
 
 use crate::{config::McpConfig, registry::build_router, session::BrowserSessionOwner};
@@ -84,13 +86,65 @@ pub struct McpService {
 }
 
 impl McpService {
+    pub async fn serve_stdio(self) -> Result<()> {
+        let running = match self.server.serve(rmcp::transport::stdio()).await {
+            Ok(running) => running,
+            Err(ServerInitializeError::ConnectionClosed(_)) => {
+                return self.sessions.shutdown().await;
+            }
+            Err(_) => return Err(service_error("MCP stdio service could not start")),
+        };
+        let cancellation = running.cancellation_token();
+        let signal_task = tokio::spawn(async move {
+            wait_for_shutdown_signal().await;
+            cancellation.cancel();
+        });
+        let service_result = match running.waiting().await {
+            Ok(QuitReason::Closed | QuitReason::Cancelled) => Ok(()),
+            Ok(QuitReason::JoinError(_)) | Err(_) => {
+                Err(service_error("MCP stdio service ended unexpectedly"))
+            }
+        };
+        signal_task.abort();
+        let _ = signal_task.await;
+        let shutdown_result = self.sessions.shutdown().await;
+        service_result.and(shutdown_result)
+    }
+
+    #[cfg(test)]
     pub(crate) fn server(&self) -> &KrometrailMcpServer {
         &self.server
     }
+}
 
-    pub(crate) fn sessions(&self) -> &BrowserSessionOwner {
-        &self.sessions
+async fn wait_for_shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut interrupt = signal(SignalKind::interrupt()).ok();
+        let mut terminate = signal(SignalKind::terminate()).ok();
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {},
+            _ = async { interrupt.as_mut().expect("guarded signal").recv().await }, if interrupt.is_some() => {},
+            _ = async { terminate.as_mut().expect("guarded signal").recv().await }, if terminate.is_some() => {},
+        }
     }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+fn service_error(message: &'static str) -> KrometrailError {
+    KrometrailError::new(
+        ErrorCode::Internal,
+        NonEmptyText::new(message).expect("static service error is valid"),
+    )
+    .with_retry(RetryAdvice::Safe)
+    .with_recovery(
+        NonEmptyText::new("restart the MCP client connection and try again")
+            .expect("static service recovery is valid"),
+    )
 }
 
 pub fn build_service(

@@ -8,15 +8,16 @@ titleTemplate: false
 
 Krometrail is a Rust foundation for local browser control and temporal visual evidence for coding agents.
 
-The current executable is intentionally small:
+The current executable provides browser discovery and the local MCP browser-control boundary:
 
 ```bash
 cargo run -- --version
 cargo run -- --help
 cargo run -- doctor
+cargo run -- mcp
 ```
 
-The first two commands work. `doctor` reports that browser transport is not yet available. Browser capture, storage, temporal analysis, and MCP are intended capabilities described by the five foundation documents, not commands exposed by this build.
+`doctor` reports discovered browser installations without launching. `mcp` serves the registry-derived browser-control tools over protocol-only stdio and keeps controlled-browser capture and recording assembled behind the same runtime. Temporal investigation tools remain future-facing contracts in the foundation documents.
 
 ## Start here
 

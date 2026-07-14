@@ -24,6 +24,7 @@ fn help_is_truthful_and_succeeds() {
     assert!(output.status.success(), "stderr: {}", text(&output.stderr));
     assert!(stdout.contains("Usage: krometrail"));
     assert!(stdout.contains("doctor"));
+    assert!(stdout.contains("mcp"));
     assert!(!stdout.to_ascii_lowercase().contains("dap"));
     assert!(!stdout.to_ascii_lowercase().contains("typescript"));
 }
@@ -56,6 +57,27 @@ fn doctor_reports_only_the_production_discovery_outcomes() {
         );
         assert!(stderr.contains("recovery:"), "stderr: {stderr}");
     }
+}
+
+#[test]
+fn mcp_eof_exits_cleanly_without_non_protocol_output() {
+    let data = std::env::temp_dir().join(format!(
+        "krometrail-mcp-eof-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let output = Command::new(env!("CARGO_BIN_EXE_krometrail"))
+        .arg("mcp")
+        .env("KROMETRAIL_DATA_DIR", &data)
+        .output()
+        .expect("MCP binary should exit after stdin EOF");
+    assert!(output.status.success(), "stderr: {}", text(&output.stderr));
+    assert!(output.stdout.is_empty(), "stdout: {}", text(&output.stdout));
+    assert!(output.stderr.is_empty(), "stderr: {}", text(&output.stderr));
+    std::fs::remove_dir_all(data).unwrap();
 }
 
 fn text(bytes: &[u8]) -> String {

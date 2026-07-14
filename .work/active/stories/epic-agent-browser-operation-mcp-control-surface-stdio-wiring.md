@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-operation-mcp-control-surface-stdio-wiring
 kind: story
-stage: implementing
+stage: done
 tags: [browser, agent-ux]
 parent: epic-agent-browser-operation-mcp-control-surface
 depends_on: [epic-agent-browser-operation-mcp-control-surface-response-mapping]
@@ -35,3 +35,19 @@ Serve the completed router over rmcp stdio and root-wire the truthful public `kr
 ## Out of scope
 
 Do not add a second executable, daemon mode, network listener, HTTP/SSE/WebSocket transport, authentication, direct browser construction inside MCP, or non-protocol stdout output.
+
+## Implementation notes
+
+- Execution capability: highest from the autopilot caller for the first public stdio command and process-lifecycle boundary.
+- Review weight: `standard` from the autopilot caller; child checkpoint advances directly to done.
+- Files changed: MCP running-service lifecycle; root CLI/composition branch; runtime smoke; current agent/development/runtime/MCP/configuration/privacy documentation.
+- Tests added: binary stdin-EOF clean exit, zero stdout/stderr contamination, and truthful help command listing.
+- Simplification: the root injects the existing production `BrowserConnector` from the fully assembled runtime; rmcp owns framing and the one session owner converges explicit stop, EOF, and signal cancellation.
+- Discrepancies from design: rmcp 0.11 performs initialization before returning `RunningService`, so pre-initialize EOF is handled as a clean `ServerInitializeError::ConnectionClosed` path before the normal running-service waiter exists.
+- Adjacent issues parked: none.
+
+## Completion evidence
+
+- `PATH=/home/nathan/.cargo/bin:$PATH cargo +1.85.0 check --workspace --all-targets --locked` passed.
+- `PATH=/home/nathan/.cargo/bin:$PATH cargo +1.85.0 test -p krometrail --test rust-runtime-smoke --locked` passed all 4 binary contract tests.
+- Direct built-binary EOF probe exited 0 with exactly 0 stdout bytes and 0 stderr bytes.

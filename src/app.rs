@@ -16,7 +16,7 @@ use uuid::Uuid;
 use krometrail_cdp::{
     CaptureConfig, LauncherConfig, ProductionBrowserConnector, SystemChromeLauncher,
 };
-use krometrail_mcp as _;
+use krometrail_mcp::{McpConfig, build_service};
 use krometrail_store::{
     IndexStoreConfig, RecordingStore, RotationConfig, SegmentStoreConfig, SegmentWriter,
     SqliteIndex, recover,
@@ -80,6 +80,14 @@ impl Runtime {
                 }
                 println!("browser available: {} installation(s)", installations.len());
                 Ok(())
+            }
+            Command::Mcp => {
+                // The complete runtime is assembled before this branch. MCP receives only the
+                // browser port, while controlled-browser capture retains the shared recording and
+                // retention services owned by the production connector.
+                build_service(Arc::clone(&self.dependencies.browser), McpConfig::default())?
+                    .serve_stdio()
+                    .await
             }
         }
     }

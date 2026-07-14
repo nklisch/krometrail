@@ -16,7 +16,7 @@ The foundation documents intentionally describe capabilities that are being buil
 
 - [Installation](guide/installation.md) — current source installation and guarded future release installs.
 - [Development](guide/development.md) — Rust build, test, lint, run, release, and docs-tooling commands.
-- [MCP configuration](guide/mcp-configuration.md) — why no MCP server entry should be added yet and where the intended boundary is specified.
+- [MCP configuration](guide/mcp-configuration.md) — configure the current local browser-control server over MCP stdio.
 - [Runtime reference](reference/runtime.md) — the small command surface currently shipped by the binary.
 - [Configuration](reference/configuration.md) — current configuration status and the authoritative future contracts.
 - [Browser fixtures](https://github.com/nklisch/krometrail/blob/main/tests/fixtures/browser/README.md) — retained target applications and their current uses.
