@@ -1,7 +1,7 @@
 ---
 id: refactor-centralize-temporal-observation-row-decoding-step-1
 kind: story
-stage: implementing
+stage: done
 tags: [refactor, storage]
 parent: refactor-centralize-temporal-observation-row-decoding
 depends_on: []
@@ -63,6 +63,13 @@ raw_observation
 **Risk**: Low. The callback already decodes this exact selected-column shape; only crate-local visibility and callback ownership change.
 
 **Rollback**: Revert the implementation commit, restore private visibility, and restore the three inline callbacks. No schema, data, public API, or compatibility migration is involved.
+
+## Implementation notes
+
+- Execution capability: baseline inline ownership; the checkpoint is one exact callback substitution across two files.
+- `timeline::raw_observation` is now crate-visible and is the sole seven-column `RawObservation` constructor in `timeline.rs` and `range.rs`.
+- `TimelineStore::range`, `observation_for_payload`, and `latest_observation` pass the same function item while retaining their SQL, parameters, ordering, optional behavior, error mapping, and decode paths.
+- Verification ran in an isolated detached worktree to exclude concurrent artifact-schema edits: Rust 1.85 format, locked all-target workspace check/test, and Clippy with warnings denied all passed.
 
 ## Coordination
 

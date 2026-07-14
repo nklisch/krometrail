@@ -137,17 +137,7 @@ impl TimelineStore for SqliteIndex {
                         codec::u64_blob(range.start().as_nanos()).to_vec(),
                         codec::u64_blob(range.end().as_nanos()).to_vec(),
                     ],
-                    |row| {
-                        Ok(RawObservation {
-                            session_id: row.get(0)?,
-                            target_id: row.get(1)?,
-                            session_time: row.get(2)?,
-                            source_time: row.get(3)?,
-                            observed_time: row.get(4)?,
-                            kind: row.get(5)?,
-                            payload_json: row.get(6)?,
-                        })
-                    },
+                    raw_observation,
                 )
                 .map_err(|_| persistence_error("could not query timeline metadata"))?;
             let raw: Vec<_> = rows
@@ -158,7 +148,7 @@ impl TimelineStore for SqliteIndex {
     }
 }
 
-fn raw_observation(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawObservation> {
+pub(crate) fn raw_observation(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawObservation> {
     Ok(RawObservation {
         session_id: row.get(0)?,
         target_id: row.get(1)?,

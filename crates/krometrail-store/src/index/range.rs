@@ -6,7 +6,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use super::{
     SqliteIndex, codec,
-    timeline::{RawObservation, decode_observation},
+    timeline::{decode_observation, raw_observation},
 };
 use crate::persistence_error;
 
@@ -153,17 +153,7 @@ impl TimelineAnchorSource for SqliteIndex {
                      ORDER BY session_time_be ASC, observed_time_be ASC, observation_id ASC \
                      LIMIT 1",
                     params![kind.as_str(), payload_json,],
-                    |row| {
-                        Ok(RawObservation {
-                            session_id: row.get(0)?,
-                            target_id: row.get(1)?,
-                            session_time: row.get(2)?,
-                            source_time: row.get(3)?,
-                            observed_time: row.get(4)?,
-                            kind: row.get(5)?,
-                            payload_json: row.get(6)?,
-                        })
-                    },
+                    raw_observation,
                 )
                 .optional()
                 .map_err(|_| persistence_error("could not query range anchor"))?;
@@ -192,17 +182,7 @@ impl TimelineAnchorSource for SqliteIndex {
                         codec::id(target_id.as_uuid()).to_vec(),
                         kind.as_str(),
                     ],
-                    |row| {
-                        Ok(RawObservation {
-                            session_id: row.get(0)?,
-                            target_id: row.get(1)?,
-                            session_time: row.get(2)?,
-                            source_time: row.get(3)?,
-                            observed_time: row.get(4)?,
-                            kind: row.get(5)?,
-                            payload_json: row.get(6)?,
-                        })
-                    },
+                    raw_observation,
                 )
                 .optional()
                 .map_err(|_| persistence_error("could not query latest range anchor"))?;
