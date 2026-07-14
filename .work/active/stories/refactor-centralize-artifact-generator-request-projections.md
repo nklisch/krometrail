@@ -1,7 +1,7 @@
 ---
 id: refactor-centralize-artifact-generator-request-projections
 kind: story
-stage: review
+stage: done
 tags: [refactor, visual, storage]
 parent: null
 depends_on: [epic-temporal-debugging-workflow-artifact-generation-and-cache]
@@ -72,6 +72,16 @@ ordering, manifests, and serialized request shapes remain unchanged.
 - Normalization planning, identity serialization, byte estimation, and execution now consume the same projection. Output preflight and generated-output validation consume the same limit projection.
 - Public request types, mutable effective-scale materialization, generator dispatch, cache parameters, errors, comparisons, manifests, and output order are unchanged.
 - Rust 1.85 locked format, full workspace all-target tests, and Clippy with warnings denied passed.
+
+## Review (2026-07-14)
+
+**Verdict**: Approve
+
+**Blockers**: none
+**Important**: none
+**Nits**: none
+
+**Evidence**: Bounded standalone-story review inspected commit `ee4d152`, confirmed the helper matches remain exhaustive, each caller receives the same copied validated field as before, region filmstrip stays normalization-free, and mutable effective-scale materialization remains independent. The full Rust 1.85 workspace gate passed. No independent reviewer ran, as required for a standalone story.
 
 ## Risk and rollback
 
