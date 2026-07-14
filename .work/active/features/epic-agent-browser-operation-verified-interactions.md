@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-operation-verified-interactions
 kind: feature
-stage: implementing
+stage: review
 tags: [browser, agent-ux]
 parent: epic-agent-browser-operation
 depends_on: [epic-agent-browser-operation-page-observation]
@@ -797,3 +797,13 @@ The riskiest assumption is that the synthesized `Input.dispatchMouseEvent` seque
 - The shared `execute_interaction` executor is the central abstraction. Action-family modules provide only the CDP `dispatch` closure and any action-specific helpers; they must not re-resolve references, re-implement coordinate conversion, re-capture the live observation, or re-allocate the interaction id. Violating this re-introduces the per-action architecture Option B was rejected for.
 - The `Runtime.callFunctionOn` fact set in `validate_node_state` must remain the single actionability source of truth. Action-family code that needs more DOM facts (e.g. option existence for `SelectOption`) makes additional bounded calls rather than extending this fact set unless the new fact is genuinely cross-action.
 - The interaction record is built across the lifecycle (id allocated → partial record → dispatch → completion → observation → finalized record). Implementation must not lose the partial record on an error path: pre-dispatch errors return the stable actionability/stale error without a record (no dispatch occurred); post-dispatch errors that leave the page in an unknown state still capture a partial `LiveObservation` and an `outcome: Dispatched` record when the input was sent, so the agent has honest evidence rather than a missing result. Cancellation during dispatch follows the supervisor's existing queue-closure path.
+
+## Implementation roll-up (2026-07-14)
+
+All five implementation checkpoints are complete and the feature is ready for review. The qualification checkpoint is recorded in commit `1407099`.
+
+- Initial fresh attachments and reconnects share the ordered session-domain restoration step (`Page.enable`, `Runtime.enable`, `Accessibility.enable`) before visibility probing.
+- Dialog dispatch is exact-session and single-attempt; speculative retries, renderer checkpoints, pending-dialog state, and debug scaffolding were removed.
+- Real Chrome qualification passed all eight verified-interactions tests under `KROMETRAIL_REAL_CHROME_TESTS=1`; deterministic qualification passed eight tests.
+- CDP package gates passed: 190 all-target tests, no-default-features check, and Clippy with `-D warnings`.
+- Workspace check and tests passed (379 tests). Workspace Clippy remains blocked by unrelated concurrent range-test warnings only; no range files were modified or staged.
