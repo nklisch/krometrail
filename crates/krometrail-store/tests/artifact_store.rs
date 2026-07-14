@@ -6,10 +6,12 @@ use std::{
 
 use krometrail_core::{
     ArtifactCacheKey, ArtifactCacheMetadata, ArtifactLookup, ArtifactMarkerId, ArtifactPublication,
-    ArtifactPublish, ArtifactSourceFingerprint, ArtifactStore, CancellationSignal, CaptureOrdinal,
-    CapturedFrame, DeviceScaleFactor, DiskBudgetBytes, EncodedFrame, FrameId, FrameSource,
-    ImageFormat, NonEmptyText, ObservedTime, PixelDimensions as CoreDimensions, PortFuture,
-    RecordingSink, RetentionRange, RetentionStore, SessionId, SessionRange, SessionTime, TargetId,
+    ArtifactPublish, ArtifactReadLookup, ArtifactSourceFingerprint, ArtifactStore,
+    CancellationSignal, CaptureOrdinal, CapturedFrame, DeviceScaleFactor, DiskBudgetBytes,
+    EncodedFrame, EvidenceScope, FrameId, FrameSource, ImageFormat, NonEmptyText, ObservedTime,
+    PixelDimensions as CoreDimensions, PortFuture, RecordingSink, RetentionPinRequest,
+    RetentionRange, RetentionStore, RetrieveArtifactRequest, SessionId, SessionRange, SessionTime,
+    TargetId,
 };
 use krometrail_store::{
     IndexStoreConfig, RecordingStore, RotationConfig, SegmentStoreConfig, SegmentWriter,
@@ -254,6 +256,125 @@ async fn publication_lookup_corruption_and_usage_share_one_authority() {
         fixture.store.publish_artifact(publication).await.unwrap(),
         ArtifactPublish::Published(_)
     ));
+}
+
+#[tokio::test]
+async fn scoped_artifact_reads_distinguish_missing_limits_invalidation_and_source_corruption() {
+    let fixture = fixture().await;
+    let publication = publication(&fixture, 22, 23);
+    fixture
+        .store
+        .publish_artifact(publication.clone())
+        .await
+        .unwrap();
+    let scope = EvidenceScope::new(fixture.session, fixture.target).unwrap();
+    let request = RetrieveArtifactRequest::new(
+        scope,
+        *publication.manifest.artifact_id(),
+        publication.encoded_bytes.len() as u64,
+    )
+    .unwrap();
+    let ArtifactReadLookup::Available(read) = fixture.store.read_artifact(request).await.unwrap()
+    else {
+        panic!("scoped retained artifact must be available")
+    };
+    assert_eq!(read.encoded_bytes(), publication.encoded_bytes.as_ref());
+    assert_eq!(read.handle.scope, scope);
+    assert_eq!(
+        read.handle.content_sha256.as_bytes(),
+        publication.manifest.output_hash().as_bytes()
+    );
+
+    let wrong_scope =
+        EvidenceScope::new(fixture.session, TargetId::from_uuid(Uuid::from_u128(999))).unwrap();
+    assert_eq!(
+        fixture
+            .store
+            .read_artifact(
+                RetrieveArtifactRequest::new(
+                    wrong_scope,
+                    *publication.manifest.artifact_id(),
+                    publication.encoded_bytes.len() as u64,
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap(),
+        ArtifactReadLookup::Missing
+    );
+    assert_eq!(
+        fixture
+            .store
+            .read_artifact(
+                RetrieveArtifactRequest::new(
+                    scope,
+                    *publication.manifest.artifact_id(),
+                    (publication.encoded_bytes.len() - 1) as u64,
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap_err()
+            .code,
+        krometrail_core::ErrorCode::ResourceLimitExceeded
+    );
+
+    let path = fixture
+        .directory
+        .path()
+        .join("artifacts")
+        .join(format!("{}.png", publication.manifest.artifact_id()));
+    std::fs::write(&path, b"corrupt").unwrap();
+    assert_eq!(
+        fixture
+            .store
+            .read_artifact(
+                RetrieveArtifactRequest::new(
+                    scope,
+                    *publication.manifest.artifact_id(),
+                    publication.encoded_bytes.len() as u64,
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap(),
+        ArtifactReadLookup::Invalidated
+    );
+    assert!(!path.exists());
+
+    let source_corruption = self::publication(&fixture, 24, 25);
+    fixture
+        .store
+        .publish_artifact(source_corruption.clone())
+        .await
+        .unwrap();
+    let segment_path = std::fs::read_dir(fixture.directory.path().join("segments"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.is_file())
+        .unwrap();
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(segment_path)
+        .unwrap()
+        .set_len(8)
+        .unwrap();
+    assert_eq!(
+        fixture
+            .store
+            .read_artifact(
+                RetrieveArtifactRequest::new(
+                    scope,
+                    *source_corruption.manifest.artifact_id(),
+                    source_corruption.encoded_bytes.len() as u64,
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap_err()
+            .code,
+        krometrail_core::ErrorCode::PersistenceFailed
+    );
 }
 
 #[tokio::test]
@@ -514,7 +635,15 @@ async fn pins_protect_sources_not_regenerable_artifacts() {
         target_id: fixture.target,
         range: SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(4)).unwrap(),
     };
-    fixture.store.pin_range(retained).await.unwrap();
+    let pin = fixture
+        .store
+        .pin_resolved_range(RetentionPinRequest::new(retained, fixture.frame_ids.clone()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        pin.state.protection_scope,
+        krometrail_core::PinProtectionScope::SourceSegmentsOnly
+    );
     let before = fixture.store.status().await.unwrap();
     let budget = DiskBudgetBytes::new(
         before.usage.total_bytes().unwrap() - publication.encoded_bytes.len() as u64,

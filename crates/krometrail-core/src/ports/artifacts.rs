@@ -3,8 +3,8 @@ use std::sync::Arc;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    ArtifactId, ArtifactManifest, CancellationSignal, FrameId, NonEmptyText, PortFuture, Result,
-    SessionId, TargetId,
+    ArtifactId, ArtifactManifest, ArtifactRead, CancellationSignal, FrameId, NonEmptyText,
+    PortFuture, Result, RetrieveArtifactRequest, SessionId, TargetId,
     error::{ErrorCode, KrometrailError},
 };
 
@@ -139,8 +139,28 @@ pub enum ArtifactPublish {
     Existing(StoredArtifact),
 }
 
+/// Scoped by-id read outcome with derived corruption distinct from ordinary expiry.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ArtifactReadLookup {
+    Missing,
+    Available(Box<ArtifactRead>),
+    Invalidated,
+}
+
 /// Persistence/cache authority for generated artifacts. Physical paths remain private.
 pub trait ArtifactStore: Send + Sync {
+    /// Reads one exact scoped artifact under the caller's byte ceiling.
+    fn read_artifact(
+        &self,
+        _request: RetrieveArtifactRequest,
+    ) -> PortFuture<'_, Result<ArtifactReadLookup>> {
+        Box::pin(std::future::ready(Err(KrometrailError::new(
+            ErrorCode::Unsupported,
+            NonEmptyText::new("this artifact store does not provide coherent scoped reads")
+                .expect("static artifact read error is non-empty"),
+        ))))
+    }
+
     fn lookup_artifact(
         &self,
         key: ArtifactCacheKey,
@@ -156,6 +176,13 @@ pub trait ArtifactStore: Send + Sync {
 }
 
 impl<T: ArtifactStore + ?Sized> ArtifactStore for Arc<T> {
+    fn read_artifact(
+        &self,
+        request: RetrieveArtifactRequest,
+    ) -> PortFuture<'_, Result<ArtifactReadLookup>> {
+        (**self).read_artifact(request)
+    }
+
     fn lookup_artifact(
         &self,
         key: ArtifactCacheKey,

@@ -85,6 +85,172 @@ pub(crate) fn index_frame_tx(
     append_observation_tx(transaction, &observation, Some(metadata.capture_ordinal()))
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct FrameReadSnapshot {
+    pub metadata: CapturedFrame,
+    address: StoredAddress,
+}
+
+impl SqliteIndex {
+    pub(crate) fn frame_read_snapshots_by_id(
+        &self,
+        frame_ids: &[FrameId],
+    ) -> krometrail_core::Result<Vec<FrameReadSnapshot>> {
+        let connection = self.connection()?;
+        let mut statement = connection
+            .prepare(&snapshot_select("f.frame_id=?1", ""))
+            .map_err(|_| persistence_error("could not prepare coherent frame lookup"))?;
+        frame_ids
+            .iter()
+            .map(|frame_id| {
+                let raw = statement
+                    .query_row(
+                        params![codec::id(frame_id.as_uuid()).to_vec()],
+                        raw_snapshot,
+                    )
+                    .optional()
+                    .map_err(|_| persistence_error("could not query coherent frame metadata"))?
+                    .ok_or_else(frame_not_found)?;
+                decode_snapshot(raw)
+            })
+            .collect()
+    }
+
+    pub(crate) fn frame_read_snapshots_in_range(
+        &self,
+        session_id: SessionId,
+        target_id: TargetId,
+        range: SessionRange,
+    ) -> krometrail_core::Result<Vec<FrameReadSnapshot>> {
+        let connection = self.connection()?;
+        let mut statement = connection
+            .prepare(&snapshot_select(
+                "f.session_id=?1 AND f.target_id=?2 AND f.session_time_be>=?3 AND f.session_time_be<=?4",
+                "ORDER BY f.capture_ordinal_be ASC, f.session_time_be ASC, f.frame_id ASC",
+            ))
+            .map_err(|_| persistence_error("could not prepare coherent frame range lookup"))?;
+        let rows = statement
+            .query_map(
+                params![
+                    codec::id(session_id.as_uuid()).to_vec(),
+                    codec::id(target_id.as_uuid()).to_vec(),
+                    codec::u64_blob(range.start().as_nanos()).to_vec(),
+                    codec::u64_blob(range.end().as_nanos()).to_vec(),
+                ],
+                raw_snapshot,
+            )
+            .map_err(|_| persistence_error("could not query coherent frame range"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|_| persistence_error("could not read coherent frame range"))?
+            .into_iter()
+            .map(decode_snapshot)
+            .collect()
+    }
+
+    pub(crate) fn frame_read_snapshots_in_ordinal_range(
+        &self,
+        session_id: SessionId,
+        target_id: TargetId,
+        start: CaptureOrdinal,
+        end: CaptureOrdinal,
+    ) -> krometrail_core::Result<Vec<FrameReadSnapshot>> {
+        if start > end {
+            return Err(KrometrailError::new(
+                ErrorCode::InvalidInput,
+                NonEmptyText::new("frame ordinal range start must not exceed its end")
+                    .expect("static frame error is non-empty"),
+            ));
+        }
+        let connection = self.connection()?;
+        let mut statement = connection
+            .prepare(&snapshot_select(
+                "f.session_id=?1 AND f.target_id=?2 AND f.capture_ordinal_be>=?3 AND f.capture_ordinal_be<=?4",
+                "ORDER BY f.capture_ordinal_be ASC, f.session_time_be ASC, f.frame_id ASC",
+            ))
+            .map_err(|_| persistence_error("could not prepare coherent frame ordinal lookup"))?;
+        let rows = statement
+            .query_map(
+                params![
+                    codec::id(session_id.as_uuid()).to_vec(),
+                    codec::id(target_id.as_uuid()).to_vec(),
+                    codec::u64_blob(start.get()).to_vec(),
+                    codec::u64_blob(end.get()).to_vec(),
+                ],
+                raw_snapshot,
+            )
+            .map_err(|_| persistence_error("could not query coherent frame ordinal range"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|_| persistence_error("could not read coherent frame ordinal range"))?
+            .into_iter()
+            .map(decode_snapshot)
+            .collect()
+    }
+
+    pub(crate) fn read_frame_snapshot(
+        &self,
+        snapshot: &FrameReadSnapshot,
+    ) -> krometrail_core::Result<EncodedFrame> {
+        let frame = self.read_address(snapshot.address.clone())?;
+        if frame.metadata() != &snapshot.metadata {
+            return Err(persistence_error(
+                "encoded source frame metadata changed from its indexed snapshot",
+            ));
+        }
+        Ok(frame)
+    }
+}
+
+fn snapshot_select(predicate: &str, order: &str) -> String {
+    format!(
+        "SELECT f.frame_id,f.session_id,f.target_id,f.segment_id,f.byte_offset_be,s.relative_path,\
+                f.capture_ordinal_be,f.source_time_be,f.observed_time_be,f.session_time_be,f.format,\
+                f.image_width,f.image_height,f.viewport_width,f.viewport_height,f.device_scale,\
+                f.warnings_json FROM frames f JOIN segments s USING(segment_id) \
+         WHERE {predicate} {order}"
+    )
+}
+
+struct RawSnapshot {
+    address: RawAddress,
+    metadata: RawMetadata,
+}
+
+fn raw_snapshot(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawSnapshot> {
+    Ok(RawSnapshot {
+        address: RawAddress {
+            frame_id: row.get(0)?,
+            session_id: row.get(1)?,
+            target_id: row.get(2)?,
+            segment_id: row.get(3)?,
+            byte_offset: row.get(4)?,
+            relative_path: row.get(5)?,
+        },
+        metadata: RawMetadata {
+            frame_id: row.get(0)?,
+            session_id: row.get(1)?,
+            target_id: row.get(2)?,
+            capture_ordinal: row.get(6)?,
+            source_time: row.get(7)?,
+            observed_time: row.get(8)?,
+            session_time: row.get(9)?,
+            format: row.get(10)?,
+            image_width: row.get(11)?,
+            image_height: row.get(12)?,
+            viewport_width: row.get(13)?,
+            viewport_height: row.get(14)?,
+            device_scale: row.get(15)?,
+            warnings_json: row.get(16)?,
+        },
+    })
+}
+
+fn decode_snapshot(raw: RawSnapshot) -> krometrail_core::Result<FrameReadSnapshot> {
+    Ok(FrameReadSnapshot {
+        metadata: decode_metadata(raw.metadata)?,
+        address: decode_address(raw.address)?,
+    })
+}
+
 impl FrameSource for SqliteIndex {
     fn frames_by_id(
         &self,

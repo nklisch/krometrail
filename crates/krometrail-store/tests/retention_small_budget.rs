@@ -5,8 +5,9 @@ use krometrail_core::{
     BrowserEventPayload, BrowserEventSelector, BrowserEventSeverity, BrowserEventSink,
     BrowserEventSource, BrowserEventUnavailableReason, CaptureOrdinal, CapturedFrame,
     DeviceScaleFactor, DiskBudgetBytes, EncodedFrame, ErrorCode, FrameId, FrameSource, ImageFormat,
-    ObservedTime, PixelDimensions, RecordingSink, RetentionRange, RetentionStore, SessionId,
-    SessionRange, SessionTime, TargetId, TargetLifecycle, TargetLifecycleEvent,
+    ObservedTime, PixelDimensions, RecordingSink, RetentionPinRequest, RetentionRange,
+    RetentionStore, SessionId, SessionRange, SessionTime, TargetId, TargetLifecycle,
+    TargetLifecycleEvent,
 };
 use krometrail_store::{
     IndexStoreConfig, RecordingStore, RotationConfig, SegmentStoreConfig, SegmentWriter,
@@ -104,13 +105,23 @@ async fn pinned_budget_pauses_then_unpin_evicts_and_resumes() {
     let first = frame(1, 10, 100, 1, 80_000);
     let first_id = first.metadata().id();
     store.append_frame(first).await.unwrap();
-    let pin = RetentionRange {
-        session_id: SessionId::from_uuid(Uuid::from_u128(1)),
-        target_id: TargetId::from_uuid(Uuid::from_u128(10)),
-        range: SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(2)).unwrap(),
-    };
+    let pin = RetentionPinRequest::new(
+        RetentionRange {
+            session_id: SessionId::from_uuid(Uuid::from_u128(1)),
+            target_id: TargetId::from_uuid(Uuid::from_u128(10)),
+            range: SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(2)).unwrap(),
+        },
+        vec![first_id],
+    )
+    .unwrap();
     assert_eq!(
-        store.pin_range(pin).await.unwrap().protected_segments.len(),
+        store
+            .pin_resolved_range(pin.clone())
+            .await
+            .unwrap()
+            .state
+            .protected_segments
+            .len(),
         1
     );
 
@@ -129,7 +140,14 @@ async fn pinned_budget_pauses_then_unpin_evicts_and_resumes() {
     );
     assert!(store.status().await.unwrap().recording_blocked);
 
-    store.unpin_range(pin).await.unwrap();
+    let unpinned = store.unpin_resolved_range(pin).await.unwrap();
+    assert!(unpinned.changed);
+    assert!(!unpinned.state.exact_pin_active);
+    assert!(matches!(
+        unpinned.state.evidence,
+        krometrail_core::RangeEvidenceAvailability::Complete
+    ));
+    assert!(!unpinned.state.retention.recording_blocked);
     store.wait_until_recording_allowed().await.unwrap();
     assert!(!store.status().await.unwrap().recording_blocked);
     store.append_frame(second.clone()).await.unwrap();
@@ -358,12 +376,16 @@ async fn pinned_source_frames_survive_older_event_eviction_with_tombstones() {
     let item = frame(400, 410, 411, 1, 150_000);
     store.append_frame(item.clone()).await.unwrap();
     store.flush(item.metadata().session_id()).await.unwrap();
-    let pin = RetentionRange {
-        session_id: item.metadata().session_id(),
-        target_id: item.metadata().target_id(),
-        range: SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(4)).unwrap(),
-    };
-    store.pin_range(pin).await.unwrap();
+    let pin = RetentionPinRequest::new(
+        RetentionRange {
+            session_id: item.metadata().session_id(),
+            target_id: item.metadata().target_id(),
+            range: SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(4)).unwrap(),
+        },
+        vec![item.metadata().id()],
+    )
+    .unwrap();
+    store.pin_resolved_range(pin).await.unwrap();
     let status = store.status().await.unwrap();
     let budget = DiskBudgetBytes::new(
         status.usage.total_bytes().unwrap() - status.open_segment_overhead_limit_bytes - 1,

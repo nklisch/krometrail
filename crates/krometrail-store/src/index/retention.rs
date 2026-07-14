@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use krometrail_core::{
-    ArtifactId, PinChange, RetainedPoint, RetentionRange, SegmentId, SessionId, SessionTime,
+    ArtifactId, FrameId, PinChange, ProtectedSegment, RangeEvidenceAvailability, RetainedPoint,
+    RetentionPinRequest, RetentionRange, SegmentId, SessionId, SessionRange, SessionTime,
     StorageUsage, TargetId,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
@@ -29,6 +30,14 @@ pub(crate) struct ArtifactCandidate {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ProgressivePinSnapshot {
+    pub exact_pin_active: bool,
+    pub evidence: RangeEvidenceAvailability,
+    pub protected_segments: Vec<ProtectedSegment>,
+    pub pinned_usage_bytes: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct UsageSnapshot {
     pub usage: StorageUsage,
     pub pinned_usage_bytes: u64,
@@ -38,6 +47,109 @@ pub(crate) struct UsageSnapshot {
 }
 
 impl SqliteIndex {
+    pub(crate) fn pin_resolved_range(
+        &self,
+        request: &RetentionPinRequest,
+    ) -> krometrail_core::Result<bool> {
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|_| persistence_error("could not begin resolved range pin transaction"))?;
+        validate_expected_range_frames(&transaction, request)?;
+        let changed = transaction
+            .execute(
+                "INSERT OR IGNORE INTO pins(session_id,target_id,start_time_be,end_time_be) \
+                 VALUES (?1,?2,?3,?4)",
+                rusqlite::params_from_iter(pin_values(request.request)),
+            )
+            .map_err(|_| persistence_error("could not create exact resolved range pin"))?
+            == 1;
+        let pin_id = exact_pin_id(&transaction, request.request)?.ok_or_else(|| {
+            persistence_error("exact resolved range pin disappeared during mutation")
+        })?;
+        transaction
+            .execute(
+                "INSERT OR IGNORE INTO pin_segments(pin_id,segment_id) \
+                 SELECT ?1,segment_id FROM segments \
+                 WHERE session_id=?2 AND target_id=?3 AND state='sealed' \
+                   AND start_time_be<=?4 AND end_time_be>=?5",
+                params![
+                    pin_id,
+                    codec::id(request.request.session_id.as_uuid()).to_vec(),
+                    codec::id(request.request.target_id.as_uuid()).to_vec(),
+                    codec::u64_blob(request.request.range.end().as_nanos()).to_vec(),
+                    codec::u64_blob(request.request.range.start().as_nanos()).to_vec(),
+                ],
+            )
+            .map_err(|_| persistence_error("could not link resolved range source segments"))?;
+        let protected: u64 = transaction
+            .query_row(
+                "SELECT count(*) FROM pin_segments WHERE pin_id=?1",
+                params![pin_id],
+                |row| row.get(0),
+            )
+            .map_err(|_| persistence_error("could not verify resolved range segment links"))?;
+        if protected == 0 {
+            return Err(persistence_error(
+                "resolved range pin did not protect a sealed source segment",
+            ));
+        }
+        transaction
+            .commit()
+            .map_err(|_| persistence_error("could not commit resolved range pin"))?;
+        Ok(changed)
+    }
+
+    pub(crate) fn unpin_resolved_range(
+        &self,
+        request: RetentionRange,
+    ) -> krometrail_core::Result<bool> {
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|_| persistence_error("could not begin exact range unpin transaction"))?;
+        let changed = transaction
+            .execute(
+                "DELETE FROM pins WHERE session_id=?1 AND target_id=?2 \
+                 AND start_time_be=?3 AND end_time_be=?4",
+                rusqlite::params_from_iter(pin_values(request)),
+            )
+            .map_err(|_| persistence_error("could not remove exact resolved range pin"))?
+            == 1;
+        transaction
+            .commit()
+            .map_err(|_| persistence_error("could not commit exact range unpin"))?;
+        Ok(changed)
+    }
+
+    pub(crate) fn progressive_pin_snapshot(
+        &self,
+        request: &RetentionPinRequest,
+    ) -> krometrail_core::Result<ProgressivePinSnapshot> {
+        let connection = self.connection()?;
+        let session_exists = connection
+            .query_row(
+                "SELECT 1 FROM sessions WHERE session_id=?1",
+                params![codec::id(request.request.session_id.as_uuid()).to_vec()],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(|_| persistence_error("could not query pin session lifetime"))?
+            .is_some();
+        if !session_exists {
+            return Err(pin_not_found(request.request));
+        }
+        let exact_pin_active = exact_pin_id(&connection, request.request)?.is_some();
+        let evidence = range_evidence_availability(&connection, request)?;
+        let protected_segments = protected_segments_for_request(&connection, request.request)?;
+        Ok(ProgressivePinSnapshot {
+            exact_pin_active,
+            evidence,
+            protected_segments,
+            pinned_usage_bytes: pinned_usage(&connection)?,
+        })
+    }
+
     pub(crate) fn pin_range(&self, request: RetentionRange) -> krometrail_core::Result<PinChange> {
         let mut connection = self.connection()?;
         let transaction = connection
@@ -290,6 +402,170 @@ fn decode_segment_candidate_parts(raw: RawSegment) -> krometrail_core::Result<Se
         file_bytes: codec::decode_u64(&raw.4)?,
         retention_sequence: u64::try_from(raw.5)
             .map_err(|_| persistence_error("stored retention sequence is malformed"))?,
+    })
+}
+
+fn validate_expected_range_frames(
+    connection: &Connection,
+    request: &RetentionPinRequest,
+) -> krometrail_core::Result<()> {
+    let mut statement = connection
+        .prepare(
+            "SELECT f.frame_id FROM frames f JOIN segments s USING(segment_id) \
+             WHERE f.session_id=?1 AND f.target_id=?2 \
+               AND f.session_time_be>=?3 AND f.session_time_be<=?4 AND s.state='sealed' \
+             ORDER BY f.capture_ordinal_be ASC,f.session_time_be ASC,f.frame_id ASC",
+        )
+        .map_err(|_| persistence_error("could not prepare resolved pin frame validation"))?;
+    let rows = statement
+        .query_map(
+            rusqlite::params_from_iter(pin_values(request.request)),
+            |row| row.get::<_, Vec<u8>>(0),
+        )
+        .map_err(|_| persistence_error("could not query resolved pin frames"))?;
+    let retained = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| persistence_error("could not read resolved pin frames"))?
+        .into_iter()
+        .map(|raw| codec::decode_id(&raw).map(FrameId::from_uuid))
+        .collect::<krometrail_core::Result<Vec<_>>>()?;
+    if retained != request.expected_frame_ids {
+        return Err(pin_not_found(request.request));
+    }
+    Ok(())
+}
+
+fn exact_pin_id(
+    connection: &Connection,
+    request: RetentionRange,
+) -> krometrail_core::Result<Option<i64>> {
+    connection
+        .query_row(
+            "SELECT pin_id FROM pins WHERE session_id=?1 AND target_id=?2 \
+             AND start_time_be=?3 AND end_time_be=?4",
+            rusqlite::params_from_iter(pin_values(request)),
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|_| persistence_error("could not query exact resolved range pin"))
+}
+
+fn range_evidence_availability(
+    connection: &Connection,
+    request: &RetentionPinRequest,
+) -> krometrail_core::Result<RangeEvidenceAvailability> {
+    let mut statement = connection
+        .prepare(
+            "SELECT 1 FROM frames WHERE frame_id=?1 AND session_id=?2 AND target_id=?3 \
+               AND session_time_be>=?4 AND session_time_be<=?5",
+        )
+        .map_err(|_| persistence_error("could not prepare expected frame availability"))?;
+    let mut retained_frame_ids = Vec::new();
+    let mut missing_frame_ids = Vec::new();
+    for frame_id in &request.expected_frame_ids {
+        let retained = statement
+            .query_row(
+                params![
+                    codec::id(frame_id.as_uuid()).to_vec(),
+                    codec::id(request.request.session_id.as_uuid()).to_vec(),
+                    codec::id(request.request.target_id.as_uuid()).to_vec(),
+                    codec::u64_blob(request.request.range.start().as_nanos()).to_vec(),
+                    codec::u64_blob(request.request.range.end().as_nanos()).to_vec(),
+                ],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(|_| persistence_error("could not query expected frame availability"))?
+            .is_some();
+        if retained {
+            retained_frame_ids.push(*frame_id);
+        } else {
+            missing_frame_ids.push(*frame_id);
+        }
+    }
+    Ok(if missing_frame_ids.is_empty() {
+        RangeEvidenceAvailability::Complete
+    } else if retained_frame_ids.is_empty() {
+        RangeEvidenceAvailability::Unavailable { missing_frame_ids }
+    } else {
+        RangeEvidenceAvailability::PartiallyUnavailable {
+            retained_frame_ids,
+            missing_frame_ids,
+        }
+    })
+}
+
+fn protected_segments_for_request(
+    connection: &Connection,
+    request: RetentionRange,
+) -> krometrail_core::Result<Vec<ProtectedSegment>> {
+    let mut statement = connection
+        .prepare(
+            "SELECT DISTINCT s.segment_id,s.start_time_be,s.end_time_be,s.file_bytes_be \
+             FROM segments s WHERE s.session_id=?1 AND s.target_id=?2 AND s.state='sealed' \
+               AND s.start_time_be<=?3 AND s.end_time_be>=?4 \
+               AND EXISTS (SELECT 1 FROM pin_segments p WHERE p.segment_id=s.segment_id) \
+             ORDER BY s.start_time_be,s.end_time_be,s.segment_id",
+        )
+        .map_err(|_| persistence_error("could not prepare overlapping pin segment state"))?;
+    let rows = statement
+        .query_map(
+            params![
+                codec::id(request.session_id.as_uuid()).to_vec(),
+                codec::id(request.target_id.as_uuid()).to_vec(),
+                codec::u64_blob(request.range.end().as_nanos()).to_vec(),
+                codec::u64_blob(request.range.start().as_nanos()).to_vec(),
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, Vec<u8>>(3)?,
+                ))
+            },
+        )
+        .map_err(|_| persistence_error("could not query overlapping pin segments"))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|_| persistence_error("could not read overlapping pin segments"))?
+        .into_iter()
+        .map(|(segment, start, end, bytes)| {
+            ProtectedSegment::new(
+                SegmentId::from_uuid(codec::decode_id(&segment)?),
+                SessionRange::new(
+                    SessionTime::from_nanos(codec::decode_u64(&start)?),
+                    SessionTime::from_nanos(codec::decode_u64(&end)?),
+                )
+                .map_err(|_| persistence_error("stored protected segment range is invalid"))?,
+                codec::decode_u64(&bytes)?,
+            )
+            .map_err(|_| persistence_error("stored protected segment state is invalid"))
+        })
+        .collect()
+}
+
+fn pin_values(request: RetentionRange) -> [Vec<u8>; 4] {
+    [
+        codec::id(request.session_id.as_uuid()).to_vec(),
+        codec::id(request.target_id.as_uuid()).to_vec(),
+        codec::u64_blob(request.range.start().as_nanos()).to_vec(),
+        codec::u64_blob(request.range.end().as_nanos()).to_vec(),
+    ]
+}
+
+fn pin_not_found(request: RetentionRange) -> krometrail_core::KrometrailError {
+    krometrail_core::KrometrailError::new(
+        krometrail_core::ErrorCode::NotFound,
+        krometrail_core::NonEmptyText::new(
+            "resolved range source frames are not completely retained",
+        )
+        .expect("static pin range error is non-empty"),
+    )
+    .with_context(krometrail_core::ErrorContext {
+        session_id: Some(request.session_id),
+        target_id: Some(request.target_id),
+        range: Some(request.range),
+        ..Default::default()
     })
 }
 

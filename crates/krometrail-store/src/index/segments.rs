@@ -85,7 +85,7 @@ pub(crate) fn register_segment_tx(
     Ok(())
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct StoredAddress {
     pub frame_id: krometrail_core::FrameId,
     pub session_id: SessionId,

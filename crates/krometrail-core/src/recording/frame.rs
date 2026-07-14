@@ -281,6 +281,11 @@ impl EncodedFrame {
         &self.bytes
     }
 
+    /// Clones the owned request-safe payload reference without copying bytes.
+    pub fn encoded_bytes(&self) -> Arc<[u8]> {
+        Arc::clone(&self.bytes)
+    }
+
     pub fn byte_len(&self) -> NonZeroU64 {
         NonZeroU64::new(self.bytes.len() as u64).expect("validated frame payload is non-empty")
     }

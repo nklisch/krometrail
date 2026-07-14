@@ -4,18 +4,21 @@ use std::{
 };
 
 use krometrail_core::{
-    ArtifactCacheKey, ArtifactLookup, ArtifactPublication, ArtifactPublish,
-    ArtifactSourceFingerprint, ArtifactStore, BrowserEventBatch, BrowserEventCursor,
-    BrowserEventSelector, BrowserEventSink, BrowserEventSource, BrowserEventUnavailableRange,
-    CaptureGap, CaptureGapStore, CaptureStatusSamples, DiskBudgetBytes, EncodedFrame, ErrorCode,
-    ErrorContext, EventCandidateLimit, EventPageLimit, FrameAddress, FrameSource,
-    InteractionAnchor, InteractionEvidenceSink, InteractionRecord, KrometrailError, NavigationId,
-    NonEmptyText, ObservedTime, PinChange, PortFuture, RecordingBudgetState, RecordingSink,
-    ResolvedRange, RetentionRange, RetentionStatus, RetentionStore, RetryAdvice, SessionDeletion,
-    SessionId, SessionRange, SessionTime, StorageUsage, StoredArtifact, TargetId, TemporalContext,
-    TemporalContextQuery, TemporalContextRequest, TemporalContextService, TemporalQuery,
-    TemporalQueryRequest, TemporalQueryService, TemporalRangeResolver, TimelineObservation,
-    TimelineStore,
+    ArtifactCacheKey, ArtifactEvidenceHandle, ArtifactLookup, ArtifactPublication, ArtifactPublish,
+    ArtifactRead, ArtifactReadLookup, ArtifactSourceFingerprint, ArtifactStore, BrowserEventBatch,
+    BrowserEventCursor, BrowserEventSelector, BrowserEventSink, BrowserEventSource,
+    BrowserEventUnavailableRange, CaptureGap, CaptureGapStore, CaptureStatusSamples,
+    DiskBudgetBytes, EncodedFrame, ErrorCode, ErrorContext, EventCandidateLimit, EventPageLimit,
+    EvidenceScope, FrameAddress, FrameId, FrameSource, InteractionAnchor, InteractionEvidenceSink,
+    InteractionRecord, KrometrailError, NavigationId, NonEmptyText, ObservedTime, PinChange,
+    PinProtectionScope, PinState, PortFuture, ProgressivePinChange, ProtectedSegment,
+    RecordingBudgetState, RecordingSink, ResolvedRange, RetentionPinRequest, RetentionRange,
+    RetentionStatus, RetentionStore, RetrieveArtifactRequest, RetryAdvice, SessionDeletion,
+    SessionId, SessionRange, SessionTime, Sha256Digest, SourceFrameBatch, SourceFrameHandle,
+    SourceFrameList, SourceFrameRead, SourceFrameSelection, SourceFramesRequest, StorageUsage,
+    StoredArtifact, TargetId, TemporalContext, TemporalContextQuery, TemporalContextRequest,
+    TemporalContextService, TemporalQuery, TemporalQueryRequest, TemporalQueryService,
+    TemporalRangeResolver, TimelineObservation, TimelineStore,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, watch};
@@ -24,12 +27,12 @@ use crate::{
     SegmentRegistration, SegmentWriter, SqliteIndex,
     artifacts::{
         CacheLocks, PublicationRegistry, files::ArtifactFiles, recovery as artifact_recovery,
-        source_fingerprints, validate_stored_artifact,
+        validate_stored_artifact,
     },
     index::{
-        artifacts::{ArtifactRow, ArtifactState, StageArtifact},
+        artifacts::{ArtifactRow, ArtifactSourceRow, ArtifactState, StageArtifact},
         deletion::{DeletionKind, DeletionObject, DeletionObjectKind, DeletionState},
-        frames::index_frame_tx,
+        frames::{FrameReadSnapshot, index_frame_tx},
         retention::{ArtifactCandidate, SegmentCandidate},
         segments::register_segment_tx,
     },
@@ -38,6 +41,26 @@ use crate::{
 };
 
 const RECORD_ENVELOPE_ALLOWANCE: u64 = 4096;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EvidenceReadKind {
+    Source,
+    Artifact,
+}
+
+#[cfg(test)]
+struct EvidenceReadPause {
+    kind: EvidenceReadKind,
+    reached: tokio::sync::Notify,
+    resume: tokio::sync::Notify,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ArtifactReadSnapshot {
+    row: ArtifactRow,
+    sources: Vec<ArtifactSourceRow>,
+    frames: Vec<FrameReadSnapshot>,
+}
 
 /// Coordinates physical frame writes, searchable metadata, and destructive
 /// retention mutations behind one ordering gate.
@@ -53,6 +76,8 @@ pub struct RecordingStore {
     open_overhead_limit: u64,
     budget_state: StdMutex<RecordingBudgetState>,
     availability: watch::Sender<u64>,
+    #[cfg(test)]
+    evidence_read_pause: StdMutex<Option<Arc<EvidenceReadPause>>>,
 }
 
 impl RecordingStore {
@@ -96,6 +121,8 @@ impl RecordingStore {
             budget,
             budget_state: StdMutex::new(RecordingBudgetState::Available),
             availability,
+            #[cfg(test)]
+            evidence_read_pause: StdMutex::new(None),
         };
         store.resume_deletions()?;
         store.recover_artifacts()?;
@@ -188,15 +215,104 @@ impl RecordingStore {
         Ok(())
     }
 
+    #[cfg(test)]
+    fn pause_next_evidence_read(&self, kind: EvidenceReadKind) -> Arc<EvidenceReadPause> {
+        let pause = Arc::new(EvidenceReadPause {
+            kind,
+            reached: tokio::sync::Notify::new(),
+            resume: tokio::sync::Notify::new(),
+        });
+        *self
+            .evidence_read_pause
+            .lock()
+            .expect("evidence read pause lock poisoned") = Some(Arc::clone(&pause));
+        pause
+    }
+
+    async fn pause_after_read_snapshot(&self, #[allow(unused_variables)] kind: EvidenceReadKind) {
+        #[cfg(test)]
+        {
+            let pause = {
+                let mut configured = self
+                    .evidence_read_pause
+                    .lock()
+                    .expect("evidence read pause lock poisoned");
+                if configured.as_ref().is_some_and(|pause| pause.kind == kind) {
+                    configured.take()
+                } else {
+                    None
+                }
+            };
+            if let Some(pause) = pause {
+                pause.reached.notify_one();
+                pause.resume.notified().await;
+            }
+        }
+    }
+
+    async fn read_frame_snapshots(
+        &self,
+        snapshots: Vec<FrameReadSnapshot>,
+        kind: EvidenceReadKind,
+    ) -> krometrail_core::Result<Vec<EncodedFrame>> {
+        self.pause_after_read_snapshot(kind).await;
+        let read = snapshots
+            .iter()
+            .map(|snapshot| self.index.read_frame_snapshot(snapshot))
+            .collect::<krometrail_core::Result<Vec<_>>>();
+
+        let _mutation = self.mutations.lock().await;
+        for session_id in snapshots
+            .iter()
+            .map(|snapshot| snapshot.metadata.session_id())
+            .collect::<HashSet<_>>()
+        {
+            self.reject_deleted(session_id)?;
+        }
+        let ids: Vec<_> = snapshots
+            .iter()
+            .map(|snapshot| snapshot.metadata.id())
+            .collect();
+        let current = self.index.frame_read_snapshots_by_id(&ids);
+        if current.as_ref().ok() != Some(&snapshots) {
+            return Err(source_read_not_found(snapshots.first()));
+        }
+        read
+    }
+
+    fn artifact_snapshot(&self, row: ArtifactRow) -> krometrail_core::Result<ArtifactReadSnapshot> {
+        let sources = self.index.artifact_sources(row.artifact_id)?;
+        let frames = self.index.frame_read_snapshots_by_id(
+            &sources
+                .iter()
+                .map(|source| source.frame_id)
+                .collect::<Vec<_>>(),
+        )?;
+        Ok(ArtifactReadSnapshot {
+            row,
+            sources,
+            frames,
+        })
+    }
+
     async fn validate_source_payloads(
         &self,
         session_id: SessionId,
         target_id: TargetId,
         expected: &[ArtifactSourceFingerprint],
     ) -> krometrail_core::Result<()> {
+        let snapshots = {
+            let _mutation = self.mutations.lock().await;
+            self.reject_deleted(session_id)?;
+            self.index.frame_read_snapshots_by_id(
+                &expected
+                    .iter()
+                    .map(|source| source.frame_id)
+                    .collect::<Vec<_>>(),
+            )?
+        };
         let frames = self
-            .index
-            .frames_by_id(expected.iter().map(|source| source.frame_id).collect())
+            .read_frame_snapshots(snapshots, EvidenceReadKind::Source)
             .await?;
         if frames.len() != expected.len() {
             return Err(source_lost_error(session_id, target_id));
@@ -211,22 +327,6 @@ impl RecordingStore {
             }
         }
         Ok(())
-    }
-
-    async fn read_artifact_row(
-        &self,
-        row: &ArtifactRow,
-        expected: Option<&[ArtifactSourceFingerprint]>,
-    ) -> krometrail_core::Result<StoredArtifact> {
-        if row.state != ArtifactState::Ready {
-            return Err(persistence_error("artifact is not ready"));
-        }
-        let sources = self.index.artifact_sources(row.artifact_id)?;
-        let retained = source_fingerprints(&sources);
-        self.validate_source_payloads(row.session_id, row.target_id, &retained)
-            .await?;
-        let bytes = self.artifact_files.read(row.relative_path.clone()).await?;
-        validate_stored_artifact(row, &sources, bytes, expected)
     }
 
     async fn invalidate_artifact_row(&self, row: ArtifactRow) -> krometrail_core::Result<()> {
@@ -331,6 +431,25 @@ impl RecordingStore {
 
     fn current_status(&self) -> krometrail_core::Result<RetentionStatus> {
         self.status_from_snapshot(self.refresh_usage()?, self.current_budget_state())
+    }
+
+    fn progressive_pin_state_locked(
+        &self,
+        request: RetentionPinRequest,
+    ) -> krometrail_core::Result<PinState> {
+        let snapshot = self.index.progressive_pin_snapshot(&request)?;
+        let coalesced = coalesce_protected_segments(&snapshot.protected_segments)?;
+        let retention = self.current_status()?;
+        PinState::new(
+            request,
+            snapshot.exact_pin_active,
+            snapshot.evidence,
+            PinProtectionScope::SourceSegmentsOnly,
+            snapshot.protected_segments,
+            coalesced,
+            snapshot.pinned_usage_bytes,
+            retention,
+        )
     }
 
     async fn ensure_append_capacity(&self, frame: &EncodedFrame) -> krometrail_core::Result<()> {
@@ -473,37 +592,426 @@ impl RecordingStore {
         self.index.finalize_deletion(&batch)?;
         Ok((segments, frames, artifacts, removed_bytes))
     }
+
+    async fn progressive_source_reads(
+        &self,
+        request: SourceFramesRequest,
+    ) -> krometrail_core::Result<Vec<SourceFrameRead>> {
+        let selected_ids = match &request.selection {
+            SourceFrameSelection::ResolvedOrder => request.range.frame_ids.clone(),
+            SourceFrameSelection::Ids(ids) => ids.clone(),
+        };
+        let snapshots = {
+            let _mutation = self.mutations.lock().await;
+            self.reject_deleted(request.range.session_id)?;
+            self.index.frame_read_snapshots_by_id(&selected_ids)?
+        };
+        if snapshots.len() != selected_ids.len() {
+            return Err(source_read_not_found(snapshots.first()));
+        }
+        for (expected, snapshot) in selected_ids.iter().zip(&snapshots) {
+            if snapshot.metadata.id() != *expected
+                || snapshot.metadata.session_id() != request.range.session_id
+                || snapshot.metadata.target_id() != request.range.target_id
+            {
+                return Err(source_read_not_found(Some(snapshot)));
+            }
+        }
+        if matches!(request.selection, SourceFrameSelection::ResolvedOrder)
+            && snapshots.windows(2).any(|pair| {
+                pair[0].metadata.capture_ordinal() >= pair[1].metadata.capture_ordinal()
+            })
+        {
+            return Err(persistence_error(
+                "resolved source frame order is not strict capture order",
+            ));
+        }
+
+        self.pause_after_read_snapshot(EvidenceReadKind::Source)
+            .await;
+        let frames = snapshots
+            .iter()
+            .map(|snapshot| self.index.read_frame_snapshot(snapshot))
+            .collect::<krometrail_core::Result<Vec<_>>>();
+        // Payload bounds, hashes, and handles are completed outside the mutation
+        // gate. No partial result escapes if any item fails.
+        let prepared = frames.and_then(|frames| {
+            let mut total_bytes = 0_u64;
+            let scope = EvidenceScope::from_range(&request.range)?;
+            let mut reads = Vec::with_capacity(frames.len());
+            for (request_position, frame) in frames.into_iter().enumerate() {
+                let encoded_byte_len = frame.byte_len().get();
+                if encoded_byte_len > request.limits.max_item_bytes() {
+                    return Err(source_limit_error(
+                        "source frame exceeds the per-item encoded-byte limit",
+                        scope,
+                    ));
+                }
+                total_bytes = total_bytes
+                    .checked_add(encoded_byte_len)
+                    .ok_or_else(|| source_limit_error("source frame byte total overflow", scope))?;
+                if total_bytes > request.limits.max_total_bytes() {
+                    return Err(source_limit_error(
+                        "source frames exceed the total encoded-byte limit",
+                        scope,
+                    ));
+                }
+                let resolved_position = request
+                    .range
+                    .frame_ids
+                    .iter()
+                    .position(|id| *id == frame.metadata().id())
+                    .ok_or_else(|| source_read_not_found(None))?;
+                let media_type = match frame.metadata().format() {
+                    krometrail_core::ImageFormat::Jpeg => "image/jpeg",
+                    krometrail_core::ImageFormat::Png => "image/png",
+                };
+                let handle = SourceFrameHandle::new(
+                    frame.metadata().id(),
+                    scope,
+                    u32::try_from(request_position)
+                        .map_err(|_| persistence_error("source request position overflow"))?,
+                    u32::try_from(resolved_position)
+                        .map_err(|_| persistence_error("source resolved position overflow"))?,
+                    NonEmptyText::new(media_type).expect("source media type is non-empty"),
+                    Sha256Digest::digest(frame.bytes()),
+                    encoded_byte_len,
+                    frame.metadata().clone(),
+                )?;
+                reads.push(SourceFrameRead::new(handle, frame.encoded_bytes())?);
+            }
+            Ok(reads)
+        });
+
+        let _mutation = self.mutations.lock().await;
+        self.reject_deleted(request.range.session_id)?;
+        let current = self.index.frame_read_snapshots_by_id(&selected_ids);
+        if current.as_ref().ok() != Some(&snapshots) {
+            return Err(source_read_not_found(snapshots.first()));
+        }
+        prepared
+    }
+
+    async fn read_artifact_snapshot(
+        &self,
+        snapshot: &ArtifactReadSnapshot,
+        expected_sources: Option<&[ArtifactSourceFingerprint]>,
+    ) -> krometrail_core::Result<StoredArtifact> {
+        self.pause_after_read_snapshot(EvidenceReadKind::Artifact)
+            .await;
+        let source_frames = snapshot
+            .frames
+            .iter()
+            .map(|frame| self.index.read_frame_snapshot(frame))
+            .collect::<krometrail_core::Result<Vec<_>>>();
+        let artifact_bytes = self
+            .artifact_files
+            .read(snapshot.row.relative_path.clone())
+            .await;
+
+        // All file reads and hashes complete before final metadata revalidation.
+        let validated = match (source_frames, artifact_bytes) {
+            (Err(error), _) => Err(error),
+            (Ok(source_frames), _) if source_frames.len() != snapshot.sources.len() => Err(
+                persistence_error("artifact source payload count contradicts retained links"),
+            ),
+            (Ok(source_frames), Ok(bytes)) => {
+                if source_frames
+                    .iter()
+                    .zip(&snapshot.sources)
+                    .any(|(frame, source)| {
+                        frame.metadata().id() != source.frame_id
+                            || frame.metadata().session_id() != snapshot.row.session_id
+                            || frame.metadata().target_id() != snapshot.row.target_id
+                    })
+                {
+                    Err(persistence_error(
+                        "artifact source payloads contradict retained source metadata",
+                    ))
+                } else if source_frames
+                    .iter()
+                    .zip(&snapshot.sources)
+                    .any(|(frame, source)| {
+                        <[u8; 32]>::from(Sha256::digest(frame.bytes())) != source.encoded_hash
+                    })
+                {
+                    Err(evidence_invalidated_error(
+                        snapshot.row.session_id,
+                        snapshot.row.target_id,
+                    ))
+                } else {
+                    validate_stored_artifact(
+                        &snapshot.row,
+                        &snapshot.sources,
+                        bytes,
+                        expected_sources,
+                    )
+                    .map_err(|_| {
+                        evidence_invalidated_error(snapshot.row.session_id, snapshot.row.target_id)
+                    })
+                }
+            }
+            (Ok(_), Err(_)) => Err(evidence_invalidated_error(
+                snapshot.row.session_id,
+                snapshot.row.target_id,
+            )),
+        };
+
+        let _mutation = self.mutations.lock().await;
+        self.reject_deleted(snapshot.row.session_id)?;
+        let current = self
+            .index
+            .artifact_row(snapshot.row.artifact_id)?
+            .filter(|row| row.state == ArtifactState::Ready)
+            .map(|row| self.artifact_snapshot(row))
+            .transpose()?;
+        if current.as_ref() != Some(snapshot) {
+            return Err(artifact_not_found(
+                snapshot.row.session_id,
+                snapshot.row.target_id,
+            ));
+        }
+        validated
+    }
+
+    async fn invalidate_artifact_snapshot(
+        &self,
+        snapshot: &ArtifactReadSnapshot,
+    ) -> krometrail_core::Result<()> {
+        let _mutation = self.mutations.lock().await;
+        let current = self
+            .index
+            .artifact_row(snapshot.row.artifact_id)?
+            .map(|row| self.artifact_snapshot(row))
+            .transpose()?;
+        if current.as_ref() == Some(snapshot) {
+            self.invalidate_artifact_row(snapshot.row.clone()).await?;
+        }
+        Ok(())
+    }
+}
+
+impl FrameSource for RecordingStore {
+    fn list_source_frames(
+        &self,
+        request: SourceFramesRequest,
+    ) -> PortFuture<'_, krometrail_core::Result<SourceFrameList>> {
+        Box::pin(async move {
+            let range = request.range.clone();
+            let frames = self
+                .progressive_source_reads(request)
+                .await?
+                .into_iter()
+                .map(|read| read.handle)
+                .collect();
+            Ok(SourceFrameList { range, frames })
+        })
+    }
+
+    fn fetch_source_frames(
+        &self,
+        request: SourceFramesRequest,
+    ) -> PortFuture<'_, krometrail_core::Result<SourceFrameBatch>> {
+        Box::pin(async move {
+            let range = request.range.clone();
+            let frames = self.progressive_source_reads(request).await?;
+            Ok(SourceFrameBatch { range, frames })
+        })
+    }
+
+    fn frames_by_id(
+        &self,
+        frame_ids: Vec<FrameId>,
+    ) -> PortFuture<'_, krometrail_core::Result<Vec<EncodedFrame>>> {
+        Box::pin(async move {
+            let snapshots = {
+                let _mutation = self.mutations.lock().await;
+                self.index.frame_read_snapshots_by_id(&frame_ids)?
+            };
+            self.read_frame_snapshots(snapshots, EvidenceReadKind::Source)
+                .await
+        })
+    }
+
+    fn frame_metadata_by_id(
+        &self,
+        frame_ids: Vec<FrameId>,
+    ) -> PortFuture<'_, krometrail_core::Result<Vec<krometrail_core::CapturedFrame>>> {
+        Box::pin(async move {
+            let _mutation = self.mutations.lock().await;
+            let snapshots = self.index.frame_read_snapshots_by_id(&frame_ids)?;
+            for snapshot in &snapshots {
+                self.reject_deleted(snapshot.metadata.session_id())?;
+            }
+            Ok(snapshots
+                .into_iter()
+                .map(|snapshot| snapshot.metadata)
+                .collect())
+        })
+    }
+
+    fn frames_in_range(
+        &self,
+        session_id: SessionId,
+        target_id: TargetId,
+        range: SessionRange,
+    ) -> PortFuture<'_, krometrail_core::Result<Vec<EncodedFrame>>> {
+        Box::pin(async move {
+            let snapshots = {
+                let _mutation = self.mutations.lock().await;
+                self.reject_deleted(session_id)?;
+                self.index
+                    .frame_read_snapshots_in_range(session_id, target_id, range)?
+            };
+            self.read_frame_snapshots(snapshots, EvidenceReadKind::Source)
+                .await
+        })
+    }
+
+    fn frames_in_ordinal_range(
+        &self,
+        session_id: SessionId,
+        target_id: TargetId,
+        start: krometrail_core::CaptureOrdinal,
+        end: krometrail_core::CaptureOrdinal,
+    ) -> PortFuture<'_, krometrail_core::Result<Vec<EncodedFrame>>> {
+        Box::pin(async move {
+            let snapshots = {
+                let _mutation = self.mutations.lock().await;
+                self.reject_deleted(session_id)?;
+                self.index
+                    .frame_read_snapshots_in_ordinal_range(session_id, target_id, start, end)?
+            };
+            self.read_frame_snapshots(snapshots, EvidenceReadKind::Source)
+                .await
+        })
+    }
+
+    fn frame_metadata_in_range(
+        &self,
+        session_id: SessionId,
+        target_id: TargetId,
+        range: SessionRange,
+    ) -> PortFuture<'_, krometrail_core::Result<Vec<krometrail_core::CapturedFrame>>> {
+        Box::pin(async move {
+            let _mutation = self.mutations.lock().await;
+            self.reject_deleted(session_id)?;
+            Ok(self
+                .index
+                .frame_read_snapshots_in_range(session_id, target_id, range)?
+                .into_iter()
+                .map(|snapshot| snapshot.metadata)
+                .collect())
+        })
+    }
+
+    fn frame_metadata_in_ordinal_range(
+        &self,
+        session_id: SessionId,
+        target_id: TargetId,
+        start: krometrail_core::CaptureOrdinal,
+        end: krometrail_core::CaptureOrdinal,
+    ) -> PortFuture<'_, krometrail_core::Result<Vec<krometrail_core::CapturedFrame>>> {
+        Box::pin(async move {
+            let _mutation = self.mutations.lock().await;
+            self.reject_deleted(session_id)?;
+            Ok(self
+                .index
+                .frame_read_snapshots_in_ordinal_range(session_id, target_id, start, end)?
+                .into_iter()
+                .map(|snapshot| snapshot.metadata)
+                .collect())
+        })
+    }
+
+    fn frame_availability(
+        &self,
+        session_id: SessionId,
+        target_id: TargetId,
+    ) -> PortFuture<'_, krometrail_core::Result<krometrail_core::FrameAvailability>> {
+        Box::pin(async move {
+            let _mutation = self.mutations.lock().await;
+            self.reject_deleted(session_id)?;
+            FrameSource::frame_availability(self.index.as_ref(), session_id, target_id).await
+        })
+    }
 }
 
 impl ArtifactStore for RecordingStore {
+    fn read_artifact(
+        &self,
+        request: RetrieveArtifactRequest,
+    ) -> PortFuture<'_, krometrail_core::Result<ArtifactReadLookup>> {
+        Box::pin(async move {
+            let snapshot = {
+                let _mutation = self.mutations.lock().await;
+                self.reject_deleted(request.scope.session_id)?;
+                let row = self.index.artifact_row(request.artifact_id)?.filter(|row| {
+                    row.state == ArtifactState::Ready
+                        && row.session_id == request.scope.session_id
+                        && row.target_id == request.scope.target_id
+                });
+                row.map(|row| self.artifact_snapshot(row)).transpose()?
+            };
+            let Some(snapshot) = snapshot else {
+                return Ok(ArtifactReadLookup::Missing);
+            };
+            if snapshot.row.byte_len > request.max_encoded_bytes() {
+                return Err(artifact_limit_error(request.scope));
+            }
+            match self.read_artifact_snapshot(&snapshot, None).await {
+                Ok(stored) => {
+                    let digest = Sha256Digest::from_bytes(snapshot.row.output_hash);
+                    let handle = ArtifactEvidenceHandle::new(
+                        snapshot.row.artifact_id,
+                        request.scope,
+                        stored.media_type.clone(),
+                        digest,
+                        snapshot.row.byte_len,
+                        stored.manifest.clone(),
+                    )?;
+                    Ok(ArtifactReadLookup::Available(Box::new(ArtifactRead::new(
+                        handle,
+                        Arc::clone(&stored.encoded_bytes),
+                    )?)))
+                }
+                Err(error) if error.code == ErrorCode::NotFound => Ok(ArtifactReadLookup::Missing),
+                Err(error) if error.code == ErrorCode::EvidenceInvalidated => {
+                    self.invalidate_artifact_snapshot(&snapshot).await?;
+                    Ok(ArtifactReadLookup::Invalidated)
+                }
+                Err(error) => Err(error),
+            }
+        })
+    }
+
     fn lookup_artifact(
         &self,
         key: ArtifactCacheKey,
         expected_sources: Vec<ArtifactSourceFingerprint>,
     ) -> PortFuture<'_, krometrail_core::Result<ArtifactLookup>> {
         Box::pin(async move {
-            let row = {
+            let snapshot = {
                 let _mutation = self.mutations.lock().await;
-                self.index.artifact_by_cache(key, true)?
+                self.index
+                    .artifact_by_cache(key, true)?
+                    .map(|row| self.artifact_snapshot(row))
+                    .transpose()?
             };
-            let Some(row) = row else {
+            let Some(snapshot) = snapshot else {
                 return Ok(ArtifactLookup::Miss);
             };
-            let validated = self.read_artifact_row(&row, Some(&expected_sources)).await;
-            let _mutation = self.mutations.lock().await;
-            let unchanged = self
-                .index
-                .artifact_by_cache(key, true)?
-                .is_some_and(|current| current == row);
-            if !unchanged {
-                return Ok(ArtifactLookup::Miss);
-            }
-            match validated {
+            match self
+                .read_artifact_snapshot(&snapshot, Some(&expected_sources))
+                .await
+            {
                 Ok(artifact) => Ok(ArtifactLookup::Hit(Box::new(artifact))),
-                Err(_) => {
-                    self.invalidate_artifact_row(row).await?;
+                Err(error) if error.code == ErrorCode::NotFound => Ok(ArtifactLookup::Miss),
+                Err(error) if error.code == ErrorCode::EvidenceInvalidated => {
+                    self.invalidate_artifact_snapshot(&snapshot).await?;
                     Ok(ArtifactLookup::Invalidated)
                 }
+                Err(error) => Err(error),
             }
         })
     }
@@ -544,8 +1052,12 @@ impl ArtifactStore for RecordingStore {
             let row = match staged {
                 StageArtifact::Staged(row) => row,
                 StageArtifact::Existing(existing) if existing.state == ArtifactState::Ready => {
+                    let snapshot = {
+                        let _mutation = self.mutations.lock().await;
+                        self.artifact_snapshot(existing)?
+                    };
                     let stored = self
-                        .read_artifact_row(&existing, Some(&publication.sources))
+                        .read_artifact_snapshot(&snapshot, Some(&publication.sources))
                         .await?;
                     return Ok(ArtifactPublish::Existing(stored));
                 }
@@ -599,12 +1111,16 @@ impl ArtifactStore for RecordingStore {
                     "artifact publication did not reach ready state",
                 ));
             }
-            let ready = self
-                .index
-                .artifact_row(*publication.manifest.artifact_id())?
-                .ok_or_else(|| persistence_error("ready artifact metadata disappeared"))?;
+            let ready = {
+                let _mutation = self.mutations.lock().await;
+                let row = self
+                    .index
+                    .artifact_row(*publication.manifest.artifact_id())?
+                    .ok_or_else(|| persistence_error("ready artifact metadata disappeared"))?;
+                self.artifact_snapshot(row)?
+            };
             let stored = self
-                .read_artifact_row(&ready, Some(&publication.sources))
+                .read_artifact_snapshot(&ready, Some(&publication.sources))
                 .await?;
             Ok(ArtifactPublish::Published(stored))
         })
@@ -615,28 +1131,25 @@ impl ArtifactStore for RecordingStore {
         artifact_id: krometrail_core::ArtifactId,
     ) -> PortFuture<'_, krometrail_core::Result<Option<StoredArtifact>>> {
         Box::pin(async move {
-            let row = {
+            let snapshot = {
                 let _mutation = self.mutations.lock().await;
                 self.index
                     .artifact_row(artifact_id)?
                     .filter(|row| row.state == ArtifactState::Ready)
+                    .map(|row| self.artifact_snapshot(row))
+                    .transpose()?
             };
-            let Some(row) = row else {
+            let Some(snapshot) = snapshot else {
                 return Ok(None);
             };
-            match self.read_artifact_row(&row, None).await {
+            match self.read_artifact_snapshot(&snapshot, None).await {
                 Ok(artifact) => Ok(Some(artifact)),
-                Err(_) => {
-                    let _mutation = self.mutations.lock().await;
-                    if self
-                        .index
-                        .artifact_row(artifact_id)?
-                        .is_some_and(|current| current == row)
-                    {
-                        self.invalidate_artifact_row(row).await?;
-                    }
+                Err(error) if error.code == ErrorCode::NotFound => Ok(None),
+                Err(error) if error.code == ErrorCode::EvidenceInvalidated => {
+                    self.invalidate_artifact_snapshot(&snapshot).await?;
                     Ok(None)
                 }
+                Err(error) => Err(error),
             }
         })
     }
@@ -852,6 +1365,50 @@ impl TemporalContextQuery for RecordingStore {
 }
 
 impl RetentionStore for RecordingStore {
+    fn pin_resolved_range(
+        &self,
+        request: RetentionPinRequest,
+    ) -> PortFuture<'_, krometrail_core::Result<ProgressivePinChange>> {
+        Box::pin(async move {
+            let _mutation = self.mutations.lock().await;
+            self.reject_deleted(request.request.session_id)?;
+            self.flush_session(request.request.session_id).await?;
+            let changed = self.index.pin_resolved_range(&request)?;
+            self.enforce_locked().await?;
+            Ok(ProgressivePinChange {
+                changed,
+                state: self.progressive_pin_state_locked(request)?,
+            })
+        })
+    }
+
+    fn unpin_resolved_range(
+        &self,
+        request: RetentionPinRequest,
+    ) -> PortFuture<'_, krometrail_core::Result<ProgressivePinChange>> {
+        Box::pin(async move {
+            let _mutation = self.mutations.lock().await;
+            self.reject_deleted(request.request.session_id)?;
+            let changed = self.index.unpin_resolved_range(request.request)?;
+            self.enforce_locked().await?;
+            Ok(ProgressivePinChange {
+                changed,
+                state: self.progressive_pin_state_locked(request)?,
+            })
+        })
+    }
+
+    fn query_pin_state(
+        &self,
+        request: RetentionPinRequest,
+    ) -> PortFuture<'_, krometrail_core::Result<PinState>> {
+        Box::pin(async move {
+            let _mutation = self.mutations.lock().await;
+            self.reject_deleted(request.request.session_id)?;
+            self.progressive_pin_state_locked(request)
+        })
+    }
+
     fn pin_range(
         &self,
         request: RetentionRange,
@@ -942,6 +1499,108 @@ impl RetentionStore for RecordingStore {
             }
         })
     }
+}
+
+fn coalesce_protected_segments(
+    segments: &[ProtectedSegment],
+) -> krometrail_core::Result<Vec<SessionRange>> {
+    let mut ranges: Vec<_> = segments
+        .iter()
+        .map(|segment| segment.retained_range)
+        .collect();
+    ranges.sort_by_key(|range| (range.start(), range.end()));
+    let mut coalesced: Vec<SessionRange> = Vec::new();
+    for range in ranges {
+        if let Some(last) = coalesced.last_mut() {
+            let adjacent = last
+                .end()
+                .as_nanos()
+                .checked_add(1)
+                .is_some_and(|next| range.start().as_nanos() <= next);
+            if range.start() <= last.end() || adjacent {
+                *last = SessionRange::new(last.start(), last.end().max(range.end()))?;
+                continue;
+            }
+        }
+        coalesced.push(range);
+    }
+    Ok(coalesced)
+}
+
+fn source_read_not_found(snapshot: Option<&FrameReadSnapshot>) -> KrometrailError {
+    KrometrailError::new(
+        ErrorCode::NotFound,
+        NonEmptyText::new("source evidence changed or was evicted during the read")
+            .expect("static source read error is non-empty"),
+    )
+    .with_context(ErrorContext {
+        session_id: snapshot.map(|value| value.metadata.session_id()),
+        target_id: snapshot.map(|value| value.metadata.target_id()),
+        ..Default::default()
+    })
+    .with_recovery(
+        NonEmptyText::new("resolve and list the temporal range again")
+            .expect("static source read recovery is non-empty"),
+    )
+}
+
+fn source_limit_error(message: &'static str, scope: EvidenceScope) -> KrometrailError {
+    KrometrailError::new(
+        ErrorCode::ResourceLimitExceeded,
+        NonEmptyText::new(message).expect("static source limit error is non-empty"),
+    )
+    .with_context(ErrorContext {
+        session_id: Some(scope.session_id),
+        target_id: Some(scope.target_id),
+        ..Default::default()
+    })
+    .with_recovery(
+        NonEmptyText::new("select fewer source frames or lower encoded-byte limits")
+            .expect("static source limit recovery is non-empty"),
+    )
+}
+
+fn artifact_limit_error(scope: EvidenceScope) -> KrometrailError {
+    KrometrailError::new(
+        ErrorCode::ResourceLimitExceeded,
+        NonEmptyText::new("artifact exceeds the requested encoded-byte limit")
+            .expect("static artifact limit error is non-empty"),
+    )
+    .with_context(ErrorContext {
+        session_id: Some(scope.session_id),
+        target_id: Some(scope.target_id),
+        ..Default::default()
+    })
+}
+
+fn artifact_not_found(session_id: SessionId, target_id: TargetId) -> KrometrailError {
+    KrometrailError::new(
+        ErrorCode::NotFound,
+        NonEmptyText::new("artifact or its retained sources changed during the read")
+            .expect("static artifact read error is non-empty"),
+    )
+    .with_context(ErrorContext {
+        session_id: Some(session_id),
+        target_id: Some(target_id),
+        ..Default::default()
+    })
+}
+
+fn evidence_invalidated_error(session_id: SessionId, target_id: TargetId) -> KrometrailError {
+    KrometrailError::new(
+        ErrorCode::EvidenceInvalidated,
+        NonEmptyText::new("derived artifact failed exact provenance or payload validation")
+            .expect("static artifact invalidation error is non-empty"),
+    )
+    .with_context(ErrorContext {
+        session_id: Some(session_id),
+        target_id: Some(target_id),
+        ..Default::default()
+    })
+    .with_recovery(
+        NonEmptyText::new("regenerate the artifact if its source frames remain retained")
+            .expect("static artifact invalidation recovery is non-empty"),
+    )
 }
 
 fn artifact_object(candidate: ArtifactCandidate) -> DeletionObject {
@@ -1078,6 +1737,302 @@ mod tests {
         );
         let store = RecordingStore::new(Arc::clone(&writer), Arc::clone(&index)).unwrap();
         (index, writer, store)
+    }
+
+    fn artifact_publication(source: &EncodedFrame) -> ArtifactPublication {
+        use std::num::{NonZeroU32, NonZeroUsize};
+        use temporal_vision::{
+            DeclaredGap, FilmstripTileLimit, Frame, FrameSequence, IntegerScale, Marker,
+            PixelDimensions as VisionDimensions, PixelFormat, RegionDefinition,
+            RegionFilmstripLabels, RegionFilmstripParameters, RegionFilmstripRenderLimits, Rgb8,
+            SignedPixelRect, Timestamp, generate_region_filmstrip, generator_descriptor,
+        };
+
+        let dimensions = VisionDimensions::new(1, 1).unwrap();
+        let sequence = FrameSequence::new(
+            vec![
+                Frame::new(
+                    source.metadata().id(),
+                    Timestamp::from_nanos(source.metadata().session_time().as_nanos()),
+                    dimensions,
+                    PixelFormat::Rgba8SrgbStraight,
+                    vec![1, 2, 3, 255].into_boxed_slice(),
+                )
+                .unwrap(),
+            ],
+            Vec::<Marker<krometrail_core::ArtifactMarkerId>>::new(),
+            Vec::<DeclaredGap<krometrail_core::GapId>>::new(),
+            None,
+            None,
+        )
+        .unwrap();
+        let artifact_id = krometrail_core::ArtifactId::from_uuid(Uuid::from_u128(900));
+        let generated = generate_region_filmstrip(
+            artifact_id,
+            &sequence,
+            RegionFilmstripParameters::new(
+                RegionDefinition::FixedSourceImage {
+                    rect: SignedPixelRect::new(
+                        0,
+                        0,
+                        NonZeroU32::new(1).unwrap(),
+                        NonZeroU32::new(1).unwrap(),
+                    )
+                    .unwrap(),
+                },
+                Timestamp::from_nanos(source.metadata().session_time().as_nanos()),
+                FilmstripTileLimit::new(1).unwrap(),
+                Rgb8::new(0, 0, 0),
+                Rgb8::new(1, 1, 1),
+                IntegerScale::IDENTITY,
+                RegionFilmstripLabels::new("region", "fixture").unwrap(),
+                RegionFilmstripRenderLimits::new(
+                    NonZeroU32::new(1024).unwrap(),
+                    NonZeroU32::new(1024).unwrap(),
+                    NonZeroUsize::new(8 * 1024 * 1024).unwrap(),
+                    NonZeroUsize::new(8 * 1024 * 1024).unwrap(),
+                ),
+            ),
+        )
+        .unwrap();
+        let descriptor = generator_descriptor(temporal_vision::ArtifactKind::RegionFilmstrip);
+        ArtifactPublication::new(
+            source.metadata().session_id(),
+            source.metadata().target_id(),
+            vec![ArtifactSourceFingerprint {
+                frame_id: source.metadata().id(),
+                encoded_sha256: Sha256::digest(source.bytes()).into(),
+            }],
+            krometrail_core::ArtifactCacheMetadata {
+                cache_key: ArtifactCacheKey::from_bytes([7; 32]),
+                source_fingerprint: [8; 32],
+                parameter_hash: [9; 32],
+                visual_epoch_hash: [10; 32],
+                cache_schema_version: 1,
+                adapter_version: NonEmptyText::new("adapter-v1").unwrap(),
+                generator_name: NonEmptyText::new(descriptor.name).unwrap(),
+                generator_version: NonEmptyText::new(descriptor.version).unwrap(),
+            },
+            generated.manifest().clone(),
+            NonEmptyText::new("image/png").unwrap(),
+            generated.image().bytes().to_vec(),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn coherent_artifact_read_rejects_concurrent_session_deletion() {
+        let directory = TempDir::new().unwrap();
+        let (_index, _writer, store) = fixture(&directory);
+        let store = Arc::new(store);
+        let source = frame(80, 81, 82, 1);
+        store.append_frame(source.clone()).await.unwrap();
+        store.flush(source.metadata().session_id()).await.unwrap();
+        let publication = artifact_publication(&source);
+        store.publish_artifact(publication.clone()).await.unwrap();
+
+        let pause = store.pause_next_evidence_read(EvidenceReadKind::Artifact);
+        let reached = pause.reached.notified();
+        tokio::pin!(reached);
+        reached.as_mut().enable();
+        let reader = {
+            let store = Arc::clone(&store);
+            tokio::spawn(async move {
+                store
+                    .read_artifact(
+                        RetrieveArtifactRequest::new(
+                            EvidenceScope::new(
+                                source.metadata().session_id(),
+                                source.metadata().target_id(),
+                            )
+                            .unwrap(),
+                            *publication.manifest.artifact_id(),
+                            publication.encoded_bytes.len() as u64,
+                        )
+                        .unwrap(),
+                    )
+                    .await
+            })
+        };
+        reached.await;
+        store
+            .delete_session(SessionId::from_uuid(Uuid::from_u128(80)))
+            .await
+            .unwrap();
+        pause.resume.notify_one();
+        assert_eq!(reader.await.unwrap().unwrap(), ArtifactReadLookup::Missing);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn coherent_artifact_read_rejects_source_link_hash_change() {
+        let directory = TempDir::new().unwrap();
+        let (index, _writer, store) = fixture(&directory);
+        let store = Arc::new(store);
+        let source = frame(85, 86, 87, 1);
+        store.append_frame(source.clone()).await.unwrap();
+        store.flush(source.metadata().session_id()).await.unwrap();
+        let publication = artifact_publication(&source);
+        let artifact_id = *publication.manifest.artifact_id();
+        let encoded_len = publication.encoded_bytes.len() as u64;
+        store.publish_artifact(publication).await.unwrap();
+
+        let pause = store.pause_next_evidence_read(EvidenceReadKind::Artifact);
+        let reached = pause.reached.notified();
+        tokio::pin!(reached);
+        reached.as_mut().enable();
+        let reader = {
+            let store = Arc::clone(&store);
+            tokio::spawn(async move {
+                store
+                    .read_artifact(
+                        RetrieveArtifactRequest::new(
+                            EvidenceScope::new(
+                                source.metadata().session_id(),
+                                source.metadata().target_id(),
+                            )
+                            .unwrap(),
+                            artifact_id,
+                            encoded_len,
+                        )
+                        .unwrap(),
+                    )
+                    .await
+            })
+        };
+        reached.await;
+        index
+            .connection()
+            .unwrap()
+            .execute(
+                "UPDATE artifact_frames SET encoded_hash=?1 WHERE artifact_id=?2",
+                rusqlite::params![
+                    vec![0_u8; 32],
+                    crate::index::codec::id(artifact_id.as_uuid()).to_vec(),
+                ],
+            )
+            .unwrap();
+        pause.resume.notify_one();
+        assert_eq!(reader.await.unwrap().unwrap(), ArtifactReadLookup::Missing);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn coherent_source_read_releases_gate_and_rejects_concurrent_deletion() {
+        let directory = TempDir::new().unwrap();
+        let (_index, _writer, store) = fixture(&directory);
+        let store = Arc::new(store);
+        let source = frame(40, 41, 42, 1);
+        store.append_frame(source.clone()).await.unwrap();
+        store.flush(source.metadata().session_id()).await.unwrap();
+
+        let pause = store.pause_next_evidence_read(EvidenceReadKind::Source);
+        let reached = pause.reached.notified();
+        tokio::pin!(reached);
+        reached.as_mut().enable();
+        let reader = {
+            let store = Arc::clone(&store);
+            tokio::spawn(async move { store.frames_by_id(vec![source.metadata().id()]).await })
+        };
+        reached.await;
+
+        // Both operations require the mutation gate. Their completion while the
+        // read is paused proves file I/O does not hold it.
+        let unrelated = frame(50, 51, 52, 1);
+        store.append_frame(unrelated).await.unwrap();
+        store
+            .delete_session(SessionId::from_uuid(Uuid::from_u128(40)))
+            .await
+            .unwrap();
+        pause.resume.notify_one();
+        assert_eq!(reader.await.unwrap().unwrap_err().code, ErrorCode::NotFound);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn coherent_source_read_rejects_concurrent_eviction() {
+        let directory = TempDir::new().unwrap();
+        let (index, _writer, store) = fixture(&directory);
+        let store = Arc::new(store);
+        let source = frame(55, 56, 57, 1);
+        store.append_frame(source.clone()).await.unwrap();
+        store.flush(source.metadata().session_id()).await.unwrap();
+
+        let pause = store.pause_next_evidence_read(EvidenceReadKind::Source);
+        let reached = pause.reached.notified();
+        tokio::pin!(reached);
+        reached.as_mut().enable();
+        let reader = {
+            let store = Arc::clone(&store);
+            tokio::spawn(async move { store.frames_by_id(vec![source.metadata().id()]).await })
+        };
+        reached.await;
+        let candidate = index.oldest_unpinned_segment().unwrap().unwrap();
+        store
+            .remove_objects(
+                DeletionKind::Eviction,
+                None,
+                vec![segment_object(candidate)],
+            )
+            .await
+            .unwrap();
+        pause.resume.notify_one();
+        assert_eq!(reader.await.unwrap().unwrap_err().code, ErrorCode::NotFound);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn coherent_source_read_rejects_metadata_change_after_snapshot() {
+        let directory = TempDir::new().unwrap();
+        let (index, _writer, store) = fixture(&directory);
+        let store = Arc::new(store);
+        let source = frame(60, 61, 62, 1);
+        store.append_frame(source.clone()).await.unwrap();
+        store.flush(source.metadata().session_id()).await.unwrap();
+
+        let pause = store.pause_next_evidence_read(EvidenceReadKind::Source);
+        let reached = pause.reached.notified();
+        tokio::pin!(reached);
+        reached.as_mut().enable();
+        let reader = {
+            let store = Arc::clone(&store);
+            tokio::spawn(async move { store.frames_by_id(vec![source.metadata().id()]).await })
+        };
+        reached.await;
+        index
+            .connection()
+            .unwrap()
+            .execute(
+                "UPDATE frames SET capture_ordinal_be=?1 WHERE frame_id=?2",
+                rusqlite::params![
+                    crate::index::codec::u64_blob(2).to_vec(),
+                    crate::index::codec::id(FrameId::from_uuid(Uuid::from_u128(62)).as_uuid())
+                        .to_vec(),
+                ],
+            )
+            .unwrap();
+        pause.resume.notify_one();
+        assert_eq!(reader.await.unwrap().unwrap_err().code, ErrorCode::NotFound);
+    }
+
+    #[tokio::test]
+    async fn source_corruption_is_never_reported_as_eviction() {
+        let directory = TempDir::new().unwrap();
+        let (index, _writer, store) = fixture(&directory);
+        let source = frame(70, 71, 72, 1);
+        store.append_frame(source.clone()).await.unwrap();
+        store.flush(source.metadata().session_id()).await.unwrap();
+        let candidate = index.oldest_unpinned_segment().unwrap().unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(index.segments_directory().join(candidate.relative_path))
+            .unwrap()
+            .set_len(8)
+            .unwrap();
+        assert_eq!(
+            store
+                .frames_by_id(vec![source.metadata().id()])
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::PersistenceFailed
+        );
     }
 
     #[tokio::test]

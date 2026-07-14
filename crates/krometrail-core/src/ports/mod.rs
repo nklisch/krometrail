@@ -24,7 +24,7 @@ pub type PortFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = 
 
 pub use artifacts::{
     ArtifactCacheKey, ArtifactCacheMetadata, ArtifactLookup, ArtifactPublication, ArtifactPublish,
-    ArtifactSourceFingerprint, ArtifactStore, StoredArtifact,
+    ArtifactReadLookup, ArtifactSourceFingerprint, ArtifactStore, StoredArtifact,
 };
 pub use browser::{
     AttachBrowser, BrowserConnectRequest, BrowserConnector, BrowserFailureKind,
