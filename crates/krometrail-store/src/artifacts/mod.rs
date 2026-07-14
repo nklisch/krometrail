@@ -94,6 +94,8 @@ impl PublicationRegistry {
     pub(crate) async fn drain(&self, session_id: SessionId) {
         loop {
             let notified = self.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
             let empty = self
                 .state
                 .lock()
@@ -241,4 +243,27 @@ fn deleted_error(session_id: SessionId) -> KrometrailError {
         session_id: Some(session_id),
         ..Default::default()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uuid::Uuid;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn publication_drop_after_notification_registration_is_not_lost() {
+        let registry = PublicationRegistry::new();
+        let session_id = SessionId::from_uuid(Uuid::from_u128(1));
+        let guard = registry.begin(session_id).unwrap();
+        let notified = registry.notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+
+        drop(guard);
+
+        tokio::time::timeout(std::time::Duration::from_millis(100), notified)
+            .await
+            .expect("registered publication notification");
+        registry.drain(session_id).await;
+    }
 }

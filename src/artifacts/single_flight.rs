@@ -104,11 +104,13 @@ impl FlightWaiter {
     ) -> std::result::Result<FlightArtifacts, KrometrailError> {
         loop {
             let notified = self.flight.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
             if let Some(result) = self.flight.result().await {
                 return result.as_ref().clone();
             }
             tokio::select! {
-                () = notified => {}
+                () = notified.as_mut() => {}
                 () = external_cancelled(cancellation.as_ref()) => return Err(cancelled_error()),
                 () = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {
                     return Err(deadline_error());
@@ -142,6 +144,23 @@ async fn external_cancelled(cancellation: Option<&Arc<dyn CancellationSignal>>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn completion_after_notification_registration_is_not_lost() {
+        let flights = SingleFlight::new();
+        let waiter = flights.join(vec![ArtifactCacheKey::from_bytes([1; 32])]);
+        let flight = waiter.flight();
+        let notified = flight.notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+
+        flight.complete(Ok(HashMap::new())).await;
+
+        tokio::time::timeout(std::time::Duration::from_millis(100), notified)
+            .await
+            .expect("registered completion notification");
+        assert!(flight.result().await.unwrap().as_ref().is_ok());
+    }
 
     #[test]
     fn only_the_last_waiter_cancels_shared_work() {

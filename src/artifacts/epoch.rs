@@ -80,6 +80,8 @@ impl krometrail_core::CancellationSignal for WorkCancellation {
         Box::pin(async move {
             loop {
                 let notified = self.0.notify.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
                 if self.is_cancelled() {
                     return;
                 }
@@ -357,4 +359,24 @@ fn limit_error(message: impl Into<String>) -> KrometrailError {
         ErrorCode::ResourceLimitExceeded,
         NonEmptyText::new(message).expect("adaptation limit errors are non-empty"),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancellation_after_notification_registration_is_not_lost() {
+        let cancellation = WorkCancellation::default();
+        let notified = cancellation.0.notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+
+        cancellation.cancel();
+
+        tokio::time::timeout(std::time::Duration::from_millis(100), notified)
+            .await
+            .expect("registered cancellation notification");
+        assert!(cancellation.is_cancelled());
+    }
 }
