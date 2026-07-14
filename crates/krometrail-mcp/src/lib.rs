@@ -2,6 +2,7 @@
 
 mod config;
 mod registry;
+mod resources;
 mod response;
 mod schema;
 mod server;

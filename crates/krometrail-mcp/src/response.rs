@@ -1,13 +1,20 @@
+use std::{sync::Arc, time::Instant};
+
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use krometrail_core::{
-    BatchOutcome, BatchResult, BrowserOperationResult, EncodedScreenshot, ErrorCode,
-    InteractionAnchor, KrometrailError, LiveObservation, NonEmptyText, ObservationPart,
-    PageOperationOutcome, PageOperationResult, ScreenshotMetadata, WaitOutcome,
+    ArtifactGenerationResult, ArtifactHandle, ArtifactId, ArtifactOutcome, BatchOutcome,
+    BatchResult, BrowserOperationResult, EncodedScreenshot, ErrorCode, InteractionAnchor,
+    KrometrailError, LiveObservation, NonEmptyText, ObservationPart, PageOperationOutcome,
+    PageOperationResult, ProgressiveEvidence, ProgressiveEvidenceContext,
+    ProgressiveEvidenceRequest, ProgressiveEvidenceResult, RetrieveArtifactRequest,
+    ScreenshotMetadata, SourceFrameBatch, SourceFrameHandle, TemporalDebugBundle, WaitOutcome,
 };
-use rmcp::model::{CallToolResult, Content};
+use rmcp::model::{CallToolResult, Content, RawResource};
 use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::{Value, json};
+
+use crate::resources::{ResourceKind, ResourceProjection};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -25,13 +32,53 @@ pub enum ImageRole {
     PostAction,
     BatchFinal,
     BatchStep,
+    TemporalPrimary,
+    TemporalSourceFrame,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ResourceRole {
+    Artifact,
+    SourceFrame,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, JsonSchema)]
+pub struct ResponseResource {
+    pub role: ResourceRole,
+    pub uri: String,
+    pub name: String,
+    pub mime_type: Option<String>,
+    pub encoded_byte_len: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ResponseImageMetadata {
+    Screenshot(ScreenshotMetadata),
+    Artifact {
+        artifact_id: ArtifactId,
+        media_type: String,
+        encoded_byte_len: u64,
+        width: u32,
+        height: u32,
+    },
+    // Source frames are retained images too, but are not generated artifacts.
+    // Keeping this arm explicit avoids inventing an artifact identity for a frame.
+    SourceFrame {
+        frame_id: krometrail_core::FrameId,
+        media_type: String,
+        encoded_byte_len: u64,
+        width: u32,
+        height: u32,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
 pub struct ResponseImage {
     pub role: ImageRole,
     pub step_index: Option<u32>,
-    pub metadata: ScreenshotMetadata,
+    pub metadata: ResponseImageMetadata,
 }
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
@@ -42,14 +89,37 @@ pub struct ToolResponse {
     pub interaction: Option<InteractionAnchor>,
     pub warnings: Vec<KrometrailError>,
     pub images: Vec<ResponseImage>,
+    pub resources: Vec<ResponseResource>,
     pub error: Option<KrometrailError>,
 }
 
 #[derive(Clone, Debug)]
-struct EncodedMcpImage {
-    role: ImageRole,
-    step_index: Option<u32>,
-    screenshot: EncodedScreenshot,
+enum EncodedMcpImage {
+    Screenshot {
+        role: ImageRole,
+        step_index: Option<u32>,
+        screenshot: EncodedScreenshot,
+    },
+    Artifact {
+        role: ImageRole,
+        step_index: Option<u32>,
+        artifact_id: ArtifactId,
+        media_type: String,
+        encoded_byte_len: u64,
+        width: u32,
+        height: u32,
+        bytes: Arc<[u8]>,
+    },
+    SourceFrame {
+        role: ImageRole,
+        step_index: Option<u32>,
+        frame_id: krometrail_core::FrameId,
+        media_type: String,
+        encoded_byte_len: u64,
+        width: u32,
+        height: u32,
+        bytes: Arc<[u8]>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -70,6 +140,7 @@ struct Projection {
     interaction: Option<InteractionAnchor>,
     warnings: Vec<KrometrailError>,
     images: Vec<EncodedMcpImage>,
+    resources: Vec<ResponseResource>,
     error: Option<KrometrailError>,
 }
 
@@ -81,6 +152,7 @@ impl Projection {
             interaction: None,
             warnings: Vec::new(),
             images: Vec::new(),
+            resources: Vec::new(),
             error: None,
         }
     }
@@ -140,17 +212,44 @@ pub(crate) fn visible_error(tool: &str, error: KrometrailError) -> CallToolResul
 pub(crate) fn into_call_tool_result(
     mapped: MappedResult,
 ) -> Result<CallToolResult, rmcp::ErrorData> {
-    let mut content = Vec::with_capacity(1 + mapped.images.len());
+    let mut content = Vec::with_capacity(1 + mapped.images.len() + mapped.response.resources.len());
     content.push(Content::text(mapped.summary));
     for image in mapped.images {
-        let mime = image_mime_type(image.screenshot.bytes()).ok_or_else(|| {
-            rmcp::ErrorData::internal_error("encoded screenshot format is unsupported", None)
-        })?;
-        content.push(Content::image(
-            STANDARD.encode(image.screenshot.bytes()),
-            mime,
-        ));
+        match image {
+            EncodedMcpImage::Screenshot { screenshot, .. } => {
+                let mime = image_mime_type(screenshot.bytes()).ok_or_else(|| {
+                    rmcp::ErrorData::internal_error(
+                        "encoded screenshot format is unsupported",
+                        None,
+                    )
+                })?;
+                content.push(Content::image(STANDARD.encode(screenshot.bytes()), mime));
+            }
+            EncodedMcpImage::Artifact {
+                media_type, bytes, ..
+            }
+            | EncodedMcpImage::SourceFrame {
+                media_type, bytes, ..
+            } => {
+                content.push(Content::image(STANDARD.encode(&bytes), media_type));
+            }
+        }
     }
+    content.extend(mapped.response.resources.iter().map(|resource| {
+        let raw = RawResource {
+            uri: resource.uri.clone(),
+            name: resource.name.clone(),
+            title: None,
+            description: None,
+            mime_type: resource.mime_type.clone(),
+            size: resource
+                .encoded_byte_len
+                .and_then(|length| u32::try_from(length).ok()),
+            icons: None,
+            meta: None,
+        };
+        Content::resource_link(raw)
+    }));
     let structured = serde_json::to_value(mapped.response).map_err(|_| {
         rmcp::ErrorData::internal_error("tool response could not be serialized", None)
     })?;
@@ -164,16 +263,66 @@ pub(crate) fn into_call_tool_result(
     Ok(result)
 }
 
+fn encoded_image_metadata(image: &EncodedMcpImage) -> ResponseImage {
+    match image {
+        EncodedMcpImage::Screenshot {
+            role,
+            step_index,
+            screenshot,
+        } => ResponseImage {
+            role: role.clone(),
+            step_index: *step_index,
+            metadata: ResponseImageMetadata::Screenshot(screenshot.metadata().clone()),
+        },
+        EncodedMcpImage::Artifact {
+            role,
+            step_index,
+            artifact_id,
+            media_type,
+            encoded_byte_len,
+            width,
+            height,
+            ..
+        } => ResponseImage {
+            role: role.clone(),
+            step_index: *step_index,
+            metadata: ResponseImageMetadata::Artifact {
+                artifact_id: *artifact_id,
+                media_type: media_type.clone(),
+                encoded_byte_len: *encoded_byte_len,
+                width: *width,
+                height: *height,
+            },
+        },
+        EncodedMcpImage::SourceFrame {
+            role,
+            step_index,
+            frame_id,
+            media_type,
+            encoded_byte_len,
+            width,
+            height,
+            ..
+        } => ResponseImage {
+            role: role.clone(),
+            step_index: *step_index,
+            metadata: ResponseImageMetadata::SourceFrame {
+                frame_id: *frame_id,
+                media_type: media_type.clone(),
+                encoded_byte_len: *encoded_byte_len,
+                width: *width,
+                height: *height,
+            },
+        },
+    }
+}
+
 fn mapped(tool: &str, projection: Projection, summary: String) -> MappedResult {
     let is_error = projection.status == ToolResponseStatus::Failed;
     let response_images = projection
         .images
         .iter()
-        .map(|image| ResponseImage {
-            role: image.role.clone(),
-            step_index: image.step_index,
-            metadata: image.screenshot.metadata().clone(),
-        })
+        .map(encoded_image_metadata)
         .collect();
     MappedResult {
         response: ToolResponse {
@@ -183,6 +332,7 @@ fn mapped(tool: &str, projection: Projection, summary: String) -> MappedResult {
             interaction: projection.interaction,
             warnings: projection.warnings,
             images: response_images,
+            resources: projection.resources,
             error: projection.error,
         },
         summary,
@@ -197,7 +347,7 @@ fn project_operation(result: BrowserOperationResult) -> Result<Projection, Respo
         BrowserOperationResult::SnapshotPage(value) => serializable(*value),
         BrowserOperationResult::TakeScreenshot(value) => {
             let mut projection = serializable(value.metadata().clone())?;
-            projection.images.push(EncodedMcpImage {
+            projection.images.push(EncodedMcpImage::Screenshot {
                 role: ImageRole::RequestedScreenshot,
                 step_index: None,
                 screenshot: *value,
@@ -296,7 +446,7 @@ fn project_batch(value: BatchResult) -> Result<Projection, ResponseInvariantErro
         let screenshot = match step.screenshot {
             ObservationPart::Available(screenshot) => {
                 let metadata = screenshot.metadata().clone();
-                images.push(EncodedMcpImage {
+                images.push(EncodedMcpImage::Screenshot {
                     role: ImageRole::BatchStep,
                     step_index: Some(step.index),
                     screenshot,
@@ -387,7 +537,7 @@ fn project_live_observation(
             "screenshot": screenshot,
         }),
         warnings,
-        image.map(|screenshot| EncodedMcpImage {
+        image.map(|screenshot| EncodedMcpImage::Screenshot {
             role,
             step_index,
             screenshot,
@@ -430,6 +580,351 @@ fn batch_outcome_error(outcome: BatchOutcome) -> KrometrailError {
         BatchOutcome::Completed => (ErrorCode::Internal, "completed batch was mapped as failed"),
     };
     KrometrailError::new(code, NonEmptyText::new(message).unwrap()).with_retry(code.default_retry())
+}
+
+pub(crate) async fn map_temporal_bundle_result(
+    tool: &str,
+    bundle: TemporalDebugBundle,
+    progressive: &dyn ProgressiveEvidence,
+    deadline: Instant,
+    cancellation: Arc<dyn krometrail_core::CancellationSignal>,
+) -> Result<MappedResult, ResponseInvariantError> {
+    let mut projection = serializable(bundle.clone())?;
+    let scope = artifact_scope(&bundle.range)?;
+    let mut candidate: Option<(u8, u32, u32, ArtifactHandle)> = None;
+    if let krometrail_core::BundleArtifactEvidence::Available(generation) = &bundle.artifacts {
+        add_artifact_generation_resources(&mut projection, generation, scope)?;
+        for outcome in &generation.outcomes {
+            let ArtifactOutcome::Available {
+                epoch_index,
+                generator_index,
+                artifact,
+            } = outcome
+            else {
+                continue;
+            };
+            let rank = artifact_kind_rank(artifact.manifest.artifact_kind().as_str());
+            if rank >= 3 {
+                continue;
+            }
+            let key = (rank, *epoch_index, *generator_index, artifact.artifact_id);
+            if candidate.as_ref().is_none_or(
+                |(old_rank, old_epoch, old_generator, old_artifact)| {
+                    key < (
+                        *old_rank,
+                        *old_epoch,
+                        *old_generator,
+                        old_artifact.artifact_id,
+                    )
+                },
+            ) {
+                candidate = Some((rank, *epoch_index, *generator_index, artifact.clone()));
+            }
+        }
+    }
+    if let Some((_, _, _, artifact)) = candidate {
+        match read_inline_artifact(
+            scope,
+            artifact.artifact_id,
+            progressive,
+            deadline,
+            &cancellation,
+        )
+        .await
+        {
+            Ok(bytes) => {
+                if bytes.handle.artifact_id != artifact.artifact_id
+                    || bytes.handle.scope != scope
+                    || bytes.encoded_bytes.len() as u64 != artifact.encoded_byte_len
+                    || bytes.handle.media_type != artifact.media_type
+                    || bytes.handle.content_sha256.as_bytes()
+                        != artifact.manifest.output_hash().as_bytes()
+                {
+                    return Err(ResponseInvariantError);
+                }
+                let dimensions = artifact.manifest.output_dimensions();
+                projection.images.push(EncodedMcpImage::Artifact {
+                    role: ImageRole::TemporalPrimary,
+                    step_index: None,
+                    artifact_id: artifact.artifact_id,
+                    media_type: artifact.media_type.as_str().to_owned(),
+                    encoded_byte_len: artifact.encoded_byte_len,
+                    width: dimensions.width(),
+                    height: dimensions.height(),
+                    bytes: bytes.encoded_bytes,
+                });
+            }
+            Err(error) if error.code == ErrorCode::Cancelled => projection.fail_with(error),
+            Err(error) => projection.degrade_with(vec![error]),
+        }
+    }
+    Ok(mapped(tool, projection, format!("{tool} succeeded")))
+}
+
+pub(crate) async fn map_progressive_result(
+    tool: &str,
+    result: ProgressiveEvidenceResult,
+    progressive: &dyn ProgressiveEvidence,
+    deadline: Instant,
+    cancellation: Arc<dyn krometrail_core::CancellationSignal>,
+) -> Result<MappedResult, ResponseInvariantError> {
+    let projection = match result {
+        ProgressiveEvidenceResult::RetrieveArtifact(read) => {
+            // Resource-only operations never become tools, but retain a safe
+            // projection if an adapter invokes this boundary directly.
+            let mut projection = Projection::success(json!({ "handle": read.handle }));
+            add_resource(
+                &mut projection,
+                ResourceProjection::from_artifact(
+                    read.handle.scope,
+                    read.handle.artifact_id,
+                    read.handle.media_type.as_str(),
+                    read.handle.encoded_byte_len,
+                )
+                .map_err(|_| ResponseInvariantError)?,
+            )?;
+            projection
+        }
+        ProgressiveEvidenceResult::RetrieveSourceFrame(read) => {
+            let mut projection = Projection::success(json!({ "handle": read.handle }));
+            add_resource(
+                &mut projection,
+                ResourceProjection::from_source_frame(
+                    read.handle.scope,
+                    read.handle.frame_id,
+                    read.handle.media_type.as_str(),
+                    read.handle.encoded_byte_len,
+                )
+                .map_err(|_| ResponseInvariantError)?,
+            )?;
+            projection
+        }
+        ProgressiveEvidenceResult::ListSourceFrames(list) => {
+            let mut projection = Projection::success(json!({
+                "range": list.range,
+                "frames": list.frames,
+            }));
+            for frame in &list.frames {
+                add_source_frame_resource(&mut projection, frame)?;
+            }
+            projection
+        }
+        ProgressiveEvidenceResult::FetchSourceFrames(batch) => project_source_frame_batch(*batch)?,
+        ProgressiveEvidenceResult::GenerateArtifacts(generation) => {
+            let generation = *generation;
+            let scope = artifact_scope(&generation.range)?;
+            let mut projection = serializable(generation.clone())?;
+            add_artifact_generation_resources(&mut projection, &generation, scope)?;
+            projection
+        }
+        ProgressiveEvidenceResult::GenerateRegionFilmstrip(evidence) => {
+            let evidence = *evidence;
+            let region = evidence.region;
+            let generation = evidence.generation;
+            let scope = artifact_scope(&generation.range)?;
+            let generation_for_links = generation.clone();
+            let mut projection = Projection::success(json!({
+                "region": region,
+                "generation": generation,
+            }));
+            add_artifact_generation_resources(&mut projection, &generation_for_links, scope)?;
+            projection
+        }
+        ProgressiveEvidenceResult::PinResolvedRange(change)
+        | ProgressiveEvidenceResult::UnpinResolvedRange(change) => serializable(*change)?,
+        ProgressiveEvidenceResult::QueryPinState(state) => serializable(*state)?,
+    };
+    // The only progressive result carrying request-scoped bytes is the source
+    // batch, which is projected synchronously above. The arguments remain here
+    // so all future byte-bearing families share the same deadline boundary.
+    let _ = (progressive, deadline, cancellation);
+    Ok(mapped(tool, projection, format!("{tool} succeeded")))
+}
+
+fn add_artifact_generation_resources(
+    projection: &mut Projection,
+    generation: &ArtifactGenerationResult,
+    scope: krometrail_core::EvidenceScope,
+) -> Result<(), ResponseInvariantError> {
+    for outcome in &generation.outcomes {
+        if let ArtifactOutcome::Available { artifact, .. } = outcome {
+            add_resource(projection, artifact_resource(scope, artifact)?)?;
+        }
+    }
+    Ok(())
+}
+
+fn add_source_frame_resource(
+    projection: &mut Projection,
+    frame: &SourceFrameHandle,
+) -> Result<(), ResponseInvariantError> {
+    add_resource(
+        projection,
+        ResourceProjection::from_source_frame(
+            frame.scope,
+            frame.frame_id,
+            frame.media_type.as_str(),
+            frame.encoded_byte_len,
+        )
+        .map_err(|_| ResponseInvariantError)?,
+    )
+}
+
+fn project_source_frame_batch(
+    batch: SourceFrameBatch,
+) -> Result<Projection, ResponseInvariantError> {
+    let mut projection = Projection::success(json!({
+        "range": batch.range,
+        "frames": batch.frames.iter().map(|frame| &frame.handle).collect::<Vec<_>>(),
+    }));
+    let mut inline_bytes = 0_u64;
+    for (index, frame) in batch.frames.into_iter().enumerate() {
+        add_source_frame_resource(&mut projection, &frame.handle)?;
+        let frame_bytes = frame.encoded_bytes();
+        let length = frame_bytes.len() as u64;
+        if index >= 4
+            || length > 4 * 1024 * 1024
+            || inline_bytes.saturating_add(length) > 16 * 1024 * 1024
+        {
+            projection.degrade_with(vec![inline_limit_warning()]);
+            continue;
+        }
+        inline_bytes += length;
+        let dimensions = frame.handle.provenance.image();
+        projection.images.push(EncodedMcpImage::SourceFrame {
+            role: ImageRole::TemporalSourceFrame,
+            step_index: Some(index as u32),
+            frame_id: frame.handle.frame_id,
+            media_type: frame.handle.media_type.as_str().to_owned(),
+            encoded_byte_len: frame.handle.encoded_byte_len,
+            width: dimensions.width(),
+            height: dimensions.height(),
+            bytes: Arc::from(frame_bytes),
+        });
+    }
+    Ok(projection)
+}
+
+async fn read_inline_artifact(
+    scope: krometrail_core::EvidenceScope,
+    artifact_id: ArtifactId,
+    progressive: &dyn ProgressiveEvidence,
+    deadline: Instant,
+    cancellation: &Arc<dyn krometrail_core::CancellationSignal>,
+) -> std::result::Result<InlineArtifact, KrometrailError> {
+    let request = RetrieveArtifactRequest::new(scope, artifact_id, 8 * 1024 * 1024)
+        .map_err(|_| inline_limit_warning())?;
+    let result = tokio::select! {
+        result = progressive.execute(
+            ProgressiveEvidenceRequest::RetrieveArtifact(request),
+            ProgressiveEvidenceContext {
+                deadline: Some(deadline),
+                cancellation: Some(Arc::clone(cancellation)),
+                current_reference_geometry: None,
+            },
+        ) => result,
+        () = cancellation.cancelled() => Err(inline_cancelled_error()),
+        () = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => Err(inline_deadline_error()),
+    }?;
+    match result {
+        ProgressiveEvidenceResult::RetrieveArtifact(read) => {
+            let encoded_bytes = Arc::from(read.encoded_bytes());
+            Ok(InlineArtifact {
+                handle: read.handle,
+                encoded_bytes,
+            })
+        }
+        _ => Err(internal_mapping_error()),
+    }
+}
+
+struct InlineArtifact {
+    handle: krometrail_core::ArtifactEvidenceHandle,
+    encoded_bytes: Arc<[u8]>,
+}
+
+fn inline_limit_warning() -> KrometrailError {
+    KrometrailError::new(
+        ErrorCode::ResourceLimitExceeded,
+        NonEmptyText::new("inline temporal evidence exceeded the MCP presentation limit")
+            .expect("static warning is non-empty"),
+    )
+}
+
+fn inline_cancelled_error() -> KrometrailError {
+    KrometrailError::new(
+        ErrorCode::Cancelled,
+        NonEmptyText::new("MCP request was cancelled").expect("static warning is non-empty"),
+    )
+}
+
+fn inline_deadline_error() -> KrometrailError {
+    KrometrailError::new(
+        ErrorCode::Cancelled,
+        NonEmptyText::new("MCP request deadline elapsed").expect("static warning is non-empty"),
+    )
+}
+
+fn internal_mapping_error() -> KrometrailError {
+    KrometrailError::new(
+        ErrorCode::Internal,
+        NonEmptyText::new("temporal evidence response mapping failed")
+            .expect("static error is non-empty"),
+    )
+}
+
+fn artifact_kind_rank(kind: &str) -> u8 {
+    match kind {
+        "before_during_after" => 0,
+        "storyboard" => 1,
+        "difference_map" => 2,
+        _ => 3,
+    }
+}
+
+fn add_resource(
+    projection: &mut Projection,
+    resource: ResourceProjection,
+) -> Result<(), ResponseInvariantError> {
+    let parsed = resource.parsed_uri().map_err(|_| ResponseInvariantError)?;
+    let role = match resource.role {
+        ResourceKind::Artifact => ResourceRole::Artifact,
+        ResourceKind::SourceFrame => ResourceRole::SourceFrame,
+    };
+    projection.resources.push(ResponseResource {
+        role,
+        uri: resource.uri,
+        name: resource.name,
+        mime_type: Some(resource.mime_type),
+        encoded_byte_len: Some(resource.encoded_byte_len),
+    });
+    // Reparse above, and retain the exact canonical form in the envelope. The
+    // actual ResourceLink is assembled from the same descriptor in the final
+    // MCP projection, so no arbitrary URI can enter either surface.
+    if parsed.canonical_uri() != projection.resources.last().expect("just pushed").uri {
+        return Err(ResponseInvariantError);
+    }
+    Ok(())
+}
+
+fn artifact_scope(
+    range: &krometrail_core::ResolvedRange,
+) -> Result<krometrail_core::EvidenceScope, ResponseInvariantError> {
+    krometrail_core::EvidenceScope::new(range.session_id, range.target_id)
+        .map_err(|_| ResponseInvariantError)
+}
+
+fn artifact_resource(
+    scope: krometrail_core::EvidenceScope,
+    handle: &ArtifactHandle,
+) -> Result<ResourceProjection, ResponseInvariantError> {
+    ResourceProjection::from_artifact(
+        scope,
+        handle.artifact_id,
+        handle.media_type.as_str(),
+        handle.encoded_byte_len,
+    )
+    .map_err(|_| ResponseInvariantError)
 }
 
 fn image_mime_type(bytes: &[u8]) -> Option<&'static str> {

@@ -27,7 +27,7 @@ use crate::{
     config::{McpConfig, McpDependencies},
     response::{
         ToolResponse, into_call_tool_result, map_lifecycle_result, map_operation_result,
-        visible_error,
+        map_progressive_result, map_temporal_bundle_result, visible_error,
     },
     schema::{generated_input_schema, operation_input_schema, type_input_schema},
     server::KrometrailMcpServer,
@@ -307,14 +307,6 @@ fn call_error_result(name: &'static str, error: KrometrailError) -> rmcp::model:
     visible_error(name, error)
 }
 
-fn minimal_success(
-    name: &'static str,
-) -> std::result::Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
-    map_lifecycle_result(name, json!({"accepted": true}))
-        .map_err(|_| rmcp::ErrorData::internal_error("tool response mapping failed", None))
-        .and_then(into_call_tool_result)
-}
-
 async fn call_bundle(
     context: ToolCallContext<'_, KrometrailMcpServer>,
     dependencies: Arc<McpDependencies>,
@@ -341,7 +333,18 @@ async fn call_bundle(
         ))
         .await;
     match result {
-        Ok(_) => minimal_success(name),
+        Ok(bundle) => map_temporal_bundle_result(
+            name,
+            bundle,
+            dependencies.progressive_evidence.as_ref(),
+            budget.deadline,
+            budget.cancellation.clone(),
+        )
+        .await
+        .map_err(|_| {
+            rmcp::ErrorData::internal_error("temporal bundle response mapping failed", None)
+        })
+        .and_then(into_call_tool_result),
         Err(error) => Ok(call_error_result(name, error)),
     }
 }
@@ -379,7 +382,16 @@ async fn call_progressive(
         ))
         .await;
     match result {
-        Ok(_) => minimal_success(name),
+        Ok(result) => map_progressive_result(
+            name,
+            result,
+            dependencies.progressive_evidence.as_ref(),
+            budget.deadline,
+            budget.cancellation.clone(),
+        )
+        .await
+        .map_err(|_| rmcp::ErrorData::internal_error("progressive response mapping failed", None))
+        .and_then(into_call_tool_result),
         Err(error) => Ok(call_error_result(name, error)),
     }
 }
@@ -408,7 +420,11 @@ async fn call_context(
         .run(dependencies.temporal_context.context(request))
         .await;
     match result {
-        Ok(_) => minimal_success(name),
+        Ok(value) => map_lifecycle_result(name, value)
+            .map_err(|_| {
+                rmcp::ErrorData::internal_error("browser event response mapping failed", None)
+            })
+            .and_then(into_call_tool_result),
         Err(error) => Ok(call_error_result(name, error)),
     }
 }

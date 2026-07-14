@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-debugging-workflow-mcp-investigation-surface-response-resources-and-inline-evidence
 kind: story
-stage: implementing
+stage: done
 tags: [agent-ux, visual, storage]
 parent: epic-temporal-debugging-workflow-mcp-investigation-surface
 depends_on:
@@ -43,6 +43,20 @@ Extend the common tool response envelope and build the one resource authority us
 ## Ordering constraints
 
 Depends on final route contracts and cancellation from the routing checkpoint. Server resource methods and root wiring must wait for this projection boundary so protocol content has one implementation.
+
+## Implementation notes
+
+- Added the shared `ToolResponse.resources` envelope and tagged screenshot, artifact, and source-frame image metadata. Existing control screenshots still use the same direct MCP image content path.
+- Added strict canonical evidence URI parsing/building and deterministic typed resource descriptors. Resource links are emitted from validated artifact/source-frame handles only; structured results retain metadata and never request-scoped bytes.
+- Added progressive-authority resource reads that return exact blob bytes, MIME, and canonical URI, with stable protocol error categories for malformed, unavailable, cancelled, and failed reads.
+- Added deterministic primary-artifact selection and bounded unchanged source-frame projection. Inline-limit or lifetime failures degrade the response while retaining durable resource links.
+
+## Verification evidence
+
+- `cargo fmt --all -- --check`
+- `cargo check --workspace --all-targets --locked`
+- `cargo test --workspace --all-targets --locked` (632 passed, 1 ignored)
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`
 
 ## Out of scope
 
