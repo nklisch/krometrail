@@ -1,7 +1,7 @@
 ---
 id: epic-durable-browser-memory
 kind: epic
-stage: implementing
+stage: review
 tags: [storage, browser]
 parent: null
 depends_on: [epic-rust-cdp-capture-foundation]
@@ -66,3 +66,7 @@ The epic is split into five capabilities-shaped features aligned with the `krome
 - **All-pinned budget pause correctness.** Pausing capture without deleting pinned evidence, then resuming when space frees, is subtle and is a SPEC requirement. Mitigation: retention owns the paused-budget state machine and its tests, and reports the blocked state through the status surface.
 - **Sibling-epic dependency on this epic's ports.** `epic-agent-browser-operation` (interaction records, browser events) and `epic-temporal-debugging-workflow` (artifact manifests, range reads) consume the storage ports defined here. Wrong port shapes block them. Mitigation: keep ports minimal and capability-focused; do not over-fit to one consumer.
 - **Open-segment-beyond-budget tolerance.** The evaluation tolerates at most one open segment beyond budget while recording. Recovery and retention must agree on the bound and report it consistently. Mitigation: the bound is a reported measurement owned by retention, consumed unchanged by recovery's status report.
+
+## Aggregate implementation roll-up
+
+All five child features are reviewed and complete: segment format, SQLite index, retention, recovery, and temporal range resolution. Their verified contracts now form one durable-memory capability boundary: source frames are addressed through immutable segments and indexed metadata, retention and recovery share the same authoritative index mutations, and natural temporal anchors resolve through the core-owned `ResolvedRange` contract. The epic is ready for aggregate review focused on cross-feature storage invariants, composition wiring, and foundation alignment rather than repeating child-feature line review.
