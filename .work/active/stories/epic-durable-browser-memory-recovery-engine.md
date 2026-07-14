@@ -1,7 +1,7 @@
 ---
 id: epic-durable-browser-memory-recovery-engine
 kind: story
-stage: implementing
+stage: done
 tags: [storage, browser]
 parent: epic-durable-browser-memory-recovery
 depends_on: []
@@ -49,4 +49,15 @@ First checkpoint. It owns the engine and the composition hook; the cross-layer f
 - Keep recovery-specific SQL inside `index::reconcile`. The codec stays private to `index`; `reconcile` is inside the module and reaches it the same way `frames`/`segments`/`timeline` do.
 - Dangling-tail removal is one `remove_frame_rows(segment_id, Some(truncate_point))` call (contiguous tail). The anomalous clean-segment-with-stray-dangling case rebuilds via `remove_frame_rows(segment_id, None)` plus re-insert. Whole-segment removal composes `remove_frame_rows(segment_id, None)` with `remove_segment`.
 - Build the reconciled `SegmentRegistration` with `state: Sealed`, `relative_path: <id>.kts`, `file_bytes` = post-seal file length, `payload_bytes` = sum of surviving `record.payload_len`, `record_count` = surviving records, `end_time: Some(last_session_time)`. Upsert it before inserting frame rows so the FK is satisfied.
+
+## Implementation notes
+
+- Execution capability: highest (autopilot caller), selected for the cross-resource durability invariant, corruption policy, and idempotent startup ordering.
+- Review weight: standard (caller/project default); feature review remains the next lifecycle boundary after fault-injection qualification.
+- Files changed: `crates/krometrail-store/src/recovery.rs`, `crates/krometrail-store/src/index/reconcile.rs`, `crates/krometrail-store/src/index/mod.rs`, `crates/krometrail-store/src/lib.rs`, and `src/app.rs`.
+- Tests added: deterministic recovery-module tests for publication discovery and empty-footer derivation; the cross-layer suite is owned by the dependent fault-injection checkpoint.
+- Simplification: recovery reuses the shared scanner, random-access decoder, segment registrations, frame-index transaction, and maintenance primitives; no journal, second scanner, retention policy, or widened core port was introduced.
+- Discrepancies from design: the implementation retains a repaired open segment's original tail boundary across the filesystem-only seal phase so Phase C can remove only its dangling tail rows instead of conservatively rebuilding the now-clean segment. Recovery also detects semantic record decode failures after CRC scanning and truncates from the first undecodable record.
+- Verification: focused store suite passed (47 tests across 7 suites); locked workspace check passed with all targets. Full locked fmt/test/clippy and isolated startup are deferred to the integrated feature gate after the fault-injection checkpoint.
+- Adjacent issues parked: none.
 - `recover` reads the segments directory from `index.segments_directory()`. Discovery classifies by extension and validates the filename stem parses as the segment UUID; non-conforming files (residual write probes, WAL/SHM in the parent dir) are skipped.

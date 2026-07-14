@@ -5,6 +5,7 @@ mod gaps;
 #[allow(dead_code)] // Consumed by the dependent retention and recovery features.
 pub(crate) mod maintenance;
 mod migrations;
+pub(crate) mod reconcile;
 mod schema_v1;
 pub(crate) mod segments;
 mod timeline;

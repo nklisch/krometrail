@@ -19,7 +19,7 @@ use krometrail_cdp::{
 use krometrail_mcp as _;
 use krometrail_store::{
     IndexStoreConfig, IndexedRecordingSink, RotationConfig, SegmentStoreConfig, SegmentWriter,
-    SqliteIndex,
+    SqliteIndex, recover,
 };
 use temporal_vision as _;
 
@@ -132,6 +132,15 @@ fn open_storage(data_directory: &std::path::Path) -> Result<StorageDependencies>
         directory: segments_directory,
         rotation: RotationConfig::suggested(),
     })?);
+    let recovery = recover(index.as_ref())?;
+    tracing::info!(
+        open_segments_sealed = recovery.open_segments_sealed,
+        segments_repaired = recovery.segments_repaired,
+        segments_quarantined = recovery.segments_quarantined,
+        frames_recovered = recovery.frames_recovered,
+        frames_removed = recovery.frames_removed,
+        "recording store recovery complete"
+    );
     Ok(StorageDependencies {
         recording: Arc::new(IndexedRecordingSink::new(segments, Arc::clone(&index))),
         timeline: Arc::clone(&index) as Arc<dyn TimelineStore>,

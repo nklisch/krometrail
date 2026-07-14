@@ -1,12 +1,14 @@
 //! Recording persistence adapters.
 
 pub mod index;
+pub mod recovery;
 pub mod segments;
 
 mod recording;
 
 pub use index::{IndexStoreConfig, SqliteIndex};
 pub use recording::IndexedRecordingSink;
+pub use recovery::{RecoveryReport, recover};
 pub use segments::{
     FrameWriteCommit, RotationConfig, SegmentRegistration, SegmentState, SegmentStoreConfig,
     SegmentWriter,
