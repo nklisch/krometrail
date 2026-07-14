@@ -1,7 +1,7 @@
 ---
 id: refactor-remove-temporal-debug-bundle-dead-scaffolding
 kind: story
-stage: implementing
+stage: review
 tags: [refactor, visual, agent-ux]
 parent: null
 depends_on: [epic-temporal-debugging-workflow-temporal-debug-bundle]
@@ -90,3 +90,14 @@ allowance. No data, schema, migration, or compatibility rollback is needed.
   present; the built-in elimination/dead-weight lenses and prepublic clean-design
   policy were applied.
 - `.work/bin/work-view` and all current epic/feature stages were preserved.
+
+## Implementation notes
+
+- Execution capability: direct inline implementation; the design identified a bounded private surface and all callers were resolvable by local reads and grep.
+- Review weight: standard, with the bounded standalone-story review still pending.
+- Files changed: `src/debug_bundle/mod.rs`, `src/debug_bundle/header.rs`, `src/debug_bundle/service.rs`, and `src/debug_bundle/tests.rs`.
+- Tests added/removed: none; removed stale test-only imports and an unused qualification fixture field exposed when the blanket module lint allowance was removed.
+- Simplification: removed the duplicate marker evidence shape, unused policy convenience function, unused epoch-summary lookup, obsolete underscore imports, unused re-export, and module-wide dead-code/unused-import allowance.
+- Discrepancies from design: none; the compiler also identified stale test-only imports/fixture state that had been hidden by the removed blanket allowance, so those were deleted without changing test behavior.
+- Adjacent issues parked: none.
+- Focused verification (Rust 1.85.0, locked): `cargo fmt --all -- --check`; `cargo check --locked --all-targets`; `cargo test --locked debug_bundle` (55 passed); `cargo clippy --locked --all-targets -- -D warnings`.

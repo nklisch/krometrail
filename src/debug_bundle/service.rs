@@ -435,8 +435,3 @@ impl Clone for TemporalDebugBundleService {
         }
     }
 }
-
-// Suppress unused-import warning for re-exported types that the service uses
-// through trait methods rather than direct reference.
-#[allow(unused_imports)]
-use super::error::{cancelled_error as _, deadline_error as _};

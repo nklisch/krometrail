@@ -10,8 +10,6 @@
 //! `TemporalDebugBundleService` (Unit 3 — bounded composition). They are
 //! exercised by focused tests until the service wires them into `RuntimeDependencies`.
 
-#![allow(dead_code, unused_imports)]
-
 mod error;
 mod focus;
 mod header;
@@ -22,13 +20,10 @@ mod service;
 #[cfg(test)]
 mod tests;
 
-use std::collections::BTreeMap;
-
 use krometrail_core::{
-    ArtifactFailurePolicy, ArtifactMarker, ArtifactOutcome, BrowserEventFilter,
-    BrowserEventSelection, EffectiveBundlePolicy, InteractionAnchor, InteractionAnchorSource,
-    InteractionId, InteractionRecordSource, OrientationPolicy, ResolvedRange, Result, SessionTime,
-    TemporalDebugBundleRequest, TimelineRangeSlice, TimelineStore,
+    ArtifactFailurePolicy, BrowserEventFilter, BrowserEventSelection, EffectiveBundlePolicy,
+    InteractionAnchorSource, InteractionRecordSource, OrientationPolicy, ResolvedRange, Result,
+    SessionTime, TimelineStore,
 };
 use policy::policy_version;
 
@@ -37,7 +32,7 @@ use policy::policy_version;
 pub(crate) use error::controlled;
 pub(crate) use focus::extract_focus_times;
 pub(crate) use header::{BrowserEventEvidenceState, VisualEvidenceState, compose_header};
-pub(crate) use markers::{AssembledMarkers, MarkerEvidence, assemble_markers};
+pub(crate) use markers::{MarkerEvidence, assemble_markers};
 pub(crate) use policy::{default_artifact_request, default_generators};
 pub(crate) use service::{BundleWorkLimits, TemporalDebugBundleService};
 
@@ -53,15 +48,6 @@ pub(crate) trait TemporalDebugEvidenceStore:
 impl<T> TemporalDebugEvidenceStore for T where
     T: TimelineStore + InteractionAnchorSource + InteractionRecordSource
 {
-}
-
-/// The bounded marker-evidence inputs the bundle service loads before visual
-/// work begins. Marker assembly is pure given these inputs.
-pub(crate) struct BundleMarkerEvidence<'a> {
-    pub range: &'a ResolvedRange,
-    pub caller_markers: &'a [ArtifactMarker],
-    pub timeline: &'a TimelineRangeSlice,
-    pub interactions: &'a BTreeMap<InteractionId, InteractionAnchor>,
 }
 
 /// Builds the effective bundle policy from the resolved range, caller
@@ -86,16 +72,4 @@ pub(crate) fn build_effective_policy(
         BrowserEventSelection::compact_default(),
         focus_times,
     )
-}
-
-/// Convenience: extract focus times from artifact outcomes and build the
-/// effective policy in one step. The bundle service calls this after artifact
-/// generation completes.
-pub(crate) fn effective_policy_from_outcomes(
-    range: &ResolvedRange,
-    request: &TemporalDebugBundleRequest,
-    outcomes: &[ArtifactOutcome],
-) -> Result<EffectiveBundlePolicy> {
-    let focus_times = extract_focus_times(outcomes);
-    build_effective_policy(range, request.orientation(), focus_times)
 }

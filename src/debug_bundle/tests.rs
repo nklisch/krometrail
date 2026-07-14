@@ -1355,15 +1355,14 @@ mod qualification {
         ArtifactStore, BrowserEventContext, CaptureGapPolicy, CaptureGapSummary, CaptureOrdinal,
         CaptureQuality, CaptureStatusEvidence, CapturedFrame, EncodedFrame, FramePoint,
         FrameSource, IdSource, IdValue, ImageFormat, InteractionEvidenceSink, InteractionTiming,
-        MarkerId, NavigationId, ObservationKind, ObservationPayloadRef, ObservedTime,
-        OrientationPolicy, RecordingSink, ResolvedAnchorReference, RetentionPolicy, RetentionStore,
+        MarkerId, ObservationKind, ObservationPayloadRef, ObservedTime, OrientationPolicy,
+        RecordingSink, ResolvedAnchorReference, RetentionPolicy, RetentionStore,
         TimelineObservation,
     };
     use krometrail_store::{
         IndexStoreConfig, RecordingStore, RotationConfig, SegmentStoreConfig, SegmentWriter,
         SqliteIndex,
     };
-    use std::num::NonZeroU64;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Duration;
@@ -1385,7 +1384,6 @@ mod qualification {
         store: Arc<RecordingStore>,
         session: SessionId,
         target: TargetId,
-        frame_ids: Vec<FrameId>,
         artifact_generation: Arc<TemporalVisionArtifactService>,
     }
 
@@ -1496,7 +1494,6 @@ mod qualification {
             store,
             session,
             target,
-            frame_ids,
             artifact_generation,
         }
     }

@@ -7,10 +7,10 @@
 //! measurements and proximity do not establish diagnosis or causality.
 
 use krometrail_core::{
-    ArtifactOutcome, BundleEpochVisualSummary, FrameId, MAX_BUNDLE_HEADER_BYTES, NonEmptyText,
+    ArtifactOutcome, BundleEpochVisualSummary, MAX_BUNDLE_HEADER_BYTES, NonEmptyText,
     ResolvedRange, Result, TemporalDebugHeader,
 };
-use temporal_vision::{ArtifactKind, StoryboardVisualSummary};
+use temporal_vision::ArtifactKind;
 
 /// Typed visual evidence state observed for the resolved range.
 ///
@@ -140,23 +140,11 @@ fn compose_summary(
     })
 }
 
-/// Returns the visual summary for a specific epoch, if available.
-#[allow(dead_code)]
-pub(crate) fn epoch_summary(
-    summaries: &[BundleEpochVisualSummary],
-    epoch_index: u32,
-) -> Option<&StoryboardVisualSummary<FrameId>> {
-    summaries
-        .iter()
-        .find(|summary| summary.epoch_index == epoch_index)
-        .map(|summary| &summary.summary)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use krometrail_core::{
-        ArtifactCacheDisposition, ArtifactHandle, ArtifactId, CaptureGapPolicy, GapId,
+        ArtifactCacheDisposition, ArtifactHandle, ArtifactId, CaptureGapPolicy, FrameId,
         RangeResolutionOptions, ResolvedRange, RetentionPolicy, SessionId, SessionRange,
         SessionTime, TargetId, TemporalRangeAnchorKind,
     };
@@ -167,8 +155,6 @@ mod tests {
         select_storyboard_frames,
     };
     use uuid::Uuid;
-
-    type TestSequence = FrameSequence<FrameId, krometrail_core::ArtifactMarkerId, GapId, Box<[u8]>>;
 
     fn resolved_range() -> ResolvedRange {
         let session = SessionId::from_uuid(Uuid::from_u128(1));
