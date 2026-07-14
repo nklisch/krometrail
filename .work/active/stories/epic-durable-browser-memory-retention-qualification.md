@@ -1,7 +1,7 @@
 ---
 id: epic-durable-browser-memory-retention-qualification
 kind: story
-stage: implementing
+stage: done
 tags: [storage, browser]
 parent: epic-durable-browser-memory-retention
 depends_on: [epic-durable-browser-memory-retention-capture-wiring]
@@ -30,3 +30,12 @@ Final checkpoint. It depends on production capture wiring so evidence covers the
 - Deleting one populated session removes all of its data while preserving another session.
 - Paused capture acknowledgement/gap/state/shutdown behavior is proven at the CDP boundary.
 - Locked workspace format/check/test/clippy pass in an isolated clean worktree if unrelated primary-tree edits remain.
+
+## Implementation evidence
+
+- Added small-budget qualification for global cross-session age ordering, overlapping pins, all-pinned pause/resume, open-segment overhead, unpolled append behavior, and scoped session deletion with a surviving session.
+- Extended provenance qualification with a mixed-source artifact that is removed before either source frame can become falsely reproducible, while an artifact sourced only from the surviving segment remains present.
+- Extended deletion-journal reopen qualification to assert exact pending bytes before replay and zero pending/segment usage after both prepared and metadata-removed replay phases.
+- The integrated CDP pause/resume and bounded shutdown coverage remains in `crates/krometrail-cdp/src/capture/tests.rs` from the capture-wiring checkpoint; focused capture tests pass alongside the new store qualification.
+- Focused verification: `cargo test -p krometrail-store --test retention_small_budget --locked -- --nocapture`, `cargo test -p krometrail-store --lib --locked -- --nocapture`, and `cargo test -p krometrail-cdp --lib capture::tests --locked -- --nocapture` all pass.
+- The primary tree's workspace test remains contaminated by unrelated verified-interactions WIP; its isolated clean-worktree gate is recorded on the parent feature after this checkpoint commit.

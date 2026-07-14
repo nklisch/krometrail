@@ -906,17 +906,18 @@ async fn budget_pause_keeps_acknowledging_records_loss_and_resumes_hidden_state(
     assert_eq!(status.statistics().accepted_frames(), 2);
     assert_eq!(status.statistics().dropped_frames(), 1);
     assert_eq!(status.statistics().gap_count(), 2);
-    let persisted = sink.gaps.lock().unwrap();
-    assert!(persisted.iter().any(|gap| {
-        gap.reason() == &CaptureGapReason::PersistenceRejected
-            && gap.detail() == Some("disk budget paused capture")
-    }));
-    assert!(
-        persisted
-            .iter()
-            .any(|gap| gap.reason() == &CaptureGapReason::IngestionQueueSaturated)
-    );
-    drop(persisted);
+    {
+        let persisted = sink.gaps.lock().unwrap();
+        assert!(persisted.iter().any(|gap| {
+            gap.reason() == &CaptureGapReason::PersistenceRejected
+                && gap.detail() == Some("disk budget paused capture")
+        }));
+        assert!(
+            persisted
+                .iter()
+                .any(|gap| gap.reason() == &CaptureGapReason::IngestionQueueSaturated)
+        );
+    }
 
     let outcome = coordinator
         .stop_target(

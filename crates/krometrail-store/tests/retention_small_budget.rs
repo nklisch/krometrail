@@ -87,6 +87,12 @@ async fn pinned_budget_pauses_then_unpin_evicts_and_resumes() {
     let second = frame(2, 20, 200, 1, 80_000);
     let error = store.append_frame(second.clone()).await.unwrap_err();
     assert_eq!(error.code, ErrorCode::BudgetExhausted);
+    assert_eq!(error.message.as_str(), "disk budget paused capture");
+    assert_eq!(error.retry, krometrail_core::RetryAdvice::AfterRecovery);
+    assert_eq!(
+        error.recovery.as_ref().map(|value| value.as_str()),
+        Some("unpin or delete retained evidence, or increase the disk budget")
+    );
     assert_eq!(
         error.context.session_id,
         Some(second.metadata().session_id())
@@ -107,6 +113,171 @@ async fn pinned_budget_pauses_then_unpin_evicts_and_resumes() {
             .id(),
         second.metadata().id()
     );
+}
+
+#[tokio::test]
+async fn global_retention_sequence_evicts_oldest_unpinned_session_first() {
+    let directory = TempDir::new().unwrap();
+    let (index, writer) = fixture(&directory);
+    let baseline = RecordingStore::new(Arc::clone(&writer), Arc::clone(&index))
+        .unwrap()
+        .status()
+        .await
+        .unwrap()
+        .usage
+        .total_bytes()
+        .unwrap();
+    let store = RecordingStore::with_budget(
+        Arc::clone(&writer),
+        Arc::clone(&index),
+        DiskBudgetBytes::new(baseline + 150_000).unwrap(),
+    )
+    .unwrap();
+
+    let first = frame(11, 110, 111, 1, 60_000);
+    let second = frame(12, 120, 121, 1, 60_000);
+    let third = frame(13, 130, 131, 1, 60_000);
+    store.append_frame(first.clone()).await.unwrap();
+    store.flush(first.metadata().session_id()).await.unwrap();
+    store.append_frame(second.clone()).await.unwrap();
+    store.flush(second.metadata().session_id()).await.unwrap();
+    store
+        .pin_range(RetentionRange {
+            session_id: second.metadata().session_id(),
+            target_id: second.metadata().target_id(),
+            range: SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(2)).unwrap(),
+        })
+        .await
+        .unwrap();
+
+    store.append_frame(third.clone()).await.unwrap();
+
+    assert!(
+        index
+            .frames_by_id(vec![first.metadata().id()])
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        index
+            .frames_by_id(vec![second.metadata().id()])
+            .await
+            .unwrap()[0]
+            .metadata()
+            .id(),
+        second.metadata().id()
+    );
+    assert_eq!(
+        index
+            .frames_by_id(vec![third.metadata().id()])
+            .await
+            .unwrap()[0]
+            .metadata()
+            .id(),
+        third.metadata().id()
+    );
+}
+
+#[tokio::test]
+async fn overlapping_pins_keep_a_segment_protected_until_the_last_unpin() {
+    let directory = TempDir::new().unwrap();
+    let (index, writer) = fixture(&directory);
+    let store = RecordingStore::new(writer, Arc::clone(&index)).unwrap();
+    let item = frame(14, 140, 141, 1, 1024);
+    let request_a = RetentionRange {
+        session_id: item.metadata().session_id(),
+        target_id: item.metadata().target_id(),
+        range: SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(1)).unwrap(),
+    };
+    let request_b = RetentionRange {
+        range: SessionRange::new(SessionTime::from_nanos(1), SessionTime::from_nanos(2)).unwrap(),
+        ..request_a
+    };
+    store.append_frame(item).await.unwrap();
+    store.flush(request_a.session_id).await.unwrap();
+    assert!(store.pin_range(request_a).await.unwrap().pinned_usage_bytes > 0);
+    assert!(store.pin_range(request_b).await.unwrap().pinned_usage_bytes > 0);
+    store.unpin_range(request_a).await.unwrap();
+    assert!(store.status().await.unwrap().pinned_usage_bytes > 0);
+    store.unpin_range(request_b).await.unwrap();
+    assert_eq!(store.status().await.unwrap().pinned_usage_bytes, 0);
+}
+
+#[tokio::test]
+async fn open_segment_usage_reports_a_single_bounded_overhead() {
+    let directory = TempDir::new().unwrap();
+    let (index, writer) = fixture(&directory);
+    let baseline = RecordingStore::new(Arc::clone(&writer), Arc::clone(&index))
+        .unwrap()
+        .status()
+        .await
+        .unwrap()
+        .usage
+        .total_bytes()
+        .unwrap();
+    let budget = DiskBudgetBytes::new(baseline + 50_000).unwrap();
+    let store =
+        RecordingStore::with_budget(Arc::clone(&writer), Arc::clone(&index), budget).unwrap();
+    store
+        .append_frame(frame(15, 150, 151, 1, 20_000))
+        .await
+        .unwrap();
+    let status = store.status().await.unwrap();
+    assert_eq!(status.open_segment_count, 1);
+    assert!(status.usage.open_segment_bytes > 0);
+    assert!(
+        status.usage.total_bytes().unwrap()
+            <= budget.get() + status.open_segment_overhead_limit_bytes
+    );
+}
+
+#[tokio::test]
+async fn unpolled_append_has_no_storage_side_effect() {
+    let directory = TempDir::new().unwrap();
+    let (index, writer) = fixture(&directory);
+    let store = RecordingStore::new(writer, Arc::clone(&index)).unwrap();
+    let item = frame(16, 160, 161, 1, 1024);
+    let frame_id = item.metadata().id();
+    let future = store.append_frame(item);
+    tokio::task::yield_now().await;
+    assert!(index.frames_by_id(vec![frame_id]).await.is_err());
+    drop(future);
+    assert!(index.frames_by_id(vec![frame_id]).await.is_err());
+}
+
+#[tokio::test]
+async fn destructive_session_deletion_preserves_another_session() {
+    let directory = TempDir::new().unwrap();
+    let (index, writer) = fixture(&directory);
+    let store = RecordingStore::new(writer, Arc::clone(&index)).unwrap();
+    let first = frame(17, 170, 171, 1, 1024);
+    let second = frame(18, 180, 181, 1, 1024);
+    store.append_frame(first.clone()).await.unwrap();
+    store.flush(first.metadata().session_id()).await.unwrap();
+    store.append_frame(second.clone()).await.unwrap();
+    store.flush(second.metadata().session_id()).await.unwrap();
+
+    let removed = store
+        .delete_session(first.metadata().session_id())
+        .await
+        .unwrap();
+    assert_eq!(removed.removed_frames, 1);
+    assert!(
+        index
+            .frames_by_id(vec![first.metadata().id()])
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        index
+            .frames_by_id(vec![second.metadata().id()])
+            .await
+            .unwrap()[0]
+            .metadata()
+            .id(),
+        second.metadata().id()
+    );
+    assert!(store.status().await.unwrap().usage.segment_bytes > 0);
 }
 
 #[tokio::test]

@@ -572,8 +572,11 @@ mod tests {
         store.flush(first.metadata().session_id()).await.unwrap();
 
         let artifact_id = ArtifactId::from_uuid(Uuid::from_u128(10));
+        let surviving_artifact_id = ArtifactId::from_uuid(Uuid::from_u128(11));
         let artifact_path = directory.path().join("artifacts").join("mixed.png");
+        let surviving_artifact_path = directory.path().join("artifacts").join("surviving.png");
         std::fs::write(&artifact_path, b"artifact").unwrap();
+        std::fs::write(&surviving_artifact_path, b"survives").unwrap();
         {
             let connection = index.connection().unwrap();
             connection.execute(
@@ -597,15 +600,36 @@ mod tests {
                     params![codec::id(artifact_id.as_uuid()).to_vec(), position as i64, codec::id(id.as_uuid()).to_vec()],
                 ).unwrap();
             }
+            connection.execute(
+                "INSERT INTO artifacts(artifact_id, session_id, target_id, kind, start_time_be, \
+                 end_time_be, manifest_json, relative_path, byte_len_be) VALUES \
+                 (?1, ?2, ?3, 'storyboard', ?4, ?5, '{}', 'surviving.png', ?6)",
+                params![
+                    codec::id(surviving_artifact_id.as_uuid()).to_vec(),
+                    codec::id(first.metadata().session_id().as_uuid()).to_vec(),
+                    codec::id(first.metadata().target_id().as_uuid()).to_vec(),
+                    codec::u64_blob(1).to_vec(), codec::u64_blob(2).to_vec(),
+                    codec::u64_blob(8).to_vec(),
+                ],
+            ).unwrap();
+            connection.execute(
+                "INSERT INTO artifact_frames(artifact_id, source_position, frame_id) VALUES (?1, 0, ?2)",
+                params![
+                    codec::id(surviving_artifact_id.as_uuid()).to_vec(),
+                    codec::id(second.metadata().id().as_uuid()).to_vec(),
+                ],
+            ).unwrap();
         }
-        index
-            .update_usage(UsageEntry {
-                class: UsageClass::Artifact,
-                object_key: codec::id(artifact_id.as_uuid()).to_vec().into_boxed_slice(),
-                session_id: Some(first.metadata().session_id()),
-                byte_len: 8,
-            })
-            .unwrap();
+        for artifact_id in [artifact_id, surviving_artifact_id] {
+            index
+                .update_usage(UsageEntry {
+                    class: UsageClass::Artifact,
+                    object_key: codec::id(artifact_id.as_uuid()).to_vec().into_boxed_slice(),
+                    session_id: Some(first.metadata().session_id()),
+                    byte_len: 8,
+                })
+                .unwrap();
+        }
 
         let candidate = index.oldest_unpinned_segment().unwrap().unwrap();
         let mut objects: Vec<_> = index
@@ -621,6 +645,7 @@ mod tests {
             .unwrap();
 
         assert!(!artifact_path.exists());
+        assert!(surviving_artifact_path.exists());
         let artifact_count: u64 = index
             .connection()
             .unwrap()
@@ -631,6 +656,16 @@ mod tests {
             )
             .unwrap();
         assert_eq!(artifact_count, 0);
+        let surviving_count: u64 = index
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM artifacts WHERE artifact_id=?1",
+                params![codec::id(surviving_artifact_id.as_uuid()).to_vec()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(surviving_count, 1);
         assert!(
             index
                 .frames_by_id(vec![first.metadata().id()])
@@ -656,6 +691,7 @@ mod tests {
             store.append_frame(item.clone()).await.unwrap();
             store.flush(item.metadata().session_id()).await.unwrap();
             let candidate = index.oldest_unpinned_segment().unwrap().unwrap();
+            let candidate_bytes = candidate.file_bytes;
             let batch = index
                 .prepare_deletion(
                     DeletionKind::Eviction,
@@ -664,6 +700,10 @@ mod tests {
                 )
                 .unwrap();
             store.removal.stage_blocking(batch.clone()).unwrap();
+            assert_eq!(
+                store.status().await.unwrap().usage.pending_deletion_bytes,
+                candidate_bytes
+            );
             if metadata_removed {
                 index.remove_deletion_metadata(&batch).unwrap();
             }
@@ -677,15 +717,9 @@ mod tests {
                     .await
                     .is_err()
             );
-            assert_eq!(
-                reopened
-                    .status()
-                    .await
-                    .unwrap()
-                    .usage
-                    .pending_deletion_bytes,
-                0
-            );
+            let status = reopened.status().await.unwrap();
+            assert_eq!(status.usage.pending_deletion_bytes, 0);
+            assert!(status.usage.segment_bytes < candidate_bytes);
         }
     }
 }
