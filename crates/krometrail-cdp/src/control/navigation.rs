@@ -68,13 +68,13 @@ impl OperationCancellation {
             return Some(operation_error(
                 ErrorCode::BrowserDisconnected,
                 target_id,
-                "browser disconnected during page navigation",
+                "browser disconnected during a page operation",
             ));
         }
         None
     }
 
-    async fn wait(&self, generation: u64, target_id: TargetId) -> KrometrailError {
+    pub(crate) async fn wait(&self, generation: u64, target_id: TargetId) -> KrometrailError {
         loop {
             if let Some(error) = self.verdict(generation, target_id) {
                 return error;

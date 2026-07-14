@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-operation-waits-and-batches-wait-executor
 kind: story
-stage: implementing
+stage: done
 tags: [browser, agent-ux]
 parent: epic-agent-browser-operation-waits-and-batches
 depends_on: [epic-agent-browser-operation-waits-and-batches-core-contracts]
@@ -36,3 +36,13 @@ Implement the CDP adapter for elapsed, text, element-state, navigation, page-con
 ## Implementation notes
 
 Use the existing `TransportEvents` named-event contract and domain enablement/restoration path. Keep raw CDP request ids and page text private. Do not replay a wait or refresh an explicit reference after reconnect.
+
+## Implementation notes
+
+- Added `crates/krometrail-cdp/src/control/wait.rs` and routed `Wait` through `PageControl` and the production single-writer session path.
+- Every wait creates one Tokio absolute deadline before setup/probing. Cancellation and generation-aware disconnect race ahead of that deadline; probes and named-event setup execute inside the same bound, and deadline completion cannot be accepted as a match.
+- Text and element waits resolve references and selectors through the existing `SnapshotRegistry`. A small refactor in `control/snapshot.rs` exposes the shared backend-object resolution before actionability checks, allowing hidden/disabled observation without inventing another locator authority. Bounded JavaScript projections return only match flags, lengths, and state booleans—not page text, selectors, URLs, or CDP identities.
+- Navigation uses `Page.lifecycleEvent` as an optional early wake while authoritative readiness/URL-predicate projections continue polling. Page conditions use the existing side-effect-free evaluation policy, disable promise awaiting, and reject every non-boolean value.
+- Explicit network quiet subscribes to the three named finite-request lifecycle events before enabling `Network`, tracks opaque request ids only in operation-local memory, resets the continuous quiet interval on new finite requests, excludes WebSocket/EventSource classifications, and reports both the subscription-start blind spot and long-lived exclusion in `WaitProbe`. Unsupported setup fails explicitly.
+- Event subscriptions remain stack-owned and drop on every return. No standalone navigation or interaction acquired an implicit network-idle wait.
+- Verification: `cargo fmt --all`; `cargo test -p krometrail-cdp --all-targets` (194 passed across 17 suites); `cargo check -p krometrail-cdp --all-targets --locked` (passed).

@@ -25,6 +25,7 @@ mod pointer;
 mod screenshot;
 mod snapshot;
 mod upload;
+mod wait;
 
 use navigation::NavigationConfig;
 use snapshot::SnapshotRegistry;
@@ -82,6 +83,8 @@ impl PageControl {
         transport: &dyn CdpTransport,
         state: &SupervisorState,
         request: BrowserOperationRequest,
+        cancel: &navigation::OperationCancellation,
+        parent_deadline: Option<tokio::time::Instant>,
     ) -> Result<BrowserOperationResult> {
         self.snapshots.retain_targets(
             state
@@ -138,6 +141,10 @@ impl PageControl {
                 .observe_live(transport, &bound, request, started_at, None)
                 .await
                 .map(|(result, _)| result),
+            BrowserOperationRequest::Wait(request) => self
+                .execute_wait(transport, state, request, cancel, parent_deadline)
+                .await
+                .map(|result| BrowserOperationResult::Wait(Box::new(result))),
             BrowserOperationRequest::ListPages(_)
             | BrowserOperationRequest::CreatePage(_)
             | BrowserOperationRequest::SelectPage(_)
@@ -154,7 +161,8 @@ impl PageControl {
             | BrowserOperationRequest::Drag(_)
             | BrowserOperationRequest::Scroll(_)
             | BrowserOperationRequest::UploadFiles(_)
-            | BrowserOperationRequest::HandleDialog(_) => {
+            | BrowserOperationRequest::HandleDialog(_)
+            | BrowserOperationRequest::Batch(_) => {
                 unreachable!("browser/page mutations are routed before read-only dispatch")
             }
         }

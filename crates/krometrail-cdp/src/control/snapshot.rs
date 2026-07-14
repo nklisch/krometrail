@@ -177,6 +177,66 @@ impl SnapshotRegistry {
         reference: NodeReference,
         requirement: ReferenceRequirement,
     ) -> Result<ResolvedNode> {
+        let scope = CommandScope::Session(bound.transport_session.clone());
+        let backend = self
+            .validated_reference_backend(transport, bound, reference)
+            .await?;
+        resolve_backend_node(transport, &scope, bound.target_id, backend, requirement).await
+    }
+
+    pub(crate) async fn resolve_selector(
+        &self,
+        transport: &dyn CdpTransport,
+        bound: &BoundTarget,
+        selector: &str,
+        requirement: ReferenceRequirement,
+    ) -> Result<ResolvedNode> {
+        let scope = CommandScope::Session(bound.transport_session.clone());
+        let backend = query_selector_backend(transport, &scope, bound.target_id, selector)
+            .await?
+            .ok_or_else(|| {
+                operation_error(
+                    ErrorCode::NotFound,
+                    bound.target_id,
+                    "CSS selector did not match an element",
+                )
+            })?;
+        resolve_backend_node(transport, &scope, bound.target_id, backend, requirement).await
+    }
+
+    /// Resolve through the same snapshot/selector authority as interactions, but stop before
+    /// actionability checks so waits can truthfully observe hidden and disabled states.
+    pub(crate) async fn resolve_wait_object(
+        &self,
+        transport: &dyn CdpTransport,
+        bound: &BoundTarget,
+        locator: &krometrail_core::ElementLocator,
+    ) -> Result<Option<String>> {
+        let scope = CommandScope::Session(bound.transport_session.clone());
+        let backend = match locator {
+            krometrail_core::ElementLocator::Reference(reference) => Some(
+                self.validated_reference_backend(transport, bound, *reference)
+                    .await?,
+            ),
+            krometrail_core::ElementLocator::CssSelector(selector) => {
+                query_selector_backend(transport, &scope, bound.target_id, selector.as_str())
+                    .await?
+            }
+        };
+        match backend {
+            Some(backend) => resolve_backend_object(transport, &scope, bound.target_id, backend)
+                .await
+                .map(Some),
+            None => Ok(None),
+        }
+    }
+
+    async fn validated_reference_backend(
+        &self,
+        transport: &dyn CdpTransport,
+        bound: &BoundTarget,
+        reference: NodeReference,
+    ) -> Result<i64> {
         if reference.target_id != bound.target_id {
             return Err(stale(
                 bound.target_id,
@@ -208,82 +268,16 @@ impl SnapshotRegistry {
                 "document changed after the snapshot",
             ));
         }
-        let binding = active.bindings.get(&reference.node_id).ok_or_else(|| {
-            stale(
-                bound.target_id,
-                "snapshot node has no backing document node",
-            )
-        })?;
-        resolve_backend_node(
-            transport,
-            &scope,
-            bound.target_id,
-            binding.backend_node_id,
-            requirement,
-        )
-        .await
-    }
-
-    pub(crate) async fn resolve_selector(
-        &self,
-        transport: &dyn CdpTransport,
-        bound: &BoundTarget,
-        selector: &str,
-        requirement: ReferenceRequirement,
-    ) -> Result<ResolvedNode> {
-        let scope = CommandScope::Session(bound.transport_session.clone());
-        let document = transport
-            .send_raw(
-                &scope,
-                "DOM.getDocument",
-                json!({"depth": 0, "pierce": true}),
-            )
-            .await
-            .map_err(|error| {
-                transport_error(error, ErrorCode::PageObservationFailed, bound.target_id)
-            })?;
-        let root_node_id = document
-            .pointer("/root/nodeId")
-            .or_else(|| document.pointer("/result/root/nodeId"))
-            .and_then(Value::as_i64)
-            .ok_or_else(|| malformed(bound.target_id, "document root response is malformed"))?;
-        let query = transport
-            .send_raw(
-                &scope,
-                "DOM.querySelector",
-                json!({"nodeId": root_node_id, "selector": selector}),
-            )
-            .await
-            .map_err(|error| {
-                let code = if error == TransportError::CommandFailed {
-                    ErrorCode::InvalidInput
-                } else {
-                    ErrorCode::PageObservationFailed
-                };
-                transport_error(error, code, bound.target_id)
-            })?;
-        let node_id = query
-            .get("nodeId")
-            .or_else(|| query.pointer("/result/nodeId"))
-            .and_then(Value::as_i64)
-            .ok_or_else(|| malformed(bound.target_id, "selector response is malformed"))?;
-        if node_id == 0 {
-            return Err(operation_error(
-                ErrorCode::NotFound,
-                bound.target_id,
-                "CSS selector did not match an element",
-            ));
-        }
-        let described = transport
-            .send_raw(&scope, "DOM.describeNode", json!({"nodeId": node_id}))
-            .await
-            .map_err(|_| stale(bound.target_id, "selected node is no longer available"))?;
-        let backend = described
-            .pointer("/node/backendNodeId")
-            .or_else(|| described.pointer("/result/node/backendNodeId"))
-            .and_then(Value::as_i64)
-            .ok_or_else(|| stale(bound.target_id, "selected node has no backing identity"))?;
-        resolve_backend_node(transport, &scope, bound.target_id, backend, requirement).await
+        active
+            .bindings
+            .get(&reference.node_id)
+            .map(|binding| binding.backend_node_id)
+            .ok_or_else(|| {
+                stale(
+                    bound.target_id,
+                    "snapshot node has no backing document node",
+                )
+            })
     }
 }
 
@@ -316,13 +310,66 @@ async fn document_fingerprint(
     })
 }
 
-async fn resolve_backend_node(
+async fn query_selector_backend(
+    transport: &dyn CdpTransport,
+    scope: &CommandScope,
+    target_id: TargetId,
+    selector: &str,
+) -> Result<Option<i64>> {
+    let document = transport
+        .send_raw(
+            scope,
+            "DOM.getDocument",
+            json!({"depth": 0, "pierce": true}),
+        )
+        .await
+        .map_err(|error| transport_error(error, ErrorCode::PageObservationFailed, target_id))?;
+    let root_node_id = document
+        .pointer("/root/nodeId")
+        .or_else(|| document.pointer("/result/root/nodeId"))
+        .and_then(Value::as_i64)
+        .ok_or_else(|| malformed(target_id, "document root response is malformed"))?;
+    let query = transport
+        .send_raw(
+            scope,
+            "DOM.querySelector",
+            json!({"nodeId": root_node_id, "selector": selector}),
+        )
+        .await
+        .map_err(|error| {
+            let code = if error == TransportError::CommandFailed {
+                ErrorCode::InvalidInput
+            } else {
+                ErrorCode::PageObservationFailed
+            };
+            transport_error(error, code, target_id)
+        })?;
+    let node_id = query
+        .get("nodeId")
+        .or_else(|| query.pointer("/result/nodeId"))
+        .and_then(Value::as_i64)
+        .ok_or_else(|| malformed(target_id, "selector response is malformed"))?;
+    if node_id == 0 {
+        return Ok(None);
+    }
+    let described = transport
+        .send_raw(scope, "DOM.describeNode", json!({"nodeId": node_id}))
+        .await
+        .map_err(|_| stale(target_id, "selected node is no longer available"))?;
+    described
+        .pointer("/node/backendNodeId")
+        .or_else(|| described.pointer("/result/node/backendNodeId"))
+        .and_then(Value::as_i64)
+        .map(Some)
+        .ok_or_else(|| stale(target_id, "selected node has no backing identity"))
+}
+
+async fn resolve_backend_object(
     transport: &dyn CdpTransport,
     scope: &CommandScope,
     target_id: TargetId,
     backend_node_id: i64,
-    requirement: ReferenceRequirement,
-) -> Result<ResolvedNode> {
+) -> Result<String> {
     let described = transport
         .send_raw(
             scope,
@@ -347,11 +394,22 @@ async fn resolve_backend_node(
         )
         .await
         .map_err(|_| stale(target_id, "backing node cannot be resolved"))?;
-    let object_id = resolved
+    resolved
         .pointer("/object/objectId")
         .or_else(|| resolved.pointer("/result/object/objectId"))
         .and_then(Value::as_str)
-        .ok_or_else(|| stale(target_id, "backing node has no live runtime object"))?;
+        .map(str::to_owned)
+        .ok_or_else(|| stale(target_id, "backing node has no live runtime object"))
+}
+
+async fn resolve_backend_node(
+    transport: &dyn CdpTransport,
+    scope: &CommandScope,
+    target_id: TargetId,
+    backend_node_id: i64,
+    requirement: ReferenceRequirement,
+) -> Result<ResolvedNode> {
+    let object_id = resolve_backend_object(transport, scope, target_id, backend_node_id).await?;
     let check = transport.send_raw(scope, "Runtime.callFunctionOn", json!({
         "objectId": object_id,
         // `inert`, native disabled state, and `aria-disabled` suppress interaction, not painting.

@@ -1479,7 +1479,13 @@ async fn execute_operation(
         }
         request => {
             page_control
-                .execute(transport.as_ref(), state, request)
+                .execute(
+                    transport.as_ref(),
+                    state,
+                    request,
+                    &shared.operation_cancellation,
+                    None,
+                )
                 .await
         }
     }
