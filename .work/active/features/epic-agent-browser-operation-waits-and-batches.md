@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-operation-waits-and-batches
 kind: feature
-stage: review
+stage: implementing
 tags: [browser, agent-ux]
 parent: epic-agent-browser-operation
 depends_on: [epic-agent-browser-operation-browser-page-lifecycle, epic-agent-browser-operation-verified-interactions]
@@ -339,4 +339,15 @@ It does not persist interaction records, add SQLite tables, expose temporal anch
 - Network quiet means no tracked finite request observed after subscription. Request ids remain private, WebSocket/EventSource and pre-subscription limitations are explicit in the bounded probe, and independent named streams are reconciled without claiming global idle.
 - Per-step or final observation degradation never rewrites successful browser state. It remains explicit in `ObservationPart`; degraded final observation selects `CompletedWithFailures`.
 
-All four child stories are `done`, integrated and real-browser verification is green, and the feature is ready for its standard independent review pass.
+All four child stories are `done`, integrated and real-browser verification is green, and the feature entered its standard independent review pass.
+
+## Review (2026-07-14)
+
+**Verdict**: Request changes
+
+**Blockers**: Network-quiet tracking resets `quiet_since` when an unseen pre-subscription or filtered long-lived request completes, even though no tracked request left `in_flight`. This contradicts the feature's tracked-from-subscription contract and can turn an otherwise satisfied tight wait into a timeout. Fix verification only is required under standard weight; no second independent pass will run.
+**Important**: none beyond the promoted current-cycle correctness blocker.
+**Nits**: `BatchTermination::TargetUnavailable` remains represented by structured step/skip errors under `StoppedOnFailure`; `completed_before_start` remains operation-scoped and bounded by the 120-second wait ceiling.
+**Rejected**: Disabling the Network domain after each wait, duplicating an internal `ObserveLive` deadline, and adding a speculative `BatchOutcome::TargetUnavailable` variant were rejected as contrary to the settled boundaries or unnecessary.
+
+**Notes**: One standard cross-model GLM 5.2 pass reviewed commits `abbe53f`, `b4bec85`, `6ccd2c3`, `976de46`, and `6f28110`. The receiver confirmed the untracked-completion reset as material current-cycle contract risk and accepted the localized direction: update the quiet timer only when `in_flight.remove(request_id)` succeeds, then add a regression proving an unseen completion leaves `quiet_since` unchanged. All other reviewed deadline, cancellation, batching, target, anchor, screenshot, degradation, registry, and foundation assertions were accepted.
