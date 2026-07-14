@@ -20,8 +20,9 @@ pub mod timeline;
 pub type PortFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
 
 pub use browser::{
-    AttachBrowser, BrowserConnectRequest, BrowserConnector, BrowserFailureKind, BrowserPageTargets,
-    BrowserSessionEvents, BrowserSessionPort, LaunchBrowser, ManagedProfile,
+    AttachBrowser, BrowserConnectRequest, BrowserConnector, BrowserFailureKind,
+    BrowserOperationContext, BrowserPageTargets, BrowserSessionEvents, BrowserSessionPort,
+    CancellationSignal, LaunchBrowser, ManagedProfile,
 };
 pub use catalog::RecordingCatalog;
 pub use clock::{MonotonicClock, WallClock};
@@ -179,6 +180,7 @@ mod tests {
         fn execute(
             &self,
             _request: crate::BrowserOperationRequest,
+            _context: BrowserOperationContext,
         ) -> PortFuture<'_, crate::Result<crate::BrowserOperationResult>> {
             Box::pin(std::future::ready(Err(crate::KrometrailError::new(
                 ErrorCode::Unsupported,

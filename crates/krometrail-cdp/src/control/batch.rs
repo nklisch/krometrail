@@ -11,6 +11,7 @@ use krometrail_core::{
 use super::{PageControl, bind_target, operation_error};
 use crate::{
     SupervisorState,
+    control::navigation::OperationCancellation,
     session::{OperationExecutionContext, SessionShared, execute_operation},
     transport::CdpTransport,
 };
@@ -53,6 +54,7 @@ impl PageControl {
         state: &mut SupervisorState,
         shared: &Arc<SessionShared>,
         request: BatchRequest,
+        cancellation: &OperationCancellation,
         parent_context: OperationExecutionContext,
     ) -> Result<BatchResult> {
         let bound = bind_target(state, request.target)?;
@@ -126,6 +128,7 @@ impl PageControl {
                 Arc::clone(&transport),
                 shared,
                 child,
+                cancellation,
                 context,
                 generation,
                 target_id,
@@ -188,6 +191,7 @@ impl PageControl {
                     Arc::clone(&transport),
                     shared,
                     screenshot_request,
+                    cancellation,
                     context,
                     generation,
                     target_id,
@@ -288,6 +292,7 @@ impl PageControl {
                 transport,
                 shared,
                 final_request,
+                cancellation,
                 context,
                 generation,
                 target_id,
@@ -349,6 +354,7 @@ async fn dispatch_bounded(
     transport: Arc<dyn CdpTransport>,
     shared: &Arc<SessionShared>,
     request: BrowserOperationRequest,
+    cancellation: &OperationCancellation,
     context: OperationExecutionContext,
     generation: u64,
     target_id: TargetId,
@@ -360,11 +366,12 @@ async fn dispatch_bounded(
         transport,
         shared,
         request,
+        cancellation,
         context,
     ));
     tokio::select! {
         biased;
-        error = shared.operation_cancellation.wait(generation, target_id) => {
+        error = cancellation.wait(generation, target_id) => {
             DispatchOutcome::Interrupted(error)
         }
         _ = tokio::time::sleep_until(deadline) => DispatchOutcome::TimedOut,

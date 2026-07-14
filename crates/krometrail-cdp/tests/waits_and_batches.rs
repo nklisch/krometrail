@@ -149,7 +149,10 @@ async fn sequential_batch_reuses_dispatcher_and_propagates_parent_anchor() {
     )
     .unwrap();
     let result = session
-        .execute(BrowserOperationRequest::Batch(request))
+        .execute(
+            BrowserOperationRequest::Batch(request),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let BrowserOperationResult::Batch(result) = result else {
@@ -224,7 +227,10 @@ async fn batch_stop_and_continue_policies_preserve_failed_wait_results() {
         )
         .unwrap();
         let result = session
-            .execute(BrowserOperationRequest::Batch(request))
+            .execute(
+                BrowserOperationRequest::Batch(request),
+                krometrail_core::BrowserOperationContext::default(),
+            )
             .await
             .unwrap();
         let BrowserOperationResult::Batch(result) = result else {
@@ -261,7 +267,10 @@ async fn wait_deadline_stops_a_held_probe_without_an_extra_poll() {
     transport.hold_method("Runtime.evaluate");
     let started = tokio::time::Instant::now();
     let result = session
-        .execute(page_wait(target, "false"))
+        .execute(
+            page_wait(target, "false"),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .expect("timeout is a structured wait result");
     let BrowserOperationResult::Wait(result) = result else {
@@ -293,17 +302,20 @@ async fn session_stop_cancels_a_held_wait_probe_before_its_deadline() {
         let session = Arc::clone(&session);
         tokio::spawn(async move {
             session
-                .execute(BrowserOperationRequest::Wait(
-                    WaitRequest::new(
-                        PageSelection::Target(target),
-                        WaitCondition::Page {
-                            expression: krometrail_core::NonEmptyText::new("false").unwrap(),
-                        },
-                        std::time::Duration::from_secs(10),
-                        std::time::Duration::from_millis(10),
-                    )
-                    .unwrap(),
-                ))
+                .execute(
+                    BrowserOperationRequest::Wait(
+                        WaitRequest::new(
+                            PageSelection::Target(target),
+                            WaitCondition::Page {
+                                expression: krometrail_core::NonEmptyText::new("false").unwrap(),
+                            },
+                            std::time::Duration::from_secs(10),
+                            std::time::Duration::from_millis(10),
+                        )
+                        .unwrap(),
+                    ),
+                    krometrail_core::BrowserOperationContext::default(),
+                )
                 .await
         })
     };
@@ -333,17 +345,20 @@ async fn explicit_network_quiet_tracks_finite_events_and_discloses_limits() {
         json!({"requestId":"private-request-id"}),
     );
     let result = session
-        .execute(BrowserOperationRequest::Wait(
-            WaitRequest::new(
-                PageSelection::Target(target),
-                WaitCondition::NetworkQuiet {
-                    quiet_for: std::time::Duration::from_millis(20),
-                },
-                std::time::Duration::from_millis(250),
-                std::time::Duration::from_millis(10),
-            )
-            .unwrap(),
-        ))
+        .execute(
+            BrowserOperationRequest::Wait(
+                WaitRequest::new(
+                    PageSelection::Target(target),
+                    WaitCondition::NetworkQuiet {
+                        quiet_for: std::time::Duration::from_millis(20),
+                    },
+                    std::time::Duration::from_millis(250),
+                    std::time::Duration::from_millis(10),
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let BrowserOperationResult::Wait(result) = result else {
@@ -399,7 +414,10 @@ async fn batch_global_deadline_fails_the_active_step_and_skips_the_rest() {
     )
     .unwrap();
     let result = session
-        .execute(BrowserOperationRequest::Batch(request))
+        .execute(
+            BrowserOperationRequest::Batch(request),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let BrowserOperationResult::Batch(result) = result else {
@@ -429,22 +447,25 @@ async fn session_stop_cancels_an_active_batch_and_marks_remaining_steps() {
         let session = Arc::clone(&session);
         tokio::spawn(async move {
             session
-                .execute(BrowserOperationRequest::Batch(
-                    BatchRequest::new(
-                        PageSelection::Target(target),
-                        vec![
-                            BrowserOperationRequest::EvaluatePage(
-                                ReadOnlyEvaluationRequest::new(target, "true", false).unwrap(),
-                            ),
-                            BrowserOperationRequest::EvaluatePage(
-                                ReadOnlyEvaluationRequest::new(target, "false", false).unwrap(),
-                            ),
-                        ],
-                        std::time::Duration::from_secs(10),
-                        BatchOptions::default(),
-                    )
-                    .unwrap(),
-                ))
+                .execute(
+                    BrowserOperationRequest::Batch(
+                        BatchRequest::new(
+                            PageSelection::Target(target),
+                            vec![
+                                BrowserOperationRequest::EvaluatePage(
+                                    ReadOnlyEvaluationRequest::new(target, "true", false).unwrap(),
+                                ),
+                                BrowserOperationRequest::EvaluatePage(
+                                    ReadOnlyEvaluationRequest::new(target, "false", false).unwrap(),
+                                ),
+                            ],
+                            std::time::Duration::from_secs(10),
+                            BatchOptions::default(),
+                        )
+                        .unwrap(),
+                    ),
+                    krometrail_core::BrowserOperationContext::default(),
+                )
                 .await
         })
     };
@@ -493,7 +514,10 @@ async fn requested_step_screenshot_uses_standalone_path_before_one_final_observa
     )
     .unwrap();
     let result = session
-        .execute(BrowserOperationRequest::Batch(request))
+        .execute(
+            BrowserOperationRequest::Batch(request),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let BrowserOperationResult::Batch(result) = result else {
@@ -530,17 +554,20 @@ async fn click(
     selector_value: &str,
 ) -> BrowserOperationResult {
     session
-        .execute(BrowserOperationRequest::Click(
-            ClickRequest::new(
-                PageSelection::Target(target),
-                selector(selector_value),
-                MouseButton::Left,
-                Modifiers::default(),
-                1,
-                false,
-            )
-            .unwrap(),
-        ))
+        .execute(
+            BrowserOperationRequest::Click(
+                ClickRequest::new(
+                    PageSelection::Target(target),
+                    selector(selector_value),
+                    MouseButton::Left,
+                    Modifiers::default(),
+                    1,
+                    false,
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap()
 }
@@ -551,15 +578,18 @@ async fn wait_for(
     condition: WaitCondition,
 ) -> krometrail_core::WaitResult {
     let result = session
-        .execute(BrowserOperationRequest::Wait(
-            WaitRequest::new(
-                PageSelection::Target(target),
-                condition,
-                std::time::Duration::from_secs(3),
-                std::time::Duration::from_millis(25),
-            )
-            .unwrap(),
-        ))
+        .execute(
+            BrowserOperationRequest::Wait(
+                WaitRequest::new(
+                    PageSelection::Target(target),
+                    condition,
+                    std::time::Duration::from_secs(3),
+                    std::time::Duration::from_millis(25),
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let BrowserOperationResult::Wait(result) = result else {
@@ -756,14 +786,17 @@ async fn opt_in_real_chrome_qualifies_every_wait_family_and_stale_references() {
         })
     ));
     let loaded = session
-        .execute(BrowserOperationRequest::EvaluatePage(
-            ReadOnlyEvaluationRequest::new(
-                target,
-                "document.querySelector('#network-image').currentSrc.includes('payload.svg')",
-                false,
-            )
-            .unwrap(),
-        ))
+        .execute(
+            BrowserOperationRequest::EvaluatePage(
+                ReadOnlyEvaluationRequest::new(
+                    target,
+                    "document.querySelector('#network-image').currentSrc.includes('payload.svg')",
+                    false,
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let BrowserOperationResult::EvaluatePage(loaded) = loaded else {
@@ -772,9 +805,10 @@ async fn opt_in_real_chrome_qualifies_every_wait_family_and_stale_references() {
     assert_eq!(loaded.value, EvaluationValue::Json(json!(true)));
 
     let snapshot = session
-        .execute(BrowserOperationRequest::SnapshotPage(
-            SnapshotPageRequest::new(target),
-        ))
+        .execute(
+            BrowserOperationRequest::SnapshotPage(SnapshotPageRequest::new(target)),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let BrowserOperationResult::SnapshotPage(snapshot) = snapshot else {
@@ -791,37 +825,43 @@ async fn opt_in_real_chrome_qualifies_every_wait_family_and_stale_references() {
         .expect("replaceable reference");
     click(&session, target, "#replace-node").await;
     let stale = session
-        .execute(BrowserOperationRequest::Wait(
-            WaitRequest::new(
-                PageSelection::Target(target),
-                WaitCondition::Text {
-                    locator: Some(ElementLocator::Reference(reference)),
-                    text: krometrail_core::NonEmptyText::new("Replacement").unwrap(),
-                    match_mode: WaitTextMatch::Contains,
-                    presence: WaitPresence::Present,
-                    case_sensitive: true,
-                },
-                std::time::Duration::from_secs(1),
-                std::time::Duration::from_millis(25),
-            )
-            .unwrap(),
-        ))
+        .execute(
+            BrowserOperationRequest::Wait(
+                WaitRequest::new(
+                    PageSelection::Target(target),
+                    WaitCondition::Text {
+                        locator: Some(ElementLocator::Reference(reference)),
+                        text: krometrail_core::NonEmptyText::new("Replacement").unwrap(),
+                        match_mode: WaitTextMatch::Contains,
+                        presence: WaitPresence::Present,
+                        case_sensitive: true,
+                    },
+                    std::time::Duration::from_secs(1),
+                    std::time::Duration::from_millis(25),
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap_err();
     assert_eq!(stale.code, ErrorCode::StaleReference);
 
     let deadline = session
-        .execute(BrowserOperationRequest::Wait(
-            WaitRequest::new(
-                PageSelection::Target(target),
-                WaitCondition::Page {
-                    expression: krometrail_core::NonEmptyText::new("false").unwrap(),
-                },
-                std::time::Duration::from_millis(30),
-                std::time::Duration::from_millis(10),
-            )
-            .unwrap(),
-        ))
+        .execute(
+            BrowserOperationRequest::Wait(
+                WaitRequest::new(
+                    PageSelection::Target(target),
+                    WaitCondition::Page {
+                        expression: krometrail_core::NonEmptyText::new("false").unwrap(),
+                    },
+                    std::time::Duration::from_millis(30),
+                    std::time::Duration::from_millis(10),
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let BrowserOperationResult::Wait(deadline) = deadline else {
@@ -862,17 +902,20 @@ async fn opt_in_real_chrome_qualifies_every_wait_family_and_stale_references() {
         let session = Arc::clone(&session);
         tokio::spawn(async move {
             session
-                .execute(BrowserOperationRequest::Wait(
-                    WaitRequest::new(
-                        PageSelection::Target(target),
-                        WaitCondition::Page {
-                            expression: krometrail_core::NonEmptyText::new("false").unwrap(),
-                        },
-                        std::time::Duration::from_secs(10),
-                        std::time::Duration::from_millis(25),
-                    )
-                    .unwrap(),
-                ))
+                .execute(
+                    BrowserOperationRequest::Wait(
+                        WaitRequest::new(
+                            PageSelection::Target(target),
+                            WaitCondition::Page {
+                                expression: krometrail_core::NonEmptyText::new("false").unwrap(),
+                            },
+                            std::time::Duration::from_secs(10),
+                            std::time::Duration::from_millis(25),
+                        )
+                        .unwrap(),
+                    ),
+                    krometrail_core::BrowserOperationContext::default(),
+                )
                 .await
         })
     };
@@ -940,16 +983,22 @@ async fn opt_in_real_chrome_qualifies_ordered_batches_and_failure_policies() {
     )
     .unwrap();
     let result = session
-        .execute(BrowserOperationRequest::Batch(batch))
+        .execute(
+            BrowserOperationRequest::Batch(batch),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let BrowserOperationResult::Batch(result) = result else {
         panic!("batch")
     };
     let observed_count = session
-        .execute(BrowserOperationRequest::EvaluatePage(
-            ReadOnlyEvaluationRequest::new(target, "window.fixtureState.count", false).unwrap(),
-        ))
+        .execute(
+            BrowserOperationRequest::EvaluatePage(
+                ReadOnlyEvaluationRequest::new(target, "window.fixtureState.count", false).unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let BrowserOperationResult::EvaluatePage(observed_count) = observed_count else {
@@ -1034,15 +1083,18 @@ async fn opt_in_real_chrome_qualifies_ordered_batches_and_failure_policies() {
         )
     };
     let stopped = session
-        .execute(BrowserOperationRequest::Batch(
-            BatchRequest::new(
-                PageSelection::Target(target),
-                vec![failing_wait(), increment()],
-                std::time::Duration::from_secs(10),
-                BatchOptions::default(),
-            )
-            .unwrap(),
-        ))
+        .execute(
+            BrowserOperationRequest::Batch(
+                BatchRequest::new(
+                    PageSelection::Target(target),
+                    vec![failing_wait(), increment()],
+                    std::time::Duration::from_secs(10),
+                    BatchOptions::default(),
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let BrowserOperationResult::Batch(stopped) = stopped else {
@@ -1061,18 +1113,21 @@ async fn opt_in_real_chrome_qualifies_ordered_batches_and_failure_policies() {
     );
 
     let continued = session
-        .execute(BrowserOperationRequest::Batch(
-            BatchRequest::new(
-                PageSelection::Target(target),
-                vec![failing_wait(), increment(), count_wait("2")],
-                std::time::Duration::from_secs(45),
-                BatchOptions {
-                    failure_policy: BatchFailurePolicy::ContinueOnFailure,
-                    include_step_screenshots: false,
-                },
-            )
-            .unwrap(),
-        ))
+        .execute(
+            BrowserOperationRequest::Batch(
+                BatchRequest::new(
+                    PageSelection::Target(target),
+                    vec![failing_wait(), increment(), count_wait("2")],
+                    std::time::Duration::from_secs(45),
+                    BatchOptions {
+                        failure_policy: BatchFailurePolicy::ContinueOnFailure,
+                        include_step_screenshots: false,
+                    },
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let BrowserOperationResult::Batch(continued) = continued else {
@@ -1088,47 +1143,50 @@ async fn opt_in_real_chrome_qualifies_ordered_batches_and_failure_policies() {
     ));
 
     let navigation = session
-        .execute(BrowserOperationRequest::Batch(
-            BatchRequest::new(
-                PageSelection::Target(target),
-                vec![
-                    BrowserOperationRequest::Click(
-                        ClickRequest::new(
-                            PageSelection::Target(target),
-                            selector("#navigate"),
-                            MouseButton::Left,
-                            Modifiers::default(),
-                            1,
-                            false,
-                        )
-                        .unwrap(),
-                    ),
-                    BrowserOperationRequest::Wait(
-                        WaitRequest::new(
-                            PageSelection::Target(target),
-                            WaitCondition::Navigation {
-                                readiness: DocumentReadiness::Complete,
-                                url: Some((
-                                    UrlMatch::Prefix,
-                                    krometrail_core::NonEmptyText::new(
-                                        support::chrome::waits_and_batches_fixture_url(
-                                            "second.html",
-                                        ),
-                                    )
-                                    .unwrap(),
-                                )),
-                            },
-                            std::time::Duration::from_secs(5),
-                            std::time::Duration::from_millis(25),
-                        )
-                        .unwrap(),
-                    ),
-                ],
-                std::time::Duration::from_secs(60),
-                BatchOptions::default(),
-            )
-            .unwrap(),
-        ))
+        .execute(
+            BrowserOperationRequest::Batch(
+                BatchRequest::new(
+                    PageSelection::Target(target),
+                    vec![
+                        BrowserOperationRequest::Click(
+                            ClickRequest::new(
+                                PageSelection::Target(target),
+                                selector("#navigate"),
+                                MouseButton::Left,
+                                Modifiers::default(),
+                                1,
+                                false,
+                            )
+                            .unwrap(),
+                        ),
+                        BrowserOperationRequest::Wait(
+                            WaitRequest::new(
+                                PageSelection::Target(target),
+                                WaitCondition::Navigation {
+                                    readiness: DocumentReadiness::Complete,
+                                    url: Some((
+                                        UrlMatch::Prefix,
+                                        krometrail_core::NonEmptyText::new(
+                                            support::chrome::waits_and_batches_fixture_url(
+                                                "second.html",
+                                            ),
+                                        )
+                                        .unwrap(),
+                                    )),
+                                },
+                                std::time::Duration::from_secs(5),
+                                std::time::Duration::from_millis(25),
+                            )
+                            .unwrap(),
+                        ),
+                    ],
+                    std::time::Duration::from_secs(60),
+                    BatchOptions::default(),
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let BrowserOperationResult::Batch(navigation) = navigation else {

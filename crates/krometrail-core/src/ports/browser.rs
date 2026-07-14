@@ -135,6 +135,44 @@ impl BrowserFailureKind {
     }
 }
 
+pub trait CancellationSignal: Send + Sync {
+    fn is_cancelled(&self) -> bool;
+    fn cancelled(&self) -> PortFuture<'_, ()>;
+}
+
+#[derive(Clone, Default)]
+pub struct BrowserOperationContext {
+    cancellation: Option<Arc<dyn CancellationSignal>>,
+}
+
+impl BrowserOperationContext {
+    pub fn with_cancellation(cancellation: Arc<dyn CancellationSignal>) -> Self {
+        Self {
+            cancellation: Some(cancellation),
+        }
+    }
+
+    pub fn cancellation(&self) -> Option<&Arc<dyn CancellationSignal>> {
+        self.cancellation.as_ref()
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancellation
+            .as_ref()
+            .is_some_and(|signal| signal.is_cancelled())
+    }
+}
+
+impl std::fmt::Debug for BrowserOperationContext {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("BrowserOperationContext")
+            .field("cancellable", &self.cancellation.is_some())
+            .field("cancelled", &self.is_cancelled())
+            .finish()
+    }
+}
+
 pub trait BrowserSessionEvents: Send {
     fn next(&mut self) -> PortFuture<'_, Result<Option<BrowserSessionEvent>>>;
 }
@@ -154,6 +192,7 @@ pub trait BrowserSessionPort: Send + Sync {
     fn execute(
         &self,
         request: BrowserOperationRequest,
+        context: BrowserOperationContext,
     ) -> PortFuture<'_, Result<BrowserOperationResult>>;
     fn stop(&self) -> PortFuture<'_, Result<BrowserStopOutcome>>;
 }

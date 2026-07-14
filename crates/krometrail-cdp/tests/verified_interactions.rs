@@ -156,7 +156,10 @@ async fn production_port_rejects_empty_coordinate_hits_and_returns_anchored_live
     )
     .unwrap();
     let result = session
-        .execute(BrowserOperationRequest::Click(request))
+        .execute(
+            BrowserOperationRequest::Click(request),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let BrowserOperationResult::Click(result) = result else {
@@ -205,7 +208,10 @@ async fn production_port_rejects_empty_coordinate_hits_and_returns_anchored_live
     )
     .unwrap();
     let error = session
-        .execute(BrowserOperationRequest::Click(request))
+        .execute(
+            BrowserOperationRequest::Click(request),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap_err();
     assert_eq!(error.code, krometrail_core::ErrorCode::InteractionFailed);
@@ -241,17 +247,20 @@ async fn element_click_uses_box_model_viewport_coordinates_after_nonzero_scroll(
     let target = session.status().await.unwrap().pages[0].target.target.id();
 
     session
-        .execute(BrowserOperationRequest::Click(
-            ClickRequest::new(
-                PageSelection::Target(target),
-                selector("#scrolled-click-target"),
-                MouseButton::Left,
-                Modifiers::default(),
-                1,
-                false,
-            )
-            .unwrap(),
-        ))
+        .execute(
+            BrowserOperationRequest::Click(
+                ClickRequest::new(
+                    PageSelection::Target(target),
+                    selector("#scrolled-click-target"),
+                    MouseButton::Left,
+                    Modifiers::default(),
+                    1,
+                    false,
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
 
@@ -347,9 +356,12 @@ async fn evaluate(
     expression: &str,
 ) -> Value {
     let result = session
-        .execute(BrowserOperationRequest::EvaluatePage(
-            ReadOnlyEvaluationRequest::new(target, expression, false).unwrap(),
-        ))
+        .execute(
+            BrowserOperationRequest::EvaluatePage(
+                ReadOnlyEvaluationRequest::new(target, expression, false).unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap_or_else(|error| panic!("evaluation {expression:?} failed: {error:?}"));
     let BrowserOperationResult::EvaluatePage(value) = result else {
@@ -396,27 +408,33 @@ async fn opt_in_real_chrome_synchronizes_dialog_open_and_close() {
     await_fixture_ready(&session, target).await;
     let page = PageSelection::Target(target);
     let scheduled = session
-        .execute(BrowserOperationRequest::Click(
-            ClickRequest::new(
-                page,
-                selector("#confirm-target"),
-                MouseButton::Left,
-                Modifiers::default(),
-                1,
-                false,
-            )
-            .unwrap(),
-        ))
+        .execute(
+            BrowserOperationRequest::Click(
+                ClickRequest::new(
+                    page,
+                    selector("#confirm-target"),
+                    MouseButton::Left,
+                    Modifiers::default(),
+                    1,
+                    false,
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .expect("schedule dialog");
     let BrowserOperationResult::Click(_scheduled) = scheduled else {
         panic!("click result")
     };
     session
-        .execute(BrowserOperationRequest::HandleDialog(HandleDialogRequest {
-            target: page,
-            action: DialogAction::Accept { prompt_text: None },
-        }))
+        .execute(
+            BrowserOperationRequest::HandleDialog(HandleDialogRequest {
+                target: page,
+                action: DialogAction::Accept { prompt_text: None },
+            }),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .expect("accept synchronized dialog");
     assert_eq!(
@@ -467,17 +485,20 @@ async fn opt_in_real_chrome_executes_verified_interaction_families() {
     let page = PageSelection::Target(target);
 
     session
-        .execute(BrowserOperationRequest::Click(
-            ClickRequest::new(
-                page,
-                selector("#click-target"),
-                MouseButton::Left,
-                Modifiers::default(),
-                1,
-                false,
-            )
-            .unwrap(),
-        ))
+        .execute(
+            BrowserOperationRequest::Click(
+                ClickRequest::new(
+                    page,
+                    selector("#click-target"),
+                    MouseButton::Left,
+                    Modifiers::default(),
+                    1,
+                    false,
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .expect("click");
     assert_eq!(
@@ -485,29 +506,35 @@ async fn opt_in_real_chrome_executes_verified_interaction_families() {
         json!(1)
     );
     session
-        .execute(BrowserOperationRequest::Fill(
-            FillRequest::new(
-                page,
-                selector("#text-input"),
-                "replaced",
-                FillMode::Replace,
-                false,
-            )
-            .unwrap(),
-        ))
+        .execute(
+            BrowserOperationRequest::Fill(
+                FillRequest::new(
+                    page,
+                    selector("#text-input"),
+                    "replaced",
+                    FillMode::Replace,
+                    false,
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .expect("fill replace");
     session
-        .execute(BrowserOperationRequest::Fill(
-            FillRequest::new(
-                page,
-                selector("#text-input"),
-                "+appended",
-                FillMode::Append,
-                false,
-            )
-            .unwrap(),
-        ))
+        .execute(
+            BrowserOperationRequest::Fill(
+                FillRequest::new(
+                    page,
+                    selector("#text-input"),
+                    "+appended",
+                    FillMode::Append,
+                    false,
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .expect("fill append");
     assert_eq!(
@@ -520,18 +547,21 @@ async fn opt_in_real_chrome_executes_verified_interaction_families() {
         json!("replaced+appended")
     );
     session
-        .execute(BrowserOperationRequest::PressKeys(
-            PressKeysRequest::new(
-                page,
-                Some(selector("#text-input")),
-                vec![
-                    KeyChord::new("Control+S").unwrap(),
-                    KeyChord::new("Enter").unwrap(),
-                ],
-                false,
-            )
-            .unwrap(),
-        ))
+        .execute(
+            BrowserOperationRequest::PressKeys(
+                PressKeysRequest::new(
+                    page,
+                    Some(selector("#text-input")),
+                    vec![
+                        KeyChord::new("Control+S").unwrap(),
+                        KeyChord::new("Enter").unwrap(),
+                    ],
+                    false,
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .expect("press keys");
     assert!(
@@ -543,14 +573,17 @@ async fn opt_in_real_chrome_executes_verified_interaction_families() {
                 .any(|value| value == "Control+s" || value == "Control+S"))
     );
     session
-        .execute(BrowserOperationRequest::SelectOption(
-            SelectOptionRequest::new(
-                page,
-                selector("#select"),
-                SelectValue::Label(krometrail_core::NonEmptyText::new("Two").unwrap()),
-            )
-            .unwrap(),
-        ))
+        .execute(
+            BrowserOperationRequest::SelectOption(
+                SelectOptionRequest::new(
+                    page,
+                    selector("#select"),
+                    SelectValue::Label(krometrail_core::NonEmptyText::new("Two").unwrap()),
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .expect("select label");
     assert_eq!(
@@ -558,10 +591,13 @@ async fn opt_in_real_chrome_executes_verified_interaction_families() {
         json!("two")
     );
     session
-        .execute(BrowserOperationRequest::Hover(HoverRequest {
-            target: page,
-            locator: selector("#hover-target"),
-        }))
+        .execute(
+            BrowserOperationRequest::Hover(HoverRequest {
+                target: page,
+                locator: selector("#hover-target"),
+            }),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .expect("hover");
     assert!(
@@ -575,21 +611,24 @@ async fn opt_in_real_chrome_executes_verified_interaction_families() {
         .is_some_and(|value| value.contains("128"))
     );
     session
-        .execute(BrowserOperationRequest::Click(
-            ClickRequest::new(
-                page,
-                InteractionLocator::coordinate(
-                    CssPoint::new(550.0, 120.0).unwrap(),
-                    CoordinateSpace::ViewportCss,
+        .execute(
+            BrowserOperationRequest::Click(
+                ClickRequest::new(
+                    page,
+                    InteractionLocator::coordinate(
+                        CssPoint::new(550.0, 120.0).unwrap(),
+                        CoordinateSpace::ViewportCss,
+                    )
+                    .unwrap(),
+                    MouseButton::Left,
+                    Modifiers::default(),
+                    1,
+                    false,
                 )
                 .unwrap(),
-                MouseButton::Left,
-                Modifiers::default(),
-                1,
-                false,
-            )
-            .unwrap(),
-        ))
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .expect("coordinate click");
     assert_eq!(
@@ -597,65 +636,80 @@ async fn opt_in_real_chrome_executes_verified_interaction_families() {
         json!(1)
     );
     let empty = session
-        .execute(BrowserOperationRequest::Click(
-            ClickRequest::new(
-                page,
-                InteractionLocator::coordinate(
-                    CssPoint::new(-10.0, -10.0).unwrap(),
-                    CoordinateSpace::ViewportCss,
+        .execute(
+            BrowserOperationRequest::Click(
+                ClickRequest::new(
+                    page,
+                    InteractionLocator::coordinate(
+                        CssPoint::new(-10.0, -10.0).unwrap(),
+                        CoordinateSpace::ViewportCss,
+                    )
+                    .unwrap(),
+                    MouseButton::Left,
+                    Modifiers::default(),
+                    1,
+                    false,
                 )
                 .unwrap(),
-                MouseButton::Left,
-                Modifiers::default(),
-                1,
-                false,
-            )
-            .unwrap(),
-        ))
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap_err();
     assert!(empty.message.as_str().contains("no_hit_target"));
 
     let drag = session
-        .execute(BrowserOperationRequest::Drag(DragRequest {
-            target: page,
-            source: selector("#drag-source"),
-            destination: selector("#drop-target"),
-        }))
+        .execute(
+            BrowserOperationRequest::Drag(DragRequest {
+                target: page,
+                source: selector("#drag-source"),
+                destination: selector("#drop-target"),
+            }),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await;
     assert!(
         drag.is_ok(),
         "drag dispatch must complete explicitly: {drag:?}"
     );
     session
-        .execute(BrowserOperationRequest::Scroll(ScrollRequest {
-            target: page,
-            delta: ScrollDelta::ByOffset { dx: 0.0, dy: 150.0 },
-        }))
+        .execute(
+            BrowserOperationRequest::Scroll(ScrollRequest {
+                target: page,
+                delta: ScrollDelta::ByOffset { dx: 0.0, dy: 150.0 },
+            }),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .expect("offset scroll");
     session
-        .execute(BrowserOperationRequest::Scroll(ScrollRequest {
-            target: page,
-            delta: ScrollDelta::ToElement(match selector("#scroll-destination") {
-                InteractionLocator::Element(value) => value,
-                _ => unreachable!(),
+        .execute(
+            BrowserOperationRequest::Scroll(ScrollRequest {
+                target: page,
+                delta: ScrollDelta::ToElement(match selector("#scroll-destination") {
+                    InteractionLocator::Element(value) => value,
+                    _ => unreachable!(),
+                }),
             }),
-        }))
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .expect("element scroll");
     let upload_path =
         std::env::temp_dir().join(format!("krometrail-real-upload-{}", std::process::id()));
     std::fs::write(&upload_path, b"real upload").unwrap();
     session
-        .execute(BrowserOperationRequest::UploadFiles(
-            UploadFilesRequest::new(
-                page,
-                selector("#file-input"),
-                vec![ValidatedFilePath::new(upload_path.to_string_lossy()).unwrap()],
-            )
-            .unwrap(),
-        ))
+        .execute(
+            BrowserOperationRequest::UploadFiles(
+                UploadFilesRequest::new(
+                    page,
+                    selector("#file-input"),
+                    vec![ValidatedFilePath::new(upload_path.to_string_lossy()).unwrap()],
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .expect("upload");
     assert_eq!(
@@ -669,9 +723,10 @@ async fn opt_in_real_chrome_executes_verified_interaction_families() {
     );
     let _ = std::fs::remove_file(upload_path);
     let snapshot = session
-        .execute(BrowserOperationRequest::SnapshotPage(
-            SnapshotPageRequest::new(target),
-        ))
+        .execute(
+            BrowserOperationRequest::SnapshotPage(SnapshotPageRequest::new(target)),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let BrowserOperationResult::SnapshotPage(snapshot) = snapshot else {
@@ -687,23 +742,27 @@ async fn opt_in_real_chrome_executes_verified_interaction_families() {
         })
         .expect("click reference");
     session
-        .execute(BrowserOperationRequest::SnapshotPage(
-            SnapshotPageRequest::new(target),
-        ))
+        .execute(
+            BrowserOperationRequest::SnapshotPage(SnapshotPageRequest::new(target)),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let stale = session
-        .execute(BrowserOperationRequest::Click(
-            ClickRequest::new(
-                page,
-                InteractionLocator::Element(ElementLocator::Reference(reference)),
-                MouseButton::Left,
-                Modifiers::default(),
-                1,
-                false,
-            )
-            .unwrap(),
-        ))
+        .execute(
+            BrowserOperationRequest::Click(
+                ClickRequest::new(
+                    page,
+                    InteractionLocator::Element(ElementLocator::Reference(reference)),
+                    MouseButton::Left,
+                    Modifiers::default(),
+                    1,
+                    false,
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap_err();
     assert_eq!(stale.code, krometrail_core::ErrorCode::StaleReference);
@@ -711,24 +770,30 @@ async fn opt_in_real_chrome_executes_verified_interaction_families() {
     // Schedule the modal after the triggering click has returned so the serialized actor can
     // receive the separate dialog operation rather than blocking behind page JavaScript.
     session
-        .execute(BrowserOperationRequest::Click(
-            ClickRequest::new(
-                page,
-                selector("#confirm-target"),
-                MouseButton::Left,
-                Modifiers::default(),
-                1,
-                false,
-            )
-            .unwrap(),
-        ))
+        .execute(
+            BrowserOperationRequest::Click(
+                ClickRequest::new(
+                    page,
+                    selector("#confirm-target"),
+                    MouseButton::Left,
+                    Modifiers::default(),
+                    1,
+                    false,
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .expect("schedule confirm dialog");
     if let Err(error) = session
-        .execute(BrowserOperationRequest::HandleDialog(HandleDialogRequest {
-            target: page,
-            action: DialogAction::Accept { prompt_text: None },
-        }))
+        .execute(
+            BrowserOperationRequest::HandleDialog(HandleDialogRequest {
+                target: page,
+                action: DialogAction::Accept { prompt_text: None },
+            }),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
     {
         panic!("accept dialog: {error:?}");
@@ -744,24 +809,30 @@ async fn opt_in_real_chrome_executes_verified_interaction_families() {
     );
 
     session
-        .execute(BrowserOperationRequest::Click(
-            ClickRequest::new(
-                page,
-                selector("#confirm-target"),
-                MouseButton::Left,
-                Modifiers::default(),
-                1,
-                false,
-            )
-            .unwrap(),
-        ))
+        .execute(
+            BrowserOperationRequest::Click(
+                ClickRequest::new(
+                    page,
+                    selector("#confirm-target"),
+                    MouseButton::Left,
+                    Modifiers::default(),
+                    1,
+                    false,
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .expect("schedule second confirm dialog");
     session
-        .execute(BrowserOperationRequest::HandleDialog(HandleDialogRequest {
-            target: page,
-            action: DialogAction::Dismiss,
-        }))
+        .execute(
+            BrowserOperationRequest::HandleDialog(HandleDialogRequest {
+                target: page,
+                action: DialogAction::Dismiss,
+            }),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .expect("dismiss dialog");
     assert_eq!(
@@ -775,13 +846,16 @@ async fn opt_in_real_chrome_executes_verified_interaction_families() {
     );
 
     session
-        .execute(BrowserOperationRequest::Scroll(ScrollRequest {
-            target: page,
-            delta: ScrollDelta::ToElement(match selector("#scrolled-click-target") {
-                InteractionLocator::Element(value) => value,
-                _ => unreachable!(),
+        .execute(
+            BrowserOperationRequest::Scroll(ScrollRequest {
+                target: page,
+                delta: ScrollDelta::ToElement(match selector("#scrolled-click-target") {
+                    InteractionLocator::Element(value) => value,
+                    _ => unreachable!(),
+                }),
             }),
-        }))
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .expect("scroll distant click target into view");
     assert_eq!(
@@ -789,17 +863,20 @@ async fn opt_in_real_chrome_executes_verified_interaction_families() {
         json!(true)
     );
     session
-        .execute(BrowserOperationRequest::Click(
-            ClickRequest::new(
-                page,
-                selector("#scrolled-click-target"),
-                MouseButton::Left,
-                Modifiers::default(),
-                1,
-                false,
-            )
-            .unwrap(),
-        ))
+        .execute(
+            BrowserOperationRequest::Click(
+                ClickRequest::new(
+                    page,
+                    selector("#scrolled-click-target"),
+                    MouseButton::Left,
+                    Modifiers::default(),
+                    1,
+                    false,
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .expect("click element after document scroll");
     assert_eq!(

@@ -83,11 +83,11 @@ pub use ids::{
 };
 pub use lifecycle::{SessionLifecycle, TargetLifecycle};
 pub use ports::{
-    AttachBrowser, BrowserConnectRequest, BrowserConnector, BrowserFailureKind, BrowserPageTargets,
-    BrowserSessionEvents, BrowserSessionPort, CaptureGapStore, FrameSource, IdSource,
-    InteractionAnchorSource, LaunchBrowser, ManagedProfile, MonotonicClock, PortFuture,
-    RecordingCatalog, RecordingSink, RetentionStore, TimelineAnchorSource, TimelineStore,
-    WallClock,
+    AttachBrowser, BrowserConnectRequest, BrowserConnector, BrowserFailureKind,
+    BrowserOperationContext, BrowserPageTargets, BrowserSessionEvents, BrowserSessionPort,
+    CancellationSignal, CaptureGapStore, FrameSource, IdSource, InteractionAnchorSource,
+    LaunchBrowser, ManagedProfile, MonotonicClock, PortFuture, RecordingCatalog, RecordingSink,
+    RetentionStore, TimelineAnchorSource, TimelineStore, WallClock,
 };
 pub use recording::{
     ByteOffset, CaptureGap, CaptureGapReason, CaptureOrdinal, CaptureStatistics,

@@ -123,24 +123,52 @@ impl PageControl {
             }
         };
         let bound = bind_target(state, selection)?;
+        cancel.check(state.connection_generation, bound.target_id)?;
         let started_at = self.session_time()?;
         match request {
             BrowserOperationRequest::InspectPage(request) => {
-                self.inspect(transport, &bound, request, started_at).await
+                cancel
+                    .race(
+                        state.connection_generation,
+                        bound.target_id,
+                        self.inspect(transport, &bound, request, started_at),
+                    )
+                    .await?
             }
             BrowserOperationRequest::EvaluatePage(request) => {
-                self.evaluate(transport, &bound, request, started_at).await
+                cancel
+                    .race(
+                        state.connection_generation,
+                        bound.target_id,
+                        self.evaluate(transport, &bound, request, started_at),
+                    )
+                    .await?
             }
             BrowserOperationRequest::SnapshotPage(request) => {
-                self.snapshot(transport, &bound, request, started_at).await
+                cancel
+                    .race(
+                        state.connection_generation,
+                        bound.target_id,
+                        self.snapshot(transport, &bound, request, started_at),
+                    )
+                    .await?
             }
             BrowserOperationRequest::TakeScreenshot(request) => {
-                self.screenshot(transport, &bound, request, started_at)
-                    .await
+                cancel
+                    .race(
+                        state.connection_generation,
+                        bound.target_id,
+                        self.screenshot(transport, &bound, request, started_at),
+                    )
+                    .await?
             }
-            BrowserOperationRequest::ObserveLive(request) => self
-                .observe_live(transport, &bound, request, started_at, None)
-                .await
+            BrowserOperationRequest::ObserveLive(request) => cancel
+                .race(
+                    state.connection_generation,
+                    bound.target_id,
+                    self.observe_live(transport, &bound, request, started_at, None),
+                )
+                .await?
                 .map(|(result, _)| result),
             BrowserOperationRequest::Wait(request) => self
                 .execute_wait(transport, state, request, cancel, parent_deadline)

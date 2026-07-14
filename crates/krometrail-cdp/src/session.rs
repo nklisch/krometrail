@@ -17,13 +17,13 @@ use futures_util::{StreamExt, stream::FuturesUnordered};
 
 use krometrail_core::{
     AttachBrowser, BrowserCompatibility, BrowserConnectRequest, BrowserConnector,
-    BrowserInstallation, BrowserOperationRequest, BrowserOperationResult, BrowserOperationScope,
-    BrowserOwnership, BrowserSessionEvent, BrowserSessionEvents, BrowserSessionPort,
-    BrowserSessionState, BrowserStatus, BrowserStopOutcome, ErrorCode, IdSource, IdValue,
-    InteractionAnchor, InteractionTiming, KrometrailError, MonotonicClock, NonEmptyText,
-    ObservationPart, PageChange, PageOperationOutcome, PageOperationResult, PageSelection,
-    PageStatus, PortFuture, ProfileRef, Result, SessionId, SessionOrigin, TargetCaptureStatus,
-    TargetVisibility,
+    BrowserInstallation, BrowserOperationContext, BrowserOperationRequest, BrowserOperationResult,
+    BrowserOperationScope, BrowserOwnership, BrowserSessionEvent, BrowserSessionEvents,
+    BrowserSessionPort, BrowserSessionState, BrowserStatus, BrowserStopOutcome, ErrorCode,
+    IdSource, IdValue, InteractionAnchor, InteractionTiming, KrometrailError, MonotonicClock,
+    NonEmptyText, ObservationPart, PageChange, PageOperationOutcome, PageOperationResult,
+    PageSelection, PageStatus, PortFuture, ProfileRef, Result, SessionId, SessionOrigin,
+    TargetCaptureStatus, TargetVisibility,
 };
 use serde_json::Value;
 use tokio::{
@@ -450,6 +450,7 @@ enum SupervisorCommand {
     Input(SupervisorInput),
     Execute(
         BrowserOperationRequest,
+        BrowserOperationContext,
         oneshot::Sender<Result<BrowserOperationResult>>,
     ),
     Stop(oneshot::Sender<Result<BrowserStopOutcome>>),
@@ -528,22 +529,44 @@ impl BrowserSessionPort for ProductionSession {
     fn execute(
         &self,
         request: BrowserOperationRequest,
+        context: BrowserOperationContext,
     ) -> PortFuture<'_, Result<BrowserOperationResult>> {
         let shared = Arc::clone(&self.shared);
         Box::pin(async move {
             let target_id = direct_request_target(&request);
+            if context.is_cancelled() {
+                return Err(request_operation_error(
+                    ErrorCode::Cancelled,
+                    target_id,
+                    "browser operation was cancelled before dispatch",
+                ));
+            }
+            let request_signal = context.cancellation().cloned();
             let (sender, receiver) = oneshot::channel();
-            shared
+            let send = shared
                 .command_tx
-                .send(SupervisorCommand::Execute(request, sender))
-                .await
-                .map_err(|_| {
-                    request_operation_error(
-                        ErrorCode::Cancelled,
-                        target_id,
-                        "browser supervision task ended",
-                    )
-                })?;
+                .send(SupervisorCommand::Execute(request, context, sender));
+            match request_signal {
+                Some(signal) => tokio::select! {
+                    biased;
+                    () = signal.cancelled() => {
+                        return Err(request_operation_error(
+                            ErrorCode::Cancelled,
+                            target_id,
+                            "browser operation was cancelled before dispatch",
+                        ));
+                    }
+                    result = send => result,
+                },
+                None => send.await,
+            }
+            .map_err(|_| {
+                request_operation_error(
+                    ErrorCode::Cancelled,
+                    target_id,
+                    "browser supervision task ended",
+                )
+            })?;
             receiver.await.map_err(|_| {
                 request_operation_error(
                     ErrorCode::Cancelled,
@@ -1046,25 +1069,35 @@ async fn run_supervisor(
                     }
                 }
             }
-            SupervisorCommand::Execute(request, sender) => {
+            SupervisorCommand::Execute(request, context, sender) => {
                 let target_id = direct_request_target(&request);
-                let result = match connection.as_ref() {
-                    Some(connection) => {
-                        execute_operation(
-                            &mut page_control,
-                            &mut state,
-                            Arc::clone(&connection.transport),
-                            &shared,
-                            request,
-                            OperationExecutionContext::default(),
-                        )
-                        .await
-                    }
-                    None => Err(request_operation_error(
-                        ErrorCode::BrowserDisconnected,
+                let cancellation = shared.operation_cancellation.for_request(&context);
+                let result = if cancellation.request_is_cancelled() {
+                    Err(request_operation_error(
+                        ErrorCode::Cancelled,
                         target_id,
-                        "browser transport is unavailable",
-                    )),
+                        "browser operation was cancelled before dispatch",
+                    ))
+                } else {
+                    match connection.as_ref() {
+                        Some(connection) => {
+                            execute_operation(
+                                &mut page_control,
+                                &mut state,
+                                Arc::clone(&connection.transport),
+                                &shared,
+                                request,
+                                &cancellation,
+                                OperationExecutionContext::default(),
+                            )
+                            .await
+                        }
+                        None => Err(request_operation_error(
+                            ErrorCode::BrowserDisconnected,
+                            target_id,
+                            "browser transport is unavailable",
+                        )),
+                    }
                 };
                 let _ = sender.send(result);
             }
@@ -1141,11 +1174,19 @@ pub(crate) async fn execute_operation(
     transport: Arc<dyn CdpTransport>,
     shared: &Arc<SessionShared>,
     request: BrowserOperationRequest,
+    cancellation: &OperationCancellation,
     context: OperationExecutionContext,
 ) -> Result<BrowserOperationResult> {
+    if cancellation.request_is_cancelled() {
+        return Err(request_operation_error(
+            ErrorCode::Cancelled,
+            direct_request_target(&request),
+            "browser operation was cancelled before dispatch",
+        ));
+    }
     if let BrowserOperationRequest::Batch(request) = request {
         return page_control
-            .execute_batch(transport, state, shared, request, context)
+            .execute_batch(transport, state, shared, request, cancellation, context)
             .await
             .map(|result| BrowserOperationResult::Batch(Box::new(result)));
     }
@@ -1155,7 +1196,7 @@ pub(crate) async fn execute_operation(
                 transport.as_ref(),
                 state,
                 request,
-                &shared.operation_cancellation,
+                cancellation,
                 context.parent_batch,
             )
             .await;
@@ -1297,7 +1338,7 @@ pub(crate) async fn execute_operation(
                 dispatched_at,
                 PageChange::Created { target_id },
                 PageSelection::Target(target_id),
-                &shared.operation_cancellation,
+                cancellation,
             )
             .await
             .map(|result| BrowserOperationResult::CreatePage(Box::new(result)))
@@ -1351,49 +1392,29 @@ pub(crate) async fn execute_operation(
                     selected: target_id,
                 },
                 PageSelection::Target(target_id),
-                &shared.operation_cancellation,
+                cancellation,
             )
             .await
             .map(|result| BrowserOperationResult::SelectPage(Box::new(result)))
         }
         BrowserOperationRequest::NavigatePage(request) => {
             page_control
-                .navigate(
-                    transport.as_ref(),
-                    state,
-                    request,
-                    &shared.operation_cancellation,
-                )
+                .navigate(transport.as_ref(), state, request, cancellation)
                 .await
         }
         BrowserOperationRequest::ReloadPage(request) => {
             page_control
-                .reload(
-                    transport.as_ref(),
-                    state,
-                    request,
-                    &shared.operation_cancellation,
-                )
+                .reload(transport.as_ref(), state, request, cancellation)
                 .await
         }
         BrowserOperationRequest::GoBack(request) => {
             page_control
-                .go_back(
-                    transport.as_ref(),
-                    state,
-                    request,
-                    &shared.operation_cancellation,
-                )
+                .go_back(transport.as_ref(), state, request, cancellation)
                 .await
         }
         BrowserOperationRequest::GoForward(request) => {
             page_control
-                .go_forward(
-                    transport.as_ref(),
-                    state,
-                    request,
-                    &shared.operation_cancellation,
-                )
+                .go_forward(transport.as_ref(), state, request, cancellation)
                 .await
         }
         BrowserOperationRequest::ClosePage(request) => {
@@ -1457,7 +1478,7 @@ pub(crate) async fn execute_operation(
                             transport.as_ref(),
                             state,
                             PageSelection::Target(selected),
-                            &shared.operation_cancellation,
+                            cancellation,
                         )
                         .await?;
                     (observed.observation, observed.interruption)
@@ -1498,7 +1519,7 @@ pub(crate) async fn execute_operation(
                     transport.as_ref(),
                     state,
                     request,
-                    &shared.operation_cancellation,
+                    cancellation,
                     context.deadline,
                 )
                 .await
@@ -2106,7 +2127,7 @@ async fn reconnect_loop_transactional(
                             let _ = finish_interrupted_reconnect(shared, state, connection, runtime, SupervisorInput::StopRequested, Some(sender)).await;
                             return true;
                         }
-                        Some(SupervisorCommand::Execute(request, sender)) => {
+                        Some(SupervisorCommand::Execute(request, _context, sender)) => {
                             let target_id = direct_request_target(&request);
                             let _ = sender.send(Err(request_operation_error(
                                 ErrorCode::BrowserDisconnected,
@@ -2189,7 +2210,7 @@ async fn reconnect_loop_transactional(
                 command = commands.recv() => {
                     let interrupt = match command {
                         Some(SupervisorCommand::Stop(sender)) => Some(ReconnectInterrupt::Stop(sender)),
-                        Some(SupervisorCommand::Execute(request, sender)) => {
+                        Some(SupervisorCommand::Execute(request, _context, sender)) => {
                             let target_id = direct_request_target(&request);
                             let _ = sender.send(Err(request_operation_error(
                                 ErrorCode::BrowserDisconnected,

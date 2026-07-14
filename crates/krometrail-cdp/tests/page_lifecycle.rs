@@ -2,22 +2,63 @@
 
 mod support;
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use krometrail_cdp::{
     CdpTransport, CdpTransportFactory, ProductionBrowserConnector, TransportError, TransportFuture,
 };
 use krometrail_core::{
-    AttachBrowser, BrowserConnectRequest, BrowserConnector, BrowserOperationRequest,
-    BrowserOperationResult, BrowserSessionState, ClosePageRequest, CreatePageRequest,
-    ElementLocator, ErrorCode, GoBackRequest, GoForwardRequest, ImageFormat, InspectPageRequest,
-    LaunchBrowser, ListPagesRequest, ManagedProfile, NavigatePageRequest, ObservationPart,
-    PageOperationOutcome, PageSelection, ProfileIdentity, ProfileRef, ReadOnlyEvaluationRequest,
-    ReloadPageRequest, ScreenshotRequest, ScreenshotTarget, SelectPageRequest, SnapshotPageRequest,
+    AttachBrowser, BrowserConnectRequest, BrowserConnector, BrowserOperationContext,
+    BrowserOperationRequest, BrowserOperationResult, BrowserSessionState, CancellationSignal,
+    ClosePageRequest, CreatePageRequest, ElementLocator, ErrorCode, GoBackRequest,
+    GoForwardRequest, ImageFormat, InspectPageRequest, LaunchBrowser, ListPagesRequest,
+    ManagedProfile, NavigatePageRequest, ObservationPart, PageOperationOutcome, PageSelection,
+    ProfileIdentity, ProfileRef, ReadOnlyEvaluationRequest, ReloadPageRequest, ScreenshotRequest,
+    ScreenshotTarget, SelectPageRequest, SnapshotPageRequest,
 };
 use serde_json::{Value, json};
 use support::scripted_cdp::ScriptedCdp;
+
+#[derive(Clone, Default)]
+struct RequestCancellation {
+    cancelled: Arc<AtomicBool>,
+    notify: Arc<tokio::sync::Notify>,
+}
+
+impl RequestCancellation {
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+        self.notify.notify_waiters();
+    }
+}
+
+impl CancellationSignal for RequestCancellation {
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    fn cancelled(&self) -> krometrail_core::PortFuture<'_, ()> {
+        Box::pin(async move {
+            loop {
+                if self.is_cancelled() {
+                    return;
+                }
+                let notified = self.notify.notified();
+                if self.is_cancelled() {
+                    return;
+                }
+                notified.await;
+            }
+        })
+    }
+}
 
 #[derive(Clone)]
 struct ScriptedFactory(ScriptedCdp);
@@ -145,7 +186,10 @@ async fn status_and_page_mutations_share_exact_selected_target_state() {
     let initial_id = initial.selected_target_id.unwrap();
 
     let listed = session
-        .execute(BrowserOperationRequest::ListPages(ListPagesRequest))
+        .execute(
+            BrowserOperationRequest::ListPages(ListPagesRequest),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let BrowserOperationResult::ListPages(listed) = listed else {
@@ -181,9 +225,10 @@ async fn status_and_page_mutations_share_exact_selected_target_state() {
         &["about:blank"],
     );
     let created = session
-        .execute(BrowserOperationRequest::CreatePage(
-            CreatePageRequest::new(None::<String>).unwrap(),
-        ))
+        .execute(
+            BrowserOperationRequest::CreatePage(CreatePageRequest::new(None::<String>).unwrap()),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let BrowserOperationResult::CreatePage(created) = created else {
@@ -205,9 +250,12 @@ async fn status_and_page_mutations_share_exact_selected_target_state() {
         &["http://fixture/"],
     );
     let selected = session
-        .execute(BrowserOperationRequest::SelectPage(SelectPageRequest {
-            target_id: initial_id,
-        }))
+        .execute(
+            BrowserOperationRequest::SelectPage(SelectPageRequest {
+                target_id: initial_id,
+            }),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let BrowserOperationResult::SelectPage(selected) = selected else {
@@ -229,9 +277,12 @@ async fn status_and_page_mutations_share_exact_selected_target_state() {
     );
     transport.push_response("Target.closeTarget", json!({"success":true}));
     let closed = session
-        .execute(BrowserOperationRequest::ClosePage(ClosePageRequest {
-            target: PageSelection::Target(created_id),
-        }))
+        .execute(
+            BrowserOperationRequest::ClosePage(ClosePageRequest {
+                target: PageSelection::Target(created_id),
+            }),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let BrowserOperationResult::ClosePage(closed) = closed else {
@@ -245,9 +296,12 @@ async fn status_and_page_mutations_share_exact_selected_target_state() {
 
     transport.push_response("Target.closeTarget", json!({"success":true}));
     let last = session
-        .execute(BrowserOperationRequest::ClosePage(ClosePageRequest {
-            target: PageSelection::Selected,
-        }))
+        .execute(
+            BrowserOperationRequest::ClosePage(ClosePageRequest {
+                target: PageSelection::Selected,
+            }),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let BrowserOperationResult::ClosePage(last) = last else {
@@ -296,9 +350,10 @@ async fn create_attach_failure_keeps_the_allocated_interaction_anchor() {
     transport.push_failure("Target.attachToTarget", TransportError::CommandFailed);
 
     let created = session
-        .execute(BrowserOperationRequest::CreatePage(
-            CreatePageRequest::new(None::<String>).unwrap(),
-        ))
+        .execute(
+            BrowserOperationRequest::CreatePage(CreatePageRequest::new(None::<String>).unwrap()),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .expect("anchored create result");
     let BrowserOperationResult::CreatePage(created) = created else {
@@ -351,10 +406,13 @@ async fn stable_loader_reload_requires_fresh_document_readiness() {
     script_live(&transport, url, "Cached", "stable-loader", 0, &[url]);
 
     let reloaded = session
-        .execute(BrowserOperationRequest::ReloadPage(ReloadPageRequest {
-            target: PageSelection::Selected,
-            bypass_cache: false,
-        }))
+        .execute(
+            BrowserOperationRequest::ReloadPage(ReloadPageRequest {
+                target: PageSelection::Selected,
+                bypass_cache: false,
+            }),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let BrowserOperationResult::ReloadPage(reloaded) = reloaded else {
@@ -443,9 +501,10 @@ async fn start_select_with_held_observation(
         let session = Arc::clone(&session);
         tokio::spawn(async move {
             session
-                .execute(BrowserOperationRequest::SelectPage(SelectPageRequest {
-                    target_id,
-                }))
+                .execute(
+                    BrowserOperationRequest::SelectPage(SelectPageRequest { target_id }),
+                    krometrail_core::BrowserOperationContext::default(),
+                )
                 .await
         })
     };
@@ -539,6 +598,87 @@ async fn disconnect_interrupts_post_operation_observation_without_replay() {
 }
 
 #[tokio::test]
+async fn request_cancellation_isolated_from_the_session_before_and_during_dispatch() {
+    let transport = ScriptedCdp::chrome();
+    let session = scripted_session(&transport).await;
+    let before = transport.command_calls().len();
+
+    let pre_cancelled = RequestCancellation::default();
+    pre_cancelled.cancel();
+    let error = session
+        .execute(
+            BrowserOperationRequest::NavigatePage(
+                NavigatePageRequest::new(PageSelection::Selected, "http://fixture/never-sent")
+                    .unwrap(),
+            ),
+            BrowserOperationContext::with_cancellation(Arc::new(pre_cancelled)),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::Cancelled);
+    assert_eq!(transport.command_calls().len(), before);
+
+    let target_id = session.status().await.unwrap().selected_target_id.unwrap();
+    transport.push_response(
+        "Page.getFrameTree",
+        frame("loader-1", "http://fixture/first"),
+    );
+    transport.push_response(
+        "Page.getNavigationHistory",
+        history(0, &["http://fixture/first"]),
+    );
+    transport.hold_method("Page.navigate");
+    let cancellation = RequestCancellation::default();
+    let operation = {
+        let session = Arc::clone(&session);
+        let signal = cancellation.clone();
+        tokio::spawn(async move {
+            session
+                .execute(
+                    BrowserOperationRequest::NavigatePage(
+                        NavigatePageRequest::new(
+                            PageSelection::Target(target_id),
+                            "http://fixture/cancelled",
+                        )
+                        .unwrap(),
+                    ),
+                    BrowserOperationContext::with_cancellation(Arc::new(signal)),
+                )
+                .await
+        })
+    };
+    transport.wait_for_command("Page.navigate").await;
+    cancellation.cancel();
+    let result = tokio::time::timeout(Duration::from_secs(1), operation)
+        .await
+        .expect("request cancellation must interrupt a held operation")
+        .unwrap()
+        .unwrap();
+    let BrowserOperationResult::NavigatePage(result) = result else {
+        panic!("cancelled navigation result")
+    };
+    let PageOperationOutcome::Failed(error) = result.outcome else {
+        panic!("cancelled navigation failure")
+    };
+    assert_eq!(error.code, ErrorCode::Cancelled);
+
+    // Per-request cancellation must not poison the session or another operation.
+    let listed = session
+        .execute(
+            BrowserOperationRequest::ListPages(ListPagesRequest),
+            BrowserOperationContext::default(),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(listed, BrowserOperationResult::ListPages(_)));
+    assert_eq!(
+        session.status().await.unwrap().state,
+        BrowserSessionState::Ready
+    );
+    session.stop().await.unwrap();
+}
+
+#[tokio::test]
 async fn navigation_reload_history_and_stop_cancellation_are_anchored() {
     let transport = ScriptedCdp::chrome();
     let session = scripted_session(&transport).await;
@@ -549,9 +689,10 @@ async fn navigation_reload_history_and_stop_cancellation_are_anchored() {
     transport.push_response("Page.getFrameTree", frame("loader-1", first));
     transport.push_response("Accessibility.getFullAXTree", ax_tree());
     let snapshot = session
-        .execute(BrowserOperationRequest::SnapshotPage(
-            SnapshotPageRequest::new(target_id),
-        ))
+        .execute(
+            BrowserOperationRequest::SnapshotPage(SnapshotPageRequest::new(target_id)),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let BrowserOperationResult::SnapshotPage(snapshot) = snapshot else {
@@ -580,9 +721,12 @@ async fn navigation_reload_history_and_stop_cancellation_are_anchored() {
         &[first, second],
     );
     let navigated = session
-        .execute(BrowserOperationRequest::NavigatePage(
-            NavigatePageRequest::new(PageSelection::Selected, second).unwrap(),
-        ))
+        .execute(
+            BrowserOperationRequest::NavigatePage(
+                NavigatePageRequest::new(PageSelection::Selected, second).unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let BrowserOperationResult::NavigatePage(navigated) = navigated else {
@@ -596,15 +740,18 @@ async fn navigation_reload_history_and_stop_cancellation_are_anchored() {
         json!({"result":{"type":"number","value":1.0}}),
     );
     let stale = session
-        .execute(BrowserOperationRequest::TakeScreenshot(
-            ScreenshotRequest::new(
-                target_id,
-                ScreenshotTarget::Element(ElementLocator::Reference(old_reference)),
-                ImageFormat::Png,
-                None,
-            )
-            .unwrap(),
-        ))
+        .execute(
+            BrowserOperationRequest::TakeScreenshot(
+                ScreenshotRequest::new(
+                    target_id,
+                    ScreenshotTarget::Element(ElementLocator::Reference(old_reference)),
+                    ImageFormat::Png,
+                    None,
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap_err();
     assert_eq!(stale.code, ErrorCode::StaleReference);
@@ -627,10 +774,13 @@ async fn navigation_reload_history_and_stop_cancellation_are_anchored() {
         &[first, second],
     );
     let reloaded = session
-        .execute(BrowserOperationRequest::ReloadPage(ReloadPageRequest {
-            target: PageSelection::Selected,
-            bypass_cache: true,
-        }))
+        .execute(
+            BrowserOperationRequest::ReloadPage(ReloadPageRequest {
+                target: PageSelection::Selected,
+                bypass_cache: true,
+            }),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let BrowserOperationResult::ReloadPage(reloaded) = reloaded else {
@@ -645,9 +795,12 @@ async fn navigation_reload_history_and_stop_cancellation_are_anchored() {
     transport.push_response("Page.getNavigationHistory", history(0, &[first, second]));
     script_live(&transport, first, "First", "loader-3", 0, &[first, second]);
     let back = session
-        .execute(BrowserOperationRequest::GoBack(GoBackRequest {
-            target: PageSelection::Selected,
-        }))
+        .execute(
+            BrowserOperationRequest::GoBack(GoBackRequest {
+                target: PageSelection::Selected,
+            }),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let BrowserOperationResult::GoBack(back) = back else {
@@ -658,9 +811,12 @@ async fn navigation_reload_history_and_stop_cancellation_are_anchored() {
     transport.push_response("Page.getFrameTree", frame("loader-3", first));
     transport.push_response("Page.getNavigationHistory", history(0, &[first, second]));
     let boundary = session
-        .execute(BrowserOperationRequest::GoBack(GoBackRequest {
-            target: PageSelection::Selected,
-        }))
+        .execute(
+            BrowserOperationRequest::GoBack(GoBackRequest {
+                target: PageSelection::Selected,
+            }),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap_err();
     assert_eq!(boundary.code, ErrorCode::InvalidInput);
@@ -679,9 +835,12 @@ async fn navigation_reload_history_and_stop_cancellation_are_anchored() {
         &[first, second],
     );
     let forward = session
-        .execute(BrowserOperationRequest::GoForward(GoForwardRequest {
-            target: PageSelection::Selected,
-        }))
+        .execute(
+            BrowserOperationRequest::GoForward(GoForwardRequest {
+                target: PageSelection::Selected,
+            }),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let BrowserOperationResult::GoForward(forward) = forward else {
@@ -703,10 +862,13 @@ async fn navigation_reload_history_and_stop_cancellation_are_anchored() {
         let session = Arc::clone(&session);
         tokio::spawn(async move {
             session
-                .execute(BrowserOperationRequest::NavigatePage(
-                    NavigatePageRequest::new(PageSelection::Selected, "http://fixture/stalled")
-                        .unwrap(),
-                ))
+                .execute(
+                    BrowserOperationRequest::NavigatePage(
+                        NavigatePageRequest::new(PageSelection::Selected, "http://fixture/stalled")
+                            .unwrap(),
+                    ),
+                    krometrail_core::BrowserOperationContext::default(),
+                )
                 .await
         })
     };
@@ -743,10 +905,16 @@ async fn navigation_rejection_and_malformed_preflight_are_source_safe() {
         json!({"frameId":"main","errorText":"private protocol detail"}),
     );
     let rejected = session
-        .execute(BrowserOperationRequest::NavigatePage(
-            NavigatePageRequest::new(PageSelection::Target(target_id), "http://fixture/rejected")
+        .execute(
+            BrowserOperationRequest::NavigatePage(
+                NavigatePageRequest::new(
+                    PageSelection::Target(target_id),
+                    "http://fixture/rejected",
+                )
                 .unwrap(),
-        ))
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let BrowserOperationResult::NavigatePage(rejected) = rejected else {
@@ -764,9 +932,13 @@ async fn navigation_rejection_and_malformed_preflight_are_source_safe() {
 
     transport.push_response("Page.getFrameTree", json!({"frameTree":{}}));
     let malformed = session
-        .execute(BrowserOperationRequest::NavigatePage(
-            NavigatePageRequest::new(PageSelection::Selected, "http://fixture/malformed").unwrap(),
-        ))
+        .execute(
+            BrowserOperationRequest::NavigatePage(
+                NavigatePageRequest::new(PageSelection::Selected, "http://fixture/malformed")
+                    .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap_err();
     assert_eq!(malformed.code, ErrorCode::NavigationFailed);
@@ -818,9 +990,10 @@ async fn opt_in_real_chrome_runs_complete_managed_page_lifecycle() {
     let initial_id = initial.selected_target_id.expect("initial selection");
 
     let snapshot = session
-        .execute(BrowserOperationRequest::SnapshotPage(
-            SnapshotPageRequest::new(initial_id),
-        ))
+        .execute(
+            BrowserOperationRequest::SnapshotPage(SnapshotPageRequest::new(initial_id)),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let BrowserOperationResult::SnapshotPage(snapshot) = snapshot else {
@@ -837,9 +1010,12 @@ async fn opt_in_real_chrome_runs_complete_managed_page_lifecycle() {
         .expect("push-history reference");
 
     let created = session
-        .execute(BrowserOperationRequest::CreatePage(
-            CreatePageRequest::new(Some(second_url.clone())).unwrap(),
-        ))
+        .execute(
+            BrowserOperationRequest::CreatePage(
+                CreatePageRequest::new(Some(second_url.clone())).unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let BrowserOperationResult::CreatePage(created) = created else {
@@ -850,10 +1026,13 @@ async fn opt_in_real_chrome_runs_complete_managed_page_lifecycle() {
     assert_ne!(created_id, initial_id);
 
     let navigated_initial = session
-        .execute(BrowserOperationRequest::NavigatePage(
-            NavigatePageRequest::new(PageSelection::Target(initial_id), second_url.clone())
-                .unwrap(),
-        ))
+        .execute(
+            BrowserOperationRequest::NavigatePage(
+                NavigatePageRequest::new(PageSelection::Target(initial_id), second_url.clone())
+                    .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let BrowserOperationResult::NavigatePage(navigated_initial) = navigated_initial else {
@@ -861,42 +1040,57 @@ async fn opt_in_real_chrome_runs_complete_managed_page_lifecycle() {
     };
     assert_successful_observation(&navigated_initial);
     let stale = session
-        .execute(BrowserOperationRequest::TakeScreenshot(
-            ScreenshotRequest::new(
-                initial_id,
-                ScreenshotTarget::Element(ElementLocator::Reference(old_reference)),
-                ImageFormat::Png,
-                None,
-            )
-            .unwrap(),
-        ))
+        .execute(
+            BrowserOperationRequest::TakeScreenshot(
+                ScreenshotRequest::new(
+                    initial_id,
+                    ScreenshotTarget::Element(ElementLocator::Reference(old_reference)),
+                    ImageFormat::Png,
+                    None,
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap_err();
     assert_eq!(stale.code, ErrorCode::StaleReference);
 
     session
-        .execute(BrowserOperationRequest::SelectPage(SelectPageRequest {
-            target_id: created_id,
-        }))
+        .execute(
+            BrowserOperationRequest::SelectPage(SelectPageRequest {
+                target_id: created_id,
+            }),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     session
-        .execute(BrowserOperationRequest::NavigatePage(
-            NavigatePageRequest::new(PageSelection::Selected, first_url.clone()).unwrap(),
-        ))
+        .execute(
+            BrowserOperationRequest::NavigatePage(
+                NavigatePageRequest::new(PageSelection::Selected, first_url.clone()).unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     session
-        .execute(BrowserOperationRequest::NavigatePage(
-            NavigatePageRequest::new(PageSelection::Selected, format!("{first_url}#pushed"))
-                .unwrap(),
-        ))
+        .execute(
+            BrowserOperationRequest::NavigatePage(
+                NavigatePageRequest::new(PageSelection::Selected, format!("{first_url}#pushed"))
+                    .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let back = session
-        .execute(BrowserOperationRequest::GoBack(GoBackRequest {
-            target: PageSelection::Selected,
-        }))
+        .execute(
+            BrowserOperationRequest::GoBack(GoBackRequest {
+                target: PageSelection::Selected,
+            }),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let BrowserOperationResult::GoBack(back) = back else {
@@ -904,9 +1098,12 @@ async fn opt_in_real_chrome_runs_complete_managed_page_lifecycle() {
     };
     assert_successful_observation(&back);
     let forward = session
-        .execute(BrowserOperationRequest::GoForward(GoForwardRequest {
-            target: PageSelection::Selected,
-        }))
+        .execute(
+            BrowserOperationRequest::GoForward(GoForwardRequest {
+                target: PageSelection::Selected,
+            }),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let BrowserOperationResult::GoForward(forward) = forward else {
@@ -914,10 +1111,13 @@ async fn opt_in_real_chrome_runs_complete_managed_page_lifecycle() {
     };
     assert_successful_observation(&forward);
     let reload = session
-        .execute(BrowserOperationRequest::ReloadPage(ReloadPageRequest {
-            target: PageSelection::Selected,
-            bypass_cache: true,
-        }))
+        .execute(
+            BrowserOperationRequest::ReloadPage(ReloadPageRequest {
+                target: PageSelection::Selected,
+                bypass_cache: true,
+            }),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let BrowserOperationResult::ReloadPage(reload) = reload else {
@@ -926,9 +1126,12 @@ async fn opt_in_real_chrome_runs_complete_managed_page_lifecycle() {
     assert_successful_observation(&reload);
 
     let closed_unselected = session
-        .execute(BrowserOperationRequest::ClosePage(ClosePageRequest {
-            target: PageSelection::Target(initial_id),
-        }))
+        .execute(
+            BrowserOperationRequest::ClosePage(ClosePageRequest {
+                target: PageSelection::Target(initial_id),
+            }),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let BrowserOperationResult::ClosePage(closed_unselected) = closed_unselected else {
@@ -940,9 +1143,12 @@ async fn opt_in_real_chrome_runs_complete_managed_page_lifecycle() {
         Some(created_id)
     );
     let closed_selected = session
-        .execute(BrowserOperationRequest::ClosePage(ClosePageRequest {
-            target: PageSelection::Selected,
-        }))
+        .execute(
+            BrowserOperationRequest::ClosePage(ClosePageRequest {
+                target: PageSelection::Selected,
+            }),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let BrowserOperationResult::ClosePage(closed_selected) = closed_selected else {
@@ -1012,14 +1218,17 @@ async fn opt_in_real_chrome_reopens_named_profile_state() {
         );
         let target_id = status.selected_target_id.unwrap();
         let result = session
-            .execute(BrowserOperationRequest::EvaluatePage(
-                ReadOnlyEvaluationRequest::new(
-                    target_id,
-                    "document.querySelector('#profile-visits').textContent",
-                    false,
-                )
-                .unwrap(),
-            ))
+            .execute(
+                BrowserOperationRequest::EvaluatePage(
+                    ReadOnlyEvaluationRequest::new(
+                        target_id,
+                        "document.querySelector('#profile-visits').textContent",
+                        false,
+                    )
+                    .unwrap(),
+                ),
+                krometrail_core::BrowserOperationContext::default(),
+            )
             .await
             .unwrap();
         let BrowserOperationResult::EvaluatePage(result) = result else {

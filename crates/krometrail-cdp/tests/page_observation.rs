@@ -131,9 +131,10 @@ async fn production_operation_port_routes_snapshot_screenshot_and_partial_live_e
     let target_id = session.status().await.unwrap().pages[0].target.target.id();
 
     let inspected = session
-        .execute(BrowserOperationRequest::InspectPage(
-            InspectPageRequest::new(target_id),
-        ))
+        .execute(
+            BrowserOperationRequest::InspectPage(InspectPageRequest::new(target_id)),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let BrowserOperationResult::InspectPage(inspected) = inspected else {
@@ -144,9 +145,12 @@ async fn production_operation_port_routes_snapshot_screenshot_and_partial_live_e
     assert_eq!(inspected.viewport.layout_viewport.origin.x, 10.0);
 
     let evaluated = session
-        .execute(BrowserOperationRequest::EvaluatePage(
-            ReadOnlyEvaluationRequest::new(target_id, "21 * 2", false).unwrap(),
-        ))
+        .execute(
+            BrowserOperationRequest::EvaluatePage(
+                ReadOnlyEvaluationRequest::new(target_id, "21 * 2", false).unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let BrowserOperationResult::EvaluatePage(evaluated) = evaluated else {
@@ -158,9 +162,10 @@ async fn production_operation_port_routes_snapshot_screenshot_and_partial_live_e
     );
 
     let first = session
-        .execute(BrowserOperationRequest::SnapshotPage(
-            SnapshotPageRequest::new(target_id),
-        ))
+        .execute(
+            BrowserOperationRequest::SnapshotPage(SnapshotPageRequest::new(target_id)),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let BrowserOperationResult::SnapshotPage(first) = first else {
@@ -169,9 +174,10 @@ async fn production_operation_port_routes_snapshot_screenshot_and_partial_live_e
     assert_eq!(first.nodes.len(), 2);
     let old_reference = first.nodes[1].reference.unwrap();
     let second = session
-        .execute(BrowserOperationRequest::SnapshotPage(
-            SnapshotPageRequest::new(target_id),
-        ))
+        .execute(
+            BrowserOperationRequest::SnapshotPage(SnapshotPageRequest::new(target_id)),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let BrowserOperationResult::SnapshotPage(second) = second else {
@@ -181,15 +187,18 @@ async fn production_operation_port_routes_snapshot_screenshot_and_partial_live_e
     assert_ne!(first.generation, second.generation);
 
     let stale = session
-        .execute(BrowserOperationRequest::TakeScreenshot(
-            ScreenshotRequest::new(
-                target_id,
-                ScreenshotTarget::Element(ElementLocator::Reference(old_reference)),
-                ImageFormat::Png,
-                None,
-            )
-            .unwrap(),
-        ))
+        .execute(
+            BrowserOperationRequest::TakeScreenshot(
+                ScreenshotRequest::new(
+                    target_id,
+                    ScreenshotTarget::Element(ElementLocator::Reference(old_reference)),
+                    ImageFormat::Png,
+                    None,
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap_err();
     assert_eq!(stale.code, krometrail_core::ErrorCode::StaleReference);
@@ -210,15 +219,18 @@ async fn production_operation_port_routes_snapshot_screenshot_and_partial_live_e
         json!({"model":{"border":[100.0,200.0,200.0,200.0,200.0,250.0,100.0,250.0]}}),
     );
     let screenshot = session
-        .execute(BrowserOperationRequest::TakeScreenshot(
-            ScreenshotRequest::new(
-                target_id,
-                ScreenshotTarget::Element(ElementLocator::Reference(current_reference)),
-                ImageFormat::Png,
-                None,
-            )
-            .unwrap(),
-        ))
+        .execute(
+            BrowserOperationRequest::TakeScreenshot(
+                ScreenshotRequest::new(
+                    target_id,
+                    ScreenshotTarget::Element(ElementLocator::Reference(current_reference)),
+                    ImageFormat::Png,
+                    None,
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let BrowserOperationResult::TakeScreenshot(screenshot) = screenshot else {
@@ -248,18 +260,21 @@ async fn production_operation_port_routes_snapshot_screenshot_and_partial_live_e
     )
     .unwrap();
     let region = session
-        .execute(BrowserOperationRequest::TakeScreenshot(
-            ScreenshotRequest::new(
-                target_id,
-                ScreenshotTarget::Region {
-                    rect: viewport_region,
-                    space: CoordinateSpace::ViewportCss,
-                },
-                ImageFormat::Png,
-                None,
-            )
-            .unwrap(),
-        ))
+        .execute(
+            BrowserOperationRequest::TakeScreenshot(
+                ScreenshotRequest::new(
+                    target_id,
+                    ScreenshotTarget::Region {
+                        rect: viewport_region,
+                        space: CoordinateSpace::ViewportCss,
+                    },
+                    ImageFormat::Png,
+                    None,
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let BrowserOperationResult::TakeScreenshot(region) = region else {
@@ -293,17 +308,20 @@ async fn production_operation_port_routes_snapshot_screenshot_and_partial_live_e
     );
     transport.push_response("Page.captureScreenshot", json!({"data":png_base64(80, 40)}));
     let disabled = session
-        .execute(BrowserOperationRequest::TakeScreenshot(
-            ScreenshotRequest::new(
-                target_id,
-                ScreenshotTarget::Element(ElementLocator::CssSelector(
-                    krometrail_core::NonEmptyText::new("#disabled-action").unwrap(),
-                )),
-                ImageFormat::Png,
-                None,
-            )
-            .unwrap(),
-        ))
+        .execute(
+            BrowserOperationRequest::TakeScreenshot(
+                ScreenshotRequest::new(
+                    target_id,
+                    ScreenshotTarget::Element(ElementLocator::CssSelector(
+                        krometrail_core::NonEmptyText::new("#disabled-action").unwrap(),
+                    )),
+                    ImageFormat::Png,
+                    None,
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .expect("disabled visible selector screenshot");
     let BrowserOperationResult::TakeScreenshot(disabled) = disabled else {
@@ -319,15 +337,18 @@ async fn production_operation_port_routes_snapshot_screenshot_and_partial_live_e
     );
     transport.push_response("Page.getFrameTree", frame_tree_with_loader("loader-2"));
     let navigated = session
-        .execute(BrowserOperationRequest::TakeScreenshot(
-            ScreenshotRequest::new(
-                target_id,
-                ScreenshotTarget::Element(ElementLocator::Reference(current_reference)),
-                ImageFormat::Png,
-                None,
-            )
-            .unwrap(),
-        ))
+        .execute(
+            BrowserOperationRequest::TakeScreenshot(
+                ScreenshotRequest::new(
+                    target_id,
+                    ScreenshotTarget::Element(ElementLocator::Reference(current_reference)),
+                    ImageFormat::Png,
+                    None,
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap_err();
     assert_eq!(navigated.code, krometrail_core::ErrorCode::StaleReference);
@@ -335,9 +356,10 @@ async fn production_operation_port_routes_snapshot_screenshot_and_partial_live_e
     // Refresh against the new document, then prove live actionability is rechecked.
     transport.push_response("Page.getFrameTree", frame_tree_with_loader("loader-2"));
     let refreshed = session
-        .execute(BrowserOperationRequest::SnapshotPage(
-            SnapshotPageRequest::new(target_id),
-        ))
+        .execute(
+            BrowserOperationRequest::SnapshotPage(SnapshotPageRequest::new(target_id)),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let BrowserOperationResult::SnapshotPage(refreshed) = refreshed else {
@@ -360,15 +382,18 @@ async fn production_operation_port_routes_snapshot_screenshot_and_partial_live_e
         json!({"result":{"type":"object","value":{"connected":true,"visuallyHidden":true,"interactionBlocked":false}}}),
     );
     let hidden = session
-        .execute(BrowserOperationRequest::TakeScreenshot(
-            ScreenshotRequest::new(
-                target_id,
-                ScreenshotTarget::Element(ElementLocator::Reference(refreshed_reference)),
-                ImageFormat::Png,
-                None,
-            )
-            .unwrap(),
-        ))
+        .execute(
+            BrowserOperationRequest::TakeScreenshot(
+                ScreenshotRequest::new(
+                    target_id,
+                    ScreenshotTarget::Element(ElementLocator::Reference(refreshed_reference)),
+                    ImageFormat::Png,
+                    None,
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap_err();
     assert_eq!(
@@ -389,15 +414,18 @@ async fn production_operation_port_routes_snapshot_screenshot_and_partial_live_e
         json!({"data":STANDARD.encode(b"not an image")}),
     );
     let malformed_image = session
-        .execute(BrowserOperationRequest::TakeScreenshot(
-            ScreenshotRequest::new(
-                target_id,
-                ScreenshotTarget::Viewport,
-                ImageFormat::Png,
-                None,
-            )
-            .unwrap(),
-        ))
+        .execute(
+            BrowserOperationRequest::TakeScreenshot(
+                ScreenshotRequest::new(
+                    target_id,
+                    ScreenshotTarget::Viewport,
+                    ImageFormat::Png,
+                    None,
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap_err();
     assert_eq!(
@@ -415,9 +443,10 @@ async fn production_operation_port_routes_snapshot_screenshot_and_partial_live_e
     transport.push_response("Accessibility.getFullAXTree", ax_tree());
     transport.push_failure("Page.captureScreenshot", TransportError::CommandFailed);
     let live = session
-        .execute(BrowserOperationRequest::ObserveLive(
-            LiveObservationRequest::new(target_id),
-        ))
+        .execute(
+            BrowserOperationRequest::ObserveLive(LiveObservationRequest::new(target_id)),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let BrowserOperationResult::ObserveLive(live) = live else {
@@ -433,9 +462,10 @@ async fn production_operation_port_routes_snapshot_screenshot_and_partial_live_e
     transport.push_response("Page.getFrameTree", frame_tree_with_loader("loader-2"));
     transport.push_response("Accessibility.getFullAXTree", json!({"nodes":"malformed"}));
     let malformed_ax = session
-        .execute(BrowserOperationRequest::SnapshotPage(
-            SnapshotPageRequest::new(target_id),
-        ))
+        .execute(
+            BrowserOperationRequest::SnapshotPage(SnapshotPageRequest::new(target_id)),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap_err();
     assert_eq!(
@@ -496,9 +526,10 @@ async fn production_operation_port_routes_snapshot_screenshot_and_partial_live_e
     session.stop().await.unwrap();
     let terminal = tokio::time::timeout(
         std::time::Duration::from_secs(1),
-        session.execute(BrowserOperationRequest::InspectPage(
-            InspectPageRequest::new(target_id),
-        )),
+        session.execute(
+            BrowserOperationRequest::InspectPage(InspectPageRequest::new(target_id)),
+            krometrail_core::BrowserOperationContext::default(),
+        ),
     )
     .await
     .expect("terminal actor must answer without hanging")
@@ -571,9 +602,10 @@ async fn opt_in_real_chrome_reports_forced_scale_without_fabricating_high_dpi() 
         .expect("forced-scale Chrome observation session");
     let target_id = session.status().await.unwrap().pages[0].target.target.id();
     let result = session
-        .execute(BrowserOperationRequest::InspectPage(
-            InspectPageRequest::new(target_id),
-        ))
+        .execute(
+            BrowserOperationRequest::InspectPage(InspectPageRequest::new(target_id)),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .expect("forced-scale inspection");
     let BrowserOperationResult::InspectPage(page) = result else {
@@ -621,9 +653,10 @@ async fn opt_in_real_chrome_observes_fixture_and_all_screenshot_target_families(
         .expect("real observation fixture");
     let target_id = session.status().await.unwrap().pages[0].target.target.id();
     let inspected = session
-        .execute(BrowserOperationRequest::InspectPage(
-            InspectPageRequest::new(target_id),
-        ))
+        .execute(
+            BrowserOperationRequest::InspectPage(InspectPageRequest::new(target_id)),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .expect("real inspection");
     let BrowserOperationResult::InspectPage(inspected) = inspected else {
@@ -632,9 +665,12 @@ async fn opt_in_real_chrome_observes_fixture_and_all_screenshot_target_families(
     assert_eq!(inspected.title, "Observation fixture");
     assert!(inspected.viewport.device_scale_factor.get() > 0.0);
     let evaluated = session
-        .execute(BrowserOperationRequest::EvaluatePage(
-            ReadOnlyEvaluationRequest::new(target_id, "document.title", false).unwrap(),
-        ))
+        .execute(
+            BrowserOperationRequest::EvaluatePage(
+                ReadOnlyEvaluationRequest::new(target_id, "document.title", false).unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .expect("real read-only evaluation");
     let BrowserOperationResult::EvaluatePage(evaluated) = evaluated else {
@@ -645,9 +681,10 @@ async fn opt_in_real_chrome_observes_fixture_and_all_screenshot_target_families(
         krometrail_core::EvaluationValue::Json(json!("Observation fixture"))
     );
     let snapshot = session
-        .execute(BrowserOperationRequest::SnapshotPage(
-            SnapshotPageRequest::new(target_id),
-        ))
+        .execute(
+            BrowserOperationRequest::SnapshotPage(SnapshotPageRequest::new(target_id)),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let BrowserOperationResult::SnapshotPage(snapshot) = snapshot else {
@@ -721,9 +758,20 @@ async fn opt_in_real_chrome_observes_fixture_and_all_screenshot_target_families(
         // Chrome occasionally fails one capture while changing surface size between variants.
         // The public contract marks screenshot failure as safe to retry; one bounded retry tests
         // that recovery without weakening the required successful payload/provenance assertions.
-        let result = match session.execute(request()).await {
+        let result = match session
+            .execute(
+                request(),
+                krometrail_core::BrowserOperationContext::default(),
+            )
+            .await
+        {
             Err(error) if error.code == krometrail_core::ErrorCode::ScreenshotFailed => {
-                session.execute(request()).await
+                session
+                    .execute(
+                        request(),
+                        krometrail_core::BrowserOperationContext::default(),
+                    )
+                    .await
             }
             result => result,
         }
@@ -736,22 +784,26 @@ async fn opt_in_real_chrome_observes_fixture_and_all_screenshot_target_families(
     }
 
     let replaced = session
-        .execute(BrowserOperationRequest::TakeScreenshot(
-            ScreenshotRequest::new(
-                target_id,
-                ScreenshotTarget::Element(ElementLocator::Reference(reference)),
-                ImageFormat::Png,
-                None,
-            )
-            .unwrap(),
-        ))
+        .execute(
+            BrowserOperationRequest::TakeScreenshot(
+                ScreenshotRequest::new(
+                    target_id,
+                    ScreenshotTarget::Element(ElementLocator::Reference(reference)),
+                    ImageFormat::Png,
+                    None,
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap_err();
     assert_eq!(replaced.code, krometrail_core::ErrorCode::StaleReference);
     let refreshed = session
-        .execute(BrowserOperationRequest::SnapshotPage(
-            SnapshotPageRequest::new(target_id),
-        ))
+        .execute(
+            BrowserOperationRequest::SnapshotPage(SnapshotPageRequest::new(target_id)),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .expect("snapshot after backing-node replacement");
     let BrowserOperationResult::SnapshotPage(refreshed) = refreshed else {
@@ -760,9 +812,10 @@ async fn opt_in_real_chrome_observes_fixture_and_all_screenshot_target_families(
     assert!(refreshed.generation > snapshot.generation);
 
     let live = session
-        .execute(BrowserOperationRequest::ObserveLive(
-            LiveObservationRequest::new(target_id),
-        ))
+        .execute(
+            BrowserOperationRequest::ObserveLive(LiveObservationRequest::new(target_id)),
+            krometrail_core::BrowserOperationContext::default(),
+        )
         .await
         .unwrap();
     let BrowserOperationResult::ObserveLive(live) = live else {

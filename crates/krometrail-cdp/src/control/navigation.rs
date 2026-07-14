@@ -8,10 +8,11 @@ use std::{
 };
 
 use krometrail_core::{
-    BrowserOperationKind, BrowserOperationResult, ErrorCode, ErrorContext, GoBackRequest,
-    GoForwardRequest, InteractionAnchor, InteractionTiming, KrometrailError, NavigatePageRequest,
-    NonEmptyText, ObservationPart, PageChange, PageOperationOutcome, PageOperationResult,
-    PageSelection, ReloadPageRequest, Result, RetryAdvice, SessionTime, TargetId,
+    BrowserOperationContext, BrowserOperationKind, BrowserOperationResult, CancellationSignal,
+    ErrorCode, ErrorContext, GoBackRequest, GoForwardRequest, InteractionAnchor, InteractionTiming,
+    KrometrailError, NavigatePageRequest, NonEmptyText, ObservationPart, PageChange,
+    PageOperationOutcome, PageOperationResult, PageSelection, ReloadPageRequest, Result,
+    RetryAdvice, SessionTime, TargetId,
 };
 use serde_json::{Value, json};
 use tokio::sync::Notify;
@@ -42,9 +43,25 @@ pub(crate) struct OperationCancellation {
     stopped: Arc<AtomicBool>,
     disconnected_generation: Arc<AtomicU64>,
     notify: Arc<Notify>,
+    request: Option<Arc<dyn CancellationSignal>>,
 }
 
 impl OperationCancellation {
+    pub(crate) fn for_request(&self, context: &BrowserOperationContext) -> Self {
+        Self {
+            stopped: Arc::clone(&self.stopped),
+            disconnected_generation: Arc::clone(&self.disconnected_generation),
+            notify: Arc::clone(&self.notify),
+            request: context.cancellation().cloned(),
+        }
+    }
+
+    pub(crate) fn request_is_cancelled(&self) -> bool {
+        self.request
+            .as_ref()
+            .is_some_and(|signal| signal.is_cancelled())
+    }
+
     pub(crate) fn stop(&self) {
         self.stopped.store(true, Ordering::Release);
         self.notify.notify_waiters();
@@ -57,6 +74,13 @@ impl OperationCancellation {
     }
 
     fn verdict(&self, generation: u64, target_id: TargetId) -> Option<KrometrailError> {
+        if self.request_is_cancelled() {
+            return Some(operation_error(
+                ErrorCode::Cancelled,
+                target_id,
+                "browser operation was cancelled by its caller",
+            ));
+        }
         if self.stopped.load(Ordering::Acquire) {
             return Some(operation_error(
                 ErrorCode::Cancelled,
@@ -74,6 +98,10 @@ impl OperationCancellation {
         None
     }
 
+    pub(crate) fn check(&self, generation: u64, target_id: TargetId) -> Result<()> {
+        self.verdict(generation, target_id).map_or(Ok(()), Err)
+    }
+
     pub(crate) async fn wait(&self, generation: u64, target_id: TargetId) -> KrometrailError {
         loop {
             if let Some(error) = self.verdict(generation, target_id) {
@@ -83,7 +111,16 @@ impl OperationCancellation {
             if let Some(error) = self.verdict(generation, target_id) {
                 return error;
             }
-            notified.await;
+            match &self.request {
+                Some(request) => {
+                    tokio::select! {
+                        biased;
+                        () = request.cancelled() => {},
+                        () = notified => {},
+                    }
+                }
+                None => notified.await,
+            }
         }
     }
 
