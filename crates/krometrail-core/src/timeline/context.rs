@@ -189,6 +189,44 @@ struct TemporalContextRequestWire {
     focus_times: Vec<SessionTime>,
 }
 
+/// The external wire shape for verbose browser-event detail. This intentionally
+/// has no compact variant: the same core wire type drives deserialization and
+/// the generated public schema, so they cannot drift apart.
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+enum BrowserEventDetailSelectionWire {
+    Chronological {
+        #[serde(default)]
+        limit: EventPageLimit,
+        #[serde(default)]
+        cursor: Option<BrowserEventCursor>,
+    },
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct BrowserEventDetailRequestWire {
+    range: ResolvedRange,
+    clip: Option<SessionRange>,
+    filter: BrowserEventFilter,
+    selection: BrowserEventDetailSelectionWire,
+    focus_times: Vec<SessionTime>,
+}
+
+impl BrowserEventDetailRequestWire {
+    fn into_request(self) -> Result<BrowserEventDetailRequest> {
+        let BrowserEventDetailSelectionWire::Chronological { limit, cursor } = self.selection;
+        BrowserEventDetailRequest::new(
+            self.range,
+            self.clip,
+            self.filter,
+            limit.get(),
+            cursor,
+            self.focus_times,
+        )
+    }
+}
+
 impl TemporalContextRequest {
     pub fn compact(range: ResolvedRange, focus_times: Vec<SessionTime>) -> Result<Self> {
         Self::new(
@@ -355,40 +393,11 @@ impl<'de> Deserialize<'de> for BrowserEventDetailRequest {
     where
         D: serde::Deserializer<'de>,
     {
-        deserialize_validated(deserializer, |wire: TemporalContextRequestWire| {
-            let request = TemporalContextRequest::new(
-                wire.range,
-                wire.clip,
-                wire.filter,
-                wire.selection,
-                wire.focus_times,
-            )?;
-            if !matches!(
-                request.selection(),
-                BrowserEventSelection::Chronological { .. }
-            ) {
-                return Err(invalid_error(
-                    "browser event detail requests must use chronological selection",
-                ));
-            }
-            Ok(Self(request))
-        })
+        deserialize_validated(deserializer, BrowserEventDetailRequestWire::into_request)
     }
 }
 
-impl schemars::JsonSchema for BrowserEventDetailRequest {
-    fn schema_name() -> std::borrow::Cow<'static, str> {
-        <TemporalContextRequestWire as schemars::JsonSchema>::schema_name()
-    }
-
-    fn schema_id() -> std::borrow::Cow<'static, str> {
-        <TemporalContextRequestWire as schemars::JsonSchema>::schema_id()
-    }
-
-    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        <TemporalContextRequestWire as schemars::JsonSchema>::json_schema(generator)
-    }
-}
+crate::validation::delegate_json_schema!(BrowserEventDetailRequest => BrowserEventDetailRequestWire);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TemporalContextOperationKind {
@@ -1355,6 +1364,20 @@ mod tests {
             serde_json::to_value(TemporalContextOperationKind::QueryBrowserEvents.input_schema())
                 .unwrap();
         assert_eq!(schema["type"], "object");
+        let selection_schema = schema["properties"]["selection"].clone();
+        let selection_schema = selection_schema
+            .get("$ref")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|reference| reference.strip_prefix("#/$defs/"))
+            .map(|name| schema["$defs"][name].clone())
+            .unwrap_or(selection_schema);
+        let modes: Vec<_> = selection_schema["oneOf"]
+            .as_array()
+            .expect("detail selection schema is a tagged union")
+            .iter()
+            .map(|branch| branch["properties"]["mode"]["const"].as_str().unwrap())
+            .collect();
+        assert_eq!(modes, ["chronological"]);
 
         let compact =
             serde_json::to_value(TemporalContextRequest::compact(range.clone(), vec![]).unwrap())

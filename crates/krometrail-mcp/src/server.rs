@@ -913,6 +913,23 @@ mod tests {
             Some(&serde_json::to_value(detail.context_request()).unwrap())
         );
 
+        let compact = serde_json::to_value(
+            TemporalContextRequest::compact(resolved_range(), vec![]).unwrap(),
+        )
+        .unwrap();
+        let compact_response = invoke_temporal_tool(
+            dependencies_with_spy(Arc::new(UnusedConnector), Arc::clone(&spy)),
+            "query_browser_events",
+            compact,
+        )
+        .await;
+        assert!(
+            compact_response["result"]["isError"]
+                .as_bool()
+                .unwrap_or(false)
+        );
+        assert_eq!(spy.context_calls.load(Ordering::SeqCst), 1);
+
         let invalid = invoke_temporal_tool(
             dependencies_with_spy(Arc::new(UnusedConnector), Arc::clone(&spy)),
             "query_browser_events",

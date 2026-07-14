@@ -517,3 +517,19 @@ None. The feature is ready for its separate parent review; paid/thesis evaluatio
 ## Foundation/document posture
 
 This is a code-first foundation change. The foundation documents already describe temporal tools, progressive resources, local-only data, explicit errors, and the MCP boundary as intended future contracts; this design does not make a foundation assertion false before implementation. Documentation updates, if needed after implementation, belong in the implementation commit rather than this design transition.
+
+## Review fix evidence
+
+Accepted Important finding fixed without changing the feature stage:
+
+- Root cause: `BrowserEventDetailRequest` reused the broader `TemporalContextRequestWire` schema even though its deserializer accepted only chronological selection.
+- Fix: the core now owns one chronological-only `BrowserEventDetailRequestWire` for both validation and generated schema; compact input has no compatibility path and is rejected before the context port is called.
+- Regression coverage: the core schema assertion proves `chronological` is present and `compact` is absent; the MCP JSON-RPC route test proves a compact `query_browser_events` request returns an error with zero additional application calls.
+- Verification with Rust 1.85: locked workspace check, test (636 passed, 1 ignored), clippy with `-D warnings`, and format check all pass. No review was rerun.
+
+Nonblocking advisory comments retained for later consideration, not expanded in this fix:
+
+- Internal projection message wording.
+- Named constants for existing literals.
+- The unreachable `u32` size conversion path.
+- The stale test name.
