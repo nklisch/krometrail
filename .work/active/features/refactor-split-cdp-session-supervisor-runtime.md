@@ -1,7 +1,7 @@
 ---
 id: refactor-split-cdp-session-supervisor-runtime
 kind: feature
-stage: implementing
+stage: review
 tags: [refactor, browser]
 parent: null
 depends_on: []
@@ -27,10 +27,10 @@ Extract the production session implementation into focused private modules under
 
 ## Acceptance criteria
 
-- [ ] `crates/krometrail-cdp/src/session.rs` becomes a focused module root (`session/mod.rs` or equivalent) that re-exports the same public entry points while moving reconnect, shutdown, and event-pump/process-watch helpers into private submodules.
-- [ ] Reducer/application behavior remains identical: single-writer supervision, request cancellation, reconnect attempt handling, shutdown deadlines, managed/attached ownership, and capture sequencing are unchanged.
-- [ ] Existing tests continue to exercise the same seams; no coverage is deleted, and session-focused tests move only as needed to match the new module layout.
-- [ ] `cargo fmt --all -- --check`, `cargo test --workspace --all-targets --locked`, and `cargo clippy --workspace --all-targets --locked -- -D warnings` pass.
+- [x] `crates/krometrail-cdp/src/session.rs` becomes a focused module root (`session/mod.rs` or equivalent) that re-exports the same public entry points while moving reconnect, shutdown, and event-pump/process-watch helpers into private submodules.
+- [x] Reducer/application behavior remains identical: single-writer supervision, request cancellation, reconnect attempt handling, shutdown deadlines, managed/attached ownership, and capture sequencing are unchanged.
+- [x] Existing tests continue to exercise the same seams; no coverage is deleted, and session-focused tests move only as needed to match the new module layout.
+- [x] `cargo fmt --all -- --check`, `cargo test --workspace --all-targets --locked`, and `cargo clippy --workspace --all-targets --locked -- -D warnings` pass.
 
 ## Scope notes
 
@@ -344,3 +344,14 @@ pub(super) async fn run_supervisor(
 - The file-to-directory rename in Step 1 is inherently atomic; landing submodules without the module-root move would break Rust module resolution.
 - Steps 2 through 4 are independently reversible because each extracts one cohesive responsibility and keeps the root-level call sites unchanged apart from module qualification.
 - Highest-risk seam: reconnect/shutdown interaction. Keep reconnect-exhausted shutdown semantics and no-replay cancellation behavior under the existing tests before accepting later cleanup.
+
+## Implementation notes
+
+- Execution capability: highest; selected by the autopilot caller because private file moves cross single-writer supervision, reconnect, shutdown, capture, and cancellation.
+- Review weight: standard (caller); implementation stops at feature review for independent adjudication by the autopilot owner.
+- Files changed: `session.rs` became `session/mod.rs`; operation dispatch moved to `operations.rs`, shutdown policy to `shutdown.rs`, reconnect transaction control to `reconnect.rs`, and connection/effect/pump supervision to `runtime.rs`.
+- Tests added/removed: none. Existing session, capture, lifecycle, observation, interaction, wait/batch, process, transport, and reducer tests remain unchanged.
+- Simplification: replaced one 3,626-line production/test module with one composition root and four cohesive private modules; introduced no traits, wrappers, policy options, or public API changes.
+- Discrepancies from design: session-local tests stayed in `session/mod.rs` to preserve shared fixtures; narrow `pub(super)` seams expose moved helpers only within the parent module. The crate-local `VisibilityProbeError` re-export has an explicit unused-import allowance so its existing path remains stable.
+- Adjacent issues parked: none.
+- Integrated verification: Rust 1.85.0 format check, locked all-target workspace check, locked all-target workspace tests (418 passed), and locked all-target workspace Clippy with `-D warnings` all passed. The real-browser opt-in was disabled, so environment-gated Chrome cases reported their normal skip-success behavior and no live Chrome run was claimed.
