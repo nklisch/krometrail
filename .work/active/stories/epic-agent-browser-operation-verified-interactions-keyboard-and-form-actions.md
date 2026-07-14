@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-operation-verified-interactions-keyboard-and-form-actions
 kind: story
-stage: implementing
+stage: done
 tags: [browser, agent-ux]
 parent: epic-agent-browser-operation-verified-interactions
 depends_on: [epic-agent-browser-operation-verified-interactions-dispatch-and-pointer-actions]
@@ -41,3 +41,11 @@ Implement `Fill`, `PressKeys`, and `SelectOption` in `crates/krometrail-cdp/src/
 
 - File upload and dialog actions (next story).
 - Real-Chrome qualification and the standalone fixture (final story).
+
+## Implementation notes
+
+- Added keyboard and form action families behind the shared interaction executor; neither family re-resolves targets, allocates ids, or captures its own observation.
+- Fill focuses the verified editable backend node, performs replace via Control+A/Delete when requested, and sends bounded text through `Input.insertText`; append preserves the current selection/cursor.
+- PressKeys consumes the core-validated closed chord grammar, holds modifiers across the non-modifier key, emits raw-key/char/key-up sequences, and centralizes all named-key CDP metadata in one complete table.
+- SelectOption resolves only a native selectable element, obtains its runtime object from the verified backend node, performs one bounded side-effecting option match/set, fires input/change, and returns `select_value_not_matched` without echoing option content.
+- Verification passed: formatting, locked all-target CDP check, 80 CDP library tests (including registry-complete key mappings), and locked all-target CDP Clippy with warnings denied. Production-port scripted and real-browser effects are consolidated in qualification.

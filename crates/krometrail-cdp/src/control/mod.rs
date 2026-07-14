@@ -15,7 +15,9 @@ use crate::{
 };
 
 mod evaluation;
+mod form;
 mod interaction;
+mod keyboard;
 pub(crate) mod navigation;
 mod pages;
 mod pointer;

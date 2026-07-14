@@ -174,13 +174,17 @@ impl PageControl {
             BrowserOperationRequest::Click(request) => {
                 super::pointer::click(transport, bound, request, resolved, cancel, generation).await
             }
-            BrowserOperationRequest::Fill(_)
-            | BrowserOperationRequest::PressKeys(_)
-            | BrowserOperationRequest::SelectOption(_) => Err(operation_error(
-                ErrorCode::Unsupported,
-                bound.target_id,
-                "keyboard and form interactions are not available",
-            )),
+            BrowserOperationRequest::Fill(request) => {
+                super::keyboard::fill(transport, bound, request, resolved, cancel, generation).await
+            }
+            BrowserOperationRequest::PressKeys(request) => {
+                super::keyboard::press_keys(transport, bound, request, resolved, cancel, generation)
+                    .await
+            }
+            BrowserOperationRequest::SelectOption(request) => {
+                super::form::select_option(transport, bound, request, resolved, cancel, generation)
+                    .await
+            }
             BrowserOperationRequest::Hover(request) => {
                 super::pointer::hover(transport, bound, request, resolved, cancel, generation).await
             }
