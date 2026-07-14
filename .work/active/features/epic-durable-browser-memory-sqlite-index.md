@@ -1,7 +1,7 @@
 ---
 id: epic-durable-browser-memory-sqlite-index
 kind: feature
-stage: implementing
+stage: review
 tags: [storage, browser]
 parent: epic-durable-browser-memory
 depends_on: [epic-durable-browser-memory-segment-format]
@@ -667,3 +667,17 @@ One feature owner should carry all checkpoints. The chain is sequencing and dura
 - **Range resolution:** consume `TimelineStore`, `CaptureGapStore`, and `FrameSource`; do not introduce a second frame query or ordering path.
 - **Browser operation/events:** index interaction/browser observations generically now; add structured storage only after their core record types and sanitizers exist.
 - **Temporal debugging:** add the artifact-manifest writer against the existing `artifacts`/`artifact_frames` schema after the manifest type lands; do not redeclare it here.
+
+## Implementation summary
+
+- Execution capability: highest/raised (autopilot caller), selected for the versioned database schema, cross-resource durability ordering, migration safety, generic registry-backed timeline, and dependent retention/recovery contracts. Review weight remains standard; this implementation pass stops at `review` without self-approval.
+- All five child checkpoints advanced directly to `done`: core metadata contracts, schema/migrations, timeline/catalog/gaps, indexed recording/reads, and maintenance/composition/qualification.
+- Commits: `791f606` (core contracts), `8404f23` (schema/migrations), `a64e187` (timeline/catalog/gaps), `e4a8040` (indexed recording/reads), and `3f7c1fe` (maintenance/composition/qualification).
+- Exact `rusqlite` 0.33.0 with bundled SQLite and disabled defaults is locked behind `krometrail-store`. Schema v1 uses strict tables, WAL, FULL synchronization, foreign keys, a bounded busy timeout, contiguous forward-only migrations, fixed-width full-domain numeric codecs, and no raw browser-event payload surface.
+- One core observation declaration now generates stable names, Serde names, registry iteration, and reverse lookup. `CaptureGap` retains declaration time and persists its structured row plus generic timeline anchor atomically; the former segment-writer `Unsupported` gap route is eliminated.
+- `IndexedRecordingSink` enforces complete segment append before one frame/segment/timeline transaction. SQL failure leaves a checksum-valid orphan payload for recovery and cannot create an index claim before bytes exist. Segment rotation and flush registrations, id/range reads, CRC/context checks, and open-to-sealed rename fallback share the established address contract.
+- Store-local maintenance supplies the narrow frame/segment/artifact/usage primitives required by retention and recovery. Root composition opens/migrates one index before capture and shares it through timeline, catalog, gap, and frame ports while CDP receives only the indexed recording facade.
+- Qualification covers migration rollback/reopen/future refusal, WAL/FULL/foreign-key/busy settings, codec boundaries, catalog placeholders/upserts, deterministic equal-time timeline ordering, atomic overlapping gaps, orphan-safe append failure, explicit flush failure, open/sealed/missing/corrupt frame reads, concurrent targets, cancellation semantics, bounded writer contention, maintenance idempotence, full-width usage accounting, source-safe errors, and redaction by omission.
+- Final verification ran in a clean detached worktree because unrelated browser-control and `work-view` edits remained active in the primary tree: locked workspace format/check, 311 tests, and Clippy with warnings denied passed. Isolated `doctor` found one browser installation and created `index.sqlite3` plus `segments/` under a temporary data directory.
+- Design deviations: the requested `sqlite_maintenance.rs` integration coverage lives as private module tests beside the crate-private maintenance API, avoiding promotion of SQL mechanics into a public adapter contract. Qualification-only cross-cutting behavior lives in `sqlite_qualification.rs`. No guarantee was reduced and no sibling-owned interaction, browser-event, pin, or artifact-manifest Rust type was invented.
+- Deferred by design: retention policy, crash reconciliation, natural range resolution, pin behavior, structured interaction/browser-event/artifact writers, and per-frame power-loss reconciliation remain with their owning dependent features.
