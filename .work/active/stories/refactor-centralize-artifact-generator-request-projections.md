@@ -1,7 +1,7 @@
 ---
 id: refactor-centralize-artifact-generator-request-projections
 kind: story
-stage: implementing
+stage: review
 tags: [refactor, visual, storage]
 parent: null
 depends_on: [epic-temporal-debugging-workflow-artifact-generation-and-cache]
@@ -64,6 +64,14 @@ ordering, manifests, and serialized request shapes remain unchanged.
 - **Ordering**: this story depends on the artifact feature reaching its review
   decision before the refactor is implemented. It does not overlap the active
   browser-event or progressive-evidence design files.
+
+## Implementation record
+
+- Execution capability: baseline inline ownership; one private exhaustive-projection extraction in one module.
+- Added `normalization_request` and `output_limits` as the sole immutable projections for shared generator fields. Region filmstrip remains an explicit `None` normalization case.
+- Normalization planning, identity serialization, byte estimation, and execution now consume the same projection. Output preflight and generated-output validation consume the same limit projection.
+- Public request types, mutable effective-scale materialization, generator dispatch, cache parameters, errors, comparisons, manifests, and output order are unchanged.
+- Rust 1.85 locked format, full workspace all-target tests, and Clippy with warnings denied passed.
 
 ## Risk and rollback
 

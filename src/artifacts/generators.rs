@@ -5,7 +5,8 @@ use std::{
 
 use krometrail_core::{
     AnalysisScale, ArtifactGeneratorRequest, ArtifactId, ArtifactManifest, ErrorCode, FrameId,
-    FrameSelector, KrometrailError, NonEmptyText, NormalizationRequest, Result,
+    FrameSelector, KrometrailError, NonEmptyText, NormalizationRequest, OutputLimitsRequest,
+    Result,
 };
 use temporal_vision::{
     ArtifactKind, ArtifactLabels, DifferenceMapLimits, DifferenceMapParameters, FilmstripTileLimit,
@@ -55,43 +56,47 @@ pub(crate) fn prepare_generator(
     })
 }
 
+fn normalization_request(request: &ArtifactGeneratorRequest) -> Option<NormalizationRequest> {
+    match request {
+        ArtifactGeneratorRequest::Storyboard(request) => Some(request.normalization),
+        ArtifactGeneratorRequest::DifferenceMap(request) => Some(request.normalization),
+        ArtifactGeneratorRequest::MotionHistory(request) => Some(request.normalization),
+        ArtifactGeneratorRequest::RegionFilmstrip(_) => None,
+    }
+}
+
+fn output_limits(request: &ArtifactGeneratorRequest) -> OutputLimitsRequest {
+    match request {
+        ArtifactGeneratorRequest::Storyboard(request) => request.output,
+        ArtifactGeneratorRequest::DifferenceMap(request) => request.output,
+        ArtifactGeneratorRequest::RegionFilmstrip(request) => request.output,
+        ArtifactGeneratorRequest::MotionHistory(request) => request.output,
+    }
+}
+
 pub(crate) fn normalization_parameters(
     prepared: &PreparedGenerator,
     limits: ArtifactWorkLimits,
 ) -> Result<Option<NormalizationParameters>> {
-    let request = match &prepared.request {
-        ArtifactGeneratorRequest::Storyboard(request) => &request.normalization,
-        ArtifactGeneratorRequest::DifferenceMap(request) => &request.normalization,
-        ArtifactGeneratorRequest::MotionHistory(request) => &request.normalization,
-        ArtifactGeneratorRequest::RegionFilmstrip(_) => return Ok(None),
-    };
-    Ok(Some(to_normalization(*request, limits)?))
+    normalization_request(&prepared.request)
+        .map(|request| to_normalization(request, limits))
+        .transpose()
 }
 
 pub(crate) fn normalization_identity(prepared: &PreparedGenerator) -> Result<Option<Arc<[u8]>>> {
-    match &prepared.request {
-        ArtifactGeneratorRequest::Storyboard(request) => serde_json::to_vec(&request.normalization),
-        ArtifactGeneratorRequest::DifferenceMap(request) => {
-            serde_json::to_vec(&request.normalization)
-        }
-        ArtifactGeneratorRequest::MotionHistory(request) => {
-            serde_json::to_vec(&request.normalization)
-        }
-        ArtifactGeneratorRequest::RegionFilmstrip(_) => return Ok(None),
-    }
-    .map(|bytes| Some(Arc::from(bytes)))
-    .map_err(|_| generation_error("could not encode normalization identity"))
+    normalization_request(&prepared.request)
+        .map(|request| serde_json::to_vec(&request))
+        .transpose()
+        .map(|bytes| bytes.map(Arc::from))
+        .map_err(|_| generation_error("could not encode normalization identity"))
 }
 
 pub(crate) fn estimated_normalized_bytes(
     prepared: &PreparedGenerator,
     epoch: &super::epoch::EpochPlan,
 ) -> Result<usize> {
-    let normalization = match &prepared.request {
-        ArtifactGeneratorRequest::Storyboard(request) => request.normalization,
-        ArtifactGeneratorRequest::DifferenceMap(request) => request.normalization,
-        ArtifactGeneratorRequest::MotionHistory(request) => request.normalization,
-        ArtifactGeneratorRequest::RegionFilmstrip(_) => return Ok(0),
+    let Some(normalization) = normalization_request(&prepared.request) else {
+        return Ok(0);
     };
     let (width, height) = normalized_dimensions(
         normalization,
@@ -405,12 +410,7 @@ fn validate_output_limits(
     request: &ArtifactGeneratorRequest,
     limits: ArtifactWorkLimits,
 ) -> Result<()> {
-    let output = match request {
-        ArtifactGeneratorRequest::Storyboard(request) => request.output,
-        ArtifactGeneratorRequest::DifferenceMap(request) => request.output,
-        ArtifactGeneratorRequest::RegionFilmstrip(request) => request.output,
-        ArtifactGeneratorRequest::MotionHistory(request) => request.output,
-    };
+    let output = output_limits(request);
     if output.max_width() > limits.max_dimension.get()
         || output.max_height() > limits.max_dimension.get()
         || output.max_encoded_bytes() > limits.max_output_bytes_each.get() as u64
@@ -427,12 +427,7 @@ fn validate_outputs(
     request: &ArtifactGeneratorRequest,
     limits: ArtifactWorkLimits,
 ) -> Result<()> {
-    let requested = match request {
-        ArtifactGeneratorRequest::Storyboard(request) => request.output,
-        ArtifactGeneratorRequest::DifferenceMap(request) => request.output,
-        ArtifactGeneratorRequest::RegionFilmstrip(request) => request.output,
-        ArtifactGeneratorRequest::MotionHistory(request) => request.output,
-    };
+    let requested = output_limits(request);
     for output in outputs {
         if output.bytes.len() > requested.max_encoded_bytes() as usize
             || output.bytes.len() > limits.max_output_bytes_each.get()
