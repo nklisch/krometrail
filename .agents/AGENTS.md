@@ -2,6 +2,16 @@
 
 Krometrail is a Rust 2024 workspace for local browser control and temporal visual evidence. The binary exposes `--version`, `--help`, browser-discovery `doctor`, and the `mcp` stdio browser-control server. Browser transport, controlled capture, recording storage, and 24 registry-derived control operations are implemented; temporal investigation tools and artifact resources remain future capabilities.
 
+## Prepublic Development Status
+
+Krometrail is unreleased and has no external users. No Krometrail Rust crate has been published, and the only realistic consumers today are development agents operating in this repository.
+
+- Do not preserve backward compatibility, deprecation paths, legacy APIs, serialized shapes, schema versions, or migration steps solely for hypothetical users or unpublished crates.
+- Prefer the cleanest current design and make breaking changes directly when they improve it. Remove superseded surfaces instead of carrying compatibility shims.
+- Treat foundation-document contracts as intended product design, not as obligations to previously shipped consumers.
+- Preserve compatibility only when a concrete current repository dependency, checked-in fixture, or explicitly retained local-data requirement is identified. State that dependency specifically rather than assuming one exists.
+- Continue validating inputs, invariants, privacy, and failure behavior rigorously; prepublic status removes compatibility burden, not correctness requirements.
+
 ## Project Structure
 
 ```text
