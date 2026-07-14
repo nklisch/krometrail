@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-operation
 kind: epic
-stage: review
+stage: done
 tags: [browser, agent-ux]
 parent: null
 depends_on: [epic-rust-cdp-capture-foundation]
@@ -51,7 +51,7 @@ The epic is split by agent capability rather than implementation layer: first ma
 - `epic-agent-browser-operation-browser-page-lifecycle` — expose browser start/attach/stop/status and page creation, selection, closure, navigation, reload, and history with post-operation evidence — depends on: `[epic-agent-browser-operation-page-observation]`
 - `epic-agent-browser-operation-verified-interactions` — execute reference-first pointer, keyboard, form, scroll, drag, dialog, upload, and coordinate-fallback actions with explicit verification and interaction records — depends on: `[epic-agent-browser-operation-page-observation]`
 - `epic-agent-browser-operation-waits-and-batches` — add explicit wait conditions and ordered batches that reuse standalone operation semantics, per-step outcomes, anchors, and final live observation — depends on: `[epic-agent-browser-operation-browser-page-lifecycle, epic-agent-browser-operation-verified-interactions]`
-- `epic-agent-browser-operation-mcp-control-surface` — expose the complete control capability through capability-driven MCP tools, generated schemas, resources, and stable error responses — depends on: `[epic-agent-browser-operation-waits-and-batches]`
+- `epic-agent-browser-operation-mcp-control-surface` — expose the complete control capability through capability-driven MCP tools, generated schemas, structured/image responses, and stable error responses — depends on: `[epic-agent-browser-operation-waits-and-batches]`
 
 ### Simplification arcs
 
@@ -74,4 +74,26 @@ The epic is split by agent capability rather than implementation layer: first ma
 
 All five child features are reviewed and complete: page observation, browser/page lifecycle, verified interactions, explicit waits and ordered batches, and the MCP control surface. The implemented boundary now forms one ordinary agent-browser workflow: the root runtime owns one controlled browser session, the core operation/capability registries define typed behavior once, CDP executes through the supervised exact-session path with request-aware cancellation, every state-changing operation returns honest current-state evidence and an interaction anchor, and MCP exposes 24 generated control tools plus four lifecycle tools over protocol-only stdio.
 
-The aggregate implementation remains within the epic boundary: durable interaction persistence, temporal queries/artifacts, browser-event inspection tools, page/framework state, remote transports, replay, rollback, and cross-target batches are not claimed here. Rust 1.85, locked workspace gates, real Chrome control qualification, MCP protocol/binary qualification, and current runtime documentation are green. The epic is ready for deeper aggregate review focused on end-to-end capability completeness, cross-feature contracts, operational shutdown/cancellation, and foundation alignment rather than repeating child-feature line review.
+The aggregate implementation remains within the epic boundary: durable interaction persistence, temporal queries/artifacts, browser-event inspection tools, page/framework state, remote transports, replay, rollback, and cross-target batches are not claimed here. Rust 1.85, locked workspace gates, real Chrome control qualification, MCP protocol/binary qualification, and current runtime documentation are green.
+
+## Aggregate review (2026-07-14)
+
+**Verdict**: Approve
+
+**Blockers**: none
+**Important**: none
+
+**Accepted limitations**:
+- Lifecycle requests serialize behind a browser connection attempt; this is deliberate for one-session ownership.
+- `PressKeys` preserves command-chord text by contract; sensitive text belongs in `Fill`.
+- Upload canonicalization follows symlinks under local operator authority; the former child-design wording overstated a root-containment guard, but no external contract or foundation document claims one.
+- Network domains remain enabled after explicit network waits while operation-scoped subscriptions are dropped.
+- Cross-layer MCP cancellation regression coverage remains parked in `idea-mcp-cancellation-protocol-regression`.
+
+**Parked follow-ups**:
+- `idea-upload-symlink-policy` records the sharp upload boundary for an explicit future product decision.
+- `idea-fill-clear-dialog-race` records the lower-risk asymmetry between sequential fill clearing and eagerly-polled pointer gesture dispatch.
+
+**Rejected / inapplicable**: adding a target-unavailable batch outcome, duplicate observation deadlines, disabling Network after waits, and `throwOnSideEffect` for the fixed coordinate hit-test had no new supporting evidence and remain correctly rejected.
+
+**Evidence**: Independent cross-model aggregate review traced all five completed features and 25 stories through MCP, session supervision, the shared standalone/batch executor, reference invalidation, cancellation/shutdown, response mapping, redaction, and foundation documents. Rust 1.85 locked workspace check and Clippy passed; 418 workspace tests, 9 MCP tests, 5 binary smoke tests, and 8 real-Chrome capture qualifications passed with no relevant failures. Standard weight requires one pass only; no re-review was requested.
