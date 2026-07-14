@@ -84,7 +84,7 @@ impl IntegerScale {
         matches!(self.direction, ScaleDirection::Identity)
     }
 
-    fn direction_name(self) -> &'static str {
+    pub(crate) fn direction_name(self) -> &'static str {
         match self.direction {
             ScaleDirection::Identity => "identity",
             ScaleDirection::Up => "up",

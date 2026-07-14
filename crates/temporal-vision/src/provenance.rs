@@ -398,6 +398,35 @@ impl<A, F: Clone + Eq, M: Clone + Eq, G: Clone + Eq> ArtifactManifest<A, F, M, G
         output_dimensions: PixelDimensions,
         output_hash: OutputHash,
     ) -> Result<Self> {
+        Self::from_sequence_with_region(
+            artifact_id,
+            artifact_kind,
+            evidence_class,
+            algorithm,
+            sequence,
+            sequence.region(),
+            selected_frame_ids,
+            normalization,
+            parameters,
+            output_dimensions,
+            output_hash,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_sequence_with_region<P: AsRef<[u8]>>(
+        artifact_id: A,
+        artifact_kind: ArtifactKind,
+        evidence_class: EvidenceClass,
+        algorithm: AlgorithmDescriptor,
+        sequence: &FrameSequence<F, M, G, P>,
+        region: Option<FrameRegion>,
+        selected_frame_ids: Vec<F>,
+        normalization: Vec<NormalizationStep>,
+        parameters: Parameters,
+        output_dimensions: PixelDimensions,
+        output_hash: OutputHash,
+    ) -> Result<Self> {
         let source_frame_ids: Box<[F]> = sequence
             .frames()
             .iter()
@@ -437,7 +466,7 @@ impl<A, F: Clone + Eq, M: Clone + Eq, G: Clone + Eq> ArtifactManifest<A, F, M, G
             range: sequence.range(),
             markers: sequence.markers().to_vec().into_boxed_slice(),
             gaps: sequence.gaps().to_vec().into_boxed_slice(),
-            region: sequence.region(),
+            region,
             mask: sequence.mask().cloned(),
             normalization: normalization.into_boxed_slice(),
             parameters,

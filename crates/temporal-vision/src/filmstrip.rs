@@ -1,8 +1,23 @@
-use std::num::{NonZeroU8, NonZeroU32};
+use std::{
+    collections::BTreeMap,
+    fmt::Display,
+    num::{NonZeroU8, NonZeroU32, NonZeroUsize},
+};
 
 use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::{ErrorCode, FrameSequence, PixelDimensions, PixelRect, Result, Timestamp, VisionError};
+use crate::{
+    AlgorithmDescriptor, ArtifactKind, ArtifactManifest, EncodedImage, ErrorCode, EvidenceClass,
+    FrameRegion, FrameSequence, GeneratedArtifact, IntegerScale, NormalizationKind,
+    NormalizationParameters, NormalizationStep, ParameterValue, Parameters, PixelDimensions,
+    PixelRect, ProcessingLimits, Result, Rgb8, Timestamp, VisionError,
+    normalize::make_parameters,
+    normalize_sequence,
+    render::{
+        canvas::{BLACK, Canvas, MUTED, PANEL, WARNING, WHITE, canvas_limit_error},
+        font::{CELL_WIDTH, draw_text, ellipsize},
+    },
+};
 
 stable_registry! {
     /// Coordinate space in which a fixed filmstrip region was declared.
@@ -550,6 +565,1360 @@ fn invalid_region_error() -> VisionError {
     VisionError::new(
         ErrorCode::InvalidRegion,
         "filmstrip region intersection exceeds supported limits",
+    )
+}
+
+const ALGORITHM_NAME: &str = "region-filmstrip";
+const ALGORITHM_VERSION: &str = "1.0.0";
+const DEFAULT_MAX_DIMENSION: u32 = 4_096;
+const DEFAULT_MAX_BYTES: usize = 64 * 1024 * 1024;
+const DEFAULT_MAX_SOURCE_FRAMES: usize = 4_096;
+const MARGIN: u32 = 12;
+const HEADER_HEIGHT: u32 = 64;
+const LOCATOR_WIDTH: u32 = 200;
+const LOCATOR_HEIGHT: u32 = 200;
+const LOCATOR_ANNOTATION_HEIGHT: u32 = 44;
+const TILE_ANNOTATION_HEIGHT: u32 = 56;
+const MINIMUM_TILE_SLOT_WIDTH: u32 = 160;
+const SECTION_GAP: u32 = 16;
+const TILE_GAP: u32 = 12;
+const TIMELINE_HEIGHT: u32 = 24;
+
+/// Required title and source context drawn onto a region filmstrip.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RegionFilmstripLabels {
+    title: String,
+    source: String,
+}
+
+impl RegionFilmstripLabels {
+    pub fn new(title: impl Into<String>, source: impl Into<String>) -> Result<Self> {
+        let title = title.into();
+        let source = source.into();
+        if title.trim().is_empty() || source.trim().is_empty() {
+            return Err(VisionError::new(
+                ErrorCode::InvalidParameter,
+                "filmstrip title and source context must not be empty",
+            ));
+        }
+        Ok(Self { title, source })
+    }
+
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+}
+
+/// Processing and output ceilings for one region-filmstrip generation request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RegionFilmstripRenderLimits {
+    max_width: NonZeroU32,
+    max_height: NonZeroU32,
+    max_canvas_bytes: NonZeroUsize,
+    max_encoded_bytes: NonZeroUsize,
+    max_source_frames: NonZeroUsize,
+}
+
+impl RegionFilmstripRenderLimits {
+    pub const fn new(
+        max_width: NonZeroU32,
+        max_height: NonZeroU32,
+        max_canvas_bytes: NonZeroUsize,
+        max_encoded_bytes: NonZeroUsize,
+    ) -> Self {
+        Self {
+            max_width,
+            max_height,
+            max_canvas_bytes,
+            max_encoded_bytes,
+            max_source_frames: NonZeroUsize::new(DEFAULT_MAX_SOURCE_FRAMES)
+                .expect("default is nonzero"),
+        }
+    }
+
+    pub const fn with_max_source_frames(mut self, max_source_frames: NonZeroUsize) -> Self {
+        self.max_source_frames = max_source_frames;
+        self
+    }
+
+    pub const fn max_width(self) -> u32 {
+        self.max_width.get()
+    }
+
+    pub const fn max_height(self) -> u32 {
+        self.max_height.get()
+    }
+
+    pub const fn max_canvas_bytes(self) -> usize {
+        self.max_canvas_bytes.get()
+    }
+
+    pub const fn max_encoded_bytes(self) -> usize {
+        self.max_encoded_bytes.get()
+    }
+
+    pub const fn max_source_frames(self) -> usize {
+        self.max_source_frames.get()
+    }
+
+    fn processing_limits(self) -> ProcessingLimits {
+        let max_pixels = (self.max_canvas_bytes() / 6).max(1);
+        ProcessingLimits::new(
+            self.max_source_frames,
+            NonZeroUsize::new(max_pixels).expect("maximum pixels is nonzero"),
+            self.max_canvas_bytes,
+        )
+    }
+}
+
+impl Default for RegionFilmstripRenderLimits {
+    fn default() -> Self {
+        Self::new(
+            NonZeroU32::new(DEFAULT_MAX_DIMENSION).expect("default is nonzero"),
+            NonZeroU32::new(DEFAULT_MAX_DIMENSION).expect("default is nonzero"),
+            NonZeroUsize::new(DEFAULT_MAX_BYTES).expect("default is nonzero"),
+            NonZeroUsize::new(DEFAULT_MAX_BYTES).expect("default is nonzero"),
+        )
+    }
+}
+
+/// Complete deterministic request for one fixed-region filmstrip.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RegionFilmstripParameters {
+    region: RegionDefinition,
+    anchor: Timestamp,
+    tile_limit: FilmstripTileLimit,
+    locator_frame_index: Option<usize>,
+    background: Rgb8,
+    padding_color: Rgb8,
+    display_scale: IntegerScale,
+    labels: RegionFilmstripLabels,
+    limits: RegionFilmstripRenderLimits,
+}
+
+impl RegionFilmstripParameters {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        region: RegionDefinition,
+        anchor: Timestamp,
+        tile_limit: FilmstripTileLimit,
+        background: Rgb8,
+        padding_color: Rgb8,
+        display_scale: IntegerScale,
+        labels: RegionFilmstripLabels,
+        limits: RegionFilmstripRenderLimits,
+    ) -> Self {
+        Self {
+            region,
+            anchor,
+            tile_limit,
+            locator_frame_index: None,
+            background,
+            padding_color,
+            display_scale,
+            labels,
+            limits,
+        }
+    }
+
+    pub const fn with_locator_frame_index(mut self, index: usize) -> Self {
+        self.locator_frame_index = Some(index);
+        self
+    }
+
+    pub const fn region(&self) -> RegionDefinition {
+        self.region
+    }
+
+    pub const fn anchor(&self) -> Timestamp {
+        self.anchor
+    }
+
+    pub const fn tile_limit(&self) -> FilmstripTileLimit {
+        self.tile_limit
+    }
+
+    pub const fn locator_frame_index(&self) -> Option<usize> {
+        self.locator_frame_index
+    }
+
+    pub const fn background(&self) -> Rgb8 {
+        self.background
+    }
+
+    pub const fn padding_color(&self) -> Rgb8 {
+        self.padding_color
+    }
+
+    pub const fn display_scale(&self) -> IntegerScale {
+        self.display_scale
+    }
+
+    pub const fn labels(&self) -> &RegionFilmstripLabels {
+        &self.labels
+    }
+
+    pub const fn limits(&self) -> RegionFilmstripRenderLimits {
+        self.limits
+    }
+}
+
+/// Encoded filmstrip evidence, provenance, and its reusable fixed-region plan.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RegionFilmstripArtifact<A, F, M, G> {
+    artifact: GeneratedArtifact<A, F, M, G>,
+    plan: RegionFilmstripPlan<F>,
+}
+
+impl<A, F, M, G> RegionFilmstripArtifact<A, F, M, G> {
+    pub const fn image(&self) -> &EncodedImage {
+        self.artifact.image()
+    }
+
+    pub const fn manifest(&self) -> &ArtifactManifest<A, F, M, G> {
+        self.artifact.manifest()
+    }
+
+    pub const fn plan(&self) -> &RegionFilmstripPlan<F> {
+        &self.plan
+    }
+}
+
+/// Generate one deterministic source-derived fixed-region filmstrip.
+pub fn generate_region_filmstrip<A, F, M, G, P>(
+    artifact_id: A,
+    source: &FrameSequence<F, M, G, P>,
+    parameters: RegionFilmstripParameters,
+) -> Result<RegionFilmstripArtifact<A, F, M, G>>
+where
+    F: Clone + Eq + Display,
+    M: Clone + Eq,
+    G: Clone + Eq,
+    P: AsRef<[u8]>,
+{
+    if source.frames().len() > parameters.limits.max_source_frames() {
+        return Err(render_limit_error());
+    }
+    let plan = plan_region_filmstrip(
+        source,
+        parameters.region,
+        parameters.anchor,
+        parameters.tile_limit,
+        parameters.locator_frame_index,
+    )?;
+    let tile_dimensions =
+        scaled_tile_dimensions(plan.tile_source_dimensions(), parameters.display_scale)?;
+    let normalized = normalize_sequence(
+        source,
+        NormalizationParameters::new(
+            parameters.background,
+            None,
+            IntegerScale::IDENTITY,
+            parameters.limits.processing_limits(),
+        ),
+    )?;
+    let layout = FilmstripLayout::new(tile_dimensions, plan.tiles().len(), parameters.limits)?;
+    let mut canvas = Canvas::new(
+        layout.dimensions,
+        BLACK,
+        parameters.limits.max_canvas_bytes(),
+    )?;
+    render_filmstrip(&mut canvas, layout, source, &normalized, &plan, &parameters)?;
+    let (bytes, hash) = crate::encode::encode_png(
+        layout.dimensions,
+        canvas.pixels(),
+        parameters.limits.max_encoded_bytes(),
+    )?;
+
+    let mut normalization = normalized.normalization_steps().to_vec();
+    normalization.push(display_conversion_step()?);
+    normalization.push(region_padding_step(&plan, parameters.padding_color)?);
+    if !parameters.display_scale.is_identity() {
+        normalization.push(display_scale_step(
+            parameters.display_scale,
+            tile_dimensions,
+        )?);
+    }
+    let selected_ids = plan
+        .tiles()
+        .iter()
+        .map(|tile| tile.frame_id().clone())
+        .collect();
+    let manifest_region = manifest_region(parameters.region, source.dimensions())?;
+    let manifest = ArtifactManifest::from_sequence_with_region(
+        artifact_id,
+        ArtifactKind::RegionFilmstrip,
+        EvidenceClass::SourceDerived,
+        AlgorithmDescriptor::new(ALGORITHM_NAME, ALGORITHM_VERSION)?,
+        source,
+        manifest_region,
+        selected_ids,
+        normalization,
+        filmstrip_parameters(&plan, &parameters, layout, tile_dimensions)?,
+        layout.dimensions,
+        hash,
+    )?;
+    Ok(RegionFilmstripArtifact {
+        artifact: GeneratedArtifact::new(EncodedImage::new(layout.dimensions, bytes), manifest),
+        plan,
+    })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FilmstripLayout {
+    dimensions: PixelDimensions,
+    locator_panel: PixelRect,
+    locator_annotation: PixelRect,
+    strip_x: u32,
+    strip_y: u32,
+    tile_slot_width: u32,
+    tile_width: u32,
+    tile_height: u32,
+    columns: usize,
+    rows: usize,
+    timeline_y: u32,
+}
+
+impl FilmstripLayout {
+    fn new(
+        tile: PixelDimensions,
+        tile_count: usize,
+        limits: RegionFilmstripRenderLimits,
+    ) -> Result<Self> {
+        let tile_slot_width = tile.width().max(MINIMUM_TILE_SLOT_WIDTH);
+        let fixed_width = MARGIN
+            .checked_mul(2)
+            .and_then(|value| value.checked_add(LOCATOR_WIDTH))
+            .and_then(|value| value.checked_add(SECTION_GAP))
+            .ok_or_else(canvas_limit_error)?;
+        let available = limits
+            .max_width()
+            .checked_sub(fixed_width)
+            .ok_or_else(canvas_limit_error)?;
+        let columns = usize::try_from(
+            available
+                .checked_add(TILE_GAP)
+                .ok_or_else(canvas_limit_error)?
+                / tile_slot_width
+                    .checked_add(TILE_GAP)
+                    .ok_or_else(canvas_limit_error)?,
+        )
+        .map_err(|_| canvas_limit_error())?
+        .min(tile_count);
+        if columns == 0 {
+            return Err(canvas_limit_error());
+        }
+        let rows = tile_count.div_ceil(columns);
+        let columns_u32 = u32::try_from(columns).map_err(|_| canvas_limit_error())?;
+        let rows_u32 = u32::try_from(rows).map_err(|_| canvas_limit_error())?;
+        let strip_width = columns_u32
+            .checked_mul(tile_slot_width)
+            .and_then(|value| {
+                value.checked_add(TILE_GAP.checked_mul(columns_u32.saturating_sub(1))?)
+            })
+            .ok_or_else(canvas_limit_error)?;
+        let row_height = tile
+            .height()
+            .checked_add(TILE_ANNOTATION_HEIGHT)
+            .ok_or_else(canvas_limit_error)?;
+        let strip_height = rows_u32
+            .checked_mul(row_height)
+            .and_then(|value| value.checked_add(TILE_GAP.checked_mul(rows_u32 - 1)?))
+            .ok_or_else(canvas_limit_error)?;
+        let locator_height = LOCATOR_HEIGHT
+            .checked_add(LOCATOR_ANNOTATION_HEIGHT)
+            .ok_or_else(canvas_limit_error)?;
+        let content_height = strip_height.max(locator_height);
+        let width = fixed_width
+            .checked_add(strip_width)
+            .ok_or_else(canvas_limit_error)?;
+        let timeline_y = HEADER_HEIGHT
+            .checked_add(MARGIN)
+            .and_then(|value| value.checked_add(content_height))
+            .and_then(|value| value.checked_add(MARGIN))
+            .ok_or_else(canvas_limit_error)?;
+        let height = timeline_y
+            .checked_add(TIMELINE_HEIGHT)
+            .ok_or_else(canvas_limit_error)?;
+        if width > limits.max_width() || height > limits.max_height() {
+            return Err(canvas_limit_error());
+        }
+        let dimensions = PixelDimensions::new(width, height).map_err(|_| canvas_limit_error())?;
+        let bytes = dimensions
+            .pixel_count()?
+            .checked_mul(3)
+            .ok_or_else(canvas_limit_error)?;
+        if bytes > limits.max_canvas_bytes() {
+            return Err(canvas_limit_error());
+        }
+        let locator_y = HEADER_HEIGHT + MARGIN;
+        Ok(Self {
+            dimensions,
+            locator_panel: PixelRect::new(MARGIN, locator_y, LOCATOR_WIDTH, LOCATOR_HEIGHT)?,
+            locator_annotation: PixelRect::new(
+                MARGIN,
+                locator_y + LOCATOR_HEIGHT,
+                LOCATOR_WIDTH,
+                LOCATOR_ANNOTATION_HEIGHT,
+            )?,
+            strip_x: MARGIN + LOCATOR_WIDTH + SECTION_GAP,
+            strip_y: locator_y,
+            tile_slot_width,
+            tile_width: tile.width(),
+            tile_height: tile.height(),
+            columns,
+            rows,
+            timeline_y,
+        })
+    }
+
+    fn tile_slot(self, index: usize) -> Result<PixelRect> {
+        let column = u32::try_from(index % self.columns).map_err(|_| canvas_limit_error())?;
+        let row = u32::try_from(index / self.columns).map_err(|_| canvas_limit_error())?;
+        let x = self
+            .strip_x
+            .checked_add(
+                column
+                    .checked_mul(self.tile_slot_width + TILE_GAP)
+                    .ok_or_else(canvas_limit_error)?,
+            )
+            .ok_or_else(canvas_limit_error)?;
+        let y = self
+            .strip_y
+            .checked_add(
+                row.checked_mul(self.tile_height + TILE_ANNOTATION_HEIGHT + TILE_GAP)
+                    .ok_or_else(canvas_limit_error)?,
+            )
+            .ok_or_else(canvas_limit_error)?;
+        PixelRect::new(
+            x,
+            y,
+            self.tile_slot_width,
+            self.tile_height + TILE_ANNOTATION_HEIGHT,
+        )
+    }
+}
+
+fn scaled_tile_dimensions(source: PixelDimensions, scale: IntegerScale) -> Result<PixelDimensions> {
+    let factor = u32::from(scale.factor());
+    let (width, height) = match scale.direction_name() {
+        "identity" => (source.width(), source.height()),
+        "up" => (
+            source
+                .width()
+                .checked_mul(factor)
+                .ok_or_else(invalid_scale_error)?,
+            source
+                .height()
+                .checked_mul(factor)
+                .ok_or_else(invalid_scale_error)?,
+        ),
+        "down" => {
+            if source.width() % factor != 0 || source.height() % factor != 0 {
+                return Err(VisionError::new(
+                    ErrorCode::InvalidScale,
+                    "filmstrip downscale factor must exactly divide declared region dimensions",
+                ));
+            }
+            (source.width() / factor, source.height() / factor)
+        }
+        _ => unreachable!("integer scale direction is a closed internal registry"),
+    };
+    PixelDimensions::new(width, height).map_err(|_| invalid_scale_error())
+}
+
+fn render_filmstrip<F: Display + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
+    canvas: &mut Canvas,
+    layout: FilmstripLayout,
+    source: &FrameSequence<F, M, G, P>,
+    normalized: &crate::NormalizedSequence<F>,
+    plan: &RegionFilmstripPlan<F>,
+    parameters: &RegionFilmstripParameters,
+) -> Result<()> {
+    draw_header(canvas, source, plan, parameters)?;
+    draw_locator(
+        canvas,
+        layout,
+        &normalized.frames()[plan.locator_frame_index()],
+        source.dimensions(),
+        plan,
+    )?;
+    for (index, tile) in plan.tiles().iter().enumerate() {
+        draw_tile(
+            canvas,
+            layout,
+            index,
+            tile,
+            &normalized.frames()[tile.frame_index()],
+            parameters,
+        )?;
+    }
+    draw_timeline(canvas, layout, source)
+}
+
+fn draw_header<F: Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
+    canvas: &mut Canvas,
+    source: &FrameSequence<F, M, G, P>,
+    plan: &RegionFilmstripPlan<F>,
+    parameters: &RegionFilmstripParameters,
+) -> Result<()> {
+    canvas.fill_rect(0, 0, canvas.dimensions().width(), HEADER_HEIGHT, BLACK)?;
+    let width = canvas.dimensions().width().saturating_sub(8);
+    draw_clipped_text(canvas, 4, 2, width, parameters.labels.title(), WHITE)?;
+    draw_clipped_text(canvas, 4, 14, width, parameters.labels.source(), MUTED)?;
+    draw_clipped_text(
+        canvas,
+        4,
+        26,
+        width,
+        &format!(
+            "RANGE {} - {} | ANCHOR {}",
+            format_time(source.range().start()),
+            format_time(source.range().end()),
+            format_time(parameters.anchor)
+        ),
+        MUTED,
+    )?;
+    let status = if source.gaps().is_empty() {
+        format!(
+            "SOURCE-DERIVED | FIXED {} | TRACKING NONE | OMITTED {}",
+            plan.coordinate_space().as_str(),
+            plan.omitted_frame_count()
+        )
+    } else {
+        format!(
+            "GAP - UNSEEN BEHAVIOR MAY HAVE OCCURRED | FIXED {} | TRACKING NONE",
+            plan.coordinate_space().as_str()
+        )
+    };
+    draw_clipped_text(
+        canvas,
+        4,
+        38,
+        width,
+        &status,
+        if source.gaps().is_empty() {
+            MUTED
+        } else {
+            WARNING
+        },
+    )?;
+    draw_clipped_text(
+        canvas,
+        4,
+        50,
+        width,
+        "FIXED VISUAL REGION; NO LOGICAL ELEMENT FOLLOWING",
+        MUTED,
+    )
+}
+
+fn draw_locator<F>(
+    canvas: &mut Canvas,
+    layout: FilmstripLayout,
+    frame: &crate::NormalizedFrame<F>,
+    source_dimensions: PixelDimensions,
+    plan: &RegionFilmstripPlan<F>,
+) -> Result<()> {
+    canvas.fill_rect(
+        layout.locator_panel.x(),
+        layout.locator_panel.y(),
+        layout.locator_panel.width(),
+        layout.locator_panel.height(),
+        PANEL,
+    )?;
+    let (draw_x, draw_y, draw_width, draw_height) = canvas.draw_linear_frame(
+        frame.dimensions(),
+        frame.linear_rgb16(),
+        layout.locator_panel.x(),
+        layout.locator_panel.y(),
+        layout.locator_panel.width(),
+        layout.locator_panel.height(),
+    )?;
+    let (intersection, _) = intersect_region(plan.resolved_source_region(), source_dimensions)?;
+    if let Some(rect) = intersection {
+        let x0 = draw_x + map_floor(rect.x(), draw_width, source_dimensions.width())?;
+        let y0 = draw_y + map_floor(rect.y(), draw_height, source_dimensions.height())?;
+        let x1 = draw_x
+            + map_ceil(
+                rect.right_exclusive()?,
+                draw_width,
+                source_dimensions.width(),
+            )?;
+        let y1 = draw_y
+            + map_ceil(
+                rect.bottom_exclusive()?,
+                draw_height,
+                source_dimensions.height(),
+            )?;
+        draw_outline(
+            canvas,
+            x0,
+            y0,
+            x1.saturating_sub(x0),
+            y1.saturating_sub(y0),
+            WARNING,
+        )?;
+    }
+    let resolved = plan.resolved_source_region();
+    let right = resolved.right_exclusive()?;
+    let bottom = resolved.bottom_exclusive()?;
+    let mut outside = Vec::new();
+    if resolved.x() < 0 {
+        draw_edge_chevrons(canvas, draw_x, draw_y, draw_width, draw_height, Edge::Left)?;
+        outside.push("LEFT");
+    }
+    if right > i64::from(source_dimensions.width()) {
+        draw_edge_chevrons(canvas, draw_x, draw_y, draw_width, draw_height, Edge::Right)?;
+        outside.push("RIGHT");
+    }
+    if resolved.y() < 0 {
+        draw_edge_chevrons(canvas, draw_x, draw_y, draw_width, draw_height, Edge::Top)?;
+        outside.push("TOP");
+    }
+    if bottom > i64::from(source_dimensions.height()) {
+        draw_edge_chevrons(
+            canvas,
+            draw_x,
+            draw_y,
+            draw_width,
+            draw_height,
+            Edge::Bottom,
+        )?;
+        outside.push("BOTTOM");
+    }
+    canvas.fill_rect(
+        layout.locator_annotation.x(),
+        layout.locator_annotation.y(),
+        layout.locator_annotation.width(),
+        layout.locator_annotation.height(),
+        PANEL,
+    )?;
+    draw_clipped_text(
+        canvas,
+        layout.locator_annotation.x() + 3,
+        layout.locator_annotation.y() + 3,
+        layout.locator_annotation.width().saturating_sub(6),
+        "REGION IN CONTEXT",
+        WHITE,
+    )?;
+    draw_clipped_text(
+        canvas,
+        layout.locator_annotation.x() + 3,
+        layout.locator_annotation.y() + 15,
+        layout.locator_annotation.width().saturating_sub(6),
+        &format!("LOCATOR FRAME {}", plan.locator_frame_index()),
+        MUTED,
+    )?;
+    let outside_label = if outside.is_empty() {
+        "REGION INSIDE SOURCE".to_owned()
+    } else {
+        format!("OUTSIDE: {}", outside.join(" + "))
+    };
+    draw_clipped_text(
+        canvas,
+        layout.locator_annotation.x() + 3,
+        layout.locator_annotation.y() + 27,
+        layout.locator_annotation.width().saturating_sub(6),
+        &outside_label,
+        if outside.is_empty() { MUTED } else { WARNING },
+    )
+}
+
+fn draw_tile<F: Display>(
+    canvas: &mut Canvas,
+    layout: FilmstripLayout,
+    index: usize,
+    tile: &FilmstripTilePlan<F>,
+    frame: &crate::NormalizedFrame<F>,
+    parameters: &RegionFilmstripParameters,
+) -> Result<()> {
+    let slot = layout.tile_slot(index)?;
+    let image_x = slot.x() + (slot.width() - layout.tile_width) / 2;
+    canvas.fill_rect(slot.x(), slot.y(), slot.width(), layout.tile_height, PANEL)?;
+    for y in 0..layout.tile_height {
+        for x in 0..layout.tile_width {
+            let (color, padding) = scaled_region_pixel(
+                frame,
+                tile,
+                parameters.padding_color.channels(),
+                parameters.display_scale,
+                x,
+                y,
+            )?;
+            let color = if padding && (x + y) % 8 < 2 {
+                WARNING
+            } else {
+                color
+            };
+            canvas.set_pixel(image_x + x, slot.y() + y, color)?;
+        }
+    }
+    let annotation_y = slot.y() + layout.tile_height;
+    canvas.fill_rect(
+        slot.x(),
+        annotation_y,
+        slot.width(),
+        TILE_ANNOTATION_HEIGHT,
+        PANEL,
+    )?;
+    let text_width = slot.width().saturating_sub(6);
+    draw_clipped_text(
+        canvas,
+        slot.x() + 3,
+        annotation_y + 2,
+        text_width,
+        &format!(
+            "T {} | {}",
+            format_time(tile.timestamp()),
+            format_offset(tile.anchor_offset_nanos())
+        ),
+        WHITE,
+    )?;
+    draw_clipped_text(
+        canvas,
+        slot.x() + 3,
+        annotation_y + 14,
+        text_width,
+        &format!(
+            "FRAME {} | SOURCE INDEX {}",
+            tile.frame_id(),
+            tile.frame_index()
+        ),
+        MUTED,
+    )?;
+    let padding = tile.padding();
+    let padding_label = if tile.source_rect().is_none() {
+        "OUTSIDE SOURCE | ALL PADDING".to_owned()
+    } else if padding.is_empty() {
+        "SOURCE CROP | NO PADDING".to_owned()
+    } else {
+        format!(
+            "PADDING L{} T{} R{} B{}",
+            padding.left(),
+            padding.top(),
+            padding.right(),
+            padding.bottom()
+        )
+    };
+    draw_clipped_text(
+        canvas,
+        slot.x() + 3,
+        annotation_y + 26,
+        text_width,
+        &padding_label,
+        if padding.is_empty() { MUTED } else { WARNING },
+    )?;
+    draw_clipped_text(
+        canvas,
+        slot.x() + 3,
+        annotation_y + 38,
+        text_width,
+        "FIXED REGION | TRACKING NONE",
+        MUTED,
+    )?;
+    if tile.gap_after() {
+        let hatch_x = slot.right_exclusive()?.saturating_sub(6);
+        canvas.draw_hatch(hatch_x, slot.y(), 6, slot.height(), WARNING)?;
+        draw_clipped_text(
+            canvas,
+            slot.x() + 3,
+            annotation_y + 44,
+            text_width,
+            "GAP ->",
+            WARNING,
+        )?;
+    }
+    Ok(())
+}
+
+fn scaled_region_pixel<F>(
+    frame: &crate::NormalizedFrame<F>,
+    tile: &FilmstripTilePlan<F>,
+    padding_color: [u8; 3],
+    scale: IntegerScale,
+    output_x: u32,
+    output_y: u32,
+) -> Result<([u8; 3], bool)> {
+    let factor = u32::from(scale.factor());
+    if scale.direction_name() != "down" {
+        let source_x = if scale.direction_name() == "up" {
+            output_x / factor
+        } else {
+            output_x
+        };
+        let source_y = if scale.direction_name() == "up" {
+            output_y / factor
+        } else {
+            output_y
+        };
+        return region_pixel(frame, tile, padding_color, source_x, source_y);
+    }
+
+    let mut sums = [0_u64; 3];
+    let mut padding = false;
+    for dy in 0..factor {
+        for dx in 0..factor {
+            let (pixel, generated) = region_pixel(
+                frame,
+                tile,
+                padding_color,
+                output_x * factor + dx,
+                output_y * factor + dy,
+            )?;
+            padding |= generated;
+            for channel in 0..3 {
+                sums[channel] += u64::from(pixel[channel]);
+            }
+        }
+    }
+    let count = u64::from(factor) * u64::from(factor);
+    Ok((
+        std::array::from_fn(|channel| ((sums[channel] + count / 2) / count) as u8),
+        padding,
+    ))
+}
+
+fn region_pixel<F>(
+    frame: &crate::NormalizedFrame<F>,
+    tile: &FilmstripTilePlan<F>,
+    padding_color: [u8; 3],
+    x: u32,
+    y: u32,
+) -> Result<([u8; 3], bool)> {
+    let padding = tile.padding();
+    let Some(source_rect) = tile.source_rect() else {
+        return Ok((padding_color, true));
+    };
+    let visible_x = x.checked_sub(padding.left());
+    let visible_y = y.checked_sub(padding.top());
+    if visible_x.is_none_or(|value| value >= source_rect.width())
+        || visible_y.is_none_or(|value| value >= source_rect.height())
+    {
+        return Ok((padding_color, true));
+    }
+    let source_x = source_rect.x() + visible_x.expect("checked above");
+    let source_y = source_rect.y() + visible_y.expect("checked above");
+    let index = usize::try_from(source_y)
+        .ok()
+        .and_then(|row| row.checked_mul(usize::try_from(frame.dimensions().width()).ok()?))
+        .and_then(|row| row.checked_add(usize::try_from(source_x).ok()?))
+        .and_then(|pixel| pixel.checked_mul(3))
+        .ok_or_else(canvas_limit_error)?;
+    let linear = &frame.linear_rgb16()[index..index + 3];
+    Ok((
+        [linear[0], linear[1], linear[2]].map(crate::normalize::linear16_to_srgb8),
+        false,
+    ))
+}
+
+fn draw_timeline<F: Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
+    canvas: &mut Canvas,
+    layout: FilmstripLayout,
+    source: &FrameSequence<F, M, G, P>,
+) -> Result<()> {
+    canvas.fill_rect(
+        0,
+        layout.timeline_y,
+        layout.dimensions.width(),
+        TIMELINE_HEIGHT,
+        BLACK,
+    )?;
+    draw_clipped_text(
+        canvas,
+        4,
+        layout.timeline_y + 6,
+        layout.dimensions.width().saturating_sub(8),
+        &format!(
+            "TIME -> {} -> {} | CHRONOLOGICAL SOURCE ORDER | ROWS {}",
+            format_time(source.range().start()),
+            format_time(source.range().end()),
+            layout.rows
+        ),
+        WHITE,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum Edge {
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+fn draw_edge_chevrons(
+    canvas: &mut Canvas,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    edge: Edge,
+) -> Result<()> {
+    for offset in (4..match edge {
+        Edge::Left | Edge::Right => height,
+        _ => width,
+    })
+        .step_by(12)
+    {
+        for arm in 0..4 {
+            let (px, py) = match edge {
+                Edge::Left => (x + arm, y + offset.saturating_sub(2) + arm),
+                Edge::Right => (x + width - 1 - arm, y + offset.saturating_sub(2) + arm),
+                Edge::Top => (x + offset.saturating_sub(2) + arm, y + arm),
+                Edge::Bottom => (x + offset.saturating_sub(2) + arm, y + height - 1 - arm),
+            };
+            if px < x + width && py < y + height {
+                canvas.set_pixel(px, py, WARNING)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn draw_outline(
+    canvas: &mut Canvas,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    color: [u8; 3],
+) -> Result<()> {
+    if width == 0 || height == 0 {
+        return Ok(());
+    }
+    canvas.fill_rect(x, y, width, height.min(2), color)?;
+    canvas.fill_rect(x, y + height.saturating_sub(2), width, height.min(2), color)?;
+    canvas.fill_rect(x, y, width.min(2), height, color)?;
+    canvas.fill_rect(x + width.saturating_sub(2), y, width.min(2), height, color)
+}
+
+fn map_floor(value: u32, target: u32, source: u32) -> Result<u32> {
+    u32::try_from(u64::from(value) * u64::from(target) / u64::from(source))
+        .map_err(|_| canvas_limit_error())
+}
+
+fn map_ceil(value: u32, target: u32, source: u32) -> Result<u32> {
+    let numerator = u64::from(value)
+        .checked_mul(u64::from(target))
+        .and_then(|value| value.checked_add(u64::from(source) - 1))
+        .ok_or_else(canvas_limit_error)?;
+    u32::try_from(numerator / u64::from(source)).map_err(|_| canvas_limit_error())
+}
+
+fn draw_clipped_text(
+    canvas: &mut Canvas,
+    x: u32,
+    y: u32,
+    width: u32,
+    text: &str,
+    color: [u8; 3],
+) -> Result<()> {
+    let cells = usize::try_from(width / CELL_WIDTH).unwrap_or(0);
+    if cells == 0 {
+        return Ok(());
+    }
+    draw_text(canvas, x, y, &ellipsize(text, cells), color)
+}
+
+fn format_time(timestamp: Timestamp) -> String {
+    let milliseconds = timestamp.as_nanos() / 1_000_000;
+    let micros = timestamp.as_nanos() % 1_000_000 / 1_000;
+    format!("{milliseconds}.{micros:03} MS")
+}
+
+fn format_offset(offset: i128) -> String {
+    let sign = if offset < 0 { '-' } else { '+' };
+    let magnitude = offset.unsigned_abs();
+    let milliseconds = magnitude / 1_000_000;
+    let micros = magnitude % 1_000_000 / 1_000;
+    format!("{sign}{milliseconds}.{micros:03} MS")
+}
+
+fn display_conversion_step() -> Result<NormalizationStep> {
+    NormalizationStep::new(
+        NormalizationKind::ColorSpaceConversion,
+        "linear16-to-srgb8-v1",
+        make_parameters([
+            ("input", ParameterValue::Text("rgb16_linear_opaque".into())),
+            ("output", ParameterValue::Text("rgb8_srgb_opaque".into())),
+            (
+                "mapping",
+                ParameterValue::Text("nearest_checked_lut_entry".into()),
+            ),
+        ])?,
+    )
+}
+
+fn region_padding_step<F>(
+    plan: &RegionFilmstripPlan<F>,
+    padding_color: Rgb8,
+) -> Result<NormalizationStep> {
+    NormalizationStep::new(
+        NormalizationKind::FixedCrop,
+        "fixed-region-padding-v1",
+        make_parameters([
+            (
+                "resolved_source_region",
+                signed_rect_value(plan.resolved_source_region())?,
+            ),
+            ("padding_rgb8", rgb_value(padding_color)),
+            (
+                "missing_pixels",
+                ParameterValue::Text("explicit_padding_with_warning_hatch".into()),
+            ),
+        ])?,
+    )
+}
+
+fn display_scale_step(
+    scale: IntegerScale,
+    dimensions: PixelDimensions,
+) -> Result<NormalizationStep> {
+    NormalizationStep::new(
+        NormalizationKind::IntegerScaling,
+        "filmstrip-display-scale-v1",
+        make_parameters([
+            (
+                "direction",
+                ParameterValue::Text(scale.direction_name().into()),
+            ),
+            (
+                "factor",
+                ParameterValue::Unsigned(u64::from(scale.factor())),
+            ),
+            (
+                "kernel",
+                ParameterValue::Text(
+                    if scale.direction_name() == "down" {
+                        "non_overlapping_srgb8_box_average"
+                    } else {
+                        "nearest_neighbor"
+                    }
+                    .into(),
+                ),
+            ),
+            ("output_dimensions", dimensions_value(dimensions)?),
+        ])?,
+    )
+}
+
+fn manifest_region(
+    region: RegionDefinition,
+    dimensions: PixelDimensions,
+) -> Result<Option<FrameRegion>> {
+    let RegionDefinition::FixedSourceImage { rect } = region else {
+        return Ok(None);
+    };
+    if rect.x() < 0 || rect.y() < 0 {
+        return Ok(None);
+    }
+    let pixel_rect = PixelRect::new(
+        u32::try_from(rect.x()).map_err(|_| invalid_region_error())?,
+        u32::try_from(rect.y()).map_err(|_| invalid_region_error())?,
+        rect.width(),
+        rect.height(),
+    )?;
+    if !pixel_rect.fits_within(dimensions) {
+        return Ok(None);
+    }
+    Ok(Some(FrameRegion::new(pixel_rect, dimensions)?))
+}
+
+fn filmstrip_parameters<F: Display>(
+    plan: &RegionFilmstripPlan<F>,
+    request: &RegionFilmstripParameters,
+    layout: FilmstripLayout,
+    tile_dimensions: PixelDimensions,
+) -> Result<Parameters> {
+    let selected = plan
+        .tiles()
+        .iter()
+        .map(|tile| {
+            object([
+                ("frame_index", unsigned_usize(tile.frame_index())?),
+                (
+                    "frame_label",
+                    ParameterValue::Text(tile.frame_id().to_string().into()),
+                ),
+                (
+                    "timestamp_nanos",
+                    ParameterValue::Unsigned(tile.timestamp().as_nanos()),
+                ),
+                (
+                    "anchor_offset_nanos",
+                    signed_i128(tile.anchor_offset_nanos())?,
+                ),
+                (
+                    "selection_reason",
+                    ParameterValue::Text("uniform_source_order_coverage".into()),
+                ),
+                ("source_rect", optional_rect_value(tile.source_rect())?),
+                ("padding", padding_value(tile.padding())?),
+                ("gap_after", ParameterValue::Bool(tile.gap_after())),
+            ])
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let gap_warning_count = plan.tiles().iter().filter(|tile| tile.gap_after()).count();
+    let mapping = match request.region {
+        RegionDefinition::FixedViewport { mapping, .. } => object([
+            (
+                "viewport_dimensions",
+                dimensions_value(mapping.viewport_dimensions())?,
+            ),
+            ("scale_x", rational_value(mapping.scale_x())?),
+            ("scale_y", rational_value(mapping.scale_y())?),
+        ])?,
+        RegionDefinition::FixedSourceImage { .. } => ParameterValue::Text("not_applicable".into()),
+    };
+    Parameters::new(
+        [
+            (
+                "algorithm_version".into(),
+                ParameterValue::Text(ALGORITHM_VERSION.into()),
+            ),
+            ("region_definition".into(), region_value(request.region)?),
+            (
+                "coordinate_space".into(),
+                ParameterValue::Text(plan.coordinate_space().as_str().into()),
+            ),
+            ("viewport_mapping".into(), mapping),
+            (
+                "resolved_source_region".into(),
+                signed_rect_value(plan.resolved_source_region())?,
+            ),
+            ("selected".into(), ParameterValue::List(selected)),
+            (
+                "omitted_frame_count".into(),
+                ParameterValue::Unsigned(plan.omitted_frame_count()),
+            ),
+            (
+                "locator_frame_index".into(),
+                unsigned_usize(plan.locator_frame_index())?,
+            ),
+            ("background_rgb8".into(), rgb_value(request.background)),
+            ("padding_rgb8".into(), rgb_value(request.padding_color)),
+            (
+                "display_scale".into(),
+                object([
+                    (
+                        "direction",
+                        ParameterValue::Text(request.display_scale.direction_name().into()),
+                    ),
+                    (
+                        "factor",
+                        ParameterValue::Unsigned(u64::from(request.display_scale.factor())),
+                    ),
+                ])?,
+            ),
+            (
+                "tile_source_dimensions".into(),
+                dimensions_value(plan.tile_source_dimensions())?,
+            ),
+            (
+                "tile_output_dimensions".into(),
+                dimensions_value(tile_dimensions)?,
+            ),
+            (
+                "gap_warning_count".into(),
+                unsigned_usize(gap_warning_count)?,
+            ),
+            (
+                "title".into(),
+                ParameterValue::Text(request.labels.title().into()),
+            ),
+            (
+                "source_context".into(),
+                ParameterValue::Text(request.labels.source().into()),
+            ),
+            (
+                "tracking_method".into(),
+                ParameterValue::Text("none".into()),
+            ),
+            (
+                "fixed_region_semantics".into(),
+                ParameterValue::Text("no_logical_element_following".into()),
+            ),
+            (
+                "label_truncation".into(),
+                ParameterValue::Text("embedded_ascii_ellipsis_exact_text_in_manifest".into()),
+            ),
+            (
+                "output_layout".into(),
+                object([
+                    (
+                        "name",
+                        ParameterValue::Text("locator_and_wrapped_strip_v1".into()),
+                    ),
+                    ("columns", unsigned_usize(layout.columns)?),
+                    ("rows", unsigned_usize(layout.rows)?),
+                    (
+                        "tile_slot_width",
+                        ParameterValue::Unsigned(u64::from(layout.tile_slot_width)),
+                    ),
+                    (
+                        "time_direction",
+                        ParameterValue::Text("left_to_right_then_next_row".into()),
+                    ),
+                ])?,
+            ),
+            (
+                "png".into(),
+                ParameterValue::Text("png-0.17.16-rgb8-best-no_filter-no_chunks".into()),
+            ),
+            (
+                "max_output_width".into(),
+                ParameterValue::Unsigned(u64::from(request.limits.max_width())),
+            ),
+            (
+                "max_output_height".into(),
+                ParameterValue::Unsigned(u64::from(request.limits.max_height())),
+            ),
+            (
+                "max_canvas_bytes".into(),
+                unsigned_usize(request.limits.max_canvas_bytes())?,
+            ),
+            (
+                "max_encoded_bytes".into(),
+                unsigned_usize(request.limits.max_encoded_bytes())?,
+            ),
+            (
+                "max_source_frames".into(),
+                unsigned_usize(request.limits.max_source_frames())?,
+            ),
+        ]
+        .into_iter()
+        .collect::<BTreeMap<_, _>>(),
+    )
+}
+
+fn region_value(region: RegionDefinition) -> Result<ParameterValue> {
+    match region {
+        RegionDefinition::FixedSourceImage { rect } => object([
+            ("kind", ParameterValue::Text("fixed_source_image".into())),
+            ("rect", signed_rect_value(rect)?),
+        ]),
+        RegionDefinition::FixedViewport { rect, mapping } => object([
+            ("kind", ParameterValue::Text("fixed_viewport".into())),
+            ("rect", signed_rect_value(rect)?),
+            (
+                "mapping",
+                object([
+                    (
+                        "viewport_dimensions",
+                        dimensions_value(mapping.viewport_dimensions())?,
+                    ),
+                    ("scale_x", rational_value(mapping.scale_x())?),
+                    ("scale_y", rational_value(mapping.scale_y())?),
+                ])?,
+            ),
+        ]),
+    }
+}
+
+fn signed_rect_value(rect: SignedPixelRect) -> Result<ParameterValue> {
+    object([
+        ("x", ParameterValue::Signed(rect.x())),
+        ("y", ParameterValue::Signed(rect.y())),
+        ("width", ParameterValue::Unsigned(u64::from(rect.width()))),
+        ("height", ParameterValue::Unsigned(u64::from(rect.height()))),
+    ])
+}
+
+fn optional_rect_value(rect: Option<PixelRect>) -> Result<ParameterValue> {
+    rect.map_or_else(
+        || Ok(ParameterValue::Text("none".into())),
+        |rect| {
+            object([
+                ("x", ParameterValue::Unsigned(u64::from(rect.x()))),
+                ("y", ParameterValue::Unsigned(u64::from(rect.y()))),
+                ("width", ParameterValue::Unsigned(u64::from(rect.width()))),
+                ("height", ParameterValue::Unsigned(u64::from(rect.height()))),
+            ])
+        },
+    )
+}
+
+fn padding_value(padding: PaddingInsets) -> Result<ParameterValue> {
+    object([
+        ("left", ParameterValue::Unsigned(u64::from(padding.left()))),
+        ("top", ParameterValue::Unsigned(u64::from(padding.top()))),
+        (
+            "right",
+            ParameterValue::Unsigned(u64::from(padding.right())),
+        ),
+        (
+            "bottom",
+            ParameterValue::Unsigned(u64::from(padding.bottom())),
+        ),
+    ])
+}
+
+fn rational_value(scale: RationalScale) -> Result<ParameterValue> {
+    object([
+        (
+            "numerator",
+            ParameterValue::Unsigned(u64::from(scale.numerator())),
+        ),
+        (
+            "denominator",
+            ParameterValue::Unsigned(u64::from(scale.denominator())),
+        ),
+    ])
+}
+
+fn dimensions_value(dimensions: PixelDimensions) -> Result<ParameterValue> {
+    object([
+        (
+            "width",
+            ParameterValue::Unsigned(u64::from(dimensions.width())),
+        ),
+        (
+            "height",
+            ParameterValue::Unsigned(u64::from(dimensions.height())),
+        ),
+    ])
+}
+
+fn rgb_value(color: Rgb8) -> ParameterValue {
+    ParameterValue::List(
+        color
+            .channels()
+            .into_iter()
+            .map(|channel| ParameterValue::Unsigned(u64::from(channel)))
+            .collect(),
+    )
+}
+
+fn signed_i128(value: i128) -> Result<ParameterValue> {
+    i64::try_from(value)
+        .map(ParameterValue::Signed)
+        .map_err(|_| render_limit_error())
+}
+
+fn unsigned_usize(value: usize) -> Result<ParameterValue> {
+    u64::try_from(value)
+        .map(ParameterValue::Unsigned)
+        .map_err(|_| render_limit_error())
+}
+
+fn object<const N: usize>(entries: [(&'static str, ParameterValue); N]) -> Result<ParameterValue> {
+    let values = entries
+        .into_iter()
+        .map(|(key, value)| (Box::<str>::from(key), value))
+        .collect::<BTreeMap<_, _>>();
+    Parameters::new(values.clone())?;
+    Ok(ParameterValue::Object(values))
+}
+
+fn render_limit_error() -> VisionError {
+    VisionError::new(
+        ErrorCode::ResourceLimitExceeded,
+        "region filmstrip exceeds configured processing or rendering limits",
     )
 }
 

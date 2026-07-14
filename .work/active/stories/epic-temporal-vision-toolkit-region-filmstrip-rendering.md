@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-vision-toolkit-region-filmstrip-rendering
 kind: story
-stage: implementing
+stage: done
 tags: [visual]
 parent: epic-temporal-vision-toolkit-region-filmstrip
 depends_on: [epic-temporal-vision-toolkit-region-filmstrip-region-plan]
@@ -38,3 +38,13 @@ Construct an `ArtifactManifest` with `ArtifactKind::RegionFilmstrip`, `EvidenceC
 ## Ordering
 
 Depends on `epic-temporal-vision-toolkit-region-filmstrip-region-plan`. Rendering consumes the plan and must not reinterpret coordinates or perform tracking.
+
+## Implementation notes
+
+- Added bounded full-frame normalization, exact fixed-region crop/padding scaling, full-frame locator rendering, clipped outlines and edge chevrons, wrapped chronological tiles, explicit gap hatches/text, timestamp/anchor/source labels, and deterministic PNG/SHA-256 output.
+- Reused the checked RGB8 canvas, embedded bitmap font, PNG encoder, `EncodedImage`, and `GeneratedArtifact` seam already established by storyboard/difference-map.
+- Extended the manifest constructor internally so filmstrips can honestly set `region` only for an in-bounds fixed source-image rectangle rather than inheriting an unrelated sequence analysis region.
+- Added a configurable source-frame ceiling through `with_max_source_frames`; processing memory, raster dimensions, canvas bytes, and encoded bytes are bounded before artifact return.
+- Filmstrip transformation records include display conversion, fixed crop/padding, optional integer scale, locator/layout/text/PNG parameters, and `tracking_method: none`; locator/layout/text remain manifest parameters rather than being mislabeled as normalization operations.
+- Downscaling uses a recorded non-overlapping sRGB8 box average over the complete padded region; upscaling uses nearest-neighbor replication.
+- Verification: `cargo check -p temporal-vision --all-targets --locked`; `cargo test -p temporal-vision --locked` (38 passed).
