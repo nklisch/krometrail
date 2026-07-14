@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-vision-toolkit-motion-history
 kind: feature
-stage: implementing
+stage: review
 tags: [visual]
 parent: epic-temporal-vision-toolkit
 depends_on: [epic-temporal-vision-toolkit-normalization-and-measurements]
@@ -385,3 +385,21 @@ The feature remains one cohesive owner and feature-review bundle. Stories are du
 ## Blockers
 
 None. `epic-temporal-vision-toolkit-normalization-and-measurements` has completed verified implementation and is at feature review, so its `NormalizedSequence`, exact thresholded change metric, gap-aware adjacent comparison, and provenance contracts satisfy this feature dependency. The shared render seam and `pub(crate) classify_pixel_change` / `linear_luminance` helpers are established by the sibling artifact features (storyboard, difference-map, region-filmstrip); if motion-history lands first, it makes the same additive exposures in the canonical form.
+
+## Implementation notes
+
+- Execution capability: raised/high, selected by the autopilot caller because deterministic image evidence, bounded integer processing, gap semantics, and public provenance are contract-sensitive.
+- Review weight: standard (autopilot caller). This implementation stops at `stage: review` and does not self-approve.
+- Dispatch: one cohesive feature owner carried decay-and-plan → rendering/provenance → public contract evidence. Child stories were sequential design checkpoints, not separate ownership units.
+- Files changed: `crates/temporal-vision/src/motion_history.rs`, additive exports in `crates/temporal-vision/src/lib.rs`, and `crates/temporal-vision/tests/motion_history.rs`.
+- Public surface: `MotionDecay`, `MotionHistoryParameters`, serializable `MotionHistoryPlan`, `MotionHistoryArtifact`, `build_motion_history_plan`, and `generate_motion_history`.
+- Implementation: canonical per-pixel classification and adjacent-gap outcomes feed one integer exponential decay; repeated changes saturate within each continuity segment, gap-separated segments max-compose, and an independent changed union produces a 4-connected outline. Rendering combines a subdued integer-luminance reference, amber history, and white outline into one bounded RGB8 image.
+- Evidence posture: visible and machine-readable output states source-derived evidence, chronological time, declared gaps, no direction inference, and storyboard/region-filmstrip disambiguation. The manifest makes no default-debug-bundle inclusion or interpretation-success claim.
+- Tests added: focused private decay/accumulation/outline/bounds/annotation checks and one browser-free public typed-ID fixture covering tied timestamps, translated motion, stable evidence, repeated traversal, one gap, mask exclusion, deterministic RGB/PNG/SHA-256, manifest round trip, selected/omitted provenance, and tiny resource limits.
+- Verification: package format/check/test/Clippy passed (47 tests across 8 suites); workspace format/check/test/Clippy passed (318 tests across 33 suites, warnings denied).
+- Commits: `80a6744` (decay and plan), `5f3eeb0` (rendering and provenance), `9f1fa1b` (public contract tests).
+- Simplification: reused the established canvas/font/PNG/hash and measurement/luminance seams; added no layer framework, decay registry, second metric, codec abstraction, runtime adapter, browser dependency, inferred overlay, filesystem behavior, or large golden fixture.
+- Discrepancies from design: (1) image-edge neighbors count as outside the changed set so isolated edge and 1×1 changes are outlined, resolving conflicting wording in favor of the explicit acceptance criterion; (2) the manifest includes an explicit RGB8 display-conversion step after normalization and threshold provenance, matching the established difference-map convention; (3) the hand-checkable public fixture uses a translated 3×3 block to preserve an interior non-outline motion pixel.
+- Stats: three child checkpoints advanced directly to `done`; one new feature module and one public integration-test module; 47 temporal-vision tests and 318 workspace tests green.
+- Adjacent issues parked: none.
+- Blockers: none.
