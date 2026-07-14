@@ -3,7 +3,7 @@ use krometrail_core::{
     ObservationPayloadRef, ObservedTime, PortFuture, SessionId, SessionRange, SessionTime,
     SourceTime, TargetId, TimelineObservation, TimelineStore,
 };
-use rusqlite::{Transaction, params};
+use rusqlite::{OptionalExtension, Transaction, params};
 
 use super::{SqliteIndex, codec, ensure_identity};
 use crate::persistence_error;
@@ -20,6 +20,47 @@ pub(crate) fn append_observation_tx(
     )?;
     let payload_json = serde_json::to_string(observation.payload())
         .map_err(|_| persistence_error("could not encode timeline payload reference"))?;
+    let sort_key = payload_sort_key(observation.payload());
+    if matches!(
+        observation.kind(),
+        ObservationKind::InteractionBoundary
+            | ObservationKind::Navigation
+            | ObservationKind::Marker
+    ) {
+        let selection = "SELECT session_id, target_id, session_time_be, source_time_be, \
+                                observed_time_be, kind, payload_json \
+                         FROM timeline_observations";
+        let existing = if observation.kind() == ObservationKind::InteractionBoundary {
+            transaction.query_row(
+                &format!(
+                    "{selection} WHERE kind=?1 AND payload_sort_key=?2 \
+                     AND session_time_be=?3 LIMIT 1"
+                ),
+                params![
+                    observation.kind().as_str(),
+                    &sort_key,
+                    codec::u64_blob(observation.session_time().as_nanos()).to_vec(),
+                ],
+                raw_observation,
+            )
+        } else {
+            transaction.query_row(
+                &format!("{selection} WHERE kind=?1 AND payload_sort_key=?2 LIMIT 1"),
+                params![observation.kind().as_str(), &sort_key],
+                raw_observation,
+            )
+        }
+        .optional()
+        .map_err(|_| persistence_error("could not validate timeline evidence replay"))?;
+        if let Some(existing) = existing {
+            if decode_observation(existing)? == *observation {
+                return Ok(());
+            }
+            return Err(persistence_error(
+                "timeline evidence identity conflicts with its durable value",
+            ));
+        }
+    }
     transaction
         .execute(
             "INSERT INTO timeline_observations(\
@@ -37,7 +78,7 @@ pub(crate) fn append_observation_tx(
                 capture_ordinal.map(|value| codec::u64_blob(value.get()).to_vec()),
                 observation.kind().as_str(),
                 payload_json,
-                payload_sort_key(observation.payload()),
+                sort_key,
             ],
         )
         .map_err(|_| persistence_error("could not persist timeline metadata"))?;
@@ -115,6 +156,18 @@ impl TimelineStore for SqliteIndex {
             raw.into_iter().map(decode_observation).collect()
         })
     }
+}
+
+fn raw_observation(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawObservation> {
+    Ok(RawObservation {
+        session_id: row.get(0)?,
+        target_id: row.get(1)?,
+        session_time: row.get(2)?,
+        source_time: row.get(3)?,
+        observed_time: row.get(4)?,
+        kind: row.get(5)?,
+        payload_json: row.get(6)?,
+    })
 }
 
 pub(crate) struct RawObservation {

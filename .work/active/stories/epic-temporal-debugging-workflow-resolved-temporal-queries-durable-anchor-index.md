@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-debugging-workflow-resolved-temporal-queries-durable-anchor-index
 kind: story
-stage: implementing
+stage: done
 tags: [storage, browser, agent-ux]
 parent: epic-temporal-debugging-workflow-resolved-temporal-queries
 depends_on: [epic-temporal-debugging-workflow-resolved-temporal-queries-core-query-contracts]
@@ -37,3 +37,15 @@ Add transactional SQLite v3 storage for the existing `InteractionAnchor` and opt
 ## Ordering
 
 Depends on the core contracts. It provides the durable sink/read implementation required before CDP can fence operation success.
+
+## Implementation notes
+
+- Execution capability: highest; retained by caller because migration, retention deletion, and exact evidence replay share one transaction boundary.
+- Review weight: standard, from the autopilot caller; child checkpoint review is not applicable.
+- Files changed: `crates/krometrail-core/src/browser/{interaction.rs,operation.rs}`; `crates/krometrail-store/src/index/{deletion.rs,frames.rs,interactions.rs,migrations.rs,mod.rs,range.rs,schema_v3.rs,timeline.rs}`; `crates/krometrail-store/src/recording.rs`; store range/schema/index tests.
+- Tests added/updated: fresh/v2→v3/future-version migration; anchor-only and exact optional action-record round trip; idempotent replay; conflicting ID and corrupted JSON source-safe failure; latest equal-time UUID ordering; atomic boundary/navigation timeline projection; coalesced eviction memory and session-deletion cleanup; durable interaction range resolution replacing the former deliberate missing-anchor assertion.
+- Semantics delivered: transactional v3 `interactions` and `evicted_frame_ranges`; exact typed reconstruction with record/anchor proof; deterministic latest ordering; one generic timeline uniqueness authority with exact-replay validation; segment eviction records and coalesces frame-time tombstones before metadata deletion; `RecordingStore` is the mutation-gated interaction and generic timeline writer.
+- Simplification: added `InteractionRecord::anchor()` and registry-derived `BrowserOperationKind::from_stable_name()` so persistence does not copy either model or variant list.
+- Discrepancies from design: v3 migration removes pre-v3 duplicate generic marker/navigation/boundary rows before installing unique indexes, preserving the earliest exact row so valid v2 databases migrate rather than failing on historical duplicate writes. This is an additive cleanup inside the same migration transaction.
+- Adjacent issues parked: none.
+- Verification: `cargo fmt --all -- --check`; `cargo check -p krometrail-store --all-targets --locked`; `cargo test -p krometrail-store --all-targets --locked` (72 passed across 10 suites); `cargo clippy -p krometrail-store --all-targets --locked -- -D warnings`.

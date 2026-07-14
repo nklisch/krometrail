@@ -2,14 +2,14 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use crate::persistence_error;
 
-use super::{schema_v1, schema_v2};
+use super::{schema_v1, schema_v2, schema_v3};
 
 pub(crate) struct Migration {
     pub version: u32,
     pub sql: &'static str,
 }
 
-pub(crate) const LATEST_SCHEMA_VERSION: u32 = 2;
+pub(crate) const LATEST_SCHEMA_VERSION: u32 = 3;
 pub(crate) const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 1,
@@ -18,6 +18,10 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 2,
         sql: schema_v2::SQL,
+    },
+    Migration {
+        version: 3,
+        sql: schema_v3::SQL,
     },
 ];
 
@@ -73,6 +77,32 @@ fn migrate_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn v2_database_upgrades_to_v3_in_one_transaction() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        migrate_with(&mut connection, &MIGRATIONS[..2], 2).unwrap();
+        let before: u32 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(before, 2);
+
+        migrate(&mut connection).unwrap();
+        let after: u32 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(after, 3);
+        for table in ["interactions", "evicted_frame_ranges"] {
+            let count: u32 = connection
+                .query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                    [table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 1);
+        }
+    }
 
     #[test]
     fn failed_migration_rolls_back_schema_and_version() {

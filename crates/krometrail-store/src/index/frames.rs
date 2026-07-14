@@ -15,6 +15,7 @@ use crate::{
 
 use super::{
     SqliteIndex, codec,
+    range::evicted_ranges,
     segments::{StoredAddress, register_segment_tx},
     timeline::append_observation_tx,
 };
@@ -357,7 +358,8 @@ impl FrameSource for SqliteIndex {
                 (None, None) => None,
                 _ => return Err(persistence_error("stored frame availability is malformed")),
             };
-            FrameAvailability::new(retained_bounds, Vec::new())
+            let evicted_ranges = evicted_ranges(&connection, session_id, target_id)?;
+            FrameAvailability::new(retained_bounds, evicted_ranges)
                 .map_err(|_| persistence_error("stored frame availability is invalid"))
         })
     }

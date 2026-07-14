@@ -121,6 +121,12 @@ macro_rules! define_browser_operations {
             pub const fn stable_name(self) -> &'static str {
                 match self { $(Self::$variant => $stable_name),+ }
             }
+            pub fn from_stable_name(value: &str) -> Option<Self> {
+                BROWSER_OPERATION_REGISTRY
+                    .iter()
+                    .find(|definition| definition.stable_name == value)
+                    .map(|definition| definition.kind)
+            }
             pub fn input_schema(self) -> schemars::Schema {
                 match self { $(Self::$variant => schemars::schema_for!($request)),+ }
             }
@@ -340,6 +346,10 @@ mod tests {
             assert!(!definition.description.trim().is_empty());
             assert_eq!(definition.capability, CapabilityId::Control);
             assert_eq!(definition.action.is_some(), kind.is_interaction());
+            assert_eq!(
+                BrowserOperationKind::from_stable_name(kind.stable_name()),
+                Some(*kind)
+            );
             let schema = serde_json::to_value(kind.input_schema()).unwrap();
             assert_eq!(
                 schema["type"],

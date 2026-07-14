@@ -822,6 +822,21 @@ impl InteractionRecord {
             parent_batch,
         })
     }
+
+    pub fn anchor(&self) -> Result<super::InteractionAnchor> {
+        super::InteractionAnchor::new(
+            self.id,
+            self.context.session_id,
+            self.context.target_id,
+            self.action,
+            super::InteractionTiming::new(
+                self.context.started_at,
+                self.dispatch_time,
+                self.live_observation_time,
+                Some(self.live_observation_time),
+            )?,
+        )
+    }
 }
 request_wire!(
     InteractionRecord,
@@ -847,18 +862,7 @@ pub struct InteractionResult {
 
 impl InteractionResult {
     pub fn anchor(&self) -> Result<super::InteractionAnchor> {
-        super::InteractionAnchor::new(
-            self.record.id,
-            self.record.context.session_id,
-            self.record.context.target_id,
-            self.record.action,
-            super::InteractionTiming::new(
-                self.record.context.started_at,
-                self.record.dispatch_time,
-                self.record.live_observation_time,
-                Some(self.record.live_observation_time),
-            )?,
-        )
+        self.record.anchor()
     }
 }
 

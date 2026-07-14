@@ -3,6 +3,7 @@ pub(crate) mod codec;
 pub(crate) mod deletion;
 pub(crate) mod frames;
 mod gaps;
+pub(crate) mod interactions;
 pub(crate) mod maintenance;
 mod migrations;
 mod range;
@@ -10,6 +11,7 @@ pub(crate) mod reconcile;
 pub(crate) mod retention;
 mod schema_v1;
 mod schema_v2;
+mod schema_v3;
 pub(crate) mod segments;
 mod timeline;
 

@@ -1,10 +1,14 @@
-use krometrail_core::{ArtifactId, SegmentId, SessionId};
-use rusqlite::{TransactionBehavior, params};
+use krometrail_core::{ArtifactId, SegmentId, SessionId, SessionRange, SessionTime, TargetId};
+use rusqlite::{OptionalExtension, TransactionBehavior, params};
 use uuid::Uuid;
 
 use crate::persistence_error;
 
-use super::{SqliteIndex, codec, retention::validate_file_name};
+use super::{
+    SqliteIndex, codec, range::record_evicted_frame_range_tx, retention::validate_file_name,
+};
+
+type RawEvictedFrameRange = (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DeletionKind {
@@ -219,6 +223,35 @@ impl SqliteIndex {
                 }
                 DeletionObjectKind::Segment(id) => {
                     let segment_key = codec::id(id.as_uuid()).to_vec();
+                    if batch.kind == DeletionKind::Eviction {
+                        let removed_range: Option<RawEvictedFrameRange> = transaction
+                            .query_row(
+                                "SELECT session_id, target_id, min(session_time_be), \
+                                            max(session_time_be) \
+                                     FROM frames WHERE segment_id=?1 \
+                                     GROUP BY session_id, target_id",
+                                params![&segment_key],
+                                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                            )
+                            .optional()
+                            .map_err(|_| {
+                                persistence_error("could not query evicted frame interval")
+                            })?;
+                        if let Some((session, target, start, end)) = removed_range {
+                            record_evicted_frame_range_tx(
+                                &transaction,
+                                SessionId::from_uuid(codec::decode_id(&session)?),
+                                TargetId::from_uuid(codec::decode_id(&target)?),
+                                SessionRange::new(
+                                    SessionTime::from_nanos(codec::decode_u64(&start)?),
+                                    SessionTime::from_nanos(codec::decode_u64(&end)?),
+                                )
+                                .map_err(|_| {
+                                    persistence_error("evicted frame interval is invalid")
+                                })?,
+                            )?;
+                        }
+                    }
                     let frame_count: u64 = transaction
                         .query_row(
                             "SELECT count(*) FROM frames WHERE segment_id=?1",

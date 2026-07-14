@@ -5,9 +5,10 @@ use std::{
 
 use krometrail_core::{
     CaptureGap, CaptureGapStore, DiskBudgetBytes, EncodedFrame, ErrorCode, ErrorContext,
-    FrameAddress, KrometrailError, NonEmptyText, PinChange, PortFuture, RecordingBudgetState,
+    FrameAddress, InteractionAnchor, InteractionEvidenceSink, InteractionRecord, KrometrailError,
+    NavigationId, NonEmptyText, ObservedTime, PinChange, PortFuture, RecordingBudgetState,
     RecordingSink, RetentionRange, RetentionStatus, RetentionStore, RetryAdvice, SessionDeletion,
-    SessionId, StorageUsage,
+    SessionId, SessionRange, StorageUsage, TargetId, TimelineObservation, TimelineStore,
 };
 use tokio::sync::{Mutex, watch};
 
@@ -357,6 +358,49 @@ impl RecordingSink for RecordingStore {
     }
 }
 
+impl InteractionEvidenceSink for RecordingStore {
+    fn append_operation_evidence(
+        &self,
+        anchor: InteractionAnchor,
+        record: Option<InteractionRecord>,
+        persisted_at: ObservedTime,
+        navigation_id: Option<NavigationId>,
+    ) -> PortFuture<'_, krometrail_core::Result<()>> {
+        Box::pin(async move {
+            let _mutation = self.mutations.lock().await;
+            self.reject_deleted(anchor.session_id)?;
+            self.index.append_operation_evidence(
+                &anchor,
+                record.as_ref(),
+                persisted_at,
+                navigation_id,
+            )
+        })
+    }
+}
+
+impl TimelineStore for RecordingStore {
+    fn append(
+        &self,
+        observation: TimelineObservation,
+    ) -> PortFuture<'_, krometrail_core::Result<()>> {
+        Box::pin(async move {
+            let _mutation = self.mutations.lock().await;
+            self.reject_deleted(observation.session_id())?;
+            TimelineStore::append(self.index.as_ref(), observation).await
+        })
+    }
+
+    fn range(
+        &self,
+        session_id: SessionId,
+        target_id: TargetId,
+        range: SessionRange,
+    ) -> PortFuture<'_, krometrail_core::Result<Vec<TimelineObservation>>> {
+        TimelineStore::range(self.index.as_ref(), session_id, target_id, range)
+    }
+}
+
 impl RetentionStore for RecordingStore {
     fn pin_range(
         &self,
@@ -680,6 +724,55 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn eviction_ranges_coalesce_and_session_deletion_removes_them() {
+        let directory = TempDir::new().unwrap();
+        let (index, _writer, store) = fixture(&directory);
+        let first = frame(30, 31, 32, 1);
+        let second = frame(30, 31, 33, 2);
+        store.append_frame(first.clone()).await.unwrap();
+        store.append_frame(second.clone()).await.unwrap();
+        store.flush(first.metadata().session_id()).await.unwrap();
+
+        for _ in 0..2 {
+            let candidate = index.oldest_unpinned_segment().unwrap().unwrap();
+            store
+                .remove_objects(
+                    DeletionKind::Eviction,
+                    None,
+                    vec![segment_object(candidate)],
+                )
+                .await
+                .unwrap();
+        }
+        let availability = index
+            .frame_availability(first.metadata().session_id(), first.metadata().target_id())
+            .await
+            .unwrap();
+        assert_eq!(availability.retained_bounds, None);
+        assert_eq!(
+            availability.evicted_ranges,
+            vec![
+                krometrail_core::SessionRange::new(
+                    SessionTime::from_nanos(1),
+                    SessionTime::from_nanos(2),
+                )
+                .unwrap()
+            ]
+        );
+
+        store
+            .delete_session(first.metadata().session_id())
+            .await
+            .unwrap();
+        let deleted = index
+            .frame_availability(first.metadata().session_id(), first.metadata().target_id())
+            .await
+            .unwrap();
+        assert_eq!(deleted.retained_bounds, None);
+        assert!(deleted.evicted_ranges.is_empty());
     }
 
     #[tokio::test]

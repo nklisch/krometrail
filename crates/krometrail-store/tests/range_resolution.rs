@@ -28,6 +28,7 @@ type RangeResolver = TemporalRangeResolver<
 struct Fixture {
     _directory: TempDir,
     index: Arc<SqliteIndex>,
+    store: Arc<RecordingStore>,
     session: SessionId,
     target: TargetId,
     frames: Vec<EncodedFrame>,
@@ -52,7 +53,7 @@ impl Fixture {
             })
             .unwrap(),
         );
-        let sink = Arc::new(RecordingStore::new(writer, Arc::clone(&index)).unwrap());
+        let store = Arc::new(RecordingStore::new(writer, Arc::clone(&index)).unwrap());
         let session = SessionId::from_uuid(Uuid::from_u128(1));
         let target = TargetId::from_uuid(Uuid::from_u128(2));
         let mut frames = Vec::new();
@@ -76,7 +77,7 @@ impl Fixture {
                 vec![id as u8, ordinal as u8],
             )
             .unwrap();
-            sink.append_frame(frame.clone()).await.unwrap();
+            store.append_frame(frame.clone()).await.unwrap();
             frames.push(frame);
         }
         let session_record = RecordingSession::new(
@@ -108,6 +109,7 @@ impl Fixture {
         Self {
             _directory: directory,
             index,
+            store,
             session,
             target,
             frames,
@@ -280,25 +282,51 @@ async fn marker_navigation_and_gap_policies_use_generic_timeline_rows() {
 }
 
 #[tokio::test]
-async fn interaction_anchors_are_not_fabricated_and_partial_retention_is_explicit() {
+async fn durable_interaction_anchors_resolve_and_uncaptured_edges_are_not_partial_eviction() {
+    use krometrail_core::{
+        BrowserOperationKind, InteractionAnchor, InteractionEvidenceSink, InteractionTiming,
+    };
+
     let fixture = Fixture::new().await;
-    let missing = fixture
+    let interaction_id = krometrail_core::InteractionId::from_uuid(Uuid::from_u128(40));
+    let anchor = InteractionAnchor::new(
+        interaction_id,
+        fixture.session,
+        fixture.target,
+        BrowserOperationKind::NavigatePage,
+        InteractionTiming::new(
+            SessionTime::from_nanos(5),
+            SessionTime::from_nanos(5),
+            SessionTime::from_nanos(5),
+            Some(SessionTime::from_nanos(5)),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    fixture
+        .store
+        .append_operation_evidence(anchor, None, ObservedTime::from_nanos(6), None)
+        .await
+        .unwrap();
+    let zero = krometrail_core::InteractionWindow::new(Duration::ZERO, Duration::ZERO).unwrap();
+    let resolved = fixture
         .resolver()
         .resolve(
             TemporalRangeAnchor::Interaction {
                 scope: AnchorScope::new(Some(fixture.session), Some(fixture.target)),
-                interaction_id: krometrail_core::InteractionId::from_uuid(Uuid::from_u128(40)),
-                window: None,
+                interaction_id,
+                window: Some(zero),
             },
             RangeResolutionOptions::DEFAULT,
         )
         .await
-        .unwrap_err();
-    assert_eq!(missing.code, ErrorCode::NotFound);
+        .unwrap();
+    assert_eq!(resolved.interaction_ids, vec![interaction_id]);
+    assert_eq!(resolved.frame_ids.len(), 2);
 
     let mut partial = RangeResolutionOptions::DEFAULT;
     partial.retention = krometrail_core::RetentionPolicy::AllowPartial;
-    let resolved = fixture
+    let error = fixture
         .resolver()
         .resolve(
             TemporalRangeAnchor::SessionTime {
@@ -308,20 +336,8 @@ async fn interaction_anchors_are_not_fabricated_and_partial_retention_is_explici
             partial,
         )
         .await
-        .unwrap();
-    assert!(!resolved.retention_warnings.is_empty());
-    let strict = fixture
-        .resolver()
-        .resolve(
-            TemporalRangeAnchor::SessionTime {
-                scope: AnchorScope::new(Some(fixture.session), Some(fixture.target)),
-                range: SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(20)).unwrap(),
-            },
-            RangeResolutionOptions::DEFAULT,
-        )
-        .await
         .unwrap_err();
-    assert_eq!(strict.code, ErrorCode::NotFound);
+    assert_eq!(error.code, ErrorCode::NotFound);
 }
 
 #[tokio::test]
