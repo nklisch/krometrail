@@ -488,42 +488,6 @@ impl StreamRuntime {
         Some(notified)
     }
 
-    fn declare_gap_range(
-        &self,
-        reason: CaptureGapReason,
-        start: SessionTime,
-        end: SessionTime,
-        estimated: Option<u64>,
-        detail: Option<&'static str>,
-    ) -> Option<CaptureGap> {
-        let gap = CaptureGap::new(
-            GapId::from_uuid(*self.dependencies.ids.next().as_uuid()),
-            self.target.session_id,
-            self.target.target_id,
-            SessionRange::new(start.min(end), start.max(end)).expect("ordered range is valid"),
-            self.dependencies.clock.now(),
-            reason,
-            estimated.and_then(std::num::NonZeroU64::new),
-            detail.map(str::to_owned),
-        )
-        .ok()?;
-        let notified = {
-            let mut state = self.state.lock().expect("capture state lock poisoned");
-            state.statistics = CaptureStatistics::new(
-                state.statistics.received_frames(),
-                state.statistics.acknowledged_frames(),
-                state.statistics.accepted_frames(),
-                state.statistics.dropped_frames(),
-                state.statistics.persisted_frames(),
-                state.statistics.gap_count().saturating_add(1),
-            )
-            .expect("gap count cannot overflow in a bounded process");
-            state.gaps.push(gap)
-        };
-        self.observer.gap_declared(notified.clone());
-        Some(notified)
-    }
-
     fn take_gaps(&self) -> Vec<CaptureGap> {
         self.state
             .lock()

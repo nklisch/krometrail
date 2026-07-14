@@ -1,7 +1,7 @@
 ---
 id: refactor-delete-unused-declare-gap-range
 kind: story
-stage: implementing
+stage: review
 tags: [refactor, browser]
 parent: null
 depends_on: []
@@ -42,18 +42,22 @@ serialized form is affected. The live `declare_gap` path is untouched.
 
 ## Acceptance criteria
 
-- [ ] `StreamRuntime::declare_gap_range` and its doc comment are removed from `crates/krometrail-cdp/src/capture/pipeline.rs`.
-- [ ] `grep -rn "declare_gap_range" crates/` returns zero matches.
-- [ ] `cargo fmt --all -- --check` passes.
-- [ ] `cargo test --workspace --all-targets --locked` passes (capture tests cover the live `declare_gap` path; nothing exercised `declare_gap_range`).
-- [ ] `cargo clippy --workspace --all-targets --locked -- -D warnings` passes.
+- [x] `StreamRuntime::declare_gap_range` and its doc comment are removed from `crates/krometrail-cdp/src/capture/pipeline.rs`.
+- [x] `grep -rn "declare_gap_range" crates/` returns zero matches.
+- [x] `cargo fmt --all -- --check` passes.
+- [x] `cargo test --workspace --all-targets --locked` passes (capture tests cover the live `declare_gap` path; nothing exercised `declare_gap_range`).
+- [x] `cargo clippy --workspace --all-targets --locked -- -D warnings` passes.
 
 ## Implementation notes
 
+- Execution capability: raised — inherited from the active autopilot run; the edit is tiny, but it touches the capture accounting path.
+- Review weight: standard (source: autopilot default).
 - Files changed: `crates/krometrail-cdp/src/capture/pipeline.rs` (deletion only); this story file.
-- Tests added: none — the deleted method had no callers, so no coverage is lost.
-- The sibling `declare_gap` (pipeline.rs:456) remains the sole gap-declaration path; do not modify it.
-- If a future caller needs an ordered-range gap, it should be added back with a call site in the same change, not kept speculatively.
+- Tests added/removed: none — the deleted method had no callers, so no coverage is lost.
+- Simplification: removed the unreachable ordered-range gap construction, counter update, ledger insertion, and observer notification; `declare_gap` remains the sole live declaration path.
+- Discrepancies from design: none.
+- Adjacent issues parked: none.
+- Verification: zero remaining workspace matches plus locked workspace format, check, test, and Clippy gates passed in an isolated clean worktree at `a8976ca`, whose capture pipeline is byte-identical to the current base. Concurrent verified-interaction work in the shared tree was excluded rather than modified.
 
 ## Risk and rollback
 
