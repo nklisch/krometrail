@@ -186,7 +186,7 @@ impl ArtifactScheduler {
     }
 }
 
-async fn controlled<T>(
+pub(crate) async fn controlled<T>(
     future: impl std::future::Future<Output = T>,
     deadline: Instant,
     cancellation: Option<&Arc<dyn CancellationSignal>>,

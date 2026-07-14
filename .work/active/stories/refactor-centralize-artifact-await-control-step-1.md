@@ -1,7 +1,7 @@
 ---
 id: refactor-centralize-artifact-await-control-step-1
 kind: story
-stage: implementing
+stage: done
 tags: [refactor, visual, storage]
 parent: refactor-centralize-artifact-await-control
 depends_on: []
@@ -107,6 +107,14 @@ single-flight implementation needs to be reverted.
 - Reusing `controlled_work` would change shared-flight cancellation semantics.
 - Generalizing `single_flight::wait` would risk the `Notify::enable()` lost-wakeup
   fix from `4ba4214` and would hide the last-waiter `WorkCancellation` policy.
+
+## Implementation record
+
+- Execution capability: baseline inline ownership; one exact private-policy consolidation across two files.
+- Scheduler `controlled` is now crate-visible and serves request permits plus the service's frame read, planning, and cache lookup awaits.
+- The scheduler select body, external cancellation waiter, deadline conversion, branch order, and error constructors are unchanged. Service-local duplicates and their unused imports were removed.
+- `controlled_work`, `WorkCancellation`, and `single_flight.rs` were not modified; shared-work and notify-registration semantics remain explicit.
+- Rust 1.85 locked format, full workspace all-target tests, and Clippy with warnings denied passed.
 
 ## Verification Gates
 

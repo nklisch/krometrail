@@ -1,6 +1,5 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
-    future::pending,
     sync::Arc,
     time::Instant,
 };
@@ -9,8 +8,8 @@ use krometrail_core::{
     ArtifactCacheDisposition, ArtifactGeneration, ArtifactGenerationContext,
     ArtifactGenerationRequest, ArtifactGenerationResult, ArtifactHandle, ArtifactId,
     ArtifactLookup, ArtifactOutcome, ArtifactPublication, ArtifactPublish,
-    ArtifactSourceFingerprint, ArtifactStore, CancellationSignal, ErrorCode, FrameSource, IdSource,
-    KrometrailError, NonEmptyText, PortFuture, Result, StoredArtifact,
+    ArtifactSourceFingerprint, ArtifactStore, ErrorCode, FrameSource, IdSource, KrometrailError,
+    NonEmptyText, PortFuture, Result, StoredArtifact,
 };
 use temporal_vision::{ArtifactKind, generator_descriptor};
 
@@ -25,7 +24,8 @@ use super::{
         prepare_generator,
     },
     scheduler::{
-        ArtifactScheduler, ArtifactWorkLimits, cancelled_error, deadline_error, limit_error,
+        ArtifactScheduler, ArtifactWorkLimits, cancelled_error, controlled, deadline_error,
+        limit_error,
     },
     single_flight::{FlightArtifacts, FlightValue, SingleFlight},
 };
@@ -96,7 +96,7 @@ impl TemporalVisionArtifactService {
             .acquire_request(deadline, context.cancellation.as_ref())
             .await?;
 
-        let frames = caller_controlled(
+        let frames = controlled(
             self.frames.frames_by_id(request.range().frame_ids.clone()),
             deadline,
             context.cancellation.as_ref(),
@@ -106,7 +106,7 @@ impl TemporalVisionArtifactService {
         let range = request.range().clone();
         let markers = request.markers().to_vec();
         let limits = self.scheduler.limits();
-        let plans = caller_controlled(
+        let plans = controlled(
             self.scheduler.run_blocking(deadline, &planning_cancel, {
                 let planning_cancel = planning_cancel.clone();
                 move || {
@@ -203,7 +203,7 @@ impl TemporalVisionArtifactService {
 
         let mut missing = Vec::new();
         for (slot_index, slot) in &slots {
-            match caller_controlled(
+            match controlled(
                 self.artifacts
                     .lookup_artifact(slot.cache.cache_key, slot.sources.clone()),
                 deadline,
@@ -580,25 +580,6 @@ fn handle(artifact: StoredArtifact, disposition: ArtifactCacheDisposition) -> Ar
         media_type: artifact.media_type,
         encoded_byte_len: artifact.encoded_bytes.len() as u64,
         manifest: artifact.manifest,
-    }
-}
-
-async fn caller_controlled<T>(
-    future: impl std::future::Future<Output = T>,
-    deadline: Instant,
-    cancellation: Option<&Arc<dyn CancellationSignal>>,
-) -> Result<T> {
-    tokio::select! {
-        value = future => Ok(value),
-        () = external_cancelled(cancellation) => Err(cancelled_error()),
-        () = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => Err(deadline_error()),
-    }
-}
-
-async fn external_cancelled(cancellation: Option<&Arc<dyn CancellationSignal>>) {
-    match cancellation {
-        Some(signal) => signal.cancelled().await,
-        None => pending().await,
     }
 }
 
