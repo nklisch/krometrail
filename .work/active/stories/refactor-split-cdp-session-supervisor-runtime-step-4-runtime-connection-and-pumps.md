@@ -1,7 +1,7 @@
 ---
 id: refactor-split-cdp-session-supervisor-runtime-step-4-runtime-connection-and-pumps
 kind: story
-stage: implementing
+stage: done
 tags: [refactor, browser]
 parent: refactor-split-cdp-session-supervisor-runtime
 depends_on: [refactor-split-cdp-session-supervisor-runtime-step-3-reconnect-transaction]
@@ -55,3 +55,14 @@ Medium: this is the biggest remaining file move, but it is mostly mechanical onc
 ## Rollback
 
 Move the runtime helpers back into `session/mod.rs` and remove `runtime.rs` rather than leaving a half-split steady-state loop.
+
+## Implementation notes
+
+- Execution capability: highest; selected by the autopilot caller because the move spans bootstrap, reducer effects, generation-routed pumps, process watch, and the sole steady-state writer.
+- Review weight: standard (caller); child checkpoint review is not applicable.
+- Files changed: connection setup, domain restoration, visibility/target parsing, `apply_effects`, `run_supervisor`, process death signaling/watch, and event pumps moved from `session/mod.rs` to private `session/runtime.rs`.
+- Tests added/removed: none; module-root tests continue to exercise helper seams through private parent visibility.
+- Simplification: left `session/mod.rs` as connector/session composition and shared stable error mapping; no new wrapper or policy layer.
+- Discrepancies from design: tests stayed consolidated with their existing shared fixtures; the established crate-local visibility error is explicitly re-exported (with a narrow unused-import allowance) to preserve the import surface.
+- Adjacent issues parked: none.
+- Verification: package all-target check; package all-target test (213 tests across 18 suites); package all-target Clippy with `-D warnings`; format check — all passed.
