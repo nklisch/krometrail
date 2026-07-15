@@ -1,7 +1,7 @@
 ---
 id: perf-temporal-share-pair-classification
 kind: feature
-stage: implementing
+stage: review
 tags: [perf, visual, testing]
 parent: null
 depends_on: []
@@ -613,3 +613,43 @@ normalization, Chrome, model, scheduler, or live-feature code. The benchmark
 scaffold is specified above and is intentionally deferred to the first child
 story so the host can commit this feature/story design without shared-index
 contamination.
+
+## Integrated implementation evidence
+
+All three child checkpoints are complete: opt-1 baseline/equivalence, opt-2
+bounded temporal context, and opt-3 production service/scheduler wiring. The
+production path now groups only exact compatible request identities, reserves
+trace and distinct cores through the existing combined-request budget, shares
+orientation selection, preserves IDs/publication order and all cache/source
+fences, and leaves region/direct paths and failure isolation intact. The
+service qualification uses the real `TemporalVisionArtifactService` and
+`RecordingStore`; no Chrome, model, network, persistent cache, new semaphore,
+normalization, or fan-out was introduced.
+
+The final five cold Rust 1.85 release repetitions per 1920x1080 PNG/down-2
+production context cell were:
+
+- 60 frames: `[996.250, 997.345, 999.354, 1,000.497, 1,001.882]` ms,
+  median `999.354` ms; context-disabled production policy median `1,262.124`
+  ms.
+- 120 frames: `[2,043.220, 2,044.905, 2,049.344, 2,076.290, 2,077.391]` ms,
+  median `2,049.344` ms; context-disabled production policy median
+  `2,598.758` ms.
+- Motion cells: 60 median `1,030.963` ms and 120 median `2,125.889` ms.
+
+Against the authoritative supplied baselines `B60=1,048.717` ms and
+`B120=2,108.262` ms, the candidate is only 4.71% and 2.79% faster, not the
+required 20% (required medians `838.974` ms and `1,686.610` ms). This is an
+honest target miss. The feature therefore stops here without lower-level,
+parallel, normalization, or cache work; the paired production-policy result
+still demonstrates 20.82%/21.14% improvement and the expected classifier
+reduction, but does not replace the authoritative gate.
+
+Peak RSS was at most `1,388,980 KiB` at 120 frames versus supplied B120
+`1,357,328 KiB` (2.33%); allocated-byte deltas were recorded for clean and
+motion cells. Representative external `perf stat` evidence recorded task
+clock/cycles/instructions/cache-misses/branch-misses for both frame sizes;
+the exact distributions, counters, reservations, cache dispositions, output
+bytes/manifests/hashes, and gate results live in child opt-3's implementation
+notes. `cargo fmt --all -- --check`, full locked workspace check/test, and
+full locked workspace clippy with `-D warnings` pass.
