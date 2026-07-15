@@ -1,7 +1,7 @@
 ---
 id: epic-prove-temporal-advantage-benchmark-corpus-and-manifest-contracts-ci-boundary-and-samples
 kind: story
-stage: implementing
+stage: done
 tags: [testing, infra, visual]
 parent: epic-prove-temporal-advantage-benchmark-corpus-and-manifest-contracts
 depends_on: [epic-prove-temporal-advantage-benchmark-corpus-and-manifest-contracts-run-manifest-and-schema]
@@ -64,16 +64,34 @@ Linux/macOS result. A complete live row below threshold is `fail`, not `inconclu
 
 ## Acceptance evidence
 
-- [ ] Locked ordinary Rust tests pass without Chrome, network access, paid agents, or model
+- [x] Locked ordinary Rust tests pass without Chrome, network access, paid agents, or model
       credentials and cover schema generation, canonical samples, definition hashes, registry
       completeness, and privacy/status invariants.
-- [ ] A clean-checkout test proves the committed schemas equal generated schemas and the sample
+- [x] A clean-checkout test proves the committed schemas equal generated schemas and the sample
       manifest's bytes equal canonical serializer output.
-- [ ] The output-boundary test proves run outputs are ignored, no absolute/private path enters a
+- [x] The output-boundary test proves run outputs are ignored, no absolute/private path enters a
       manifest, and no generated documentation is edited.
-- [ ] The README names exactly what CI proves and does not broaden it into live capture,
+- [x] The README names exactly what CI proves and does not broaden it into live capture,
       cross-platform, artifact, or model claims.
-- [ ] No standalone `[refactor]` item under review is modified as part of this checkpoint.
+- [x] No standalone `[refactor]` item under review is modified as part of this checkpoint.
+
+## Implementation notes
+
+- Added the authoritative v1 README and a consolidated `contracts.rs` suite covering canonical
+  definition/schema/sample identities, fixture hashes, registry completeness, deterministic matrix
+  ordering, prompt/privacy/status invariants, the dependency-free crate boundary, and ignored
+  `target/temporal-evaluation/` output.
+- Generation was run into a clean ignored output directory and all four committed artifacts compared
+  byte-for-byte. No CDP launcher or live-browser integration was added because the contract crate
+  owns this CI-safe boundary and all ordinary tests remain browser-free.
+
+## Verification
+
+- `cargo fmt --all -- --check`
+- `cargo check --workspace --all-targets --locked`
+- `cargo test --workspace --all-targets --locked` (668 passed, 1 ignored)
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`
+- Clean generation/cmp checks for both definition and manifest artifacts
 
 ## Ordering
 

@@ -1,7 +1,7 @@
 ---
 id: epic-prove-temporal-advantage-benchmark-corpus-and-manifest-contracts
 kind: feature
-stage: implementing
+stage: review
 tags: [testing, visual, browser]
 parent: epic-prove-temporal-advantage
 depends_on: []
@@ -256,13 +256,13 @@ its digest, opaque reference, and bounded structured answer.
 
 **Acceptance criteria**:
 
-- [ ] The new crate has no dependency on Krometrail runtime crates, Chrome, MCP, a network, or a
+- [x] The new crate has no dependency on Krometrail runtime crates, Chrome, MCP, a network, or a
       model client; later lanes consume it as their single manifest contract.
-- [ ] Generated schemas match committed schema files exactly and the canonical sample round-trips
+- [x] Generated schemas match committed schema files exactly and the canonical sample round-trips
       byte-for-byte.
-- [ ] Unknown fields, duplicate/unsorted IDs, non-finite numbers, contradictory counts/digests,
+- [x] Unknown fields, duplicate/unsorted IDs, non-finite numbers, contradictory counts/digests,
       missing observed identities, and passing incomplete rows are rejected.
-- [ ] Privacy tests reject private machine details and page-sensitive content while accepting
+- [x] Privacy tests reject private machine details and page-sensitive content while accepting
       permitted relative fixture paths and opaque output references.
 
 ### Unit 4: CI-safe boundary, committed samples, and evidence README
@@ -292,13 +292,28 @@ artifact, and manual model results are separate opt-in consumers.
 
 **Acceptance criteria**:
 
-- [ ] Locked CI tests are green without Chrome, network access, paid agents, or a second model
+- [x] Locked CI tests are green without Chrome, network access, paid agents, or a second model
       family and cannot emit a false live/model pass.
-- [ ] A clean-checkout test proves committed schema/sample bytes equal generated canonical bytes.
-- [ ] The ignored-output boundary and privacy checks pass; no standalone refactor item under
+- [x] A clean-checkout test proves committed schema/sample bytes equal generated canonical bytes.
+- [x] The ignored-output boundary and privacy checks pass; no standalone refactor item under
       review is touched.
-- [ ] The README preserves explicit blocked/inconclusive/optional-skipped semantics and names
+- [x] The README preserves explicit blocked/inconclusive/optional-skipped semantics and names
       the recovery action for unavailable required evidence.
+
+## Integrated implementation evidence
+
+- Corpus checkpoint: committed dependency-free temporal benchmark fixture, hidden ground truth,
+  fixture hashes, and canonical definition/schema identities are validated by the contract tests.
+- Vocabulary checkpoint: exact condition, prompt, scoring, status, matrix seed, deterministic
+  ordering, answer bounds, and metadata non-leakage are validated without a browser or model.
+- Manifest checkpoint: strict v1 `RunManifest` availability, retention, gap, status, privacy,
+  canonicalization, and input-digest contracts are generated and tested from Rust types.
+- CI-boundary checkpoint: `README.md`, `contracts.rs`, ignored `target/temporal-evaluation/`
+  output verification, and clean generation/cmp checks complete the feature boundary.
+- Final gates: Rust 1.85 locked formatting, workspace check, workspace tests (668 passed, 1
+  ignored), workspace clippy with `-D warnings`, and all four generation comparisons passed.
+- Scope remained CI-safe: no Chrome launch, network request, model credential, paid agent, product
+  CLI, generated documentation edit, or parent-feature review was performed.
 
 ## Implementation Order
 
