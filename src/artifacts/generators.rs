@@ -118,6 +118,8 @@ pub(crate) fn normalize(
     let Some(parameters) = normalization_parameters(prepared, limits)? else {
         return Ok(None);
     };
+    #[cfg(test)]
+    super::perf_counters::record_normalize(epoch.sequence.frames().len());
     temporal_vision::normalize_sequence(&epoch.sequence, parameters)
         .map(Arc::new)
         .map(Some)

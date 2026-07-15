@@ -7,6 +7,10 @@ pub(crate) mod service;
 pub(crate) mod single_flight;
 
 #[cfg(test)]
+mod overlap_perf;
+#[cfg(test)]
+mod perf_counters;
+#[cfg(test)]
 mod qualification_tests;
 #[cfg(test)]
 mod service_tests;

@@ -37,6 +37,8 @@ pub(crate) fn decode_frame(
     frame: &EncodedFrame,
     limits: DecodeLimits,
 ) -> Result<OwnedFrame<krometrail_core::FrameId>> {
+    #[cfg(test)]
+    super::perf_counters::record_decode();
     let metadata = frame.metadata();
     let width = metadata.image().width();
     let height = metadata.image().height();
