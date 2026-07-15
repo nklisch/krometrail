@@ -812,3 +812,32 @@ Integrated verification passed with Rust 1.85 locked `cargo fmt --all -- --check
 The qualification generators reproduced all committed definition, manifest, and result artifacts
 byte-for-byte without changing `docs/public/llms-full.txt` or tracked run output. The feature is
 ready for feature-level review; no parent review was performed in this implementation pass.
+
+## Feature review notes
+
+### Accepted finding M1 — preserve per-frame availability in partial packages
+
+Accepted for this review cycle. The root cause was `EvaluationResultRecord::from_scores` delegating
+source-frame trace construction to an aggregate `RetentionState` mapping: every frame in a
+`PartiallyRetained` package was labeled `NotCollected`, including retained source frames cited by
+valid A/B claims. The result builder consequently rejected those claims as unavailable.
+
+The prepublic fix uses one current schema without a compatibility branch: every condition package
+and trial result now carries an ordered `SourceFrameAvailability` record for each source-frame ID.
+Packager validation binds that record exactly to the source interval, includes it in privacy and
+canonical digest validation, and requires all packages to share it. Trace construction consumes the
+per-frame proof; retained citations remain `Retained`, while corrupt, evicted, gap, and
+not-collected frames remain exact. Result validation cross-checks the proof against every source
+frame trace and rejects contradictory availability.
+
+Regression coverage constructs partially retained A and B packages, scores retained-frame claims,
+builds and canonical-roundtrips result records, verifies exact corrupt/evicted/not-collected
+statuses, and rejects citations to unavailable frames. Generated result schema/sample and the
+temporal-evaluation README were regenerated or updated; benchmark-definition and run-manifest
+artifacts were also regenerated and remained byte-identical. Final verification passed Rust 1.85
+locked `cargo fmt --all -- --check`, `cargo check --workspace --all-targets --locked`, `cargo test
+--workspace --all-targets --locked` (700 passed, 1 ignored), `cargo clippy --workspace --all-targets
+--locked -- -D warnings`, and clean temporary-output generation identity for all six committed
+benchmark/manifest/result artifacts. The feature remains at `stage: review`; this accepted finding
+was fixed and verified without a re-review. Advisory findings A1–A5 remain intentionally
+unimplemented.

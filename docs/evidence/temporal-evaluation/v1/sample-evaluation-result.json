@@ -398,7 +398,7 @@
         "result-observation"
       ],
       "gap_ids": [],
-      "package_digest": "sha256:46de991803375cc21405219d22a74c0af1ad3a306b080d7aa6d271c5b5ab5e56",
+      "package_digest": "sha256:95618f880cb372ee7659332e1525c0b0516b96468b6d12456bb6d5169af3450c",
       "retention": "retained",
       "score": {
         "accepted_claims": [
@@ -503,7 +503,7 @@
           "recovery": "review the structured answer against retained evidence",
           "retryable": false
         },
-        "package_digest": "sha256:46de991803375cc21405219d22a74c0af1ad3a306b080d7aa6d271c5b5ab5e56",
+        "package_digest": "sha256:95618f880cb372ee7659332e1525c0b0516b96468b6d12456bb6d5169af3450c",
         "possible_points": 4,
         "raw_answer_ref": "result-sample-sidecar",
         "source_frame_tile_count": 1,
@@ -511,6 +511,40 @@
         "status": "fail",
         "trial_id": "result-sample-trial"
       },
+      "source_frame_availability": [
+        {
+          "availability": "retained",
+          "id": "result-frame-0"
+        },
+        {
+          "availability": "retained",
+          "id": "result-frame-1"
+        },
+        {
+          "availability": "retained",
+          "id": "result-frame-2"
+        },
+        {
+          "availability": "retained",
+          "id": "result-frame-3"
+        },
+        {
+          "availability": "retained",
+          "id": "result-frame-4"
+        },
+        {
+          "availability": "retained",
+          "id": "result-frame-5"
+        },
+        {
+          "availability": "retained",
+          "id": "result-frame-6"
+        },
+        {
+          "availability": "retained",
+          "id": "result-frame-7"
+        }
+      ],
       "source_frame_ids": [
         "result-frame-0",
         "result-frame-1",

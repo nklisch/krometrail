@@ -53,7 +53,8 @@ pub use packaging::{
     ArtifactCacheIdentity, ArtifactEvidenceReference, CONDITION_PACKAGER_VERSION,
     ConditionEvidence, ConditionPackage, ConditionPackager, EvidenceReference,
     EvidenceReferenceKind, NonClaimId, ProgressiveConditionEvidence, ProgressiveRetrievalRecord,
-    TemporalBundleEvidence, UNIFORM_SOURCE_FRAME_SLOTS, require_one_source_interval,
+    SourceFrameAvailability, TemporalBundleEvidence, UNIFORM_SOURCE_FRAME_SLOTS,
+    require_one_source_interval,
 };
 pub use prompts::{
     AnswerKind, AnswerRegion, AnswerTruth, AnswerValidationContext, DebuggingAnswer,

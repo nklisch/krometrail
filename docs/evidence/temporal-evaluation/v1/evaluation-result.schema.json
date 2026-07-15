@@ -846,6 +846,23 @@
         "stable_control_false_positive"
       ]
     },
+    "SourceFrameAvailability": {
+      "description": "Exact availability for one source-frame identity in a condition package.\n\nThe package retains this projection because aggregate `RetentionState` cannot distinguish a\nretained citation from an evicted, corrupt, gap, or never-collected frame in a partially\nretained interval. The interval digest binds these statuses to the source authority.",
+      "type": "object",
+      "properties": {
+        "availability": {
+          "$ref": "#/$defs/EvidenceAvailability"
+        },
+        "id": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "availability"
+      ]
+    },
     "StateLabel": {
       "type": "string",
       "enum": [
@@ -1104,6 +1121,12 @@
         "score": {
           "$ref": "#/$defs/TrialScore"
         },
+        "source_frame_availability": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SourceFrameAvailability"
+          }
+        },
         "source_frame_ids": {
           "type": "array",
           "items": {
@@ -1120,6 +1143,7 @@
         "package_digest",
         "source_interval_digest",
         "source_frame_ids",
+        "source_frame_availability",
         "gap_ids",
         "retention",
         "evidence_ids",

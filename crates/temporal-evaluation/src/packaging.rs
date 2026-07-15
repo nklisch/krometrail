@@ -117,6 +117,24 @@ impl EvidenceReference {
     }
 }
 
+/// Exact availability for one source-frame identity in a condition package.
+///
+/// The package retains this projection because aggregate `RetentionState` cannot distinguish a
+/// retained citation from an evicted, corrupt, gap, or never-collected frame in a partially
+/// retained interval. The interval digest binds these statuses to the source authority.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SourceFrameAvailability {
+    pub id: String,
+    pub availability: EvidenceAvailability,
+}
+
+impl SourceFrameAvailability {
+    fn validate(&self, label: &str) -> Result<()> {
+        privacy::validate_opaque_id(&self.id, &format!("{label} id"))
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ArtifactCacheIdentity {
@@ -455,6 +473,7 @@ pub struct ConditionPackage {
     pub condition_id: ConditionId,
     pub source_interval_digest: String,
     pub source_frame_ids: Vec<String>,
+    pub source_frame_availability: Vec<SourceFrameAvailability>,
     pub gap_ids: Vec<String>,
     pub retention: RetentionState,
     pub evidence: ConditionEvidence,
@@ -479,6 +498,11 @@ impl ConditionPackage {
             ));
         }
         validate_ordered_unique_ids(&self.source_frame_ids, "condition source frame ids")?;
+        validate_source_frame_availability(
+            &self.source_frame_ids,
+            &self.source_frame_availability,
+            "condition source frame availability",
+        )?;
         validate_ordered_unique_ids(&self.gap_ids, "condition gap ids")?;
         if self.non_claims != NonClaimId::ALL {
             return Err(ContractError::new(
@@ -533,6 +557,14 @@ impl ConditionPackage {
             condition_id,
             source_interval_digest: interval.digest()?,
             source_frame_ids: interval.frame_ids(),
+            source_frame_availability: interval
+                .frames
+                .iter()
+                .map(|frame| SourceFrameAvailability {
+                    id: frame.id.clone(),
+                    availability: frame.availability,
+                })
+                .collect(),
             gap_ids: interval.gap_ids(),
             retention: interval.retention,
             evidence,
@@ -556,6 +588,19 @@ impl ConditionPackage {
                 "condition package source identities do not match the source interval",
             ));
         }
+        let expected_availability = interval
+            .frames
+            .iter()
+            .map(|frame| SourceFrameAvailability {
+                id: frame.id.clone(),
+                availability: frame.availability,
+            })
+            .collect::<Vec<_>>();
+        if self.source_frame_availability != expected_availability {
+            return Err(ContractError::new(
+                "condition package source-frame availability does not match the source interval",
+            ));
+        }
         if self.retention != interval.retention {
             return Err(ContractError::new(
                 "condition package retention does not match the source interval",
@@ -577,6 +622,7 @@ impl<'de> Deserialize<'de> for ConditionPackage {
             condition_id: ConditionId,
             source_interval_digest: String,
             source_frame_ids: Vec<String>,
+            source_frame_availability: Vec<SourceFrameAvailability>,
             gap_ids: Vec<String>,
             retention: RetentionState,
             evidence: ConditionEvidence,
@@ -589,6 +635,7 @@ impl<'de> Deserialize<'de> for ConditionPackage {
             condition_id: wire.condition_id,
             source_interval_digest: wire.source_interval_digest,
             source_frame_ids: wire.source_frame_ids,
+            source_frame_availability: wire.source_frame_availability,
             gap_ids: wire.gap_ids,
             retention: wire.retention,
             evidence: wire.evidence,
@@ -705,6 +752,7 @@ pub fn require_one_source_interval(packages: &[ConditionPackage]) -> Result<Stri
         package.validate()?;
         if package.source_interval_digest != first.source_interval_digest
             || package.source_frame_ids != first.source_frame_ids
+            || package.source_frame_availability != first.source_frame_availability
             || package.gap_ids != first.gap_ids
             || package.retention != first.retention
         {
@@ -1016,6 +1064,26 @@ fn validate_exact_ids(actual: &[String], expected: &[String], label: &str) -> Re
         )));
     }
     Ok(())
+}
+
+fn validate_source_frame_availability(
+    source_frame_ids: &[String],
+    availability: &[SourceFrameAvailability],
+    label: &str,
+) -> Result<()> {
+    if availability.len() != source_frame_ids.len() {
+        return Err(ContractError::new(format!(
+            "{label} must contain one record for every source frame"
+        )));
+    }
+    let ids = availability
+        .iter()
+        .map(|record| {
+            record.validate(label)?;
+            Ok(record.id.clone())
+        })
+        .collect::<Result<Vec<_>>>()?;
+    validate_exact_ids(&ids, source_frame_ids, label)
 }
 
 fn validate_ordered_unique_ids(ids: &[String], label: &str) -> Result<()> {

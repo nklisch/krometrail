@@ -8,10 +8,10 @@ use crate::{
     BENCHMARK_ID, CaseFamily, ConditionAggregate, ConditionEvidence, ConditionId, ConditionPackage,
     ContractError, EvaluationStatus, EvidenceAvailability, EvidenceReference,
     EvidenceReferenceKind, FailureRecord, FamilyThresholdCheck, NamedVersion, NonClaimId,
-    RetentionState, SCORER_VERSION, ScorerIdentity, SourceInterval, ThresholdAssessment,
-    ThresholdCheck, ThresholdProfile, TrialIdentity, TrialScore, aggregate_condition,
-    assess_thresholds, canonical_json, privacy, require_one_source_interval, sha256_prefixed,
-    validate_interpretation_answer,
+    RetentionState, SCORER_VERSION, ScorerIdentity, SourceFrameAvailability, SourceInterval,
+    ThresholdAssessment, ThresholdCheck, ThresholdProfile, TrialIdentity, TrialScore,
+    aggregate_condition, assess_thresholds, canonical_json, privacy, require_one_source_interval,
+    sha256_prefixed, validate_interpretation_answer,
 };
 
 pub const RESULT_SCHEMA_VERSION: u16 = 1;
@@ -175,6 +175,7 @@ pub struct TrialResultRecord {
     pub package_digest: String,
     pub source_interval_digest: String,
     pub source_frame_ids: Vec<String>,
+    pub source_frame_availability: Vec<SourceFrameAvailability>,
     pub gap_ids: Vec<String>,
     pub retention: RetentionState,
     pub evidence_ids: Vec<String>,
@@ -203,8 +204,17 @@ impl TrialResultRecord {
                 "trial result must preserve source frame identities",
             ));
         }
+        validate_source_frame_availability(
+            &self.source_frame_ids,
+            &self.source_frame_availability,
+            "trial result source frame availability",
+        )?;
+        if self.retention != expected_retention(&self.source_frame_availability) {
+            return Err(ContractError::new(
+                "trial result retention contradicts per-frame availability",
+            ));
+        }
         validate_unique_ids(&self.gap_ids, "trial result gap ids")?;
-        let expected_availability = source_availability(self.retention);
         let mut trace_ids = Vec::with_capacity(self.evidence.len());
         for trace in &self.evidence {
             trace.validate(&self.source_frame_ids, &self.gap_ids)?;
@@ -222,13 +232,21 @@ impl TrialResultRecord {
                     "source-frame result evidence is outside its source interval",
                 ));
             }
-            if trace.kind == EvidenceReferenceKind::SourceFrame
-                && trace.availability != expected_availability
-                && expected_availability == EvidenceAvailability::Retained
-            {
-                return Err(ContractError::new(
-                    "retained trial source interval cannot mark a source frame uncollected",
-                ));
+            if trace.kind == EvidenceReferenceKind::SourceFrame {
+                let expected = self
+                    .source_frame_availability
+                    .iter()
+                    .find(|record| record.id == trace.id)
+                    .ok_or_else(|| {
+                        ContractError::new(
+                            "source-frame result evidence is outside its source availability proof",
+                        )
+                    })?;
+                if trace.availability != expected.availability {
+                    return Err(ContractError::new(
+                        "source-frame result evidence availability contradicts its exact proof",
+                    ));
+                }
             }
         }
         if self.evidence_ids != trace_ids {
@@ -237,7 +255,9 @@ impl TrialResultRecord {
             ));
         }
         for source_id in &self.source_frame_ids {
-            if !self.evidence_ids.contains(source_id) {
+            if !self.evidence.iter().any(|trace| {
+                trace.kind == EvidenceReferenceKind::SourceFrame && trace.id == *source_id
+            }) {
                 return Err(ContractError::new(
                     "trial result must retain every source identity in its evidence trace",
                 ));
@@ -573,6 +593,7 @@ fn trial_result(
         package_digest: package.digest.clone(),
         source_interval_digest: package.source_interval_digest.clone(),
         source_frame_ids: package.source_frame_ids.clone(),
+        source_frame_availability: package.source_frame_availability.clone(),
         gap_ids: package.gap_ids.clone(),
         retention: package.retention,
         evidence_ids,
@@ -589,8 +610,8 @@ fn trial_result(
 }
 
 struct TraceBuilder {
-    package_retention: RetentionState,
     source_frame_ids: Vec<String>,
+    source_frame_availability: BTreeMap<String, EvidenceAvailability>,
     gap_ids: Vec<String>,
     traces: Vec<EvidenceTraceRecord>,
 }
@@ -598,8 +619,12 @@ struct TraceBuilder {
 impl TraceBuilder {
     fn new(package: &ConditionPackage) -> Self {
         Self {
-            package_retention: package.retention,
             source_frame_ids: package.source_frame_ids.clone(),
+            source_frame_availability: package
+                .source_frame_availability
+                .iter()
+                .map(|record| (record.id.clone(), record.availability))
+                .collect(),
             gap_ids: package.gap_ids.clone(),
             traces: Vec::new(),
         }
@@ -607,19 +632,38 @@ impl TraceBuilder {
 
     fn add_package_evidence(&mut self, evidence: &ConditionEvidence) -> crate::Result<()> {
         for id in self.source_frame_ids.clone() {
-            self.add_source_frame(&id, source_availability(self.package_retention))?;
+            let availability = self
+                .source_frame_availability
+                .get(&id)
+                .copied()
+                .ok_or_else(|| ContractError::new("source frame proof is incomplete"))?;
+            self.add_source_frame(&id, availability)?;
         }
         match evidence {
             ConditionEvidence::FinalScreenshot {
                 final_frame_id,
                 current_observation,
             } => {
-                self.add_source_frame(final_frame_id, source_availability(self.package_retention))?;
+                let availability = self
+                    .source_frame_availability
+                    .get(final_frame_id)
+                    .copied()
+                    .ok_or_else(|| {
+                        ContractError::new("condition A final frame proof is missing")
+                    })?;
+                self.add_source_frame(final_frame_id, availability)?;
                 self.add_reference(current_observation)?;
             }
             ConditionEvidence::UniformStoryboard { slot_frame_ids } => {
                 for id in slot_frame_ids {
-                    self.add_source_frame(id, source_availability(self.package_retention))?;
+                    let availability =
+                        self.source_frame_availability
+                            .get(id)
+                            .copied()
+                            .ok_or_else(|| {
+                                ContractError::new("condition B source frame proof is missing")
+                            })?;
+                    self.add_source_frame(id, availability)?;
                 }
             }
             ConditionEvidence::ChangeAwareStoryboard { artifacts } => {
@@ -702,6 +746,11 @@ impl TraceBuilder {
         id: &str,
         availability: EvidenceAvailability,
     ) -> crate::Result<()> {
+        if self.source_frame_availability.get(id).copied() != Some(availability) {
+            return Err(ContractError::new(
+                "source-frame trace availability does not match package proof",
+            ));
+        }
         self.add_trace(EvidenceTraceRecord {
             id: id.into(),
             kind: EvidenceReferenceKind::SourceFrame,
@@ -750,15 +799,9 @@ impl TraceBuilder {
                 existing.output_sha256 = incoming.output_sha256;
             }
             if existing.availability != incoming.availability {
-                if existing.availability == EvidenceAvailability::NotCollected
-                    && incoming.availability == EvidenceAvailability::Retained
-                {
-                    existing.availability = incoming.availability;
-                } else if incoming.availability != EvidenceAvailability::NotCollected {
-                    return Err(ContractError::new(
-                        "result evidence id has contradictory availability",
-                    ));
-                }
+                return Err(ContractError::new(
+                    "result evidence id has contradictory availability",
+                ));
             }
             return Ok(());
         }
@@ -828,14 +871,49 @@ fn require_retained_trace(result: &TrialResultRecord, evidence_id: &str) -> crat
     Ok(())
 }
 
-fn source_availability(retention: RetentionState) -> EvidenceAvailability {
-    match retention {
-        RetentionState::Retained => EvidenceAvailability::Retained,
-        RetentionState::PartiallyRetained => EvidenceAvailability::NotCollected,
-        RetentionState::Evicted => EvidenceAvailability::Evicted,
-        RetentionState::Unavailable => EvidenceAvailability::NotCollected,
-        RetentionState::NotApplicable => EvidenceAvailability::NotCollected,
+fn expected_retention(availability: &[SourceFrameAvailability]) -> RetentionState {
+    let retained = availability
+        .iter()
+        .filter(|record| record.availability == EvidenceAvailability::Retained)
+        .count();
+    if retained == availability.len() {
+        RetentionState::Retained
+    } else if retained == 0
+        && availability
+            .iter()
+            .all(|record| record.availability == EvidenceAvailability::Evicted)
+    {
+        RetentionState::Evicted
+    } else if retained > 0 {
+        RetentionState::PartiallyRetained
+    } else {
+        RetentionState::Unavailable
     }
+}
+
+fn validate_source_frame_availability(
+    source_frame_ids: &[String],
+    availability: &[SourceFrameAvailability],
+    label: &str,
+) -> crate::Result<()> {
+    if availability.len() != source_frame_ids.len() {
+        return Err(ContractError::new(format!(
+            "{label} must contain one record for every source frame"
+        )));
+    }
+    let ids = availability
+        .iter()
+        .map(|record| {
+            privacy::validate_opaque_id(&record.id, &format!("{label} id"))?;
+            Ok(record.id.clone())
+        })
+        .collect::<crate::Result<Vec<_>>>()?;
+    if ids != source_frame_ids {
+        return Err(ContractError::new(format!(
+            "{label} must preserve source-frame order"
+        )));
+    }
+    Ok(())
 }
 
 fn validate_unique_ids(values: &[String], label: &str) -> crate::Result<()> {

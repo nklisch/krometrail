@@ -14,9 +14,9 @@ A normal locked Rust test run proves only that:
 - canonical serialization, digests, privacy rejection, retention references, and status invariants
   are deterministic;
 - result records bind the manifest input digest to exact packages, scores, aggregates, threshold
-  checks, retained evidence/source identities, artifact output/manifest hashes, algorithm/version
-  identities, and cache identities without copying the manifest or storing raw/model/page prose,
-  bytes, paths, or URLs;
+  checks, per-frame availability proofs, retained evidence/source identities, artifact
+  output/manifest hashes, algorithm/version identities, and cache identities without copying the
+  manifest or storing raw/model/page prose, bytes, paths, or URLs;
 - deterministic qualification replays fixed source records through the fake monotonic-clock and
   existing authority seams, checks the A–E budgets and one-interval identity, and keeps gaps,
   eviction, corruption, partial retrieval, unavailable inputs, and skipped rows non-passing; and
@@ -88,6 +88,16 @@ opaque handles. Validation rejects absolute or private paths, traversal, backsla
 URLs/endpoints and ports, credentials, control characters, page text, raw browser payloads, and
 adapter error details. Raw model answers are not canonical manifest content: later consumers may
 keep an ignored sidecar addressed by its digest and opaque reference.
+
+## Per-frame availability proof
+
+`ConditionPackage.source_frame_availability` and the corresponding result trial field preserve
+one ordered availability record for every `source_frame_ids` entry. The package validator binds
+that projection to the source interval digest and rejects reordered, missing, or mutated records.
+Result trace construction uses those exact records rather than deriving source-frame status from
+aggregate `RetentionState`: retained citations remain `retained` in a `partially_retained`
+interval, while `corrupt`, `evicted`, `gap`, and `not_collected` frames remain their original
+availability. Claims still require a retained trace; an unavailable citation is rejected.
 
 ## Future execution states
 
