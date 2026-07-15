@@ -4,11 +4,13 @@ kind: feature
 stage: drafting
 tags: [testing, visual]
 parent: epic-prove-temporal-advantage
-depends_on: [epic-prove-temporal-advantage-deterministic-scoring-and-artifact-conditions, epic-prove-temporal-advantage-platform-evidence-collection]
+depends_on:
+  - epic-prove-temporal-advantage-deterministic-scoring-and-artifact-conditions
+  - epic-prove-temporal-advantage-platform-evidence-collection-linux-stable-chrome-reference-host-evidence
 release_binding: null
 gate_origin: null
 created: 2026-07-14
-updated: 2026-07-14
+updated: 2026-07-15
 ---
 
 # Manual Multimodal Interpretation
@@ -23,7 +25,19 @@ This feature is deliberately manual and authorization-gated. It must never invok
 
 - Parent epic: `epic-prove-temporal-advantage`
 - Position in epic: paid/manual interpretation capability — consumes deterministic conditions, live source evidence, and the shared scorer
-- Depends on: deterministic scoring/conditions and platform evidence collection
+- Depends on: deterministic scoring/conditions and the exact Linux stable-Chrome reference-host
+  evidence checkpoint
+
+## Dependency correction
+
+Manual interpretation requires one declared, operator-authorized Linux stable-Chrome live evidence
+run so every A–E model trial has a real reference-host interval, browser identity, and source
+traceability. Its dependency is the exact child story
+`epic-prove-temporal-advantage-platform-evidence-collection-linux-stable-chrome-reference-host-evidence`,
+not the platform feature or its matrix aggregator. macOS default-DPI/high-DPI evidence and optional
+Linux Chromium are separate platform comparisons; they may be absent and leave the matrix
+`inconclusive` without delaying this reference-host model lane. No missing run, authorization, or
+source interval may be converted into a passing interpretation result.
 
 ## Execution boundary
 

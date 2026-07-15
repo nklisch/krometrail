@@ -8,7 +8,7 @@ depends_on: [epic-temporal-debugging-workflow]
 release_binding: null
 gate_origin: null
 created: 2026-07-11
-updated: 2026-07-14
+updated: 2026-07-15
 ---
 
 # Prove the Temporal Advantage
@@ -39,6 +39,7 @@ This is not a generic test-cleanup container. Its output is the project’s defe
 - **Thesis thresholds are reportable, not release blockers.** The capture envelope and agent-effectiveness thresholds produce `pass`, `fail`, or `inconclusive` evaluation outcomes. They do not block a software release and do not permit a release to claim validated improvement when the result is unmet or incomplete.
 - **Initial agent scope is Codex-specific.** The initial manual lane uses the locally available Codex CLI because that is the authorized execution surface. A Codex result names its provider/model/version and makes no cross-model or general multimodal claim. Another model family requires its own separately authorized, independently identified run set and comparison.
 - **Paid execution is never implicit.** No CI job, Rust test, fixture server, MCP operation, sub-agent, or implementation worker may invoke a paid agent. An operator must explicitly authorize each manual run set and its budget outside this design transition. Absent authorization is `blocked` or `inconclusive`, never a passing no-op.
+- **Reference-host evidence is the agent-lane gate.** Manual interpretation requires the exact Linux stable-Chrome reference-host child checkpoint and one declared live evidence manifest. It does not wait for the platform parent, macOS default-DPI, macOS high-DPI, or optional Linux Chromium. MacOS absence leaves cross-platform evidence `inconclusive`; it is never silently claimed and never blocks reference-host agent effectiveness.
 - **Prepublic clean design.** Benchmark contracts, schemas, prompts, and evidence handles are new unpublished surfaces. Do not add compatibility aliases, legacy serialized shapes, migrations, fallback providers, or shims for hypothetical consumers. Remove superseded local scaffolding when a later implementation makes it unnecessary.
 - **No UI work.** This epic produces browser targets, machine-readable evidence, still artifacts, and agent workflows; it has no human screen, page, modal, or journey. UI mockups do not apply.
 
@@ -79,7 +80,7 @@ A result can be reproduced only while its manifest-referenced source frames and 
 | Deterministic CI | Corpus/schema/condition/scorer determinism, artifact provenance, fake-clock ordering, gap/retention/control contracts, and reproducible scoring | Ordinary locked CI; no browser, network, paid model, or external service | Green proves only the deterministic harness and product-contract tests. It cannot satisfy live capture or agent thresholds. |
 | Opt-in live capture/system | Production Chrome/Chromium capture, timing, control, storage, retention, and performance measurements for the declared configuration | Explicit real-browser opt-in, a supported local installation, and the fixture; no paid model | Missing installation, unsupported platform, failed probe, or required observation is `blocked`, `skipped`, or `inconclusive`; never a fake pass. Complete below-threshold data is `fail`. |
 | Platform matrix | Comparable Linux/macOS evidence with browser, DPI, fixture, and runtime identity | Required Linux Chrome, macOS Chrome default-DPI, and macOS Chrome high-DPI lanes; Linux Chromium remains best-effort | A single host is not cross-platform evidence. Missing macOS/high-DPI evidence leaves the matrix incomplete. Optional Linux Chromium may be skipped with its reason. |
-| Manual multimodal interpretation | Named model's answers to structured observation tasks under conditions A–E, including uncertainty and source tracing | Explicit operator authorization and budget for each local Codex/multimodal run set; never automatic | No authorization/model/source interval/minimum sample yields no decisive result. The record remains `blocked` or `inconclusive`, not pass. |
+| Manual multimodal interpretation | Named model's answers to structured observation tasks under conditions A–E, including uncertainty and source tracing | Explicit operator authorization and budget plus one declared Linux stable-Chrome reference-host live evidence run; never automatic | No authorization/model/reference-host source interval/minimum sample yields no decisive result. MacOS/default-DPI/high-DPI absence does not block this lane. The record remains `blocked` or `inconclusive`, not pass. |
 | Manual agent debugging | Named model's reproduce–diagnose–patch–verify outcomes against current-state and temporal conditions | Same explicit manual authorization; isolated task workspaces and recorded prompts/fixtures | A successful patch is evidence for the named scenario/model/configuration, not automatic diagnosis, replay, or general model capability. |
 
 The existing CDP transport v2 and cross-platform smoke evidence are consumed as prerequisite context with their own schemas and non-claims. They do not satisfy this epic's duration sweep, full defect corpus, artifact comparison, retention validation, or product-thesis thresholds. In particular, the currently absent macOS high-DPI smoke artifact remains absent until a future run observes the required scale; the evaluation lane must not manufacture one from wrapper flags.
@@ -124,7 +125,7 @@ Child stories spawned during feature design are implementation checkpoints and a
 
 ## Decomposition
 
-The epic is split by capability and evidence authority rather than by code layer. The deterministic corpus and manifest contracts come first; deterministic scoring then gives live and manual lanes a stable comparison surface. Live system qualification precedes the platform matrix, while the manual interpretation and debugging lanes remain explicitly downstream and authorization-gated. This preserves CI parallelism where it is safe without allowing a fake run, one platform, or one model to stand in for another evidence class.
+The epic is split by capability and evidence authority rather than by code layer. The deterministic corpus and manifest contracts come first; deterministic scoring then gives live and manual lanes a stable comparison surface. Live system qualification precedes the platform lane contracts. After that, the platform matrix branch and the Linux reference-host → manual interpretation → debugging branch proceed independently: only the exact Linux reference-host child gates manual model work, while macOS lanes remain cross-platform evidence inputs. This preserves CI parallelism where it is safe without allowing a fake run, one platform, or one model to stand in for another evidence class.
 
 ### Child features
 
@@ -132,8 +133,8 @@ The epic is split by capability and evidence authority rather than by code layer
 - `epic-prove-temporal-advantage-deterministic-scoring-and-artifact-conditions` — CI-safe condition packager, deterministic artifact/provenance checks, and structured scorer — depends on: `[epic-prove-temporal-advantage-benchmark-corpus-and-manifest-contracts]`
 - `epic-prove-temporal-advantage-live-capture-and-system-qualification` — opt-in production capture-duration, control, retention, timing, and performance qualification — depends on: `[epic-prove-temporal-advantage-benchmark-corpus-and-manifest-contracts, epic-prove-temporal-advantage-deterministic-scoring-and-artifact-conditions]`
 - `epic-prove-temporal-advantage-platform-evidence-collection` — required Linux/macOS and best-effort Linux Chromium evidence collection with platform-bounded claims — depends on: `[epic-prove-temporal-advantage-live-capture-and-system-qualification]`
-- `epic-prove-temporal-advantage-manual-multimodal-interpretation` — manually authorized Codex-specific interpretation comparison across evidence conditions — depends on: `[epic-prove-temporal-advantage-deterministic-scoring-and-artifact-conditions, epic-prove-temporal-advantage-platform-evidence-collection]`
-- `epic-prove-temporal-advantage-agent-debugging-qualification` — manually authorized reproduce–diagnose–patch–verify benchmark and thesis assessment — depends on: `[epic-prove-temporal-advantage-platform-evidence-collection, epic-prove-temporal-advantage-manual-multimodal-interpretation]`
+- `epic-prove-temporal-advantage-manual-multimodal-interpretation` — manually authorized Codex-specific interpretation comparison across evidence conditions; requires one declared Linux stable-Chrome reference-host live evidence checkpoint — depends on: `[epic-prove-temporal-advantage-deterministic-scoring-and-artifact-conditions, epic-prove-temporal-advantage-platform-evidence-collection-linux-stable-chrome-reference-host-evidence]`
+- `epic-prove-temporal-advantage-agent-debugging-qualification` — manually authorized reproduce–diagnose–patch–verify benchmark and thesis assessment; consumes the manual contract and does not wait for platform matrix completion — depends on: `[epic-prove-temporal-advantage-manual-multimodal-interpretation]`
 
 ### Simplification arcs
 
@@ -145,8 +146,9 @@ The epic is split by capability and evidence authority rather than by code layer
 
 ## Decomposition risks
 
-- Live Chrome and macOS/high-DPI availability can block otherwise complete deterministic work. The dependency graph isolates that environment boundary and records missing rows rather than weakening thresholds.
+- Linux stable Chrome reference-host availability is a real prerequisite for manual interpretation and must remain an explicit operator blocker; no other platform can substitute for it.
+- MacOS/default-DPI/high-DPI availability can leave the platform matrix `inconclusive`, but must not block a valid Linux reference-host agent/model evaluation. The graph must never silently claim macOS from Linux evidence.
 - The existing cross-platform smoke has an intentionally absent high-DPI result. A future platform implementation must observe and validate device scale through production metadata; wrapper flags alone are not evidence.
-- Manual Codex evaluation can be expensive and cannot be authorized implicitly. Until the operator supplies a budget and completes the declared matrix, the thesis remains `blocked` or `inconclusive`, not failed by default and not passed by default.
+- Manual Codex evaluation can be expensive and cannot be authorized implicitly. Until the operator supplies authorization, a Linux reference interval, and the required sample coverage, the thesis remains `blocked` or `inconclusive`, not failed by default and not passed by default.
 - Capture gaps, retention eviction, or missing source frames can make a visual answer unscorable even when an artifact was generated. The manifest and scorer must preserve that distinction rather than reward confident guesses.
-- The six-feature graph has a long manual-evidence tail, but merging deterministic, live, platform, interpretation, and debugging work would make ownership and claim boundaries less honest; the explicit chain is safer than a layer-based mega-feature.
+- The graph deliberately separates platform comparison from reference-host effectiveness: macOS lanes can run or remain unavailable without delaying manual interpretation, while the exact Linux child preserves the live-evidence guarantee. This is safer than making a whole platform parent a late-bound gate.
