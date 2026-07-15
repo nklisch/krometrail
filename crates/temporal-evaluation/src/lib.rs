@@ -13,6 +13,7 @@ mod matrix;
 mod packaging;
 mod privacy;
 mod prompts;
+mod result;
 mod scoring;
 mod thresholds;
 mod vocabulary;
@@ -54,6 +55,10 @@ pub use prompts::{
     InterpretationAnswer, Judgment, MotionBehavior, PromptId, PromptSet, PromptTemplate,
     StateLabel, UncertaintyReason, parse_interpretation_answer, validate_debugging_answer,
     validate_interpretation_answer,
+};
+pub use result::{
+    EvaluationResultRecord, EvidenceLayer, EvidenceTraceRecord, RESULT_KIND, RESULT_SCHEMA_VERSION,
+    ThesisEligibility, sample_evaluation_result,
 };
 pub use scoring::{
     DimensionOutcome, DimensionScore, MAX_RAW_ANSWER_BYTES, SCORER_VERSION, ScoreInput, TrialScore,

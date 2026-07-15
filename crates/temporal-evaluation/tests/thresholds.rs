@@ -239,6 +239,7 @@ fn synthetic_score(
     TrialScore {
         trial_id: format!("synthetic/{family:?}/{index}"),
         condition_id: condition,
+        package_digest: hash(250),
         source_interval_digest: source_interval_digest.into(),
         source_frame_tile_count: tile_count,
         case_id: case_id.into(),

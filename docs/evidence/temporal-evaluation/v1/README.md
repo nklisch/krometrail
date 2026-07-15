@@ -12,7 +12,11 @@ A normal locked Rust test run proves only that:
 - fixture files are in the declared order with the declared SHA-256 identities;
 - the condition, prompt, scoring, status, and deterministic matrix registries are complete;
 - canonical serialization, digests, privacy rejection, retention references, and status invariants
-  are deterministic; and
+  are deterministic;
+- result records bind the manifest input digest to exact packages, scores, aggregates, threshold
+  checks, retained evidence/source identities, artifact output/manifest hashes, algorithm/version
+  identities, and cache identities without copying the manifest or storing raw/model/page prose,
+  bytes, paths, or URLs; and
 - benchmark output has an ignored destination under `target/temporal-evaluation/`.
 
 That is a **contract and reproducibility claim only**. CI does not claim that Chrome captured any
@@ -20,8 +24,11 @@ state, that a platform passed, that an artifact is useful, that a model understo
 or that temporal evidence improves debugging. It does not start Chrome, access a network, invoke a
 model or paid agent, or change the product CLI.
 
-The committed `sample-manifest.json` is a contract-only sample. It is not live browser evidence,
-a capture result, an interpretation result, a scoring result, or a platform qualification.
+The committed `sample-manifest.json` is a contract-only input sample. The committed
+`sample-evaluation-result.json` is a deterministic-CI result sample: it demonstrates canonical
+result and traceability semantics, is always `thesis_eligibility=not_eligible`, and is not live
+browser evidence, a capture result, a model-comprehension result, a debugging qualification, or a
+product-thesis assessment.
 
 ## Authoritative inputs and generation
 
@@ -30,6 +37,9 @@ a capture result, an interpretation result, a scoring result, or a platform qual
 - `run-manifest.schema.json` is generated from `RunManifest`.
 - `sample-manifest.json` is generated from `RunManifest::sample()` and canonicalized by the same
   serializer used by consumers.
+- `evaluation-result.schema.json` is generated from `EvaluationResultRecord`.
+- `sample-evaluation-result.json` is generated from the deterministic result constructor and
+  canonicalized by the same serializer used by consumers.
 
 Regenerate only the versioned artifacts with the Rust generators:
 
@@ -40,6 +50,9 @@ cargo run -p temporal-evaluation --locked --bin generate-benchmark-definition --
 cargo run -p temporal-evaluation --locked --bin generate-run-manifest -- \
   docs/evidence/temporal-evaluation/v1/sample-manifest.json \
   docs/evidence/temporal-evaluation/v1/run-manifest.schema.json
+cargo run -p temporal-evaluation --locked --bin generate-evaluation-result -- \
+  docs/evidence/temporal-evaluation/v1/sample-evaluation-result.json \
+  docs/evidence/temporal-evaluation/v1/evaluation-result.schema.json
 ```
 
 After generation, run the locked workspace checks. `bun run docs:build` is unrelated VitePress
@@ -92,13 +105,17 @@ model that is not available must never become a passing row:
   threshold condition for that future consumer.
 
 Those live, cross-platform, artifact, and model consumers are opt-in work outside this CI-safe
-contract checkpoint. Their manifests belong under the ignored output boundary and must retain the
-same explicit status semantics.
+contract checkpoint. Their manifests and result records belong under the ignored output boundary
+and must retain the same explicit status semantics. A deterministic-CI result can never be
+thesis-eligible, even when synthetic arithmetic thresholds pass; its fixed non-claims explicitly
+cover Chrome capture, network access, paid/model calls, model comprehension, product-thesis
+improvement, causal diagnosis, deterministic replay, cross-model generalization, unobserved
+frames, and treating artifacts as ground truth.
 
 ## Ignored run output
 
-Per-run manifests, source frames, generated artifacts, model answers/transcripts, patch
-workspaces, logs, and aggregate results belong only under:
+Per-run manifests, result records, source frames, generated artifacts, model answers/transcripts,
+patch workspaces, logs, and aggregate results belong only under:
 
 ```text
 target/temporal-evaluation/

@@ -1,0 +1,527 @@
+{
+  "benchmark_id": "temporal-advantage-corpus-v1",
+  "conditions": [
+    {
+      "condition_id": "A-final-screenshot",
+      "decisive_trial_count": 1,
+      "dimensions": [
+        {
+          "dimension_id": "transient_defect_identification",
+          "inconclusive_rows": 0,
+          "not_applicable_rows": 0,
+          "rate": {
+            "denominator": 1,
+            "numerator": 0
+          }
+        },
+        {
+          "dimension_id": "state_order",
+          "inconclusive_rows": 0,
+          "not_applicable_rows": 0,
+          "rate": {
+            "denominator": 1,
+            "numerator": 0
+          }
+        },
+        {
+          "dimension_id": "affected_region",
+          "inconclusive_rows": 0,
+          "not_applicable_rows": 0,
+          "rate": {
+            "denominator": 1,
+            "numerator": 1
+          }
+        },
+        {
+          "dimension_id": "motion_behavior",
+          "inconclusive_rows": 0,
+          "not_applicable_rows": 0,
+          "rate": {
+            "denominator": 1,
+            "numerator": 0
+          }
+        },
+        {
+          "dimension_id": "gap_uncertainty",
+          "inconclusive_rows": 0,
+          "not_applicable_rows": 1,
+          "rate": null
+        },
+        {
+          "dimension_id": "stable_control_false_positive",
+          "inconclusive_rows": 0,
+          "not_applicable_rows": 1,
+          "rate": null
+        }
+      ],
+      "failure": null,
+      "family_defect_rates": [
+        [
+          "movement_reversal",
+          {
+            "denominator": 1,
+            "numerator": 0
+          }
+        ]
+      ],
+      "paired_trials": [
+        {
+          "case_id": "movement-reversal/basic",
+          "family": "movement_reversal",
+          "source_interval_digest": "sha256:4566896ae33bb5e038de41d018a9f49aa94708ee5c5a2d32e870f320b879ef4b",
+          "trial_id": "result-sample-trial"
+        }
+      ],
+      "source_frame_tile_count": {
+        "denominator": 8,
+        "numerator": 1
+      },
+      "stable_false_positive_rate": null,
+      "status": "pass",
+      "trial_count": 1
+    }
+  ],
+  "evidence_layer": "deterministic_ci",
+  "failure": {
+    "code": "insufficient_evidence",
+    "phase": "threshold_assessment",
+    "reason": "coverage, pairing, traceability, or decisive evidence is incomplete",
+    "recovery": "retain complete paired source and artifact evidence",
+    "retryable": true
+  },
+  "kind": "temporal_benchmark_evaluation_result",
+  "non_claims": [
+    "no_chrome_capture_claim",
+    "no_network_claim",
+    "no_paid_model_claim",
+    "no_model_comprehension_claim",
+    "no_product_thesis_claim",
+    "no_causal_diagnosis_claim",
+    "no_deterministic_replay_claim",
+    "no_cross_model_generalization_claim",
+    "no_unobserved_frame_claim",
+    "no_ground_truth_from_artifact_claim"
+  ],
+  "run_manifest_input_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "schema_version": 1,
+  "scorer": {
+    "git_revision": "0000000000000000000000000000000000000000",
+    "version": "temporal-evaluation-scorer-v1"
+  },
+  "status": "inconclusive",
+  "thesis_eligibility": "not_eligible",
+  "threshold_profile": {
+    "bundle_vs_uniform_minimum_delta_pp": 0,
+    "improvement_over_final_screenshot_pp": 25,
+    "minimum_trials_per_family_condition": 10,
+    "required_families": [
+      "movement_reversal",
+      "flicker",
+      "transient_layout"
+    ],
+    "stable_controls_required": true,
+    "stable_false_positive_delta_max_pp": 10,
+    "version": "temporal-thesis-thresholds-v1"
+  },
+  "thresholds": {
+    "bundle_vs_uniform": {
+      "failure": {
+        "code": "insufficient_evidence",
+        "phase": "threshold_assessment",
+        "reason": "threshold check is inconclusive: missing-observed-condition",
+        "recovery": "provide complete retained paired condition evidence",
+        "retryable": true
+      },
+      "observed_rate": null,
+      "passed": false,
+      "rationale_code": "missing-observed-condition",
+      "reference_rate": null,
+      "status": "inconclusive",
+      "threshold_delta_pp": 0,
+      "tile_observed_rate": null,
+      "tile_passed": null,
+      "tile_reference_rate": null
+    },
+    "failure": {
+      "code": "insufficient_evidence",
+      "phase": "threshold_assessment",
+      "reason": "coverage, pairing, traceability, or decisive evidence is incomplete",
+      "recovery": "retain complete paired source and artifact evidence",
+      "retryable": true
+    },
+    "final_vs_bundle": {
+      "failure": {
+        "code": "insufficient_evidence",
+        "phase": "threshold_assessment",
+        "reason": "threshold check is inconclusive: missing-observed-condition",
+        "recovery": "provide complete retained paired condition evidence",
+        "retryable": true
+      },
+      "observed_rate": null,
+      "passed": false,
+      "rationale_code": "missing-observed-condition",
+      "reference_rate": null,
+      "status": "inconclusive",
+      "threshold_delta_pp": 0,
+      "tile_observed_rate": null,
+      "tile_passed": null,
+      "tile_reference_rate": null
+    },
+    "progressive_report": {
+      "failure": {
+        "code": "insufficient_evidence",
+        "phase": "threshold_assessment",
+        "reason": "threshold check is inconclusive: missing-progressive-condition",
+        "recovery": "provide complete retained paired condition evidence",
+        "retryable": true
+      },
+      "observed_rate": null,
+      "passed": false,
+      "rationale_code": "missing-progressive-condition",
+      "reference_rate": null,
+      "status": "inconclusive",
+      "threshold_delta_pp": 0,
+      "tile_observed_rate": null,
+      "tile_passed": null,
+      "tile_reference_rate": null
+    },
+    "required_family_improvements": [
+      {
+        "failure": {
+          "code": "insufficient_evidence",
+          "phase": "threshold_assessment",
+          "reason": "threshold check is inconclusive: missing-observed-condition",
+          "recovery": "provide complete retained paired condition evidence",
+          "retryable": true
+        },
+        "family": "movement_reversal",
+        "observed_rate": null,
+        "passed": false,
+        "rationale_code": "missing-observed-condition",
+        "reference_rate": null,
+        "status": "inconclusive",
+        "threshold_delta_pp": 1
+      },
+      {
+        "failure": {
+          "code": "insufficient_evidence",
+          "phase": "threshold_assessment",
+          "reason": "threshold check is inconclusive: missing-observed-condition",
+          "recovery": "provide complete retained paired condition evidence",
+          "retryable": true
+        },
+        "family": "flicker",
+        "observed_rate": null,
+        "passed": false,
+        "rationale_code": "missing-observed-condition",
+        "reference_rate": null,
+        "status": "inconclusive",
+        "threshold_delta_pp": 1
+      },
+      {
+        "failure": {
+          "code": "insufficient_evidence",
+          "phase": "threshold_assessment",
+          "reason": "threshold check is inconclusive: missing-observed-condition",
+          "recovery": "provide complete retained paired condition evidence",
+          "retryable": true
+        },
+        "family": "transient_layout",
+        "observed_rate": null,
+        "passed": false,
+        "rationale_code": "missing-observed-condition",
+        "reference_rate": null,
+        "status": "inconclusive",
+        "threshold_delta_pp": 1
+      }
+    ],
+    "stable_false_positive_delta": {
+      "failure": {
+        "code": "insufficient_evidence",
+        "phase": "threshold_assessment",
+        "reason": "threshold check is inconclusive: missing-observed-condition",
+        "recovery": "provide complete retained paired condition evidence",
+        "retryable": true
+      },
+      "observed_rate": null,
+      "passed": false,
+      "rationale_code": "missing-observed-condition",
+      "reference_rate": null,
+      "status": "inconclusive",
+      "threshold_delta_pp": 0,
+      "tile_observed_rate": null,
+      "tile_passed": null,
+      "tile_reference_rate": null
+    },
+    "status": "inconclusive"
+  },
+  "trials": [
+    {
+      "cache_keys": [],
+      "evidence": [
+        {
+          "algorithm_versions": [],
+          "availability": "retained",
+          "cache": null,
+          "gap_ids": [],
+          "id": "result-frame-0",
+          "kind": {
+            "kind": "source_frame"
+          },
+          "manifest_sha256": null,
+          "output_sha256": null,
+          "selected_frame_ids": [],
+          "source_frame_ids": []
+        },
+        {
+          "algorithm_versions": [],
+          "availability": "retained",
+          "cache": null,
+          "gap_ids": [],
+          "id": "result-frame-1",
+          "kind": {
+            "kind": "source_frame"
+          },
+          "manifest_sha256": null,
+          "output_sha256": null,
+          "selected_frame_ids": [],
+          "source_frame_ids": []
+        },
+        {
+          "algorithm_versions": [],
+          "availability": "retained",
+          "cache": null,
+          "gap_ids": [],
+          "id": "result-frame-2",
+          "kind": {
+            "kind": "source_frame"
+          },
+          "manifest_sha256": null,
+          "output_sha256": null,
+          "selected_frame_ids": [],
+          "source_frame_ids": []
+        },
+        {
+          "algorithm_versions": [],
+          "availability": "retained",
+          "cache": null,
+          "gap_ids": [],
+          "id": "result-frame-3",
+          "kind": {
+            "kind": "source_frame"
+          },
+          "manifest_sha256": null,
+          "output_sha256": null,
+          "selected_frame_ids": [],
+          "source_frame_ids": []
+        },
+        {
+          "algorithm_versions": [],
+          "availability": "retained",
+          "cache": null,
+          "gap_ids": [],
+          "id": "result-frame-4",
+          "kind": {
+            "kind": "source_frame"
+          },
+          "manifest_sha256": null,
+          "output_sha256": null,
+          "selected_frame_ids": [],
+          "source_frame_ids": []
+        },
+        {
+          "algorithm_versions": [],
+          "availability": "retained",
+          "cache": null,
+          "gap_ids": [],
+          "id": "result-frame-5",
+          "kind": {
+            "kind": "source_frame"
+          },
+          "manifest_sha256": null,
+          "output_sha256": null,
+          "selected_frame_ids": [],
+          "source_frame_ids": []
+        },
+        {
+          "algorithm_versions": [],
+          "availability": "retained",
+          "cache": null,
+          "gap_ids": [],
+          "id": "result-frame-6",
+          "kind": {
+            "kind": "source_frame"
+          },
+          "manifest_sha256": null,
+          "output_sha256": null,
+          "selected_frame_ids": [],
+          "source_frame_ids": []
+        },
+        {
+          "algorithm_versions": [],
+          "availability": "retained",
+          "cache": null,
+          "gap_ids": [],
+          "id": "result-frame-7",
+          "kind": {
+            "kind": "source_frame"
+          },
+          "manifest_sha256": null,
+          "output_sha256": null,
+          "selected_frame_ids": [],
+          "source_frame_ids": []
+        },
+        {
+          "algorithm_versions": [],
+          "availability": "retained",
+          "cache": null,
+          "gap_ids": [],
+          "id": "result-observation",
+          "kind": {
+            "kind": "current_observation"
+          },
+          "manifest_sha256": null,
+          "output_sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "selected_frame_ids": [],
+          "source_frame_ids": []
+        }
+      ],
+      "evidence_ids": [
+        "result-frame-0",
+        "result-frame-1",
+        "result-frame-2",
+        "result-frame-3",
+        "result-frame-4",
+        "result-frame-5",
+        "result-frame-6",
+        "result-frame-7",
+        "result-observation"
+      ],
+      "gap_ids": [],
+      "package_digest": "sha256:46de991803375cc21405219d22a74c0af1ad3a306b080d7aa6d271c5b5ab5e56",
+      "retention": "retained",
+      "score": {
+        "accepted_claims": [
+          {
+            "claim_id": "dimension_affected_region",
+            "evidence_ids": [
+              "result-frame-7"
+            ]
+          }
+        ],
+        "answer": {
+          "affected_region": {
+            "height": 120,
+            "kind": "rect",
+            "width": 480,
+            "x": 49,
+            "y": 73
+          },
+          "evidence_refs": [
+            "result-frame-7"
+          ],
+          "judgment": "defective",
+          "motion_behavior": "reversal",
+          "state_order": [
+            "baseline",
+            "changed",
+            "final"
+          ],
+          "temporary_state": "yes",
+          "uncertainty_reasons": []
+        },
+        "answer_digest": "sha256:c63f61c2aa39874d51c9226812ea562515919208a002471a1bd5bb9b367d65e6",
+        "case_id": "movement-reversal/basic",
+        "condition_id": "A-final-screenshot",
+        "dimensions": [
+          {
+            "dimension_id": "transient_defect_identification",
+            "evidence_ids": [
+              "result-frame-7"
+            ],
+            "expected_value": "temporary_state=yes;judgment=defective",
+            "observed_value": "temporary_state=yes;judgment=defective",
+            "outcome": "incorrect",
+            "rationale_code": "historical-presentation-missing"
+          },
+          {
+            "dimension_id": "state_order",
+            "evidence_ids": [
+              "result-frame-7"
+            ],
+            "expected_value": "[baseline,changed,final]",
+            "observed_value": "[baseline,changed,final]",
+            "outcome": "incorrect",
+            "rationale_code": "historical-presentation-missing"
+          },
+          {
+            "dimension_id": "affected_region",
+            "evidence_ids": [
+              "result-frame-7"
+            ],
+            "expected_value": "[49,73,480,120]",
+            "observed_value": "[49,73,480,120]",
+            "outcome": "correct",
+            "rationale_code": "exact-viewport-pixel-roi"
+          },
+          {
+            "dimension_id": "motion_behavior",
+            "evidence_ids": [
+              "result-frame-7"
+            ],
+            "expected_value": "reversal",
+            "observed_value": "reversal",
+            "outcome": "incorrect",
+            "rationale_code": "historical-presentation-missing"
+          },
+          {
+            "dimension_id": "gap_uncertainty",
+            "evidence_ids": [
+              "result-frame-7"
+            ],
+            "expected_value": "not_applicable",
+            "observed_value": "not_applicable",
+            "outcome": "not_applicable",
+            "rationale_code": "no-source-limitation"
+          },
+          {
+            "dimension_id": "stable_control_false_positive",
+            "evidence_ids": [
+              "result-frame-7"
+            ],
+            "expected_value": "not_applicable",
+            "observed_value": "defective",
+            "outcome": "not_applicable",
+            "rationale_code": "defect-case-separate-dimension"
+          }
+        ],
+        "earned_points": 1,
+        "failure": {
+          "code": "threshold",
+          "phase": "interpretation_scoring",
+          "reason": "one or more applicable dimensions are incorrect",
+          "recovery": "review the structured answer against retained evidence",
+          "retryable": false
+        },
+        "package_digest": "sha256:46de991803375cc21405219d22a74c0af1ad3a306b080d7aa6d271c5b5ab5e56",
+        "possible_points": 4,
+        "raw_answer_ref": "result-sample-sidecar",
+        "source_frame_tile_count": 1,
+        "source_interval_digest": "sha256:4566896ae33bb5e038de41d018a9f49aa94708ee5c5a2d32e870f320b879ef4b",
+        "status": "fail",
+        "trial_id": "result-sample-trial"
+      },
+      "source_frame_ids": [
+        "result-frame-0",
+        "result-frame-1",
+        "result-frame-2",
+        "result-frame-3",
+        "result-frame-4",
+        "result-frame-5",
+        "result-frame-6",
+        "result-frame-7"
+      ],
+      "source_interval_digest": "sha256:4566896ae33bb5e038de41d018a9f49aa94708ee5c5a2d32e870f320b879ef4b"
+    }
+  ]
+}

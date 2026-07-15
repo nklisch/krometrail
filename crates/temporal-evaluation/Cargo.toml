@@ -20,3 +20,7 @@ path = "src/bin/generate-benchmark-definition.rs"
 [[bin]]
 name = "generate-run-manifest"
 path = "src/bin/generate-run-manifest.rs"
+
+[[bin]]
+name = "generate-evaluation-result"
+path = "src/bin/generate-evaluation-result.rs"

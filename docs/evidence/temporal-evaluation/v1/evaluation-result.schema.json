@@ -1,0 +1,1232 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EvaluationResultRecord",
+  "type": "object",
+  "properties": {
+    "benchmark_id": {
+      "type": "string"
+    },
+    "conditions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ConditionAggregate"
+      }
+    },
+    "evidence_layer": {
+      "$ref": "#/$defs/EvidenceLayer"
+    },
+    "failure": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FailureRecord"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "kind": {
+      "type": "string"
+    },
+    "non_claims": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/NonClaimId"
+      }
+    },
+    "run_manifest_input_digest": {
+      "type": "string"
+    },
+    "schema_version": {
+      "type": "integer",
+      "format": "uint16",
+      "maximum": 65535,
+      "minimum": 0
+    },
+    "scorer": {
+      "$ref": "#/$defs/ScorerIdentity"
+    },
+    "status": {
+      "$ref": "#/$defs/EvaluationStatus"
+    },
+    "thesis_eligibility": {
+      "$ref": "#/$defs/ThesisEligibility"
+    },
+    "threshold_profile": {
+      "$ref": "#/$defs/ThresholdProfile"
+    },
+    "thresholds": {
+      "$ref": "#/$defs/ThresholdAssessment"
+    },
+    "trials": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/TrialResultRecord"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "benchmark_id",
+    "run_manifest_input_digest",
+    "scorer",
+    "evidence_layer",
+    "thesis_eligibility",
+    "threshold_profile",
+    "trials",
+    "conditions",
+    "thresholds",
+    "status",
+    "non_claims"
+  ],
+  "$defs": {
+    "AcceptedClaim": {
+      "type": "object",
+      "properties": {
+        "claim_id": {
+          "type": "string"
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "claim_id",
+        "evidence_ids"
+      ]
+    },
+    "AnswerRegion": {
+      "description": "A model-supplied localization in the same coordinate space as the benchmark ground truth.\n\nRectangles use half-open captured-viewport pixels from the top-left of the fixed 800x450\nscreenshot at device scale one. They are not stage-relative offsets or canvas-local drawing\ncoordinates.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "unknown"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "height": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "kind": {
+              "type": "string",
+              "const": "rect"
+            },
+            "width": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "x": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "y": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "x",
+            "y",
+            "width",
+            "height"
+          ]
+        }
+      ]
+    },
+    "AnswerTruth": {
+      "type": "string",
+      "enum": [
+        "yes",
+        "no",
+        "uncertain"
+      ]
+    },
+    "ArtifactCacheIdentity": {
+      "type": "object",
+      "properties": {
+        "adapter_version": {
+          "$ref": "#/$defs/NamedVersion"
+        },
+        "cache_key": {
+          "type": "string"
+        },
+        "cache_schema_version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "generator": {
+          "$ref": "#/$defs/NamedVersion"
+        },
+        "parameter_hash": {
+          "type": "string"
+        },
+        "source_fingerprint": {
+          "type": "string"
+        },
+        "visual_epoch_hash": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "cache_schema_version",
+        "cache_key",
+        "source_fingerprint",
+        "parameter_hash",
+        "visual_epoch_hash",
+        "adapter_version",
+        "generator"
+      ]
+    },
+    "ArtifactKind": {
+      "type": "string",
+      "enum": [
+        "final_screenshot",
+        "uniform_storyboard",
+        "change_aware_storyboard",
+        "before_during_after",
+        "difference_map",
+        "temporal_debug_bundle",
+        "source_frame",
+        "region_filmstrip"
+      ]
+    },
+    "CaseFamily": {
+      "type": "string",
+      "enum": [
+        "movement_reversal",
+        "flicker",
+        "transient_layout",
+        "dom_opaque_motion",
+        "stable_control"
+      ]
+    },
+    "ConditionAggregate": {
+      "type": "object",
+      "properties": {
+        "condition_id": {
+          "$ref": "#/$defs/ConditionId"
+        },
+        "decisive_trial_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "dimensions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DimensionAggregate"
+          }
+        },
+        "failure": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FailureRecord"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "family_defect_rates": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "$ref": "#/$defs/CaseFamily"
+              },
+              {
+                "$ref": "#/$defs/ExactRate"
+              }
+            ]
+          }
+        },
+        "paired_trials": {
+          "description": "Exact pairing keys retained so later threshold checks cannot join different intervals.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TrialPair"
+          }
+        },
+        "source_frame_tile_count": {
+          "description": "Maximum source-frame tiles normalized against the eight-tile contract.",
+          "$ref": "#/$defs/ExactRate"
+        },
+        "stable_false_positive_rate": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExactRate"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "description": "Completeness status of the aggregate; answer correctness remains in dimension rates.",
+          "$ref": "#/$defs/EvaluationStatus"
+        },
+        "trial_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "condition_id",
+        "trial_count",
+        "decisive_trial_count",
+        "source_frame_tile_count",
+        "dimensions",
+        "family_defect_rates",
+        "status",
+        "paired_trials"
+      ]
+    },
+    "ConditionId": {
+      "type": "string",
+      "enum": [
+        "A-final-screenshot",
+        "B-uniform-storyboard",
+        "C-change-aware-storyboard",
+        "D-temporal-bundle",
+        "E-progressive-source"
+      ]
+    },
+    "DimensionAggregate": {
+      "type": "object",
+      "properties": {
+        "dimension_id": {
+          "$ref": "#/$defs/ScoringDimensionId"
+        },
+        "inconclusive_rows": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "not_applicable_rows": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "rate": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExactRate"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "dimension_id",
+        "inconclusive_rows",
+        "not_applicable_rows"
+      ]
+    },
+    "DimensionOutcome": {
+      "type": "string",
+      "enum": [
+        "correct",
+        "incorrect",
+        "inconclusive",
+        "not_applicable"
+      ]
+    },
+    "DimensionScore": {
+      "type": "object",
+      "properties": {
+        "dimension_id": {
+          "$ref": "#/$defs/ScoringDimensionId"
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "expected_value": {
+          "type": "string"
+        },
+        "observed_value": {
+          "type": "string"
+        },
+        "outcome": {
+          "$ref": "#/$defs/DimensionOutcome"
+        },
+        "rationale_code": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "dimension_id",
+        "outcome",
+        "observed_value",
+        "expected_value",
+        "evidence_ids",
+        "rationale_code"
+      ]
+    },
+    "EvaluationStatus": {
+      "type": "string",
+      "enum": [
+        "pass",
+        "fail",
+        "inconclusive",
+        "blocked",
+        "skipped"
+      ]
+    },
+    "EvidenceAvailability": {
+      "type": "string",
+      "enum": [
+        "retained",
+        "evicted",
+        "not_collected",
+        "corrupt",
+        "gap"
+      ]
+    },
+    "EvidenceLayer": {
+      "type": "string",
+      "enum": [
+        "deterministic_ci",
+        "live_capture",
+        "manual_model"
+      ]
+    },
+    "EvidenceReferenceKind": {
+      "description": "The kind of an opaque evidence handle. Artifact kinds reuse the temporal-vision registry.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "source_frame"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "current_observation"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "artifact_kind": {
+              "$ref": "#/$defs/ArtifactKind"
+            },
+            "kind": {
+              "type": "string",
+              "const": "artifact"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "artifact_kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "capture_summary"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "context_summary"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "progressive_request"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
+    "EvidenceTraceRecord": {
+      "description": "The bounded evidence projection retained by a result record.\n\nArtifact manifests, source payloads, cache rows, and model prose stay in their owning\nauthorities. This record keeps only the identities needed to audit a score.",
+      "type": "object",
+      "properties": {
+        "algorithm_versions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/NamedVersion"
+          }
+        },
+        "availability": {
+          "$ref": "#/$defs/EvidenceAvailability"
+        },
+        "cache": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactCacheIdentity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "gap_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/EvidenceReferenceKind"
+        },
+        "manifest_sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "output_sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "selected_frame_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "source_frame_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "availability",
+        "source_frame_ids",
+        "selected_frame_ids",
+        "gap_ids",
+        "algorithm_versions"
+      ]
+    },
+    "ExactRate": {
+      "description": "A bounded exact fraction. Rates are never represented as floating-point values.",
+      "type": "object",
+      "properties": {
+        "denominator": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "numerator": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "numerator",
+        "denominator"
+      ]
+    },
+    "FailureRecord": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/RunFailureCode"
+        },
+        "phase": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "recovery": {
+          "type": "string"
+        },
+        "retryable": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "phase",
+        "reason",
+        "recovery",
+        "retryable"
+      ]
+    },
+    "FamilyThresholdCheck": {
+      "type": "object",
+      "properties": {
+        "failure": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FailureRecord"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "family": {
+          "$ref": "#/$defs/CaseFamily"
+        },
+        "observed_rate": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExactRate"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "passed": {
+          "type": "boolean"
+        },
+        "rationale_code": {
+          "type": "string"
+        },
+        "reference_rate": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExactRate"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/EvaluationStatus"
+        },
+        "threshold_delta_pp": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "family",
+        "threshold_delta_pp",
+        "passed",
+        "status",
+        "rationale_code"
+      ]
+    },
+    "InterpretationAnswer": {
+      "type": "object",
+      "properties": {
+        "affected_region": {
+          "$ref": "#/$defs/AnswerRegion"
+        },
+        "evidence_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "judgment": {
+          "$ref": "#/$defs/Judgment"
+        },
+        "motion_behavior": {
+          "$ref": "#/$defs/MotionBehavior"
+        },
+        "state_order": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/StateLabel"
+          }
+        },
+        "temporary_state": {
+          "$ref": "#/$defs/AnswerTruth"
+        },
+        "uncertainty_reasons": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/UncertaintyReason"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "temporary_state",
+        "state_order",
+        "affected_region",
+        "motion_behavior",
+        "judgment",
+        "uncertainty_reasons",
+        "evidence_refs"
+      ]
+    },
+    "Judgment": {
+      "type": "string",
+      "enum": [
+        "defective",
+        "intentional",
+        "uncertain"
+      ]
+    },
+    "MotionBehavior": {
+      "type": "string",
+      "enum": [
+        "monotonic",
+        "reversal",
+        "teleport",
+        "flicker",
+        "layout_shift",
+        "none",
+        "uncertain"
+      ]
+    },
+    "NamedVersion": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "version"
+      ]
+    },
+    "NonClaimId": {
+      "description": "Fixed non-claims attached to every condition package.\n\nThis registry is deliberately shared with later result records rather than allowing each\ncondition to invent its own privacy disclaimer set.",
+      "type": "string",
+      "enum": [
+        "no_chrome_capture_claim",
+        "no_network_claim",
+        "no_paid_model_claim",
+        "no_model_comprehension_claim",
+        "no_product_thesis_claim",
+        "no_causal_diagnosis_claim",
+        "no_deterministic_replay_claim",
+        "no_cross_model_generalization_claim",
+        "no_unobserved_frame_claim",
+        "no_ground_truth_from_artifact_claim"
+      ]
+    },
+    "RetentionState": {
+      "type": "string",
+      "enum": [
+        "not_applicable",
+        "retained",
+        "partially_retained",
+        "evicted",
+        "unavailable"
+      ]
+    },
+    "RunFailureCode": {
+      "type": "string",
+      "enum": [
+        "validation",
+        "threshold",
+        "insufficient_evidence",
+        "unavailable",
+        "authorization",
+        "unsupported",
+        "retention",
+        "capture_gap",
+        "corrupt_source",
+        "optional_unavailable",
+        "internal"
+      ]
+    },
+    "ScorerIdentity": {
+      "type": "object",
+      "properties": {
+        "git_revision": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "git_revision",
+        "version"
+      ]
+    },
+    "ScoringDimensionId": {
+      "type": "string",
+      "enum": [
+        "transient_defect_identification",
+        "state_order",
+        "affected_region",
+        "motion_behavior",
+        "gap_uncertainty",
+        "stable_control_false_positive"
+      ]
+    },
+    "StateLabel": {
+      "type": "string",
+      "enum": [
+        "baseline",
+        "changed",
+        "final",
+        "intentional_motion",
+        "unknown"
+      ]
+    },
+    "ThesisEligibility": {
+      "type": "string",
+      "enum": [
+        "eligible",
+        "not_eligible",
+        "inconclusive"
+      ]
+    },
+    "ThresholdAssessment": {
+      "type": "object",
+      "properties": {
+        "bundle_vs_uniform": {
+          "$ref": "#/$defs/ThresholdCheck"
+        },
+        "failure": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FailureRecord"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "final_vs_bundle": {
+          "$ref": "#/$defs/ThresholdCheck"
+        },
+        "progressive_report": {
+          "description": "E is reported for visibility and traceability, but is never a gating substitute for D.",
+          "$ref": "#/$defs/ThresholdCheck"
+        },
+        "required_family_improvements": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FamilyThresholdCheck"
+          }
+        },
+        "stable_false_positive_delta": {
+          "$ref": "#/$defs/ThresholdCheck"
+        },
+        "status": {
+          "$ref": "#/$defs/EvaluationStatus"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "final_vs_bundle",
+        "required_family_improvements",
+        "bundle_vs_uniform",
+        "stable_false_positive_delta",
+        "progressive_report",
+        "status"
+      ]
+    },
+    "ThresholdCheck": {
+      "type": "object",
+      "properties": {
+        "failure": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FailureRecord"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observed_rate": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExactRate"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "passed": {
+          "type": "boolean"
+        },
+        "rationale_code": {
+          "type": "string"
+        },
+        "reference_rate": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExactRate"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/EvaluationStatus"
+        },
+        "threshold_delta_pp": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "tile_observed_rate": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExactRate"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tile_passed": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "tile_reference_rate": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExactRate"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "threshold_delta_pp",
+        "passed",
+        "status",
+        "rationale_code"
+      ]
+    },
+    "ThresholdProfile": {
+      "type": "object",
+      "properties": {
+        "bundle_vs_uniform_minimum_delta_pp": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "improvement_over_final_screenshot_pp": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "minimum_trials_per_family_condition": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "required_families": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CaseFamily"
+          }
+        },
+        "stable_controls_required": {
+          "type": "boolean"
+        },
+        "stable_false_positive_delta_max_pp": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "minimum_trials_per_family_condition",
+        "improvement_over_final_screenshot_pp",
+        "bundle_vs_uniform_minimum_delta_pp",
+        "stable_false_positive_delta_max_pp",
+        "required_families",
+        "stable_controls_required"
+      ]
+    },
+    "TrialPair": {
+      "type": "object",
+      "properties": {
+        "case_id": {
+          "type": "string"
+        },
+        "family": {
+          "$ref": "#/$defs/CaseFamily"
+        },
+        "source_interval_digest": {
+          "type": "string"
+        },
+        "trial_id": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "trial_id",
+        "case_id",
+        "family",
+        "source_interval_digest"
+      ]
+    },
+    "TrialResultRecord": {
+      "type": "object",
+      "properties": {
+        "cache_keys": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvidenceTraceRecord"
+          }
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "gap_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "package_digest": {
+          "type": "string"
+        },
+        "retention": {
+          "$ref": "#/$defs/RetentionState"
+        },
+        "score": {
+          "$ref": "#/$defs/TrialScore"
+        },
+        "source_frame_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "source_interval_digest": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "score",
+        "package_digest",
+        "source_interval_digest",
+        "source_frame_ids",
+        "gap_ids",
+        "retention",
+        "evidence_ids",
+        "evidence",
+        "cache_keys"
+      ]
+    },
+    "TrialScore": {
+      "type": "object",
+      "properties": {
+        "accepted_claims": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AcceptedClaim"
+          }
+        },
+        "answer": {
+          "$ref": "#/$defs/InterpretationAnswer"
+        },
+        "answer_digest": {
+          "type": "string"
+        },
+        "case_id": {
+          "type": "string"
+        },
+        "condition_id": {
+          "$ref": "#/$defs/ConditionId"
+        },
+        "dimensions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DimensionScore"
+          }
+        },
+        "earned_points": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "failure": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FailureRecord"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "package_digest": {
+          "description": "Exact package identity used for result traceability.",
+          "type": "string"
+        },
+        "possible_points": {
+          "description": "The count of decisive dimensions. Inconclusive and not-applicable dimensions are excluded.",
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "raw_answer_ref": {
+          "type": "string"
+        },
+        "source_frame_tile_count": {
+          "description": "Number of source-frame tiles presented to the trial, bounded by eight.",
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "source_interval_digest": {
+          "description": "Exact source interval identity used for threshold pairing.",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/EvaluationStatus"
+        },
+        "trial_id": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "trial_id",
+        "condition_id",
+        "package_digest",
+        "source_interval_digest",
+        "source_frame_tile_count",
+        "case_id",
+        "answer",
+        "answer_digest",
+        "raw_answer_ref",
+        "dimensions",
+        "accepted_claims",
+        "earned_points",
+        "possible_points",
+        "status"
+      ]
+    },
+    "UncertaintyReason": {
+      "type": "string",
+      "enum": [
+        "capture_gap",
+        "missing_source",
+        "insufficient_detail",
+        "other"
+      ]
+    }
+  }
+}

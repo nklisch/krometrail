@@ -1,7 +1,7 @@
 ---
 id: epic-prove-temporal-advantage-deterministic-scoring-and-artifact-conditions-canonical-result-records-and-traceability
 kind: story
-stage: implementing
+stage: done
 tags: [testing, visual, storage]
 parent: epic-prove-temporal-advantage-deterministic-scoring-and-artifact-conditions
 depends_on: [epic-prove-temporal-advantage-deterministic-scoring-and-artifact-conditions-threshold-aggregation-and-status]
@@ -63,13 +63,24 @@ the versioned evidence README, and keep all per-run results under ignored
 
 ## Acceptance evidence
 
-- [ ] Generated schema/sample and repeated result canonicalization are byte-stable with unknown fields, unsorted semantic arrays, invalid hashes, duplicate IDs, and unsafe references rejected.
-- [ ] Every accepted claim traces through retained evidence to exact source IDs, gaps, retention, output/manifest hashes, algorithm/version, and cache identity.
-- [ ] Mixed intervals, status/threshold contradictions, unavailable evidence, and deterministic-CI attempts to claim thesis `Pass` fail validation.
-- [ ] Result round-trips preserve all dimension outcomes, aggregate rates, threshold checks, non-claims, and failure/recovery data without raw answer prose or bytes.
-- [ ] README explicitly separates deterministic scoring output from live capture, platform, model, debugging, and product-thesis evidence.
+- [x] Generated schema/sample and repeated result canonicalization are byte-stable with unknown fields, unsorted semantic arrays, invalid hashes, duplicate IDs, and unsafe references rejected.
+- [x] Every accepted claim traces through retained evidence to exact source IDs, gaps, retention, output/manifest hashes, algorithm/version, and cache identity.
+- [x] Mixed intervals, status/threshold contradictions, unavailable evidence, and deterministic-CI attempts to claim thesis `Pass` fail validation.
+- [x] Result round-trips preserve all dimension outcomes, aggregate rates, threshold checks, non-claims, and failure/recovery data without raw answer prose or bytes.
+- [x] README explicitly separates deterministic scoring output from live capture, platform, model, debugging, and product-thesis evidence.
 
 ## Ordering
 
 This checkpoint consumes the completed scorer and threshold aggregates. The final story adds fake
 clock/source/store qualification and clean-checkout boundary verification.
+
+## Implementation notes
+
+- Execution capability: inline implementation; this checkpoint has one browser-agnostic Rust crate, one generator, and one versioned evidence directory with no independent runtime lane.
+- Review weight: standard default; child-story checkpoints do not enter review.
+- Files changed: `crates/temporal-evaluation/src/result.rs`, `src/lib.rs`, `src/bin/generate-evaluation-result.rs`, `Cargo.toml`, `tests/result.rs`, `src/scoring.rs`, `tests/thresholds.rs`, and the v1 result schema/sample/README.
+- Tests added/removed: canonical result byte/digest and round-trip tests, unknown/unsafe/duplicate/unsorted/contradictory input tests, retained/unavailable trace checks, and generated-artifact integration checks; no tests were removed.
+- Simplification: result records retain bounded trace projections and identities rather than copying manifests, configuration, artifact bytes, raw answer prose, paths, URLs, or cache storage; no browser/model/qualification lane was added.
+- Discrepancies from design: added `EvidenceTraceRecord` as the named bounded projection needed to carry artifact output/manifest hashes, source IDs, algorithm/version identities, and cache identities without duplicating temporal-vision provenance; deterministic constructor keeps live/manual thesis eligibility inconclusive until their authorization lanes exist.
+- Adjacent issues parked: none.
+- Verification: Rust 1.85 locked workspace fmt, check, test, and clippy passed; all three versioned generators reproduced committed artifacts byte-for-byte.

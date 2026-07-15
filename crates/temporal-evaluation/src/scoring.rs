@@ -60,6 +60,8 @@ impl DimensionScore {
 pub struct TrialScore {
     pub trial_id: String,
     pub condition_id: ConditionId,
+    /// Exact package identity used for result traceability.
+    pub package_digest: String,
     /// Exact source interval identity used for threshold pairing.
     pub source_interval_digest: String,
     /// Number of source-frame tiles presented to the trial, bounded by eight.
@@ -80,7 +82,9 @@ pub struct TrialScore {
 impl TrialScore {
     pub fn validate(&self) -> crate::Result<()> {
         privacy::validate_trial_id(&self.trial_id, "score trial id")?;
+        privacy::validate_safe_text(&self.trial_id, "score trial id", privacy::MAX_SHORT_TEXT)?;
         privacy::validate_safe_text(&self.case_id, "score case id", privacy::MAX_SHORT_TEXT)?;
+        privacy::validate_sha256(&self.package_digest, "score package digest")?;
         privacy::validate_sha256(&self.source_interval_digest, "score source interval digest")?;
         if self.source_frame_tile_count > UNIFORM_SOURCE_FRAME_SLOTS as u16 {
             return Err(ContractError::new(
@@ -100,6 +104,32 @@ impl TrialScore {
             return Err(ContractError::new(
                 "trial score dimensions must match the canonical registry order",
             ));
+        }
+        for dimension in &self.dimensions {
+            privacy::validate_safe_text(
+                &dimension.observed_value,
+                "score observed value",
+                privacy::MAX_SHORT_TEXT,
+            )?;
+            privacy::validate_safe_text(
+                &dimension.expected_value,
+                "score expected value",
+                privacy::MAX_SHORT_TEXT,
+            )?;
+            privacy::validate_safe_text(
+                &dimension.rationale_code,
+                "score rationale code",
+                privacy::MAX_SHORT_TEXT,
+            )?;
+            let mut evidence_ids = BTreeSet::new();
+            for evidence_id in &dimension.evidence_ids {
+                privacy::validate_opaque_id(evidence_id, "score dimension evidence id")?;
+                if !evidence_ids.insert(evidence_id) {
+                    return Err(ContractError::new(
+                        "score dimension evidence identifiers must be unique",
+                    ));
+                }
+            }
         }
         if self.earned_points > self.possible_points {
             return Err(ContractError::new(
@@ -248,6 +278,7 @@ pub fn score_interpretation(input: ScoreInput<'_>) -> crate::Result<TrialScore> 
     let score = TrialScore {
         trial_id: input.trial.trial_id.clone(),
         condition_id: input.trial.condition_id,
+        package_digest: input.package.digest.clone(),
         source_interval_digest: input.package.source_interval_digest.clone(),
         source_frame_tile_count: source_frame_tile_count(input.package),
         case_id: input.trial.case_id.clone(),
