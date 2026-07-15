@@ -104,6 +104,15 @@ runs visual updates from `performance.now()` and `requestAnimationFrame`. The fi
 uses half-open phase intervals and a 100 ms lead-in/settle for defect cases. Stable controls run
 through the same duration matrix but are intentionally correct.
 
+`affected_region` has one exact scoring meaning: a half-open axis-aligned rectangle in the
+viewport screenshot pixel space, with `(0, 0)` at the top-left of the fixed viewport and the
+canonical device scale set to one. It is the union of the affected subject's visible extents over
+its declared phases, clipped by the visible stage. A moving panel includes its full path; a
+compound layout shift includes every changing subject and its pre-/post-shift extent; and a
+DOM-opaque canvas uses its complete rendered canvas border box. It is not a stage-relative offset
+or a canvas-local JavaScript coordinate. The fixture contract tests
+derive every canonical region from the committed CSS/HTML/animation geometry without Chrome.
+
 The committed cases are:
 
 | Case ID | Behavior identity |
@@ -172,8 +181,10 @@ structured interpretation response is bounded to `temporary_state`, `state_order
 Allowed scoring dimensions are `transient_defect_identification`, `state_order`,
 `affected_region`, `motion_behavior`, `gap_uncertainty`, and `stable_control_false_positive`.
 The prompt explicitly preserves Krometrail's non-diagnostic posture and requires uncertainty when
-capture gaps or missing source prevent a claim; it does not name the case family, defect mechanism,
-or expected answer.
+capture gaps or missing source prevent a claim. Its rectangle answer uses the same half-open
+viewport-pixel coordinate space as ground truth: top-left origin, fixed 800x450 viewport, device
+scale one, and no stage-relative or canvas-local coordinates. It does not name the case family,
+defect mechanism, or expected answer.
 
 **Acceptance criteria**:
 
@@ -350,8 +361,9 @@ cohesive bundle.
   authorization, threshold minimums, and no-pass-on-missing-input protect honest claims.
 - **Privacy tests**: path/endpoint/credential/page-content rejection prevents local identity or
   sensitive browser data from entering committed manifests.
-- **Fixture tests**: static no-network/no-random/no-wall-clock checks plus exact phase/final-state
-  definition checks protect deterministic target behavior without live Chrome.
+- **Fixture tests**: static no-network/no-random/no-wall-clock checks, exact phase/final-state
+  checks, and a CSS/HTML/JavaScript geometry projection that derives every affected viewport-pixel
+  extent and rejects fixture/definition drift without live Chrome.
 - **No live/model tests here**: Chrome capture, artifact rendering, platform evidence, and
   paid/manual interpretation belong to downstream features and remain explicit unavailable when
   not authorized. No low-value line-by-line tests or duplicate schema copies are planned.
@@ -384,3 +396,25 @@ smoke's generated-schema/canonical-sample/redaction conventions, temporal-vision
 artifact provenance and gap semantics, Cargo workspace boundaries, and the documented Bun-only
 VitePress tooling boundary. No foundation assertion is changed by this design; downstream
 implementation must update an assertion in place if its behavior makes one stale.
+
+## Standard review — accepted fixes and advisory nits
+
+The host review accepted two contract findings. Both fixes are implemented below; this feature
+intentionally remains at `stage: review` for host approval and is not re-reviewed here.
+
+1. **Skipped aggregate honesty (`crates/temporal-evaluation/src/manifest.rs`).** A top-level
+   `skipped` manifest is now valid only when every measured row is explicitly `skipped`, in
+   addition to the existing optional Linux Chromium and `optional_unavailable` requirements.
+   Manifest tests cover a hidden `pass`, `fail`, `inconclusive`, or `blocked` row.
+2. **Localization coordinate ground truth (`crates/temporal-evaluation/src/corpus.rs`, fixture,
+   docs, and schemas).** `affected_region` is now an exact half-open viewport-pixel ROI in the
+   fixed 800x450, device-scale-one screenshot space. Canonical regions were audited against the
+   stage border, child border boxes, panel motion path, content-shift clipping, field placement,
+   and canvas surface; prompt/schema/README comments use the same semantics. A deterministic
+   contract test derives all thirteen regions from committed fixture CSS/HTML/JavaScript and
+   requires the definition to match without starting Chrome. Definition, schema, prompt/input
+   digests, and canonical sample artifacts were regenerated.
+
+Advisory nits remain recorded as non-blocking notes rather than expanded into this remediation;
+no scoring implementation, live browser/network/model execution, re-review, or unrelated cleanup
+was performed.

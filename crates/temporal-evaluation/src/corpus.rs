@@ -25,9 +25,9 @@ const FIXTURE_FILES: [&str; 4] = ["README.md", "benchmark.css", "benchmark.js", 
 // These hashes are part of the current v1 definition. Contract tests recompute them from the
 // committed target files, so changing a fixture requires an intentional definition update.
 const FIXTURE_FILE_SHA256: [&str; 4] = [
-    "sha256:068ae8b4bb771580d64d251bdc0832a121699acfa64a3286bd43712b93244c57",
+    "sha256:440ebde2a44869fd05ad266bef778d294ca5a94108b124f1fd4afb676b29f314",
     "sha256:e098d0c7eb95f9f3dd2d268ed820197820242dbb7c15f900cacffb9b4a9c7d2c",
-    "sha256:80bd7b56ddf603b5dd552eecced8506e5cf75f08b553bcccdeb4a8d4272f7278",
+    "sha256:aea769bb28dff5317d143485c366774d0805ec1e789d01cf7118328a572553a7",
     "sha256:23da2695cb0b0e164b2a181e5436f31cd59ee42696933f7c7015bccd4648cabb",
 ];
 
@@ -102,12 +102,28 @@ pub struct TimeInterval {
     pub end: PhaseBoundary,
 }
 
+/// An affected extent in the fixed qualification viewport.
+///
+/// Coordinates are integer captured-viewport pixels with the origin at the screenshot's top-left
+/// corner. The rectangle is half-open (`x..x + width`, `y..y + height`) in the 800x450,
+/// device-scale-one contract; it is never a stage-relative offset or a canvas-local drawing
+/// coordinate. The extent is the union of the affected fixture subject's visible extents across
+/// its declared phases, clipped by the fixture's viewport/stage visibility. A moving subject
+/// therefore covers its complete path, and a DOM-opaque canvas uses its complete viewport canvas
+/// box so a scorer has one exact localization ROI.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(
+    description = "Half-open affected extent in fixed 800x450 viewport pixels, origin at the top-left; not stage-relative or canvas-local coordinates."
+)]
 pub struct Rect {
+    /// Horizontal viewport-pixel origin of the half-open rectangle.
     pub x: u32,
+    /// Vertical viewport-pixel origin of the half-open rectangle.
     pub y: u32,
+    /// Extent width in viewport pixels.
     pub width: u32,
+    /// Extent height in viewport pixels.
     pub height: u32,
 }
 
@@ -130,6 +146,7 @@ pub struct CaseDefinition {
     pub timing: TimingDefinition,
     pub phases: Vec<PhaseDefinition>,
     pub defect_interval: Option<TimeInterval>,
+    /// The exact captured-viewport-pixel ROI consumed by localization scoring.
     pub affected_region: Rect,
     pub final_state_id: String,
 }
@@ -371,6 +388,18 @@ fn validate_case(case: &CaseDefinition, durations: &[u16]) -> Result<()> {
     if case.phases.is_empty() {
         return Err(ContractError::new(format!(
             "{} must declare at least one phase",
+            case.case_id
+        )));
+    }
+    if case.affected_region.width == 0
+        || case.affected_region.height == 0
+        || case.affected_region.x > VIEWPORT_WIDTH
+        || case.affected_region.y > VIEWPORT_HEIGHT
+        || case.affected_region.width > VIEWPORT_WIDTH - case.affected_region.x
+        || case.affected_region.height > VIEWPORT_HEIGHT - case.affected_region.y
+    {
+        return Err(ContractError::new(format!(
+            "{} affected_region must be a non-empty rectangle within the 800x450 viewport",
             case.case_id
         )));
     }
@@ -622,9 +651,9 @@ fn expected_cases() -> Vec<CaseDefinition> {
             ],
             Some(defect_interval(200)),
             Rect {
-                x: 48,
-                y: 72,
-                width: 240,
+                x: 49,
+                y: 73,
+                width: 480,
                 height: 120,
             },
             "movement.stable",
@@ -659,8 +688,8 @@ fn expected_cases() -> Vec<CaseDefinition> {
             ],
             Some(defect_interval(100)),
             Rect {
-                x: 360,
-                y: 72,
+                x: 361,
+                y: 73,
                 width: 240,
                 height: 120,
             },
@@ -696,8 +725,8 @@ fn expected_cases() -> Vec<CaseDefinition> {
             ],
             Some(defect_interval(100)),
             Rect {
-                x: 360,
-                y: 72,
+                x: 361,
+                y: 73,
                 width: 240,
                 height: 120,
             },
@@ -733,8 +762,8 @@ fn expected_cases() -> Vec<CaseDefinition> {
             ],
             Some(defect_interval(100)),
             Rect {
-                x: 360,
-                y: 72,
+                x: 361,
+                y: 73,
                 width: 240,
                 height: 120,
             },
@@ -770,8 +799,8 @@ fn expected_cases() -> Vec<CaseDefinition> {
             ],
             Some(defect_interval(100)),
             Rect {
-                x: 48,
-                y: 240,
+                x: 49,
+                y: 241,
                 width: 640,
                 height: 160,
             },
@@ -807,10 +836,10 @@ fn expected_cases() -> Vec<CaseDefinition> {
             ],
             Some(defect_interval(100)),
             Rect {
-                x: 48,
-                y: 240,
+                x: 49,
+                y: 223,
                 width: 640,
-                height: 160,
+                height: 202,
             },
             "layout.content_shift.stable",
         ),
@@ -844,8 +873,8 @@ fn expected_cases() -> Vec<CaseDefinition> {
             ],
             Some(defect_interval(100)),
             Rect {
-                x: 48,
-                y: 240,
+                x: 49,
+                y: 241,
                 width: 320,
                 height: 120,
             },
@@ -893,8 +922,8 @@ fn expected_cases() -> Vec<CaseDefinition> {
             ],
             Some(defect_interval(200)),
             Rect {
-                x: 400,
-                y: 240,
+                x: 401,
+                y: 241,
                 width: 320,
                 height: 160,
             },
@@ -930,8 +959,8 @@ fn expected_cases() -> Vec<CaseDefinition> {
             ],
             Some(defect_interval(100)),
             Rect {
-                x: 400,
-                y: 240,
+                x: 401,
+                y: 241,
                 width: 320,
                 height: 160,
             },
@@ -967,8 +996,8 @@ fn expected_cases() -> Vec<CaseDefinition> {
             ],
             Some(defect_interval(100)),
             Rect {
-                x: 400,
-                y: 240,
+                x: 401,
+                y: 241,
                 width: 320,
                 height: 160,
             },
@@ -998,9 +1027,9 @@ fn expected_cases() -> Vec<CaseDefinition> {
             ],
             None,
             Rect {
-                x: 48,
-                y: 72,
-                width: 240,
+                x: 49,
+                y: 73,
+                width: 480,
                 height: 120,
             },
             "stable.smooth_panel.final",
@@ -1029,8 +1058,8 @@ fn expected_cases() -> Vec<CaseDefinition> {
             ],
             None,
             Rect {
-                x: 360,
-                y: 72,
+                x: 361,
+                y: 73,
                 width: 240,
                 height: 120,
             },
@@ -1047,10 +1076,10 @@ fn expected_cases() -> Vec<CaseDefinition> {
             vec![phase("ready", "stable.caret.ready", Zero, End)],
             None,
             Rect {
-                x: 48,
-                y: 240,
+                x: 49,
+                y: 381,
                 width: 300,
-                height: 48,
+                height: 32,
             },
             "stable.caret.ready",
         ),

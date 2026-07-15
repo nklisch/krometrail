@@ -193,4 +193,26 @@ fn blocked_model_and_optional_linux_chromium_states_remain_explicit() {
         retryable: false,
     });
     assert!(skipped.validate().is_ok());
+
+    let mut wrong_row_failure = skipped.clone();
+    wrong_row_failure.rows[0].failure.as_mut().unwrap().code = RunFailureCode::Unavailable;
+    assert!(wrong_row_failure.validate().is_err());
+
+    for row_status in [
+        EvaluationStatus::Pass,
+        EvaluationStatus::Fail,
+        EvaluationStatus::Inconclusive,
+        EvaluationStatus::Blocked,
+    ] {
+        let mut hidden_non_skipped_row = skipped.clone();
+        hidden_non_skipped_row.rows[0].status = row_status;
+        if row_status == EvaluationStatus::Pass {
+            hidden_non_skipped_row.rows[0].failure = None;
+        }
+        assert!(
+            hidden_non_skipped_row.validate().is_err(),
+            "a skipped run must reject a {:?} row",
+            row_status
+        );
+    }
 }

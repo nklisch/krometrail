@@ -24,11 +24,11 @@ const README_BYTES: &[u8] =
     include_bytes!("../../../docs/evidence/temporal-evaluation/v1/README.md");
 
 const DEFINITION_DIGEST: &str =
-    "sha256:26f0f2835ca9bf4410c6a04a2919a2e04a6bbf1c4704a6098ce2b8f583b77a20";
+    "sha256:6585cc1e23106a14994c1b8c7b19609ad621f681e2073a754c36b28a7b6537e2";
 const DEFINITION_SCHEMA_DIGEST: &str =
-    "sha256:1e8abdfcf6dc52ef446abc8cbb6752f1dba09ee8f3d6cf9cf9f651b6a13cc846";
+    "sha256:6e77564bd142ad7362159024748bb76a98389ce3d8d194355c15afc006b0709b";
 const MANIFEST_DIGEST: &str =
-    "sha256:2a811db9b38561717bb385902a8fa8729c0fe659dd3ef3410a3420f270bfdde8";
+    "sha256:1076be41353bf38513d58a1b1584d0dd678abf3976e09240baa5f83b1be73785";
 const MANIFEST_SCHEMA_DIGEST: &str =
     "sha256:1d48245867112af66d6218687db06b61f056100111ca3f409c3fd16af5839844";
 

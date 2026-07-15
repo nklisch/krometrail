@@ -89,6 +89,11 @@ pub enum UncertaintyReason {
     Other,
 }
 
+/// A model-supplied localization in the same coordinate space as the benchmark ground truth.
+///
+/// Rectangles use half-open captured-viewport pixels from the top-left of the fixed 800x450
+/// screenshot at device scale one. They are not stage-relative offsets or canvas-local drawing
+/// coordinates.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AnswerRegion {
@@ -200,7 +205,7 @@ impl PromptSet {
                     PromptId::Interpretation,
                     AnswerKind::Interpretation,
                     "You inspect browser evidence as an observation task. Describe only visible sequence, region, and uncertainty supported by supplied evidence. Do not infer causes, diagnoses, or hidden implementation details. If a capture gap or missing source prevents a claim, use uncertain and name the limitation. Return only the JSON object required by the answer contract.",
-                    "Inspect the supplied browser evidence and return JSON. State whether a temporary visible state occurred; list visible state order; identify the affected region or unknown; classify motion or visual behavior; judge defective, intentional, or uncertain; list uncertainty reasons; and cite opaque evidence references. Do not use labels not visible in the evidence.",
+                    "Inspect the supplied browser evidence and return JSON. State whether a temporary visible state occurred; list visible state order; identify the affected region or unknown; classify motion or visual behavior; judge defective, intentional, or uncertain; list uncertainty reasons; and cite opaque evidence references. Rectangle coordinates are half-open viewport pixels from the top-left of the fixed 800x450 screenshot at device scale one, not stage-relative or canvas-local coordinates. Do not use labels not visible in the evidence.",
                 ),
                 canonical_prompt(
                     PromptId::Debugging,

@@ -1334,9 +1334,15 @@ fn validate_outcome(manifest: &RunManifest) -> Result<()> {
                         ..
                     }
                 )
+                || !manifest.rows.iter().all(|row| {
+                    row.status == EvaluationStatus::Skipped
+                        && row.failure.as_ref().is_some_and(|failure| {
+                            failure.code == RunFailureCode::OptionalUnavailable
+                        })
+                })
             {
                 return Err(ContractError::new(
-                    "only the optional Linux Chromium configuration may be skipped",
+                    "only the optional Linux Chromium configuration with explicitly skipped rows and optional-unavailability failures may be skipped",
                 ));
             }
             validate_failure(failure, "failure")?;

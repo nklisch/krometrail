@@ -1,6 +1,10 @@
 (() => {
   "use strict";
 
+  // Canvas marker positions below are canvas-local drawing coordinates. The evaluator's
+  // affected_region is separately defined in viewport pixels from the rendered 800x450 target;
+  // these JavaScript values must never be interpreted as viewport coordinates.
+
   const CASE_IDS = new Set([
     "movement-reversal/basic",
     "flicker/visibility",

@@ -1,7 +1,7 @@
 ---
 id: epic-prove-temporal-advantage-benchmark-corpus-and-manifest-contracts-region-coordinate-and-skip-status-review-fix
 kind: story
-stage: implementing
+stage: done
 tags: [testing, visual]
 parent: epic-prove-temporal-advantage-benchmark-corpus-and-manifest-contracts
 depends_on: [epic-prove-temporal-advantage-benchmark-corpus-and-manifest-contracts-ci-boundary-and-samples]
@@ -67,19 +67,39 @@ platforms or model lanes.
 
 ## Acceptance evidence
 
-- [ ] The definition and schema expose one explicit fixed viewport-pixel ROI contract; all 13
+- [x] The definition and schema expose one explicit fixed viewport-pixel ROI contract; all 13
       canonical regions are measured against actual fixture geometry, fit 800×450, and no longer
       depend on ambiguous JS logical coordinates.
-- [ ] Fixture/contract tests prove the ROI origin, half-open bounds, non-empty/within-viewport
+- [x] Fixture/contract tests prove the ROI origin, half-open bounds, non-empty/within-viewport
       invariants, and representative rendered geometry for movement, flicker, layout, and
       DOM-opaque cases.
-- [ ] The model-facing prompt documents fixed viewport-pixel coordinates without exposing family,
+- [x] The model-facing prompt documents fixed viewport-pixel coordinates without exposing family,
       case, variant, or expected answer metadata.
-- [ ] A skipped manifest with every row skipped remains valid; any mixed row-status variant is
+- [x] A skipped manifest with every row skipped remains valid; any mixed row-status variant is
       rejected and preserves row-level optional-unavailability reasons/recovery actions.
-- [ ] Regenerated definition/schema/sample digests and clean-checkout comparisons pass; no live
+- [x] Regenerated definition/schema/sample digests and clean-checkout comparisons pass; no live
       browser, network, model, paid work, product CLI, or generated VitePress documentation is
       involved.
+
+## Implementation evidence
+
+- `Rect` now has one explicit half-open captured-viewport-pixel meaning: top-left origin,
+  fixed 800x450 bounds, device scale one, and no stage-relative or canvas-local interpretation.
+  The canonical regions cover the panel's full movement path, status card, content-shift notice
+  and clipped extent, scroll box, field, and rendered canvas surface. The schema description,
+  interpretation prompt, fixture README, and feature review notes use the same contract.
+- `affected_regions_are_derived_from_viewport_geometry_not_fixture_local_coordinates` projects
+  the committed fixture CSS/HTML placement into viewport space, accounts for the stage border and
+  clipping, checks canvas dimensions, and asserts the panel/canvas animation inputs before matching
+  all thirteen definition regions. It performs no browser, network, or model work. Definition
+  validation rejects empty or out-of-viewport rectangles.
+- `RunManifest` now requires every row of a skipped aggregate to be `Skipped` with its own
+  `OptionalUnavailable` failure. Manifest tests retain a valid all-skipped sample and reject pass,
+  fail, inconclusive, blocked, and wrong-row-failure variants.
+- The benchmark definition, generated schemas, canonical sample, prompt/input identities, fixture
+  hashes, and digest assertions were regenerated together. Verification passed with Rust 1.85:
+  `cargo fmt --all -- --check`, locked workspace check/test/clippy (`-D warnings`), and clean
+  generation byte-identity comparisons for the definition schema, sample, and manifest schema.
 
 ## Ordering and handoff
 

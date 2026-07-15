@@ -126,6 +126,7 @@
       "type": "object",
       "properties": {
         "affected_region": {
+          "description": "The exact captured-viewport-pixel ROI consumed by localization scoring.",
           "$ref": "#/$defs/Rect"
         },
         "anchor_id": {
@@ -566,24 +567,29 @@
       ]
     },
     "Rect": {
+      "description": "Half-open affected extent in fixed 800x450 viewport pixels, origin at the top-left; not stage-relative or canvas-local coordinates.",
       "type": "object",
       "properties": {
         "height": {
+          "description": "Extent height in viewport pixels.",
           "type": "integer",
           "format": "uint32",
           "minimum": 0
         },
         "width": {
+          "description": "Extent width in viewport pixels.",
           "type": "integer",
           "format": "uint32",
           "minimum": 0
         },
         "x": {
+          "description": "Horizontal viewport-pixel origin of the half-open rectangle.",
           "type": "integer",
           "format": "uint32",
           "minimum": 0
         },
         "y": {
+          "description": "Vertical viewport-pixel origin of the half-open rectangle.",
           "type": "integer",
           "format": "uint32",
           "minimum": 0

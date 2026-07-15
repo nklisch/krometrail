@@ -4,8 +4,9 @@ use std::path::PathBuf;
 use temporal_evaluation::{
     AnswerRegion, AnswerTruth, AnswerValidationContext, BENCHMARK_ID, BenchmarkDefinition,
     ConditionId, DURATIONS_MS, DebuggingAnswer, FixtureFile, InterpretationAnswer, Judgment,
-    MATRIX_SEED, MotionBehavior, ScoringDimensionId, StateLabel, UncertaintyReason,
-    benchmark_definition_schema, parse_interpretation_answer, validate_debugging_answer,
+    MATRIX_SEED, MotionBehavior, Rect, ScoringDimensionId, StateLabel, UncertaintyReason,
+    VIEWPORT_HEIGHT, VIEWPORT_WIDTH, benchmark_definition_schema, parse_interpretation_answer,
+    validate_debugging_answer,
 };
 
 const DEFINITION_BYTES: &[u8] =
@@ -342,6 +343,134 @@ fn invalid_case_duration_phase_and_final_state_edits_are_rejected() {
     let mut invalid = definition();
     invalid.cases[0].defect_interval = None;
     assert!(invalid.validate().is_err());
+
+    let mut invalid = definition();
+    invalid.cases[0].affected_region.width = 0;
+    assert!(invalid.validate().is_err());
+
+    let mut invalid = definition();
+    invalid.cases[0].affected_region.x = VIEWPORT_WIDTH;
+    assert!(invalid.validate().is_err());
+}
+
+#[test]
+fn affected_regions_are_derived_from_viewport_geometry_not_fixture_local_coordinates() {
+    let definition = definition();
+    let css = String::from_utf8(fs::read(fixture_root().join("benchmark.css")).unwrap()).unwrap();
+    let html = String::from_utf8(fs::read(fixture_root().join("index.html")).unwrap()).unwrap();
+    let js = String::from_utf8(fs::read(fixture_root().join("benchmark.js")).unwrap()).unwrap();
+
+    assert_eq!(css_value(&css, "body", "margin"), "0");
+    assert!(css_block(&css, "*").contains("box-sizing: border-box"));
+    let surface_padding = css_padding(&css, ".surface");
+    assert_eq!(css_px(&css, ".surface", "width"), VIEWPORT_WIDTH);
+    assert_eq!(css_px(&css, ".surface", "height"), VIEWPORT_HEIGHT);
+    assert_eq!(surface_padding, (24, 40));
+
+    let stage_border = css_first_px(&css, ".stage", "border");
+    let stage = Rect {
+        x: 0,
+        y: 0,
+        width: css_px(&css, ".stage", "width"),
+        height: css_px(&css, ".stage", "height"),
+    };
+    let stage_origin = (
+        surface_padding.1 + stage_border,
+        surface_padding.0 + stage_border,
+    );
+    let stage_clip = Rect {
+        x: stage_origin.0,
+        y: stage_origin.1,
+        width: stage.width - stage_border * 2,
+        height: stage.height - stage_border * 2,
+    };
+
+    let panel = viewport_box(stage_origin, css_box(&css, ".panel"));
+    let status = viewport_box(stage_origin, css_box(&css, ".status-card"));
+    let content = viewport_box(stage_origin, css_box(&css, ".content-block"));
+    let notice = viewport_box(stage_origin, css_box(&css, ".notice"));
+    let scroll_box = viewport_box(stage_origin, css_box(&css, ".scroll-box"));
+    let canvas = viewport_box(stage_origin, css_box(&css, "#visual-surface"));
+    let field = viewport_box(stage_origin, css_box(&css, ".field"));
+    let narrow_width = css_px(&css, ".content-block.narrow", "width");
+
+    assert_eq!(html_attribute(&html, "canvas", "width"), 320);
+    assert_eq!(html_attribute(&html, "canvas", "height"), 160);
+    assert_eq!(canvas.width, 320);
+    assert_eq!(canvas.height, 160);
+    assert_eq!(narrow_width, 480);
+
+    // These values are the fixture's local animation/drawing inputs. The assertions make their
+    // coordinate space explicit and fail if a fixture edit changes the geometry without updating
+    // this contract test and the evaluator-owned definition.
+    for source_fragment in [
+        "let x = 48;",
+        "lerp(48, 160",
+        "lerp(160, 120",
+        "lerp(120, 288",
+        "lerp(48, 288",
+        "markerX = 80",
+        "lerp(80, 320",
+        "lerp(320, 240",
+        "lerp(240, 320",
+        "? 520 : elapsed < 100 ? 80 : 320",
+        "markerX = 160",
+        "context.fillRect(markerX - 16, 80 - 16, 32, 32)",
+    ] {
+        assert!(
+            js.contains(source_fragment),
+            "fixture geometry input drifted: {source_fragment}"
+        );
+    }
+    assert!(js.contains("contentBlock.style.top = active ? \"264px\" : \"216px\""));
+    assert!(
+        js.contains(
+            "scrollBox.scrollTop = elapsed >= activeStart && elapsed < activeEnd ? 160 : 0"
+        )
+    );
+
+    let panel_path = Rect {
+        x: panel.x,
+        y: panel.y,
+        width: panel.width + (288 - 48),
+        height: panel.height,
+    };
+    let shifted_content = Rect {
+        x: content.x,
+        y: stage_origin.1 + 264,
+        width: content.width,
+        height: content.height,
+    };
+    let content_shift = clip_rect(
+        union_rect(union_rect(notice, content), shifted_content),
+        stage_clip,
+    );
+    let expected = [
+        ("movement-reversal/basic", panel_path),
+        ("flicker/visibility", status),
+        ("flicker/color", status),
+        ("flicker/text", status),
+        ("layout/width", content),
+        ("layout/content-shift", content_shift),
+        ("layout/scroll-position", scroll_box),
+        ("dom-opaque/path-reversal", canvas),
+        ("dom-opaque/teleport", canvas),
+        ("dom-opaque/sprite", canvas),
+        ("stable/smooth-panel", panel_path),
+        ("stable/loading-indicator", status),
+        ("stable/caret", field),
+    ];
+    for (case_id, expected_region) in expected {
+        let case_definition = definition
+            .case(case_id)
+            .unwrap_or_else(|| panic!("missing canonical case {case_id}"));
+        assert_eq!(
+            case_definition.affected_region, expected_region,
+            "affected_region for {case_id} is not the fixture's viewport-pixel extent"
+        );
+        assert!(expected_region.x + expected_region.width <= VIEWPORT_WIDTH);
+        assert!(expected_region.y + expected_region.height <= VIEWPORT_HEIGHT);
+    }
 }
 
 #[test]
@@ -418,6 +547,118 @@ fn agent_facing_markup_does_not_render_ground_truth_labels_or_case_identity() {
         assert!(!html.contains(hidden_label), "markup leaks {hidden_label}");
     }
     assert!(!html.contains("data-"));
+}
+
+fn css_block<'a>(css: &'a str, selector: &str) -> &'a str {
+    let marker = format!("{selector} {{");
+    let start = css
+        .rfind(&marker)
+        .unwrap_or_else(|| panic!("fixture CSS selector is missing: {selector}"))
+        + marker.len();
+    let end = start
+        + css[start..]
+            .find('}')
+            .unwrap_or_else(|| panic!("fixture CSS block is unterminated: {selector}"));
+    &css[start..end]
+}
+
+fn css_value<'a>(css: &'a str, selector: &str, property: &str) -> &'a str {
+    let prefix = format!("{property}:");
+    css_block(css, selector)
+        .lines()
+        .find_map(|line| {
+            let line = line.trim();
+            line.strip_prefix(&prefix)
+                .map(|value| value.trim().trim_end_matches(';').trim())
+        })
+        .unwrap_or_else(|| panic!("fixture CSS declaration is missing: {selector} {property}"))
+}
+
+fn css_px(css: &str, selector: &str, property: &str) -> u32 {
+    css_value(css, selector, property)
+        .strip_suffix("px")
+        .unwrap_or_else(|| panic!("fixture CSS value is not in pixels: {selector} {property}"))
+        .parse()
+        .unwrap_or_else(|_| panic!("fixture CSS value is not an integer: {selector} {property}"))
+}
+
+fn css_first_px(css: &str, selector: &str, property: &str) -> u32 {
+    css_value(css, selector, property)
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .strip_suffix("px")
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+
+fn css_padding(css: &str, selector: &str) -> (u32, u32) {
+    let values = css_value(css, selector, "padding")
+        .split_whitespace()
+        .map(|value| value.strip_suffix("px").unwrap().parse().unwrap())
+        .collect::<Vec<u32>>();
+    match values.as_slice() {
+        [vertical, horizontal] => (*vertical, *horizontal),
+        _ => panic!("fixture surface padding must have vertical and horizontal values"),
+    }
+}
+
+fn css_box(css: &str, selector: &str) -> Rect {
+    Rect {
+        x: css_px(css, selector, "left"),
+        y: css_px(css, selector, "top"),
+        width: css_px(css, selector, "width"),
+        height: css_px(css, selector, "height"),
+    }
+}
+
+fn viewport_box(origin: (u32, u32), local: Rect) -> Rect {
+    Rect {
+        x: origin.0 + local.x,
+        y: origin.1 + local.y,
+        width: local.width,
+        height: local.height,
+    }
+}
+
+fn union_rect(first: Rect, second: Rect) -> Rect {
+    let right = (first.x + first.width).max(second.x + second.width);
+    let bottom = (first.y + first.height).max(second.y + second.height);
+    Rect {
+        x: first.x.min(second.x),
+        y: first.y.min(second.y),
+        width: right - first.x.min(second.x),
+        height: bottom - first.y.min(second.y),
+    }
+}
+
+fn clip_rect(rect: Rect, clip: Rect) -> Rect {
+    let right = (rect.x + rect.width).min(clip.x + clip.width);
+    let bottom = (rect.y + rect.height).min(clip.y + clip.height);
+    let x = rect.x.max(clip.x);
+    let y = rect.y.max(clip.y);
+    Rect {
+        x,
+        y,
+        width: right - x,
+        height: bottom - y,
+    }
+}
+
+fn html_attribute(html: &str, element: &str, attribute: &str) -> u32 {
+    let start = html
+        .find(&format!("<{element}"))
+        .unwrap_or_else(|| panic!("fixture element is missing: {element}"));
+    let end = start + html[start..].find('>').unwrap();
+    let tag = &html[start..end];
+    let marker = format!("{attribute}=\"");
+    tag[tag.find(&marker).unwrap() + marker.len()..]
+        .split('"')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap()
 }
 
 #[test]

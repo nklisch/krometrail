@@ -15,6 +15,16 @@ updates use the browser's monotonic `performance.now()` value and `requestAnimat
 requested duration is an intended fixture interval; it is not evidence that Chrome presented or
 Krometrail captured every display frame.
 
-The evaluator-owned case phases and expected final states are committed separately in
-`docs/evidence/temporal-evaluation/v1/benchmark-definition.json`. The page intentionally does
-not render case labels, phase IDs, defect labels, or ground-truth output.
+The evaluator-owned case phases, expected final states, and affected regions are committed
+separately in `docs/evidence/temporal-evaluation/v1/benchmark-definition.json`. An
+`affected_region` is an exact half-open ROI in captured viewport pixels: `(0, 0)` is the top-left
+of the 800x450 screenshot, and device scale is one. It is the union of the affected subject's
+visible extents across its declared phases, clipped by the stage's visible area. Moving subjects
+cover their full path; a DOM-opaque canvas uses its complete rendered canvas box. These are
+viewport coordinates, not `.stage`-relative offsets or canvas-local JavaScript drawing
+coordinates. The contract tests derive these rectangles from this fixture's CSS/HTML geometry
+and animation values without starting Chrome, so a fixture or definition geometry change must be
+intentional and synchronized.
+
+The page intentionally does not render case labels, phase IDs, defect labels, or ground-truth
+output.

@@ -15,7 +15,7 @@
   },
   "benchmark_definition": {
     "git_revision": "0000000000000000000000000000000000000000",
-    "sha256": "sha256:26f0f2835ca9bf4410c6a04a2919a2e04a6bbf1c4704a6098ce2b8f583b77a20"
+    "sha256": "sha256:6585cc1e23106a14994c1b8c7b19609ad621f681e2073a754c36b28a7b6537e2"
   },
   "benchmark_id": "temporal-advantage-corpus-v1",
   "browser": {
@@ -28,11 +28,11 @@
   },
   "failure": null,
   "fixture": {
-    "definition_sha256": "sha256:26f0f2835ca9bf4410c6a04a2919a2e04a6bbf1c4704a6098ce2b8f583b77a20",
+    "definition_sha256": "sha256:6585cc1e23106a14994c1b8c7b19609ad621f681e2073a754c36b28a7b6537e2",
     "ordered_files": [
       {
         "path": "README.md",
-        "sha256": "sha256:068ae8b4bb771580d64d251bdc0832a121699acfa64a3286bd43712b93244c57"
+        "sha256": "sha256:440ebde2a44869fd05ad266bef778d294ca5a94108b124f1fd4afb676b29f314"
       },
       {
         "path": "benchmark.css",
@@ -40,7 +40,7 @@
       },
       {
         "path": "benchmark.js",
-        "sha256": "sha256:80bd7b56ddf603b5dd552eecced8506e5cf75f08b553bcccdeb4a8d4272f7278"
+        "sha256": "sha256:aea769bb28dff5317d143485c366774d0805ec1e789d01cf7118328a572553a7"
       },
       {
         "path": "index.html",
@@ -76,9 +76,9 @@
   "prompt": {
     "prompt_set_id": "interpretation-v1",
     "prompt_version": "1",
-    "sha256": "sha256:20a8ac9b6afdf979175fe9a6214c3a9a78a3e9015ae047f3ffa31fd858740397",
+    "sha256": "sha256:6499b6de29eef1e00a9995dbaad8e5f30c4b0daaeda12ac543293b87670316b2",
     "system_prompt": "You inspect browser evidence as an observation task. Describe only visible sequence, region, and uncertainty supported by supplied evidence. Do not infer causes, diagnoses, or hidden implementation details. If a capture gap or missing source prevents a claim, use uncertain and name the limitation. Return only the JSON object required by the answer contract.",
-    "task_prompt": "Inspect the supplied browser evidence and return JSON. State whether a temporary visible state occurred; list visible state order; identify the affected region or unknown; classify motion or visual behavior; judge defective, intentional, or uncertain; list uncertainty reasons; and cite opaque evidence references. Do not use labels not visible in the evidence."
+    "task_prompt": "Inspect the supplied browser evidence and return JSON. State whether a temporary visible state occurred; list visible state order; identify the affected region or unknown; classify motion or visual behavior; judge defective, intentional, or uncertain; list uncertainty reasons; and cite opaque evidence references. Rectangle coordinates are half-open viewport pixels from the top-left of the fixed 800x450 screenshot at device scale one, not stage-relative or canvas-local coordinates. Do not use labels not visible in the evidence."
   },
   "rows": [
     {

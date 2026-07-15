@@ -4,9 +4,9 @@
     {
       "affected_region": {
         "height": 120,
-        "width": 240,
-        "x": 48,
-        "y": 72
+        "width": 480,
+        "x": 49,
+        "y": 73
       },
       "anchor_id": "run",
       "case_id": "movement-reversal/basic",
@@ -94,8 +94,8 @@
       "affected_region": {
         "height": 120,
         "width": 240,
-        "x": 360,
-        "y": 72
+        "x": 361,
+        "y": 73
       },
       "anchor_id": "run",
       "case_id": "flicker/visibility",
@@ -159,8 +159,8 @@
       "affected_region": {
         "height": 120,
         "width": 240,
-        "x": 360,
-        "y": 72
+        "x": 361,
+        "y": 73
       },
       "anchor_id": "run",
       "case_id": "flicker/color",
@@ -224,8 +224,8 @@
       "affected_region": {
         "height": 120,
         "width": 240,
-        "x": 360,
-        "y": 72
+        "x": 361,
+        "y": 73
       },
       "anchor_id": "run",
       "case_id": "flicker/text",
@@ -289,8 +289,8 @@
       "affected_region": {
         "height": 160,
         "width": 640,
-        "x": 48,
-        "y": 240
+        "x": 49,
+        "y": 241
       },
       "anchor_id": "run",
       "case_id": "layout/width",
@@ -352,10 +352,10 @@
     },
     {
       "affected_region": {
-        "height": 160,
+        "height": 202,
         "width": 640,
-        "x": 48,
-        "y": 240
+        "x": 49,
+        "y": 223
       },
       "anchor_id": "run",
       "case_id": "layout/content-shift",
@@ -419,8 +419,8 @@
       "affected_region": {
         "height": 120,
         "width": 320,
-        "x": 48,
-        "y": 240
+        "x": 49,
+        "y": 241
       },
       "anchor_id": "run",
       "case_id": "layout/scroll-position",
@@ -484,8 +484,8 @@
       "affected_region": {
         "height": 160,
         "width": 320,
-        "x": 400,
-        "y": 240
+        "x": 401,
+        "y": 241
       },
       "anchor_id": "run",
       "case_id": "dom-opaque/path-reversal",
@@ -573,8 +573,8 @@
       "affected_region": {
         "height": 160,
         "width": 320,
-        "x": 400,
-        "y": 240
+        "x": 401,
+        "y": 241
       },
       "anchor_id": "run",
       "case_id": "dom-opaque/teleport",
@@ -638,8 +638,8 @@
       "affected_region": {
         "height": 160,
         "width": 320,
-        "x": 400,
-        "y": 240
+        "x": 401,
+        "y": 241
       },
       "anchor_id": "run",
       "case_id": "dom-opaque/sprite",
@@ -702,9 +702,9 @@
     {
       "affected_region": {
         "height": 120,
-        "width": 240,
-        "x": 48,
-        "y": 72
+        "width": 480,
+        "x": 49,
+        "y": 73
       },
       "anchor_id": "run",
       "case_id": "stable/smooth-panel",
@@ -747,8 +747,8 @@
       "affected_region": {
         "height": 120,
         "width": 240,
-        "x": 360,
-        "y": 72
+        "x": 361,
+        "y": 73
       },
       "anchor_id": "run",
       "case_id": "stable/loading-indicator",
@@ -789,10 +789,10 @@
     },
     {
       "affected_region": {
-        "height": 48,
+        "height": 32,
         "width": 300,
-        "x": 48,
-        "y": 240
+        "x": 49,
+        "y": 381
       },
       "anchor_id": "run",
       "case_id": "stable/caret",
@@ -1015,7 +1015,7 @@
     "files": [
       {
         "path": "README.md",
-        "sha256": "sha256:068ae8b4bb771580d64d251bdc0832a121699acfa64a3286bd43712b93244c57"
+        "sha256": "sha256:440ebde2a44869fd05ad266bef778d294ca5a94108b124f1fd4afb676b29f314"
       },
       {
         "path": "benchmark.css",
@@ -1023,7 +1023,7 @@
       },
       {
         "path": "benchmark.js",
-        "sha256": "sha256:80bd7b56ddf603b5dd552eecced8506e5cf75f08b553bcccdeb4a8d4272f7278"
+        "sha256": "sha256:aea769bb28dff5317d143485c366774d0805ec1e789d01cf7118328a572553a7"
       },
       {
         "path": "index.html",
@@ -1036,7 +1036,7 @@
   "input_identities": {
     "conditions_sha256": "sha256:507ab51e84af716f9b5e67a05210a6c58105675ccf471c757189cf110029503d",
     "matrix_sha256": "sha256:e0cd45ad9eac4783ea0154495024a96d0bd525185d82bf696cde090e1e66f6ed",
-    "prompts_sha256": "sha256:d6967bbc948f0e31f9710247ec8b2fbaa091c5345e49fdb379bfd1bddd7c2fd1",
+    "prompts_sha256": "sha256:67b6063f35a4f60431f00619dbd2df9647948ac5f732b3fc776275eebfa35bf2",
     "scoring_sha256": "sha256:bfb5f2441a97cb011e043e685b78d4eeeee9088abd4d5544eb4591eec2a21533"
   },
   "matrix": {
@@ -1067,9 +1067,9 @@
       {
         "answer_kind": "interpretation",
         "id": "interpretation-v1",
-        "sha256": "sha256:20a8ac9b6afdf979175fe9a6214c3a9a78a3e9015ae047f3ffa31fd858740397",
+        "sha256": "sha256:6499b6de29eef1e00a9995dbaad8e5f30c4b0daaeda12ac543293b87670316b2",
         "system_prompt": "You inspect browser evidence as an observation task. Describe only visible sequence, region, and uncertainty supported by supplied evidence. Do not infer causes, diagnoses, or hidden implementation details. If a capture gap or missing source prevents a claim, use uncertain and name the limitation. Return only the JSON object required by the answer contract.",
-        "task_prompt": "Inspect the supplied browser evidence and return JSON. State whether a temporary visible state occurred; list visible state order; identify the affected region or unknown; classify motion or visual behavior; judge defective, intentional, or uncertain; list uncertainty reasons; and cite opaque evidence references. Do not use labels not visible in the evidence.",
+        "task_prompt": "Inspect the supplied browser evidence and return JSON. State whether a temporary visible state occurred; list visible state order; identify the affected region or unknown; classify motion or visual behavior; judge defective, intentional, or uncertain; list uncertainty reasons; and cite opaque evidence references. Rectangle coordinates are half-open viewport pixels from the top-left of the fixed 800x450 screenshot at device scale one, not stage-relative or canvas-local coordinates. Do not use labels not visible in the evidence.",
         "version": "1"
       },
       {

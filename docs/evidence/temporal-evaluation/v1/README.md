@@ -53,6 +53,20 @@ numbers, normalizes `-0` to `0`, and uses lowercase `sha256:<64 hex>` identities
 and session times remain separate. The definition owns ground truth; no measurement, artifact, or
 model answer can redefine it.
 
+### Affected-region coordinate contract
+
+Each case's `affected_region` is the exact half-open axis-aligned localization ROI in the fixed
+800x450 captured-viewport-pixel space. `(x, y)` is measured from the screenshot's top-left;
+width and height cover `x..x+width` and `y..y+height`, at the canonical device scale of one.
+The region is the union of the affected fixture subject's visible extents over all declared
+phases, clipped by the visible stage. A moving panel
+therefore includes its complete path, a layout shift includes both the inserted notice and the
+pre-/post-shift content extent, and a DOM-opaque canvas uses its complete rendered canvas box.
+The values are not `.stage`-relative offsets, `getBoundingClientRect()` values from another
+viewport, or canvas-local JavaScript drawing coordinates. Model answers use this same coordinate
+space. The contract tests derive every canonical rectangle from the committed fixture CSS, HTML,
+and animation geometry without starting Chrome.
+
 Committed fixture paths are repository-relative POSIX paths. Ignored evidence references are
 opaque handles. Validation rejects absolute or private paths, traversal, backslashes,
 URLs/endpoints and ports, credentials, control characters, page text, raw browser payloads, and
