@@ -717,6 +717,58 @@ where
     ))
 }
 
+/// Render motion history from a request-local pair-analysis context.
+pub fn generate_motion_history_with_context<A, F, M, G, P>(
+    artifact_id: A,
+    source: &FrameSequence<F, M, G, P>,
+    normalized: &NormalizedSequence<F>,
+    parameters: MotionHistoryParameters,
+    context: &mut PairAnalysisContext<'_>,
+) -> Result<MotionHistoryArtifact<A, F, M, G>>
+where
+    F: Clone + Eq + Display,
+    M: Clone + Eq,
+    G: Clone + Eq,
+    P: AsRef<[u8]>,
+{
+    validate_source_alignment(source, normalized, parameters.reference_frame_index)?;
+    let layout = MotionHistoryLayout::new(normalized.dimensions(), parameters.limits)?;
+    let plan = build_motion_history_plan_with_context(source, normalized, &parameters, context)?;
+    let mut canvas = Canvas::new(
+        layout.dimensions,
+        BLACK,
+        parameters.limits.max_canvas_bytes(),
+    )?;
+    draw_motion_history(&mut canvas, layout, source, normalized, &plan, &parameters)?;
+    let (bytes, hash) = crate::encode::encode_png(
+        layout.dimensions,
+        canvas.pixels(),
+        parameters.limits.max_encoded_bytes(),
+    )?;
+    let mut normalization = normalized.normalization_steps().to_vec();
+    normalization.push(parameters.measurement.provenance_step()?);
+    normalization.push(display_step()?);
+    let manifest = ArtifactManifest::from_sequence(
+        artifact_id,
+        ArtifactKind::MotionHistory,
+        EvidenceClass::SourceDerived,
+        {
+            let descriptor = generator_descriptor(ArtifactKind::MotionHistory);
+            AlgorithmDescriptor::new(descriptor.name, descriptor.version)?
+        },
+        source,
+        vec![plan.reference_frame_id().clone()],
+        normalization,
+        manifest_parameters(source, &plan, &parameters)?,
+        layout.dimensions,
+        hash,
+    )?;
+    Ok(GeneratedArtifact::new(
+        EncodedImage::new(layout.dimensions, bytes),
+        manifest,
+    ))
+}
+
 #[cfg(test)]
 pub(crate) fn generate_motion_history_direct<A, F, M, G, P>(
     artifact_id: A,

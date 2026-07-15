@@ -403,7 +403,12 @@ pub(crate) fn select_storyboard_frames_direct<F: Clone + Eq, M: Eq, G: Eq, P: As
     )
 }
 
-fn select_storyboard_frames_with_comparisons<F: Clone + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
+pub(crate) fn select_storyboard_frames_with_comparisons<
+    F: Clone + Eq,
+    M: Eq,
+    G: Eq,
+    P: AsRef<[u8]>,
+>(
     source: &FrameSequence<F, M, G, P>,
     normalized: &NormalizedSequence<F>,
     anchor: Timestamp,

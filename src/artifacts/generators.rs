@@ -140,17 +140,7 @@ pub(crate) fn generate(
                 request.include_orientation.then(|| artifact_ids[1]),
                 &epoch.sequence,
                 normalized,
-                StoryboardParameters::new(
-                    Timestamp::from_nanos(request.anchor.as_nanos()),
-                    StoryboardTileLimit::new(request.tile_limit).map_err(vision_error)?,
-                    MeasurementParameters::new(request.noise_floor),
-                    ArtifactLabels::new(
-                        request.labels.title.as_str(),
-                        request.labels.source.as_str(),
-                    )
-                    .map_err(vision_error)?,
-                    render_limits(request.output, limits)?,
-                ),
+                storyboard_parameters(request, limits)?,
             )
             .map_err(vision_error)?;
             let mut outputs = vec![from_generated(generated.storyboard())];
@@ -167,20 +157,7 @@ pub(crate) fn generate(
                 artifact_ids[0],
                 &epoch.sequence,
                 normalized,
-                DifferenceMapParameters::new(
-                    reference,
-                    request.frequency_mode,
-                    TimePalette::Spectral,
-                    request
-                        .repeated_change_separation_nanos
-                        .map(Timestamp::from_nanos),
-                    MeasurementParameters::new(request.noise_floor),
-                    request.canvas_background,
-                    DifferenceMapLimits::new(
-                        NonZeroUsize::new(limits.max_normalized_bytes.get()).unwrap(),
-                        encoded_limit(request.output, limits)?,
-                    ),
-                ),
+                difference_parameters(request, reference, limits)?,
             )
             .map_err(vision_error)?;
             vec![from_generated(&generated)]
@@ -241,23 +218,7 @@ pub(crate) fn generate(
                 artifact_ids[0],
                 &epoch.sequence,
                 normalized,
-                MotionHistoryParameters::new(
-                    reference,
-                    MeasurementParameters::new(request.noise_floor),
-                    MotionDecay::new(
-                        request.decay_peak,
-                        NonZeroU8::new(request.decay_half_life_ranks).unwrap(),
-                    ),
-                    request.reference_strength,
-                    request.accent,
-                    request.outline,
-                    ArtifactLabels::new(
-                        request.labels.title.as_str(),
-                        request.labels.source.as_str(),
-                    )
-                    .map_err(vision_error)?,
-                    render_limits(request.output, limits)?,
-                ),
+                motion_parameters(request, reference, limits)?,
             )
             .map_err(vision_error)?;
             vec![from_generated(&generated)]
@@ -265,6 +226,163 @@ pub(crate) fn generate(
     };
     validate_outputs(&outputs, &prepared.request, limits)?;
     Ok(outputs)
+}
+
+pub(crate) struct AnalysisContextSpec {
+    pub measurement: MeasurementParameters,
+    pub difference_limits: Option<DifferenceMapLimits>,
+    pub motion_parameters: Option<MotionHistoryParameters>,
+}
+
+pub(crate) fn analysis_context_spec(
+    prepared: &PreparedGenerator,
+    limits: ArtifactWorkLimits,
+) -> Result<Option<AnalysisContextSpec>> {
+    let spec = match &prepared.request {
+        ArtifactGeneratorRequest::Storyboard(request) => AnalysisContextSpec {
+            measurement: MeasurementParameters::new(request.noise_floor),
+            difference_limits: None,
+            motion_parameters: None,
+        },
+        ArtifactGeneratorRequest::DifferenceMap(request) => AnalysisContextSpec {
+            measurement: MeasurementParameters::new(request.noise_floor),
+            difference_limits: Some(DifferenceMapLimits::new(
+                NonZeroUsize::new(limits.max_normalized_bytes.get()).unwrap(),
+                encoded_limit(request.output, limits)?,
+            )),
+            motion_parameters: None,
+        },
+        ArtifactGeneratorRequest::MotionHistory(request) => AnalysisContextSpec {
+            measurement: MeasurementParameters::new(request.noise_floor),
+            difference_limits: None,
+            // The context core only depends on measurement and decay. The
+            // actual reference is resolved again by the renderer in source order.
+            motion_parameters: Some(motion_parameters(request, 0, limits)?),
+        },
+        ArtifactGeneratorRequest::RegionFilmstrip(_) => return Ok(None),
+    };
+    Ok(Some(spec))
+}
+
+pub(crate) fn generate_with_context(
+    epoch: &EpochInput,
+    prepared: &PreparedGenerator,
+    artifact_ids: &[ArtifactId],
+    normalized: Option<&NormalizedSequence<FrameId>>,
+    context: &mut temporal_vision::PairAnalysisContext<'_>,
+    limits: ArtifactWorkLimits,
+) -> Result<Vec<GeneratedOutput>> {
+    let normalized =
+        normalized.ok_or_else(|| generation_error("analysis normalization is missing"))?;
+    let outputs = match &prepared.request {
+        ArtifactGeneratorRequest::Storyboard(request) => {
+            let generated = temporal_vision::generate_storyboard_with_context(
+                artifact_ids[0],
+                request.include_orientation.then(|| artifact_ids[1]),
+                &epoch.sequence,
+                normalized,
+                storyboard_parameters(request, limits)?,
+                context,
+            )
+            .map_err(vision_error)?;
+            let mut outputs = vec![from_generated(generated.storyboard())];
+            if let Some(orientation) = generated.orientation() {
+                outputs.push(from_generated(orientation));
+            }
+            outputs
+        }
+        ArtifactGeneratorRequest::DifferenceMap(request) => {
+            let reference = resolve_reference(request.reference, epoch)?;
+            let generated = temporal_vision::render_difference_map_with_context(
+                artifact_ids[0],
+                &epoch.sequence,
+                normalized,
+                difference_parameters(request, reference, limits)?,
+                context,
+            )
+            .map_err(vision_error)?;
+            vec![from_generated(&generated)]
+        }
+        ArtifactGeneratorRequest::MotionHistory(request) => {
+            let reference = resolve_reference(request.reference, epoch)?;
+            let generated = temporal_vision::generate_motion_history_with_context(
+                artifact_ids[0],
+                &epoch.sequence,
+                normalized,
+                motion_parameters(request, reference, limits)?,
+                context,
+            )
+            .map_err(vision_error)?;
+            vec![from_generated(&generated)]
+        }
+        ArtifactGeneratorRequest::RegionFilmstrip(_) => {
+            return generate(epoch, prepared, artifact_ids, Some(normalized), limits);
+        }
+    };
+    validate_outputs(&outputs, &prepared.request, limits)?;
+    Ok(outputs)
+}
+
+fn storyboard_parameters(
+    request: &krometrail_core::StoryboardRequest,
+    limits: ArtifactWorkLimits,
+) -> Result<StoryboardParameters> {
+    Ok(StoryboardParameters::new(
+        Timestamp::from_nanos(request.anchor.as_nanos()),
+        StoryboardTileLimit::new(request.tile_limit).map_err(vision_error)?,
+        MeasurementParameters::new(request.noise_floor),
+        ArtifactLabels::new(
+            request.labels.title.as_str(),
+            request.labels.source.as_str(),
+        )
+        .map_err(vision_error)?,
+        render_limits(request.output, limits)?,
+    ))
+}
+
+fn difference_parameters(
+    request: &krometrail_core::DifferenceMapRequest,
+    reference: usize,
+    limits: ArtifactWorkLimits,
+) -> Result<DifferenceMapParameters> {
+    Ok(DifferenceMapParameters::new(
+        reference,
+        request.frequency_mode,
+        TimePalette::Spectral,
+        request
+            .repeated_change_separation_nanos
+            .map(Timestamp::from_nanos),
+        MeasurementParameters::new(request.noise_floor),
+        request.canvas_background,
+        DifferenceMapLimits::new(
+            NonZeroUsize::new(limits.max_normalized_bytes.get()).unwrap(),
+            encoded_limit(request.output, limits)?,
+        ),
+    ))
+}
+
+fn motion_parameters(
+    request: &krometrail_core::MotionHistoryRequest,
+    reference: usize,
+    limits: ArtifactWorkLimits,
+) -> Result<MotionHistoryParameters> {
+    Ok(MotionHistoryParameters::new(
+        reference,
+        MeasurementParameters::new(request.noise_floor),
+        MotionDecay::new(
+            request.decay_peak,
+            NonZeroU8::new(request.decay_half_life_ranks).unwrap(),
+        ),
+        request.reference_strength,
+        request.accent,
+        request.outline,
+        ArtifactLabels::new(
+            request.labels.title.as_str(),
+            request.labels.source.as_str(),
+        )
+        .map_err(vision_error)?,
+        render_limits(request.output, limits)?,
+    ))
 }
 
 fn from_generated(
@@ -467,7 +585,7 @@ fn encoded_limit(
         .ok_or_else(|| limit_error("effective output byte limit is zero"))
 }
 
-fn vision_error(error: temporal_vision::VisionError) -> KrometrailError {
+pub(crate) fn vision_error(error: temporal_vision::VisionError) -> KrometrailError {
     let code = if error.code == temporal_vision::ErrorCode::ResourceLimitExceeded {
         ErrorCode::ResourceLimitExceeded
     } else {

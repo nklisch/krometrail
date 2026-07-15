@@ -12,7 +12,8 @@ use crate::{
     EvidenceClass, FrameSequence, GeneratedArtifact, Marker, MeasurementParameters,
     NormalizationKind, NormalizationStep, NormalizedSequence, ParameterValue, Parameters,
     PixelDimensions, Result, SelectionReason, StoryboardSelection, StoryboardTileLimit, Timestamp,
-    VisionError, generator_descriptor, normalize::make_parameters, select_storyboard_frames,
+    VisionError, generator_descriptor, normalize::make_parameters,
+    pair_analysis::PairAnalysisContext, select_storyboard_frames,
 };
 use canvas::{BLACK, Canvas, MUTED, PANEL, WARNING, WHITE, canvas_limit_error};
 use font::{CELL_WIDTH, draw_text, ellipsize};
@@ -253,6 +254,89 @@ where
         None
     };
 
+    Ok(StoryboardArtifacts {
+        storyboard,
+        orientation,
+        selection,
+    })
+}
+
+/// Generate storyboard and optional orientation using precomputed adjacent pairs.
+pub fn generate_storyboard_with_context<A, F, M, G, P>(
+    storyboard_artifact_id: A,
+    orientation_artifact_id: Option<A>,
+    source: &FrameSequence<F, M, G, P>,
+    normalized: &NormalizedSequence<F>,
+    parameters: StoryboardParameters,
+    context: &PairAnalysisContext<'_>,
+) -> Result<StoryboardArtifacts<A, F, M, G>>
+where
+    F: Clone + Eq + Display,
+    M: Clone + Eq,
+    G: Clone + Eq,
+    P: AsRef<[u8]>,
+{
+    context.ensure_normalized(normalized, parameters.measurement)?;
+    let selection = crate::select::select_storyboard_frames_with_comparisons(
+        source,
+        normalized,
+        parameters.anchor,
+        parameters.tile_limit,
+        parameters.measurement,
+        context.comparisons(),
+    )?;
+    let marker_assignments = assign_markers(source.markers(), &selection);
+    let storyboard_raster = render_storyboard(
+        source,
+        normalized,
+        &selection,
+        &marker_assignments,
+        &parameters,
+    )?;
+    let storyboard = finish_artifact(
+        storyboard_artifact_id,
+        ArtifactKind::Storyboard,
+        source,
+        normalized,
+        selection
+            .selected_frames()
+            .iter()
+            .map(|frame| frame.frame_id().clone())
+            .collect(),
+        &selection,
+        &marker_assignments,
+        &parameters,
+        storyboard_raster,
+        "chronological_strip",
+    )?;
+    let orientation = orientation_artifact_id.map_or(Ok(None), |artifact_id| {
+        let role_indices = [
+            selection.before_index(),
+            selection.during_index(),
+            selection.after_index(),
+        ];
+        let mut selected_indices = role_indices.to_vec();
+        selected_indices.sort_unstable();
+        selected_indices.dedup();
+        let selected_ids = selected_indices
+            .iter()
+            .map(|index| source.frames()[*index].id().clone())
+            .collect();
+        let raster = render_orientation(source, normalized, &selection, &parameters)?;
+        finish_artifact(
+            artifact_id,
+            ArtifactKind::BeforeDuringAfter,
+            source,
+            normalized,
+            selected_ids,
+            &selection,
+            &marker_assignments,
+            &parameters,
+            raster,
+            "before_during_after",
+        )
+        .map(Some)
+    })?;
     Ok(StoryboardArtifacts {
         storyboard,
         orientation,

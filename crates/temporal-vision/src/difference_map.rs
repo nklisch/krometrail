@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, num::NonZeroUsize};
+use std::{collections::BTreeMap, num::NonZeroUsize, sync::Arc};
 
 use crate::{
     AlgorithmDescriptor, ArtifactKind, ArtifactManifest, EncodedImage, ErrorCode, EvidenceClass,
@@ -199,6 +199,11 @@ impl DifferenceAccumulators {
             build_pair_analysis_context(normalized, measurement, Some(limits), None, || Ok(()))?;
         context
             .into_difference()
+            .map(|core| {
+                Arc::try_unwrap(core).unwrap_or_else(|_| {
+                    panic!("difference core remains uniquely owned after context build")
+                })
+            })
             .ok_or_else(accumulator_limit_error)
     }
 
@@ -275,7 +280,7 @@ impl DifferenceAccumulators {
 }
 
 pub(crate) struct DifferenceMapData {
-    accumulators: DifferenceAccumulators,
+    accumulators: Arc<DifferenceAccumulators>,
     range_start: Timestamp,
     range_duration_ns: u64,
     effective_separation_ns: u64,
@@ -289,11 +294,11 @@ impl DifferenceMapData {
         normalized: &NormalizedSequence<F>,
         parameters: DifferenceMapParameters,
     ) -> Result<Self> {
-        let accumulators = DifferenceAccumulators::accumulate(
+        let accumulators = Arc::new(DifferenceAccumulators::accumulate(
             normalized,
             parameters.measurement,
             parameters.limits,
-        )?;
+        )?);
         Self::from_accumulators(normalized, parameters, accumulators)
     }
 
@@ -301,19 +306,17 @@ impl DifferenceMapData {
     pub(crate) fn build_with_context<F>(
         normalized: &NormalizedSequence<F>,
         parameters: DifferenceMapParameters,
-        context: &mut PairAnalysisContext<'_>,
+        context: &PairAnalysisContext<'_>,
     ) -> Result<Self> {
         context.ensure_normalized(normalized, parameters.measurement)?;
-        let accumulators = context
-            .take_difference()
-            .ok_or_else(accumulator_limit_error)?;
+        let accumulators = Arc::clone(context.difference().ok_or_else(accumulator_limit_error)?);
         Self::from_accumulators(normalized, parameters, accumulators)
     }
 
     fn from_accumulators<F>(
         normalized: &NormalizedSequence<F>,
         parameters: DifferenceMapParameters,
-        accumulators: DifferenceAccumulators,
+        accumulators: Arc<DifferenceAccumulators>,
     ) -> Result<Self> {
         let range_start = normalized.frames()[0].timestamp();
         let range_duration_ns = normalized
@@ -576,6 +579,72 @@ where
     ))
 }
 
+/// Render a difference map from a request-local pair-analysis context.
+pub fn render_difference_map_with_context<A, F, M, G, P>(
+    artifact_id: A,
+    sequence: &FrameSequence<F, M, G, P>,
+    normalized: &NormalizedSequence<F>,
+    parameters: DifferenceMapParameters,
+    context: &PairAnalysisContext<'_>,
+) -> Result<DifferenceMapArtifact<A, F, M, G>>
+where
+    F: Clone + Eq,
+    M: Clone + Eq,
+    G: Clone + Eq,
+    P: AsRef<[u8]>,
+{
+    validate_normalized_source(sequence, normalized, parameters.reference_frame_index)?;
+    let data = DifferenceMapData::build_with_context(normalized, parameters, context)?;
+    let layout = DifferenceMapLayout::new(data.dimensions())?;
+    let canvas_bytes = layout
+        .image
+        .pixel_count()?
+        .checked_mul(3)
+        .ok_or_else(canvas_limit_error)?;
+    if canvas_bytes > parameters.limits.max_output_bytes() {
+        return Err(canvas_limit_error());
+    }
+
+    let mut canvas = Canvas::new(
+        layout.image,
+        parameters.background.channels(),
+        parameters.limits.max_output_bytes(),
+    )?;
+    draw_composite(&mut canvas, layout, sequence, normalized, parameters, &data)?;
+    let (bytes, hash) = crate::encode::encode_png(
+        layout.image,
+        canvas.pixels(),
+        parameters.limits.max_output_bytes(),
+    )?;
+
+    let mut normalization = normalized.normalization_steps().to_vec();
+    normalization.push(parameters.measurement.provenance_step()?);
+    normalization.push(display_step()?);
+    let manifest = ArtifactManifest::from_sequence(
+        artifact_id,
+        ArtifactKind::DifferenceMap,
+        EvidenceClass::SourceDerived,
+        {
+            let descriptor = generator_descriptor(ArtifactKind::DifferenceMap);
+            AlgorithmDescriptor::new(descriptor.name, descriptor.version)?
+        },
+        sequence,
+        vec![
+            sequence.frames()[parameters.reference_frame_index]
+                .id()
+                .clone(),
+        ],
+        normalization,
+        manifest_parameters(parameters, &data)?,
+        layout.image,
+        hash,
+    )?;
+    Ok(GeneratedArtifact::new(
+        EncodedImage::new(layout.image, bytes),
+        manifest,
+    ))
+}
+
 #[cfg(test)]
 pub(crate) fn render_difference_map_direct<A, F, M, G, P>(
     artifact_id: A,
@@ -595,7 +664,8 @@ where
         parameters.measurement,
         parameters.limits,
     )?;
-    let data = DifferenceMapData::from_accumulators(normalized, parameters, accumulators)?;
+    let data =
+        DifferenceMapData::from_accumulators(normalized, parameters, Arc::new(accumulators))?;
     let layout = DifferenceMapLayout::new(data.dimensions())?;
     let canvas_bytes = layout
         .image
@@ -1233,7 +1303,8 @@ mod tests {
                     weighted_time_sum: vec![1_000, 500, 0].into_boxed_slice(),
                     first_change_offset: vec![1, 1, 0].into_boxed_slice(),
                     last_change_offset: vec![9, 1, 0].into_boxed_slice(),
-                },
+                }
+                .into(),
                 range_start: Timestamp::ZERO,
                 range_duration_ns: 10,
                 effective_separation_ns: 5,

@@ -1,4 +1,4 @@
-use std::marker::PhantomData;
+use std::{marker::PhantomData, sync::Arc};
 
 use crate::{
     ComparisonOutcome, ErrorCode, FrameComparison, MeasurementParameters, NormalizedSequence,
@@ -15,13 +15,13 @@ pub(crate) const TRACE_METADATA_BUDGET: usize = 64;
 /// Request-local adjacent-pair results. The comparison trace is the only
 /// replayable per-pair data; consumer cores are output-local working memory.
 #[derive(Debug)]
-pub(crate) struct PairAnalysisContext<'a> {
+pub struct PairAnalysisContext<'a> {
     normalized_identity: usize,
     _normalized: PhantomData<&'a ()>,
     measurement: MeasurementParameters,
     comparisons: Box<[FrameComparison]>,
-    difference: Option<DifferenceAccumulators>,
-    motion: Option<MotionAccumulatorCore>,
+    difference: Option<Arc<DifferenceAccumulators>>,
+    motion: Box<[Option<MotionAccumulatorCore>]>,
 }
 
 impl<'a> PairAnalysisContext<'a> {
@@ -55,25 +55,75 @@ impl<'a> PairAnalysisContext<'a> {
         Ok(())
     }
 
-    pub(crate) fn into_difference(self) -> Option<DifferenceAccumulators> {
+    pub(crate) fn into_difference(self) -> Option<Arc<DifferenceAccumulators>> {
         self.difference
     }
 
+    pub(crate) fn difference(&self) -> Option<&Arc<DifferenceAccumulators>> {
+        self.difference.as_ref()
+    }
+
     #[allow(dead_code)]
-    pub(crate) fn take_difference(&mut self) -> Option<DifferenceAccumulators> {
+    pub(crate) fn take_difference(&mut self) -> Option<Arc<DifferenceAccumulators>> {
         self.difference.take()
     }
 
     pub(crate) fn take_motion(&mut self, decay: MotionDecay) -> Option<MotionAccumulatorCore> {
-        if self
-            .motion
-            .as_ref()
-            .is_some_and(|core| core.decay() != decay)
-        {
-            return None;
-        }
-        self.motion.take()
+        self.motion.iter_mut().find_map(|core| {
+            (core.as_ref().is_some_and(|core| core.decay() == decay))
+                .then(|| core.take().expect("matching motion core is present"))
+        })
     }
+}
+
+/// Build one request-local pair context for the temporal artifact service.
+///
+/// `motion_parameters` may contain several display requests. One bounded core
+/// is allocated for each distinct decay curve; the cores are fed by the same
+/// deterministic adjacent-pair traversal.
+pub fn build_pair_analysis_context_for_consumers<'a, F>(
+    normalized: &'a NormalizedSequence<F>,
+    measurement: MeasurementParameters,
+    difference_limits: Option<DifferenceMapLimits>,
+    motion_parameters: &[MotionHistoryParameters],
+) -> Result<PairAnalysisContext<'a>> {
+    let motion_parameters = motion_parameters.iter().collect::<Vec<_>>();
+    build_pair_analysis_context_many(
+        normalized,
+        measurement,
+        difference_limits,
+        &motion_parameters,
+        || Ok(()),
+    )
+}
+
+/// Exact bounded working-memory estimate for one pair context.
+pub fn pair_analysis_memory_bytes(
+    pixel_count: usize,
+    pair_count: usize,
+    has_difference: bool,
+    distinct_motion_cores: usize,
+) -> Result<usize> {
+    let trace = pair_count
+        .checked_mul(std::mem::size_of::<FrameComparison>())
+        .and_then(|bytes| bytes.checked_add(TRACE_METADATA_BUDGET))
+        .ok_or_else(context_limit_error)?;
+    let difference = has_difference
+        .then_some(pixel_count.checked_mul(48).ok_or_else(context_limit_error))
+        .transpose()?
+        .unwrap_or(0);
+    let motion_pixel_bytes = pixel_count
+        .checked_mul(std::mem::size_of::<u16>())
+        .and_then(|bytes| bytes.checked_mul(2))
+        .and_then(|bytes| {
+            let mask = pixel_count.checked_add(7)?.checked_div(8)?;
+            bytes.checked_add(mask)
+        })
+        .ok_or_else(context_limit_error)?;
+    trace
+        .checked_add(difference)
+        .and_then(|bytes| bytes.checked_add(motion_pixel_bytes.checked_mul(distinct_motion_cores)?))
+        .ok_or_else(context_limit_error)
 }
 
 /// Build one deterministic row-major adjacent-pair traversal for the requested
@@ -84,18 +134,41 @@ pub(crate) fn build_pair_analysis_context<'a, F>(
     measurement: MeasurementParameters,
     difference_limits: Option<DifferenceMapLimits>,
     motion_parameters: Option<&MotionHistoryParameters>,
+    checkpoint: impl FnMut() -> Result<()>,
+) -> Result<PairAnalysisContext<'a>> {
+    let motion_parameters = motion_parameters.into_iter().collect::<Vec<_>>();
+    build_pair_analysis_context_many(
+        normalized,
+        measurement,
+        difference_limits,
+        &motion_parameters,
+        checkpoint,
+    )
+}
+
+fn build_pair_analysis_context_many<'a, F>(
+    normalized: &'a NormalizedSequence<F>,
+    measurement: MeasurementParameters,
+    difference_limits: Option<DifferenceMapLimits>,
+    motion_parameters: &[&MotionHistoryParameters],
     mut checkpoint: impl FnMut() -> Result<()>,
 ) -> Result<PairAnalysisContext<'a>> {
     let difference = difference_limits
-        .map(|limits| DifferenceAccumulators::empty(normalized, limits))
+        .map(|limits| DifferenceAccumulators::empty(normalized, limits).map(Arc::new))
         .transpose()?;
-    let motion = motion_parameters
-        .map(|parameters| MotionAccumulatorCore::empty(normalized, parameters))
-        .transpose()?;
+    let mut motion = Vec::new();
+    for parameters in motion_parameters {
+        if motion.iter().any(|core: &Option<MotionAccumulatorCore>| {
+            core.as_ref()
+                .is_some_and(|core| core.decay() == parameters.decay())
+        }) {
+            continue;
+        }
+        motion.push(Some(MotionAccumulatorCore::empty(normalized, parameters)?));
+    }
     let pair_count = normalized.frames().len().saturating_sub(1);
     let mut comparisons = Vec::with_capacity(pair_count);
     let mut difference = difference;
-    let mut motion = motion;
     let mut pair_index = 0;
 
     while pair_index < pair_count {
@@ -103,7 +176,7 @@ pub(crate) fn build_pair_analysis_context<'a, F>(
         if gap_count > 0 {
             checkpoint()?;
             let comparison = metadata_comparison(normalized, pair_index, gap_count)?;
-            if let Some(core) = motion.as_mut() {
+            for core in motion.iter_mut().filter_map(Option::as_mut) {
                 core.record_gap_pair()?;
             }
             comparisons.push(comparison);
@@ -116,7 +189,7 @@ pub(crate) fn build_pair_analysis_context<'a, F>(
             segment_end += 1;
         }
         let segment_pair_count = segment_end - pair_index;
-        if let Some(core) = motion.as_mut() {
+        for core in motion.iter_mut().filter_map(Option::as_mut) {
             core.begin_segment(segment_pair_count)?;
         }
         for current_pair in pair_index..segment_end {
@@ -127,14 +200,18 @@ pub(crate) fn build_pair_analysis_context<'a, F>(
                 normalized,
                 current_pair,
                 measurement,
-                motion.as_ref().map(|core| core.decay().weight_at(rank)),
+                motion
+                    .iter()
+                    .filter_map(Option::as_ref)
+                    .map(|core| core.decay().weight_at(rank))
+                    .collect::<Box<[_]>>(),
                 difference.as_mut(),
-                motion.as_mut(),
+                &mut motion,
                 &mut checkpoint,
             )?;
             comparisons.push(comparison);
         }
-        if let Some(core) = motion.as_mut() {
+        for core in motion.iter_mut().filter_map(Option::as_mut) {
             core.finish_segment();
         }
         pair_index = segment_end;
@@ -146,7 +223,7 @@ pub(crate) fn build_pair_analysis_context<'a, F>(
         measurement,
         comparisons: comparisons.into_boxed_slice(),
         difference,
-        motion,
+        motion: motion.into_boxed_slice(),
     })
 }
 
@@ -180,9 +257,9 @@ fn process_measured_pair<F>(
     normalized: &NormalizedSequence<F>,
     pair_index: usize,
     measurement: MeasurementParameters,
-    motion_weight: Option<u16>,
-    mut difference: Option<&mut DifferenceAccumulators>,
-    mut motion: Option<&mut MotionAccumulatorCore>,
+    motion_weights: Box<[u16]>,
+    mut difference: Option<&mut Arc<DifferenceAccumulators>>,
+    motion: &mut [Option<MotionAccumulatorCore>],
     checkpoint: &mut impl FnMut() -> Result<()>,
 ) -> Result<FrameComparison> {
     let earlier = &normalized.frames()[pair_index];
@@ -226,21 +303,29 @@ fn process_measured_pair<F>(
             .try_into()
             .expect("chunks_exact yields three-channel pixels");
         if let Some(core) = difference.as_mut() {
-            core.record_comparable(pixel)?;
+            Arc::get_mut(core)
+                .expect("difference core is unique while building")
+                .record_comparable(pixel)?;
         }
         let change = classify_pixel_change(before, after, measurement)?;
         aggregate.record(x, y, before, after, change)?;
         if let (Some(core), Some(offset)) = (difference.as_mut(), later_offset) {
             if change.changed {
-                core.record_change(pixel, offset, change.weighted_square)?;
+                Arc::get_mut(core)
+                    .expect("difference core is unique while building")
+                    .record_change(pixel, offset, change.weighted_square)?;
             }
         }
-        if let Some(core) = motion.as_mut() {
-            core.record_pixel(pixel, change.changed, motion_weight.unwrap_or(0))?;
+        for (core, weight) in motion
+            .iter_mut()
+            .filter_map(Option::as_mut)
+            .zip(&motion_weights)
+        {
+            core.record_pixel(pixel, change.changed, *weight)?;
         }
     }
 
-    if let Some(core) = motion.as_mut() {
+    for core in motion.iter_mut().filter_map(Option::as_mut) {
         core.record_measured_pair()?;
     }
     Ok(FrameComparison::from_parts(
@@ -465,7 +550,7 @@ mod tests {
                     let context_difference = context
                         .into_difference()
                         .expect("difference core requested");
-                    assert_eq!(context_difference, direct_difference);
+                    assert_eq!(&*context_difference, &direct_difference);
 
                     let direct_motion = crate::motion_history::build_motion_history_plan_direct(
                         &source,
