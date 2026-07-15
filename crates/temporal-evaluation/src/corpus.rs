@@ -149,6 +149,47 @@ pub struct CaseDefinition {
     /// The exact captured-viewport-pixel ROI consumed by localization scoring.
     pub affected_region: Rect,
     pub final_state_id: String,
+    /// Evaluator-owned truth withheld from condition packages and model-facing prompts.
+    pub ground_truth: GroundTruthDefinition,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GroundTruthDefinition {
+    pub temporary_state: crate::AnswerTruth,
+    pub state_order: Vec<crate::StateLabel>,
+    pub affected_region: Rect,
+    pub motion_behavior: crate::MotionBehavior,
+    pub judgment: crate::Judgment,
+}
+
+impl GroundTruthDefinition {
+    pub fn validate(&self) -> Result<()> {
+        if self.state_order.is_empty() || self.state_order.len() > 8 {
+            return Err(ContractError::new(
+                "ground truth state_order must contain between one and eight labels",
+            ));
+        }
+        let mut states = BTreeSet::new();
+        if self
+            .state_order
+            .iter()
+            .any(|state| *state == crate::StateLabel::Unknown || !states.insert(state))
+        {
+            return Err(ContractError::new(
+                "ground truth state_order labels must be unique and known",
+            ));
+        }
+        if self.temporary_state == crate::AnswerTruth::Uncertain
+            || self.motion_behavior == crate::MotionBehavior::Uncertain
+            || self.judgment == crate::Judgment::Uncertain
+        {
+            return Err(ContractError::new(
+                "ground truth cannot contain uncertain values",
+            ));
+        }
+        validate_rect(&self.affected_region, "ground truth affected_region")
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -351,6 +392,21 @@ impl BenchmarkDefinition {
     }
 }
 
+fn validate_rect(rect: &Rect, label: &str) -> Result<()> {
+    if rect.width == 0
+        || rect.height == 0
+        || rect.x > VIEWPORT_WIDTH
+        || rect.y > VIEWPORT_HEIGHT
+        || rect.width > VIEWPORT_WIDTH - rect.x
+        || rect.height > VIEWPORT_HEIGHT - rect.y
+    {
+        return Err(ContractError::new(format!(
+            "{label} must be a non-empty rectangle within the 800x450 viewport"
+        )));
+    }
+    Ok(())
+}
+
 fn validate_fixture(fixture: &FixtureIdentity) -> Result<()> {
     if fixture.name != FIXTURE_NAME || fixture.root_relative_path != FIXTURE_ROOT {
         return Err(ContractError::new(
@@ -391,15 +447,14 @@ fn validate_case(case: &CaseDefinition, durations: &[u16]) -> Result<()> {
             case.case_id
         )));
     }
-    if case.affected_region.width == 0
-        || case.affected_region.height == 0
-        || case.affected_region.x > VIEWPORT_WIDTH
-        || case.affected_region.y > VIEWPORT_HEIGHT
-        || case.affected_region.width > VIEWPORT_WIDTH - case.affected_region.x
-        || case.affected_region.height > VIEWPORT_HEIGHT - case.affected_region.y
-    {
+    validate_rect(
+        &case.affected_region,
+        &format!("{} affected_region", case.case_id),
+    )?;
+    case.ground_truth.validate()?;
+    if case.ground_truth.affected_region != case.affected_region {
         return Err(ContractError::new(format!(
-            "{} affected_region must be a non-empty rectangle within the 800x450 viewport",
+            "{} ground truth ROI must match the corrected case ROI",
             case.case_id
         )));
     }
@@ -583,6 +638,7 @@ fn case(
     defect_interval: Option<TimeInterval>,
     affected_region: Rect,
     final_state_id: &str,
+    ground_truth: GroundTruthDefinition,
 ) -> CaseDefinition {
     CaseDefinition {
         case_id: case_id.into(),
@@ -599,10 +655,28 @@ fn case(
         defect_interval,
         affected_region,
         final_state_id: final_state_id.into(),
+        ground_truth,
+    }
+}
+
+fn ground_truth(
+    temporary_state: crate::AnswerTruth,
+    state_order: &[crate::StateLabel],
+    affected_region: Rect,
+    motion_behavior: crate::MotionBehavior,
+    judgment: crate::Judgment,
+) -> GroundTruthDefinition {
+    GroundTruthDefinition {
+        temporary_state,
+        state_order: state_order.to_vec(),
+        affected_region,
+        motion_behavior,
+        judgment,
     }
 }
 
 fn expected_cases() -> Vec<CaseDefinition> {
+    use crate::{AnswerTruth, Judgment, MotionBehavior, StateLabel};
     use CaseFamily::{DomOpaqueMotion, Flicker, MovementReversal, StableControl, TransientLayout};
     use CaseIntent::{Defect, Intentional};
     use DurationMode::{DefectInterval, ObservationWindow, TransitionInterval};
@@ -657,6 +731,18 @@ fn expected_cases() -> Vec<CaseDefinition> {
                 height: 120,
             },
             "movement.stable",
+            ground_truth(
+                AnswerTruth::Yes,
+                &[StateLabel::Baseline, StateLabel::Changed, StateLabel::Final],
+                Rect {
+                    x: 49,
+                    y: 73,
+                    width: 480,
+                    height: 120,
+                },
+                MotionBehavior::Reversal,
+                Judgment::Defective,
+            ),
         ),
         case(
             "flicker/visibility",
@@ -694,6 +780,18 @@ fn expected_cases() -> Vec<CaseDefinition> {
                 height: 120,
             },
             "flicker.visibility.ready",
+            ground_truth(
+                AnswerTruth::Yes,
+                &[StateLabel::Baseline, StateLabel::Changed, StateLabel::Final],
+                Rect {
+                    x: 361,
+                    y: 73,
+                    width: 240,
+                    height: 120,
+                },
+                MotionBehavior::Flicker,
+                Judgment::Defective,
+            ),
         ),
         case(
             "flicker/color",
@@ -731,6 +829,18 @@ fn expected_cases() -> Vec<CaseDefinition> {
                 height: 120,
             },
             "flicker.color.neutral",
+            ground_truth(
+                AnswerTruth::Yes,
+                &[StateLabel::Baseline, StateLabel::Changed, StateLabel::Final],
+                Rect {
+                    x: 361,
+                    y: 73,
+                    width: 240,
+                    height: 120,
+                },
+                MotionBehavior::Flicker,
+                Judgment::Defective,
+            ),
         ),
         case(
             "flicker/text",
@@ -768,6 +878,18 @@ fn expected_cases() -> Vec<CaseDefinition> {
                 height: 120,
             },
             "flicker.text.ready",
+            ground_truth(
+                AnswerTruth::Yes,
+                &[StateLabel::Baseline, StateLabel::Changed, StateLabel::Final],
+                Rect {
+                    x: 361,
+                    y: 73,
+                    width: 240,
+                    height: 120,
+                },
+                MotionBehavior::Flicker,
+                Judgment::Defective,
+            ),
         ),
         case(
             "layout/width",
@@ -805,6 +927,18 @@ fn expected_cases() -> Vec<CaseDefinition> {
                 height: 160,
             },
             "layout.width.stable",
+            ground_truth(
+                AnswerTruth::Yes,
+                &[StateLabel::Baseline, StateLabel::Changed, StateLabel::Final],
+                Rect {
+                    x: 49,
+                    y: 241,
+                    width: 640,
+                    height: 160,
+                },
+                MotionBehavior::LayoutShift,
+                Judgment::Defective,
+            ),
         ),
         case(
             "layout/content-shift",
@@ -842,6 +976,18 @@ fn expected_cases() -> Vec<CaseDefinition> {
                 height: 202,
             },
             "layout.content_shift.stable",
+            ground_truth(
+                AnswerTruth::Yes,
+                &[StateLabel::Baseline, StateLabel::Changed, StateLabel::Final],
+                Rect {
+                    x: 49,
+                    y: 223,
+                    width: 640,
+                    height: 202,
+                },
+                MotionBehavior::LayoutShift,
+                Judgment::Defective,
+            ),
         ),
         case(
             "layout/scroll-position",
@@ -879,6 +1025,18 @@ fn expected_cases() -> Vec<CaseDefinition> {
                 height: 120,
             },
             "layout.scroll_position.top",
+            ground_truth(
+                AnswerTruth::Yes,
+                &[StateLabel::Baseline, StateLabel::Changed, StateLabel::Final],
+                Rect {
+                    x: 49,
+                    y: 241,
+                    width: 320,
+                    height: 120,
+                },
+                MotionBehavior::LayoutShift,
+                Judgment::Defective,
+            ),
         ),
         case(
             "dom-opaque/path-reversal",
@@ -928,6 +1086,18 @@ fn expected_cases() -> Vec<CaseDefinition> {
                 height: 160,
             },
             "dom_opaque.path.final",
+            ground_truth(
+                AnswerTruth::Yes,
+                &[StateLabel::Baseline, StateLabel::Changed, StateLabel::Final],
+                Rect {
+                    x: 401,
+                    y: 241,
+                    width: 320,
+                    height: 160,
+                },
+                MotionBehavior::Reversal,
+                Judgment::Defective,
+            ),
         ),
         case(
             "dom-opaque/teleport",
@@ -965,6 +1135,18 @@ fn expected_cases() -> Vec<CaseDefinition> {
                 height: 160,
             },
             "dom_opaque.teleport.final",
+            ground_truth(
+                AnswerTruth::Yes,
+                &[StateLabel::Baseline, StateLabel::Changed, StateLabel::Final],
+                Rect {
+                    x: 401,
+                    y: 241,
+                    width: 320,
+                    height: 160,
+                },
+                MotionBehavior::Teleport,
+                Judgment::Defective,
+            ),
         ),
         case(
             "dom-opaque/sprite",
@@ -1002,6 +1184,18 @@ fn expected_cases() -> Vec<CaseDefinition> {
                 height: 160,
             },
             "dom_opaque.sprite.final",
+            ground_truth(
+                AnswerTruth::Yes,
+                &[StateLabel::Baseline, StateLabel::Changed, StateLabel::Final],
+                Rect {
+                    x: 401,
+                    y: 241,
+                    width: 320,
+                    height: 160,
+                },
+                MotionBehavior::Flicker,
+                Judgment::Defective,
+            ),
         ),
         case(
             "stable/smooth-panel",
@@ -1033,6 +1227,18 @@ fn expected_cases() -> Vec<CaseDefinition> {
                 height: 120,
             },
             "stable.smooth_panel.final",
+            ground_truth(
+                AnswerTruth::No,
+                &[StateLabel::IntentionalMotion, StateLabel::Final],
+                Rect {
+                    x: 49,
+                    y: 73,
+                    width: 480,
+                    height: 120,
+                },
+                MotionBehavior::Monotonic,
+                Judgment::Intentional,
+            ),
         ),
         case(
             "stable/loading-indicator",
@@ -1064,6 +1270,18 @@ fn expected_cases() -> Vec<CaseDefinition> {
                 height: 120,
             },
             "stable.loading_indicator.final",
+            ground_truth(
+                AnswerTruth::No,
+                &[StateLabel::IntentionalMotion, StateLabel::Final],
+                Rect {
+                    x: 361,
+                    y: 73,
+                    width: 240,
+                    height: 120,
+                },
+                MotionBehavior::None,
+                Judgment::Intentional,
+            ),
         ),
         case(
             "stable/caret",
@@ -1082,6 +1300,18 @@ fn expected_cases() -> Vec<CaseDefinition> {
                 height: 32,
             },
             "stable.caret.ready",
+            ground_truth(
+                AnswerTruth::No,
+                &[StateLabel::IntentionalMotion],
+                Rect {
+                    x: 49,
+                    y: 381,
+                    width: 300,
+                    height: 32,
+                },
+                MotionBehavior::None,
+                Judgment::Intentional,
+            ),
         ),
     ]
 }

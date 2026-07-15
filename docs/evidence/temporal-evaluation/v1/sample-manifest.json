@@ -15,7 +15,7 @@
   },
   "benchmark_definition": {
     "git_revision": "0000000000000000000000000000000000000000",
-    "sha256": "sha256:6585cc1e23106a14994c1b8c7b19609ad621f681e2073a754c36b28a7b6537e2"
+    "sha256": "sha256:06d98f18e4e7df18849a5afda4e17f7bb29705d7b9fa57c295d37b06a876adad"
   },
   "benchmark_id": "temporal-advantage-corpus-v1",
   "browser": {
@@ -28,7 +28,7 @@
   },
   "failure": null,
   "fixture": {
-    "definition_sha256": "sha256:6585cc1e23106a14994c1b8c7b19609ad621f681e2073a754c36b28a7b6537e2",
+    "definition_sha256": "sha256:06d98f18e4e7df18849a5afda4e17f7bb29705d7b9fa57c295d37b06a876adad",
     "ordered_files": [
       {
         "path": "README.md",

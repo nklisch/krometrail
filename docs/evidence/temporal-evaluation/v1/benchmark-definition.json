@@ -22,6 +22,22 @@
       },
       "family": "movement_reversal",
       "final_state_id": "movement.stable",
+      "ground_truth": {
+        "affected_region": {
+          "height": 120,
+          "width": 480,
+          "x": 49,
+          "y": 73
+        },
+        "judgment": "defective",
+        "motion_behavior": "reversal",
+        "state_order": [
+          "baseline",
+          "changed",
+          "final"
+        ],
+        "temporary_state": "yes"
+      },
       "intent": "defect",
       "phases": [
         {
@@ -111,6 +127,22 @@
       },
       "family": "flicker",
       "final_state_id": "flicker.visibility.ready",
+      "ground_truth": {
+        "affected_region": {
+          "height": 120,
+          "width": 240,
+          "x": 361,
+          "y": 73
+        },
+        "judgment": "defective",
+        "motion_behavior": "flicker",
+        "state_order": [
+          "baseline",
+          "changed",
+          "final"
+        ],
+        "temporary_state": "yes"
+      },
       "intent": "defect",
       "phases": [
         {
@@ -176,6 +208,22 @@
       },
       "family": "flicker",
       "final_state_id": "flicker.color.neutral",
+      "ground_truth": {
+        "affected_region": {
+          "height": 120,
+          "width": 240,
+          "x": 361,
+          "y": 73
+        },
+        "judgment": "defective",
+        "motion_behavior": "flicker",
+        "state_order": [
+          "baseline",
+          "changed",
+          "final"
+        ],
+        "temporary_state": "yes"
+      },
       "intent": "defect",
       "phases": [
         {
@@ -241,6 +289,22 @@
       },
       "family": "flicker",
       "final_state_id": "flicker.text.ready",
+      "ground_truth": {
+        "affected_region": {
+          "height": 120,
+          "width": 240,
+          "x": 361,
+          "y": 73
+        },
+        "judgment": "defective",
+        "motion_behavior": "flicker",
+        "state_order": [
+          "baseline",
+          "changed",
+          "final"
+        ],
+        "temporary_state": "yes"
+      },
       "intent": "defect",
       "phases": [
         {
@@ -306,6 +370,22 @@
       },
       "family": "transient_layout",
       "final_state_id": "layout.width.stable",
+      "ground_truth": {
+        "affected_region": {
+          "height": 160,
+          "width": 640,
+          "x": 49,
+          "y": 241
+        },
+        "judgment": "defective",
+        "motion_behavior": "layout_shift",
+        "state_order": [
+          "baseline",
+          "changed",
+          "final"
+        ],
+        "temporary_state": "yes"
+      },
       "intent": "defect",
       "phases": [
         {
@@ -371,6 +451,22 @@
       },
       "family": "transient_layout",
       "final_state_id": "layout.content_shift.stable",
+      "ground_truth": {
+        "affected_region": {
+          "height": 202,
+          "width": 640,
+          "x": 49,
+          "y": 223
+        },
+        "judgment": "defective",
+        "motion_behavior": "layout_shift",
+        "state_order": [
+          "baseline",
+          "changed",
+          "final"
+        ],
+        "temporary_state": "yes"
+      },
       "intent": "defect",
       "phases": [
         {
@@ -436,6 +532,22 @@
       },
       "family": "transient_layout",
       "final_state_id": "layout.scroll_position.top",
+      "ground_truth": {
+        "affected_region": {
+          "height": 120,
+          "width": 320,
+          "x": 49,
+          "y": 241
+        },
+        "judgment": "defective",
+        "motion_behavior": "layout_shift",
+        "state_order": [
+          "baseline",
+          "changed",
+          "final"
+        ],
+        "temporary_state": "yes"
+      },
       "intent": "defect",
       "phases": [
         {
@@ -501,6 +613,22 @@
       },
       "family": "dom_opaque_motion",
       "final_state_id": "dom_opaque.path.final",
+      "ground_truth": {
+        "affected_region": {
+          "height": 160,
+          "width": 320,
+          "x": 401,
+          "y": 241
+        },
+        "judgment": "defective",
+        "motion_behavior": "reversal",
+        "state_order": [
+          "baseline",
+          "changed",
+          "final"
+        ],
+        "temporary_state": "yes"
+      },
       "intent": "defect",
       "phases": [
         {
@@ -590,6 +718,22 @@
       },
       "family": "dom_opaque_motion",
       "final_state_id": "dom_opaque.teleport.final",
+      "ground_truth": {
+        "affected_region": {
+          "height": 160,
+          "width": 320,
+          "x": 401,
+          "y": 241
+        },
+        "judgment": "defective",
+        "motion_behavior": "teleport",
+        "state_order": [
+          "baseline",
+          "changed",
+          "final"
+        ],
+        "temporary_state": "yes"
+      },
       "intent": "defect",
       "phases": [
         {
@@ -655,6 +799,22 @@
       },
       "family": "dom_opaque_motion",
       "final_state_id": "dom_opaque.sprite.final",
+      "ground_truth": {
+        "affected_region": {
+          "height": 160,
+          "width": 320,
+          "x": 401,
+          "y": 241
+        },
+        "judgment": "defective",
+        "motion_behavior": "flicker",
+        "state_order": [
+          "baseline",
+          "changed",
+          "final"
+        ],
+        "temporary_state": "yes"
+      },
       "intent": "defect",
       "phases": [
         {
@@ -711,6 +871,21 @@
       "defect_interval": null,
       "family": "stable_control",
       "final_state_id": "stable.smooth_panel.final",
+      "ground_truth": {
+        "affected_region": {
+          "height": 120,
+          "width": 480,
+          "x": 49,
+          "y": 73
+        },
+        "judgment": "intentional",
+        "motion_behavior": "monotonic",
+        "state_order": [
+          "intentional_motion",
+          "final"
+        ],
+        "temporary_state": "no"
+      },
       "intent": "intentional",
       "phases": [
         {
@@ -755,6 +930,21 @@
       "defect_interval": null,
       "family": "stable_control",
       "final_state_id": "stable.loading_indicator.final",
+      "ground_truth": {
+        "affected_region": {
+          "height": 120,
+          "width": 240,
+          "x": 361,
+          "y": 73
+        },
+        "judgment": "intentional",
+        "motion_behavior": "none",
+        "state_order": [
+          "intentional_motion",
+          "final"
+        ],
+        "temporary_state": "no"
+      },
       "intent": "intentional",
       "phases": [
         {
@@ -799,6 +989,20 @@
       "defect_interval": null,
       "family": "stable_control",
       "final_state_id": "stable.caret.ready",
+      "ground_truth": {
+        "affected_region": {
+          "height": 32,
+          "width": 300,
+          "x": 49,
+          "y": 381
+        },
+        "judgment": "intentional",
+        "motion_behavior": "none",
+        "state_order": [
+          "intentional_motion"
+        ],
+        "temporary_state": "no"
+      },
       "intent": "intentional",
       "phases": [
         {

@@ -89,6 +89,14 @@
         "debugging"
       ]
     },
+    "AnswerTruth": {
+      "type": "string",
+      "enum": [
+        "yes",
+        "no",
+        "uncertain"
+      ]
+    },
     "ArtifactContract": {
       "type": "object",
       "properties": {
@@ -151,6 +159,10 @@
         "final_state_id": {
           "type": "string"
         },
+        "ground_truth": {
+          "description": "Evaluator-owned truth withheld from condition packages and model-facing prompts.",
+          "$ref": "#/$defs/GroundTruthDefinition"
+        },
         "intent": {
           "$ref": "#/$defs/CaseIntent"
         },
@@ -177,7 +189,8 @@
         "timing",
         "phases",
         "affected_region",
-        "final_state_id"
+        "final_state_id",
+        "ground_truth"
       ]
     },
     "CaseFamily": {
@@ -331,6 +344,37 @@
         "files"
       ]
     },
+    "GroundTruthDefinition": {
+      "type": "object",
+      "properties": {
+        "affected_region": {
+          "$ref": "#/$defs/Rect"
+        },
+        "judgment": {
+          "$ref": "#/$defs/Judgment"
+        },
+        "motion_behavior": {
+          "$ref": "#/$defs/MotionBehavior"
+        },
+        "state_order": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/StateLabel"
+          }
+        },
+        "temporary_state": {
+          "$ref": "#/$defs/AnswerTruth"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "temporary_state",
+        "state_order",
+        "affected_region",
+        "motion_behavior",
+        "judgment"
+      ]
+    },
     "InputIdentities": {
       "type": "object",
       "properties": {
@@ -353,6 +397,14 @@
         "conditions_sha256",
         "prompts_sha256",
         "scoring_sha256"
+      ]
+    },
+    "Judgment": {
+      "type": "string",
+      "enum": [
+        "defective",
+        "intentional",
+        "uncertain"
       ]
     },
     "MatrixDefinition": {
@@ -418,6 +470,18 @@
       "enum": [
         "family_case_duration_repetition",
         "seeded_fisher_yates"
+      ]
+    },
+    "MotionBehavior": {
+      "type": "string",
+      "enum": [
+        "monotonic",
+        "reversal",
+        "teleport",
+        "flicker",
+        "layout_shift",
+        "none",
+        "uncertain"
       ]
     },
     "PhaseBoundary": {
@@ -693,6 +757,16 @@
       "type": "string",
       "enum": [
         "same_captured_source_interval"
+      ]
+    },
+    "StateLabel": {
+      "type": "string",
+      "enum": [
+        "baseline",
+        "changed",
+        "final",
+        "intentional_motion",
+        "unknown"
       ]
     },
     "StatusRules": {

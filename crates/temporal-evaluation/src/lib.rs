@@ -13,6 +13,7 @@ mod matrix;
 mod packaging;
 mod privacy;
 mod prompts;
+mod scoring;
 mod vocabulary;
 
 pub use canonical::{canonical_json, sha256_prefixed};
@@ -23,8 +24,8 @@ pub use conditions::{
 pub use corpus::{
     BENCHMARK_ID, BENCHMARK_SCHEMA_VERSION, BenchmarkDefinition, CaseDefinition, CaseFamily,
     CaseIntent, DEVICE_SCALE_FACTOR_MILLI, DURATIONS_MS, DurationMode, FIXTURE_NAME, FIXTURE_ROOT,
-    FixtureFile, FixtureIdentity, InputIdentities, PhaseBoundary, PhaseDefinition, Rect,
-    TimeInterval, TimingDefinition, VIEWPORT_HEIGHT, VIEWPORT_WIDTH,
+    FixtureFile, FixtureIdentity, GroundTruthDefinition, InputIdentities, PhaseBoundary,
+    PhaseDefinition, Rect, TimeInterval, TimingDefinition, VIEWPORT_HEIGHT, VIEWPORT_WIDTH,
 };
 pub use error::{ContractError, Result};
 pub use interval::{GapEvidence, ScopeIdentity, SourceFrameEvidence, SourceInterval, TimeRangeNs};
@@ -52,6 +53,10 @@ pub use prompts::{
     InterpretationAnswer, Judgment, MotionBehavior, PromptId, PromptSet, PromptTemplate,
     StateLabel, UncertaintyReason, parse_interpretation_answer, validate_debugging_answer,
     validate_interpretation_answer,
+};
+pub use scoring::{
+    DimensionOutcome, DimensionScore, MAX_RAW_ANSWER_BYTES, SCORER_VERSION, ScoreInput, TrialScore,
+    score_interpretation,
 };
 pub use vocabulary::{ScoringDimension, ScoringDimensionId, ScoringVocabulary};
 

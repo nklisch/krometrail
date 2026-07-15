@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -50,7 +52,9 @@ pub enum AnswerTruth {
     Uncertain,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum StateLabel {
     Baseline,
@@ -95,7 +99,7 @@ pub enum UncertaintyReason {
 /// screenshot at device scale one. They are not stage-relative offsets or canvas-local drawing
 /// coordinates.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AnswerRegion {
     Unknown,
     Rect {
@@ -252,8 +256,22 @@ pub fn validate_interpretation_answer(
             "state_order must contain between one and eight labels",
         ));
     }
+    let mut states = HashSet::new();
+    if answer.state_order.iter().any(|state| !states.insert(state)) {
+        return Err(ContractError::new(
+            "state_order labels must be unique and ordered observations",
+        ));
+    }
     if answer.uncertainty_reasons.len() > MAX_STATE_LABELS {
         return Err(ContractError::new("too many uncertainty reasons"));
+    }
+    let mut reasons = HashSet::new();
+    if answer
+        .uncertainty_reasons
+        .iter()
+        .any(|reason| !reasons.insert(reason))
+    {
+        return Err(ContractError::new("uncertainty reasons must be unique"));
     }
     validate_evidence_refs(&answer.evidence_refs)?;
     if context.unresolved_capture_gap || context.missing_source {
@@ -339,7 +357,13 @@ fn validate_evidence_refs(refs: &[String]) -> Result<()> {
     if refs.len() > MAX_EVIDENCE_REFS {
         return Err(ContractError::new("too many evidence references"));
     }
+    let mut unique = HashSet::new();
     for reference in refs {
+        if !unique.insert(reference) {
+            return Err(ContractError::new(
+                "evidence references must be unique and ordered",
+            ));
+        }
         if reference.is_empty()
             || reference.chars().count() > 128
             || reference

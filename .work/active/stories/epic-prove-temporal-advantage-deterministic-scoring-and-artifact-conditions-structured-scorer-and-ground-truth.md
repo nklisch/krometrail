@@ -1,7 +1,7 @@
 ---
 id: epic-prove-temporal-advantage-deterministic-scoring-and-artifact-conditions-structured-scorer-and-ground-truth
 kind: story
-stage: implementing
+stage: done
 tags: [testing, visual]
 parent: epic-prove-temporal-advantage-deterministic-scoring-and-artifact-conditions
 depends_on:
@@ -70,6 +70,28 @@ result. Stable-control false positives and uncertainty calibration remain separa
 - [ ] Dimension outcomes distinguish correct, incorrect, inconclusive, and not-applicable; gaps and retention loss cannot become negative visual evidence.
 - [ ] Every accepted claim maps to retained source/artifact evidence, with source interval, gap, retention, manifest/output, algorithm/version, and cache identities still available to the later result record.
 - [ ] Repeated scoring of identical package/truth/answer bytes is byte-stable and never calls Chrome, the network, a model, or a visual algorithm.
+
+## Implementation evidence
+
+- Added `scoring.rs` with `SCORER_VERSION`, the 16 KiB pre-parse raw-answer bound, exact raw-byte
+  SHA-256 identity, opaque sidecar validation, strict structured-answer parsing, retained evidence
+  citation checks, deterministic six-dimension outcomes, accepted claims, integer points/denominator,
+  status, and failure/recovery records.
+- Added explicit evaluator-owned truth for all 13 cases. Defect truth is authored as
+  baseline/changed/final with the corrected fixed viewport-pixel ROI; stable controls use their
+  intentional-motion ordering and intentional judgment. Ground truth is validated in the corpus
+  and is not included in condition packages or prompts.
+- Scoring treats missing historical presentation as incorrect, but capture gaps, retention loss,
+  corrupt/unavailable evidence, and gap-crossing certainty as inconclusive or boundary errors;
+  stable-control false positives remain a separate dimension. ROI comparison is exact integer
+  equality in the corrected 800x450 half-open viewport-pixel space.
+- Regenerated `benchmark-definition.json`, `benchmark-definition.schema.json`, and
+  `sample-manifest.json`, and updated their committed digest assertions. Added canonical truth,
+  parser-boundary, citation, gap, stable-control, deterministic-byte, and scorer contract tests.
+- Verification passed with Rust 1.85: `cargo fmt --all -- --check`, locked workspace check/test
+  (`683 passed, 1 ignored`), and locked workspace clippy with `-D warnings`.
+- Scope intentionally stops at one-trial scoring. Threshold aggregation, result records, CI
+  qualification, browser/network/model calls, and visual algorithms remain unimplemented.
 
 ## Ordering
 

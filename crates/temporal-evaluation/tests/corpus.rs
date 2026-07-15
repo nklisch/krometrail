@@ -130,6 +130,194 @@ fn canonical_case_registry_has_exact_phase_duration_and_final_state_contracts() 
 }
 
 #[test]
+fn every_case_has_explicit_evaluator_owned_truth_in_corrected_roi_space() {
+    let definition = definition();
+    let expected = [
+        (
+            "movement-reversal/basic",
+            AnswerTruth::Yes,
+            vec![StateLabel::Baseline, StateLabel::Changed, StateLabel::Final],
+            MotionBehavior::Reversal,
+            Judgment::Defective,
+            Rect {
+                x: 49,
+                y: 73,
+                width: 480,
+                height: 120,
+            },
+        ),
+        (
+            "flicker/visibility",
+            AnswerTruth::Yes,
+            vec![StateLabel::Baseline, StateLabel::Changed, StateLabel::Final],
+            MotionBehavior::Flicker,
+            Judgment::Defective,
+            Rect {
+                x: 361,
+                y: 73,
+                width: 240,
+                height: 120,
+            },
+        ),
+        (
+            "flicker/color",
+            AnswerTruth::Yes,
+            vec![StateLabel::Baseline, StateLabel::Changed, StateLabel::Final],
+            MotionBehavior::Flicker,
+            Judgment::Defective,
+            Rect {
+                x: 361,
+                y: 73,
+                width: 240,
+                height: 120,
+            },
+        ),
+        (
+            "flicker/text",
+            AnswerTruth::Yes,
+            vec![StateLabel::Baseline, StateLabel::Changed, StateLabel::Final],
+            MotionBehavior::Flicker,
+            Judgment::Defective,
+            Rect {
+                x: 361,
+                y: 73,
+                width: 240,
+                height: 120,
+            },
+        ),
+        (
+            "layout/width",
+            AnswerTruth::Yes,
+            vec![StateLabel::Baseline, StateLabel::Changed, StateLabel::Final],
+            MotionBehavior::LayoutShift,
+            Judgment::Defective,
+            Rect {
+                x: 49,
+                y: 241,
+                width: 640,
+                height: 160,
+            },
+        ),
+        (
+            "layout/content-shift",
+            AnswerTruth::Yes,
+            vec![StateLabel::Baseline, StateLabel::Changed, StateLabel::Final],
+            MotionBehavior::LayoutShift,
+            Judgment::Defective,
+            Rect {
+                x: 49,
+                y: 223,
+                width: 640,
+                height: 202,
+            },
+        ),
+        (
+            "layout/scroll-position",
+            AnswerTruth::Yes,
+            vec![StateLabel::Baseline, StateLabel::Changed, StateLabel::Final],
+            MotionBehavior::LayoutShift,
+            Judgment::Defective,
+            Rect {
+                x: 49,
+                y: 241,
+                width: 320,
+                height: 120,
+            },
+        ),
+        (
+            "dom-opaque/path-reversal",
+            AnswerTruth::Yes,
+            vec![StateLabel::Baseline, StateLabel::Changed, StateLabel::Final],
+            MotionBehavior::Reversal,
+            Judgment::Defective,
+            Rect {
+                x: 401,
+                y: 241,
+                width: 320,
+                height: 160,
+            },
+        ),
+        (
+            "dom-opaque/teleport",
+            AnswerTruth::Yes,
+            vec![StateLabel::Baseline, StateLabel::Changed, StateLabel::Final],
+            MotionBehavior::Teleport,
+            Judgment::Defective,
+            Rect {
+                x: 401,
+                y: 241,
+                width: 320,
+                height: 160,
+            },
+        ),
+        (
+            "dom-opaque/sprite",
+            AnswerTruth::Yes,
+            vec![StateLabel::Baseline, StateLabel::Changed, StateLabel::Final],
+            MotionBehavior::Flicker,
+            Judgment::Defective,
+            Rect {
+                x: 401,
+                y: 241,
+                width: 320,
+                height: 160,
+            },
+        ),
+        (
+            "stable/smooth-panel",
+            AnswerTruth::No,
+            vec![StateLabel::IntentionalMotion, StateLabel::Final],
+            MotionBehavior::Monotonic,
+            Judgment::Intentional,
+            Rect {
+                x: 49,
+                y: 73,
+                width: 480,
+                height: 120,
+            },
+        ),
+        (
+            "stable/loading-indicator",
+            AnswerTruth::No,
+            vec![StateLabel::IntentionalMotion, StateLabel::Final],
+            MotionBehavior::None,
+            Judgment::Intentional,
+            Rect {
+                x: 361,
+                y: 73,
+                width: 240,
+                height: 120,
+            },
+        ),
+        (
+            "stable/caret",
+            AnswerTruth::No,
+            vec![StateLabel::IntentionalMotion],
+            MotionBehavior::None,
+            Judgment::Intentional,
+            Rect {
+                x: 49,
+                y: 381,
+                width: 300,
+                height: 32,
+            },
+        ),
+    ];
+    assert_eq!(definition.cases.len(), expected.len());
+    for (case, (case_id, temporary_state, state_order, motion_behavior, judgment, region)) in
+        definition.cases.iter().zip(expected)
+    {
+        assert_eq!(case.case_id, case_id);
+        assert_eq!(case.ground_truth.temporary_state, temporary_state);
+        assert_eq!(case.ground_truth.state_order, state_order);
+        assert_eq!(case.ground_truth.motion_behavior, motion_behavior);
+        assert_eq!(case.ground_truth.judgment, judgment);
+        assert_eq!(case.ground_truth.affected_region, region);
+        assert_eq!(case.ground_truth.affected_region, case.affected_region);
+    }
+}
+
+#[test]
 fn deterministic_capture_and_interpretation_matrices_are_platform_independent() {
     let definition = definition();
     let capture = definition
