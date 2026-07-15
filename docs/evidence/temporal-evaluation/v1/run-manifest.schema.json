@@ -313,10 +313,12 @@
       ]
     },
     "CacheDisposition": {
+      "description": "Aggregate cache state for a qualification measurement.\n\nThis is derived from the exact disposition of every returned artifact, not from whether a\nrequest was the first or a repeated invocation. `Cold` includes cache-miss regeneration after\ninvalidation; the per-artifact record retains that more specific disposition.",
       "type": "string",
       "enum": [
         "cold",
         "warm",
+        "mixed",
         "unavailable"
       ]
     },

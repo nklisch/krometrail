@@ -132,17 +132,17 @@ pub async fn measure_latency(
     // Use the existing policy helper. Excluding the optional orientation makes this a direct
     // storyboard/difference-map pair while retaining the product's generator and cache identity.
     let direct_request = default_artifact_request(resolved_range, &[], OrientationPolicy::Omit)?;
-    let cold_started = Instant::now();
-    let direct_cold = runtime
+    let uncached_started = Instant::now();
+    let direct_uncached = runtime
         .dependencies
         .artifact_generation
         .generate(direct_request.clone(), ArtifactGenerationContext::default())
         .await?;
-    let cold_elapsed_ms = cold_started.elapsed().as_millis() as u64;
-    let cold_identities = artifact_identities(
+    let uncached_elapsed_ms = uncached_started.elapsed().as_millis() as u64;
+    let uncached_identities = artifact_identities(
         runtime,
         LatencyOperation::Storyboard,
-        &direct_cold,
+        &direct_uncached,
         resolved_range,
     )
     .await?;
@@ -169,8 +169,8 @@ pub async fn measure_latency(
         range: resolved_range.resolved_range,
     })?;
     let bundle_request = TemporalDebugBundleRequest::default_policy(bundle_query)?;
-    let bundle_cold_started = Instant::now();
-    let bundle_cold = runtime
+    let first_bundle_started = Instant::now();
+    let first_bundle = runtime
         .dependencies
         .temporal_debug_bundles
         .bundle(
@@ -178,57 +178,59 @@ pub async fn measure_latency(
             TemporalDebugBundleContext::default(),
         )
         .await?;
-    let bundle_cold_elapsed_ms = bundle_cold_started.elapsed().as_millis() as u64;
-    validate_bundle_range(&bundle_cold, resolved_range)?;
-    let bundle_cold_identities = bundle_identities(runtime, &bundle_cold, resolved_range).await?;
-    let bundle_warm_started = Instant::now();
-    let bundle_warm = runtime
+    let first_bundle_elapsed_ms = first_bundle_started.elapsed().as_millis() as u64;
+    validate_bundle_range(&first_bundle, resolved_range)?;
+    let first_bundle_identities = bundle_identities(runtime, &first_bundle, resolved_range).await?;
+    let second_bundle_started = Instant::now();
+    let second_bundle = runtime
         .dependencies
         .temporal_debug_bundles
         .bundle(bundle_request, TemporalDebugBundleContext::default())
         .await?;
-    let bundle_warm_elapsed_ms = bundle_warm_started.elapsed().as_millis() as u64;
-    validate_bundle_range(&bundle_warm, resolved_range)?;
-    let bundle_warm_identities = bundle_identities(runtime, &bundle_warm, resolved_range).await?;
+    let second_bundle_elapsed_ms = second_bundle_started.elapsed().as_millis() as u64;
+    validate_bundle_range(&second_bundle, resolved_range)?;
+    let second_bundle_identities =
+        bundle_identities(runtime, &second_bundle, resolved_range).await?;
 
-    let direct_complete = direct_cold.outcomes.len() == 2
+    let uncached_cache = aggregate_cache_disposition(&uncached_identities);
+    let warm_artifact_cache = aggregate_cache_disposition(&warm_identities);
+    let direct_complete = direct_uncached.outcomes.len() == 2
         && direct_warm.outcomes.len() == 2
-        && cold_identities.len() == 2
+        && uncached_identities.len() == 2
         && warm_identities.len() == 2
-        && cold_identities
+        && uncached_cache == CacheDisposition::Cold
+        && warm_artifact_cache == CacheDisposition::Warm
+        && uncached_identities
             .iter()
             .all(|item| item.cache == ArtifactCacheDisposition::Generated)
         && warm_identities
             .iter()
             .all(|item| item.cache == ArtifactCacheDisposition::Hit)
-        && same_identity_set(&cold_identities, &warm_identities);
+        && same_identity_set(&uncached_identities, &warm_identities);
     // The production default bundle also persists its orientation composite. The direct artifact
     // measurement remains the exact two-generator storyboard/difference-map path; bundle timing
     // accounts for every authority-returned output instead of dropping that third identity.
-    // The direct generation above intentionally warms the shared storyboard and difference-map
-    // entries before the bundle call. The bundle's first invocation is therefore cold at the
-    // orchestration boundary, while its constituent artifact dispositions are authority-owned
-    // (the orientation composite is generated and the other two may already be hits). Requiring
-    // every constituent to be `Generated` would contradict the shared production cache rather
-    // than prove a missing artifact. The direct pair already proves cold generation followed by a
-    // warm hit for both required artifact kinds.
-    let bundle_complete = bundle_cold_identities.len() == 3
-        && bundle_warm_identities.len() == 3
-        && bundle_cold_identities.iter().all(|item| {
+    // The direct request above warms the shared storyboard and difference-map entries before the
+    // first bundle call. Its exact artifact dispositions are therefore mixed: the shared
+    // difference map is a hit while bundle-specific outputs are generated. The direct pair still
+    // proves the decisive uncached generation and all-hit repeat independently.
+    let first_bundle_cache = aggregate_cache_disposition(&first_bundle_identities);
+    let second_bundle_cache = aggregate_cache_disposition(&second_bundle_identities);
+    let bundle_complete = first_bundle_identities.len() == 3
+        && second_bundle_identities.len() == 3
+        && first_bundle_identities.iter().all(|item| {
             matches!(
                 item.cache,
                 ArtifactCacheDisposition::Generated | ArtifactCacheDisposition::Hit
             )
         })
-        && bundle_warm_identities
+        && second_bundle_identities
             .iter()
             .all(|item| item.cache == ArtifactCacheDisposition::Hit)
-        && bundle_cold_identities
-            .iter()
-            .any(|item| item.cache == ArtifactCacheDisposition::Generated)
-        && same_identity_set(&bundle_cold_identities, &bundle_warm_identities);
-    let cached_bundle_ok = bundle_warm_elapsed_ms < CACHED_TEMPORAL_BUNDLE_THRESHOLD_MS;
-    let uncached_artifact_ok = cold_elapsed_ms < UNCACHED_ARTIFACT_THRESHOLD_MS;
+        && second_bundle_cache == CacheDisposition::Warm
+        && same_identity_set(&first_bundle_identities, &second_bundle_identities);
+    let cached_bundle_ok = second_bundle_elapsed_ms < CACHED_TEMPORAL_BUNDLE_THRESHOLD_MS;
+    let uncached_artifact_ok = uncached_elapsed_ms < UNCACHED_ARTIFACT_THRESHOLD_MS;
     let complete = direct_complete && bundle_complete && cached_bundle_ok && uncached_artifact_ok;
     let status = if complete {
         EvaluationStatus::Pass
@@ -237,13 +239,8 @@ pub async fn measure_latency(
     } else {
         EvaluationStatus::Inconclusive
     };
-    let warm_cache = if direct_warm
-        .outcomes
-        .iter()
-        .all(|outcome| matches!(outcome, ArtifactOutcome::Available { artifact, .. } if artifact.cache == ArtifactCacheDisposition::Hit))
-        && bundle_warm_identities
-            .iter()
-            .all(|item| item.cache == ArtifactCacheDisposition::Hit)
+    let warm_bundle_cache = if warm_artifact_cache == CacheDisposition::Warm
+        && second_bundle_cache == CacheDisposition::Warm
     {
         CacheDisposition::Warm
     } else {
@@ -254,9 +251,9 @@ pub async fn measure_latency(
         viewport: profile.viewport,
         frame_width: profile.viewport.width,
         frame_height: profile.viewport.height,
-        warm_cache,
-        temporal_query_elapsed_ms: vec![bundle_cold_elapsed_ms, bundle_warm_elapsed_ms],
-        artifact_elapsed_ms: vec![cold_elapsed_ms, warm_elapsed_ms],
+        warm_cache: warm_bundle_cache,
+        temporal_query_elapsed_ms: vec![first_bundle_elapsed_ms, second_bundle_elapsed_ms],
+        artifact_elapsed_ms: vec![uncached_elapsed_ms, warm_elapsed_ms],
         sample_count: 4,
         threshold_profile_ids: vec![
             "evaluation-cached-temporal-bundle-below-1s".into(),
@@ -287,28 +284,31 @@ pub async fn measure_latency(
         samples: vec![
             LatencySample {
                 operation: LatencyOperation::Storyboard,
-                cache: CacheDisposition::Cold,
-                elapsed_ms: cold_elapsed_ms,
-                identities: identities_for_operation(&cold_identities, LatencyOperation::Storyboard),
+                cache: uncached_cache,
+                elapsed_ms: uncached_elapsed_ms,
+                identities: identities_for_operation(
+                    &uncached_identities,
+                    LatencyOperation::Storyboard,
+                ),
             },
             LatencySample {
                 operation: LatencyOperation::DifferenceMap,
-                cache: CacheDisposition::Cold,
-                elapsed_ms: cold_elapsed_ms,
+                cache: uncached_cache,
+                elapsed_ms: uncached_elapsed_ms,
                 identities: identities_for_operation(
-                    &cold_identities,
+                    &uncached_identities,
                     LatencyOperation::DifferenceMap,
                 ),
             },
             LatencySample {
                 operation: LatencyOperation::Storyboard,
-                cache: CacheDisposition::Warm,
+                cache: warm_artifact_cache,
                 elapsed_ms: warm_elapsed_ms,
                 identities: identities_for_operation(&warm_identities, LatencyOperation::Storyboard),
             },
             LatencySample {
                 operation: LatencyOperation::DifferenceMap,
-                cache: CacheDisposition::Warm,
+                cache: warm_artifact_cache,
                 elapsed_ms: warm_elapsed_ms,
                 identities: identities_for_operation(
                     &warm_identities,
@@ -317,15 +317,15 @@ pub async fn measure_latency(
             },
             LatencySample {
                 operation: LatencyOperation::TemporalBundle,
-                cache: CacheDisposition::Cold,
-                elapsed_ms: bundle_cold_elapsed_ms,
-                identities: bundle_cold_identities,
+                cache: first_bundle_cache,
+                elapsed_ms: first_bundle_elapsed_ms,
+                identities: first_bundle_identities,
             },
             LatencySample {
                 operation: LatencyOperation::TemporalBundle,
-                cache: CacheDisposition::Warm,
-                elapsed_ms: bundle_warm_elapsed_ms,
-                identities: bundle_warm_identities,
+                cache: second_bundle_cache,
+                elapsed_ms: second_bundle_elapsed_ms,
+                identities: second_bundle_identities,
             },
         ],
         measurements,
@@ -524,6 +524,35 @@ fn identities_for_operation(
         .collect()
 }
 
+/// Classify an aggregate from the exact cache dispositions returned for its artifacts.
+///
+/// A cache-miss regeneration is generation for this aggregate, while the identity still exposes
+/// whether it was a first generation or a regeneration after invalidation. An empty set is not a
+/// cache state at all and remains unavailable.
+fn aggregate_cache_disposition(identities: &[ArtifactIdentityObservation]) -> CacheDisposition {
+    classify_cache_dispositions(identities.iter().map(|identity| identity.cache))
+}
+
+fn classify_cache_dispositions(
+    dispositions: impl IntoIterator<Item = ArtifactCacheDisposition>,
+) -> CacheDisposition {
+    let mut has_hit = false;
+    let mut has_generation = false;
+    for disposition in dispositions {
+        match disposition {
+            ArtifactCacheDisposition::Hit => has_hit = true,
+            ArtifactCacheDisposition::Generated
+            | ArtifactCacheDisposition::RegeneratedAfterInvalidation => has_generation = true,
+        }
+    }
+    match (has_generation, has_hit) {
+        (false, false) => CacheDisposition::Unavailable,
+        (true, false) => CacheDisposition::Cold,
+        (false, true) => CacheDisposition::Warm,
+        (true, true) => CacheDisposition::Mixed,
+    }
+}
+
 fn same_identity_set(
     left: &[ArtifactIdentityObservation],
     right: &[ArtifactIdentityObservation],
@@ -572,8 +601,63 @@ mod tests {
         assert_eq!(UNCACHED_ARTIFACT_THRESHOLD_MS, 5_000);
     }
 
+    #[test]
+    fn cache_classifier_reports_all_generated_as_cold() {
+        assert_eq!(
+            classify_cache_dispositions([
+                ArtifactCacheDisposition::Generated,
+                ArtifactCacheDisposition::Generated,
+            ]),
+            CacheDisposition::Cold
+        );
+        assert_eq!(
+            classify_cache_dispositions([
+                ArtifactCacheDisposition::Generated,
+                ArtifactCacheDisposition::RegeneratedAfterInvalidation,
+            ]),
+            CacheDisposition::Cold
+        );
+    }
+
+    #[test]
+    fn cache_classifier_reports_all_hits_as_warm() {
+        assert_eq!(
+            classify_cache_dispositions([
+                ArtifactCacheDisposition::Hit,
+                ArtifactCacheDisposition::Hit,
+            ]),
+            CacheDisposition::Warm
+        );
+    }
+
+    #[test]
+    fn cache_classifier_reports_generated_and_hit_as_mixed() {
+        assert_eq!(
+            classify_cache_dispositions([
+                ArtifactCacheDisposition::Generated,
+                ArtifactCacheDisposition::Hit,
+            ]),
+            CacheDisposition::Mixed
+        );
+        assert_eq!(
+            classify_cache_dispositions([
+                ArtifactCacheDisposition::RegeneratedAfterInvalidation,
+                ArtifactCacheDisposition::Hit,
+            ]),
+            CacheDisposition::Mixed
+        );
+    }
+
+    #[test]
+    fn cache_classifier_reports_empty_artifact_identity_as_unavailable() {
+        assert_eq!(
+            classify_cache_dispositions(std::iter::empty::<ArtifactCacheDisposition>()),
+            CacheDisposition::Unavailable
+        );
+    }
+
     #[tokio::test]
-    async fn concrete_store_accounts_cold_and_warm_authority_cache_dispositions() {
+    async fn concrete_store_accounts_uncached_and_warm_authority_cache_dispositions() {
         let root =
             std::env::temp_dir().join(format!("krometrail-latency-1080p-{}", Uuid::new_v4()));
         let config = super::super::LiveQualificationConfig {
@@ -689,7 +773,7 @@ mod tests {
                         }
                 })
         );
-        assert_eq!(result.samples[4].cache, CacheDisposition::Cold);
+        assert_eq!(result.samples[4].cache, CacheDisposition::Mixed);
         assert_eq!(result.samples[5].cache, CacheDisposition::Warm);
         assert!(
             result
@@ -722,18 +806,37 @@ mod tests {
                 .iter()
                 .all(|identity| identity.cache == ArtifactCacheDisposition::Hit)
         );
-        assert!(result.samples[4].identities.iter().any(|identity| {
-            identity.operation == LatencyOperation::TemporalBundle
-                && identity.cache == ArtifactCacheDisposition::Generated
-        }));
-        assert!(result.samples[4].identities.iter().all(|identity| {
-            match identity.operation {
-                LatencyOperation::DifferenceMap => identity.cache == ArtifactCacheDisposition::Hit,
-                LatencyOperation::Storyboard | LatencyOperation::TemporalBundle => {
-                    identity.cache == ArtifactCacheDisposition::Generated
-                }
-            }
-        }));
+        assert_eq!(result.samples[4].identities.len(), 3);
+        assert_eq!(
+            result.samples[4]
+                .identities
+                .iter()
+                .find(|identity| identity.operation == LatencyOperation::DifferenceMap)
+                .map(|identity| identity.cache),
+            Some(ArtifactCacheDisposition::Hit)
+        );
+        assert_eq!(
+            result.samples[4]
+                .identities
+                .iter()
+                .find(|identity| identity.operation == LatencyOperation::Storyboard)
+                .map(|identity| identity.cache),
+            Some(ArtifactCacheDisposition::Generated)
+        );
+        assert_eq!(
+            result.samples[4]
+                .identities
+                .iter()
+                .find(|identity| identity.operation == LatencyOperation::TemporalBundle)
+                .map(|identity| identity.cache),
+            Some(ArtifactCacheDisposition::Generated)
+        );
+        assert!(
+            result.samples[5]
+                .identities
+                .iter()
+                .all(|identity| identity.cache == ArtifactCacheDisposition::Hit)
+        );
         assert_ne!(result.status, EvaluationStatus::Inconclusive);
         assert_ne!(result.status, EvaluationStatus::Blocked);
         let _ = runtime.cleanup();

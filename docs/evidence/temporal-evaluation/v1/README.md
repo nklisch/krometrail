@@ -128,6 +128,17 @@ fake source/store records therefore prove contract and traceability behavior onl
 qualify browser capture, artifact usefulness, platforms, model interpretation, debugging, or the
 product thesis.
 
+### Aggregate artifact cache state
+
+Live latency samples retain each authority-returned `ArtifactCacheDisposition` on every artifact
+identity. Their aggregate `CacheDisposition` is computed from those exact identities: `cold`
+means every artifact was generated (including regeneration after invalidation), `warm` means every
+artifact was a cache hit, and `mixed` means the set contains both generation and hits. An empty or
+unavailable artifact set remains `unavailable`. Invocation order is not a cache-state signal: the
+first temporal-bundle call may be `mixed` when a direct artifact request has already warmed a
+shared key, while the decisive checks remain uncached direct artifact generation below 5 seconds
+and an all-hit warm bundle below 1 second.
+
 ## Ignored run output
 
 Per-run manifests, result records, source frames, generated artifacts, model answers/transcripts,

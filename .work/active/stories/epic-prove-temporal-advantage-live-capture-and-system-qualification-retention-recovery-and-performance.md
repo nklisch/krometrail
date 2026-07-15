@@ -62,9 +62,10 @@ identities. The harness never re-renders or hand-authors an artifact to satisfy 
       concrete bounded usage, pinning, eviction, repair, and reconciliation outcomes.
 - [x] Resource metrics identify process scope and preserve unavailable reasons; no fabricated zero,
       local host threshold, or private path is emitted.
-- [x] Cold/warm query and artifact measurements use one source interval, existing cache identities,
-      exact dimensions/range, and only the 1 s/5 s EVALUATION thresholds for a true two-second
-      1080p profile.
+- [x] Uncached/warm query and artifact measurements use one source interval, existing cache
+      identities, exact dimensions/range, and only the 1 s/5 s EVALUATION thresholds for a true
+      two-second 1080p profile; aggregate cache state is identity-derived and preserves mixed
+      generated/hit bundles.
 - [x] A failed, unavailable, corrupt, or incomplete service result produces fail/inconclusive/
       blocked status as appropriate and cannot be promoted to pass by cleanup or serialization.
 - [x] No model, paid service, remote endpoint, product CLI, second storage authority, or benchmark
@@ -91,13 +92,16 @@ the operator-facing manifest.
   a feature-gated store fault seam and verifies reopen repair, frame/gap reconciliation, usage, and
   cleanup; resource tests require explicit inconclusive/unavailable evidence rather than zeros; and
   latency tests keep the exact two-second 1920x1080 profile separate from 800x450 capture data while
-  asserting typed authority cache metadata, complete manifests, output dimensions, source IDs, and
-  exact cold/warm dispositions.
+  asserting typed authority cache metadata, complete manifests, output dimensions, source IDs, exact
+  uncached/warm dispositions, all-cold/all-warm/mixed classifier cases, and the first bundle's
+  identity-level mixed state.
 - Validation: retention uses the production `RecordingStore` ports and authority-returned interval;
   recovery reopens through `open_storage_with_budget` and keeps artifact paths private; resource
   metrics retain process scope and unavailable reasons; latency verifies authority cache identities,
-  cold generated/warm hit dispositions, source interval identity, output hashes/manifests, and only
-  the EVALUATION cached-bundle `<1 s` and uncached-artifact `<5 s` limits.
+  uncached generated/warm hit dispositions, source interval identity, output hashes/manifests, and
+  only the EVALUATION cached-bundle `<1 s` and uncached-artifact `<5 s` limits. Aggregate labels are
+  derived from exact artifact dispositions, so the first bundle is reported as `mixed`, not `cold`
+  merely because it is the first invocation.
 - Simplification: no benchmark store, renderer, cache, database/segment format, browser runtime,
   CLI, remote endpoint, model lane, host-speed threshold, or hand-formatted cache-key projection was
   added. Latency observations retain the production typed cache metadata and manifest directly;
@@ -110,16 +114,16 @@ the operator-facing manifest.
 
 ## Verification evidence
 
-- Root cause fixed: the direct storyboard/difference-map call intentionally warms the shared
+- Cache-state correction: the direct storyboard/difference-map call intentionally warms the shared
   production artifact cache before the bundle call. The bundle then adds its authority-returned
   marker/orientation parameters, so its first call legitimately reports generated storyboard and
-  orientation outputs but a hit for the shared difference map. Requiring every bundle output to be
-  `Generated` mislabeled that valid shared-cache identity accounting as `InsufficientEvidence` /
-  `Inconclusive`; no identity check or threshold was weakened.
-- Latency identity accounting now preserves authority-typed cache metadata, cache key, complete
+  orientation outputs but a hit for the shared difference map. `LatencySample.cache` now reports
+  `Mixed` from those exact per-artifact dispositions; `Cold` no longer means merely first call.
+  No identity check or decisive threshold was weakened.
+- Latency identity accounting preserves authority-typed cache metadata, cache key, complete
   manifest/output hash, artifact ID, source-frame IDs, and output dimensions, and verifies the
-  returned handle against the store authority. The regression proves direct cold generation/warm
-  hits, the bundle's mixed first-call dispositions, and all bundle warm hits for one exact
+  returned handle against the store authority. The regression proves direct uncached generation /
+  warm hits, the bundle's mixed first-call dispositions, and all bundle warm hits for one exact
   authority-returned 1920x1080 two-second range.
 - Final focused scenarios: latency 1 passed; retention pin/evict/pause/resume 1 passed; retention
   linked-cleanup 1 passed; recovery repair/reconciliation 1 passed; unavailable-resource handling

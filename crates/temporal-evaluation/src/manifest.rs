@@ -368,11 +368,17 @@ pub struct FailureRecord {
     pub retryable: bool,
 }
 
+/// Aggregate cache state for a qualification measurement.
+///
+/// This is derived from the exact disposition of every returned artifact, not from whether a
+/// request was the first or a repeated invocation. `Cold` includes cache-miss regeneration after
+/// invalidation; the per-artifact record retains that more specific disposition.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum CacheDisposition {
     Cold,
     Warm,
+    Mixed,
     Unavailable,
 }
 

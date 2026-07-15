@@ -8,7 +8,7 @@ depends_on: [epic-prove-temporal-advantage-benchmark-corpus-and-manifest-contrac
 release_binding: null
 gate_origin: null
 created: 2026-07-14
-updated: 2026-07-14
+updated: 2026-07-15
 ---
 
 # Live capture and system qualification
@@ -144,9 +144,10 @@ ordered IDs, no image payloads or private paths:
   repair, and artifact staging recovery from the existing recovery path;
 - `resources` records sample count, process RSS/CPU observations, browser-child accounting when
   available, and an explicit unavailable reason when the platform adapter cannot measure them;
-- `latency` records source interval identity, viewport/frame dimensions, warm/cold cache
-  disposition, temporal-query elapsed values, artifact elapsed values, sample counts, and
-  applicable evaluation threshold identities; and
+- `latency` records source interval identity, viewport/frame dimensions, aggregate cache
+  disposition derived from exact artifact identities (including mixed generated/hit output sets),
+  temporal-query elapsed values, artifact elapsed values, sample counts, and applicable evaluation
+  threshold identities; and
 - `cleanup` records only safe booleans/counts for server stop, profile deletion, store flush,
   lock release, output finalization, and zero remaining managed resources.
 
@@ -475,5 +476,11 @@ and later authorized model lanes.
   verification checkpoints and do not each require a separate review lane.
 - Design-only scope: no browser was launched, no live output was generated, and no product runtime
   or CLI behavior was changed in this stride.
+- Live latency correction: aggregate cache state is now derived from every authority-returned
+  `ArtifactCacheDisposition`; `Mixed` is distinct from all-generated `Cold`, all-hit `Warm`, and
+  `Unavailable`. The direct artifact pair remains the uncached `<5 s` target and the repeated
+  all-hit bundle remains the warm `<1 s` target. The first bundle is intentionally recorded as
+  mixed when the direct request has warmed its shared difference-map key; the final report story
+  was not started.
 - Adjacent decisions: the high-DPI gap remains owned by platform evidence; no backlog item was
   created because it is an explicit upstream contract/blocker rather than an incidental bug.
