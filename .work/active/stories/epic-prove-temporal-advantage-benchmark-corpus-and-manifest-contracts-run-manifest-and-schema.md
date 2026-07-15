@@ -1,7 +1,7 @@
 ---
 id: epic-prove-temporal-advantage-benchmark-corpus-and-manifest-contracts-run-manifest-and-schema
 kind: story
-stage: implementing
+stage: done
 tags: [testing, visual, browser, storage]
 parent: epic-prove-temporal-advantage-benchmark-corpus-and-manifest-contracts
 depends_on: [epic-prove-temporal-advantage-benchmark-corpus-and-manifest-contracts-vocabulary-and-prompts]
@@ -127,18 +127,35 @@ exist.
 
 ## Acceptance evidence
 
-- [ ] The crate builds without a dependency on Krometrail runtime crates or a browser/model
+- [x] The crate builds without a dependency on Krometrail runtime crates or a browser/model
       client and its generated schemas contain no hand-maintained duplicate type surface.
-- [ ] `benchmark-definition.schema.json` and `run-manifest.schema.json` under
+- [x] `benchmark-definition.schema.json` and `run-manifest.schema.json` under
       `docs/evidence/temporal-evaluation/v1/` exactly match schemas generated from the Rust
       types; `sample-manifest.json` round-trips byte-for-byte through canonical serialization.
-- [ ] Validation rejects unknown fields, duplicate IDs, unsorted semantic arrays, non-finite
+- [x] Validation rejects unknown fields, duplicate IDs, unsorted semantic arrays, non-finite
       numbers, contradictory counts/hashes, missing required identity for an observed browser or
       model, and a pass with a blocked/skipped/inconclusive required row.
-- [ ] Privacy tests reject absolute/private paths, endpoint forms, credentials, raw page text,
+- [x] Privacy tests reject absolute/private paths, endpoint forms, credentials, raw page text,
       and raw adapter errors while accepting the permitted relative fixture paths and hashes.
-- [ ] Tests prove source/artifact availability, gaps, retention, and model authorization are
+- [x] Tests prove source/artifact availability, gaps, retention, and model authorization are
       represented independently and never promoted to a passing claim by omission.
+
+## Implementation notes
+
+- Extended `temporal-evaluation` with strict tagged browser/model/evidence availability states,
+  bounded run rows, explicit status/failure semantics, and independent source/artifact retention
+  identities.
+- Added canonical manifest and input digests, `-0` normalization, privacy rejection, and a
+  generated `generate-run-manifest` tool. The committed sample is intentionally contract-only and
+  makes no browser, model, or evidence claim.
+- Generated and committed `run-manifest.schema.json` and `sample-manifest.json`.
+
+## Verification
+
+- `cargo fmt --all -- --check`
+- `cargo check --workspace --all-targets --locked`
+- `cargo test --workspace --all-targets --locked` (663 passed, 1 ignored)
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`
 
 ## Ordering
 

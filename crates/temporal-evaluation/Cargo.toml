@@ -16,3 +16,7 @@ thiserror.workspace = true
 [[bin]]
 name = "generate-benchmark-definition"
 path = "src/bin/generate-benchmark-definition.rs"
+
+[[bin]]
+name = "generate-run-manifest"
+path = "src/bin/generate-run-manifest.rs"

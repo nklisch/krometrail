@@ -31,6 +31,9 @@ fn sort_value(value: serde_json::Value) -> serde_json::Value {
             }
             serde_json::Value::Object(sorted)
         }
+        serde_json::Value::Number(number) if number.as_f64().is_some_and(|value| value == 0.0) => {
+            serde_json::Value::Number(serde_json::Number::from(0))
+        }
         value => value,
     }
 }

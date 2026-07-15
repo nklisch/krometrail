@@ -1,0 +1,1172 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RunManifest",
+  "type": "object",
+  "properties": {
+    "artifact": {
+      "$ref": "#/$defs/ArtifactIdentity"
+    },
+    "benchmark_definition": {
+      "$ref": "#/$defs/RevisionIdentity"
+    },
+    "benchmark_id": {
+      "type": "string"
+    },
+    "browser": {
+      "$ref": "#/$defs/BrowserAvailability"
+    },
+    "environment": {
+      "$ref": "#/$defs/EnvironmentIdentity"
+    },
+    "failure": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FailureRecord"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "fixture": {
+      "$ref": "#/$defs/ManifestFixture"
+    },
+    "harness": {
+      "$ref": "#/$defs/RevisionIdentity"
+    },
+    "kind": {
+      "type": "string"
+    },
+    "krometrail": {
+      "$ref": "#/$defs/KrometrailIdentity"
+    },
+    "model": {
+      "$ref": "#/$defs/ModelAvailability"
+    },
+    "non_claims": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "prompt": {
+      "$ref": "#/$defs/ManifestPrompt"
+    },
+    "rows": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ManifestRow"
+      }
+    },
+    "run": {
+      "$ref": "#/$defs/RunConfiguration"
+    },
+    "schema_version": {
+      "type": "integer",
+      "format": "uint16",
+      "maximum": 65535,
+      "minimum": 0
+    },
+    "scorer": {
+      "$ref": "#/$defs/ScorerIdentity"
+    },
+    "scoring": {
+      "$ref": "#/$defs/ScoringIdentity"
+    },
+    "status": {
+      "$ref": "#/$defs/EvaluationStatus"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "benchmark_id",
+    "benchmark_definition",
+    "harness",
+    "scorer",
+    "fixture",
+    "run",
+    "environment",
+    "browser",
+    "krometrail",
+    "model",
+    "prompt",
+    "artifact",
+    "scoring",
+    "rows",
+    "status",
+    "non_claims"
+  ],
+  "$defs": {
+    "AcceptedClaim": {
+      "type": "object",
+      "properties": {
+        "claim_id": {
+          "type": "string"
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "claim_id",
+        "evidence_ids"
+      ]
+    },
+    "Architecture": {
+      "type": "string",
+      "enum": [
+        "x86_64",
+        "aarch64",
+        "other"
+      ]
+    },
+    "ArtifactIdentity": {
+      "type": "object",
+      "properties": {
+        "algorithm_versions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/NamedVersion"
+          }
+        },
+        "condition_id": {
+          "$ref": "#/$defs/ConditionId"
+        },
+        "gap_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "output_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/OutputIdentity"
+          }
+        },
+        "parameters": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "source_frame_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/OutputIdentity"
+          }
+        },
+        "source_interval_id": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "condition_id",
+        "algorithm_versions",
+        "parameters",
+        "source_interval_id",
+        "output_ids",
+        "source_frame_ids",
+        "gap_ids"
+      ]
+    },
+    "BrowserAvailability": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "availability": {
+              "type": "string",
+              "const": "not_required"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "availability"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "availability": {
+              "type": "string",
+              "const": "observed"
+            },
+            "capability_id": {
+              "type": "string"
+            },
+            "product": {
+              "$ref": "#/$defs/BrowserProduct"
+            },
+            "product_version": {
+              "type": "string"
+            },
+            "protocol_version": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "availability",
+            "product",
+            "product_version",
+            "protocol_version",
+            "revision",
+            "capability_id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "availability": {
+              "type": "string",
+              "const": "unavailable"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "recovery": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "availability",
+            "reason",
+            "recovery"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "availability": {
+              "type": "string",
+              "const": "blocked"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "recovery": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "availability",
+            "reason",
+            "recovery"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "availability": {
+              "type": "string",
+              "const": "skipped"
+            },
+            "product": {
+              "$ref": "#/$defs/BrowserProduct"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "recovery": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "availability",
+            "product",
+            "reason",
+            "recovery"
+          ]
+        }
+      ]
+    },
+    "BrowserProduct": {
+      "type": "string",
+      "enum": [
+        "chromium",
+        "chrome",
+        "other_chromium"
+      ]
+    },
+    "CaptureConfigIdentity": {
+      "type": "object",
+      "properties": {
+        "ack_timeout_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "max_active_streams": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "queue_capacity": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "shutdown_timeout_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "queue_capacity",
+        "max_active_streams",
+        "ack_timeout_ms",
+        "shutdown_timeout_ms"
+      ]
+    },
+    "CaptureOrdinalRange": {
+      "type": "object",
+      "properties": {
+        "first": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "last": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "first",
+        "last"
+      ]
+    },
+    "CaseFamily": {
+      "type": "string",
+      "enum": [
+        "movement_reversal",
+        "flicker",
+        "transient_layout",
+        "dom_opaque_motion",
+        "stable_control"
+      ]
+    },
+    "ConditionId": {
+      "type": "string",
+      "enum": [
+        "A-final-screenshot",
+        "B-uniform-storyboard",
+        "C-change-aware-storyboard",
+        "D-temporal-bundle",
+        "E-progressive-source"
+      ]
+    },
+    "EnvironmentIdentity": {
+      "type": "object",
+      "properties": {
+        "architecture": {
+          "$ref": "#/$defs/Architecture"
+        },
+        "os_release_class": {
+          "type": "string"
+        },
+        "platform": {
+          "$ref": "#/$defs/Platform"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "platform",
+        "architecture",
+        "os_release_class"
+      ]
+    },
+    "EvaluationStatus": {
+      "type": "string",
+      "enum": [
+        "pass",
+        "fail",
+        "inconclusive",
+        "blocked",
+        "skipped"
+      ]
+    },
+    "EvidenceAvailability": {
+      "type": "string",
+      "enum": [
+        "retained",
+        "evicted",
+        "not_collected",
+        "corrupt",
+        "gap"
+      ]
+    },
+    "FailureRecord": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/RunFailureCode"
+        },
+        "phase": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "recovery": {
+          "type": "string"
+        },
+        "retryable": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "phase",
+        "reason",
+        "recovery",
+        "retryable"
+      ]
+    },
+    "FixtureFile": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256"
+      ]
+    },
+    "ImageFormat": {
+      "type": "string",
+      "enum": [
+        "png",
+        "jpeg"
+      ]
+    },
+    "KrometrailIdentity": {
+      "type": "object",
+      "properties": {
+        "adapter_versions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/NamedVersion"
+          }
+        },
+        "capture_config": {
+          "$ref": "#/$defs/CaptureConfigIdentity"
+        },
+        "cargo_lock_sha256": {
+          "type": "string"
+        },
+        "git_revision": {
+          "type": "string"
+        },
+        "rust_toolchain": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "git_revision",
+        "cargo_lock_sha256",
+        "rust_toolchain",
+        "capture_config",
+        "adapter_versions"
+      ]
+    },
+    "ManifestFixture": {
+      "type": "object",
+      "properties": {
+        "definition_sha256": {
+          "type": "string"
+        },
+        "ordered_files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FixtureFile"
+          }
+        },
+        "root_relative_path": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "root_relative_path",
+        "ordered_files",
+        "definition_sha256"
+      ]
+    },
+    "ManifestPrompt": {
+      "type": "object",
+      "properties": {
+        "prompt_set_id": {
+          "$ref": "#/$defs/PromptId"
+        },
+        "prompt_version": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "system_prompt": {
+          "type": "string"
+        },
+        "task_prompt": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "prompt_set_id",
+        "prompt_version",
+        "system_prompt",
+        "task_prompt",
+        "sha256"
+      ]
+    },
+    "ManifestRow": {
+      "type": "object",
+      "properties": {
+        "accepted_claims": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AcceptedClaim"
+          }
+        },
+        "answer_digest": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "artifact_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "capture_ordinal_range": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CaptureOrdinalRange"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "case_id": {
+          "type": "string"
+        },
+        "condition_id": {
+          "$ref": "#/$defs/ConditionId"
+        },
+        "duration_ms": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "failure": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FailureRecord"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "family": {
+          "$ref": "#/$defs/CaseFamily"
+        },
+        "gap_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "observed_time_range": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TimeRangeMs"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "raw_answer_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "repetition": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "retention_state": {
+          "$ref": "#/$defs/RetentionState"
+        },
+        "score": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0
+        },
+        "scoring_rationale": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "session_time_range": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TimeRangeMs"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source_time_range": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TimeRangeMs"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/EvaluationStatus"
+        },
+        "trial_id": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "trial_id",
+        "case_id",
+        "family",
+        "duration_ms",
+        "repetition",
+        "condition_id",
+        "gap_ids",
+        "retention_state",
+        "artifact_ids",
+        "accepted_claims",
+        "status"
+      ]
+    },
+    "MatrixOrder": {
+      "type": "string",
+      "enum": [
+        "family_case_duration_repetition",
+        "seeded_fisher_yates"
+      ]
+    },
+    "ModelAvailability": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "availability": {
+              "type": "string",
+              "const": "not_required"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "availability"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "authorization_ref": {
+              "type": "string"
+            },
+            "availability": {
+              "type": "string",
+              "const": "observed"
+            },
+            "input_limits": {
+              "$ref": "#/$defs/ModelInputLimits"
+            },
+            "invocation_date": {
+              "type": "string"
+            },
+            "model_id": {
+              "type": "string"
+            },
+            "model_version_or_dated_alias": {
+              "type": "string"
+            },
+            "provider": {
+              "type": "string"
+            },
+            "tools": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "availability",
+            "provider",
+            "model_id",
+            "model_version_or_dated_alias",
+            "invocation_date",
+            "authorization_ref",
+            "tools",
+            "input_limits"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "availability": {
+              "type": "string",
+              "const": "unavailable"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "recovery": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "availability",
+            "reason",
+            "recovery"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "availability": {
+              "type": "string",
+              "const": "blocked"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "recovery": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "availability",
+            "reason",
+            "recovery"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "availability": {
+              "type": "string",
+              "const": "skipped"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "recovery": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "availability",
+            "reason",
+            "recovery"
+          ]
+        }
+      ]
+    },
+    "ModelInputLimits": {
+      "type": "object",
+      "properties": {
+        "max_images": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "max_input_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "max_input_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "NamedVersion": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "version"
+      ]
+    },
+    "OutputIdentity": {
+      "type": "object",
+      "properties": {
+        "availability": {
+          "$ref": "#/$defs/EvidenceAvailability"
+        },
+        "id": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "availability"
+      ]
+    },
+    "Platform": {
+      "type": "string",
+      "enum": [
+        "linux",
+        "macos",
+        "windows",
+        "other"
+      ]
+    },
+    "PromptId": {
+      "type": "string",
+      "enum": [
+        "interpretation-v1",
+        "debugging-v1"
+      ]
+    },
+    "RetentionState": {
+      "type": "string",
+      "enum": [
+        "not_applicable",
+        "retained",
+        "partially_retained",
+        "evicted",
+        "unavailable"
+      ]
+    },
+    "RevisionIdentity": {
+      "type": "object",
+      "properties": {
+        "git_revision": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "git_revision",
+        "sha256"
+      ]
+    },
+    "RunConfiguration": {
+      "type": "object",
+      "properties": {
+        "condition_id": {
+          "$ref": "#/$defs/ConditionId"
+        },
+        "device_scale_factor": {
+          "description": "Device scale factor represented in thousandths to keep the contract integer-only.",
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "duration_ms": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0
+          }
+        },
+        "image_format": {
+          "$ref": "#/$defs/ImageFormat"
+        },
+        "image_quality": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0
+        },
+        "optional_configuration": {
+          "type": "boolean"
+        },
+        "order_policy": {
+          "$ref": "#/$defs/MatrixOrder"
+        },
+        "ordered_trials": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TrialIdentity"
+          }
+        },
+        "repetitions": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "retention_budget_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "seed": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "threshold_profile": {
+          "type": "string"
+        },
+        "viewport": {
+          "$ref": "#/$defs/Viewport"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "seed",
+        "order_policy",
+        "ordered_trials",
+        "condition_id",
+        "duration_ms",
+        "repetitions",
+        "optional_configuration",
+        "viewport",
+        "device_scale_factor",
+        "image_format",
+        "retention_budget_bytes",
+        "threshold_profile"
+      ]
+    },
+    "RunFailureCode": {
+      "type": "string",
+      "enum": [
+        "validation",
+        "threshold",
+        "insufficient_evidence",
+        "unavailable",
+        "authorization",
+        "unsupported",
+        "retention",
+        "capture_gap",
+        "corrupt_source",
+        "optional_unavailable",
+        "internal"
+      ]
+    },
+    "ScorerIdentity": {
+      "type": "object",
+      "properties": {
+        "git_revision": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "git_revision",
+        "version"
+      ]
+    },
+    "ScoringDimensionId": {
+      "type": "string",
+      "enum": [
+        "transient_defect_identification",
+        "state_order",
+        "affected_region",
+        "motion_behavior",
+        "gap_uncertainty",
+        "stable_control_false_positive"
+      ]
+    },
+    "ScoringIdentity": {
+      "type": "object",
+      "properties": {
+        "aggregate_method": {
+          "type": "string"
+        },
+        "dimension_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ScoringDimensionId"
+          }
+        },
+        "rationale_policy": {
+          "type": "string"
+        },
+        "rubric_version": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "rubric_version",
+        "dimension_ids",
+        "aggregate_method",
+        "rationale_policy"
+      ]
+    },
+    "TimeRangeMs": {
+      "type": "object",
+      "properties": {
+        "end_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "start_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "start_ms",
+        "end_ms"
+      ]
+    },
+    "TrialIdentity": {
+      "type": "object",
+      "properties": {
+        "case_id": {
+          "type": "string"
+        },
+        "condition_id": {
+          "$ref": "#/$defs/ConditionId"
+        },
+        "duration_ms": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "family": {
+          "$ref": "#/$defs/CaseFamily"
+        },
+        "repetition": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "trial_id": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "trial_id",
+        "case_id",
+        "family",
+        "duration_ms",
+        "repetition",
+        "condition_id"
+      ]
+    },
+    "Viewport": {
+      "type": "object",
+      "properties": {
+        "height": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "width": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "width",
+        "height"
+      ]
+    }
+  }
+}

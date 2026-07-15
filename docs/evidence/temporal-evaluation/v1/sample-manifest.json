@@ -1,0 +1,159 @@
+{
+  "artifact": {
+    "algorithm_versions": [
+      {
+        "name": "contract",
+        "version": "1"
+      }
+    ],
+    "condition_id": "A-final-screenshot",
+    "gap_ids": [],
+    "output_ids": [],
+    "parameters": {},
+    "source_frame_ids": [],
+    "source_interval_id": "contract-interval"
+  },
+  "benchmark_definition": {
+    "git_revision": "0000000000000000000000000000000000000000",
+    "sha256": "sha256:26f0f2835ca9bf4410c6a04a2919a2e04a6bbf1c4704a6098ce2b8f583b77a20"
+  },
+  "benchmark_id": "temporal-advantage-corpus-v1",
+  "browser": {
+    "availability": "not_required"
+  },
+  "environment": {
+    "architecture": "x86_64",
+    "os_release_class": "contract-fixture",
+    "platform": "linux"
+  },
+  "failure": null,
+  "fixture": {
+    "definition_sha256": "sha256:26f0f2835ca9bf4410c6a04a2919a2e04a6bbf1c4704a6098ce2b8f583b77a20",
+    "ordered_files": [
+      {
+        "path": "README.md",
+        "sha256": "sha256:068ae8b4bb771580d64d251bdc0832a121699acfa64a3286bd43712b93244c57"
+      },
+      {
+        "path": "benchmark.css",
+        "sha256": "sha256:e098d0c7eb95f9f3dd2d268ed820197820242dbb7c15f900cacffb9b4a9c7d2c"
+      },
+      {
+        "path": "benchmark.js",
+        "sha256": "sha256:80bd7b56ddf603b5dd552eecced8506e5cf75f08b553bcccdeb4a8d4272f7278"
+      },
+      {
+        "path": "index.html",
+        "sha256": "sha256:23da2695cb0b0e164b2a181e5436f31cd59ee42696933f7c7015bccd4648cabb"
+      }
+    ],
+    "root_relative_path": "tests/fixtures/browser/temporal-benchmark"
+  },
+  "harness": {
+    "git_revision": "0000000000000000000000000000000000000000",
+    "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "kind": "temporal_benchmark_run",
+  "krometrail": {
+    "adapter_versions": [],
+    "capture_config": {
+      "ack_timeout_ms": 1000,
+      "max_active_streams": 1,
+      "queue_capacity": 1,
+      "shutdown_timeout_ms": 1000
+    },
+    "cargo_lock_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "git_revision": "0000000000000000000000000000000000000000",
+    "rust_toolchain": "rustc-1.85.0"
+  },
+  "model": {
+    "availability": "not_required"
+  },
+  "non_claims": [
+    "This sample validates the contract only.",
+    "It is not browser, model, or temporal-evidence measurement."
+  ],
+  "prompt": {
+    "prompt_set_id": "interpretation-v1",
+    "prompt_version": "1",
+    "sha256": "sha256:20a8ac9b6afdf979175fe9a6214c3a9a78a3e9015ae047f3ffa31fd858740397",
+    "system_prompt": "You inspect browser evidence as an observation task. Describe only visible sequence, region, and uncertainty supported by supplied evidence. Do not infer causes, diagnoses, or hidden implementation details. If a capture gap or missing source prevents a claim, use uncertain and name the limitation. Return only the JSON object required by the answer contract.",
+    "task_prompt": "Inspect the supplied browser evidence and return JSON. State whether a temporary visible state occurred; list visible state order; identify the affected region or unknown; classify motion or visual behavior; judge defective, intentional, or uncertain; list uncertainty reasons; and cite opaque evidence references. Do not use labels not visible in the evidence."
+  },
+  "rows": [
+    {
+      "accepted_claims": [],
+      "answer_digest": null,
+      "artifact_ids": [],
+      "capture_ordinal_range": null,
+      "case_id": "movement-reversal/basic",
+      "condition_id": "A-final-screenshot",
+      "duration_ms": 16,
+      "failure": null,
+      "family": "movement_reversal",
+      "gap_ids": [],
+      "observed_time_range": null,
+      "raw_answer_ref": null,
+      "repetition": 0,
+      "retention_state": "not_applicable",
+      "score": null,
+      "scoring_rationale": null,
+      "session_time_range": null,
+      "source_time_range": null,
+      "status": "pass",
+      "trial_id": "contract/movement-reversal-basic/16/0"
+    }
+  ],
+  "run": {
+    "condition_id": "A-final-screenshot",
+    "device_scale_factor": 1000,
+    "duration_ms": [
+      16,
+      33,
+      50,
+      100,
+      200
+    ],
+    "image_format": "png",
+    "image_quality": null,
+    "optional_configuration": false,
+    "order_policy": "family_case_duration_repetition",
+    "ordered_trials": [
+      {
+        "case_id": "movement-reversal/basic",
+        "condition_id": "A-final-screenshot",
+        "duration_ms": 16,
+        "family": "movement_reversal",
+        "repetition": 0,
+        "trial_id": "contract/movement-reversal-basic/16/0"
+      }
+    ],
+    "repetitions": 1,
+    "retention_budget_bytes": 0,
+    "seed": 5427487694229099073,
+    "threshold_profile": "contract-only",
+    "viewport": {
+      "height": 450,
+      "width": 800
+    }
+  },
+  "schema_version": 1,
+  "scorer": {
+    "git_revision": "0000000000000000000000000000000000000000",
+    "version": "contract-only"
+  },
+  "scoring": {
+    "aggregate_method": "contract-only",
+    "dimension_ids": [
+      "transient_defect_identification",
+      "state_order",
+      "affected_region",
+      "motion_behavior",
+      "gap_uncertainty",
+      "stable_control_false_positive"
+    ],
+    "rationale_policy": "not_applicable",
+    "rubric_version": "1"
+  },
+  "status": "pass"
+}

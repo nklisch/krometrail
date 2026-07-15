@@ -7,7 +7,9 @@ mod canonical;
 mod conditions;
 mod corpus;
 mod error;
+mod manifest;
 mod matrix;
+mod privacy;
 mod prompts;
 mod vocabulary;
 
@@ -23,6 +25,15 @@ pub use corpus::{
     TimeInterval, TimingDefinition, VIEWPORT_HEIGHT, VIEWPORT_WIDTH,
 };
 pub use error::{ContractError, Result};
+pub use manifest::{
+    AcceptedClaim, Architecture, ArtifactIdentity, BrowserAvailability, BrowserProduct,
+    CaptureConfigIdentity, CaptureOrdinalRange, EnvironmentIdentity, EvidenceAvailability,
+    FailureRecord, ImageFormat, KrometrailIdentity, MANIFEST_KIND, MANIFEST_SCHEMA_VERSION,
+    ManifestFixture, ManifestPrompt, ManifestRow, ModelAvailability, ModelInputLimits,
+    NamedVersion, OutputIdentity, Platform, RetentionState, RevisionIdentity, RunConfiguration,
+    RunFailureCode, RunManifest, ScorerIdentity, ScoringIdentity, TimeRangeMs, TrialIdentity,
+    Viewport, run_manifest_schema, sample_manifest,
+};
 pub use matrix::{
     CAPTURE_REPETITIONS, CaptureTrial, EvaluationStatus, INTERPRETATION_REPETITIONS,
     InterpretationTrial, MATRIX_SEED, MatrixDefinition, MatrixOrder, StatusRules,
