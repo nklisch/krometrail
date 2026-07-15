@@ -7,8 +7,10 @@ mod canonical;
 mod conditions;
 mod corpus;
 mod error;
+mod interval;
 mod manifest;
 mod matrix;
+mod packaging;
 mod privacy;
 mod prompts;
 mod vocabulary;
@@ -25,6 +27,7 @@ pub use corpus::{
     TimeInterval, TimingDefinition, VIEWPORT_HEIGHT, VIEWPORT_WIDTH,
 };
 pub use error::{ContractError, Result};
+pub use interval::{GapEvidence, ScopeIdentity, SourceFrameEvidence, SourceInterval, TimeRangeNs};
 pub use manifest::{
     AcceptedClaim, Architecture, ArtifactIdentity, BrowserAvailability, BrowserProduct,
     CaptureConfigIdentity, CaptureOrdinalRange, EnvironmentIdentity, EvidenceAvailability,
@@ -37,6 +40,12 @@ pub use manifest::{
 pub use matrix::{
     CAPTURE_REPETITIONS, CaptureTrial, EvaluationStatus, INTERPRETATION_REPETITIONS,
     InterpretationTrial, MATRIX_SEED, MatrixDefinition, MatrixOrder, StatusRules,
+};
+pub use packaging::{
+    ArtifactCacheIdentity, ArtifactEvidenceReference, CONDITION_PACKAGER_VERSION,
+    ConditionEvidence, ConditionPackage, ConditionPackager, EvidenceReference,
+    EvidenceReferenceKind, NonClaimId, ProgressiveConditionEvidence, ProgressiveRetrievalRecord,
+    TemporalBundleEvidence, UNIFORM_SOURCE_FRAME_SLOTS, require_one_source_interval,
 };
 pub use prompts::{
     AnswerKind, AnswerRegion, AnswerTruth, AnswerValidationContext, DebuggingAnswer,

@@ -1,7 +1,7 @@
 ---
 id: epic-prove-temporal-advantage-deterministic-scoring-and-artifact-conditions-condition-packaging-and-source-interval
 kind: story
-stage: implementing
+stage: done
 tags: [testing, visual]
 parent: epic-prove-temporal-advantage-deterministic-scoring-and-artifact-conditions
 depends_on: [epic-prove-temporal-advantage-benchmark-corpus-and-manifest-contracts-region-coordinate-and-skip-status-review-fix]
@@ -78,3 +78,19 @@ format, decoder, renderer, tracking rule, logical-element mapping, or second sou
 
 This checkpoint unblocks the scorer. The following scorer story must also wait for the upstream
 ROI/skipped-manifest review fix; it has no fallback for the old ambiguous region values.
+
+## Implementation notes
+- Execution capability: feature-owning Luna worker, direct-read and single-write-set implementation; the child checkpoint was kept cohesive because interval identity and A–E validation share one browser-agnostic boundary.
+- Review weight: standard by default; child-story checkpoints do not enter review, so green verification advanced this item directly to `done`.
+- Files changed: `crates/temporal-evaluation/src/interval.rs`, `crates/temporal-evaluation/src/packaging.rs`, `crates/temporal-evaluation/src/lib.rs`, `crates/temporal-evaluation/tests/conditions.rs`.
+- Tests added: deterministic interval canonicalization, clock/order/gap/retention rejection, integer B slot selection and insufficient-retention failure, authority/version/cache/output validation for C–E, progressive request and filmstrip budgets, unavailable evidence preservation, shared interval identity, non-claim/privacy checks, and canonical package round trips.
+- Simplification: reused the existing condition, artifact-kind, named-version, evidence-availability, retention, canonical JSON, SHA-256, and privacy contracts; no cache implementation, provenance manifest copy, decoder, renderer, reader, scorer, or runtime dependency was added.
+- Discrepancies from design: `ArtifactEvidenceReference` also retains the authority manifest resolved range so C/D/E constructors can reject mixed-range projections rather than trusting an uncheckable handle; `NonClaimId` is defined once in this package boundary for later result records to reuse.
+- Adjacent issues parked: none.
+
+## Verification evidence
+- `cargo fmt --all -- --check`
+- `cargo check --workspace --all-targets --locked`
+- `cargo test --workspace --all-targets --locked` — 675 passed, 1 ignored
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`
+- No browser, network, model, paid-agent, product CLI, generated documentation, or `target/temporal-evaluation/` output was used.
