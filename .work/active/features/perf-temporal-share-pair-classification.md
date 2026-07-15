@@ -57,6 +57,72 @@ measurement and implementation checkpoints.
   kernels were the dominant CPU evidence. The selection and difference paths
   independently classify the same normalized adjacent pairs.
 
+## Current-revision baseline record (opt-1)
+
+The committed ignored scaffold is
+`crates/temporal-vision/tests/pair_classification_perf.rs`. It ran under
+`rustc 1.85.0 (4d91de4e4 2025-02-17)` / Cargo 1.85.0, locked release
+dependencies, on Linux x86_64 with an AMD Ryzen 7 7800X3D (8 cores/16 threads,
+96 MiB L3). Each repetition was a new process with a newly generated in-memory
+source fixture, no artifact/source cache, and an unmeasured duplicate run that
+compared normalized buffers, artifacts, manifests, bytes, accounting, and
+hashes directly. The benchmark is ignored and does not launch Chrome, a model,
+network, service, or scheduler.
+
+The authoritative clean storyboard + orientation + difference, down-2 current
+baselines are:
+
+| baseline | wall ms (five cold runs; median) | process CPU ms (median) | normalization / generator ms (median) | allocations | peak RSS KiB (median; max) |
+|---|---:|---:|---:|---:|---:|
+| `B60_current` | `[1082.302, 1052.269, 1044.537, 1048.717, 1036.510]`; **1048.717** | `[1078.105, 1047.564, 1040.745, 1045.112, 1032.780]`; **1045.112** | 308.230 / 740.472 | 223,488,695 | 697,096; 697,320 |
+| `B120_current` | `[2121.246, 2123.465, 2062.360, 2108.262, 2088.045]`; **2108.262** | `[2105.863, 2085.689, 2052.862, 2091.719, 2077.799]`; **2085.689** | 664.442 / 1423.600 | 410,162,461 | 1,357,328; 1,357,400 |
+
+For these baselines, `A/M/G/P/B/Bm` are B60
+`59/59/0/518400/40/40` and B120 `119/119/0/518400/80/80`; `Bm` excludes a
+possible gap-boundary metadata call from classified passes. The default
+storyboard + difference path therefore reports `2M+B` as 158 and 318
+classified pixel passes, or 81,907,200 and 164,851,200 expected classifier
+pixel calls. Adding motion reports `4M+B` (276 and 556 passes). A gapped cell
+keeps its gap metadata call but contributes zero classifier calls.
+
+The five-run external `perf stat` medians, with all requested events permitted,
+were B60 task-clock 2247.85 ms, cycles 9,870,639,974, instructions
+42,106,490,794, cache-misses 2,909,840, and branch-misses 2,832,025; B120
+was task-clock 4502.79 ms, cycles 19,418,922,641, instructions 82,057,964,609,
+cache-misses 7,069,320, and branch-misses 3,348,946. These counters include
+Cargo/test startup because the prescribed external command wraps the locked
+Cargo test; the benchmark JSON leaves `task_clock_us` null rather than
+substituting process CPU time. No counter denial was hidden.
+
+The baseline normalized/output digests are:
+
+| baseline | normalized digest | combined artifact digest | output digest |
+|---|---|---|---|
+| B60 | `d235e074cd4ef04828ff614b2fdef65d05cc8fba720be1297a2cd091b01aab3e` | `da3e56ccdaaa3d23ab0b63724686985759586f8632b8fc24a316b9c5ab9e9f5e`, `0166467c529d54a1618cbe0c75442eb0b47101326a7a1b26a2267dd8eeb12fb9`, `1b2e499d3f6b31d5e1799af2bc99e9a98b8d90df6c6a99be448539833510df83` | `8f7d3ad0feaf2d12d445e454b74dfe6ff8193ae75d3215810c8d9d3f4e598c5a` |
+| B120 | `3daa145cc263afdedcbda0bda35bd5e1678ac16232ad6cc46e0195ee1766c309` | `555b223404fba6c920e246e3afb79d80803d8aebfee031a3fa505fc00b467356`, `d08d0a44c50bc8fdcd3df69a219e03918fc018ce94ab8da8e91fb4a97d94d9f6`, `c68bceb7660cd221be21dc8a68ec4f9fd1d16a22a02dc8a44fee765adeaa8105` | `c43b6f16d0bfb754ef4ee4aa7691e96136fe73604f72f1e1df49d96bbe6d23cd` |
+
+The first-run manifest digests are B60
+`15854ec45e900a9ac4a108893aaab08a6bc5ca308191822fd0e2c6e2daf4ecde`,
+`321a865eb8a01041bb56a19bccf203c50447a7cf85b2cb049e854ada8832af8e`,
+`cba3b0a6dc6971be1a8551cddac7d284f0447570311b80438f08388f5f355fb5`; and
+B120 `6666c15bf91042c5fb6aa1d8ff0785027e08130e821b6d50005f072b052cd8c0`,
+`2e3d49a8c5225e0a7cd04b04d5b785bfd63f566aab965f58a23cfa5ff17079ab`,
+`ca7589ab12a6d589be323796440438314b0ac59994e56745ebdee6e26b09d7af`.
+
+All 48 required cells (8/30/60/120 x identity/down-2 x clean/masked/gapped x
+storyboard+difference or storyboard+difference+motion) ran five separate cold
+process repetitions: 240 matrix runs. Every duplicate comparison passed and
+every cell repeated its normalized and output digest exactly. Masked included
+pixels were 1,166,400 identity / 292,320 down-2; clean included pixels were
+2,073,600 / 518,400. Gapped cells had `G=1` and zero classifier calls for the
+gap pair. Clean baseline `B/Bm` was 6/6, 20/20, 40/40, 80/80 for 8/30/60/120;
+gapped `B/Bm` was 3/2, 6/5, 11/10, 21/20. The matrix reported the exact
+`2M+B` and `4M+B` formulas in every consumer mode.
+
+This record supersedes the historical numbers as the implementation baseline;
+the 20% candidate thresholds remain owned by opt-2/opt-3 and are not claimed
+by this measurement-only story.
+
 ## Design decisions
 
 ### Scope and measurement posture

@@ -1327,6 +1327,7 @@ dependencies = [
 name = "temporal-vision"
 version = "0.2.20"
 dependencies = [
+ "libc",
  "png 0.17.16",
  "schemars",
  "serde",
