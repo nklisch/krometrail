@@ -3,13 +3,13 @@ use std::{
     future::pending,
     sync::{
         Arc, Mutex as StdMutex, Weak,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Instant,
 };
 
 use krometrail_core::{ArtifactCacheKey, CancellationSignal, KrometrailError, StoredArtifact};
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit, Semaphore};
 
 use super::{
     cache::{DecodedFrameKey, NormalizedFrameKey},
@@ -150,7 +150,7 @@ async fn external_cancelled(cancellation: Option<&Arc<dyn CancellationSignal>>) 
 #[derive(Debug)]
 enum WorkFlightState<T> {
     InFlight,
-    Ready(Arc<T>),
+    Ready { value: Arc<T>, retained: bool },
     Failed(KrometrailError),
 }
 
@@ -158,6 +158,12 @@ enum WorkFlightState<T> {
 struct WorkByteBudget {
     maximum: usize,
     used: AtomicUsize,
+    memory: Option<Arc<Semaphore>>,
+}
+
+struct WorkReservation {
+    bytes: usize,
+    _memory: Option<OwnedSemaphorePermit>,
 }
 
 #[allow(dead_code)]
@@ -166,30 +172,64 @@ impl WorkByteBudget {
         Self {
             maximum,
             used: AtomicUsize::new(0),
+            memory: None,
         }
     }
 
-    fn try_reserve(&self, bytes: usize) -> bool {
+    fn with_memory(maximum: usize, memory: Arc<Semaphore>) -> Self {
+        Self {
+            maximum,
+            used: AtomicUsize::new(0),
+            memory: Some(memory),
+        }
+    }
+
+    fn try_reserve(&self, bytes: usize) -> Option<WorkReservation> {
         if bytes == 0 || bytes > self.maximum {
-            return false;
+            return None;
         }
         let mut current = self.used.load(Ordering::Acquire);
         loop {
-            let Some(next) = current.checked_add(bytes) else {
-                return false;
-            };
+            let next = current.checked_add(bytes)?;
             if next > self.maximum {
-                return false;
+                return None;
             }
-            match self.used.compare_exchange_weak(
-                current,
-                next,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => return true,
-                Err(observed) => current = observed,
+            if self
+                .used
+                .compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                let permits = match u32::try_from(bytes) {
+                    Ok(permits) => permits,
+                    Err(_) => {
+                        self.release(bytes);
+                        return None;
+                    }
+                };
+                let memory = self
+                    .memory
+                    .as_ref()
+                    .map(|memory| memory.clone().try_acquire_many_owned(permits));
+                match memory {
+                    Some(Ok(permit)) => {
+                        return Some(WorkReservation {
+                            bytes,
+                            _memory: Some(permit),
+                        });
+                    }
+                    Some(Err(_)) => {
+                        self.release(bytes);
+                        return None;
+                    }
+                    None => {
+                        return Some(WorkReservation {
+                            bytes,
+                            _memory: None,
+                        });
+                    }
+                }
             }
+            current = self.used.load(Ordering::Acquire);
         }
     }
 
@@ -212,8 +252,9 @@ pub(crate) struct WorkFlight<T> {
     notify: Notify,
     waiters: StdMutex<usize>,
     cancellation: WorkCancellation,
+    finished: AtomicBool,
     budget: Arc<WorkByteBudget>,
-    reserved_bytes: AtomicUsize,
+    reservation: StdMutex<Option<WorkReservation>>,
 }
 
 #[allow(dead_code)]
@@ -224,13 +265,21 @@ impl<T> WorkFlight<T> {
             notify: Notify::new(),
             waiters: StdMutex::new(0),
             cancellation: WorkCancellation::default(),
+            finished: AtomicBool::new(false),
             budget,
-            reserved_bytes: AtomicUsize::new(0),
+            reservation: StdMutex::new(None),
         }
     }
 
-    fn cancellation(&self) -> WorkCancellation {
+    pub(crate) fn cancellation(&self) -> WorkCancellation {
         self.cancellation.clone()
+    }
+
+    pub(crate) fn waiter_count(&self) -> usize {
+        *self
+            .waiters
+            .lock()
+            .expect("work-flight waiter count poisoned")
     }
 
     fn add_waiter(self: &Arc<Self>, is_leader: bool) -> WorkWaiter<T> {
@@ -245,33 +294,42 @@ impl<T> WorkFlight<T> {
     }
 
     fn reserve(&self, bytes: usize) -> bool {
-        if !self.budget.try_reserve(bytes) {
+        let Some(reservation) = self.budget.try_reserve(bytes) else {
+            return false;
+        };
+        let mut slot = self
+            .reservation
+            .lock()
+            .expect("work-flight reservation poisoned");
+        if slot.is_some() {
+            self.budget.release(reservation.bytes);
             return false;
         }
-        if self
-            .reserved_bytes
-            .compare_exchange(0, bytes, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            self.budget.release(bytes);
-            return false;
-        }
+        *slot = Some(reservation);
         true
     }
 
     fn release_reservation(&self) {
-        let bytes = self.reserved_bytes.swap(0, Ordering::AcqRel);
-        if bytes != 0 {
-            self.budget.release(bytes);
+        let reservation = self
+            .reservation
+            .lock()
+            .expect("work-flight reservation poisoned")
+            .take();
+        if let Some(reservation) = reservation {
+            self.budget.release(reservation.bytes);
         }
     }
 
-    async fn publish_ready(&self, value: T) -> bool {
+    async fn publish_ready(&self, value: T, retained: bool) -> bool {
         let mut state = self.state.lock().await;
         if self.cancellation.is_cancelled() || !matches!(*state, WorkFlightState::InFlight) {
             return false;
         }
-        *state = WorkFlightState::Ready(Arc::new(value));
+        *state = WorkFlightState::Ready {
+            value: Arc::new(value),
+            retained,
+        };
+        self.finished.store(true, Ordering::Release);
         drop(state);
         self.notify.notify_waiters();
         true
@@ -283,6 +341,7 @@ impl<T> WorkFlight<T> {
             return false;
         }
         *state = WorkFlightState::Failed(error);
+        self.finished.store(true, Ordering::Release);
         drop(state);
         self.notify.notify_waiters();
         true
@@ -292,7 +351,7 @@ impl<T> WorkFlight<T> {
         &self,
         deadline: Instant,
         cancellation: Option<Arc<dyn CancellationSignal>>,
-    ) -> std::result::Result<Arc<T>, KrometrailError> {
+    ) -> std::result::Result<WorkValue<T>, KrometrailError> {
         loop {
             let notified = self.notify.notified();
             tokio::pin!(notified);
@@ -300,7 +359,12 @@ impl<T> WorkFlight<T> {
             {
                 let state = self.state.lock().await;
                 match &*state {
-                    WorkFlightState::Ready(value) => return Ok(Arc::clone(value)),
+                    WorkFlightState::Ready { value, retained } => {
+                        return Ok(WorkValue {
+                            value: Arc::clone(value),
+                            retained: *retained,
+                        });
+                    }
                     WorkFlightState::Failed(error) => return Err(error.clone()),
                     WorkFlightState::InFlight => {}
                 }
@@ -318,9 +382,13 @@ impl<T> WorkFlight<T> {
 
 impl<T> Drop for WorkFlight<T> {
     fn drop(&mut self) {
-        let bytes = self.reserved_bytes.load(Ordering::Acquire);
-        if bytes != 0 {
-            self.budget.release(bytes);
+        let reservation = self
+            .reservation
+            .get_mut()
+            .expect("work-flight reservation poisoned")
+            .take();
+        if let Some(reservation) = reservation {
+            self.budget.release(reservation.bytes);
         }
     }
 }
@@ -329,6 +397,29 @@ impl<T> Drop for WorkFlight<T> {
 pub(crate) type DecodedWorkFlight = WorkFlight<SharedFrame<krometrail_core::FrameId>>;
 #[allow(dead_code)]
 pub(crate) type NormalizedWorkFlight = WorkFlight<SharedNormalizedFrame<krometrail_core::FrameId>>;
+
+pub(crate) struct WorkValue<T> {
+    value: Arc<T>,
+    retained: bool,
+}
+
+impl<T> WorkValue<T> {
+    pub(crate) fn retained(&self) -> bool {
+        self.retained
+    }
+
+    pub(crate) fn into_arc(self) -> Arc<T> {
+        self.value
+    }
+}
+
+impl<T> std::ops::Deref for WorkValue<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.value
+    }
+}
 
 #[allow(dead_code)]
 pub(crate) struct WorkWaiter<T> {
@@ -346,7 +437,7 @@ impl<T> WorkWaiter<T> {
         self,
         deadline: Instant,
         cancellation: Option<Arc<dyn CancellationSignal>>,
-    ) -> std::result::Result<Arc<T>, KrometrailError> {
+    ) -> std::result::Result<WorkValue<T>, KrometrailError> {
         self.flight.wait(deadline, cancellation).await
     }
 }
@@ -359,7 +450,7 @@ impl<T> Drop for WorkWaiter<T> {
             .lock()
             .expect("work-flight waiter count poisoned");
         *waiters = waiters.saturating_sub(1);
-        if *waiters == 0 {
+        if *waiters == 0 && !self.flight.finished.load(Ordering::Acquire) {
             self.flight.cancellation.cancel();
         }
     }
@@ -396,11 +487,18 @@ pub(crate) struct WorkBatchRegistry {
 #[allow(dead_code)]
 impl WorkBatchRegistry {
     pub(crate) fn new(max_bytes: usize) -> Self {
-        assert!(max_bytes > 0, "shared work-byte budget must be non-zero");
         Self {
             decoded: StdMutex::new(HashMap::new()),
             normalized: StdMutex::new(HashMap::new()),
             budget: Arc::new(WorkByteBudget::new(max_bytes)),
+        }
+    }
+
+    pub(crate) fn new_with_memory(max_bytes: usize, memory: Arc<Semaphore>) -> Self {
+        Self {
+            decoded: StdMutex::new(HashMap::new()),
+            normalized: StdMutex::new(HashMap::new()),
+            budget: Arc::new(WorkByteBudget::with_memory(max_bytes, memory)),
         }
     }
 
@@ -498,7 +596,7 @@ impl WorkBatchRegistry {
         value: SharedFrame<krometrail_core::FrameId>,
     ) -> bool {
         let retained = flight.reserve(value.pixels().len());
-        let published = flight.publish_ready(value).await;
+        let published = flight.publish_ready(value, retained).await;
         if !published {
             flight.release_reservation();
         }
@@ -519,7 +617,7 @@ impl WorkBatchRegistry {
             .len()
             .saturating_mul(std::mem::size_of::<u16>());
         let retained = flight.reserve(bytes);
-        let published = flight.publish_ready(value).await;
+        let published = flight.publish_ready(value, retained).await;
         if !published {
             flight.release_reservation();
         }

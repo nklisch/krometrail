@@ -145,6 +145,18 @@ pub(crate) fn visual_epoch_hash(sources: &[SourceFingerprint]) -> [u8; 32] {
     hash_epoch(sources)
 }
 
+/// Identity of one geometry epoch for intermediate work. Frame membership is deliberately
+/// excluded so adjacent requests can share a frame without crossing a resize or scale boundary.
+pub(crate) fn visual_frame_epoch_hash(source: &SourceFingerprint) -> [u8; 32] {
+    let mut transcript = FramedHasher::new("krometrail-visual-frame-epoch-v1");
+    transcript.u32(source.image_width);
+    transcript.u32(source.image_height);
+    transcript.u32(source.viewport_width);
+    transcript.u32(source.viewport_height);
+    transcript.u64(source.device_scale_bits);
+    transcript.finish()
+}
+
 pub(crate) struct CacheIdentityInput<'a> {
     pub session_id: SessionId,
     pub target_id: TargetId,

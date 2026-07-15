@@ -97,7 +97,8 @@ pub use motion_history::{
 };
 pub use normalize::{
     IntegerScale, NormalizationParameters, NormalizedFrame, NormalizedSequence, ProcessingLimits,
-    Rgb8, SharedNormalizedFrame, SharedNormalizedSequence, normalize_sequence,
+    Rgb8, SharedNormalizedFrame, SharedNormalizedSequence, assemble_normalized_sequence,
+    normalize_frame, normalize_sequence,
 };
 pub use provenance::{
     AlgorithmDescriptor, ArtifactKind, ArtifactManifest, EvidenceClass, FiniteNumber,

@@ -83,14 +83,6 @@ pub(crate) fn normalization_parameters(
         .transpose()
 }
 
-pub(crate) fn normalization_identity(prepared: &PreparedGenerator) -> Result<Option<Arc<[u8]>>> {
-    normalization_request(&prepared.request)
-        .map(|request| serde_json::to_vec(&request))
-        .transpose()
-        .map(|bytes| bytes.map(Arc::from))
-        .map_err(|_| generation_error("could not encode normalization identity"))
-}
-
 pub(crate) fn estimated_normalized_bytes(
     prepared: &PreparedGenerator,
     epoch: &super::epoch::EpochPlan,
@@ -110,17 +102,39 @@ pub(crate) fn estimated_normalized_bytes(
         .ok_or_else(|| limit_error("normalized sequence byte estimate overflows"))
 }
 
-pub(crate) fn normalize(
+pub(crate) fn normalization_identity(prepared: &PreparedGenerator) -> Result<Option<Arc<[u8]>>> {
+    normalization_request(&prepared.request)
+        .map(|request| serde_json::to_vec(&request))
+        .transpose()
+        .map(|bytes| bytes.map(Arc::from))
+        .map_err(|_| generation_error("could not encode normalization identity"))
+}
+
+pub(crate) fn normalize_frame(
+    frame: &temporal_vision::SharedFrame<FrameId>,
+    prepared: &PreparedGenerator,
+    limits: ArtifactWorkLimits,
+) -> Result<Option<temporal_vision::SharedNormalizedFrame<FrameId>>> {
+    let Some(parameters) = normalization_parameters(prepared, limits)? else {
+        return Ok(None);
+    };
+    #[cfg(test)]
+    super::perf_counters::record_normalize(1);
+    temporal_vision::normalize_frame(frame, parameters)
+        .map(Some)
+        .map_err(vision_error)
+}
+
+pub(crate) fn assemble_normalized(
     epoch: &EpochInput,
     prepared: &PreparedGenerator,
+    frames: Vec<temporal_vision::SharedNormalizedFrame<FrameId>>,
     limits: ArtifactWorkLimits,
 ) -> Result<Option<Arc<NormalizedSequence<FrameId>>>> {
     let Some(parameters) = normalization_parameters(prepared, limits)? else {
         return Ok(None);
     };
-    #[cfg(test)]
-    super::perf_counters::record_normalize(epoch.sequence.frames().len());
-    temporal_vision::normalize_sequence(&epoch.sequence, parameters)
+    temporal_vision::assemble_normalized_sequence(&epoch.sequence, frames, parameters)
         .map(Arc::new)
         .map(Some)
         .map_err(vision_error)

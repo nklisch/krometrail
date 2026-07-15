@@ -10,7 +10,9 @@ use krometrail_core::{
     ArtifactMarker, ArtifactMarkerId, ArtifactSourceFingerprint, EncodedFrame, ErrorCode,
     KrometrailError, NonEmptyText, ResolvedRange, Result, VisualEpoch,
 };
-use temporal_vision::{DeclaredGap, Marker, OwnedFrameSequence, TimeRange, Timestamp};
+use temporal_vision::{
+    DeclaredGap, Marker, SharedFrame, SharedFrameSequence, TimeRange, Timestamp,
+};
 
 use super::{
     cache::SourceFingerprint,
@@ -30,7 +32,7 @@ pub(crate) struct AdaptationLimits {
 }
 
 impl AdaptationLimits {
-    fn decode_limits(self) -> DecodeLimits {
+    pub(crate) fn decode_limits(self) -> DecodeLimits {
         DecodeLimits::new(
             self.max_dimension,
             self.max_pixels_per_frame,
@@ -105,7 +107,7 @@ pub(crate) struct EpochPlan {
 #[derive(Debug)]
 pub(crate) struct EpochInput {
     pub sequence:
-        OwnedFrameSequence<krometrail_core::FrameId, ArtifactMarkerId, krometrail_core::GapId>,
+        SharedFrameSequence<krometrail_core::FrameId, ArtifactMarkerId, krometrail_core::GapId>,
 }
 
 /// Validate exact retained identities and build geometry/annotation plans without decoding.
@@ -183,6 +185,7 @@ pub(crate) fn validate_and_plan(
         .collect()
 }
 
+#[allow(dead_code)]
 pub(crate) fn decode_plan(
     plan: EpochPlan,
     limits: AdaptationLimits,
@@ -191,12 +194,29 @@ pub(crate) fn decode_plan(
     let mut decoded = Vec::with_capacity(plan.frames.len());
     for frame in &plan.frames {
         cancellation.check()?;
-        decoded.push(decode_frame(frame, limits.decode_limits())?);
+        decoded.push(to_shared_frame(decode_frame(
+            frame,
+            limits.decode_limits(),
+        )?)?);
     }
     let sequence =
         temporal_vision::FrameSequence::new(decoded, plan.markers, plan.gaps, None, None)
             .map_err(vision_error)?;
     Ok(EpochInput { sequence })
+}
+
+pub(crate) fn to_shared_frame(
+    frame: temporal_vision::OwnedFrame<krometrail_core::FrameId>,
+) -> Result<SharedFrame<krometrail_core::FrameId>> {
+    let (id, timestamp, dimensions, pixel_format, pixels) = frame.into_parts();
+    temporal_vision::Frame::new(
+        id,
+        timestamp,
+        dimensions,
+        pixel_format,
+        Arc::<[u8]>::from(pixels),
+    )
+    .map_err(vision_error)
 }
 
 #[cfg(test)]

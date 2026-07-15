@@ -398,9 +398,48 @@ fn validate_time_ranges(ranges: &[TimeRange], sequence_range: TimeRange) -> Resu
     Ok(())
 }
 
-/// Normalize one validated source geometry epoch.
-pub fn normalize_sequence<F: Clone + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
+/// Normalize one validated source frame using the same recipe as a full sequence.
+///
+/// The service uses this narrow operation for request-lifetime sharing. Sequence-level
+/// validation and provenance still happen in [`assemble_normalized_sequence`].
+pub fn normalize_frame<F: Clone, P: AsRef<[u8]>>(
+    frame: &Frame<F, P>,
+    parameters: NormalizationParameters,
+) -> Result<NormalizedFrame<F>> {
+    let source_dimensions = frame.dimensions();
+    let crop = match parameters.crop {
+        Some(crop) if crop.fits_within(source_dimensions) => crop,
+        Some(_) => {
+            return Err(VisionError::new(
+                ErrorCode::InvalidRegion,
+                "normalization crop lies outside the source-frame dimensions",
+            ));
+        }
+        None => PixelRect::new(0, 0, source_dimensions.width(), source_dimensions.height())?,
+    };
+    let dimensions = scaled_dimensions(crop, parameters.scale)?;
+    let output_pixels = dimensions.pixel_count()?;
+    validate_resource_limits(1, output_pixels, false, parameters.limits)?;
+    let background = parameters.background.channels().map(linear_channel);
+    let allow_opaque_full_frame_fast_path = parameters.crop.is_none();
+    normalize_frame_inner(
+        frame,
+        crop,
+        dimensions,
+        parameters.scale,
+        background,
+        allow_opaque_full_frame_fast_path,
+    )
+}
+
+/// Assemble per-frame normalized results while recomputing all sequence-level invariants.
+///
+/// In particular, this validates source identity and order before accepting an immutable
+/// intermediate from another request. It also rebuilds masks, gaps, and normalization steps so
+/// sharing pixel buffers cannot change artifact provenance.
+pub fn assemble_normalized_sequence<F: Clone + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
     sequence: &FrameSequence<F, M, G, P>,
+    frames: Vec<NormalizedFrame<F>>,
     parameters: NormalizationParameters,
 ) -> Result<NormalizedSequence<F>> {
     let source_dimensions = sequence.dimensions();
@@ -423,8 +462,22 @@ pub fn normalize_sequence<F: Clone + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
         restricted_domain,
         parameters.limits,
     )?;
+    if frames.len() != sequence.frames().len() {
+        return Err(VisionError::new(
+            ErrorCode::IncompatibleFrame,
+            "normalized frame count does not match the source sequence",
+        ));
+    }
+    for (index, (source, normalized)) in sequence.frames().iter().zip(&frames).enumerate() {
+        if source.id() != normalized.id() || source.timestamp() != normalized.timestamp() {
+            return Err(VisionError::at(
+                ErrorCode::IncompatibleFrame,
+                "normalized frame identity does not match its source frame",
+                index,
+            ));
+        }
+    }
 
-    // Build and validate the domain before retaining any normalized frame buffers.
     let (analysis_mask, analysis_pixel_count) = transformed_analysis_mask(
         sequence,
         crop,
@@ -432,41 +485,35 @@ pub fn normalize_sequence<F: Clone + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
         parameters.scale,
         restricted_domain,
     )?;
-    let background = parameters.background.channels().map(linear_channel);
-    let allow_opaque_full_frame_fast_path = parameters.crop.is_none() && !restricted_domain;
-    let frames = sequence
-        .frames()
-        .iter()
-        .map(|frame| {
-            normalize_frame(
-                frame,
-                crop,
-                dimensions,
-                parameters.scale,
-                background,
-                allow_opaque_full_frame_fast_path,
-            )
-        })
-        .collect::<Result<Vec<_>>>()?
-        .into_boxed_slice();
     let gap_ranges = sequence
         .gaps()
         .iter()
         .map(|gap| gap.range())
-        .collect::<Vec<_>>()
-        .into_boxed_slice();
+        .collect::<Vec<_>>();
     let normalization_steps = normalization_steps(parameters, crop, dimensions)?;
-
-    Ok(NormalizedSequence {
+    NormalizedSequence::from_parts(
         source_dimensions,
-        source_crop: crop,
+        crop,
         dimensions,
         frames,
         analysis_mask,
         analysis_pixel_count,
         gap_ranges,
-        normalization_steps: normalization_steps.into_boxed_slice(),
-    })
+        normalization_steps,
+    )
+}
+
+/// Normalize one validated source geometry epoch.
+pub fn normalize_sequence<F: Clone + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
+    sequence: &FrameSequence<F, M, G, P>,
+    parameters: NormalizationParameters,
+) -> Result<NormalizedSequence<F>> {
+    let frames = sequence
+        .frames()
+        .iter()
+        .map(|frame| normalize_frame(frame, parameters))
+        .collect::<Result<Vec<_>>>()?;
+    assemble_normalized_sequence(sequence, frames, parameters)
 }
 
 fn scaled_dimensions(crop: PixelRect, scale: IntegerScale) -> Result<PixelDimensions> {
@@ -637,7 +684,7 @@ fn source_pixel_in_domain<F: Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
             .is_none_or(|mask| mask.includes(x, y) == Some(true))
 }
 
-fn normalize_frame<F: Clone, P: AsRef<[u8]>>(
+fn normalize_frame_inner<F: Clone, P: AsRef<[u8]>>(
     frame: &Frame<F, P>,
     crop: PixelRect,
     dimensions: PixelDimensions,

@@ -1,13 +1,15 @@
 use std::{
     collections::HashMap,
+    io::Cursor,
     num::{NonZeroU32, NonZeroUsize},
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, AtomicUsize, Ordering},
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
+use image::{ColorType, ImageEncoder, codecs::png::PngEncoder};
 use krometrail_core::{
     AnalysisScale, ArtifactCacheKey, ArtifactFailurePolicy, ArtifactGeneration,
     ArtifactGenerationContext, ArtifactGenerationRequest, ArtifactGeneratorRequest,
@@ -31,6 +33,7 @@ const PNG: &[u8] = include_bytes!("../../tests/fixtures/artifacts/chrome-rgba.pn
 struct FakeFrames {
     frames: Vec<EncodedFrame>,
     loads: AtomicUsize,
+    start_barrier: Option<Arc<tokio::sync::Barrier>>,
 }
 
 impl FrameSource for FakeFrames {
@@ -51,7 +54,13 @@ impl FrameSource for FakeFrames {
                     })
             })
             .collect();
-        Box::pin(std::future::ready(result))
+        let barrier = self.start_barrier.clone();
+        Box::pin(async move {
+            if let Some(barrier) = barrier {
+                barrier.wait().await;
+            }
+            result
+        })
     }
     fn frame_metadata_by_id(
         &self,
@@ -317,6 +326,7 @@ fn rig(two_epochs: bool, limits: ArtifactWorkLimits) -> TestRig {
     let frames = Arc::new(FakeFrames {
         frames,
         loads: AtomicUsize::new(0),
+        start_barrier: None,
     });
     let artifacts = Arc::new(FakeArtifacts::default());
     let ids = Arc::new(FakeIds {
@@ -741,6 +751,146 @@ async fn resource_limits_accept_exact_boundaries_and_reject_the_next_unit() {
             .code,
         krometrail_core::ErrorCode::ResourceLimitExceeded
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_adjacent_windows_share_119_decodes_and_normalizations_without_intermediate_storage()
+ {
+    let base = rig(false, ArtifactWorkLimits::default());
+    let dimensions = PixelDimensions::new(256, 256).unwrap();
+    let mut pixels = vec![0_u8; 256 * 256 * 4];
+    for (index, pixel) in pixels.chunks_exact_mut(4).enumerate() {
+        pixel.copy_from_slice(&[
+            (index % 251) as u8,
+            ((index / 251) % 251) as u8,
+            80,
+            u8::MAX,
+        ]);
+    }
+    let mut encoded = Vec::new();
+    PngEncoder::new(Cursor::new(&mut encoded))
+        .write_image(&pixels, 256, 256, ColorType::Rgba8.into())
+        .unwrap();
+    let source_frames: Vec<_> = (0..121_usize)
+        .map(|position| {
+            let ordinal = position as u64 + 1;
+            EncodedFrame::new(
+                CapturedFrame::new(
+                    FrameId::from_uuid(Uuid::from_u128(10 + position as u128)),
+                    SessionId::from_uuid(Uuid::from_u128(1)),
+                    TargetId::from_uuid(Uuid::from_u128(2)),
+                    CaptureOrdinal::new(ordinal).unwrap(),
+                    None,
+                    ObservedTime::from_nanos(ordinal + 10),
+                    SessionTime::from_nanos(ordinal),
+                    ImageFormat::Png,
+                    dimensions,
+                    dimensions,
+                    DeviceScaleFactor::new(1.0).unwrap(),
+                    vec![],
+                )
+                .unwrap(),
+                encoded.clone(),
+            )
+            .unwrap()
+        })
+        .collect();
+    let frame_ids: Vec<_> = source_frames
+        .iter()
+        .map(|frame| frame.metadata().id())
+        .collect();
+    let frames = Arc::new(FakeFrames {
+        frames: source_frames,
+        loads: AtomicUsize::new(0),
+        start_barrier: Some(Arc::new(tokio::sync::Barrier::new(2))),
+    });
+    let artifacts = Arc::clone(&base.artifacts);
+    let service = TemporalVisionArtifactService::new(
+        Arc::clone(&frames) as Arc<dyn FrameSource>,
+        Arc::clone(&artifacts) as Arc<dyn ArtifactStore>,
+        Arc::new(FakeIds {
+            next: AtomicU64::new(0),
+        }),
+        ArtifactWorkLimits {
+            max_wall_time: Duration::from_secs(60),
+            ..ArtifactWorkLimits::default()
+        },
+    )
+    .unwrap();
+    let generator = base.request.generators()[0].clone();
+    let request_for = |ids: &[FrameId]| {
+        let range = SessionRange::new(
+            frames
+                .frames
+                .iter()
+                .find(|frame| frame.metadata().id() == *ids.first().unwrap())
+                .unwrap()
+                .metadata()
+                .session_time(),
+            frames
+                .frames
+                .iter()
+                .find(|frame| frame.metadata().id() == *ids.last().unwrap())
+                .unwrap()
+                .metadata()
+                .session_time(),
+        )
+        .unwrap();
+        ArtifactGenerationRequest::new(
+            ResolvedRange::new(
+                SessionId::from_uuid(Uuid::from_u128(1)),
+                TargetId::from_uuid(Uuid::from_u128(2)),
+                TemporalRangeAnchorKind::SessionTime,
+                range,
+                range,
+                ids.to_vec(),
+                vec![],
+                vec![],
+                vec![],
+                vec![],
+                vec![],
+                RangeResolutionOptions::DEFAULT,
+            )
+            .unwrap(),
+            vec![],
+            vec![generator.clone()],
+            ArtifactFailurePolicy::RequireAll,
+        )
+        .unwrap()
+    };
+    let first_request = request_for(&frame_ids[..120]);
+    let second_request = request_for(&frame_ids[1..]);
+
+    service.install_work_start_barrier(Arc::new(tokio::sync::Barrier::new(2)));
+    service.install_shared_work_ordinals(Arc::new((2..=120).collect()));
+    let (first, second) = tokio::join!(
+        service.generate(first_request, ArtifactGenerationContext::default()),
+        service.generate(second_request, ArtifactGenerationContext::default()),
+    );
+    service.clear_work_start_barrier();
+    service.clear_shared_work_ordinals();
+    let first = first.unwrap();
+    let second = second.unwrap();
+    assert_eq!(first.outcomes.len(), 2);
+    assert_eq!(second.outcomes.len(), 2);
+    assert!(
+        first
+            .outcomes
+            .iter()
+            .all(|outcome| matches!(outcome, ArtifactOutcome::Available { .. }))
+    );
+    assert!(
+        second
+            .outcomes
+            .iter()
+            .all(|outcome| matches!(outcome, ArtifactOutcome::Available { .. }))
+    );
+
+    assert_eq!(service.shared_work_leader_counts(), (121, 121));
+    assert_eq!(artifacts.publications.load(Ordering::SeqCst), 4);
+    assert_eq!(artifacts.by_key.lock().unwrap().len(), 4);
+    assert_eq!(service.shared_work_bytes(), 0);
+    assert_eq!(service.shared_work_entries(), 0);
 }
 
 fn test_error(
