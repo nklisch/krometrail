@@ -237,15 +237,17 @@ mod tests {
         BrowserOperationResult, BrowserOwnership, BrowserProduct, BrowserProductVersion,
         BrowserSessionEvent, BrowserSessionEvents, BrowserSessionPort, BrowserSessionState,
         BrowserStatus, BrowserStopOutcome, BrowserVersion, CapabilityId, CapabilitySupport,
-        FrameId, GenerateArtifactsRequest, NormalizationRequest, OutputLimitsRequest, PageStatus,
+        CaptureStatistics, CaptureStreamState, CaptureTimingSummary, EveryNthFrame, FrameId,
+        GenerateArtifactsRequest, NormalizationRequest, OutputLimitsRequest, PageStatus,
         PortFuture, ProfileRef, ProgressiveEvidence, ProgressiveEvidenceContext,
         ProgressiveEvidenceRequest, ProgressiveEvidenceResult, ProgressiveRegion,
         RangeResolutionOptions, RegionFilmstripEvidenceRequest, RendererCapability, ResolvedRange,
         ResolvedRangeEvidenceRequest, RetentionStatus, SessionId, SessionOrigin, SessionRange,
         SessionTime, SourceFrameSelection, SourceFramesRequest, SourceReadLimitsRequest,
-        StoryboardRequest, TargetId, TemporalContext, TemporalContextQuery, TemporalContextRequest,
-        TemporalDebugBundle, TemporalDebugBundleContext, TemporalDebugBundleRequest,
-        TemporalDebugBundles, TemporalQueryRequest, TemporalRangeAnchor, TemporalRangeAnchorKind,
+        StoryboardRequest, TargetCaptureStatus, TargetId, TemporalContext, TemporalContextQuery,
+        TemporalContextRequest, TemporalDebugBundle, TemporalDebugBundleContext,
+        TemporalDebugBundleRequest, TemporalDebugBundles, TemporalQueryRequest,
+        TemporalRangeAnchor, TemporalRangeAnchorKind,
     };
     use serde_json::{Value, json};
     use std::{
@@ -474,6 +476,125 @@ mod tests {
     }
 
     #[test]
+    fn lifecycle_routes_publish_one_generated_stride_contract() {
+        let service = build_service(
+            dependencies(Arc::new(UnusedConnector)),
+            McpConfig::new(vec![CapabilityId::Control]).unwrap(),
+        )
+        .unwrap();
+        let tools = service.server().tools();
+        let input_schema = |name: &str| {
+            tools
+                .iter()
+                .find(|tool| tool.name == name)
+                .unwrap_or_else(|| panic!("missing lifecycle tool {name}"))
+                .input_schema
+                .clone()
+        };
+        let start = input_schema("start_browser");
+        let attach = input_schema("attach_browser");
+        let start_properties = start.get("properties").unwrap();
+        let attach_properties = attach.get("properties").unwrap();
+        let start_stride = start_properties.get("every_nth_frame").unwrap().clone();
+        let attach_stride = attach_properties.get("every_nth_frame").unwrap().clone();
+
+        assert_eq!(start_stride, attach_stride);
+        assert_eq!(start_stride["type"], "integer");
+        assert_eq!(start_stride["minimum"], 1);
+        assert_eq!(start_stride["maximum"], 60);
+        assert_eq!(start_stride["default"], 1);
+        for schema in [start.as_ref(), attach.as_ref()] {
+            assert!(
+                !schema
+                    .get("required")
+                    .and_then(Value::as_array)
+                    .is_some_and(|required| {
+                        required.iter().any(|field| field == "every_nth_frame")
+                    })
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn lifecycle_routes_forward_defaults_values_and_capture_events_through_the_owner() {
+        for route in ["start_browser", "attach_browser"] {
+            for requested in [None, Some(1_u8), Some(7), Some(60)] {
+                let connector = LifecycleConnector::new();
+                let mut arguments = json!({});
+                if route == "attach_browser" {
+                    arguments["endpoint"] = json!("ws://127.0.0.1:9222");
+                }
+                if let Some(value) = requested {
+                    arguments["every_nth_frame"] = json!(value);
+                }
+                let responses = invoke_control_tools(
+                    Arc::clone(&connector),
+                    vec![(route, arguments), ("browser_status", json!({}))],
+                )
+                .await;
+                let expected = requested.unwrap_or(1);
+                for response in responses {
+                    assert_eq!(response["result"]["isError"], false);
+                    assert_eq!(
+                        response["result"]["structuredContent"]["result"]["every_nth_frame"],
+                        expected
+                    );
+                }
+
+                assert_eq!(connector.connect_calls.load(Ordering::SeqCst), 1);
+                match (route, connector.requests().as_slice()) {
+                    ("start_browser", [BrowserConnectRequest::Launch(request)]) => {
+                        assert_eq!(request.every_nth_frame.get(), expected);
+                    }
+                    ("attach_browser", [BrowserConnectRequest::Attach(request)]) => {
+                        assert_eq!(request.every_nth_frame.get(), expected);
+                    }
+                    _ => panic!("lifecycle route did not forward its core request"),
+                }
+
+                let mut events = connector.session().subscribe().await.unwrap();
+                let event = events.next().await.unwrap().unwrap();
+                assert_eq!(
+                    serde_json::to_value(&event).unwrap()["status"]["every_nth_frame"],
+                    expected
+                );
+                match event {
+                    BrowserSessionEvent::CaptureStateChanged { status } => {
+                        assert_eq!(status.every_nth_frame().get(), expected);
+                    }
+                    event => panic!("unexpected lifecycle capture event: {event:?}"),
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn lifecycle_routes_reject_invalid_stride_before_connector_calls() {
+        for invalid in [json!(0), json!(61), json!(null), json!("7"), json!(7.5)] {
+            for route in ["start_browser", "attach_browser"] {
+                let connector = LifecycleConnector::new();
+                let mut arguments = json!({});
+                if route == "attach_browser" {
+                    arguments["endpoint"] = json!("ws://127.0.0.1:9222");
+                }
+                arguments["every_nth_frame"] = invalid.clone();
+                let response =
+                    invoke_control_tools(Arc::clone(&connector), vec![(route, arguments)])
+                        .await
+                        .pop()
+                        .unwrap();
+                assert_eq!(response["result"]["isError"], true);
+                assert_eq!(
+                    response["result"]["structuredContent"]["error"]["code"],
+                    "invalid_input"
+                );
+                assert_eq!(connector.connect_calls.load(Ordering::SeqCst), 0);
+                assert!(connector.requests().is_empty());
+            }
+        }
+    }
+
+    #[test]
     fn capability_filters_keep_temporal_tools_when_control_is_disabled() {
         let service = build_service(
             dependencies(Arc::new(UnusedConnector)),
@@ -605,7 +726,131 @@ mod tests {
         }
     }
 
+    struct LifecycleEvents {
+        next: Option<BrowserSessionEvent>,
+    }
+
+    impl BrowserSessionEvents for LifecycleEvents {
+        fn next(&mut self) -> PortFuture<'_, krometrail_core::Result<Option<BrowserSessionEvent>>> {
+            Box::pin(std::future::ready(Ok(self.next.take())))
+        }
+    }
+
+    struct LifecycleSession {
+        status: BrowserStatus,
+        capture_event: BrowserSessionEvent,
+    }
+
+    impl BrowserSessionPort for LifecycleSession {
+        fn session_origin(&self) -> SessionOrigin {
+            SessionOrigin::new(krometrail_core::ObservedTime::from_nanos(0))
+        }
+
+        fn status(&self) -> PortFuture<'_, krometrail_core::Result<BrowserStatus>> {
+            Box::pin(std::future::ready(Ok(self.status.clone())))
+        }
+
+        fn subscribe(
+            &self,
+        ) -> PortFuture<'_, krometrail_core::Result<Box<dyn BrowserSessionEvents>>> {
+            Box::pin(std::future::ready(Ok(Box::new(LifecycleEvents {
+                next: Some(self.capture_event.clone()),
+            })
+                as Box<dyn BrowserSessionEvents>)))
+        }
+
+        fn execute(
+            &self,
+            _request: BrowserOperationRequest,
+            _context: BrowserOperationContext,
+        ) -> PortFuture<'_, krometrail_core::Result<BrowserOperationResult>> {
+            panic!("lifecycle contract test must not execute a browser operation")
+        }
+
+        fn stop(&self) -> PortFuture<'_, krometrail_core::Result<BrowserStopOutcome>> {
+            Box::pin(std::future::ready(Ok(BrowserStopOutcome::Detached)))
+        }
+    }
+
+    struct LifecycleConnector {
+        connect_calls: AtomicUsize,
+        requests: Mutex<Vec<BrowserConnectRequest>>,
+        session: Mutex<Option<Arc<LifecycleSession>>>,
+    }
+
+    impl LifecycleConnector {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                connect_calls: AtomicUsize::new(0),
+                requests: Mutex::new(Vec::new()),
+                session: Mutex::new(None),
+            })
+        }
+
+        fn requests(&self) -> Vec<BrowserConnectRequest> {
+            self.requests.lock().unwrap().clone()
+        }
+
+        fn session(&self) -> Arc<LifecycleSession> {
+            self.session
+                .lock()
+                .unwrap()
+                .clone()
+                .expect("valid lifecycle call creates a session")
+        }
+    }
+
+    impl BrowserConnector for LifecycleConnector {
+        fn installations(
+            &self,
+        ) -> PortFuture<'_, krometrail_core::Result<Vec<BrowserInstallation>>> {
+            Box::pin(std::future::ready(Ok(Vec::new())))
+        }
+
+        fn connect(
+            &self,
+            request: BrowserConnectRequest,
+        ) -> PortFuture<'_, krometrail_core::Result<Arc<dyn BrowserSessionPort>>> {
+            let stride = match &request {
+                BrowserConnectRequest::Launch(request) => request.every_nth_frame,
+                BrowserConnectRequest::Attach(request) => request.every_nth_frame,
+            };
+            self.connect_calls.fetch_add(1, Ordering::SeqCst);
+            self.requests.lock().unwrap().push(request);
+            let session = Arc::new(LifecycleSession {
+                status: protocol_status_with_stride(stride),
+                capture_event: capture_event(stride),
+            });
+            *self.session.lock().unwrap() = Some(Arc::clone(&session));
+            Box::pin(std::future::ready(Ok(
+                session as Arc<dyn BrowserSessionPort>
+            )))
+        }
+    }
+
+    fn capture_event(stride: EveryNthFrame) -> BrowserSessionEvent {
+        BrowserSessionEvent::CaptureStateChanged {
+            status: TargetCaptureStatus::new(
+                target_id(),
+                1,
+                CaptureStreamState::Capturing,
+                CaptureStatistics::default(),
+                1,
+                0,
+                None,
+                CaptureTimingSummary::empty(),
+                CaptureTimingSummary::empty(),
+                stride,
+            )
+            .unwrap(),
+        }
+    }
+
     fn protocol_status() -> BrowserStatus {
+        protocol_status_with_stride(EveryNthFrame::default())
+    }
+
+    fn protocol_status_with_stride(stride: EveryNthFrame) -> BrowserStatus {
         let version = BrowserVersion::new(
             BrowserProduct::Chrome,
             BrowserProductVersion::new("1").unwrap(),
@@ -635,7 +880,7 @@ mod tests {
             Vec::<PageStatus>::new(),
             Vec::new(),
             RetentionStatus::empty(krometrail_core::DiskBudgetBytes::default()),
-            krometrail_core::EveryNthFrame::default(),
+            stride,
         )
         .unwrap()
     }
@@ -656,6 +901,61 @@ mod tests {
         reader.read_line(&mut line).await.unwrap();
         assert!(!line.is_empty(), "server closed before a JSON-RPC response");
         serde_json::from_str(&line).unwrap()
+    }
+
+    async fn invoke_control_tools(
+        connector: Arc<LifecycleConnector>,
+        calls: Vec<(&'static str, Value)>,
+    ) -> Vec<Value> {
+        let browser: Arc<dyn BrowserConnector> = connector;
+        let service = build_service(
+            dependencies(browser),
+            McpConfig::new(vec![CapabilityId::Control]).unwrap(),
+        )
+        .unwrap();
+        let (client_io, server_io) = tokio::io::duplex(256 * 1024);
+        let server_task = tokio::spawn(async move {
+            let running = service.server.serve(server_io).await.unwrap();
+            running.waiting().await.unwrap();
+        });
+        let (read, mut write) = tokio::io::split(client_io);
+        let mut read = BufReader::new(read);
+        send_json(
+            &mut write,
+            json!({
+                "jsonrpc":"2.0","id":1,"method":"initialize","params":{
+                    "protocolVersion":"2025-06-18","capabilities":{},
+                    "clientInfo":{"name":"lifecycle-route-test","version":"1"}
+                }
+            }),
+        )
+        .await;
+        let initialized = read_json(&mut read).await;
+        assert_eq!(initialized["result"]["protocolVersion"], "2025-06-18");
+        send_json(
+            &mut write,
+            json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+        )
+        .await;
+
+        let mut responses = Vec::with_capacity(calls.len());
+        for (index, (name, arguments)) in calls.into_iter().enumerate() {
+            send_json(
+                &mut write,
+                json!({
+                    "jsonrpc":"2.0",
+                    "id": index + 2,
+                    "method":"tools/call",
+                    "params":{"name":name,"arguments":arguments}
+                }),
+            )
+            .await;
+            responses.push(read_json(&mut read).await);
+        }
+        drop(write);
+        drop(read);
+        let _ = server_task.await;
+        responses
     }
 
     async fn invoke_temporal_tool(

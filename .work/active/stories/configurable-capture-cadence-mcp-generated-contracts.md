@@ -1,7 +1,7 @@
 ---
 id: configurable-capture-cadence-mcp-generated-contracts
 kind: story
-stage: implementing
+stage: done
 tags: [browser, agent-ux, testing]
 parent: configurable-capture-cadence
 depends_on: [configurable-capture-cadence-session-capture-forwarding]
@@ -49,15 +49,28 @@ regeneration file.
 
 ## Acceptance evidence
 
-- [ ] Generated `start_browser` and `attach_browser` schemas contain identical optional
+- [x] Generated `start_browser` and `attach_browser` schemas contain identical optional
       `every_nth_frame` properties with minimum 1, maximum 60, and default 1.
-- [ ] Omitted MCP arguments reach core defaults; 1, 7, and 60 are accepted; 0, 61, null, strings,
+- [x] Omitted MCP arguments reach core defaults; 1, 7, and 60 are accepted; 0, 61, null, strings,
       and fractions fail before the connector is called.
-- [ ] MCP lifecycle/status results and capture-state events expose the same request-bound value.
-- [ ] Tests prove generated schemas and forwarding through the existing owner, without a duplicate
+- [x] MCP lifecycle/status results and capture-state events expose the same request-bound value.
+- [x] Tests prove generated schemas and forwarding through the existing owner, without a duplicate
       request type or checked-in MCP schema artifact.
 
 ## Ordering
 
 Depends on the completed core and CDP session checkpoints so the MCP contract test observes the
 same value through a live session/status projection. Evaluation identity is the final checkpoint.
+
+## Implementation notes
+
+- Execution capability: direct-read inline implementation as feature owner.
+- The existing lifecycle routes and `parse_arguments` path already derive schemas and deserialize
+  `LaunchBrowser`/`AttachBrowser`; no production MCP type or validation path was added.
+- Runtime MCP tests inspect both generated route schemas, exercise omitted/1/7/60 forwarding through
+  `BrowserSessionOwner`, and prove 0/61/null/string/fraction inputs return visible `invalid_input`
+  errors with zero connector calls. The same owner/session seam projects the request into lifecycle
+  status, `browser_status`, and serialized `CaptureStateChanged` status.
+- Verification: Rust 1.85.0 `cargo fmt --all -- --check`, `cargo check --workspace --all-targets
+  --locked`, `cargo test --workspace --all-targets --locked` (724 passed, 4 ignored), and
+  `cargo clippy --workspace --all-targets --locked -- -D warnings` all pass.
