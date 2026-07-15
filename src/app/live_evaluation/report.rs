@@ -1038,16 +1038,27 @@ pub fn finalize_manifest_at(
     cleanup: CleanupObservation,
     path: &Path,
 ) -> Result<PathBuf> {
+    finalize_manifest_value(&mut run, cleanup, path).map(|_| path.to_owned())
+}
+
+/// Finalize and return the exact manifest that was published. The returned value is useful to
+/// the in-process qualification entry point, while `finalize_manifest_at` preserves the existing
+/// path-only helper for contract tests.
+pub fn finalize_manifest_value(
+    run: &mut RunManifest,
+    cleanup: CleanupObservation,
+    path: &Path,
+) -> Result<RunManifest> {
     if !is_safe_manifest_path(path) {
         return Err(report_error(
             "live output path is outside the ignored qualification boundary",
         ));
     }
-    let result = finalize_manifest_inner(&mut run, cleanup, path);
+    let result = finalize_manifest_inner(run, cleanup, path);
     if let Err(error) = &result {
         write_safe_error_report(path, error.code);
     }
-    result
+    result.map(|_| run.clone())
 }
 
 fn finalize_manifest_inner(
@@ -1213,7 +1224,10 @@ fn safe_component(value: &str) -> bool {
 }
 
 /// Finalize a run using the canonical `<product>/<run-id>` output boundary.
-pub async fn finalize_manifest(run: RunManifest, cleanup: CleanupObservation) -> Result<PathBuf> {
+pub(crate) async fn finalize_manifest(
+    run: RunManifest,
+    cleanup: CleanupObservation,
+) -> Result<PathBuf> {
     if super::OptInDecision::from_environment() != super::OptInDecision::Authorized {
         return Err(live_error(
             ErrorCode::InvalidLifecycleTransition,

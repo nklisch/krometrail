@@ -430,7 +430,7 @@ ordinary qualification.
 
 ## Acceptance evidence
 
-- [ ] With the opt-in absent, ordinary workspace tests do not start Chrome, bind a fixture server,
+- [x] With the opt-in absent, ordinary workspace tests do not start Chrome, bind a fixture server,
       create a managed profile, touch the operator data directory, or write live output.
 - [ ] Scripted/no-browser tests prove canonical live manifest serialization, registry completeness,
       status precedence, privacy/path rejection, failure recovery, deterministic barrier ordering,
@@ -503,3 +503,29 @@ and later authorized model lanes.
   identity, source frames, gaps, resource samples, latency measurements, or live pass is claimed.
   No Chrome, model, paid/remote service, performance/report follow-up, or backlog work was started;
   `.work/bin/work-view` was not restored, staged, or committed.
+
+## Review fix M1 (2026-07-15)
+
+M1 was accepted: the implemented lower-level capture/control entry points did not provide one
+operator-runnable composition, and the ignored real-browser coverage did not prove the canonical
+output boundary. The fix adds `run_live_qualification(config)` in the test-only root composition
+module. After the dual opt-in fence it performs preflight, one lifecycle, one production runtime
+and browser session, then capture/control, retention, isolated production recovery, resource
+sampling, latency, canonical report assembly, bounded cleanup, and atomic finalization in order.
+The capture interval retains its exact resolver pair so retention and latency cannot reconstruct a
+natural anchor or use a second authority graph. Recovery uses a child temporary store only because
+the production recovery path must close/reopen a store; the live browser/store runtime remains
+shared for capture, control, retention, and latency.
+
+The root binary is the narrowest honest integration-test home: an ignored `#[tokio::test]` under
+`src/app/live_evaluation.rs` requires both `KROMETRAIL_REAL_CHROME_TESTS=1` and
+`KROMETRAIL_LIVE_CAPTURE_EVALUATION=1`, invokes only `run_live_qualification`, decodes the
+canonical manifest, and asserts the run root contains only
+`target/temporal-evaluation/live/<product>/<run-id>/run-manifest.json`. Runtime cleanup now removes
+only managed data/profile directories and empty parents, never recursively deleting finalized or
+prior run output. Disabled paths write nothing; authorized blocked/skipped preflight paths write
+only honest canonical statuses; no fallback measurements or Chrome invocation were used here.
+
+Verification: Rust 1.85.0 locked default and `qualification-support` workspace check/test/Clippy
+plus formatting passed with no live variables; the ignored integration test was not run. The parent
+remains at `stage: review` and this fix does not initiate a second review.

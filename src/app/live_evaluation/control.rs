@@ -1116,7 +1116,7 @@ pub async fn recover_after_failure(
 
 /// Authorized real-browser control entry point.  It is test-only and has two independent opt-in
 /// gates; ordinary qualification tests call only the scripted seams below.
-pub async fn run_opted_in_control(
+pub(crate) async fn run_opted_in_control(
     config: LiveQualificationConfig,
 ) -> krometrail_core::Result<ControlQualificationRun> {
     if OptInDecision::from_environment() != OptInDecision::Authorized {

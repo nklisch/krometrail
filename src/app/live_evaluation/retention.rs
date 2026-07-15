@@ -26,9 +26,11 @@ pub struct RetentionObservation {
     pub status: EvaluationStatus,
     pub failure: Option<FailureRecord>,
     pub measurements: RetentionQualificationMeasurements,
+    pub source_session_id: SessionId,
     pub source_frame_ids: Vec<FrameId>,
     pub source_availability: FrameAvailability,
     pub linked_artifact_removed: bool,
+    pub linked_artifact_id: Option<ArtifactId>,
     pub declared_gap_ids: Vec<String>,
 }
 
@@ -45,6 +47,25 @@ pub async fn qualify_retention(
     runtime: &QualificationRuntime,
     interval: &ResolvedRange,
     linked_artifact: Option<ArtifactId>,
+) -> krometrail_core::Result<RetentionObservation> {
+    qualify_retention_inner(runtime, interval, linked_artifact, false).await
+}
+
+/// Preserve the captured source interval for a later latency stage. The source-linked deletion
+/// check remains incomplete rather than claiming that preserved evidence was removed.
+pub async fn qualify_retention_preserving_interval(
+    runtime: &QualificationRuntime,
+    interval: &ResolvedRange,
+    linked_artifact: Option<ArtifactId>,
+) -> krometrail_core::Result<RetentionObservation> {
+    qualify_retention_inner(runtime, interval, linked_artifact, true).await
+}
+
+async fn qualify_retention_inner(
+    runtime: &QualificationRuntime,
+    interval: &ResolvedRange,
+    linked_artifact: Option<ArtifactId>,
+    preserve_interval: bool,
 ) -> krometrail_core::Result<RetentionObservation> {
     interval.validate().map_err(|_| {
         live_error(
@@ -223,6 +244,7 @@ pub async fn qualify_retention(
             RetentionEvidence {
                 interval: interval.clone(),
                 linked_artifact,
+                preserve_interval,
                 peak_usage_bytes,
                 usage_bounded,
                 pinned_interval_preserved,
@@ -264,6 +286,7 @@ pub async fn qualify_retention(
             RetentionEvidence {
                 interval: interval.clone(),
                 linked_artifact,
+                preserve_interval,
                 peak_usage_bytes,
                 usage_bounded,
                 pinned_interval_preserved,
@@ -281,6 +304,7 @@ pub async fn qualify_retention(
 struct RetentionEvidence {
     interval: ResolvedRange,
     linked_artifact: Option<ArtifactId>,
+    preserve_interval: bool,
     peak_usage_bytes: u64,
     usage_bounded: bool,
     pinned_interval_preserved: bool,
@@ -298,6 +322,7 @@ async fn finish_retention(
     let RetentionEvidence {
         interval,
         linked_artifact,
+        preserve_interval,
         peak_usage_bytes,
         usage_bounded,
         pinned_interval_preserved,
@@ -307,15 +332,21 @@ async fn finish_retention(
         source_availability,
         declared_gap_ids,
     } = evidence;
-    let deletion = runtime
-        .dependencies
-        .retention
-        .delete_session(interval.session_id)
-        .await?;
-    let linked_artifact_removed = match linked_artifact {
-        Some(artifact_id) => runtime.store.artifact(artifact_id).await?.is_none(),
-        None => false,
+    let removed_frames = if preserve_interval {
+        0
+    } else {
+        runtime
+            .dependencies
+            .retention
+            .delete_session(interval.session_id)
+            .await?
+            .removed_frames
     };
+    let linked_artifact_removed = !preserve_interval
+        && match linked_artifact {
+            Some(artifact_id) => runtime.store.artifact(artifact_id).await?.is_none(),
+            None => false,
+        };
     let measurements = RetentionQualificationMeasurements {
         budget_bytes: runtime
             .dependencies
@@ -329,7 +360,7 @@ async fn finish_retention(
         evicted_frame_count,
         capture_paused_when_pinned,
         capture_resumed_after_unpin,
-        cleanup_removed_frame_count: deletion.removed_frames,
+        cleanup_removed_frame_count: removed_frames,
     };
     let complete = usage_bounded
         && pinned_interval_preserved
@@ -337,7 +368,7 @@ async fn finish_retention(
         && capture_paused_when_pinned
         && capture_resumed_after_unpin
         && linked_artifact_removed
-        && deletion.removed_frames >= interval.frame_ids.len() as u64;
+        && removed_frames >= interval.frame_ids.len() as u64;
     Ok(RetentionObservation {
         status: if complete {
             EvaluationStatus::Pass
@@ -352,11 +383,56 @@ async fn finish_retention(
             retryable: true,
         }),
         measurements,
+        source_session_id: interval.session_id,
         source_frame_ids: interval.frame_ids.clone(),
         source_availability,
         linked_artifact_removed,
+        linked_artifact_id: linked_artifact,
         declared_gap_ids,
     })
+}
+
+/// Complete cleanup for a preserved live interval after the later latency stage has consumed
+/// it. This keeps the dependency order explicit without deleting evidence before latency reads.
+pub async fn finalize_preserved_retention(
+    runtime: &QualificationRuntime,
+    observation: &mut RetentionObservation,
+) -> krometrail_core::Result<()> {
+    if observation.linked_artifact_removed {
+        return Ok(());
+    }
+    let deletion = runtime
+        .dependencies
+        .retention
+        .delete_session(observation.source_session_id)
+        .await?;
+    let linked_artifact_removed = match observation.linked_artifact_id {
+        Some(artifact_id) => runtime.store.artifact(artifact_id).await?.is_none(),
+        None => false,
+    };
+    observation.measurements.cleanup_removed_frame_count = deletion.removed_frames;
+    observation.linked_artifact_removed = linked_artifact_removed;
+    let complete = observation.measurements.peak_usage_bytes
+        <= observation.measurements.budget_bytes
+        && observation.measurements.pinned_interval_preserved
+        && observation.measurements.evicted_frame_count > 0
+        && observation.measurements.capture_paused_when_pinned
+        && observation.measurements.capture_resumed_after_unpin
+        && linked_artifact_removed
+        && deletion.removed_frames >= observation.source_frame_ids.len() as u64;
+    observation.status = if complete {
+        EvaluationStatus::Pass
+    } else {
+        EvaluationStatus::Inconclusive
+    };
+    observation.failure = (!complete).then(|| FailureRecord {
+        code: RunFailureCode::Retention,
+        phase: "retention".into(),
+        reason: "preserved live retention evidence did not complete linked cleanup".into(),
+        recovery: "rerun the bounded retention scenario and verify the captured interval is retained through latency".into(),
+        retryable: true,
+    });
+    Ok(())
 }
 
 fn status_usage_is_bounded(status: &RetentionStatus) -> krometrail_core::Result<bool> {

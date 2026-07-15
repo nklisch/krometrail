@@ -92,7 +92,9 @@ pub(crate) fn qualification_capture_config() -> krometrail_cdp::CaptureConfig {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CaptureTrialMeasurement {
     pub trial: CaptureTrial,
+    pub interaction_id: Option<InteractionId>,
     pub interval: Option<SourceInterval>,
+    pub resolved_range: Option<krometrail_core::ResolvedRange>,
     pub observations: Vec<TemporalFixtureObservation>,
     pub status: EvaluationStatus,
     pub failure: Option<FailureRecord>,
@@ -301,14 +303,23 @@ pub fn interaction_interval_request(
     })
 }
 
+/// The exact interval pair returned by the production resolver. Keeping both values together
+/// prevents later qualification stages from reconstructing a natural interaction anchor from its
+/// serialized projection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResolvedSourceInterval {
+    pub interval: SourceInterval,
+    pub resolved_range: krometrail_core::ResolvedRange,
+}
+
 /// Resolve one exact interval through the production temporal query and then re-read the durable
 /// gap/source authorities. No ordinal arithmetic is used to invent missing frames or gaps.
-pub async fn source_interval_for_interaction(
+pub async fn resolve_source_interval_for_interaction(
     authorities: &IntervalAuthorities<'_>,
     session_id: krometrail_core::SessionId,
     target_id: TargetId,
     interaction_id: InteractionId,
-) -> krometrail_core::Result<SourceInterval> {
+) -> krometrail_core::Result<ResolvedSourceInterval> {
     let request = interaction_interval_request(session_id, target_id, interaction_id)?;
     let resolved = authorities.query.resolve_range(request).await?;
     if resolved.session_id != session_id
@@ -425,7 +436,7 @@ pub async fn source_interval_for_interaction(
         .map(gap_evidence)
         .collect::<krometrail_core::Result<Vec<_>>>()?;
     let interval_id = format!("interval-{interaction_id}");
-    SourceInterval::new(
+    let interval = SourceInterval::new(
         interval_id,
         ScopeIdentity::new(session_id.to_string(), target_id.to_string())
             .map_err(|_| live_error(ErrorCode::InvalidInput, "source interval scope is invalid"))?,
@@ -459,7 +470,24 @@ pub async fn source_interval_for_interaction(
             ErrorCode::PersistenceFailed,
             "source interval identity validation failed",
         )
+    })?;
+    Ok(ResolvedSourceInterval {
+        interval,
+        resolved_range: resolved,
     })
+}
+
+pub async fn source_interval_for_interaction(
+    authorities: &IntervalAuthorities<'_>,
+    session_id: krometrail_core::SessionId,
+    target_id: TargetId,
+    interaction_id: InteractionId,
+) -> krometrail_core::Result<SourceInterval> {
+    Ok(
+        resolve_source_interval_for_interaction(authorities, session_id, target_id, interaction_id)
+            .await?
+            .interval,
+    )
 }
 
 fn gap_evidence(gap: &CaptureGap) -> krometrail_core::Result<GapEvidence> {
@@ -505,14 +533,15 @@ pub async fn capture_connected_session(
         navigate(&session, target_id, url).await?;
         verify_viewport(&session, target_id).await?;
         let interaction_id = run_fixture(&session, target_id).await?;
-        let interval = source_interval_for_interaction(
+        let interval = resolve_source_interval_for_interaction(
             &authorities,
             status.session_id,
             target_id,
             interaction_id,
         )
         .await;
-        measurements.push(measure_trial(trial, case, interval, &authorities).await?);
+        measurements
+            .push(measure_trial(trial, case, interaction_id, interval, &authorities).await?);
     }
     let capture = summarize_capture(definition, &measurements)?;
     let manifest_trials = canonical_manifest_trials(definition)?;
@@ -531,7 +560,7 @@ pub async fn capture_connected_session(
 
 /// Authorized real-run entry point. It performs no work unless both existing and feature-specific
 /// opt-ins are present and validates the committed fixture before browser discovery.
-pub async fn run_opted_in_capture(
+pub(crate) async fn run_opted_in_capture(
     config: LiveQualificationConfig,
 ) -> krometrail_core::Result<CaptureQualificationRun> {
     if OptInDecision::from_environment() != OptInDecision::Authorized {
@@ -794,10 +823,14 @@ async fn wait_for_settle(
 async fn measure_trial(
     trial: CaptureTrial,
     case: &CaseDefinition,
-    interval: krometrail_core::Result<SourceInterval>,
+    interaction_id: InteractionId,
+    interval: krometrail_core::Result<ResolvedSourceInterval>,
     authorities: &IntervalAuthorities<'_>,
 ) -> krometrail_core::Result<CaptureTrialMeasurement> {
-    let interval = match interval {
+    let ResolvedSourceInterval {
+        interval,
+        resolved_range,
+    } = match interval {
         Ok(interval) => interval,
         Err(error) => {
             let status = if matches!(
@@ -810,7 +843,9 @@ async fn measure_trial(
             };
             return Ok(CaptureTrialMeasurement {
                 trial,
+                interaction_id: None,
                 interval: None,
+                resolved_range: None,
                 observations: Vec::new(),
                 status,
                 failure: Some(failure_for_error(error.code)),
@@ -879,7 +914,9 @@ async fn measure_trial(
         .count() as u64;
     Ok(CaptureTrialMeasurement {
         trial,
+        interaction_id: Some(interaction_id),
         interval: Some(interval.clone()),
+        resolved_range: Some(resolved_range),
         observations,
         status,
         failure,
@@ -1473,21 +1510,5 @@ mod tests {
         assert_eq!(capture_threshold(100), Some(9_500));
         assert_eq!(capture_threshold(200), Some(9_500));
         assert_eq!(basis_points(19, 20), 9_500);
-    }
-
-    #[tokio::test]
-    #[ignore = "requires KROMETRAIL_REAL_CHROME_TESTS=1 and KROMETRAIL_LIVE_CAPTURE_EVALUATION=1"]
-    async fn opted_in_real_capture_uses_the_production_session_only() {
-        if OptInDecision::from_environment() != OptInDecision::Authorized {
-            return;
-        }
-        let run = run_opted_in_capture(LiveQualificationConfig::default())
-            .await
-            .expect("authorized live capture");
-        assert_eq!(run.manifest_trials.len(), run.measurements.len());
-        assert_eq!(
-            run.capture.requested_durations_ms,
-            temporal_evaluation::DURATIONS_MS
-        );
     }
 }

@@ -19,11 +19,15 @@ use super::{
 use krometrail_cdp::qualification_support::{ChromeViewport, FixtureServer, real_browser_lock};
 use krometrail_cdp::{LauncherConfig, ProductionBrowserConnector, SystemChromeLauncher};
 use krometrail_core::{
-    BrowserConnector, BrowserInstallation, BrowserProduct, DiskBudgetBytes, ErrorCode, IdSource,
-    KrometrailError, MonotonicClock, NonEmptyText, Result,
+    BrowserConnectRequest, BrowserConnector, BrowserInstallation, BrowserProduct, DiskBudgetBytes,
+    ErrorCode, IdSource, KrometrailError, LaunchBrowser, ManagedProfile, MonotonicClock,
+    NonEmptyText, Result,
 };
 use krometrail_store::RecordingStore;
-use temporal_evaluation::{FailureRecord, RunFailureCode};
+use temporal_evaluation::{
+    Architecture, BrowserAvailability, EnvironmentIdentity, FailureRecord, Platform,
+    QualificationEvidenceMode, RunFailureCode, RunManifest,
+};
 
 mod barriers;
 mod capture;
@@ -332,16 +336,18 @@ impl QualificationRuntime {
         drop(store);
         let data_removed = remove_tree(&data_root);
         let profile_removed = remove_tree(&profile_root);
-        let output_removed = remove_tree(&output_root);
+        // Never recursively remove the live output root: the finalized manifest is written there
+        // after runtime cleanup, and a previous run may already have evidence below it. Remove
+        // only empty directories so cleanup cannot delete another run's output.
+        let _ = remove_empty_tree(data_root.parent().unwrap_or(&output_root));
+        let _ = remove_empty_tree(&output_root);
         CleanupObservation {
             server_stopped: true,
             profile_deleted: profile_removed,
             store_flushed: data_removed,
             lock_released: true,
             output_finalized: false,
-            remaining_managed_resources: u64::from(!data_removed)
-                + u64::from(!profile_removed)
-                + u64::from(!output_removed),
+            remaining_managed_resources: u64::from(!data_removed) + u64::from(!profile_removed),
         }
     }
 }
@@ -477,11 +483,297 @@ fn remove_tree(path: &Path) -> bool {
     fs::remove_dir_all(path).is_ok()
 }
 
+/// Remove an empty directory tree without ever deleting a file. This is used for parent cleanup
+/// around finalized evidence, where recursive deletion would be an unacceptable data-loss path.
+fn remove_empty_tree(path: &Path) -> bool {
+    if !path.exists() {
+        return true;
+    }
+    let Ok(entries) = fs::read_dir(path) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        if entry.path().is_dir() && !remove_empty_tree(&entry.path()) {
+            return false;
+        }
+        if entry.path().is_file() {
+            return false;
+        }
+    }
+    fs::remove_dir(path).is_ok()
+}
+
 fn live_error(code: ErrorCode, message: &'static str) -> KrometrailError {
     KrometrailError::new(
         code,
         NonEmptyText::new(message).expect("static live qualification error"),
     )
+}
+
+/// Run the complete operator-authorized qualification as one dependency-ordered composition.
+///
+/// The lower-level modules remain seams for focused tests, but this is the only live entry point:
+/// it creates one lifecycle, one production runtime/store, and one browser session, then passes
+/// the same authorities through capture, control, retention, recovery, resources, latency, and
+/// report finalization. A missing or incomplete stage is represented in the canonical manifest;
+/// it is never replaced with a fabricated pass.
+pub async fn run_live_qualification(config: LiveQualificationConfig) -> Result<RunManifest> {
+    if OptInDecision::from_environment() != OptInDecision::Authorized {
+        return Err(live_error(
+            ErrorCode::InvalidLifecycleTransition,
+            "live qualification requires both explicit opt-in environment gates",
+        ));
+    }
+
+    // This is a pure committed-fixture/definition check. It intentionally precedes browser
+    // discovery so drift cannot create a managed profile or loopback listener.
+    let definition = capture::validate_fixture_before_launch()?;
+    let preflight = run_preflight(config.clone()).await?;
+    let Some(browser) = preflight.browser.as_ref() else {
+        return Err(live_error(
+            ErrorCode::BrowserNotFound,
+            "authorized qualification preflight did not produce a browser result",
+        ));
+    };
+    let BrowserPreflight::Ready(installation) = browser else {
+        let observations = base_observations(&config, browser_availability(browser));
+        return finalize_observations(&config, observations, clean_without_resources());
+    };
+
+    let lifecycle = match QualificationLifecycle::start(&config, &preflight).await {
+        Ok(lifecycle) => lifecycle,
+        Err(_) => {
+            let observations = base_observations(
+                &config,
+                BrowserAvailability::Unavailable {
+                    reason: "qualification lifecycle could not become ready".into(),
+                    recovery: "inspect the loopback listener and temporary profile permissions, then retry".into(),
+                },
+            );
+            return finalize_observations(&config, observations, clean_without_resources());
+        }
+    };
+    let runtime = match build_qualification_runtime(&config, OptInDecision::Authorized) {
+        Ok(runtime) => runtime,
+        Err(_) => {
+            let cleanup = lifecycle.cleanup();
+            let observations = base_observations(
+                &config,
+                BrowserAvailability::Unavailable {
+                    reason: "qualification production runtime could not be opened".into(),
+                    recovery: "inspect the temporary qualification store and retry".into(),
+                },
+            );
+            return finalize_observations(&config, observations, cleanup);
+        }
+    };
+
+    let wrapper = capture::qualification_wrapper(installation, lifecycle.viewport());
+    let initial_url =
+        lifecycle.temporal_benchmark_url(&definition.cases[0].case_id, definition.duration_ms[0]);
+    let session = match runtime
+        .dependencies
+        .browser
+        .connect(BrowserConnectRequest::Launch(LaunchBrowser {
+            executable: wrapper.as_ref().map(|wrapper| wrapper.path.clone()),
+            profile: ManagedProfile::Temporary,
+            initial_url: Some(initial_url),
+        }))
+        .await
+    {
+        Ok(session) => session,
+        Err(_) => {
+            drop(wrapper);
+            let lifecycle_cleanup = lifecycle.cleanup();
+            let runtime_cleanup = runtime.cleanup();
+            let observations = base_observations(
+                &config,
+                BrowserAvailability::Unavailable {
+                    reason: "qualification browser session could not be launched".into(),
+                    recovery: "inspect the supported browser installation and retry".into(),
+                },
+            );
+            return finalize_observations(
+                &config,
+                observations,
+                merge_cleanup(lifecycle_cleanup, runtime_cleanup, true),
+            );
+        }
+    };
+
+    let observed_browser = session
+        .status()
+        .await
+        .ok()
+        .map(|status| {
+            report::observed_browser(&status.compatibility.version, "live-qualification-cdp")
+        })
+        .unwrap_or_else(|| BrowserAvailability::Unavailable {
+            reason: "qualification browser identity could not be observed".into(),
+            recovery: "verify the browser protocol handshake and retry".into(),
+        });
+
+    let capture =
+        capture::capture_connected_session(&runtime, Arc::clone(&session), &lifecycle, &definition)
+            .await
+            .ok();
+    let control = if capture.is_some() {
+        control::run_control_session(&runtime, Arc::clone(&session), &lifecycle)
+            .await
+            .ok()
+    } else {
+        None
+    };
+
+    // Retention and latency consume one exact interval returned by the capture resolver. The
+    // retention probe cleans only its own probe sessions, preserving this interval for latency.
+    let interval = capture.as_ref().and_then(|run| {
+        run.measurements.iter().find_map(|measurement| {
+            measurement
+                .interval
+                .as_ref()
+                .zip(measurement.resolved_range.as_ref())
+        })
+    });
+    let mut retention = match interval {
+        Some((_, resolved_range)) => {
+            retention::qualify_retention_preserving_interval(&runtime, resolved_range, None)
+                .await
+                .ok()
+        }
+        None => None,
+    };
+
+    // Recovery owns a separate temporary scenario root because its production implementation
+    // intentionally closes and reopens a store. The browser/capture runtime remains alive and is
+    // still the shared authority for the real evidence and later latency call.
+    let recovery = recovery::qualify_recovery(&recovery_scenario_config(&config))
+        .await
+        .ok();
+    let resources = Some(resource_usage::sample_process_resources());
+    let latency = match interval {
+        Some((source_interval, resolved_range)) => {
+            latency::measure_latency(&runtime, source_interval, resolved_range)
+                .await
+                .ok()
+        }
+        None => None,
+    };
+    // Stop capture before deleting the preserved source session. This is the final production
+    // evidence fence; cleanup never races an active writer against session deletion.
+    let stop_succeeded = session.stop().await.is_ok();
+    if stop_succeeded {
+        if let Some(retention) = retention.as_mut() {
+            let _ = retention::finalize_preserved_retention(&runtime, retention).await;
+        }
+    }
+    drop(wrapper);
+    let lifecycle_cleanup = lifecycle.cleanup();
+    let runtime_cleanup = runtime.cleanup();
+    let cleanup = merge_cleanup(lifecycle_cleanup, runtime_cleanup, stop_succeeded);
+    let mut observations = base_observations(&config, observed_browser);
+    observations.capture = capture;
+    observations.control = control;
+    observations.retention = retention;
+    observations.recovery = recovery;
+    observations.resources = resources;
+    observations.latency = latency;
+    finalize_observations(&config, observations, cleanup)
+}
+
+fn base_observations(
+    config: &LiveQualificationConfig,
+    browser: BrowserAvailability,
+) -> report::QualificationObservations {
+    let mut observations = report::QualificationObservations::contract_seed();
+    observations.browser = browser;
+    observations.optional_configuration = config.optional_browser;
+    observations.evidence_mode = QualificationEvidenceMode::OperatorAuthorizedLiveCapture;
+    observations.retention_budget = config.retention_budget;
+    observations.environment = Some(EnvironmentIdentity {
+        platform: if cfg!(target_os = "linux") {
+            Platform::Linux
+        } else if cfg!(target_os = "macos") {
+            Platform::Macos
+        } else if cfg!(target_os = "windows") {
+            Platform::Windows
+        } else {
+            Platform::Other
+        },
+        architecture: if cfg!(target_arch = "x86_64") {
+            Architecture::X86_64
+        } else if cfg!(target_arch = "aarch64") {
+            Architecture::Aarch64
+        } else {
+            Architecture::Other
+        },
+        os_release_class: std::env::consts::OS.into(),
+    });
+    observations
+}
+
+fn browser_availability(preflight: &BrowserPreflight) -> BrowserAvailability {
+    match preflight {
+        BrowserPreflight::Ready(_) => BrowserAvailability::Unavailable {
+            reason: "browser identity was not observed".into(),
+            recovery: "complete the browser protocol handshake and retry".into(),
+        },
+        BrowserPreflight::Blocked(failure) => BrowserAvailability::Blocked {
+            reason: failure.reason.clone(),
+            recovery: failure.recovery.clone(),
+        },
+        BrowserPreflight::Skipped(failure) => BrowserAvailability::Skipped {
+            product: temporal_evaluation::BrowserProduct::Chromium,
+            reason: failure.reason.clone(),
+            recovery: failure.recovery.clone(),
+        },
+    }
+}
+
+fn clean_without_resources() -> CleanupObservation {
+    CleanupObservation {
+        server_stopped: true,
+        profile_deleted: true,
+        store_flushed: true,
+        lock_released: true,
+        output_finalized: false,
+        remaining_managed_resources: 0,
+    }
+}
+
+fn merge_cleanup(
+    lifecycle: CleanupObservation,
+    runtime: CleanupObservation,
+    stop_succeeded: bool,
+) -> CleanupObservation {
+    CleanupObservation {
+        server_stopped: lifecycle.server_stopped,
+        profile_deleted: lifecycle.profile_deleted && runtime.profile_deleted,
+        store_flushed: runtime.store_flushed,
+        lock_released: lifecycle.lock_released && runtime.lock_released,
+        output_finalized: false,
+        remaining_managed_resources: lifecycle
+            .remaining_managed_resources
+            .saturating_add(runtime.remaining_managed_resources)
+            .saturating_add(u64::from(!stop_succeeded)),
+    }
+}
+
+fn recovery_scenario_config(config: &LiveQualificationConfig) -> LiveQualificationConfig {
+    LiveQualificationConfig {
+        output_root: config.run_root().join("recovery-scenario"),
+        run_id: "store-recovery".into(),
+        ..config.clone()
+    }
+}
+
+fn finalize_observations(
+    config: &LiveQualificationConfig,
+    observations: report::QualificationObservations,
+    cleanup: CleanupObservation,
+) -> Result<RunManifest> {
+    let mut run = report::assemble_manifest(observations)?;
+    report::finalize_manifest_value(&mut run, cleanup, &config.output_path())
 }
 
 #[cfg(test)]
@@ -599,5 +891,63 @@ mod tests {
                 .run_root()
                 .ends_with("target/temporal-evaluation/live/chrome/invalid-run-id")
         );
+    }
+
+    #[tokio::test]
+    async fn live_orchestrator_rejects_missing_opt_in_without_touching_output() {
+        if OptInDecision::from_environment() == OptInDecision::Authorized {
+            // This test is deliberately never allowed to exercise the live path. The ignored
+            // integration test below is the only browser-launching test.
+            return;
+        }
+        let root = std::env::temp_dir().join(format!(
+            "krometrail-live-orchestrator-disabled-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let config = LiveQualificationConfig {
+            output_root: root.clone(),
+            ..LiveQualificationConfig::default()
+        };
+        let error = run_live_qualification(config).await.unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidLifecycleTransition);
+        assert!(!root.exists());
+    }
+
+    #[test]
+    fn recovery_scenario_isolated_from_the_live_store_and_output_manifest() {
+        let config = LiveQualificationConfig::default();
+        let recovery = recovery_scenario_config(&config);
+        assert!(recovery.run_root().starts_with(config.run_root()));
+        assert_ne!(recovery.data_root(), config.data_root());
+        assert!(recovery.output_path().ends_with("run-manifest.json"));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires KROMETRAIL_REAL_CHROME_TESTS=1 and KROMETRAIL_LIVE_CAPTURE_EVALUATION=1"]
+    async fn opted_in_real_qualification_writes_only_the_canonical_manifest() {
+        assert_eq!(
+            OptInDecision::from_environment(),
+            OptInDecision::Authorized,
+            "set both live qualification opt-in variables to run this test"
+        );
+        let config = LiveQualificationConfig::default();
+        let manifest = run_live_qualification(config.clone())
+            .await
+            .expect("authorized live qualification");
+        let output = config.output_path();
+        let expected_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target/temporal-evaluation/live");
+        assert!(output.starts_with(expected_root));
+        assert!(output.ends_with("run-manifest.json"));
+        let bytes = fs::read(&output).expect("canonical live manifest");
+        assert_eq!(
+            temporal_evaluation::RunManifest::from_canonical_json(&bytes).unwrap(),
+            manifest
+        );
+        let entries = fs::read_dir(config.run_root())
+            .expect("live run root")
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        assert_eq!(entries, vec![std::ffi::OsString::from("run-manifest.json")]);
     }
 }
