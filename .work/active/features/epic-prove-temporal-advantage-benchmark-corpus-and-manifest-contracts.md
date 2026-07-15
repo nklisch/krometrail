@@ -1,7 +1,7 @@
 ---
 id: epic-prove-temporal-advantage-benchmark-corpus-and-manifest-contracts
 kind: feature
-stage: review
+stage: done
 tags: [testing, visual, browser]
 parent: epic-prove-temporal-advantage
 depends_on: []
@@ -418,3 +418,7 @@ intentionally remains at `stage: review` for host approval and is not re-reviewe
 Advisory nits remain recorded as non-blocking notes rather than expanded into this remediation;
 no scoring implementation, live browser/network/model execution, re-review, or unrelated cleanup
 was performed.
+
+## Review decision
+
+**Approved.** The single standard independent review was performed by `zai/glm-5.2` after implementation by `openai-codex/gpt-5.6-luna`. It found no material blockers. The skipped-row and viewport-ROI findings were accepted because downstream scoring consumes those contracts, repaired in `fda17ea`, and verified through deterministic fixture-drift tests, regenerated canonical artifacts, and the full Rust 1.85 workspace gate. Remaining nits are non-material current-cycle observations. Per standard review policy, no repeat review was run. The feature advances to `done`.
