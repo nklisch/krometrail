@@ -16,7 +16,10 @@ A normal locked Rust test run proves only that:
 - result records bind the manifest input digest to exact packages, scores, aggregates, threshold
   checks, retained evidence/source identities, artifact output/manifest hashes, algorithm/version
   identities, and cache identities without copying the manifest or storing raw/model/page prose,
-  bytes, paths, or URLs; and
+  bytes, paths, or URLs;
+- deterministic qualification replays fixed source records through the fake monotonic-clock and
+  existing authority seams, checks the A–E budgets and one-interval identity, and keeps gaps,
+  eviction, corruption, partial retrieval, unavailable inputs, and skipped rows non-passing; and
 - benchmark output has an ignored destination under `target/temporal-evaluation/`.
 
 That is a **contract and reproducibility claim only**. CI does not claim that Chrome captured any
@@ -110,7 +113,10 @@ and must retain the same explicit status semantics. A deterministic-CI result ca
 thesis-eligible, even when synthetic arithmetic thresholds pass; its fixed non-claims explicitly
 cover Chrome capture, network access, paid/model calls, model comprehension, product-thesis
 improvement, causal diagnosis, deterministic replay, cross-model generalization, unobserved
-frames, and treating artifacts as ground truth.
+frames, and treating artifacts as ground truth. The qualification suite's synthetic answers and
+fake source/store records therefore prove contract and traceability behavior only; they do not
+qualify browser capture, artifact usefulness, platforms, model interpretation, debugging, or the
+product thesis.
 
 ## Ignored run output
 

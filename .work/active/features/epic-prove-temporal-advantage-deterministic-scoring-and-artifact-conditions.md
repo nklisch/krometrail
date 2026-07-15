@@ -1,7 +1,7 @@
 ---
 id: epic-prove-temporal-advantage-deterministic-scoring-and-artifact-conditions
 kind: feature
-stage: implementing
+stage: review
 tags: [testing, visual]
 parent: epic-prove-temporal-advantage
 depends_on:
@@ -788,10 +788,27 @@ stories preserve the contract boundaries and evidence required for later live/ma
 
 ## Blockers
 
-The prerequisite benchmark corpus/manifest feature has implemented, schema-backed condition,
-prompt, scoring, status, matrix, and run-manifest contracts, but its review-fix story must first
-align ROI semantics and tighten skipped-row closure. The current temporal-vision artifact
-APIs/tests, typed storyboard trace, artifact cache metadata, bundle contract, progressive handles,
-and store/fake seams provide the authorities this design consumes. No external research, model
-authorization, browser installation, network access, or schema migration is required for this
-CI-safe feature.
+The prerequisite benchmark corpus/manifest feature and its ROI/skipped-row review fix are
+complete. The current temporal-vision artifact APIs/tests, typed storyboard trace, artifact cache
+metadata, bundle contract, progressive handles, and store/fake seams provide the authorities this
+feature consumes. No external research, model authorization, browser installation, network access,
+or schema migration was required for this CI-safe feature.
+
+## Integrated implementation evidence
+
+All five sequential child checkpoints are complete: condition packaging, structured scoring,
+threshold aggregation, canonical result records, and deterministic CI qualification. The final
+qualification adds browser-free fake-clock/source records, exact A–E budget and authority tests,
+uniform-versus-change-aware distinction, parallel/call/order byte-stability checks, one-field
+identity mutation rejection, explicit gap/eviction/corruption/partial/unavailable/skipped status
+coverage, and byte-identical clean generation checks. Existing `RecordingStore` progressive,
+artifact-integrity, retention, and recovery suites remain the persistence seam authority; no fake
+store, browser, renderer, cache, or product command was introduced. The scorer preserves a distinct
+`CorruptSource` failure/recovery state rather than flattening corrupt evidence into retention loss.
+
+Integrated verification passed with Rust 1.85 locked `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --locked`, `cargo test --workspace --all-targets --locked`
+(705 passed, 1 ignored), and `cargo clippy --workspace --all-targets --locked -- -D warnings`.
+The qualification generators reproduced all committed definition, manifest, and result artifacts
+byte-for-byte without changing `docs/public/llms-full.txt` or tracked run output. The feature is
+ready for feature-level review; no parent review was performed in this implementation pass.

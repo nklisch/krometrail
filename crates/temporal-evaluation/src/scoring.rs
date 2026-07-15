@@ -385,6 +385,7 @@ struct EvidenceInventory {
     retained_source_frames: BTreeSet<String>,
     has_unavailable_evidence: bool,
     has_capture_gap: bool,
+    has_corrupt_evidence: bool,
     has_missing_source: bool,
     has_historical_presentation: bool,
     has_retained_region_evidence: bool,
@@ -479,6 +480,7 @@ impl EvidenceInventory {
             );
         } else {
             self.has_capture_gap |= reference.availability == EvidenceAvailability::Gap;
+            self.has_corrupt_evidence |= reference.availability == EvidenceAvailability::Corrupt;
             self.has_unavailable_evidence = true;
         }
     }
@@ -520,6 +522,8 @@ impl EvidenceInventory {
     fn failure_code(&self) -> crate::RunFailureCode {
         if self.has_capture_gap {
             crate::RunFailureCode::CaptureGap
+        } else if self.has_corrupt_evidence {
+            crate::RunFailureCode::CorruptSource
         } else if self.has_missing_source {
             crate::RunFailureCode::Retention
         } else {
@@ -530,6 +534,8 @@ impl EvidenceInventory {
     fn failure_reason(&self) -> &'static str {
         if self.has_capture_gap {
             "the source interval contains a declared capture gap"
+        } else if self.has_corrupt_evidence {
+            "a required source or artifact failed integrity validation"
         } else if self.has_missing_source {
             "a required source or artifact is not fully retained"
         } else {
@@ -540,6 +546,8 @@ impl EvidenceInventory {
     fn failure_recovery(&self) -> &'static str {
         if self.has_capture_gap {
             "recapture a gap-free interval or retain a gap-aware answer"
+        } else if self.has_corrupt_evidence {
+            "invalidate or regenerate the corrupt artifact from retained source evidence"
         } else if self.has_missing_source {
             "retain the required source and artifact evidence before scoring"
         } else {
