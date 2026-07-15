@@ -1,7 +1,7 @@
 ---
 id: perf-temporal-normalize-opaque-row-major
 kind: story
-stage: implementing
+stage: review
 tags: [perf, visual, testing]
 parent: null
 depends_on: []
@@ -80,18 +80,18 @@ cache identity, or algorithm versions.
 
 ## Acceptance budget
 
-- [ ] Existing temporal-vision tests plus new focused opaque/full-frame,
+- [x] Existing temporal-vision tests plus new focused opaque/full-frame,
       alpha, crop, identity, up-scale, and down-scale equality tests pass.
-- [ ] Normalized buffers, manifests, generated PNG bytes, and hashes remain byte
+- [x] Normalized buffers, manifests, generated PNG bytes, and hashes remain byte
       identical for representative opaque and alpha inputs.
-- [ ] On the same host and Rust 1.85 release command, five measured repetitions
+- [x] On the same host and Rust 1.85 release command, five measured repetitions
       show at least **15% lower normalization wall time** at both 30 frames
       (baseline 351.599 ms) and 120 frames (baseline 1,218.810 ms), with no
       greater than 5% regression at 2 frames (baseline 26.011 ms).
-- [ ] Cold 120-frame production-policy artifact generation does not regress wall
+- [x] Cold 120-frame production-policy artifact generation does not regress wall
       time by more than 5% from 2,583.599 ms and does not increase peak RSS by
       more than 5% from 1,375,468 KiB.
-- [ ] The optimized path remains deterministic and does not reduce capture
+- [x] The optimized path remains deterministic and does not reduce capture
       headroom by adding unbounded work, threads, or retained buffers.
 
 ## Scout disposition
@@ -106,4 +106,61 @@ cache identity, or algorithm versions.
 ## Discovery notes
 
 This story was emitted by `perf-design` discovery with `gate_origin: perf-design`.
-No product optimization or committed benchmark scaffold has been applied.
+
+## Implementation notes
+
+- Execution capability: GPT-5.6 Luna inline implementation; the change is one
+  cohesive normalization-module optimization with no ownership split.
+- Review weight: standard default, but the caller explicitly requested
+  `implementing -> review` without running the standalone review lane.
+- Files changed: `crates/temporal-vision/src/normalize.rs`.
+- Tests added: private kernel equality coverage for opaque identity and exact
+  opaque down-2 output, plus path-selection coverage rejecting alpha, crop,
+  upscale, and restricted-domain inputs. Existing alpha, crop, mask, identity,
+  upscale, downscale, provenance, and limit tests remain green.
+- Implementation: `normalize_sequence` only permits the fast path for an
+  unrequested crop and unrestricted domain. Identity uses direct packed
+  row-major transfer-table conversion; opaque downscale uses the existing
+  non-overlapping box average and round-half-up rule over direct source rows.
+  General alpha, crop, upscale, downscale, mask, and restricted-domain inputs
+  retain the existing kernel and all provenance/cache identity strings are
+  unchanged.
+- Benchmark harness: recreated temporarily under `/tmp` with Rust 1.85.0,
+  `--release`, locked/offline dependencies, 1920x1080 opaque PNGs with a moving
+  256px patch, and removed from the repository after measurement. A temporary
+  real-`RecordingStore` production-policy harness also ran the cold 120-frame
+  storyboard + orientation + difference-map request; neither harness is a
+  committed scaffold.
+- Normalization distributions, five repetitions each (ms; before -> after):
+  `2: mean 22.913 -> 9.348 (59.2% lower)`, `30: mean 354.557 -> 140.826
+  (60.3% lower)`, `120: mean 1,186.888 -> 553.965 (53.3% lower)`. The five
+  before/after samples were respectively `[22.814, 22.782, 22.757, 22.832,
+  23.380]` -> `[9.466, 9.360, 9.358, 9.269, 9.286]`,
+  `[382.056, 359.829, 359.694, 341.177, 330.030]` ->
+  `[149.264, 138.496, 138.454, 138.111, 139.803]`, and
+  `[1,217.854, 1,183.112, 1,212.795, 1,162.970, 1,157.707]` ->
+  `[558.883, 557.188, 548.797, 552.266, 552.693]`.
+- Output evidence: normalized digest
+  `dc815f40241de22f466233a7d6624b582d93503a871ec8801c83d03ec737d1be`,
+  storyboard PNG SHA-256
+  `b0e2665a32d4204c5c840112ee653114d5f90e488ea4a00924cb3115ef046613`,
+  difference-map PNG SHA-256
+  `0789ce05abb16a0dff3d2243d2ba2ec87a05a55a120447fab28eea53da6a2616`, and
+  matching storyboard/difference manifest SHA-256 values before and after.
+  The production-policy run also matched orientation bytes and manifests.
+- Cold production-policy 120-frame result: baseline-harness `1,965.824 ms`,
+  optimized `1,994.995 ms` (1.5% same-harness variation); against the recorded
+  discovery baseline `2,583.599 ms`, this is 22.8% lower. Peak RSS was
+  `1,393,504 -> 1,394,252 KiB` in the same harness (+0.007%), and the
+  optimized absolute value is 1.4% above the recorded `1,375,468 KiB` baseline,
+  within the 5% budget.
+- Verification: `cargo fmt --all -- --check`, workspace check, workspace test
+  (706 passed, 1 ignored), and workspace clippy with `-D warnings` all pass.
+- Simplification: none beyond splitting the old general kernel from the
+  narrowly selected fast path; no dependencies, LUTs, threads, caches, or
+  adjacent work were added.
+- Discrepancies from design: the measured 120-frame FitLimits case is down-2,
+  so the same opaque full-frame specialization includes an exact downscale
+  traversal; the general downscale path remains untouched for all excluded
+  inputs.
+- Adjacent issues parked: none.
