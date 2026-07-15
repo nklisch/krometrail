@@ -1,7 +1,7 @@
 ---
 id: perf-temporal-normalize-opaque-row-major
 kind: story
-stage: review
+stage: done
 tags: [perf, visual, testing]
 parent: null
 depends_on: []
@@ -183,3 +183,7 @@ This story was emitted by `perf-design` discovery with `gate_origin: perf-design
   were added. The only structural addition is the narrow committed ignored
   scaffold needed to make the evidence reproducible.
 - Adjacent issues parked: none.
+
+## Review decision
+
+**Approved.** A fresh-context `openai-codex/gpt-5.6-luna` bounded standalone review found no correctness blocker. Its downscale-coverage and reproducibility comments were accepted and fixed in `66b9bc0`: identity/down-2/down-4/down-8 now compare against the reference kernel over rectangular multi-row fixtures with artifact/hash equality, and a committed ignored Rust 1.85 benchmark scaffold reproduces five-run distributions. The optimized normalization stage is about 58% faster at 30 and 120 frames; same-harness production-policy E2E improved about 6.8% and 20.5% respectively, while the two-frame result is explicitly inconclusive. Full gates pass. Per standard policy, no re-review was run. The story advances to `done`.
