@@ -6,6 +6,11 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+# Exposes only fault-injection helpers for the test-only live qualification harness.
+qualification-support = []
+
 [dependencies]
 crc32fast.workspace = true
 krometrail-core.workspace = true

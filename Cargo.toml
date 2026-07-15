@@ -56,7 +56,11 @@ url = "2"
 [features]
 default = []
 # Test-only opt-in for local live qualification; it is never enabled by product defaults.
-qualification-support = ["dep:temporal-evaluation", "krometrail-cdp/qualification-support"]
+qualification-support = [
+    "dep:temporal-evaluation",
+    "krometrail-cdp/qualification-support",
+    "krometrail-store/qualification-support",
+]
 
 [dependencies]
 clap.workspace = true
@@ -70,6 +74,7 @@ temporal-evaluation = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+libc.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 tracing.workspace = true
 uuid.workspace = true

@@ -3,6 +3,9 @@ use std::{
     sync::{Arc, Mutex as StdMutex},
 };
 
+#[cfg(feature = "qualification-support")]
+use std::fs;
+
 use krometrail_core::{
     ArtifactCacheKey, ArtifactEvidenceHandle, ArtifactLookup, ArtifactPublication, ArtifactPublish,
     ArtifactRead, ArtifactReadLookup, ArtifactSourceFingerprint, ArtifactStore, BrowserEventBatch,
@@ -133,6 +136,35 @@ impl RecordingStore {
 
     pub fn index(&self) -> &Arc<SqliteIndex> {
         &self.index
+    }
+
+    #[cfg(feature = "qualification-support")]
+    pub(crate) fn qualification_inject_corrupt_ready_artifact(
+        &self,
+        artifact_id: krometrail_core::ArtifactId,
+    ) -> krometrail_core::Result<()> {
+        let final_path = self.artifact_files.final_path(artifact_id);
+        if !final_path.is_file() {
+            return Err(persistence_error(
+                "qualification artifact fault requires a ready payload",
+            ));
+        }
+        fs::write(
+            self.artifact_files.temp_path(artifact_id),
+            b"qualification staged artifact",
+        )
+        .map_err(|_| persistence_error("could not stage a qualification artifact fault"))?;
+        fs::write(final_path, b"qualification corrupt artifact")
+            .map_err(|_| persistence_error("could not corrupt a qualification artifact"))
+    }
+
+    #[cfg(feature = "qualification-support")]
+    pub(crate) fn qualification_artifact_recovery_files_absent(
+        &self,
+        artifact_id: krometrail_core::ArtifactId,
+    ) -> krometrail_core::Result<bool> {
+        Ok(!self.artifact_files.final_path(artifact_id).exists()
+            && !self.artifact_files.temp_path(artifact_id).exists())
     }
 
     fn resume_deletions(&self) -> krometrail_core::Result<()> {

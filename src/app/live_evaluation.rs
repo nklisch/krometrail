@@ -31,6 +31,10 @@ mod barriers;
 mod capture;
 mod control;
 mod fixture_observation;
+mod latency;
+mod recovery;
+mod resource_usage;
+mod retention;
 
 pub(crate) use capture::qualification_capture_config;
 
@@ -289,6 +293,7 @@ pub struct QualificationRuntime {
     pub(crate) data_root: PathBuf,
     pub(crate) profile_root: PathBuf,
     pub(crate) output_root: PathBuf,
+    pub(crate) recovery: krometrail_store::RecoveryReport,
 }
 
 impl QualificationRuntime {
@@ -309,6 +314,7 @@ impl QualificationRuntime {
             data_root,
             profile_root,
             output_root,
+            recovery: _,
         } = self;
         drop(dependencies);
         drop(store);
@@ -418,6 +424,7 @@ pub fn build_qualification_runtime(
         data_root: config.data_root(),
         profile_root: config.profile_root(),
         output_root: config.output_root.clone(),
+        recovery: storage.recovery,
     })
 }
 

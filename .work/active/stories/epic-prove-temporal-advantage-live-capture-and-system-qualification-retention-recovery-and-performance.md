@@ -1,14 +1,14 @@
 ---
 id: epic-prove-temporal-advantage-live-capture-and-system-qualification-retention-recovery-and-performance
 kind: story
-stage: implementing
+stage: done
 tags: [testing, infra, visual]
 parent: epic-prove-temporal-advantage-live-capture-and-system-qualification
 depends_on: [epic-prove-temporal-advantage-live-capture-and-system-qualification-control-reliability-and-session-barriers]
 release_binding: null
 gate_origin: null
 created: 2026-07-14
-updated: 2026-07-14
+updated: 2026-07-15
 ---
 
 # Qualify retention, recovery, resources, and production latency
@@ -56,18 +56,18 @@ identities. The harness never re-renders or hand-authors an artifact to satisfy 
 
 ## Acceptance evidence
 
-- [ ] Scripted store tests verify pin/evict/pause/resume, recovery repair/reconciliation, resource
+- [x] Scripted store tests verify pin/evict/pause/resume, recovery repair/reconciliation, resource
       unavailable handling, and latency cache-disposition accounting without Chrome.
-- [ ] Live retention/recovery scenarios use the existing store/recovery authority and record
+- [x] Live retention/recovery scenarios use the existing store/recovery authority and record
       concrete bounded usage, pinning, eviction, repair, and reconciliation outcomes.
-- [ ] Resource metrics identify process scope and preserve unavailable reasons; no fabricated zero,
+- [x] Resource metrics identify process scope and preserve unavailable reasons; no fabricated zero,
       local host threshold, or private path is emitted.
-- [ ] Cold/warm query and artifact measurements use one source interval, existing cache identities,
+- [x] Cold/warm query and artifact measurements use one source interval, existing cache identities,
       exact dimensions/range, and only the 1 s/5 s EVALUATION thresholds for a true two-second
       1080p profile.
-- [ ] A failed, unavailable, corrupt, or incomplete service result produces fail/inconclusive/
+- [x] A failed, unavailable, corrupt, or incomplete service result produces fail/inconclusive/
       blocked status as appropriate and cannot be promoted to pass by cleanup or serialization.
-- [ ] No model, paid service, remote endpoint, product CLI, second storage authority, or benchmark
+- [x] No model, paid service, remote endpoint, product CLI, second storage authority, or benchmark
       browser runtime is involved.
 
 ## Ordering
@@ -75,3 +75,61 @@ identities. The harness never re-renders or hand-authors an artifact to satisfy 
 This child depends on control barriers because all measurements must be tied to stable interaction
 and source interval identities. The final child consumes its measurements to assemble and verify
 the operator-facing manifest.
+
+## Implementation notes
+
+- Execution capability: resumed inline over the inherited qualification composition; this is one
+  cohesive store/recovery/resource/latency boundary and needed no separate worker.
+- Review weight: standard parent-feature review; this child advanced directly to `done` after the
+  final 1080p cold/warm latency regression and complete gates turned green.
+- Files changed: `src/app/live_evaluation/{retention,recovery,resource_usage,latency}.rs`,
+  `src/app/live_evaluation.rs`, `src/app.rs`, `Cargo.toml`, `Cargo.lock`,
+  `crates/krometrail-store/Cargo.toml`, `crates/krometrail-store/src/lib.rs`, and
+  `crates/krometrail-store/src/recording.rs`.
+- Tests added or strengthened: concrete-store pin/evict/pause/resume/linked-artifact cleanup now
+  requires a passing scripted scenario; recovery injects corrupt and staged artifact state through
+  a feature-gated store fault seam and verifies reopen repair, frame/gap reconciliation, usage, and
+  cleanup; resource tests require explicit inconclusive/unavailable evidence rather than zeros; and
+  latency tests keep the exact two-second 1920x1080 profile separate from 800x450 capture data while
+  asserting typed authority cache metadata, complete manifests, output dimensions, source IDs, and
+  exact cold/warm dispositions.
+- Validation: retention uses the production `RecordingStore` ports and authority-returned interval;
+  recovery reopens through `open_storage_with_budget` and keeps artifact paths private; resource
+  metrics retain process scope and unavailable reasons; latency verifies authority cache identities,
+  cold generated/warm hit dispositions, source interval identity, output hashes/manifests, and only
+  the EVALUATION cached-bundle `<1 s` and uncached-artifact `<5 s` limits.
+- Simplification: no benchmark store, renderer, cache, database/segment format, browser runtime,
+  CLI, remote endpoint, model lane, host-speed threshold, or hand-formatted cache-key projection was
+  added. Latency observations retain the production typed cache metadata and manifest directly;
+  the store fault seam is feature-gated and only exercises the existing recovery authority without
+  exposing private paths.
+- Discrepancies from design: the store received the narrow feature-gated artifact fault-injection
+  seam required to test corrupt/staged recovery without duplicating or exposing storage authority;
+  default product behavior is unchanged.
+- Adjacent issues parked: none.
+
+## Verification evidence
+
+- Root cause fixed: the direct storyboard/difference-map call intentionally warms the shared
+  production artifact cache before the bundle call. The bundle then adds its authority-returned
+  marker/orientation parameters, so its first call legitimately reports generated storyboard and
+  orientation outputs but a hit for the shared difference map. Requiring every bundle output to be
+  `Generated` mislabeled that valid shared-cache identity accounting as `InsufficientEvidence` /
+  `Inconclusive`; no identity check or threshold was weakened.
+- Latency identity accounting now preserves authority-typed cache metadata, cache key, complete
+  manifest/output hash, artifact ID, source-frame IDs, and output dimensions, and verifies the
+  returned handle against the store authority. The regression proves direct cold generation/warm
+  hits, the bundle's mixed first-call dispositions, and all bundle warm hits for one exact
+  authority-returned 1920x1080 two-second range.
+- Final focused scenarios: latency 1 passed; retention pin/evict/pause/resume 1 passed; retention
+  linked-cleanup 1 passed; recovery repair/reconciliation 1 passed; unavailable-resource handling
+  1 passed; platform resource status 1 passed.
+- Final Rust 1.85.0 locked gates: fmt clean; default workspace check passed; default workspace test
+  701 passed, 1 ignored across 60 suites; default workspace Clippy passed with `-D warnings`;
+  qualification-support workspace check passed; qualification-support workspace test 710 passed,
+  2 ignored across 60 suites; qualification-support workspace Clippy passed with `-D warnings`;
+  qualification-support CDP check passed; CDP test 214 passed across 20 suites; CDP Clippy passed
+  with `-D warnings`.
+- No live environment variables were enabled, ignored live tests were not invoked, and Chrome was
+  not launched. `.work/bin/work-view` remains an intentional user modification and was not
+  checked out, overwritten, staged, or committed.

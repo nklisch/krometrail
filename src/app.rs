@@ -27,8 +27,8 @@ use krometrail_cdp::{
 };
 use krometrail_mcp::{McpConfig, McpDependencies, build_service};
 use krometrail_store::{
-    IndexStoreConfig, RecordingStore, RotationConfig, SegmentStoreConfig, SegmentWriter,
-    SqliteIndex, recover,
+    IndexStoreConfig, RecordingStore, RecoveryReport, RotationConfig, SegmentStoreConfig,
+    SegmentWriter, SqliteIndex, recover,
 };
 
 #[cfg(all(test, feature = "qualification-support"))]
@@ -65,6 +65,10 @@ struct StorageDependencies {
     browser_event_sink: Arc<dyn BrowserEventSink>,
     temporal_context: Arc<dyn TemporalContextQuery>,
     artifacts: Arc<dyn ArtifactStore>,
+    // The qualification composition root transfers this authority-owned report to its observation
+    // runtime; the normal product runtime intentionally does not publish startup diagnostics.
+    #[allow(dead_code)]
+    recovery: RecoveryReport,
 }
 
 impl RuntimeDependencies {
@@ -252,6 +256,7 @@ fn open_storage_with_budget(
     )?);
     Ok(StorageDependencies {
         store: Arc::clone(&store),
+        recovery,
         recording: Arc::clone(&store) as Arc<dyn RecordingSink>,
         retention: Arc::clone(&store) as Arc<dyn RetentionStore>,
         timeline: Arc::clone(&store) as Arc<dyn TimelineStore>,
