@@ -3,7 +3,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{ContractError, Result, ScoringDimensionId};
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum ConditionId {
     #[serde(rename = "A-final-screenshot")]

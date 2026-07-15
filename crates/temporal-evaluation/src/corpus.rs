@@ -31,7 +31,9 @@ const FIXTURE_FILE_SHA256: [&str; 4] = [
     "sha256:23da2695cb0b0e164b2a181e5436f31cd59ee42696933f7c7015bccd4648cabb",
 ];
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum CaseFamily {
     MovementReversal,

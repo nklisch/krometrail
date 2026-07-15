@@ -14,6 +14,7 @@ mod packaging;
 mod privacy;
 mod prompts;
 mod scoring;
+mod thresholds;
 mod vocabulary;
 
 pub use canonical::{canonical_json, sha256_prefixed};
@@ -57,6 +58,11 @@ pub use prompts::{
 pub use scoring::{
     DimensionOutcome, DimensionScore, MAX_RAW_ANSWER_BYTES, SCORER_VERSION, ScoreInput, TrialScore,
     score_interpretation,
+};
+pub use thresholds::{
+    ConditionAggregate, DimensionAggregate, ExactRate, FamilyThresholdCheck,
+    THRESHOLD_PROFILE_VERSION, ThresholdAssessment, ThresholdCheck, ThresholdProfile, TrialPair,
+    aggregate_condition, assess_thresholds,
 };
 pub use vocabulary::{ScoringDimension, ScoringDimensionId, ScoringVocabulary};
 

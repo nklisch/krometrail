@@ -1,7 +1,7 @@
 ---
 id: epic-prove-temporal-advantage-deterministic-scoring-and-artifact-conditions-threshold-aggregation-and-status
 kind: story
-stage: implementing
+stage: done
 tags: [testing, visual]
 parent: epic-prove-temporal-advantage-deterministic-scoring-and-artifact-conditions
 depends_on: [epic-prove-temporal-advantage-deterministic-scoring-and-artifact-conditions-structured-scorer-and-ground-truth]
@@ -81,6 +81,25 @@ the matrix registry.
 - [ ] D-vs-A, family gains, D-vs-B, tile-budget, stable-false-positive, and E-report checks use the exact thresholds and same-trial/interval pairing.
 - [ ] Complete below-threshold evidence is `Fail`; gaps, retention loss, corruption, missing rows, unauthorized inputs, and mixed skipped rows cannot become `Pass`.
 - [ ] Threshold tests use synthetic structured scores only and make no capture, model-comprehension, platform, or product-thesis claim.
+
+## Implementation evidence
+
+- Added `thresholds.rs` with integer-only `ExactRate` comparisons using `u128` cross
+  multiplication, the canonical v1 threshold profile, fixed-order dimension/family/condition
+  aggregates, exact trial/source-interval pairing, tile-budget accounting, and threshold checks.
+- Threshold assessment enforces D-over-A 25 percentage points overall, positive gains in each
+  required family, D at least B on paired trials, D's tile budget no greater than B's, stable
+  false-positive delta at most 10 percentage points, complete A-E coverage/retained traceability,
+  and an E report that never substitutes for D.
+- Status precedence preserves blocked, skipped, inconclusive, fail, and pass outcomes; mixed
+  skipped rows/conditions are rejected. Gaps, partial retention, corrupt outputs, missing coverage,
+  and pair mismatches remain non-decisive rather than passing.
+- `TrialScore` now retains source-interval identity and bounded tile count so threshold pairing and
+  budget checks do not infer provenance from condition IDs. No result records, CI qualification,
+  browser capture, model invocation, network access, or visual algorithm was added.
+- Added deterministic synthetic tests for exact boundaries, fixed ordering, complete pass/fail,
+  missing coverage, pair mismatch, gap, retention, corruption, blocked, and mixed-skipped states.
+- Verification passed with Rust 1.85: locked workspace fmt, check, test, and clippy gates.
 
 ## Ordering
 

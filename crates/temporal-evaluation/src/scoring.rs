@@ -8,8 +8,8 @@ use crate::{
     ConditionEvidence, ConditionId, ConditionPackage, ContractError, EvaluationStatus,
     EvidenceAvailability, EvidenceReference, EvidenceReferenceKind, FailureRecord,
     GroundTruthDefinition, Judgment, MotionBehavior, RetentionState, ScoringDimensionId,
-    StateLabel, TrialIdentity, VIEWPORT_HEIGHT, VIEWPORT_WIDTH, canonical_json,
-    parse_interpretation_answer, privacy, sha256_prefixed,
+    StateLabel, TrialIdentity, UNIFORM_SOURCE_FRAME_SLOTS, VIEWPORT_HEIGHT, VIEWPORT_WIDTH,
+    canonical_json, parse_interpretation_answer, privacy, sha256_prefixed,
 };
 
 pub const SCORER_VERSION: &str = "temporal-evaluation-scorer-v1";
@@ -60,6 +60,10 @@ impl DimensionScore {
 pub struct TrialScore {
     pub trial_id: String,
     pub condition_id: ConditionId,
+    /// Exact source interval identity used for threshold pairing.
+    pub source_interval_digest: String,
+    /// Number of source-frame tiles presented to the trial, bounded by eight.
+    pub source_frame_tile_count: u16,
     pub case_id: String,
     pub answer: crate::InterpretationAnswer,
     pub answer_digest: String,
@@ -77,6 +81,12 @@ impl TrialScore {
     pub fn validate(&self) -> crate::Result<()> {
         privacy::validate_trial_id(&self.trial_id, "score trial id")?;
         privacy::validate_safe_text(&self.case_id, "score case id", privacy::MAX_SHORT_TEXT)?;
+        privacy::validate_sha256(&self.source_interval_digest, "score source interval digest")?;
+        if self.source_frame_tile_count > UNIFORM_SOURCE_FRAME_SLOTS as u16 {
+            return Err(ContractError::new(
+                "score source-frame tile count exceeds the eight-frame contract",
+            ));
+        }
         privacy::validate_sha256(&self.answer_digest, "score answer digest")?;
         privacy::validate_opaque_id(&self.raw_answer_ref, "score raw answer reference")?;
         if self.dimensions.len() != ScoringDimensionId::ALL.len()
@@ -117,15 +127,29 @@ impl TrialScore {
             ));
         }
         validate_claims(&self.accepted_claims)?;
+        if let Some(failure) = &self.failure {
+            privacy::validate_safe_text(
+                &failure.phase,
+                "score failure phase",
+                privacy::MAX_SHORT_TEXT,
+            )?;
+            privacy::validate_safe_text(
+                &failure.reason,
+                "score failure reason",
+                privacy::MAX_LONG_TEXT,
+            )?;
+            privacy::validate_safe_text(
+                &failure.recovery,
+                "score failure recovery",
+                privacy::MAX_LONG_TEXT,
+            )?;
+        }
         match (self.status, self.failure.is_some()) {
             (EvaluationStatus::Pass, false)
             | (EvaluationStatus::Fail, true)
-            | (EvaluationStatus::Inconclusive, true) => {}
-            (EvaluationStatus::Blocked | EvaluationStatus::Skipped, _) => {
-                return Err(ContractError::new(
-                    "a trial score cannot be blocked or skipped",
-                ));
-            }
+            | (EvaluationStatus::Inconclusive, true)
+            | (EvaluationStatus::Blocked, true)
+            | (EvaluationStatus::Skipped, true) => {}
             _ => {
                 return Err(ContractError::new(
                     "trial score failure must agree with its status",
@@ -224,6 +248,8 @@ pub fn score_interpretation(input: ScoreInput<'_>) -> crate::Result<TrialScore> 
     let score = TrialScore {
         trial_id: input.trial.trial_id.clone(),
         condition_id: input.trial.condition_id,
+        source_interval_digest: input.package.source_interval_digest.clone(),
+        source_frame_tile_count: source_frame_tile_count(input.package),
         case_id: input.trial.case_id.clone(),
         answer,
         answer_digest: sha256_prefixed(input.raw_answer),
@@ -237,6 +263,46 @@ pub fn score_interpretation(input: ScoreInput<'_>) -> crate::Result<TrialScore> 
     };
     score.validate()?;
     Ok(score)
+}
+
+fn source_frame_tile_count(package: &ConditionPackage) -> u16 {
+    fn artifact_count(artifact: &ArtifactEvidenceReference) -> u16 {
+        artifact.selected_frame_ids.len() as u16
+    }
+
+    match &package.evidence {
+        ConditionEvidence::FinalScreenshot { .. } => 1,
+        ConditionEvidence::UniformStoryboard { slot_frame_ids } => slot_frame_ids.len() as u16,
+        ConditionEvidence::ChangeAwareStoryboard { artifacts } => {
+            artifacts.iter().map(artifact_count).max().unwrap_or(0)
+        }
+        ConditionEvidence::TemporalBundle(bundle) => bundle
+            .before_during_after
+            .iter()
+            .chain(&bundle.storyboards)
+            .chain(&bundle.difference_maps)
+            .map(artifact_count)
+            .max()
+            .unwrap_or(0),
+        ConditionEvidence::ProgressiveSource(evidence) => {
+            let bundle_count = evidence
+                .bundle
+                .before_during_after
+                .iter()
+                .chain(&evidence.bundle.storyboards)
+                .chain(&evidence.bundle.difference_maps)
+                .map(artifact_count)
+                .max()
+                .unwrap_or(0);
+            let retrieval_count = evidence
+                .source_retrievals
+                .iter()
+                .map(|retrieval| retrieval.returned_frames.len() as u16)
+                .max()
+                .unwrap_or(0);
+            bundle_count.max(retrieval_count)
+        }
+    }
 }
 
 fn validate_trial(trial: &TrialIdentity, condition_id: ConditionId) -> crate::Result<()> {
