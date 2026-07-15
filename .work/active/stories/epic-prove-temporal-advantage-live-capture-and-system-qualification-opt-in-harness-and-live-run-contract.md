@@ -1,7 +1,7 @@
 ---
 id: epic-prove-temporal-advantage-live-capture-and-system-qualification-opt-in-harness-and-live-run-contract
 kind: story
-stage: implementing
+stage: done
 tags: [testing, infra]
 parent: epic-prove-temporal-advantage-live-capture-and-system-qualification
 depends_on: []
@@ -64,21 +64,32 @@ enter the manifest.
 
 ## Acceptance evidence
 
-- [ ] Default `cargo test --workspace --all-targets --locked` has no path to Chrome, a listener,
+- [x] Default `cargo test --workspace --all-targets --locked` has no path to Chrome, a listener,
       managed profile, operator data directory, model, network, or live output.
-- [ ] Opt-in is checked before any side effect; required browser absence is `blocked`, optional
+- [x] Opt-in is checked before any side effect; required browser absence is `blocked`, optional
       Linux Chromium absence is `skipped`, and both carry safe reason/recovery records.
-- [ ] Scripted tests prove the runtime graph shares one concrete store across recording, retention,
+- [x] Scripted tests prove the runtime graph shares one concrete store across recording, retention,
       timeline, gaps, frames, queries, progressive evidence, and artifact/bundle services.
-- [ ] Live manifest round trips canonically, requires exactly the registered gates for
+- [x] Live manifest round trips canonically, requires exactly the registered gates for
       `live-qualification-v1`, rejects unknown/duplicate gate IDs and unsafe paths/text, and
       rejects pass/fail claims whose rows/gates do not support them.
-- [ ] Cleanup runs after preflight failure and simulated launch/transport/write failures, is safe
+- [x] Cleanup runs after preflight failure and simulated launch/transport/write failures, is safe
       to repeat, and records failure rather than claiming success when a resource remains.
-- [ ] No browser is launched while implementing or verifying this checkpoint.
+- [x] No browser is launched while implementing or verifying this checkpoint.
 
 ## Ordering
 
 This checkpoint unblocks all capture and measurement scenarios. It intentionally has no child
 story dependency; the parent feature's benchmark and deterministic-scoring dependencies remain the
 feature-level prerequisites.
+
+## Implementation notes
+
+- Execution capability: feature-owning Luna worker, inline implementation; the story's support, contract, and composition seams share one Rust ownership boundary.
+- Review weight: standard feature review remains owned by the parent feature; this child checkpoint advanced directly to `done` after verification.
+- Files changed: gated CDP qualification support and re-export shims; test-only live composition/lifecycle module; temporal evaluation manifest, prompt, matrix, and registry contracts; generated contract artifacts; locked dependency metadata.
+- Tests added: live manifest round-trip, gate registry, status, privacy, input-digest, blocked/skipped, opt-in ordering, lifecycle rejection, shared-store pointer, cleanup, and viewport-wrapper tests.
+- Verification: Rust 1.85 locked workspace check, test, and clippy passed; feature-gated root/CDP tests passed; no live environment variables were supplied and no browser was launched.
+- Simplification: existing browser support implementations are promoted through the feature-gated source support surface and integration-test re-export shims; smoke wrapper flags remain unchanged.
+- Discrepancies from design: later capture scenarios, fixture observation, control matrix, retention/recovery measurements, and operator evidence remain intentionally unimplemented for their dependent child checkpoints.
+- Adjacent issues parked: none.

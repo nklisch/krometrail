@@ -86,7 +86,8 @@
       "type": "string",
       "enum": [
         "interpretation",
-        "debugging"
+        "debugging",
+        "capture_qualification"
       ]
     },
     "AnswerTruth": {
@@ -576,7 +577,8 @@
       "type": "string",
       "enum": [
         "interpretation-v1",
-        "debugging-v1"
+        "debugging-v1",
+        "capture-qualification-v1"
       ]
     },
     "PromptSet": {

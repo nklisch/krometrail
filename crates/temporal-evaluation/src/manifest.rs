@@ -7,7 +7,9 @@ use crate::{
     AnswerKind, BenchmarkDefinition, CaseFamily, ConditionId, EvaluationStatus, FixtureFile,
     MatrixOrder, PromptId, PromptTemplate, Result, ScoringDimensionId, canonical_json,
     conditions::canonical_conditions,
-    matrix::{CAPTURE_REPETITIONS, INTERPRETATION_REPETITIONS, MATRIX_SEED},
+    matrix::{
+        CAPTURE_REPETITIONS, INTERPRETATION_REPETITIONS, LIVE_QUALIFICATION_PROFILE, MATRIX_SEED,
+    },
     privacy,
 };
 use crate::{ContractError, DURATIONS_MS, FIXTURE_ROOT, VIEWPORT_HEIGHT, VIEWPORT_WIDTH};
@@ -193,6 +195,7 @@ impl ManifestPrompt {
             answer_kind: match self.prompt_set_id {
                 PromptId::Interpretation => AnswerKind::Interpretation,
                 PromptId::Debugging => AnswerKind::Debugging,
+                PromptId::CaptureQualification => AnswerKind::CaptureQualification,
             },
             system_prompt: self.system_prompt.clone(),
             task_prompt: self.task_prompt.clone(),
@@ -351,6 +354,7 @@ pub enum RunFailureCode {
     CaptureGap,
     CorruptSource,
     OptionalUnavailable,
+    Cleanup,
     Internal,
 }
 
@@ -362,6 +366,129 @@ pub struct FailureRecord {
     pub reason: String,
     pub recovery: String,
     pub retryable: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CacheDisposition {
+    Cold,
+    Warm,
+    Unavailable,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DurationQualificationMeasurement {
+    pub duration_ms: u16,
+    pub eligible_count: u32,
+    pub observed_count: u32,
+    pub eligibility_rate_basis_points: u16,
+    pub coverage_rate_basis_points: u16,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CaptureQualificationMeasurements {
+    pub requested_durations_ms: Vec<u16>,
+    pub repetitions: u16,
+    pub observed_viewport: Viewport,
+    pub observed_device_scale_factor: u16,
+    pub source_frame_count: u64,
+    pub observed_frame_count: u64,
+    pub source_time_sample_count: u64,
+    pub gap_ids: Vec<String>,
+    pub gap_count: u64,
+    pub per_duration: Vec<DurationQualificationMeasurement>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ControlQualificationMeasurements {
+    pub scenario_ids: Vec<String>,
+    pub attempts: u64,
+    pub successes: u64,
+    pub failed_observation_ids: Vec<String>,
+    pub success_rate_basis_points: u16,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RetentionQualificationMeasurements {
+    pub budget_bytes: u64,
+    pub peak_usage_bytes: u64,
+    pub pinned_interval_preserved: bool,
+    pub evicted_frame_count: u64,
+    pub capture_paused_when_pinned: bool,
+    pub capture_resumed_after_unpin: bool,
+    pub cleanup_removed_frame_count: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryQualificationMeasurements {
+    pub reopened: bool,
+    pub reconciled: bool,
+    pub recovered_frame_count: u64,
+    pub removed_frame_count: u64,
+    pub trailing_segment_repaired: bool,
+    pub staged_artifacts_recovered: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ResourceQualificationMeasurements {
+    pub sample_count: u64,
+    pub rss_bytes: Vec<u64>,
+    pub cpu_millis: Vec<u64>,
+    pub browser_child_accounting_available: bool,
+    pub unavailable_reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LatencyQualificationMeasurements {
+    pub source_interval_id: String,
+    pub viewport: Viewport,
+    pub frame_width: u32,
+    pub frame_height: u32,
+    pub warm_cache: CacheDisposition,
+    pub temporal_query_elapsed_ms: Vec<u64>,
+    pub artifact_elapsed_ms: Vec<u64>,
+    pub sample_count: u64,
+    pub threshold_profile_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CleanupQualificationMeasurements {
+    pub server_stopped: bool,
+    pub profile_deleted: bool,
+    pub store_flushed: bool,
+    pub lock_released: bool,
+    pub output_finalized: bool,
+    pub remaining_managed_resources: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct QualificationGateResult {
+    pub gate: crate::QualificationGateId,
+    pub status: EvaluationStatus,
+    pub failure: Option<FailureRecord>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LiveQualification {
+    pub profile: String,
+    pub gates: Vec<QualificationGateResult>,
+    pub capture: CaptureQualificationMeasurements,
+    pub control: ControlQualificationMeasurements,
+    pub retention: RetentionQualificationMeasurements,
+    pub recovery: RecoveryQualificationMeasurements,
+    pub resources: ResourceQualificationMeasurements,
+    pub latency: LatencyQualificationMeasurements,
+    pub cleanup: CleanupQualificationMeasurements,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -383,6 +510,8 @@ pub struct RunManifest {
     pub artifact: ArtifactIdentity,
     pub scoring: ScoringIdentity,
     pub rows: Vec<ManifestRow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub qualification: Option<LiveQualification>,
     pub status: EvaluationStatus,
     pub non_claims: Vec<String>,
     pub failure: Option<FailureRecord>,
@@ -424,7 +553,7 @@ impl RunManifest {
         let object = value
             .as_object_mut()
             .ok_or_else(|| ContractError::new("run manifest did not serialize as an object"))?;
-        for key in ["rows", "status", "non_claims", "failure"] {
+        for key in ["rows", "qualification", "status", "non_claims", "failure"] {
             object.remove(key);
         }
         Ok(crate::sha256_prefixed(&canonical_json(&value)?))
@@ -569,6 +698,7 @@ impl RunManifest {
                 status: EvaluationStatus::Pass,
                 failure: None,
             }],
+            qualification: None,
             status: EvaluationStatus::Pass,
             non_claims: vec![
                 "This sample validates the contract only.".to_owned(),
@@ -617,6 +747,7 @@ impl RunManifest {
         self.prompt.validate()?;
         let expected_prompt = match run_mode(&self.run)? {
             ManifestRunMode::Debugging => PromptId::Debugging,
+            ManifestRunMode::Qualification => PromptId::CaptureQualification,
             ManifestRunMode::Contract
             | ManifestRunMode::Capture
             | ManifestRunMode::Interpretation => canonical_conditions()
@@ -633,6 +764,7 @@ impl RunManifest {
         validate_artifact(&self.artifact, &self.run)?;
         validate_scoring(&self.scoring)?;
         validate_rows(self)?;
+        validate_qualification(self)?;
         validate_outcome(self)
     }
 }
@@ -670,6 +802,7 @@ enum ManifestRunMode {
     Capture,
     Interpretation,
     Debugging,
+    Qualification,
 }
 
 fn run_mode(value: &RunConfiguration) -> Result<ManifestRunMode> {
@@ -678,6 +811,7 @@ fn run_mode(value: &RunConfiguration) -> Result<ManifestRunMode> {
         "capture-v1" => Ok(ManifestRunMode::Capture),
         "interpretation-v1" => Ok(ManifestRunMode::Interpretation),
         "debugging-v1" => Ok(ManifestRunMode::Debugging),
+        LIVE_QUALIFICATION_PROFILE => Ok(ManifestRunMode::Qualification),
         _ => Err(ContractError::new(
             "run threshold profile is not registered",
         )),
@@ -692,6 +826,7 @@ fn validate_run(value: &RunConfiguration) -> Result<()> {
         ManifestRunMode::Interpretation | ManifestRunMode::Debugging => {
             MatrixOrder::SeededFisherYates
         }
+        ManifestRunMode::Qualification => MatrixOrder::FamilyCaseDurationRepetition,
     };
     if value.seed != MATRIX_SEED || value.order_policy != expected_order {
         return Err(ContractError::new(
@@ -713,6 +848,13 @@ fn validate_run(value: &RunConfiguration) -> Result<()> {
     }
     if value.device_scale_factor == 0 {
         return Err(ContractError::new("device scale factor must be positive"));
+    }
+    if matches!(run_mode(value)?, ManifestRunMode::Qualification)
+        && value.device_scale_factor != 1_000
+    {
+        return Err(ContractError::new(
+            "live qualification requires device scale one",
+        ));
     }
     if matches!(value.image_format, ImageFormat::Jpeg)
         && !matches!(value.image_quality, Some(1..=100))
@@ -1022,6 +1164,190 @@ fn validate_failure(value: &FailureRecord, label: &str) -> Result<()> {
     validate_reason(&value.reason, &value.recovery, label)
 }
 
+fn validate_qualification(manifest: &RunManifest) -> Result<()> {
+    let mode = run_mode(&manifest.run)?;
+    match (&manifest.qualification, mode) {
+        (None, ManifestRunMode::Qualification) => Err(ContractError::new(
+            "live qualification profile requires qualification measurements",
+        )),
+        (Some(_), mode) if mode != ManifestRunMode::Qualification => Err(ContractError::new(
+            "qualification measurements are only valid for the live qualification profile",
+        )),
+        (None, _) => Ok(()),
+        (Some(value), ManifestRunMode::Qualification) => validate_live_qualification(value),
+        (Some(_), _) => Err(ContractError::new(
+            "qualification measurements are only valid for the live qualification profile",
+        )),
+    }
+}
+
+fn validate_live_qualification(value: &LiveQualification) -> Result<()> {
+    if value.profile != LIVE_QUALIFICATION_PROFILE {
+        return Err(ContractError::new(
+            "qualification profile is not registered",
+        ));
+    }
+    if value.gates.len() != crate::QualificationGateId::ALL.len()
+        || value.gates.iter().map(|gate| gate.gate).collect::<Vec<_>>()
+            != crate::QualificationGateId::ALL
+    {
+        return Err(ContractError::new(
+            "qualification gates must appear exactly once in registry order",
+        ));
+    }
+    for gate in &value.gates {
+        match (&gate.status, &gate.failure) {
+            (EvaluationStatus::Pass, None) => {}
+            (EvaluationStatus::Pass, Some(_)) => {
+                return Err(ContractError::new(
+                    "passing qualification gate cannot carry a failure",
+                ));
+            }
+            (_, None) => {
+                return Err(ContractError::new(
+                    "non-passing qualification gate requires a failure",
+                ));
+            }
+            (_, Some(failure)) => validate_failure(failure, "qualification.gate.failure")?,
+        }
+    }
+    validate_capture_measurements(&value.capture)?;
+    validate_control_measurements(&value.control)?;
+    validate_retention_measurements(&value.retention)?;
+    validate_recovery_measurements(&value.recovery)?;
+    validate_resource_measurements(&value.resources)?;
+    validate_latency_measurements(&value.latency)?;
+    if value.cleanup.remaining_managed_resources > 0 && value.cleanup.output_finalized {
+        return Err(ContractError::new(
+            "finalized qualification cannot claim zero cleanup while resources remain",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_rate(value: u16, label: &str) -> Result<()> {
+    if value > 10_000 {
+        return Err(ContractError::new(format!(
+            "{label} must be at most 10000 basis points"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_capture_measurements(value: &CaptureQualificationMeasurements) -> Result<()> {
+    if value.requested_durations_ms != DURATIONS_MS || value.repetitions == 0 {
+        return Err(ContractError::new(
+            "qualification capture matrix is not canonical",
+        ));
+    }
+    if value.observed_viewport.width != VIEWPORT_WIDTH
+        || value.observed_viewport.height != VIEWPORT_HEIGHT
+        || value.observed_device_scale_factor != 1_000
+    {
+        return Err(ContractError::new(
+            "qualification capture observation does not match the canonical viewport",
+        ));
+    }
+    if value.gap_count != value.gap_ids.len() as u64 {
+        return Err(ContractError::new(
+            "qualification gap count does not match gap identifiers",
+        ));
+    }
+    validate_unique_ids(&value.gap_ids, "qualification.gap_ids")?;
+    for measurement in &value.per_duration {
+        if !DURATIONS_MS.contains(&measurement.duration_ms) {
+            return Err(ContractError::new(
+                "qualification duration is not in the canonical matrix",
+            ));
+        }
+        validate_rate(
+            measurement.eligibility_rate_basis_points,
+            "qualification eligibility rate",
+        )?;
+        validate_rate(
+            measurement.coverage_rate_basis_points,
+            "qualification coverage rate",
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_control_measurements(value: &ControlQualificationMeasurements) -> Result<()> {
+    validate_unique_ids(&value.scenario_ids, "qualification.control.scenario_ids")?;
+    validate_unique_ids(
+        &value.failed_observation_ids,
+        "qualification.control.failed_observation_ids",
+    )?;
+    if value.successes > value.attempts {
+        return Err(ContractError::new(
+            "qualification control successes exceed attempts",
+        ));
+    }
+    validate_rate(
+        value.success_rate_basis_points,
+        "qualification control success rate",
+    )
+}
+
+fn validate_retention_measurements(value: &RetentionQualificationMeasurements) -> Result<()> {
+    if value.peak_usage_bytes < value.budget_bytes && value.capture_paused_when_pinned {
+        return Err(ContractError::new(
+            "qualification retention pause contradicts its budget observation",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_recovery_measurements(_value: &RecoveryQualificationMeasurements) -> Result<()> {
+    Ok(())
+}
+
+fn validate_resource_measurements(value: &ResourceQualificationMeasurements) -> Result<()> {
+    if value.sample_count == 0 && value.unavailable_reason.is_none() {
+        return Err(ContractError::new(
+            "qualification resources need samples or an unavailable reason",
+        ));
+    }
+    if let Some(reason) = &value.unavailable_reason {
+        privacy::validate_safe_text(
+            reason,
+            "qualification.resources.unavailable_reason",
+            privacy::MAX_LONG_TEXT,
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_latency_measurements(value: &LatencyQualificationMeasurements) -> Result<()> {
+    privacy::validate_opaque_id(
+        &value.source_interval_id,
+        "qualification.latency.source_interval_id",
+    )?;
+    validate_unique_ids(
+        &value.threshold_profile_ids,
+        "qualification.latency.threshold_profile_ids",
+    )?;
+    if value.sample_count == 0
+        && (!value.temporal_query_elapsed_ms.is_empty() || !value.artifact_elapsed_ms.is_empty())
+    {
+        return Err(ContractError::new(
+            "qualification latency sample count is inconsistent",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_unique_ids(values: &[String], label: &str) -> Result<()> {
+    let mut ids = BTreeSet::new();
+    for value in values {
+        privacy::validate_opaque_id(value, label)?;
+        if !ids.insert(value) {
+            return Err(ContractError::new(format!("{label} must be unique")));
+        }
+    }
+    Ok(())
+}
+
 fn validate_rows(manifest: &RunManifest) -> Result<()> {
     if manifest.rows.is_empty() {
         return Err(ContractError::new(
@@ -1168,6 +1494,7 @@ fn required_repetitions(mode: ManifestRunMode) -> u16 {
         ManifestRunMode::Contract => 1,
         ManifestRunMode::Capture => CAPTURE_REPETITIONS,
         ManifestRunMode::Interpretation | ManifestRunMode::Debugging => INTERPRETATION_REPETITIONS,
+        ManifestRunMode::Qualification => CAPTURE_REPETITIONS,
     }
 }
 
@@ -1212,6 +1539,29 @@ fn validate_outcome(manifest: &RunManifest) -> Result<()> {
         .rows
         .iter()
         .any(|row| row.status == EvaluationStatus::Fail);
+    let qualification_gates_failed = manifest
+        .qualification
+        .as_ref()
+        .is_some_and(|qualification| {
+            qualification
+                .gates
+                .iter()
+                .any(|gate| gate.status == EvaluationStatus::Fail)
+        });
+    let qualification_gates_incomplete =
+        manifest
+            .qualification
+            .as_ref()
+            .is_some_and(|qualification| {
+                qualification.gates.iter().any(|gate| {
+                    matches!(
+                        gate.status,
+                        EvaluationStatus::Inconclusive
+                            | EvaluationStatus::Blocked
+                            | EvaluationStatus::Skipped
+                    )
+                })
+            });
     let mode = run_mode(&manifest.run)?;
     if mode != ManifestRunMode::Contract
         && manifest.status == EvaluationStatus::Pass
@@ -1252,9 +1602,19 @@ fn validate_outcome(manifest: &RunManifest) -> Result<()> {
                     .rows
                     .iter()
                     .all(|row| row.status == EvaluationStatus::Pass)
+                || qualification_gates_incomplete
+                || manifest
+                    .qualification
+                    .as_ref()
+                    .is_some_and(|qualification| {
+                        qualification
+                            .gates
+                            .iter()
+                            .any(|gate| gate.status != EvaluationStatus::Pass)
+                    })
             {
                 return Err(ContractError::new(
-                    "a passing run must contain complete passing rows and no failure",
+                    "a passing run must contain complete passing rows and qualification gates with no failure",
                 ));
             }
         }
@@ -1264,11 +1624,12 @@ fn validate_outcome(manifest: &RunManifest) -> Result<()> {
                 .as_ref()
                 .ok_or_else(|| ContractError::new("a failed run requires an explicit failure"))?;
             if rows_incomplete
+                || qualification_gates_incomplete
                 || !matches!(
                     failure.code,
                     RunFailureCode::Threshold | RunFailureCode::Validation
                 )
-                || !rows_failed
+                || (!rows_failed && !qualification_gates_failed)
             {
                 return Err(ContractError::new(
                     "a failed run must be complete and below threshold or invalid",
@@ -1288,6 +1649,7 @@ fn validate_outcome(manifest: &RunManifest) -> Result<()> {
                         | RunFailureCode::Retention
                         | RunFailureCode::CaptureGap
                         | RunFailureCode::CorruptSource
+                        | RunFailureCode::Cleanup
                 )
             {
                 return Err(ContractError::new(

@@ -1240,7 +1240,7 @@
   "input_identities": {
     "conditions_sha256": "sha256:507ab51e84af716f9b5e67a05210a6c58105675ccf471c757189cf110029503d",
     "matrix_sha256": "sha256:e0cd45ad9eac4783ea0154495024a96d0bd525185d82bf696cde090e1e66f6ed",
-    "prompts_sha256": "sha256:67b6063f35a4f60431f00619dbd2df9647948ac5f732b3fc776275eebfa35bf2",
+    "prompts_sha256": "sha256:b07f19776bd236bdd2e05d0fcb731d369693b288aaf1ae21da1dd177f62e9558",
     "scoring_sha256": "sha256:bfb5f2441a97cb011e043e685b78d4eeeee9088abd4d5544eb4591eec2a21533"
   },
   "matrix": {
@@ -1282,6 +1282,14 @@
         "sha256": "sha256:2b35db61b41969c6a58209ee14a76a56f2e2e8f04eae4594cffa3efb72fa6804",
         "system_prompt": "You are completing a bounded browser debugging task after inspecting supplied evidence. Keep observation, diagnosis, patch, and verification separate. Do not claim a cause not supported by the repository or evidence. Return only the JSON object required by the answer contract.",
         "task_prompt": "Reproduce the reported browser behavior, record whether reproduction succeeded, summarize the supported diagnosis, record whether a focused patch was applied, and state whether final-state and temporal verification succeeded. Use opaque evidence references and uncertainty when verification is unavailable.",
+        "version": "1"
+      },
+      {
+        "answer_kind": "capture_qualification",
+        "id": "capture-qualification-v1",
+        "sha256": "sha256:a2ca12d72cf231ad1d896dfd98e09c0301c801bb1f8e7737c5e9d18e26058c26",
+        "system_prompt": "You are recording a local browser capture qualification. No model answer, interpretation, diagnosis, transcript, or page text is requested. Preserve observed facts and explicit limitations without making a product-thesis claim.",
+        "task_prompt": "Record only typed capture, timing, control, retention, recovery, resource, latency, and cleanup measurements from the production authority graph. Missing or unsupported evidence remains blocked or inconclusive; never infer a passing observation from the requested scenario.",
         "version": "1"
       }
     ],

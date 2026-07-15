@@ -52,6 +52,16 @@
     "prompt": {
       "$ref": "#/$defs/ManifestPrompt"
     },
+    "qualification": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/LiveQualification"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "rows": {
       "type": "array",
       "items": {
@@ -302,6 +312,14 @@
         "other_chromium"
       ]
     },
+    "CacheDisposition": {
+      "type": "string",
+      "enum": [
+        "cold",
+        "warm",
+        "unavailable"
+      ]
+    },
     "CaptureConfigIdentity": {
       "type": "object",
       "properties": {
@@ -356,6 +374,80 @@
         "last"
       ]
     },
+    "CaptureQualificationMeasurements": {
+      "type": "object",
+      "properties": {
+        "gap_count": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "gap_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "observed_device_scale_factor": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "observed_frame_count": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "observed_viewport": {
+          "$ref": "#/$defs/Viewport"
+        },
+        "per_duration": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DurationQualificationMeasurement"
+          }
+        },
+        "repetitions": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "requested_durations_ms": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0
+          }
+        },
+        "source_frame_count": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "source_time_sample_count": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "requested_durations_ms",
+        "repetitions",
+        "observed_viewport",
+        "observed_device_scale_factor",
+        "source_frame_count",
+        "observed_frame_count",
+        "source_time_sample_count",
+        "gap_ids",
+        "gap_count",
+        "per_duration"
+      ]
+    },
     "CaseFamily": {
       "type": "string",
       "enum": [
@@ -366,6 +458,40 @@
         "stable_control"
       ]
     },
+    "CleanupQualificationMeasurements": {
+      "type": "object",
+      "properties": {
+        "lock_released": {
+          "type": "boolean"
+        },
+        "output_finalized": {
+          "type": "boolean"
+        },
+        "profile_deleted": {
+          "type": "boolean"
+        },
+        "remaining_managed_resources": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "server_stopped": {
+          "type": "boolean"
+        },
+        "store_flushed": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "server_stopped",
+        "profile_deleted",
+        "store_flushed",
+        "lock_released",
+        "output_finalized",
+        "remaining_managed_resources"
+      ]
+    },
     "ConditionId": {
       "type": "string",
       "enum": [
@@ -374,6 +500,88 @@
         "C-change-aware-storyboard",
         "D-temporal-bundle",
         "E-progressive-source"
+      ]
+    },
+    "ControlQualificationMeasurements": {
+      "type": "object",
+      "properties": {
+        "attempts": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "failed_observation_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "scenario_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "success_rate_basis_points": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "successes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "scenario_ids",
+        "attempts",
+        "successes",
+        "failed_observation_ids",
+        "success_rate_basis_points"
+      ]
+    },
+    "DurationQualificationMeasurement": {
+      "type": "object",
+      "properties": {
+        "coverage_rate_basis_points": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "duration_ms": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "eligibility_rate_basis_points": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "eligible_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "observed_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "duration_ms",
+        "eligible_count",
+        "observed_count",
+        "eligibility_rate_basis_points",
+        "coverage_rate_basis_points"
       ]
     },
     "EnvironmentIdentity": {
@@ -496,6 +704,116 @@
         "rust_toolchain",
         "capture_config",
         "adapter_versions"
+      ]
+    },
+    "LatencyQualificationMeasurements": {
+      "type": "object",
+      "properties": {
+        "artifact_elapsed_ms": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          }
+        },
+        "frame_height": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "frame_width": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "sample_count": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "source_interval_id": {
+          "type": "string"
+        },
+        "temporal_query_elapsed_ms": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          }
+        },
+        "threshold_profile_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "viewport": {
+          "$ref": "#/$defs/Viewport"
+        },
+        "warm_cache": {
+          "$ref": "#/$defs/CacheDisposition"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "source_interval_id",
+        "viewport",
+        "frame_width",
+        "frame_height",
+        "warm_cache",
+        "temporal_query_elapsed_ms",
+        "artifact_elapsed_ms",
+        "sample_count",
+        "threshold_profile_ids"
+      ]
+    },
+    "LiveQualification": {
+      "type": "object",
+      "properties": {
+        "capture": {
+          "$ref": "#/$defs/CaptureQualificationMeasurements"
+        },
+        "cleanup": {
+          "$ref": "#/$defs/CleanupQualificationMeasurements"
+        },
+        "control": {
+          "$ref": "#/$defs/ControlQualificationMeasurements"
+        },
+        "gates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/QualificationGateResult"
+          }
+        },
+        "latency": {
+          "$ref": "#/$defs/LatencyQualificationMeasurements"
+        },
+        "profile": {
+          "type": "string"
+        },
+        "recovery": {
+          "$ref": "#/$defs/RecoveryQualificationMeasurements"
+        },
+        "resources": {
+          "$ref": "#/$defs/ResourceQualificationMeasurements"
+        },
+        "retention": {
+          "$ref": "#/$defs/RetentionQualificationMeasurements"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "profile",
+        "gates",
+        "capture",
+        "control",
+        "retention",
+        "recovery",
+        "resources",
+        "latency",
+        "cleanup"
       ]
     },
     "ManifestFixture": {
@@ -906,7 +1224,172 @@
       "type": "string",
       "enum": [
         "interpretation-v1",
-        "debugging-v1"
+        "debugging-v1",
+        "capture-qualification-v1"
+      ]
+    },
+    "QualificationGateId": {
+      "description": "The qualification gate registry is the sole source of gate identity and order.",
+      "type": "string",
+      "enum": [
+        "capture_envelope",
+        "timing_integrity",
+        "movement_sequence",
+        "control_reliability",
+        "retention",
+        "recovery",
+        "resource_usage",
+        "temporal_query_latency",
+        "artifact_latency",
+        "cleanup"
+      ]
+    },
+    "QualificationGateResult": {
+      "type": "object",
+      "properties": {
+        "failure": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FailureRecord"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "gate": {
+          "$ref": "#/$defs/QualificationGateId"
+        },
+        "status": {
+          "$ref": "#/$defs/EvaluationStatus"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "gate",
+        "status"
+      ]
+    },
+    "RecoveryQualificationMeasurements": {
+      "type": "object",
+      "properties": {
+        "reconciled": {
+          "type": "boolean"
+        },
+        "recovered_frame_count": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "removed_frame_count": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "reopened": {
+          "type": "boolean"
+        },
+        "staged_artifacts_recovered": {
+          "type": "boolean"
+        },
+        "trailing_segment_repaired": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "reopened",
+        "reconciled",
+        "recovered_frame_count",
+        "removed_frame_count",
+        "trailing_segment_repaired",
+        "staged_artifacts_recovered"
+      ]
+    },
+    "ResourceQualificationMeasurements": {
+      "type": "object",
+      "properties": {
+        "browser_child_accounting_available": {
+          "type": "boolean"
+        },
+        "cpu_millis": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          }
+        },
+        "rss_bytes": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          }
+        },
+        "sample_count": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "unavailable_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "sample_count",
+        "rss_bytes",
+        "cpu_millis",
+        "browser_child_accounting_available"
+      ]
+    },
+    "RetentionQualificationMeasurements": {
+      "type": "object",
+      "properties": {
+        "budget_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "capture_paused_when_pinned": {
+          "type": "boolean"
+        },
+        "capture_resumed_after_unpin": {
+          "type": "boolean"
+        },
+        "cleanup_removed_frame_count": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "evicted_frame_count": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "peak_usage_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "pinned_interval_preserved": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "budget_bytes",
+        "peak_usage_bytes",
+        "pinned_interval_preserved",
+        "evicted_frame_count",
+        "capture_paused_when_pinned",
+        "capture_resumed_after_unpin",
+        "cleanup_removed_frame_count"
       ]
     },
     "RetentionState": {
@@ -1033,6 +1516,7 @@
         "capture_gap",
         "corrupt_source",
         "optional_unavailable",
+        "cleanup",
         "internal"
       ]
     },

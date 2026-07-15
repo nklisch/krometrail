@@ -6,6 +6,7 @@ use crate::{CaseDefinition, CaseFamily, ContractError, Result};
 pub const MATRIX_SEED: u64 = 0x4b524f4d45545241;
 pub const CAPTURE_REPETITIONS: u16 = 30;
 pub const INTERPRETATION_REPETITIONS: u16 = 10;
+pub const LIVE_QUALIFICATION_PROFILE: &str = "live-qualification-v1";
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -24,6 +25,48 @@ impl EvaluationStatus {
         Self::Inconclusive,
         Self::Blocked,
         Self::Skipped,
+    ];
+
+    /// Returns the status that must win when independent evidence layers disagree.
+    pub const fn precedence(self) -> u8 {
+        match self {
+            Self::Pass => 0,
+            Self::Fail => 1,
+            Self::Inconclusive => 2,
+            Self::Skipped => 3,
+            Self::Blocked => 4,
+        }
+    }
+}
+
+/// The qualification gate registry is the sole source of gate identity and order.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum QualificationGateId {
+    CaptureEnvelope,
+    TimingIntegrity,
+    MovementSequence,
+    ControlReliability,
+    Retention,
+    Recovery,
+    ResourceUsage,
+    TemporalQueryLatency,
+    ArtifactLatency,
+    Cleanup,
+}
+
+impl QualificationGateId {
+    pub const ALL: [Self; 10] = [
+        Self::CaptureEnvelope,
+        Self::TimingIntegrity,
+        Self::MovementSequence,
+        Self::ControlReliability,
+        Self::Retention,
+        Self::Recovery,
+        Self::ResourceUsage,
+        Self::TemporalQueryLatency,
+        Self::ArtifactLatency,
+        Self::Cleanup,
     ];
 }
 

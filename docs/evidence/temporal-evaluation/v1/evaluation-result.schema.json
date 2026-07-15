@@ -815,6 +815,7 @@
         "capture_gap",
         "corrupt_source",
         "optional_unavailable",
+        "cleanup",
         "internal"
       ]
     },

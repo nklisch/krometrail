@@ -57,6 +57,10 @@ pub mod session;
 #[cfg(feature = "cdpkit-transport")]
 pub use session::ProductionBrowserConnector;
 
+/// Test-only real-browser qualification support. This is deliberately absent from default builds.
+#[cfg(feature = "qualification-support")]
+pub mod qualification_support;
+
 pub use transport::{
     CdpTransport, CdpTransportFactory, CommandScope, NamedEvent, TransportClose, TransportError,
     TransportEvents, TransportFuture, TransportSessionId,

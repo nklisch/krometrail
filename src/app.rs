@@ -31,6 +31,9 @@ use krometrail_store::{
     SqliteIndex, recover,
 };
 
+#[cfg(all(test, feature = "qualification-support"))]
+pub(crate) mod live_evaluation;
+
 pub(crate) struct RuntimeDependencies {
     pub clock: Arc<dyn MonotonicClock>,
     pub wall_clock: Arc<dyn WallClock>,

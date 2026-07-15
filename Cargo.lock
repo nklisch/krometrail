@@ -729,6 +729,7 @@ dependencies = [
  "krometrail-store",
  "serde_json",
  "sha2",
+ "temporal-evaluation",
  "temporal-vision",
  "tokio",
  "tracing",

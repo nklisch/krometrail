@@ -25,6 +25,8 @@ cdp-spike = [
 	"tokio/test-util",
 ]
 cdp-spike-cdpkit = ["cdp-spike", "cdpkit-transport"]
+# Opt-in only: this exposes browser-launching helpers for qualification tests, never product code.
+qualification-support = ["cdpkit-transport", "tokio/sync", "tokio/time"]
 
 [dev-dependencies]
 futures-util.workspace = true

@@ -33,16 +33,21 @@ pub use error::{ContractError, Result};
 pub use interval::{GapEvidence, ScopeIdentity, SourceFrameEvidence, SourceInterval, TimeRangeNs};
 pub use manifest::{
     AcceptedClaim, Architecture, ArtifactIdentity, BrowserAvailability, BrowserProduct,
-    CaptureConfigIdentity, CaptureOrdinalRange, EnvironmentIdentity, EvidenceAvailability,
-    FailureRecord, ImageFormat, KrometrailIdentity, MANIFEST_KIND, MANIFEST_SCHEMA_VERSION,
-    ManifestFixture, ManifestPrompt, ManifestRow, ModelAvailability, ModelInputLimits,
-    NamedVersion, OutputIdentity, Platform, RetentionState, RevisionIdentity, RunConfiguration,
+    CacheDisposition, CaptureConfigIdentity, CaptureOrdinalRange, CaptureQualificationMeasurements,
+    CleanupQualificationMeasurements, ControlQualificationMeasurements,
+    DurationQualificationMeasurement, EnvironmentIdentity, EvidenceAvailability, FailureRecord,
+    ImageFormat, KrometrailIdentity, LatencyQualificationMeasurements, LiveQualification,
+    MANIFEST_KIND, MANIFEST_SCHEMA_VERSION, ManifestFixture, ManifestPrompt, ManifestRow,
+    ModelAvailability, ModelInputLimits, NamedVersion, OutputIdentity, Platform,
+    QualificationGateResult, RecoveryQualificationMeasurements, ResourceQualificationMeasurements,
+    RetentionQualificationMeasurements, RetentionState, RevisionIdentity, RunConfiguration,
     RunFailureCode, RunManifest, ScorerIdentity, ScoringIdentity, TimeRangeMs, TrialIdentity,
     Viewport, run_manifest_schema, sample_manifest,
 };
 pub use matrix::{
     CAPTURE_REPETITIONS, CaptureTrial, EvaluationStatus, INTERPRETATION_REPETITIONS,
-    InterpretationTrial, MATRIX_SEED, MatrixDefinition, MatrixOrder, StatusRules,
+    InterpretationTrial, LIVE_QUALIFICATION_PROFILE, MATRIX_SEED, MatrixDefinition, MatrixOrder,
+    QualificationGateId, StatusRules,
 };
 pub use packaging::{
     ArtifactCacheIdentity, ArtifactEvidenceReference, CONDITION_PACKAGER_VERSION,

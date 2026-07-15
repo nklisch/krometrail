@@ -18,15 +18,22 @@ pub enum PromptId {
     Interpretation,
     #[serde(rename = "debugging-v1")]
     Debugging,
+    #[serde(rename = "capture-qualification-v1")]
+    CaptureQualification,
 }
 
 impl PromptId {
-    pub const ALL: [Self; 2] = [Self::Interpretation, Self::Debugging];
+    pub const ALL: [Self; 3] = [
+        Self::Interpretation,
+        Self::Debugging,
+        Self::CaptureQualification,
+    ];
 
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Interpretation => "interpretation-v1",
             Self::Debugging => "debugging-v1",
+            Self::CaptureQualification => "capture-qualification-v1",
         }
     }
 }
@@ -42,6 +49,7 @@ impl std::fmt::Display for PromptId {
 pub enum AnswerKind {
     Interpretation,
     Debugging,
+    CaptureQualification,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -216,6 +224,12 @@ impl PromptSet {
                     AnswerKind::Debugging,
                     "You are completing a bounded browser debugging task after inspecting supplied evidence. Keep observation, diagnosis, patch, and verification separate. Do not claim a cause not supported by the repository or evidence. Return only the JSON object required by the answer contract.",
                     "Reproduce the reported browser behavior, record whether reproduction succeeded, summarize the supported diagnosis, record whether a focused patch was applied, and state whether final-state and temporal verification succeeded. Use opaque evidence references and uncertainty when verification is unavailable.",
+                ),
+                canonical_prompt(
+                    PromptId::CaptureQualification,
+                    AnswerKind::CaptureQualification,
+                    "You are recording a local browser capture qualification. No model answer, interpretation, diagnosis, transcript, or page text is requested. Preserve observed facts and explicit limitations without making a product-thesis claim.",
+                    "Record only typed capture, timing, control, retention, recovery, resource, latency, and cleanup measurements from the production authority graph. Missing or unsupported evidence remains blocked or inconclusive; never infer a passing observation from the requested scenario.",
                 ),
             ],
         }
@@ -401,7 +415,7 @@ mod tests {
     fn canonical_prompt_hash_is_stable() {
         let set = PromptSet::canonical();
         set.validate().unwrap();
-        assert_eq!(set.templates.len(), 2);
+        assert_eq!(set.templates.len(), 3);
         assert_eq!(
             set.templates[0].sha256,
             set.templates[0].computed_sha256().unwrap()

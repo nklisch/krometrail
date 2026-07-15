@@ -1,12 +1,11 @@
-#![allow(dead_code)]
+#![allow(dead_code, unused_imports)]
 
-//! Deterministic browser target fixture helpers used by supervision tests.
+#[cfg(feature = "qualification-support")]
+pub use krometrail_cdp::qualification_support::static_fixture::*;
 
-pub const INDEX_HTML: &str =
-    include_str!("../../../../tests/fixtures/browser/cdp-transport-gate/index.html");
-pub const ANIMATION_JS: &str =
-    include_str!("../../../../tests/fixtures/browser/cdp-transport-gate/animation.js");
+#[cfg(not(feature = "qualification-support"))]
+#[path = "legacy_static_fixture.rs"]
+mod legacy;
 
-pub fn contains_stable_fixture_markers() -> bool {
-    INDEX_HTML.contains("CDP") && !ANIMATION_JS.trim().is_empty()
-}
+#[cfg(not(feature = "qualification-support"))]
+pub use legacy::*;

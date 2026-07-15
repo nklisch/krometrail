@@ -24,13 +24,13 @@ const README_BYTES: &[u8] =
     include_bytes!("../../../docs/evidence/temporal-evaluation/v1/README.md");
 
 const DEFINITION_DIGEST: &str =
-    "sha256:06d98f18e4e7df18849a5afda4e17f7bb29705d7b9fa57c295d37b06a876adad";
+    "sha256:ed3525d78a072c357c6a97fd5ba006dd23dae973fa8d80b6d309d121d0b7cb1d";
 const DEFINITION_SCHEMA_DIGEST: &str =
-    "sha256:1ff14bcc28b9826a3b5885fd05d342d514419d4ec5dd79abd0aee5413304cf7e";
+    "sha256:2068c69ee0b9c6a3edc7072d1cfa6f63fe98094dcb7906288ab82cf3f6fbc36a";
 const MANIFEST_DIGEST: &str =
-    "sha256:cf2a404c274375642f39028b00873b59ce8452b9e2a147546df34b2fbc4caae5";
+    "sha256:7881c4b05db700757f52a6f5be854bb0c7c8e403bf66970fcfaa3922ac74c134";
 const MANIFEST_SCHEMA_DIGEST: &str =
-    "sha256:1d48245867112af66d6218687db06b61f056100111ca3f409c3fd16af5839844";
+    "sha256:a268f0b0f7446e5dd849dff5753fde92ce5a752155ddd020540064fdbe8f344a";
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
