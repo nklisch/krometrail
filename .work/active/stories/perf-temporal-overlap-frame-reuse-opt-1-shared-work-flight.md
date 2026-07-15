@@ -1,7 +1,7 @@
 ---
 id: perf-temporal-overlap-frame-reuse-opt-1-shared-work-flight
 kind: story
-stage: implementing
+stage: done
 tags: [perf, visual, storage, testing]
 parent: perf-temporal-overlap-frame-reuse
 depends_on: []
@@ -55,3 +55,20 @@ part of the existing artifact identity.
   immutable equal pixels.
 - A focused test proves entries disappear after the final batch lease and do
   not remain addressable for a later sequential request.
+
+## Implementation notes
+
+- Execution capability: inline feature-owner implementation; the primitive and its validation surface are cohesive, while service/scheduler integration remains explicitly deferred to the next child story.
+- Review weight: standard default; child-story checkpoints do not enter review.
+- Files changed: `src/artifacts/cache.rs`, `src/artifacts/single_flight.rs`, `crates/temporal-vision/src/frame.rs`, `crates/temporal-vision/src/sequence.rs`, `crates/temporal-vision/src/normalize.rs`, `crates/temporal-vision/src/lib.rs`, `crates/temporal-vision/src/geometry.rs`, `crates/krometrail-core/src/recording/frame.rs`.
+- Tests added: exhaustive decoded/normalized key sensitivity, epoch/order separation, duplicate leader suppression, independent waiter cancellation, cancellation/failure non-cache, byte admission/release and weak cleanup, 119 shared decoded/normalized keys across overlapping batches, and exact Arc-backed normalized sequence reconstruction preserving pixels, dimensions, timestamps, gaps, masks, and normalization steps.
+- Simplification: kept the existing final-artifact `SingleFlight` and publication path unchanged; the new registry is weak-only and request-batch scoped, with no durable, TTL, global warm, pair-context, scheduler, or publication behavior.
+- Discrepancies from design: none.
+- Adjacent issues parked: none.
+
+## Verification evidence
+
+- Rust 1.85.0 `cargo fmt --all -- --check` passed.
+- Rust 1.85.0 `cargo check --workspace --all-targets --locked` passed.
+- Rust 1.85.0 `cargo test --workspace --all-targets --locked` passed.
+- Rust 1.85.0 `cargo clippy --workspace --all-targets --locked -- -D warnings` passed.

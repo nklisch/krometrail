@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use krometrail_core::{
     ArtifactCacheKey, ArtifactCacheMetadata, ArtifactSourceFingerprint, EncodedFrame, FrameId,
     ImageFormat, NonEmptyText, SessionId, TargetId,
@@ -45,6 +47,102 @@ impl SourceFingerprint {
             encoded_sha256: self.encoded_sha256,
         }
     }
+}
+
+/// Complete identity for one decoded frame within one visual epoch.
+// This key is intentionally staged ahead of service wiring in the next child story.
+#[allow(dead_code)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct DecodedFrameKey {
+    pub session_id: SessionId,
+    pub target_id: TargetId,
+    pub frame_id: FrameId,
+    pub capture_ordinal: u64,
+    pub session_time_nanos: u64,
+    pub source_format: ImageFormat,
+    pub image_dimensions: krometrail_core::PixelDimensions,
+    pub viewport_dimensions: krometrail_core::PixelDimensions,
+    pub device_scale_bits: u64,
+    pub encoded_sha256: [u8; 32],
+    pub visual_epoch_hash: [u8; 32],
+    pub decoder_profile: Arc<str>,
+    pub decoder_algorithm_version: Arc<str>,
+}
+
+#[allow(dead_code)]
+impl DecodedFrameKey {
+    pub(crate) fn from_frame(
+        frame: &EncodedFrame,
+        visual_epoch_hash: [u8; 32],
+        decoder_profile: &str,
+        decoder_algorithm_version: &str,
+    ) -> Self {
+        let metadata = frame.metadata();
+        Self {
+            session_id: metadata.session_id(),
+            target_id: metadata.target_id(),
+            frame_id: metadata.id(),
+            capture_ordinal: metadata.capture_ordinal().get(),
+            session_time_nanos: metadata.session_time().as_nanos(),
+            source_format: metadata.format(),
+            image_dimensions: metadata.image(),
+            viewport_dimensions: metadata.viewport(),
+            device_scale_bits: metadata.device_scale_factor().get().to_bits(),
+            encoded_sha256: Sha256::digest(frame.bytes()).into(),
+            visual_epoch_hash,
+            decoder_profile: Arc::from(decoder_profile),
+            decoder_algorithm_version: Arc::from(decoder_algorithm_version),
+        }
+    }
+}
+
+/// Complete identity for one normalized frame. Measurement parameters intentionally do not
+/// appear here: they affect artifact measurements, not normalized pixels.
+#[allow(dead_code)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct NormalizedFrameKey {
+    pub decoded: DecodedFrameKey,
+    pub visual_epoch_hash: [u8; 32],
+    pub effective_crop: temporal_vision::PixelRect,
+    pub effective_scale: temporal_vision::IntegerScale,
+    pub background: temporal_vision::Rgb8,
+    pub mask_or_region_digest: [u8; 32],
+    pub normalization_recipe_version: Arc<str>,
+    pub transfer_lut_version: Arc<str>,
+    pub normalization_algorithm_version: Arc<str>,
+}
+
+#[allow(dead_code)]
+impl NormalizedFrameKey {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        decoded: DecodedFrameKey,
+        visual_epoch_hash: [u8; 32],
+        effective_crop: temporal_vision::PixelRect,
+        effective_scale: temporal_vision::IntegerScale,
+        background: temporal_vision::Rgb8,
+        mask_or_region_digest: [u8; 32],
+        normalization_recipe_version: &str,
+        transfer_lut_version: &str,
+        normalization_algorithm_version: &str,
+    ) -> Self {
+        Self {
+            decoded,
+            visual_epoch_hash,
+            effective_crop,
+            effective_scale,
+            background,
+            mask_or_region_digest,
+            normalization_recipe_version: Arc::from(normalization_recipe_version),
+            transfer_lut_version: Arc::from(transfer_lut_version),
+            normalization_algorithm_version: Arc::from(normalization_algorithm_version),
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) fn visual_epoch_hash(sources: &[SourceFingerprint]) -> [u8; 32] {
+    hash_epoch(sources)
 }
 
 pub(crate) struct CacheIdentityInput<'a> {
@@ -245,6 +343,20 @@ mod tests {
             fingerprint.store_fingerprint().encoded_sha256,
             fingerprint.encoded_sha256
         );
+        let key = DecodedFrameKey::from_frame(&frame, [8; 32], "profile", "decoder-v1");
+        assert_eq!(key.session_id, frame.metadata().session_id());
+        assert_eq!(key.target_id, frame.metadata().target_id());
+        assert_eq!(key.frame_id, frame.metadata().id());
+        assert_eq!(key.capture_ordinal, 4);
+        assert_eq!(key.session_time_nanos, 5);
+        assert_eq!(key.source_format, ImageFormat::Png);
+        assert_eq!(key.image_dimensions, frame.metadata().image());
+        assert_eq!(key.viewport_dimensions, frame.metadata().viewport());
+        assert_eq!(key.device_scale_bits, 2.0_f64.to_bits());
+        assert_eq!(key.encoded_sha256, fingerprint.encoded_sha256);
+        assert_eq!(key.visual_epoch_hash, [8; 32]);
+        assert_eq!(&*key.decoder_profile, "profile");
+        assert_eq!(&*key.decoder_algorithm_version, "decoder-v1");
     }
 
     #[test]
@@ -355,6 +467,120 @@ mod tests {
         })
         .cache_key;
         assert_ne!(changed, expected);
+    }
+
+    fn decoded_key() -> DecodedFrameKey {
+        DecodedFrameKey {
+            session_id: SessionId::from_uuid(uuid::Uuid::from_u128(10)),
+            target_id: TargetId::from_uuid(uuid::Uuid::from_u128(11)),
+            frame_id: FrameId::from_uuid(uuid::Uuid::from_u128(12)),
+            capture_ordinal: 13,
+            session_time_nanos: 14,
+            source_format: ImageFormat::Png,
+            image_dimensions: PixelDimensions::new(15, 16).unwrap(),
+            viewport_dimensions: PixelDimensions::new(17, 18).unwrap(),
+            device_scale_bits: 19.0_f64.to_bits(),
+            encoded_sha256: [20; 32],
+            visual_epoch_hash: [21; 32],
+            decoder_profile: Arc::from("decoder-profile"),
+            decoder_algorithm_version: Arc::from("decoder-algorithm"),
+        }
+    }
+
+    #[test]
+    fn decoded_work_key_is_sensitive_to_every_field_and_epoch() {
+        let base = decoded_key();
+        let mut variants = Vec::new();
+        let mut changed = base.clone();
+        changed.session_id = SessionId::from_uuid(uuid::Uuid::from_u128(30));
+        variants.push(changed);
+        let mut changed = base.clone();
+        changed.target_id = TargetId::from_uuid(uuid::Uuid::from_u128(31));
+        variants.push(changed);
+        let mut changed = base.clone();
+        changed.frame_id = FrameId::from_uuid(uuid::Uuid::from_u128(32));
+        variants.push(changed);
+        let mut changed = base.clone();
+        changed.capture_ordinal += 1;
+        variants.push(changed);
+        let mut changed = base.clone();
+        changed.session_time_nanos += 1;
+        variants.push(changed);
+        let mut changed = base.clone();
+        changed.source_format = ImageFormat::Jpeg;
+        variants.push(changed);
+        let mut changed = base.clone();
+        changed.image_dimensions = PixelDimensions::new(16, 16).unwrap();
+        variants.push(changed);
+        let mut changed = base.clone();
+        changed.viewport_dimensions = PixelDimensions::new(17, 19).unwrap();
+        variants.push(changed);
+        let mut changed = base.clone();
+        changed.device_scale_bits = 2.0_f64.to_bits();
+        variants.push(changed);
+        let mut changed = base.clone();
+        changed.encoded_sha256[0] ^= 1;
+        variants.push(changed);
+        let mut changed = base.clone();
+        changed.visual_epoch_hash[0] ^= 1;
+        variants.push(changed);
+        let mut changed = base.clone();
+        changed.decoder_profile = Arc::from("other-profile");
+        variants.push(changed);
+        let mut changed = base.clone();
+        changed.decoder_algorithm_version = Arc::from("other-algorithm");
+        variants.push(changed);
+        assert!(variants.iter().all(|variant| variant != &base));
+
+        let mut ordered = base.clone();
+        ordered.frame_id = base.frame_id;
+        ordered.capture_ordinal = base.capture_ordinal + 1;
+        assert_ne!(ordered, base);
+    }
+
+    #[test]
+    fn normalized_work_key_is_sensitive_to_each_normalization_field() {
+        let base = NormalizedFrameKey::new(
+            decoded_key(),
+            [40; 32],
+            temporal_vision::PixelRect::new(1, 2, 3, 4).unwrap(),
+            temporal_vision::IntegerScale::IDENTITY,
+            temporal_vision::Rgb8::new(5, 6, 7),
+            [41; 32],
+            "recipe-v1",
+            "lut-v1",
+            "normalizer-v1",
+        );
+        let mut variants = Vec::new();
+        let mut changed = base.clone();
+        changed.decoded.frame_id = FrameId::from_uuid(uuid::Uuid::from_u128(50));
+        variants.push(changed);
+        let mut changed = base.clone();
+        changed.visual_epoch_hash[0] ^= 1;
+        variants.push(changed);
+        let mut changed = base.clone();
+        changed.effective_crop = temporal_vision::PixelRect::new(1, 2, 2, 4).unwrap();
+        variants.push(changed);
+        let mut changed = base.clone();
+        changed.effective_scale =
+            temporal_vision::IntegerScale::down(std::num::NonZeroU8::new(2).unwrap()).unwrap();
+        variants.push(changed);
+        let mut changed = base.clone();
+        changed.background = temporal_vision::Rgb8::new(8, 6, 7);
+        variants.push(changed);
+        let mut changed = base.clone();
+        changed.mask_or_region_digest[0] ^= 1;
+        variants.push(changed);
+        let mut changed = base.clone();
+        changed.normalization_recipe_version = Arc::from("recipe-v2");
+        variants.push(changed);
+        let mut changed = base.clone();
+        changed.transfer_lut_version = Arc::from("lut-v2");
+        variants.push(changed);
+        let mut changed = base.clone();
+        changed.normalization_algorithm_version = Arc::from("normalizer-v2");
+        variants.push(changed);
+        assert!(variants.iter().all(|variant| variant != &base));
     }
 
     #[test]

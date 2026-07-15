@@ -1,4 +1,4 @@
-use std::num::NonZeroU64;
+use std::{num::NonZeroU64, sync::Arc};
 
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -220,6 +220,7 @@ pub struct FrameSequence<FrameId, MarkerId, GapId, Pixels> {
 }
 
 pub type OwnedFrameSequence<F, M, G> = FrameSequence<F, M, G, Box<[u8]>>;
+pub type SharedFrameSequence<F, M, G> = FrameSequence<F, M, G, Arc<[u8]>>;
 pub type BorrowedFrameSequence<'a, F, M, G> = FrameSequence<F, M, G, &'a [u8]>;
 
 impl<F: Eq, M: Eq, G: Eq, P: AsRef<[u8]>> FrameSequence<F, M, G, P> {

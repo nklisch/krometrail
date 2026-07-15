@@ -83,7 +83,9 @@ pub use filmstrip::{
     RegionFilmstripPlan, RegionFilmstripRenderLimits, SignedPixelRect, ViewportMapping,
     generate_region_filmstrip, plan_region_filmstrip,
 };
-pub use frame::{BorrowedFrame, Frame, OwnedFrame, PixelDimensions, PixelFormat, Timestamp};
+pub use frame::{
+    BorrowedFrame, Frame, OwnedFrame, PixelDimensions, PixelFormat, SharedFrame, Timestamp,
+};
 pub use geometry::{BinaryMask, FrameRegion, PixelRect};
 pub use measure::{
     ChangedPixelProportion, ComparisonOutcome, FrameComparison, MeasurementParameters,
@@ -95,7 +97,7 @@ pub use motion_history::{
 };
 pub use normalize::{
     IntegerScale, NormalizationParameters, NormalizedFrame, NormalizedSequence, ProcessingLimits,
-    Rgb8, normalize_sequence,
+    Rgb8, SharedNormalizedFrame, SharedNormalizedSequence, normalize_sequence,
 };
 pub use provenance::{
     AlgorithmDescriptor, ArtifactKind, ArtifactManifest, EvidenceClass, FiniteNumber,
@@ -110,5 +112,6 @@ pub use select::{
     StoryboardVisualSummary, VisualChangeMoment, select_storyboard_frames,
 };
 pub use sequence::{
-    BorrowedFrameSequence, DeclaredGap, FrameSequence, Marker, OwnedFrameSequence, TimeRange,
+    BorrowedFrameSequence, DeclaredGap, FrameSequence, Marker, OwnedFrameSequence,
+    SharedFrameSequence, TimeRange,
 };

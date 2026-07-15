@@ -12,14 +12,14 @@ use crate::{
     validation::deserialize_validated,
 };
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ImageFormat {
     Jpeg,
     Png,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct PixelDimensions {
     width: NonZeroU32,
     height: NonZeroU32,
