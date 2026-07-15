@@ -1,7 +1,7 @@
 ---
 id: perf-temporal-share-pair-classification-opt-2-temporal-context
 kind: story
-stage: implementing
+stage: done
 tags: [perf, visual, testing]
 parent: perf-temporal-share-pair-classification
 depends_on: [perf-temporal-share-pair-classification-opt-1-baseline-equivalence]
@@ -114,3 +114,16 @@ execution.
 Depends on `perf-temporal-share-pair-classification-opt-1-baseline-equivalence`.
 The service/scheduler wiring story may consume the context only after these
 pure-kernel exactness tests pass.
+
+## Implementation notes
+
+- Execution capability: inline feature-owner implementation; the work is one cohesive temporal-vision kernel change and intentionally stops before service/scheduler integration.
+- Review weight: standard, project default; child-story checkpoints advance directly to done after verification.
+- Files changed: `measure.rs`, new `pair_analysis.rs`, `select.rs`, `difference_map.rs`, `motion_history.rs`, `render.rs`, and the shared `pair_classification_perf.rs` benchmark.
+- Tests added: direct-versus-context comparison, difference core, motion plan, selection, manifest, encoded PNG, output digest, clean/masked/gapped/equal-time/threshold/identity/down-2 coverage, cancellation failure, and trace-budget assertions. The shared benchmark now reports/asserts the pure-kernel `M+B` prediction and explicitly labels service integration out of scope.
+- Simplification: measurement aggregation is now one checked helper shared by direct measurement and the context; difference and motion accumulation consume the canonical classified event without rescanning adjacent pixels.
+- Discrepancies from design: none. Public generator signatures, algorithm descriptors/versions, manifests, normalization, schemas, and non-adjacent selector baseline comparisons remain unchanged.
+- Adjacent issues parked: none. The next child story owns service/scheduler grouping and budgets.
+- Exactness evidence: the Rust test matrix passed for both normalization scales and clean, masked, gapped, equal-timestamp, and threshold cases. Context and direct `FrameComparison` values, selection plans/reasons/roles, difference and motion cores, manifests, PNG bytes, and SHA-256 output digests matched.
+- Performance evidence: the Rust 1.85 release smoke at 30 frames/1920x1080/identity/clean reported baseline `2M+B = 78` classified passes and predicted shared-context `M+B = 49`, a reduction of 29 adjacent passes and 60,134,400 classifier calls; predicted trace budget was 2,384 bytes. This is pure-kernel accounting, not an end-to-end service claim.
+- Verification: `rustup run 1.85.0 cargo fmt --all -- --check`, workspace locked check, workspace locked test, workspace locked clippy with `-D warnings`, temporal-vision all-target tests, and focused ignored release benchmark smoke all passed. The pre-existing `.work/bin/work-view` working-tree modification was preserved and not staged.

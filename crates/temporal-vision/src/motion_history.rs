@@ -3,13 +3,12 @@ use std::{collections::BTreeMap, fmt::Display, num::NonZeroU8};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AlgorithmDescriptor, ArtifactKind, ArtifactManifest, BinaryMask, ComparisonOutcome,
-    EncodedImage, ErrorCode, EvidenceClass, FrameSequence, GeneratedArtifact,
-    MeasurementParameters, NormalizationKind, NormalizationStep, NormalizedSequence,
-    ParameterValue, Parameters, PixelDimensions, Result, Rgb8, TimeRange, Timestamp, VisionError,
-    generator_descriptor,
-    measure::{classify_pixel_change, linear_luminance},
-    measure_adjacent,
+    AlgorithmDescriptor, ArtifactKind, ArtifactManifest, BinaryMask, EncodedImage, ErrorCode,
+    EvidenceClass, FrameSequence, GeneratedArtifact, MeasurementParameters, NormalizationKind,
+    NormalizationStep, NormalizedSequence, ParameterValue, Parameters, PixelDimensions, Result,
+    Rgb8, TimeRange, Timestamp, VisionError, generator_descriptor,
+    measure::linear_luminance,
+    pair_analysis::{PairAnalysisContext, build_pair_analysis_context},
     render::{
         ArtifactLabels, RenderLimits,
         canvas::{BLACK, Canvas, MUTED, PANEL, WARNING, WHITE, canvas_limit_error},
@@ -139,6 +138,96 @@ impl MotionHistoryParameters {
     }
 }
 
+#[derive(Debug)]
+pub(crate) struct MotionAccumulatorCore {
+    dimensions: PixelDimensions,
+    accumulation: Box<[u16]>,
+    segment_accumulation: Box<[u16]>,
+    ever_changed_bits: Box<[u8]>,
+    decay: MotionDecay,
+    measured_pair_count: usize,
+    gap_pair_count: usize,
+    continuity_segment_count: usize,
+    max_segment_rank: u32,
+}
+
+impl MotionAccumulatorCore {
+    pub(crate) fn empty<F>(
+        normalized: &NormalizedSequence<F>,
+        parameters: &MotionHistoryParameters,
+    ) -> Result<Self> {
+        let dimensions = normalized.dimensions();
+        let pixel_count = dimensions.pixel_count()?;
+        ensure_plan_memory_fits(pixel_count, parameters.limits)?;
+        let mask_byte_len = pixel_count.checked_add(7).ok_or_else(motion_limit_error)? / 8;
+        Ok(Self {
+            dimensions,
+            accumulation: vec![0; pixel_count].into_boxed_slice(),
+            segment_accumulation: vec![0; pixel_count].into_boxed_slice(),
+            ever_changed_bits: vec![0; mask_byte_len].into_boxed_slice(),
+            decay: parameters.decay,
+            measured_pair_count: 0,
+            gap_pair_count: 0,
+            continuity_segment_count: 0,
+            max_segment_rank: 0,
+        })
+    }
+
+    pub(crate) fn begin_segment(&mut self, pair_count: usize) -> Result<()> {
+        self.segment_accumulation.fill(0);
+        self.continuity_segment_count = self
+            .continuity_segment_count
+            .checked_add(1)
+            .ok_or_else(motion_limit_error)?;
+        self.max_segment_rank = self
+            .max_segment_rank
+            .max(u32::try_from(pair_count.saturating_sub(1)).map_err(|_| motion_limit_error())?);
+        Ok(())
+    }
+
+    pub(crate) const fn decay(&self) -> MotionDecay {
+        self.decay
+    }
+
+    pub(crate) fn record_measured_pair(&mut self) -> Result<()> {
+        self.measured_pair_count = self
+            .measured_pair_count
+            .checked_add(1)
+            .ok_or_else(motion_limit_error)?;
+        Ok(())
+    }
+
+    pub(crate) fn record_gap_pair(&mut self) -> Result<()> {
+        self.gap_pair_count = self
+            .gap_pair_count
+            .checked_add(1)
+            .ok_or_else(motion_limit_error)?;
+        Ok(())
+    }
+
+    pub(crate) fn record_pixel(&mut self, pixel: usize, changed: bool, weight: u16) -> Result<()> {
+        if !changed {
+            return Ok(());
+        }
+        set_bit(&mut self.ever_changed_bits, pixel);
+        if weight != 0 {
+            self.segment_accumulation[pixel] =
+                self.segment_accumulation[pixel].saturating_add(weight);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn finish_segment(&mut self) {
+        for (composite, segment) in self
+            .accumulation
+            .iter_mut()
+            .zip(self.segment_accumulation.iter())
+        {
+            *composite = (*composite).max(*segment);
+        }
+    }
+}
+
 /// Render-independent result of deterministic gap-aware motion accumulation.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct MotionHistoryPlan<FrameId> {
@@ -224,14 +313,96 @@ where
     P: AsRef<[u8]>,
 {
     validate_source_alignment(source, normalized, parameters.reference_frame_index)?;
+    let mut context = build_pair_analysis_context(
+        normalized,
+        parameters.measurement,
+        None,
+        Some(parameters),
+        || Ok(()),
+    )?;
+    build_motion_history_plan_with_context(source, normalized, parameters, &mut context)
+}
+
+pub(crate) fn build_motion_history_plan_with_context<F, M, G, P>(
+    source: &FrameSequence<F, M, G, P>,
+    normalized: &NormalizedSequence<F>,
+    parameters: &MotionHistoryParameters,
+    context: &mut PairAnalysisContext<'_>,
+) -> Result<MotionHistoryPlan<F>>
+where
+    F: Clone + Eq,
+    M: Eq,
+    G: Eq,
+    P: AsRef<[u8]>,
+{
+    validate_source_alignment(source, normalized, parameters.reference_frame_index)?;
+    context.ensure_normalized(normalized, parameters.measurement)?;
+    let core = context
+        .take_motion(parameters.decay)
+        .ok_or_else(motion_limit_error)?;
+    motion_plan_from_core(source, normalized, parameters, core)
+}
+
+fn motion_plan_from_core<F, M, G, P>(
+    source: &FrameSequence<F, M, G, P>,
+    normalized: &NormalizedSequence<F>,
+    parameters: &MotionHistoryParameters,
+    core: MotionAccumulatorCore,
+) -> Result<MotionHistoryPlan<F>>
+where
+    F: Clone + Eq,
+    M: Eq,
+    G: Eq,
+    P: AsRef<[u8]>,
+{
+    let changed_pixel_count = core
+        .ever_changed_bits
+        .iter()
+        .map(|byte| u64::from(byte.count_ones()))
+        .sum();
+    let outline_bits = build_outline(&core.ever_changed_bits, core.dimensions)?;
+    let ever_changed = BinaryMask::new(core.dimensions, core.ever_changed_bits)?;
+    let outline = BinaryMask::new(core.dimensions, outline_bits)?;
+
+    Ok(MotionHistoryPlan {
+        accumulation: core.accumulation,
+        ever_changed,
+        outline,
+        dimensions: core.dimensions,
+        reference_frame_index: parameters.reference_frame_index,
+        reference_frame_id: normalized.frames()[parameters.reference_frame_index]
+            .id()
+            .clone(),
+        continuity_segment_count: core.continuity_segment_count,
+        live_window: parameters.decay.live_window(),
+        measured_pair_count: core.measured_pair_count,
+        gap_pair_count: core.gap_pair_count,
+        changed_pixel_count,
+        max_segment_rank: core.max_segment_rank,
+        range: source.range(),
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn build_motion_history_plan_direct<F, M, G, P>(
+    source: &FrameSequence<F, M, G, P>,
+    normalized: &NormalizedSequence<F>,
+    parameters: &MotionHistoryParameters,
+) -> Result<MotionHistoryPlan<F>>
+where
+    F: Clone + Eq,
+    M: Eq,
+    G: Eq,
+    P: AsRef<[u8]>,
+{
+    validate_source_alignment(source, normalized, parameters.reference_frame_index)?;
     let dimensions = normalized.dimensions();
     let pixel_count = dimensions.pixel_count()?;
     ensure_plan_memory_fits(pixel_count, parameters.limits)?;
-
-    let comparisons = measure_adjacent(normalized, parameters.measurement)?;
+    let comparisons = crate::measure_adjacent(normalized, parameters.measurement)?;
     let measured_pair_count = comparisons
         .iter()
-        .filter(|comparison| matches!(comparison.outcome(), ComparisonOutcome::Measured(_)))
+        .filter(|comparison| matches!(comparison.outcome(), crate::ComparisonOutcome::Measured(_)))
         .count();
     let gap_pair_count = comparisons.len() - measured_pair_count;
     let mut accumulation = vec![0_u16; pixel_count];
@@ -241,16 +412,15 @@ where
     let mut continuity_segment_count = 0_usize;
     let mut max_segment_rank = 0_u32;
     let width = usize::try_from(dimensions.width()).map_err(|_| motion_limit_error())?;
-
     let mut segment_start = None;
     for (comparison_index, comparison) in comparisons.iter().enumerate() {
         match comparison.outcome() {
-            ComparisonOutcome::Measured(_) => {
+            crate::ComparisonOutcome::Measured(_) => {
                 segment_start.get_or_insert(comparison_index);
             }
-            ComparisonOutcome::GapBoundary { .. } => {
+            crate::ComparisonOutcome::GapBoundary { .. } => {
                 if let Some(start) = segment_start.take() {
-                    accumulate_segment(
+                    accumulate_segment_direct(
                         &comparisons[start..comparison_index],
                         normalized,
                         parameters,
@@ -262,14 +432,17 @@ where
                     continuity_segment_count = continuity_segment_count
                         .checked_add(1)
                         .ok_or_else(motion_limit_error)?;
-                    max_segment_rank =
-                        max_segment_rank.max(segment_rank(comparison_index - start)?);
+                    max_segment_rank = max_segment_rank.max(
+                        u32::try_from(comparison_index - start)
+                            .unwrap()
+                            .saturating_sub(1),
+                    );
                 }
             }
         }
     }
     if let Some(start) = segment_start {
-        accumulate_segment(
+        accumulate_segment_direct(
             &comparisons[start..],
             normalized,
             parameters,
@@ -281,21 +454,21 @@ where
         continuity_segment_count = continuity_segment_count
             .checked_add(1)
             .ok_or_else(motion_limit_error)?;
-        max_segment_rank = max_segment_rank.max(segment_rank(comparisons.len() - start)?);
+        max_segment_rank = max_segment_rank.max(
+            u32::try_from(comparisons.len() - start)
+                .unwrap()
+                .saturating_sub(1),
+        );
     }
-
     let changed_pixel_count = ever_changed_bits
         .iter()
         .map(|byte| u64::from(byte.count_ones()))
         .sum();
     let outline_bits = build_outline(&ever_changed_bits, dimensions)?;
-    let ever_changed = BinaryMask::new(dimensions, ever_changed_bits)?;
-    let outline = BinaryMask::new(dimensions, outline_bits)?;
-
     Ok(MotionHistoryPlan {
         accumulation: accumulation.into_boxed_slice(),
-        ever_changed,
-        outline,
+        ever_changed: BinaryMask::new(dimensions, ever_changed_bits)?,
+        outline: BinaryMask::new(dimensions, outline_bits)?,
         dimensions,
         reference_frame_index: parameters.reference_frame_index,
         reference_frame_id: normalized.frames()[parameters.reference_frame_index]
@@ -309,6 +482,58 @@ where
         max_segment_rank,
         range: source.range(),
     })
+}
+
+#[cfg(test)]
+fn accumulate_segment_direct<F>(
+    comparisons: &[crate::FrameComparison],
+    normalized: &NormalizedSequence<F>,
+    parameters: &MotionHistoryParameters,
+    width: usize,
+    segment_accumulation: &mut [u16],
+    accumulation: &mut [u16],
+    ever_changed_bits: &mut [u8],
+) -> Result<()> {
+    segment_accumulation.fill(0);
+    for (offset, comparison) in comparisons.iter().enumerate() {
+        let rank =
+            u32::try_from(comparisons.len() - 1 - offset).map_err(|_| motion_limit_error())?;
+        let weight = parameters.decay.weight_at(rank);
+        let earlier = normalized.frames()[comparison.earlier_frame_index()].linear_rgb16();
+        let later = normalized.frames()[comparison.later_frame_index()].linear_rgb16();
+        for (pixel, (before, after)) in earlier
+            .chunks_exact(3)
+            .zip(later.chunks_exact(3))
+            .enumerate()
+        {
+            let x = u32::try_from(pixel % width).map_err(|_| motion_limit_error())?;
+            let y = u32::try_from(pixel / width).map_err(|_| motion_limit_error())?;
+            if normalized
+                .analysis_mask()
+                .is_some_and(|mask| mask.includes(x, y) != Some(true))
+            {
+                continue;
+            }
+            let before: &[u16; 3] = before
+                .try_into()
+                .expect("chunks_exact yields three-channel pixels");
+            let after: &[u16; 3] = after
+                .try_into()
+                .expect("chunks_exact yields three-channel pixels");
+            if crate::measure::classify_pixel_change(before, after, parameters.measurement)?.changed
+            {
+                set_bit(ever_changed_bits, pixel);
+                if weight != 0 {
+                    segment_accumulation[pixel] =
+                        segment_accumulation[pixel].saturating_add(weight);
+                }
+            }
+        }
+    }
+    for (composite, segment) in accumulation.iter_mut().zip(segment_accumulation.iter()) {
+        *composite = (*composite).max(*segment);
+    }
+    Ok(())
 }
 
 fn validate_source_alignment<F: Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
@@ -357,65 +582,6 @@ fn plan_working_bytes(pixel_count: usize) -> Result<usize> {
         .and_then(|value| value.checked_mul(2))
         .and_then(|value| value.checked_add(mask_bytes.checked_mul(2)?))
         .ok_or_else(motion_limit_error)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn accumulate_segment<F>(
-    comparisons: &[crate::FrameComparison],
-    normalized: &NormalizedSequence<F>,
-    parameters: &MotionHistoryParameters,
-    width: usize,
-    segment_accumulation: &mut [u16],
-    accumulation: &mut [u16],
-    ever_changed_bits: &mut [u8],
-) -> Result<()> {
-    segment_accumulation.fill(0);
-    for (offset, comparison) in comparisons.iter().enumerate() {
-        debug_assert!(matches!(
-            comparison.outcome(),
-            ComparisonOutcome::Measured(_)
-        ));
-        let rank =
-            u32::try_from(comparisons.len() - 1 - offset).map_err(|_| motion_limit_error())?;
-        let weight = parameters.decay.weight_at(rank);
-        let earlier = normalized.frames()[comparison.earlier_frame_index()].linear_rgb16();
-        let later = normalized.frames()[comparison.later_frame_index()].linear_rgb16();
-        for (pixel, (before, after)) in earlier
-            .chunks_exact(3)
-            .zip(later.chunks_exact(3))
-            .enumerate()
-        {
-            let x = u32::try_from(pixel % width).map_err(|_| motion_limit_error())?;
-            let y = u32::try_from(pixel / width).map_err(|_| motion_limit_error())?;
-            if normalized
-                .analysis_mask()
-                .is_some_and(|mask| mask.includes(x, y) != Some(true))
-            {
-                continue;
-            }
-            let before: &[u16; 3] = before
-                .try_into()
-                .expect("chunks_exact yields three-channel pixels");
-            let after: &[u16; 3] = after
-                .try_into()
-                .expect("chunks_exact yields three-channel pixels");
-            if !classify_pixel_change(before, after, parameters.measurement)?.changed {
-                continue;
-            }
-            set_bit(ever_changed_bits, pixel);
-            if weight != 0 {
-                segment_accumulation[pixel] = segment_accumulation[pixel].saturating_add(weight);
-            }
-        }
-    }
-    for (composite, segment) in accumulation.iter_mut().zip(segment_accumulation.iter()) {
-        *composite = (*composite).max(*segment);
-    }
-    Ok(())
-}
-
-fn segment_rank(pair_count: usize) -> Result<u32> {
-    u32::try_from(pair_count.saturating_sub(1)).map_err(|_| motion_limit_error())
 }
 
 fn build_outline(ever_changed: &[u8], dimensions: PixelDimensions) -> Result<Vec<u8>> {
@@ -527,6 +693,57 @@ where
         parameters.limits.max_encoded_bytes(),
     )?;
 
+    let mut normalization = normalized.normalization_steps().to_vec();
+    normalization.push(parameters.measurement.provenance_step()?);
+    normalization.push(display_step()?);
+    let manifest = ArtifactManifest::from_sequence(
+        artifact_id,
+        ArtifactKind::MotionHistory,
+        EvidenceClass::SourceDerived,
+        {
+            let descriptor = generator_descriptor(ArtifactKind::MotionHistory);
+            AlgorithmDescriptor::new(descriptor.name, descriptor.version)?
+        },
+        source,
+        vec![plan.reference_frame_id().clone()],
+        normalization,
+        manifest_parameters(source, &plan, &parameters)?,
+        layout.dimensions,
+        hash,
+    )?;
+    Ok(GeneratedArtifact::new(
+        EncodedImage::new(layout.dimensions, bytes),
+        manifest,
+    ))
+}
+
+#[cfg(test)]
+pub(crate) fn generate_motion_history_direct<A, F, M, G, P>(
+    artifact_id: A,
+    source: &FrameSequence<F, M, G, P>,
+    normalized: &NormalizedSequence<F>,
+    parameters: MotionHistoryParameters,
+) -> Result<MotionHistoryArtifact<A, F, M, G>>
+where
+    F: Clone + Eq + Display,
+    M: Clone + Eq,
+    G: Clone + Eq,
+    P: AsRef<[u8]>,
+{
+    validate_source_alignment(source, normalized, parameters.reference_frame_index)?;
+    let layout = MotionHistoryLayout::new(normalized.dimensions(), parameters.limits)?;
+    let plan = build_motion_history_plan_direct(source, normalized, &parameters)?;
+    let mut canvas = Canvas::new(
+        layout.dimensions,
+        BLACK,
+        parameters.limits.max_canvas_bytes(),
+    )?;
+    draw_motion_history(&mut canvas, layout, source, normalized, &plan, &parameters)?;
+    let (bytes, hash) = crate::encode::encode_png(
+        layout.dimensions,
+        canvas.pixels(),
+        parameters.limits.max_encoded_bytes(),
+    )?;
     let mut normalization = normalized.normalization_steps().to_vec();
     normalization.push(parameters.measurement.provenance_step()?);
     normalization.push(display_step()?);

@@ -66,6 +66,7 @@ mod geometry;
 mod measure;
 mod motion_history;
 mod normalize;
+mod pair_analysis;
 mod provenance;
 mod render;
 mod select;

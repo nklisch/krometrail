@@ -163,6 +163,20 @@ pub struct FrameComparison {
 }
 
 impl FrameComparison {
+    pub(crate) const fn from_parts(
+        earlier_frame_index: usize,
+        later_frame_index: usize,
+        elapsed_nanos: u64,
+        outcome: ComparisonOutcome,
+    ) -> Self {
+        Self {
+            earlier_frame_index,
+            later_frame_index,
+            elapsed_nanos,
+            outcome,
+        }
+    }
+
     pub const fn earlier_frame_index(&self) -> usize {
         self.earlier_frame_index
     }
@@ -220,12 +234,12 @@ pub fn measure_pair<F>(
             parameters,
         )?)
     };
-    Ok(FrameComparison {
+    Ok(FrameComparison::from_parts(
         earlier_frame_index,
         later_frame_index,
         elapsed_nanos,
         outcome,
-    })
+    ))
 }
 
 /// Measure every adjacent captured-frame pair in declaration order.
@@ -239,6 +253,123 @@ pub fn measure_adjacent<F>(
         .map(Vec::into_boxed_slice)
 }
 
+pub(crate) struct MeasurementAccumulator {
+    compared: u128,
+    changed: u128,
+    absolute_sum: u128,
+    luminance_sum: u128,
+    weighted_square_sum: u128,
+    min_x: u32,
+    min_y: u32,
+    max_x: u32,
+    max_y: u32,
+}
+
+impl MeasurementAccumulator {
+    pub(crate) fn new(compared: u128) -> Self {
+        Self {
+            compared,
+            changed: 0,
+            absolute_sum: 0,
+            luminance_sum: 0,
+            weighted_square_sum: 0,
+            min_x: u32::MAX,
+            min_y: u32::MAX,
+            max_x: 0,
+            max_y: 0,
+        }
+    }
+
+    pub(crate) fn record(
+        &mut self,
+        x: u32,
+        y: u32,
+        before: &[u16; 3],
+        after: &[u16; 3],
+        change: PixelChange,
+    ) -> Result<()> {
+        if !change.changed {
+            return Ok(());
+        }
+        let dr = u128::from(before[0].abs_diff(after[0]));
+        let dg = u128::from(before[1].abs_diff(after[1]));
+        let db = u128::from(before[2].abs_diff(after[2]));
+        self.changed = self
+            .changed
+            .checked_add(1)
+            .ok_or_else(measurement_overflow)?;
+        let channel_sum = dr
+            .checked_add(dg)
+            .and_then(|value| value.checked_add(db))
+            .ok_or_else(measurement_overflow)?;
+        self.absolute_sum = self
+            .absolute_sum
+            .checked_add(channel_sum)
+            .ok_or_else(measurement_overflow)?;
+        self.weighted_square_sum = self
+            .weighted_square_sum
+            .checked_add(change.weighted_square)
+            .ok_or_else(measurement_overflow)?;
+        let before_luma = linear_luminance(before)?;
+        let after_luma = linear_luminance(after)?;
+        self.luminance_sum = self
+            .luminance_sum
+            .checked_add(before_luma.abs_diff(after_luma))
+            .ok_or_else(measurement_overflow)?;
+        self.min_x = self.min_x.min(x);
+        self.min_y = self.min_y.min(y);
+        self.max_x = self.max_x.max(x);
+        self.max_y = self.max_y.max(y);
+        Ok(())
+    }
+
+    pub(crate) fn finish(self) -> Result<MeasurementVector> {
+        let changed_u64 = u64::try_from(self.changed).map_err(|_| measurement_overflow())?;
+        let compared_u64 = u64::try_from(self.compared).map_err(|_| measurement_overflow())?;
+        let changed_region_bounds = if self.changed == 0 {
+            None
+        } else {
+            Some(PixelRect::new(
+                self.min_x,
+                self.min_y,
+                self.max_x
+                    .checked_sub(self.min_x)
+                    .and_then(|value| value.checked_add(1))
+                    .ok_or_else(measurement_overflow)?,
+                self.max_y
+                    .checked_sub(self.min_y)
+                    .and_then(|value| value.checked_add(1))
+                    .ok_or_else(measurement_overflow)?,
+            )?)
+        };
+        let mean_luminance_difference =
+            u16::try_from(round_ratio(self.luminance_sum, self.compared)?)
+                .map_err(|_| measurement_overflow())?;
+        let color_divisor = self
+            .compared
+            .checked_mul(3)
+            .ok_or_else(measurement_overflow)?;
+        let mean_color_difference = u16::try_from(round_ratio(self.absolute_sum, color_divisor)?)
+            .map_err(|_| measurement_overflow())?;
+        let perceptual_divisor = WEIGHT_SUM
+            .checked_mul(self.compared)
+            .ok_or_else(measurement_overflow)?;
+        let mean_weighted_square = self.weighted_square_sum / perceptual_divisor;
+        let perceptual_frame_distance = u16::try_from(integer_sqrt(mean_weighted_square))
+            .map_err(|_| measurement_overflow())?;
+
+        Ok(MeasurementVector {
+            absolute_pixel_difference: u64::try_from(self.absolute_sum)
+                .map_err(|_| measurement_overflow())?,
+            changed_pixel_proportion: ChangedPixelProportion::new(changed_u64, compared_u64)?,
+            changed_region_bounds,
+            mean_luminance_difference,
+            mean_color_difference,
+            perceptual_frame_distance,
+        })
+    }
+}
+
 fn measure_pixels<F>(
     sequence: &NormalizedSequence<F>,
     earlier_index: usize,
@@ -249,28 +380,16 @@ fn measure_pixels<F>(
     let later = sequence.frames()[later_index].linear_rgb16();
     let dimensions = sequence.dimensions();
     let mask = sequence.analysis_mask();
-    let mut changed = 0_u128;
-    let mut absolute_sum = 0_u128;
-    let mut luminance_sum = 0_u128;
-    let mut weighted_square_sum = 0_u128;
-    let mut min_x = u32::MAX;
-    let mut min_y = u32::MAX;
-    let mut max_x = 0_u32;
-    let mut max_y = 0_u32;
+    let width = usize::try_from(dimensions.width()).map_err(|_| measurement_overflow())?;
+    let mut aggregate = MeasurementAccumulator::new(u128::from(sequence.analysis_pixel_count()));
 
     for (index, (before, after)) in earlier
         .chunks_exact(3)
         .zip(later.chunks_exact(3))
         .enumerate()
     {
-        let x = u32::try_from(
-            index % usize::try_from(dimensions.width()).map_err(|_| measurement_overflow())?,
-        )
-        .map_err(|_| measurement_overflow())?;
-        let y = u32::try_from(
-            index / usize::try_from(dimensions.width()).map_err(|_| measurement_overflow())?,
-        )
-        .map_err(|_| measurement_overflow())?;
+        let x = u32::try_from(index % width).map_err(|_| measurement_overflow())?;
+        let y = u32::try_from(index / width).map_err(|_| measurement_overflow())?;
         if mask.is_some_and(|mask| mask.includes(x, y) != Some(true)) {
             continue;
         }
@@ -282,75 +401,9 @@ fn measure_pixels<F>(
             .try_into()
             .expect("chunks_exact yields three-channel pixels");
         let change = classify_pixel_change(before_pixel, after_pixel, parameters)?;
-        if !change.changed {
-            continue;
-        }
-        let dr = u128::from(before[0].abs_diff(after[0]));
-        let dg = u128::from(before[1].abs_diff(after[1]));
-        let db = u128::from(before[2].abs_diff(after[2]));
-
-        changed = changed.checked_add(1).ok_or_else(measurement_overflow)?;
-        let channel_sum = dr
-            .checked_add(dg)
-            .and_then(|value| value.checked_add(db))
-            .ok_or_else(measurement_overflow)?;
-        absolute_sum = absolute_sum
-            .checked_add(channel_sum)
-            .ok_or_else(measurement_overflow)?;
-        weighted_square_sum = weighted_square_sum
-            .checked_add(change.weighted_square)
-            .ok_or_else(measurement_overflow)?;
-        let before_luma = linear_luminance(before)?;
-        let after_luma = linear_luminance(after)?;
-        luminance_sum = luminance_sum
-            .checked_add(before_luma.abs_diff(after_luma))
-            .ok_or_else(measurement_overflow)?;
-        min_x = min_x.min(x);
-        min_y = min_y.min(y);
-        max_x = max_x.max(x);
-        max_y = max_y.max(y);
+        aggregate.record(x, y, before_pixel, after_pixel, change)?;
     }
-
-    let compared = u128::from(sequence.analysis_pixel_count());
-    let changed_u64 = u64::try_from(changed).map_err(|_| measurement_overflow())?;
-    let compared_u64 = u64::try_from(compared).map_err(|_| measurement_overflow())?;
-    let changed_region_bounds = if changed == 0 {
-        None
-    } else {
-        Some(PixelRect::new(
-            min_x,
-            min_y,
-            max_x
-                .checked_sub(min_x)
-                .and_then(|value| value.checked_add(1))
-                .ok_or_else(measurement_overflow)?,
-            max_y
-                .checked_sub(min_y)
-                .and_then(|value| value.checked_add(1))
-                .ok_or_else(measurement_overflow)?,
-        )?)
-    };
-    let mean_luminance_difference =
-        u16::try_from(round_ratio(luminance_sum, compared)?).map_err(|_| measurement_overflow())?;
-    let color_divisor = compared.checked_mul(3).ok_or_else(measurement_overflow)?;
-    let mean_color_difference = u16::try_from(round_ratio(absolute_sum, color_divisor)?)
-        .map_err(|_| measurement_overflow())?;
-    let perceptual_divisor = WEIGHT_SUM
-        .checked_mul(compared)
-        .ok_or_else(measurement_overflow)?;
-    let mean_weighted_square = weighted_square_sum / perceptual_divisor;
-    let perceptual_frame_distance =
-        u16::try_from(integer_sqrt(mean_weighted_square)).map_err(|_| measurement_overflow())?;
-
-    Ok(MeasurementVector {
-        absolute_pixel_difference: u64::try_from(absolute_sum)
-            .map_err(|_| measurement_overflow())?,
-        changed_pixel_proportion: ChangedPixelProportion::new(changed_u64, compared_u64)?,
-        changed_region_bounds,
-        mean_luminance_difference,
-        mean_color_difference,
-        perceptual_frame_distance,
-    })
+    aggregate.finish()
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

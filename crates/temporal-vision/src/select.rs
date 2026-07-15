@@ -4,7 +4,8 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::{
     ComparisonOutcome, ErrorCode, FrameSequence, MeasurementParameters, MeasurementVector,
-    NormalizedSequence, Result, Timestamp, VisionError, measure_adjacent, measure_pair,
+    NormalizedSequence, Result, Timestamp, VisionError, measure_pair,
+    pair_analysis::build_pair_analysis_context,
 };
 
 const MIN_TILES: u8 = 3;
@@ -365,10 +366,53 @@ pub fn select_storyboard_frames<F: Clone + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
             "storyboard anchor must lie inside the source frame range",
         ));
     }
+    let context = build_pair_analysis_context(normalized, measurement, None, None, || Ok(()))?;
+    select_storyboard_frames_with_comparisons(
+        source,
+        normalized,
+        anchor,
+        tile_limit,
+        measurement,
+        context.comparisons(),
+    )
+}
 
+#[cfg(test)]
+pub(crate) fn select_storyboard_frames_direct<F: Clone + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
+    source: &FrameSequence<F, M, G, P>,
+    normalized: &NormalizedSequence<F>,
+    anchor: Timestamp,
+    tile_limit: StoryboardTileLimit,
+    measurement: MeasurementParameters,
+) -> Result<StoryboardSelection<F>> {
+    validate_alignment(source, normalized)?;
+    if !source.range().contains(anchor) {
+        return Err(VisionError::new(
+            ErrorCode::InvalidParameter,
+            "storyboard anchor must lie inside the source frame range",
+        ));
+    }
+    let adjacent = crate::measure_adjacent(normalized, measurement)?;
+    select_storyboard_frames_with_comparisons(
+        source,
+        normalized,
+        anchor,
+        tile_limit,
+        measurement,
+        &adjacent,
+    )
+}
+
+fn select_storyboard_frames_with_comparisons<F: Clone + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
+    source: &FrameSequence<F, M, G, P>,
+    normalized: &NormalizedSequence<F>,
+    anchor: Timestamp,
+    tile_limit: StoryboardTileLimit,
+    measurement: MeasurementParameters,
+    adjacent: &[crate::FrameComparison],
+) -> Result<StoryboardSelection<F>> {
     let frame_count = source.frames().len();
-    let adjacent = measure_adjacent(normalized, measurement)?;
-    let analysis = SelectionAnalysis::new(&adjacent, source, frame_count)?;
+    let analysis = SelectionAnalysis::new(adjacent, source, frame_count)?;
     let baseline = source
         .frames()
         .iter()
@@ -378,14 +422,14 @@ pub fn select_storyboard_frames<F: Clone + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
         .frames()
         .iter()
         .position(|frame| frame.timestamp() > anchor);
-    let first_change_comparison = first_change_comparison(&adjacent, normalized, anchor);
+    let first_change_comparison = first_change_comparison(adjacent, normalized, anchor);
     let first_change = first_change_comparison.map(crate::FrameComparison::later_frame_index);
     let peak_baseline_comparison =
         peak_baseline_comparison(normalized, baseline, &analysis, measurement)?;
     let peak = peak_baseline_comparison
         .as_ref()
         .map(crate::FrameComparison::later_frame_index);
-    let peak_adjacent_comparison = peak_adjacent_changed_area_comparison(&adjacent);
+    let peak_adjacent_comparison = peak_adjacent_changed_area_comparison(adjacent);
     let visual_summary = StoryboardVisualSummary {
         first_change: first_change_comparison
             .map(|comparison| visual_moment(source, comparison.clone())),
@@ -525,6 +569,30 @@ pub fn select_storyboard_frames<F: Clone + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
         continuity_segment_count: analysis.segment_count,
         visual_summary,
     })
+}
+
+#[cfg(test)]
+pub(crate) fn select_storyboard_frames_with_comparisons_for_test<
+    F: Clone + Eq,
+    M: Eq,
+    G: Eq,
+    P: AsRef<[u8]>,
+>(
+    source: &FrameSequence<F, M, G, P>,
+    normalized: &NormalizedSequence<F>,
+    anchor: Timestamp,
+    tile_limit: StoryboardTileLimit,
+    measurement: MeasurementParameters,
+    adjacent: &[crate::FrameComparison],
+) -> Result<StoryboardSelection<F>> {
+    select_storyboard_frames_with_comparisons(
+        source,
+        normalized,
+        anchor,
+        tile_limit,
+        measurement,
+        adjacent,
+    )
 }
 
 fn validate_alignment<F: Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(

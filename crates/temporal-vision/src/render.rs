@@ -260,6 +260,87 @@ where
     })
 }
 
+#[cfg(test)]
+pub(crate) fn generate_storyboard_direct<A, F, M, G, P>(
+    storyboard_artifact_id: A,
+    orientation_artifact_id: Option<A>,
+    source: &FrameSequence<F, M, G, P>,
+    normalized: &NormalizedSequence<F>,
+    parameters: StoryboardParameters,
+) -> Result<StoryboardArtifacts<A, F, M, G>>
+where
+    F: Clone + Eq + Display,
+    M: Clone + Eq,
+    G: Clone + Eq,
+    P: AsRef<[u8]>,
+{
+    let selection = crate::select::select_storyboard_frames_direct(
+        source,
+        normalized,
+        parameters.anchor,
+        parameters.tile_limit,
+        parameters.measurement,
+    )?;
+    let marker_assignments = assign_markers(source.markers(), &selection);
+    let storyboard_raster = render_storyboard(
+        source,
+        normalized,
+        &selection,
+        &marker_assignments,
+        &parameters,
+    )?;
+    let storyboard = finish_artifact(
+        storyboard_artifact_id,
+        ArtifactKind::Storyboard,
+        source,
+        normalized,
+        selection
+            .selected_frames()
+            .iter()
+            .map(|frame| frame.frame_id().clone())
+            .collect(),
+        &selection,
+        &marker_assignments,
+        &parameters,
+        storyboard_raster,
+        "chronological_strip",
+    )?;
+    let orientation = if let Some(artifact_id) = orientation_artifact_id {
+        let role_indices = [
+            selection.before_index(),
+            selection.during_index(),
+            selection.after_index(),
+        ];
+        let mut selected_indices = role_indices.to_vec();
+        selected_indices.sort_unstable();
+        selected_indices.dedup();
+        let selected_ids = selected_indices
+            .iter()
+            .map(|index| source.frames()[*index].id().clone())
+            .collect();
+        let raster = render_orientation(source, normalized, &selection, &parameters)?;
+        Some(finish_artifact(
+            artifact_id,
+            ArtifactKind::BeforeDuringAfter,
+            source,
+            normalized,
+            selected_ids,
+            &selection,
+            &marker_assignments,
+            &parameters,
+            raster,
+            "before_during_after",
+        )?)
+    } else {
+        None
+    };
+    Ok(StoryboardArtifacts {
+        storyboard,
+        orientation,
+        selection,
+    })
+}
+
 struct Raster {
     canvas: Canvas,
     tile_width: u32,

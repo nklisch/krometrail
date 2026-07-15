@@ -187,6 +187,13 @@ struct Accounting {
     expected_classified_pass_formula: String,
     expected_classified_pixel_passes: u64,
     expected_classifier_pixel_calls: u64,
+    predicted_context_classified_pass_formula: String,
+    predicted_context_classified_pixel_passes: u64,
+    predicted_context_classifier_pixel_calls: u64,
+    predicted_adjacent_pixel_pass_reduction: u64,
+    predicted_classifier_call_reduction: u64,
+    predicted_trace_bytes: u64,
+    prediction_scope: &'static str,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -530,6 +537,15 @@ fn accounting(source: &Source, normalized: &Normalized, config: Config) -> Accou
     } else {
         "2M+B".to_owned()
     };
+    // Pure-kernel prediction for one request-local context: adjacent measurement,
+    // difference, and optional motion consumers share M; selector baseline work B
+    // remains explicit and non-adjacent. This is not an end-to-end service claim.
+    let predicted_context_passes = measurable + baseline_classified;
+    let predicted_context_formula = "M+B".to_owned();
+    let predicted_trace_bytes = adjacent
+        .checked_mul(80)
+        .and_then(|bytes| bytes.checked_add(64))
+        .unwrap();
     Accounting {
         frame_count: u64::try_from(source.frames().len()).unwrap(),
         adjacent_pairs: adjacent,
@@ -546,6 +562,14 @@ fn accounting(source: &Source, normalized: &Normalized, config: Config) -> Accou
         expected_classified_pass_formula: expected_formula,
         expected_classified_pixel_passes: expected_passes,
         expected_classifier_pixel_calls: included * expected_passes,
+        predicted_context_classified_pass_formula: predicted_context_formula,
+        predicted_context_classified_pixel_passes: predicted_context_passes,
+        predicted_context_classifier_pixel_calls: included * predicted_context_passes,
+        predicted_adjacent_pixel_pass_reduction: expected_passes - predicted_context_passes,
+        predicted_classifier_call_reduction: included
+            * (expected_passes - predicted_context_passes),
+        predicted_trace_bytes,
+        prediction_scope: "pure temporal-vision kernel; no service or scheduler integration",
     }
 }
 
@@ -565,6 +589,30 @@ fn assert_accounting(accounting: &Accounting, includes_motion: bool) {
     assert_eq!(
         accounting.expected_classifier_pixel_calls,
         accounting.included_analysis_pixels * expected
+    );
+    let predicted =
+        accounting.measurable_adjacent_pairs + accounting.storyboard_baseline_classified_pair_calls;
+    assert_eq!(accounting.predicted_context_classified_pass_formula, "M+B");
+    assert_eq!(
+        accounting.predicted_context_classified_pixel_passes,
+        predicted
+    );
+    assert_eq!(
+        accounting.predicted_context_classifier_pixel_calls,
+        accounting.included_analysis_pixels * predicted
+    );
+    assert_eq!(
+        accounting.predicted_adjacent_pixel_pass_reduction,
+        expected - predicted
+    );
+    assert_eq!(
+        accounting.predicted_classifier_call_reduction,
+        accounting.included_analysis_pixels * (expected - predicted)
+    );
+    assert!(accounting.predicted_trace_bytes <= accounting.adjacent_pairs * 80 + 64);
+    assert_eq!(
+        accounting.prediction_scope,
+        "pure temporal-vision kernel; no service or scheduler integration"
     );
     assert_eq!(
         accounting.storyboard.classified_pixel_passes,
