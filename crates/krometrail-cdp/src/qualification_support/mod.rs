@@ -8,7 +8,9 @@ pub mod static_fixture;
 
 pub use chrome::{
     ChromeViewport, ChromeWrapper, ChromeWrapperVariant, TemporaryRootGuard,
-    cleanup_real_browser_roots, process_references, real_browser_lock, real_browser_tests_enabled,
-    temporary_profile_root,
+    cleanup_real_browser_roots, fixture_url, page_lifecycle_fixture_url,
+    page_observation_fixture_url, process_references, real_browser_lock,
+    real_browser_tests_enabled, temporary_profile_root, verified_interactions_fixture_url,
+    waits_and_batches_fixture_url,
 };
 pub use static_fixture::{FixtureServer, contains_stable_fixture_markers};

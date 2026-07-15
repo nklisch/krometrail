@@ -27,7 +27,9 @@ use temporal_evaluation::{
     EvaluationStatus, FailureRecord, LiveQualification, RunFailureCode, RunManifest,
 };
 
+mod barriers;
 mod capture;
+mod control;
 mod fixture_observation;
 
 pub(crate) use capture::qualification_capture_config;
@@ -165,6 +167,14 @@ impl QualificationLifecycle {
 
     pub fn fixture_url(&self) -> &str {
         &self.fixture_url
+    }
+
+    pub(crate) fn lock_held(&self) -> bool {
+        self.browser_lock.is_some()
+    }
+
+    pub(crate) fn server_ready(&self) -> bool {
+        !self.fixture_url.is_empty()
     }
 
     pub fn temporal_benchmark_url(&self, case_id: &str, duration_ms: u16) -> String {

@@ -1,7 +1,7 @@
 ---
 id: epic-prove-temporal-advantage-live-capture-and-system-qualification-control-reliability-and-session-barriers
 kind: story
-stage: implementing
+stage: done
 tags: [testing, infra]
 parent: epic-prove-temporal-advantage-live-capture-and-system-qualification
 depends_on: [epic-prove-temporal-advantage-live-capture-and-system-qualification-duration-capture-timing-and-movement]
@@ -52,20 +52,45 @@ composition and stores every anchor/result through production ports.
 
 ## Acceptance evidence
 
-- [ ] Scripted tests assert the complete barrier order and reject a shortcut that proceeds from
+- [x] Scripted tests assert the complete barrier order and reject a shortcut that proceeds from
       transport acknowledgement without the required observation.
-- [ ] The control matrix derives operation identity from the existing registry and records every
+- [x] The control matrix derives operation identity from the existing registry and records every
       attempted scenario with exact success/failure accounting.
-- [ ] A missing fixture capability, stale reference, target replacement, timeout, and transport
+- [x] A missing fixture capability, stale reference, target replacement, timeout, and transport
       loss become explicit unavailable/inconclusive evidence with recovery, never a pass.
-- [ ] Repeated runs are deterministic in scenario order and canonical manifest serialization; no
+- [x] Repeated runs are deterministic in scenario order and canonical manifest serialization; no
       arbitrary sleep is required for readiness or settle.
-- [ ] Live execution remains gated by the feature-specific opt-in and uses the same production
+- [x] Live execution remains gated by the feature-specific opt-in and uses the same production
       browser connector, interaction evidence, capture, and store authorities.
-- [ ] Ordinary qualification verification does not launch Chrome.
+- [x] Ordinary qualification verification does not launch Chrome.
 
 ## Ordering
 
 This child depends on duration capture because its barriers and control attempts must share the
 same interaction/source interval identities. Retention, recovery, and performance depend on the
 completed control/lifecycle accounting.
+
+## Implementation notes
+
+- Execution capability: inline implementation over the existing qualification composition; the
+  story is one cohesive test-only control/barrier boundary and did not need a separate worker.
+- Review weight: standard parent-feature review; this child advanced directly to done after green
+  verification and does not enter a child-story review lane.
+- Files changed: `src/app/live_evaluation/control.rs`,
+  `src/app/live_evaluation/barriers.rs`, `src/app/live_evaluation.rs`,
+  `src/app/live_evaluation/capture.rs`, qualification-support fixture URL exports, and the root
+  serde dependency/lock entry needed for canonical test-only records.
+- Tests added: canonical operation-registry-derived scenario ordering; exact control attempt and
+  reliability aggregation; transport-acknowledgement-without-observation rejection; safe failure
+  classification for unsupported, stale, replacement, timeout, and transport loss; canonical
+  attempt/run bytes; complete ordered barrier traces; out-of-order shortcut rejection; and
+  bounded timeout behavior without sleeps.
+- Verification: Rust 1.85 locked `cargo fmt --all -- --check`, workspace check/test/clippy, and
+  qualification-support root/CDP test and clippy gates all passed. No live environment variables
+  were set, ignored live tests were not invoked, and Chrome was not launched.
+- Simplification: reused the production connector, interaction evidence sink, recording flush,
+  timeline anchor, frame/gap/query authorities, existing fixture URLs, and the existing operation
+  registry; added no MCP route, product command, alternate protocol, retry shortcut, or storage
+  authority.
+- Discrepancies from design: none.
+- Adjacent issues parked: none.

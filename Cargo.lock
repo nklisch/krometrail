@@ -727,6 +727,7 @@ dependencies = [
  "krometrail-core",
  "krometrail-mcp",
  "krometrail-store",
+ "serde",
  "serde_json",
  "sha2",
  "temporal-evaluation",

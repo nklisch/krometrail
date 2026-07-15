@@ -591,7 +591,7 @@ pub async fn run_opted_in_capture(
     stop_result(result, stop, cleanup)
 }
 
-fn qualification_wrapper(
+pub(crate) fn qualification_wrapper(
     installation: &krometrail_core::BrowserInstallation,
     viewport: krometrail_cdp::qualification_support::ChromeViewport,
 ) -> Option<krometrail_cdp::qualification_support::ChromeWrapper> {

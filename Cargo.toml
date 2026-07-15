@@ -67,6 +67,7 @@ krometrail-mcp.workspace = true
 temporal-vision.workspace = true
 image.workspace = true
 temporal-evaluation = { workspace = true, optional = true }
+serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 tokio = { workspace = true, features = ["sync"] }
