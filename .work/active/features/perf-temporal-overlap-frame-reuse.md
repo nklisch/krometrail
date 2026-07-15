@@ -1,7 +1,7 @@
 ---
 id: perf-temporal-overlap-frame-reuse
 kind: feature
-stage: implementing
+stage: review
 tags: [perf, visual, storage, testing]
 parent: null
 depends_on: []
@@ -455,3 +455,46 @@ was used. `.work/bin/work-view` was pre-existing modified working-tree state
 and was not edited. The pair-context optimization remains rolled back at
 `fcaa5ec`; this feature intentionally designs only cross-query decoded and
 normalized work reuse.
+
+## Integrated qualification and rollback disposition
+
+All three child checkpoints reached a terminal implementation decision. The
+final qualification ran the real `TemporalVisionArtifactService` and
+`RecordingStore` candidate from `0112f10` + `1855fdb` in fresh Rust 1.85 release
+processes across concurrent adjacent and sequential one-frame sliding windows,
+30/60/120 frames, one/two request permits, and five repetitions per cell. The
+full distributions, reservations, call counters, cache dispositions, exactness
+observations, and perf-stat output are recorded in
+`perf-temporal-overlap-frame-reuse-opt-3-qualification-equivalence.md`.
+
+The hard two-permit 120-frame gate was rejected: wall max `2339.923 ms` passed
+`2986.643 ms`, and RSS max `1411548 KiB` passed `1505412 KiB`, but CPU min
+`3353.483 ms` failed `2773.898 ms` and allocation min `4108022377` bytes failed
+`3584253236` bytes. Concurrent two-permit hits were the expected 119 decoded
+and 119 normalized frames; one-permit controls and sequential completed windows
+had zero hits. Scheduler accounting remained explicit with a 128 MiB capture
+reserve, 1.5 GiB shared-work cap, 4 blocking permits, and 1 generator permit;
+the capture-headroom field remained a browser-free proxy and made no CDP claim.
+External `perf stat` was permitted for the 60- and 120-frame two-permit cells;
+all requested task-clock, cycle, instruction, cache-miss, and branch-miss values
+are retained in the child with no denial.
+
+The candidate also failed the exactness checkpoint. Repeated 120-frame
+concurrent two-permit runs produced two artifact-evidence signatures: one run
+swapped the generated difference-map artifact IDs and changed manifest and
+combined hashes while PNG bytes remained equal. The required dedicated
+cache-disabled/reuse-enabled equality across normalized buffers, manifests,
+PNG bytes, source order, epochs, and provenance was therefore not claimed.
+Candidate deletion, corruption/invalidation, cancellation, publication, and
+headroom fence smoke passed, but those results cannot override the failed hard
+performance and exactness gates.
+
+The optimization source from `0112f10` and `1855fdb` was mechanically restored
+to `97c4ea0`. This removes the intermediate work registry, Arc-backed reuse,
+shared scheduler accounting, and service integration. The low-risk ignored
+benchmark/design scaffold from `97c4ea0` remains, including its no-reuse
+control. The child is closed as a measured rejection; no lower-level,
+parallel, persistent-cache, or other speculative follow-up was introduced.
+Rust 1.85 fmt, locked workspace check/test/clippy, and the retained release
+benchmark smoke passed after rollback. `.work/bin/work-view` remains the
+pre-existing modified working-tree file and was not staged.

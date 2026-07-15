@@ -8,7 +8,6 @@ use temporal_vision::{OwnedFrame, PixelDimensions, PixelFormat, Timestamp};
 
 pub(crate) const DECODER_PROFILE: &str =
     "image-0.25.9-forced-jpeg-png-rgba8-straight-no-orientation-v1";
-pub(crate) const DECODER_ALGORITHM_VERSION: &str = "krometrail-decode-v1";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct DecodeLimits {

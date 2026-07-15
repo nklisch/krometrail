@@ -198,9 +198,6 @@ struct RunReport {
     current_total_requested_memory_bytes: usize,
     unique_shared_intermediate_bytes_if_enabled: usize,
     scheduler_combined_budget_bytes: usize,
-    scheduler_memory_capacity_bytes: usize,
-    scheduler_capture_reserve_bytes: usize,
-    scheduler_shared_work_budget_bytes: usize,
     scheduler_blocking_permits: usize,
     scheduler_generator_permits: usize,
     capture_headroom_proxy: &'static str,
@@ -334,12 +331,9 @@ async fn run_case(config: Config, repetition: usize) -> RunReport {
         Mode::Concurrent => 2,
         Mode::Sequential => config.sliding_windows,
     };
-    let expected_decode_calls = (request_count * config.frames) as u64;
-    let expected_normalize_calls = (request_count * config.frames) as u64;
-    let intermediate_decode_hits = expected_decode_calls.saturating_sub(counters.decoded_frames);
-    let intermediate_normalize_hits =
-        expected_normalize_calls.saturating_sub(counters.normalized_frames);
-    let current_request_memory_reservation_bytes = request_output_reservation();
+    let expected_decode_calls = request_count as u64;
+    let expected_normalize_calls = request_count as u64;
+    let current_request_memory_reservation_bytes = request_memory_reservation(config.frames);
     let current_total_requested_memory_bytes =
         current_request_memory_reservation_bytes.saturating_mul(request_count);
     let unique_shared_intermediate_bytes_if_enabled = (config.frames + 1)
@@ -362,8 +356,10 @@ async fn run_case(config: Config, repetition: usize) -> RunReport {
         counters,
         expected_decode_calls,
         expected_normalize_calls,
-        intermediate_decode_hits,
-        intermediate_normalize_hits,
+        // Current post-rollback service has no cross-request intermediate cache; these are the
+        // observed hit counters. The expected fields define the candidate's equivalence target.
+        intermediate_decode_hits: 0,
+        intermediate_normalize_hits: 0,
         expected_decode_hits_if_enabled: if config.mode == Mode::Concurrent
             && config.request_permits == 2
         {
@@ -385,10 +381,6 @@ async fn run_case(config: Config, repetition: usize) -> RunReport {
         current_total_requested_memory_bytes,
         unique_shared_intermediate_bytes_if_enabled,
         scheduler_combined_budget_bytes: BENCHMARK_COMBINED_BYTES,
-        scheduler_memory_capacity_bytes: limits.memory_capacity(),
-        scheduler_capture_reserve_bytes: BENCHMARK_COMBINED_BYTES
-            .saturating_sub(limits.memory_capacity()),
-        scheduler_shared_work_budget_bytes: limits.shared_work_bytes(),
         scheduler_blocking_permits: limits.max_blocking_jobs.get(),
         scheduler_generator_permits: limits.max_parallel_generators_per_request.get(),
         capture_headroom_proxy: "browser-free: compare request/cpu/memory permits; no CDP queue claim",
@@ -568,8 +560,10 @@ fn normalized_bytes_per_frame() -> usize {
     960 * 540 * 6
 }
 
-fn request_output_reservation() -> usize {
-    3 * 64 * 1024 * 1024
+fn request_memory_reservation(frames: usize) -> usize {
+    frames
+        .saturating_mul(decoded_bytes_per_frame() + normalized_bytes_per_frame())
+        .saturating_add(3 * 64 * 1024 * 1024)
 }
 
 fn production_png(position: usize, dimensions: PixelDimensions) -> Vec<u8> {

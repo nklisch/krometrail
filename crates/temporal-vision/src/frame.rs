@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::{ErrorCode, Result, VisionError};
@@ -24,7 +22,7 @@ impl Timestamp {
 }
 
 /// Non-zero source-frame pixel dimensions.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, schemars::JsonSchema)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct PixelDimensions {
     width: u32,
     height: u32,
@@ -111,15 +109,7 @@ pub struct Frame<Id, Pixels> {
 }
 
 pub type OwnedFrame<Id> = Frame<Id, Box<[u8]>>;
-pub type SharedFrame<Id> = Frame<Id, Arc<[u8]>>;
 pub type BorrowedFrame<'a, Id> = Frame<Id, &'a [u8]>;
-
-impl<Id> Frame<Id, Arc<[u8]>> {
-    /// Clone the immutable pixel owner without copying its bytes.
-    pub fn shared_pixels(&self) -> Arc<[u8]> {
-        Arc::clone(&self.pixels)
-    }
-}
 
 impl<Id, Pixels: AsRef<[u8]>> Frame<Id, Pixels> {
     pub fn new(

@@ -10,19 +10,6 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use super::epoch::{AdaptationLimits, WorkCancellation};
 
-pub(crate) const CAPTURE_RESERVE_BYTES: usize = 128 * 1024 * 1024;
-pub(crate) const SHARED_WORK_CAP_BYTES: usize = 1_536 * 1024 * 1024;
-
-fn capture_reserve(combined_bytes: usize) -> usize {
-    // Tiny unit-test cells intentionally model only artifact memory. Production-sized cells keep
-    // the documented 128 MiB capture headroom outside the analysis scheduler.
-    if combined_bytes >= CAPTURE_RESERVE_BYTES.saturating_mul(2) {
-        CAPTURE_RESERVE_BYTES
-    } else {
-        0
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ArtifactWorkLimits {
     pub max_active_requests: NonZeroUsize,
@@ -43,23 +30,13 @@ pub(crate) struct ArtifactWorkLimits {
 }
 
 impl ArtifactWorkLimits {
-    pub(crate) fn memory_capacity(self) -> usize {
-        self.max_combined_request_bytes
-            .get()
-            .saturating_sub(capture_reserve(self.max_combined_request_bytes.get()))
-    }
-
-    pub(crate) fn shared_work_bytes(self) -> usize {
-        self.memory_capacity().min(SHARED_WORK_CAP_BYTES)
-    }
-
     pub(crate) fn validate(self) -> Result<Self> {
         if self.max_wall_time.is_zero() {
             return Err(limit_error("artifact wall-time limit must be non-zero"));
         }
         if self.max_decoded_bytes.get() > self.max_combined_request_bytes.get()
             || self.max_normalized_bytes.get() > self.max_combined_request_bytes.get()
-            || self.max_output_bytes_total.get() > self.memory_capacity()
+            || self.max_output_bytes_total.get() > self.max_combined_request_bytes.get()
             || self.max_output_bytes_each.get() > self.max_output_bytes_total.get()
         {
             return Err(limit_error(
@@ -124,7 +101,7 @@ impl ArtifactScheduler {
             limits,
             requests: Arc::new(Semaphore::new(limits.max_active_requests.get())),
             cpu: Arc::new(Semaphore::new(limits.max_blocking_jobs.get())),
-            memory: Arc::new(Semaphore::new(limits.memory_capacity())),
+            memory: Arc::new(Semaphore::new(limits.max_combined_request_bytes.get())),
         })
     }
 
@@ -152,7 +129,7 @@ impl ArtifactScheduler {
         deadline: Instant,
         cancellation: &WorkCancellation,
     ) -> Result<OwnedSemaphorePermit> {
-        if bytes == 0 || bytes > self.limits.memory_capacity() {
+        if bytes == 0 || bytes > self.limits.max_combined_request_bytes.get() {
             return Err(limit_error(
                 "artifact request exceeds the combined memory limit",
             ));
@@ -206,10 +183,6 @@ impl ArtifactScheduler {
         Arc::new(Semaphore::new(
             self.limits.max_parallel_generators_per_request.get(),
         ))
-    }
-
-    pub(crate) fn memory_semaphore(&self) -> Arc<Semaphore> {
-        Arc::clone(&self.memory)
     }
 }
 

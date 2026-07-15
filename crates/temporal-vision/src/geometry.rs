@@ -3,7 +3,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::{ErrorCode, PixelDimensions, Result, VisionError};
 
 /// A non-empty half-open rectangle in source-frame pixel coordinates.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, schemars::JsonSchema)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct PixelRect {
     x: u32,
     y: u32,

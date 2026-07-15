@@ -2,7 +2,6 @@ use std::{
     collections::BTreeMap,
     mem::size_of,
     num::{NonZeroU8, NonZeroUsize},
-    sync::Arc,
 };
 
 use serde::{Deserialize, Serialize};
@@ -19,7 +18,7 @@ const DEFAULT_MAX_PIXELS_PER_FRAME: usize = 16_777_216;
 const DEFAULT_MAX_RETAINED_BYTES: usize = 512 * 1024 * 1024;
 
 /// An sRGB background used to make straight-alpha input pixels opaque.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Rgb8 {
     red: u8,
     green: u8,
@@ -36,7 +35,7 @@ impl Rgb8 {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ScaleDirection {
     Identity,
     Up,
@@ -44,7 +43,7 @@ enum ScaleDirection {
 }
 
 /// A bounded whole-number image scale.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct IntegerScale {
     direction: ScaleDirection,
     factor: NonZeroU8,
@@ -185,36 +184,10 @@ pub struct NormalizedFrame<FrameId> {
     id: FrameId,
     timestamp: Timestamp,
     dimensions: PixelDimensions,
-    linear_rgb16: Arc<[u16]>,
+    linear_rgb16: Box<[u16]>,
 }
 
-pub type SharedNormalizedFrame<FrameId> = NormalizedFrame<FrameId>;
-
 impl<F> NormalizedFrame<F> {
-    pub fn new(
-        id: F,
-        timestamp: Timestamp,
-        dimensions: PixelDimensions,
-        linear_rgb16: Arc<[u16]>,
-    ) -> Result<Self> {
-        let expected = dimensions
-            .pixel_count()?
-            .checked_mul(3)
-            .ok_or_else(resource_limit_error)?;
-        if linear_rgb16.len() != expected {
-            return Err(VisionError::new(
-                ErrorCode::PixelLengthMismatch,
-                "normalized pixel payload length does not match frame dimensions",
-            ));
-        }
-        Ok(Self {
-            id,
-            timestamp,
-            dimensions,
-            linear_rgb16,
-        })
-    }
-
     pub fn id(&self) -> &F {
         &self.id
     }
@@ -228,10 +201,6 @@ impl<F> NormalizedFrame<F> {
     }
 
     pub fn linear_rgb16(&self) -> &[u16] {
-        &self.linear_rgb16
-    }
-
-    pub fn pixels(&self) -> &Arc<[u16]> {
         &self.linear_rgb16
     }
 }
@@ -248,8 +217,6 @@ pub struct NormalizedSequence<FrameId> {
     gap_ranges: Box<[TimeRange]>,
     normalization_steps: Box<[NormalizationStep]>,
 }
-
-pub type SharedNormalizedSequence<FrameId> = NormalizedSequence<FrameId>;
 
 impl<F> NormalizedSequence<F> {
     pub fn frames(&self) -> &[NormalizedFrame<F>] {
@@ -283,163 +250,11 @@ impl<F> NormalizedSequence<F> {
     pub const fn analysis_pixel_count(&self) -> u64 {
         self.analysis_pixel_count
     }
-
-    /// Assemble a normalized epoch from immutable per-frame buffers without copying pixels.
-    #[allow(clippy::too_many_arguments)]
-    pub fn from_parts(
-        source_dimensions: PixelDimensions,
-        source_crop: PixelRect,
-        dimensions: PixelDimensions,
-        frames: Vec<NormalizedFrame<F>>,
-        analysis_mask: Option<BinaryMask>,
-        analysis_pixel_count: u64,
-        gap_ranges: Vec<TimeRange>,
-        normalization_steps: Vec<NormalizationStep>,
-    ) -> Result<Self>
-    where
-        F: Eq,
-    {
-        if !source_crop.fits_within(source_dimensions) {
-            return Err(VisionError::new(
-                ErrorCode::InvalidRegion,
-                "normalization crop lies outside the source-frame dimensions",
-            ));
-        }
-        let Some(first) = frames.first() else {
-            return Err(VisionError::new(
-                ErrorCode::EmptySequence,
-                "normalized sequence must not be empty",
-            ));
-        };
-        let expected_frame_bytes = dimensions
-            .pixel_count()?
-            .checked_mul(3)
-            .ok_or_else(resource_limit_error)?;
-        let range = TimeRange::new(first.timestamp(), frames.last().unwrap().timestamp())?;
-        for (index, frame) in frames.iter().enumerate() {
-            if frames[..index].iter().any(|prior| prior.id() == frame.id()) {
-                return Err(VisionError::at(
-                    ErrorCode::DuplicateIdentifier,
-                    "normalized frame identifiers must be unique",
-                    index,
-                ));
-            }
-            if index > 0 && frames[index - 1].timestamp() > frame.timestamp() {
-                return Err(VisionError::at(
-                    ErrorCode::OutOfOrder,
-                    "normalized frame timestamps must be nondecreasing",
-                    index,
-                ));
-            }
-            if frame.dimensions() != dimensions
-                || frame.linear_rgb16().len() != expected_frame_bytes
-            {
-                return Err(VisionError::at(
-                    ErrorCode::IncompatibleFrame,
-                    "normalized frames must use common dimensions and pixel payloads",
-                    index,
-                ));
-            }
-        }
-        let expected_analysis_pixels = match &analysis_mask {
-            Some(mask) if mask.dimensions() == dimensions => mask
-                .bits()
-                .iter()
-                .map(|byte| u64::from(byte.count_ones()))
-                .sum(),
-            Some(_) => {
-                return Err(VisionError::new(
-                    ErrorCode::InvalidMask,
-                    "normalized analysis mask dimensions do not match its frames",
-                ));
-            }
-            None => u64::try_from(dimensions.pixel_count()?).map_err(|_| resource_limit_error())?,
-        };
-        if expected_analysis_pixels != analysis_pixel_count || analysis_pixel_count == 0 {
-            return Err(VisionError::new(
-                ErrorCode::EmptyAnalysisDomain,
-                "normalized analysis pixel count does not match its mask",
-            ));
-        }
-        validate_time_ranges(&gap_ranges, range)?;
-        Ok(Self {
-            source_dimensions,
-            source_crop,
-            dimensions,
-            frames: frames.into_boxed_slice(),
-            analysis_mask,
-            analysis_pixel_count,
-            gap_ranges: gap_ranges.into_boxed_slice(),
-            normalization_steps: normalization_steps.into_boxed_slice(),
-        })
-    }
 }
 
-fn validate_time_ranges(ranges: &[TimeRange], sequence_range: TimeRange) -> Result<()> {
-    for (index, range) in ranges.iter().enumerate() {
-        if index > 0 {
-            let prior = ranges[index - 1];
-            if prior.start() > range.start() || prior.end() > range.start() {
-                return Err(VisionError::at(
-                    ErrorCode::OutOfOrder,
-                    "normalized gap ranges must be ordered and non-overlapping",
-                    index,
-                ));
-            }
-        }
-        if !sequence_range.contains(range.start()) || !sequence_range.contains(range.end()) {
-            return Err(VisionError::at(
-                ErrorCode::AnnotationOutOfRange,
-                "normalized gap range lies outside the frame range",
-                index,
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// Normalize one validated source frame using the same recipe as a full sequence.
-///
-/// The service uses this narrow operation for request-lifetime sharing. Sequence-level
-/// validation and provenance still happen in [`assemble_normalized_sequence`].
-pub fn normalize_frame<F: Clone, P: AsRef<[u8]>>(
-    frame: &Frame<F, P>,
-    parameters: NormalizationParameters,
-) -> Result<NormalizedFrame<F>> {
-    let source_dimensions = frame.dimensions();
-    let crop = match parameters.crop {
-        Some(crop) if crop.fits_within(source_dimensions) => crop,
-        Some(_) => {
-            return Err(VisionError::new(
-                ErrorCode::InvalidRegion,
-                "normalization crop lies outside the source-frame dimensions",
-            ));
-        }
-        None => PixelRect::new(0, 0, source_dimensions.width(), source_dimensions.height())?,
-    };
-    let dimensions = scaled_dimensions(crop, parameters.scale)?;
-    let output_pixels = dimensions.pixel_count()?;
-    validate_resource_limits(1, output_pixels, false, parameters.limits)?;
-    let background = parameters.background.channels().map(linear_channel);
-    let allow_opaque_full_frame_fast_path = parameters.crop.is_none();
-    normalize_frame_inner(
-        frame,
-        crop,
-        dimensions,
-        parameters.scale,
-        background,
-        allow_opaque_full_frame_fast_path,
-    )
-}
-
-/// Assemble per-frame normalized results while recomputing all sequence-level invariants.
-///
-/// In particular, this validates source identity and order before accepting an immutable
-/// intermediate from another request. It also rebuilds masks, gaps, and normalization steps so
-/// sharing pixel buffers cannot change artifact provenance.
-pub fn assemble_normalized_sequence<F: Clone + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
+/// Normalize one validated source geometry epoch.
+pub fn normalize_sequence<F: Clone + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
     sequence: &FrameSequence<F, M, G, P>,
-    frames: Vec<NormalizedFrame<F>>,
     parameters: NormalizationParameters,
 ) -> Result<NormalizedSequence<F>> {
     let source_dimensions = sequence.dimensions();
@@ -462,22 +277,8 @@ pub fn assemble_normalized_sequence<F: Clone + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>
         restricted_domain,
         parameters.limits,
     )?;
-    if frames.len() != sequence.frames().len() {
-        return Err(VisionError::new(
-            ErrorCode::IncompatibleFrame,
-            "normalized frame count does not match the source sequence",
-        ));
-    }
-    for (index, (source, normalized)) in sequence.frames().iter().zip(&frames).enumerate() {
-        if source.id() != normalized.id() || source.timestamp() != normalized.timestamp() {
-            return Err(VisionError::at(
-                ErrorCode::IncompatibleFrame,
-                "normalized frame identity does not match its source frame",
-                index,
-            ));
-        }
-    }
 
+    // Build and validate the domain before retaining any normalized frame buffers.
     let (analysis_mask, analysis_pixel_count) = transformed_analysis_mask(
         sequence,
         crop,
@@ -485,35 +286,41 @@ pub fn assemble_normalized_sequence<F: Clone + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>
         parameters.scale,
         restricted_domain,
     )?;
+    let background = parameters.background.channels().map(linear_channel);
+    let allow_opaque_full_frame_fast_path = parameters.crop.is_none() && !restricted_domain;
+    let frames = sequence
+        .frames()
+        .iter()
+        .map(|frame| {
+            normalize_frame(
+                frame,
+                crop,
+                dimensions,
+                parameters.scale,
+                background,
+                allow_opaque_full_frame_fast_path,
+            )
+        })
+        .collect::<Result<Vec<_>>>()?
+        .into_boxed_slice();
     let gap_ranges = sequence
         .gaps()
         .iter()
         .map(|gap| gap.range())
-        .collect::<Vec<_>>();
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
     let normalization_steps = normalization_steps(parameters, crop, dimensions)?;
-    NormalizedSequence::from_parts(
+
+    Ok(NormalizedSequence {
         source_dimensions,
-        crop,
+        source_crop: crop,
         dimensions,
         frames,
         analysis_mask,
         analysis_pixel_count,
         gap_ranges,
-        normalization_steps,
-    )
-}
-
-/// Normalize one validated source geometry epoch.
-pub fn normalize_sequence<F: Clone + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
-    sequence: &FrameSequence<F, M, G, P>,
-    parameters: NormalizationParameters,
-) -> Result<NormalizedSequence<F>> {
-    let frames = sequence
-        .frames()
-        .iter()
-        .map(|frame| normalize_frame(frame, parameters))
-        .collect::<Result<Vec<_>>>()?;
-    assemble_normalized_sequence(sequence, frames, parameters)
+        normalization_steps: normalization_steps.into_boxed_slice(),
+    })
 }
 
 fn scaled_dimensions(crop: PixelRect, scale: IntegerScale) -> Result<PixelDimensions> {
@@ -684,7 +491,7 @@ fn source_pixel_in_domain<F: Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
             .is_none_or(|mask| mask.includes(x, y) == Some(true))
 }
 
-fn normalize_frame_inner<F: Clone, P: AsRef<[u8]>>(
+fn normalize_frame<F: Clone, P: AsRef<[u8]>>(
     frame: &Frame<F, P>,
     crop: PixelRect,
     dimensions: PixelDimensions,
@@ -770,7 +577,7 @@ fn normalize_opaque_identity<F: Clone, P: AsRef<[u8]>>(
         id: frame.id().clone(),
         timestamp: frame.timestamp(),
         dimensions,
-        linear_rgb16: Arc::<[u16]>::from(output.into_boxed_slice()),
+        linear_rgb16: output.into_boxed_slice(),
     })
 }
 
@@ -839,7 +646,7 @@ fn normalize_opaque_downscale<F: Clone, P: AsRef<[u8]>>(
         id: frame.id().clone(),
         timestamp: frame.timestamp(),
         dimensions,
-        linear_rgb16: Arc::<[u16]>::from(output.into_boxed_slice()),
+        linear_rgb16: output.into_boxed_slice(),
     })
 }
 
@@ -880,7 +687,7 @@ fn normalize_frame_general<F: Clone, P: AsRef<[u8]>>(
         id: frame.id().clone(),
         timestamp: frame.timestamp(),
         dimensions,
-        linear_rgb16: Arc::<[u16]>::from(output.into_boxed_slice()),
+        linear_rgb16: output.into_boxed_slice(),
     })
 }
 
@@ -1387,87 +1194,6 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.code, ErrorCode::EmptyAnalysisDomain);
-    }
-
-    #[test]
-    fn assembles_shared_normalized_sequence_without_copying_pixels() {
-        let dimensions = PixelDimensions::new(2, 1).unwrap();
-        let source = FrameSequence::new(
-            vec![
-                frame(1, dimensions, vec![10, 20, 30, 255, 40, 50, 60, 255]),
-                frame(2, dimensions, vec![11, 21, 31, 255, 41, 51, 61, 255]),
-            ],
-            Vec::<Marker<u8>>::new(),
-            vec![
-                DeclaredGap::new(
-                    1,
-                    TimeRange::new(Timestamp::from_nanos(1), Timestamp::from_nanos(2)).unwrap(),
-                    "capture gap",
-                    None,
-                )
-                .unwrap(),
-            ],
-            None,
-            None,
-        )
-        .unwrap();
-        let original = normalize_sequence(
-            &source,
-            NormalizationParameters::new(
-                Rgb8::new(0, 0, 0),
-                None,
-                IntegerScale::IDENTITY,
-                ProcessingLimits::default(),
-            ),
-        )
-        .unwrap();
-        let shared_frames = original
-            .frames()
-            .iter()
-            .map(|frame| {
-                NormalizedFrame::new(
-                    *frame.id(),
-                    frame.timestamp(),
-                    frame.dimensions(),
-                    Arc::clone(frame.pixels()),
-                )
-                .unwrap()
-            })
-            .collect();
-        let rebuilt = NormalizedSequence::from_parts(
-            original.source_dimensions(),
-            original.source_crop(),
-            original.dimensions(),
-            shared_frames,
-            original.analysis_mask().cloned(),
-            original.analysis_pixel_count(),
-            original.gap_ranges().to_vec(),
-            original.normalization_steps().to_vec(),
-        )
-        .unwrap();
-        assert_eq!(rebuilt.frames().len(), 2);
-        assert_eq!(rebuilt.dimensions(), original.dimensions());
-        assert_eq!(rebuilt.source_dimensions(), original.source_dimensions());
-        assert_eq!(rebuilt.source_crop(), original.source_crop());
-        assert_eq!(rebuilt.gap_ranges(), original.gap_ranges());
-        assert_eq!(rebuilt.analysis_mask(), original.analysis_mask());
-        assert_eq!(
-            rebuilt.analysis_pixel_count(),
-            original.analysis_pixel_count()
-        );
-        assert_eq!(
-            rebuilt.normalization_steps(),
-            original.normalization_steps()
-        );
-        assert_eq!(
-            rebuilt.frames()[0].linear_rgb16(),
-            original.frames()[0].linear_rgb16()
-        );
-        assert_eq!(
-            rebuilt.frames()[0].pixels().as_ptr(),
-            original.frames()[0].pixels().as_ptr(),
-            "shared sequence assembly must retain the immutable Arc allocation"
-        );
     }
 
     #[test]

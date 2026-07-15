@@ -13,33 +13,21 @@ use krometrail_core::{
 };
 use temporal_vision::{ArtifactKind, generator_descriptor};
 
-#[cfg(test)]
-use std::sync::{
-    Mutex as StdMutex,
-    atomic::{AtomicUsize, Ordering},
-};
-
 use super::{
-    cache::{
-        CacheIdentityInput, DecodedFrameKey, NormalizedFrameKey, cache_metadata,
-        visual_frame_epoch_hash,
-    },
-    decode::{DECODER_ALGORITHM_VERSION, DECODER_PROFILE, decode_frame},
+    cache::{CacheIdentityInput, cache_metadata},
+    decode::DECODER_PROFILE,
     epoch::{
-        ADAPTER_VERSION, EpochInput, EpochPlan, WorkCancellation, to_shared_frame,
-        validate_and_plan,
+        ADAPTER_VERSION, EpochInput, EpochPlan, WorkCancellation, decode_plan, validate_and_plan,
     },
     generators::{
-        PreparedGenerator, assemble_normalized, estimated_normalized_bytes, generate,
-        normalization_identity, normalization_parameters, normalize_frame, prepare_generator,
+        PreparedGenerator, estimated_normalized_bytes, generate, normalization_identity, normalize,
+        prepare_generator,
     },
     scheduler::{
         ArtifactScheduler, ArtifactWorkLimits, cancelled_error, controlled, deadline_error,
         limit_error,
     },
-    single_flight::{
-        FlightArtifacts, FlightValue, SingleFlight, WorkBatchLease, WorkBatchRegistry,
-    },
+    single_flight::{FlightArtifacts, FlightValue, SingleFlight},
 };
 
 #[derive(Clone)]
@@ -49,15 +37,6 @@ pub(crate) struct TemporalVisionArtifactService {
     ids: Arc<dyn IdSource>,
     scheduler: Arc<ArtifactScheduler>,
     flights: Arc<SingleFlight>,
-    work: Arc<WorkBatchRegistry>,
-    #[cfg(test)]
-    test_work_start_barrier: Arc<StdMutex<Option<Arc<tokio::sync::Barrier>>>>,
-    #[cfg(test)]
-    test_shared_work_ordinals: Arc<StdMutex<Option<Arc<HashSet<u64>>>>>,
-    #[cfg(test)]
-    test_decode_leaders: Arc<AtomicUsize>,
-    #[cfg(test)]
-    test_normalize_leaders: Arc<AtomicUsize>,
 }
 
 #[derive(Clone)]
@@ -85,77 +64,13 @@ impl TemporalVisionArtifactService {
         ids: Arc<dyn IdSource>,
         limits: ArtifactWorkLimits,
     ) -> Result<Self> {
-        let scheduler = Arc::new(ArtifactScheduler::new(limits)?);
-        let work = Arc::new(WorkBatchRegistry::new_with_memory(
-            limits.shared_work_bytes(),
-            scheduler.memory_semaphore(),
-        ));
         Ok(Self {
             frames,
             artifacts,
             ids,
-            scheduler,
+            scheduler: Arc::new(ArtifactScheduler::new(limits)?),
             flights: Arc::new(SingleFlight::new()),
-            work,
-            #[cfg(test)]
-            test_work_start_barrier: Arc::new(StdMutex::new(None)),
-            #[cfg(test)]
-            test_shared_work_ordinals: Arc::new(StdMutex::new(None)),
-            #[cfg(test)]
-            test_decode_leaders: Arc::new(AtomicUsize::new(0)),
-            #[cfg(test)]
-            test_normalize_leaders: Arc::new(AtomicUsize::new(0)),
         })
-    }
-
-    #[cfg(test)]
-    pub(crate) fn shared_work_bytes(&self) -> usize {
-        self.work.bytes_used()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn shared_work_entries(&self) -> usize {
-        self.work.entry_count()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn install_work_start_barrier(&self, barrier: Arc<tokio::sync::Barrier>) {
-        *self
-            .test_work_start_barrier
-            .lock()
-            .expect("test work barrier poisoned") = Some(barrier);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn clear_work_start_barrier(&self) {
-        *self
-            .test_work_start_barrier
-            .lock()
-            .expect("test work barrier poisoned") = None;
-    }
-
-    #[cfg(test)]
-    pub(crate) fn install_shared_work_ordinals(&self, ordinals: Arc<HashSet<u64>>) {
-        *self
-            .test_shared_work_ordinals
-            .lock()
-            .expect("test shared-work ordinals poisoned") = Some(ordinals);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn clear_shared_work_ordinals(&self) {
-        *self
-            .test_shared_work_ordinals
-            .lock()
-            .expect("test shared-work ordinals poisoned") = None;
-    }
-
-    #[cfg(test)]
-    pub(crate) fn shared_work_leader_counts(&self) -> (usize, usize) {
-        (
-            self.test_decode_leaders.load(Ordering::Acquire),
-            self.test_normalize_leaders.load(Ordering::Acquire),
-        )
     }
 
     async fn generate_inner(
@@ -209,7 +124,6 @@ impl TemporalVisionArtifactService {
         )
         .await??;
         let plans = Arc::new(plans);
-        let batch = self.work.begin_batch();
 
         let potential_outputs = plans
             .len()
@@ -320,17 +234,10 @@ impl TemporalVisionArtifactService {
                 let flight = waiter.flight();
                 let service = self.clone();
                 let plans = Arc::clone(&plans);
-                let batch = batch.clone();
                 let work_slots = missing.iter().map(|(_, slot, _)| slot.clone()).collect();
                 tokio::spawn(async move {
                     let result = service
-                        .run_flight(
-                            plans,
-                            work_slots,
-                            batch,
-                            flight.cancellation(),
-                            service_deadline,
-                        )
+                        .run_flight(plans, work_slots, flight.cancellation(), service_deadline)
                         .await;
                     flight.complete(result).await;
                 });
@@ -396,216 +303,10 @@ impl TemporalVisionArtifactService {
         })
     }
 
-    async fn decode_shared_epoch(
-        &self,
-        plan: &EpochPlan,
-        batch: &WorkBatchLease,
-        cancellation: &WorkCancellation,
-        deadline: Instant,
-        fallback_memory: &mut Vec<tokio::sync::OwnedSemaphorePermit>,
-    ) -> Result<EpochInput> {
-        #[cfg(test)]
-        let test_barrier = self
-            .test_work_start_barrier
-            .lock()
-            .expect("test work barrier poisoned")
-            .clone();
-        #[cfg(test)]
-        if let Some(barrier) = test_barrier {
-            barrier.wait().await;
-        }
-        let mut frames = Vec::with_capacity(plan.frames.len());
-        for (frame, source) in plan.frames.iter().zip(&plan.cache_sources) {
-            cancellation.check()?;
-            let key = DecodedFrameKey::from_frame(
-                frame,
-                visual_frame_epoch_hash(source),
-                DECODER_PROFILE,
-                DECODER_ALGORITHM_VERSION,
-            );
-            let waiter = self.work.join_decoded(batch, key.clone());
-            let flight = waiter.flight();
-            #[cfg(test)]
-            tokio::task::yield_now().await;
-            #[cfg(test)]
-            if waiter.is_leader
-                && self
-                    .test_shared_work_ordinals
-                    .lock()
-                    .expect("test shared-work ordinals poisoned")
-                    .as_ref()
-                    .is_some_and(|ordinals| ordinals.contains(&key.capture_ordinal))
-            {
-                while flight.waiter_count() < 2 {
-                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-                }
-            }
-            if waiter.is_leader {
-                #[cfg(test)]
-                self.test_decode_leaders.fetch_add(1, Ordering::AcqRel);
-                let frame = frame.clone();
-                let adaptation = self.scheduler.limits().adaptation();
-                let work_cancellation = flight.cancellation();
-                let decoded = self
-                    .scheduler
-                    .run_blocking(deadline, &work_cancellation, move || {
-                        decode_frame(&frame, adaptation.decode_limits()).and_then(to_shared_frame)
-                    })
-                    .await;
-                match decoded {
-                    Ok(decoded) => {
-                        self.work.complete_decoded(&key, &flight, decoded).await;
-                    }
-                    Err(error) => {
-                        self.work.fail_decoded(&key, &flight, error).await;
-                    }
-                }
-            }
-            let value = waiter
-                .wait(deadline, Some(Arc::new(cancellation.clone())))
-                .await?;
-            if !value.retained() {
-                fallback_memory.push(
-                    self.scheduler
-                        .acquire_memory(value.pixels().len(), deadline, cancellation)
-                        .await?,
-                );
-            }
-            frames.push((*value.into_arc()).clone());
-        }
-        temporal_vision::FrameSequence::new(
-            frames,
-            plan.markers.clone(),
-            plan.gaps.clone(),
-            None,
-            None,
-        )
-        .map(|sequence| EpochInput { sequence })
-        .map_err(|error| {
-            generation_error(format!(
-                "frame sequence adaptation failed: {}",
-                error.message
-            ))
-        })
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn normalize_shared_epoch(
-        &self,
-        epoch: &EpochInput,
-        plan: &EpochPlan,
-        prepared: &PreparedGenerator,
-        batch: &WorkBatchLease,
-        cancellation: &WorkCancellation,
-        deadline: Instant,
-        fallback_memory: &mut Vec<tokio::sync::OwnedSemaphorePermit>,
-        limits: ArtifactWorkLimits,
-    ) -> Result<Option<Arc<temporal_vision::NormalizedSequence<krometrail_core::FrameId>>>> {
-        let Some(parameters) = normalization_parameters(prepared, limits)? else {
-            return Ok(None);
-        };
-        let source_dimensions = epoch.sequence.dimensions();
-        let effective_crop = parameters.crop().unwrap_or(
-            temporal_vision::PixelRect::new(
-                0,
-                0,
-                source_dimensions.width(),
-                source_dimensions.height(),
-            )
-            .map_err(|_| generation_error("normalization dimensions are invalid"))?,
-        );
-        let mut normalized_frames = Vec::with_capacity(epoch.sequence.frames().len());
-        for ((source, encoded), source_fingerprint) in epoch
-            .sequence
-            .frames()
-            .iter()
-            .zip(&plan.frames)
-            .zip(&plan.cache_sources)
-        {
-            cancellation.check()?;
-            let decoded_key = DecodedFrameKey::from_frame(
-                encoded,
-                visual_frame_epoch_hash(source_fingerprint),
-                DECODER_PROFILE,
-                DECODER_ALGORITHM_VERSION,
-            );
-            let key = NormalizedFrameKey::new(
-                decoded_key,
-                visual_frame_epoch_hash(source_fingerprint),
-                effective_crop,
-                parameters.scale(),
-                parameters.background(),
-                [0; 32],
-                "temporal-vision-normalization-v1",
-                "srgb8-to-linear16-v1",
-                "temporal-vision-normalize-v1",
-            );
-            let waiter = self.work.join_normalized(batch, key.clone());
-            let flight = waiter.flight();
-            #[cfg(test)]
-            tokio::task::yield_now().await;
-            #[cfg(test)]
-            if waiter.is_leader
-                && self
-                    .test_shared_work_ordinals
-                    .lock()
-                    .expect("test shared-work ordinals poisoned")
-                    .as_ref()
-                    .is_some_and(|ordinals| ordinals.contains(&key.decoded.capture_ordinal))
-            {
-                while flight.waiter_count() < 2 {
-                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-                }
-            }
-            if waiter.is_leader {
-                #[cfg(test)]
-                self.test_normalize_leaders.fetch_add(1, Ordering::AcqRel);
-                let source = source.clone();
-                let prepared = prepared.clone();
-                let work_cancellation = flight.cancellation();
-                let normalized = self
-                    .scheduler
-                    .run_blocking(deadline, &work_cancellation, move || {
-                        normalize_frame(&source, &prepared, limits)?.ok_or_else(|| {
-                            generation_error("normalization work was requested without parameters")
-                        })
-                    })
-                    .await;
-                match normalized {
-                    Ok(normalized) => {
-                        self.work
-                            .complete_normalized(&key, &flight, normalized)
-                            .await;
-                    }
-                    Err(error) => {
-                        self.work.fail_normalized(&key, &flight, error).await;
-                    }
-                }
-            }
-            let value = waiter
-                .wait(deadline, Some(Arc::new(cancellation.clone())))
-                .await?;
-            if !value.retained() {
-                fallback_memory.push(
-                    self.scheduler
-                        .acquire_memory(
-                            std::mem::size_of_val(value.linear_rgb16()),
-                            deadline,
-                            cancellation,
-                        )
-                        .await?,
-                );
-            }
-            normalized_frames.push((*value.into_arc()).clone());
-        }
-        assemble_normalized(epoch, prepared, normalized_frames, limits)
-    }
-
     async fn run_flight(
         self,
         plans: Arc<Vec<EpochPlan>>,
         slots: Vec<WorkSlot>,
-        batch: WorkBatchLease,
         cancellation: WorkCancellation,
         deadline: Instant,
     ) -> std::result::Result<FlightArtifacts, KrometrailError> {
@@ -634,52 +335,51 @@ impl TemporalVisionArtifactService {
             return Ok(result);
         }
 
-        let mut output_reservation = 0_usize;
-        let mut intermediate_bytes = 0_usize;
         let mut normalized_estimates = HashSet::new();
+        let mut normalized_bytes = 0_usize;
         let mut epoch_indices = HashSet::new();
+        let mut output_reservation = 0_usize;
         for slot in &pending_slots {
+            epoch_indices.insert(slot.0.epoch_index);
+            if let Some(identity) = normalization_identity(&slot.0.prepared)? {
+                if normalized_estimates.insert((slot.0.epoch_index, identity.to_vec())) {
+                    normalized_bytes = normalized_bytes
+                        .checked_add(estimated_normalized_bytes(
+                            &slot.0.prepared,
+                            &plans[slot.0.epoch_index],
+                        )?)
+                        .ok_or_else(|| limit_error("normalized memory estimate overflows"))?;
+                }
+            }
             output_reservation = output_reservation
                 .checked_add(self.scheduler.limits().max_output_bytes_each.get())
                 .ok_or_else(|| limit_error("output memory reservation overflows"))?
                 .min(self.scheduler.limits().max_output_bytes_total.get());
-            epoch_indices.insert(slot.0.epoch_index);
-            if let Some(identity) = normalization_identity(&slot.0.prepared)?
-                && normalized_estimates.insert((slot.0.epoch_index, identity.to_vec()))
-            {
-                intermediate_bytes = intermediate_bytes
-                    .checked_add(estimated_normalized_bytes(
-                        &slot.0.prepared,
-                        &plans[slot.0.epoch_index],
-                    )?)
-                    .ok_or_else(|| limit_error("normalized memory estimate overflows"))?;
-            }
         }
-        intermediate_bytes =
-            epoch_indices
-                .into_iter()
-                .try_fold(intermediate_bytes, |total, index| {
-                    total
-                        .checked_add(plans[index].decoded_bytes)
-                        .ok_or_else(|| limit_error("decoded memory estimate overflows"))
-                })?;
-        let request_memory = intermediate_bytes
-            .checked_add(output_reservation)
-            .ok_or_else(|| limit_error("combined artifact memory estimate overflows"))?;
-        if request_memory > self.scheduler.limits().memory_capacity() {
+        if normalized_bytes > self.scheduler.limits().max_normalized_bytes.get() {
             return Err(limit_error(
-                "one artifact request exceeds memory and capture-headroom limits",
+                "artifact flight exceeds normalized or output memory limits",
             ));
         }
+        let decoded_bytes = epoch_indices
+            .into_iter()
+            .try_fold(0_usize, |total, index| {
+                total
+                    .checked_add(plans[index].decoded_bytes)
+                    .ok_or_else(|| limit_error("decoded memory estimate overflows"))
+            })?;
+        let reservation = decoded_bytes
+            .checked_add(normalized_bytes)
+            .and_then(|value| value.checked_add(output_reservation))
+            .ok_or_else(|| limit_error("combined artifact memory estimate overflows"))?;
         let _memory = self
             .scheduler
-            .acquire_memory(output_reservation, deadline, &cancellation)
+            .acquire_memory(reservation, deadline, &cancellation)
             .await?;
         let generator_semaphore = self.scheduler.generator_semaphore();
 
         let mut decoded: HashMap<usize, Arc<EpochInput>> = HashMap::new();
         let mut normalized = HashMap::new();
-        let mut fallback_memory = Vec::new();
         let mut groups: BTreeMap<(usize, usize), Vec<WorkSlot>> = BTreeMap::new();
         for slot in pending_slots {
             groups
@@ -694,19 +394,18 @@ impl TemporalVisionArtifactService {
             let epoch = match decoded.get(&epoch_index) {
                 Some(epoch) => Arc::clone(epoch),
                 None => {
-                    let plan = &plans[epoch_index];
-                    match self
-                        .decode_shared_epoch(
-                            plan,
-                            &batch,
-                            &cancellation,
-                            deadline,
-                            &mut fallback_memory,
-                        )
+                    let plan = plans[epoch_index].clone();
+                    let adaptation = self.scheduler.limits().adaptation();
+                    let token = cancellation.clone();
+                    let input = self
+                        .scheduler
+                        .run_blocking(deadline, &cancellation, move || {
+                            decode_plan(plan, adaptation, &token)
+                        })
                         .await
-                    {
+                        .map(Arc::new);
+                    match input {
                         Ok(input) => {
-                            let input = Arc::new(input);
                             decoded.insert(epoch_index, Arc::clone(&input));
                             input
                         }
@@ -728,18 +427,14 @@ impl TemporalVisionArtifactService {
                 match normalized.get(&key) {
                     Some(value) => Some(Arc::clone(value)),
                     None => {
+                        let epoch_for_normalize = Arc::clone(&epoch);
+                        let prepared_for_normalize = Arc::clone(&prepared);
                         let limits = self.scheduler.limits();
                         match self
-                            .normalize_shared_epoch(
-                                &epoch,
-                                &plans[epoch_index],
-                                &prepared,
-                                &batch,
-                                &cancellation,
-                                deadline,
-                                &mut fallback_memory,
-                                limits,
-                            )
+                            .scheduler
+                            .run_blocking(deadline, &cancellation, move || {
+                                normalize(&epoch_for_normalize, &prepared_for_normalize, limits)
+                            })
                             .await
                         {
                             Ok(Some(value)) => {
@@ -892,7 +587,7 @@ fn is_fatal(error: &KrometrailError) -> bool {
     matches!(error.code, ErrorCode::Cancelled | ErrorCode::NotFound)
 }
 
-fn generation_error(message: impl Into<String>) -> KrometrailError {
+fn generation_error(message: &'static str) -> KrometrailError {
     KrometrailError::new(
         ErrorCode::ArtifactGenerationFailed,
         NonEmptyText::new(message).unwrap(),
