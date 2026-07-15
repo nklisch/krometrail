@@ -96,6 +96,7 @@ impl Fixture {
             ProfileRef::managed(ProfileIdentity::new("range-test").unwrap()),
             DiskBudgetBytes::new(1024).unwrap(),
             vec![krometrail_core::CapabilityId::Control],
+            krometrail_core::EveryNthFrame::default(),
         )
         .unwrap();
         index.put_session(session_record).await.unwrap();

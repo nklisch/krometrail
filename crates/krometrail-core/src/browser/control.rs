@@ -3,8 +3,9 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ErrorContext, InteractionId, KrometrailError, NonEmptyText, Result, RetentionStatus, SessionId,
-    SessionTime, TargetCaptureStatus, TargetId, error::invalid, validation::deserialize_validated,
+    ErrorContext, EveryNthFrame, InteractionId, KrometrailError, NonEmptyText, Result,
+    RetentionStatus, SessionId, SessionTime, TargetCaptureStatus, TargetId, error::invalid,
+    validation::deserialize_validated,
 };
 
 use super::{
@@ -39,6 +40,7 @@ pub struct BrowserStatus {
     pub pages: Vec<PageStatus>,
     pub capture: Vec<TargetCaptureStatus>,
     pub retention: RetentionStatus,
+    pub every_nth_frame: EveryNthFrame,
 }
 
 #[derive(Deserialize)]
@@ -52,6 +54,7 @@ struct BrowserStatusWire {
     pages: Vec<PageStatus>,
     capture: Vec<TargetCaptureStatus>,
     retention: RetentionStatus,
+    every_nth_frame: EveryNthFrame,
 }
 
 impl BrowserStatus {
@@ -66,6 +69,7 @@ impl BrowserStatus {
         pages: Vec<PageStatus>,
         capture: Vec<TargetCaptureStatus>,
         retention: RetentionStatus,
+        every_nth_frame: EveryNthFrame,
     ) -> Result<Self> {
         let mut ids = HashSet::new();
         let selected = pages
@@ -96,7 +100,12 @@ impl BrowserStatus {
             pages,
             capture,
             retention,
+            every_nth_frame,
         })
+    }
+
+    pub const fn every_nth_frame(&self) -> EveryNthFrame {
+        self.every_nth_frame
     }
 }
 
@@ -113,6 +122,7 @@ impl<'de> Deserialize<'de> for BrowserStatus {
                 w.pages,
                 w.capture,
                 w.retention,
+                w.every_nth_frame,
             )
         })
     }
@@ -471,8 +481,10 @@ mod tests {
             vec![],
             vec![],
             RetentionStatus::empty(crate::DiskBudgetBytes::default()),
+            EveryNthFrame::new(17).unwrap(),
         )
         .unwrap();
+        assert_eq!(status.every_nth_frame().get(), 17);
         assert_eq!(
             serde_json::from_str::<BrowserStatus>(&serde_json::to_string(&status).unwrap())
                 .unwrap(),

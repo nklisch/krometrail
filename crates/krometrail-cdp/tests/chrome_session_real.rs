@@ -37,6 +37,7 @@ async fn opt_in_managed_session_stops_without_retaining_temporary_profile() {
         executable: None,
         profile: ManagedProfile::Temporary,
         initial_url: Some(support::chrome::fixture_url()),
+        every_nth_frame: krometrail_core::EveryNthFrame::default(),
     };
     let session = connector
         .connect(BrowserConnectRequest::Launch(request))
@@ -74,6 +75,7 @@ async fn opt_in_managed_launch_attach_targets_and_external_survival() {
         executable: None,
         profile: ManagedProfile::Temporary,
         initial_url: Some(support::chrome::fixture_url()),
+        every_nth_frame: krometrail_core::EveryNthFrame::default(),
     };
     let mut launched = launcher
         .launch_owned(&request)

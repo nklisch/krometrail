@@ -29,8 +29,9 @@ pub use artifacts::{
 pub use browser::{
     AttachBrowser, BrowserConnectRequest, BrowserConnector, BrowserFailureKind,
     BrowserOperationContext, BrowserPageTargets, BrowserSessionEvents, BrowserSessionPort,
-    CancellationSignal, CurrentReferenceGeometry, CurrentReferenceGeometryRequest, LaunchBrowser,
-    ManagedProfile, ResolvedReferenceGeometry,
+    CancellationSignal, CurrentReferenceGeometry, CurrentReferenceGeometryRequest, EveryNthFrame,
+    LaunchBrowser, MAX_EVERY_NTH_FRAME, MIN_EVERY_NTH_FRAME, ManagedProfile,
+    ResolvedReferenceGeometry,
 };
 pub use browser_events::{
     BrowserEventCursor, BrowserEventSelector, BrowserEventSink, BrowserEventSource,
@@ -187,6 +188,7 @@ mod tests {
                 pages,
                 Vec::new(),
                 crate::RetentionStatus::empty(crate::DiskBudgetBytes::default()),
+                EveryNthFrame::default(),
             );
             Box::pin(std::future::ready(status))
         }
@@ -484,12 +486,113 @@ mod tests {
         let request = LaunchBrowser::default();
         assert!(request.executable.is_none());
         assert!(request.initial_url.is_none());
+        assert_eq!(request.every_nth_frame, EveryNthFrame::default());
         assert_eq!(
             request.profile,
             ManagedProfile::Reusable {
                 name: ProfileIdentity::new(crate::DEFAULT_MANAGED_PROFILE_NAME).unwrap(),
             }
         );
+    }
+
+    #[test]
+    fn every_nth_frame_accepts_only_the_inclusive_integer_bounds() {
+        for value in [MIN_EVERY_NTH_FRAME, MAX_EVERY_NTH_FRAME] {
+            let stride = EveryNthFrame::new(value).unwrap();
+            assert_eq!(stride.get(), value);
+            assert_eq!(
+                serde_json::to_value(stride).unwrap(),
+                serde_json::json!(value)
+            );
+            assert_eq!(
+                serde_json::from_value::<EveryNthFrame>(serde_json::json!(value)).unwrap(),
+                stride
+            );
+        }
+        for value in [0, 61, u8::MAX] {
+            assert!(EveryNthFrame::new(value).is_err());
+        }
+        for value in [
+            serde_json::json!(0),
+            serde_json::json!(61),
+            serde_json::json!(null),
+            serde_json::json!("1"),
+            serde_json::json!(1.5),
+        ] {
+            assert!(serde_json::from_value::<EveryNthFrame>(value).is_err());
+        }
+    }
+
+    #[test]
+    fn launch_and_attach_stride_contracts_default_and_publish_generated_bounds() {
+        let launch: LaunchBrowser = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(launch.every_nth_frame, EveryNthFrame::default());
+        let launch_stride = EveryNthFrame::new(17).unwrap();
+        let launch = LaunchBrowser {
+            every_nth_frame: launch_stride,
+            ..LaunchBrowser::default()
+        };
+        let launch_json = serde_json::to_value(&launch).unwrap();
+        assert_eq!(launch_json["every_nth_frame"], serde_json::json!(17));
+        assert_eq!(
+            serde_json::from_value::<LaunchBrowser>(launch_json).unwrap(),
+            launch
+        );
+        assert!(
+            serde_json::from_value::<LaunchBrowser>(serde_json::json!({
+                "every_nth_frame": 0
+            }))
+            .is_err()
+        );
+
+        let attach: AttachBrowser = serde_json::from_value(serde_json::json!({
+            "endpoint": "ws://localhost:9222"
+        }))
+        .unwrap();
+        assert_eq!(attach.every_nth_frame, EveryNthFrame::default());
+        let attach = AttachBrowser::new("ws://localhost:9222")
+            .unwrap()
+            .with_every_nth_frame(EveryNthFrame::new(60).unwrap());
+        let attach_json = serde_json::to_value(&attach).unwrap();
+        assert_eq!(attach_json["every_nth_frame"], serde_json::json!(60));
+        assert_eq!(
+            serde_json::from_value::<AttachBrowser>(attach_json).unwrap(),
+            attach
+        );
+        assert!(
+            serde_json::from_value::<AttachBrowser>(serde_json::json!({
+                "endpoint": "ws://localhost:9222",
+                "every_nth_frame": 61
+            }))
+            .is_err()
+        );
+
+        for schema in [
+            serde_json::to_value(schemars::schema_for!(EveryNthFrame)).unwrap(),
+            serde_json::to_value(schemars::schema_for!(LaunchBrowser)).unwrap(),
+            serde_json::to_value(schemars::schema_for!(AttachBrowser)).unwrap(),
+        ] {
+            let stride_schema = if schema["type"] == "integer" {
+                schema
+            } else {
+                schema["properties"]["every_nth_frame"].clone()
+            };
+            assert_eq!(stride_schema["type"], "integer");
+            assert_eq!(stride_schema["minimum"], serde_json::json!(1));
+            assert_eq!(stride_schema["maximum"], serde_json::json!(60));
+            assert_eq!(stride_schema["default"], serde_json::json!(1));
+        }
+        for schema in [
+            serde_json::to_value(schemars::schema_for!(LaunchBrowser)).unwrap(),
+            serde_json::to_value(schemars::schema_for!(AttachBrowser)).unwrap(),
+        ] {
+            let required = schema["required"].as_array();
+            assert!(
+                !required.is_some_and(|fields| {
+                    fields.iter().any(|field| field == "every_nth_frame")
+                })
+            );
+        }
     }
 
     #[test]
@@ -572,6 +675,7 @@ mod tests {
                 executable: None,
                 profile: ManagedProfile::Temporary,
                 initial_url: None,
+                every_nth_frame: EveryNthFrame::default(),
             })),
         );
         assert_eq!(result.err().unwrap().code, ErrorCode::BrowserNotFound);

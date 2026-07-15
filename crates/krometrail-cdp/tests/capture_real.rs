@@ -153,6 +153,7 @@ async fn opt_in_real_chrome_capture_isolates_two_targets_and_records_visibility_
         executable: chrome_wrapper.as_ref().map(|wrapper| wrapper.path.clone()),
         profile: ManagedProfile::Temporary,
         initial_url: Some(fixture.url().to_owned()),
+        every_nth_frame: krometrail_core::EveryNthFrame::default(),
     };
     let mut launched = launcher
         .launch_owned(&request)
@@ -475,6 +476,7 @@ async fn opt_in_real_chrome_capture_fences_one_disconnect_and_resets_generation_
         executable: chrome_wrapper.as_ref().map(|wrapper| wrapper.path.clone()),
         profile: ManagedProfile::Temporary,
         initial_url: Some(fixture.url().to_owned()),
+        every_nth_frame: krometrail_core::EveryNthFrame::default(),
     };
     let mut launched = launcher
         .launch_owned(&request)
@@ -655,6 +657,7 @@ async fn connect_managed(
         executable: chrome_wrapper.as_ref().map(|wrapper| wrapper.path.clone()),
         profile: ManagedProfile::Temporary,
         initial_url: Some(fixture_url.to_owned()),
+        every_nth_frame: krometrail_core::EveryNthFrame::default(),
     };
     let factory = krometrail_cdp::transport::CdpkitTransportFactory::new()
         .with_command_timeout(Duration::from_secs(4));

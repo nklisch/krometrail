@@ -83,6 +83,7 @@ impl Fixture {
                     ProfileRef::managed(ProfileIdentity::new("temporal-query").unwrap()),
                     DiskBudgetBytes::new(1024 * 1024).unwrap(),
                     vec![krometrail_core::CapabilityId::Control],
+                    krometrail_core::EveryNthFrame::default(),
                 )
                 .unwrap(),
             )

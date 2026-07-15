@@ -99,6 +99,7 @@ async fn placeholders_are_completed_by_lossless_catalog_upserts() {
         ProfileRef::managed(ProfileIdentity::new("profile").unwrap()),
         DiskBudgetBytes::new(1024).unwrap(),
         vec![CapabilityId::Control],
+        krometrail_core::EveryNthFrame::default(),
     )
     .unwrap();
     let target = PageTarget::new(

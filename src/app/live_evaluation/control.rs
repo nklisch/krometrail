@@ -1154,6 +1154,7 @@ pub(crate) async fn run_opted_in_control(
                 executable: wrapper.as_ref().map(|wrapper| wrapper.path.clone()),
                 profile: krometrail_core::ManagedProfile::Temporary,
                 initial_url: Some(initial_url),
+                every_nth_frame: krometrail_core::EveryNthFrame::default(),
             },
         ))
         .await?;

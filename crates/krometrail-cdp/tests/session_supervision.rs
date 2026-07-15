@@ -131,6 +131,7 @@ async fn opt_in_real_chrome_reconnects_through_a_new_physical_proxy_connection()
         executable: None,
         profile: krometrail_core::ManagedProfile::Temporary,
         initial_url: Some(support::chrome::fixture_url()),
+        every_nth_frame: krometrail_core::EveryNthFrame::default(),
     };
     // The browser is deliberately launched outside ProductionBrowserConnector. The connector
     // therefore exercises the attached ownership path while this test retains an independent

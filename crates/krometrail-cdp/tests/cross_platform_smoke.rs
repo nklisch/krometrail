@@ -611,6 +611,7 @@ async fn connect_managed(
         executable: Some(wrapper.path.clone()),
         profile: ManagedProfile::Temporary,
         initial_url: Some(fixture_url.to_owned()),
+        every_nth_frame: krometrail_core::EveryNthFrame::default(),
     };
     let factory = krometrail_cdp::transport::CdpkitTransportFactory::new()
         .with_command_timeout(Duration::from_secs(4));

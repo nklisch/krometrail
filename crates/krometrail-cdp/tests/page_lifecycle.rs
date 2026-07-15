@@ -977,6 +977,7 @@ async fn opt_in_real_chrome_runs_complete_managed_page_lifecycle() {
             executable: None,
             profile: ManagedProfile::Temporary,
             initial_url: Some(first_url.clone()),
+            every_nth_frame: krometrail_core::EveryNthFrame::default(),
         }))
         .await
         .expect("real lifecycle session");
@@ -1207,6 +1208,7 @@ async fn opt_in_real_chrome_reopens_named_profile_state() {
                 executable: None,
                 profile: profile.clone(),
                 initial_url: Some(url.clone()),
+                every_nth_frame: krometrail_core::EveryNthFrame::default(),
             }))
             .await
             .unwrap();

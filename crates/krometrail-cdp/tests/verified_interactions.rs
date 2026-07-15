@@ -403,6 +403,7 @@ async fn opt_in_real_chrome_synchronizes_dialog_open_and_close() {
                 executable: None,
                 profile: krometrail_core::ManagedProfile::Temporary,
                 initial_url: Some(support::chrome::verified_interactions_fixture_url()),
+                every_nth_frame: krometrail_core::EveryNthFrame::default(),
             },
         ))
         .await
@@ -480,6 +481,7 @@ async fn opt_in_real_chrome_executes_verified_interaction_families() {
                 executable: None,
                 profile: krometrail_core::ManagedProfile::Temporary,
                 initial_url: Some(support::chrome::verified_interactions_fixture_url()),
+                every_nth_frame: krometrail_core::EveryNthFrame::default(),
             },
         ))
         .await

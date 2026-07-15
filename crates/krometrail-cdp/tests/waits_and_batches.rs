@@ -859,6 +859,7 @@ async fn launch_real_fixture(
             executable: None,
             profile: ManagedProfile::Temporary,
             initial_url: Some(support::chrome::waits_and_batches_fixture_url("index.html")),
+            every_nth_frame: krometrail_core::EveryNthFrame::default(),
         }))
         .await
         .expect("real waits/batches fixture");

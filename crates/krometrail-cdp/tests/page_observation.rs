@@ -596,6 +596,7 @@ async fn opt_in_real_chrome_reports_forced_scale_without_fabricating_high_dpi() 
                 executable: Some(wrapper.path.clone()),
                 profile: krometrail_core::ManagedProfile::Temporary,
                 initial_url: Some(support::chrome::page_observation_fixture_url()),
+                every_nth_frame: krometrail_core::EveryNthFrame::default(),
             },
         ))
         .await
@@ -647,6 +648,7 @@ async fn opt_in_real_chrome_observes_fixture_and_all_screenshot_target_families(
                 executable: None,
                 profile: krometrail_core::ManagedProfile::Temporary,
                 initial_url: Some(support::chrome::page_observation_fixture_url()),
+                every_nth_frame: krometrail_core::EveryNthFrame::default(),
             },
         ))
         .await

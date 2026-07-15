@@ -267,7 +267,7 @@ impl BrowserConnector for ProductionBrowserConnector {
                     let endpoint = launched.endpoint.clone();
                     (endpoint, BrowserOwnership::Managed, Some(launched))
                 }
-                BrowserConnectRequest::Attach(AttachBrowser { endpoint }) => {
+                BrowserConnectRequest::Attach(AttachBrowser { endpoint, .. }) => {
                     let endpoint = attach_endpoint(endpoint)
                         .await
                         .map_err(|error| launch_error_to_core(&error))?;
@@ -600,6 +600,7 @@ impl BrowserSessionPort for ProductionSession {
                 pages,
                 capture_statuses,
                 retention,
+                krometrail_core::EveryNthFrame::default(),
             )
         })
     }

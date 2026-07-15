@@ -222,6 +222,7 @@ mod tests {
             Vec::<PageStatus>::new(),
             Vec::new(),
             RetentionStatus::empty(krometrail_core::DiskBudgetBytes::default()),
+            krometrail_core::EveryNthFrame::default(),
         )
         .unwrap()
     }

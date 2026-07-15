@@ -1,4 +1,4 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{num::NonZeroU8, path::PathBuf, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 
@@ -21,12 +21,71 @@ pub enum BrowserConnectRequest {
     Attach(AttachBrowser),
 }
 
+pub const MIN_EVERY_NTH_FRAME: u8 = 1;
+pub const MAX_EVERY_NTH_FRAME: u8 = 60;
+
+/// A validated relative capture stride requested when a browser session starts.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(transparent)]
+pub struct EveryNthFrame(NonZeroU8);
+
+// Schemars' range metadata is field-oriented; this local override keeps the public tuple
+// newtype transparent while adding the same generated contract constraints to its primitive schema.
+impl schemars::JsonSchema for EveryNthFrame {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("EveryNthFrame")
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let mut schema = <u8 as schemars::JsonSchema>::json_schema(generator);
+        let object = schema.ensure_object();
+        object.insert("minimum".into(), serde_json::json!(MIN_EVERY_NTH_FRAME));
+        object.insert("maximum".into(), serde_json::json!(MAX_EVERY_NTH_FRAME));
+        object.insert("default".into(), serde_json::json!(MIN_EVERY_NTH_FRAME));
+        schema
+    }
+}
+
+impl EveryNthFrame {
+    pub fn new(value: u8) -> Result<Self> {
+        NonZeroU8::new(value)
+            .filter(|value| value.get() <= MAX_EVERY_NTH_FRAME)
+            .map(Self)
+            .ok_or_else(|| invalid("every_nth_frame must be between 1 and 60"))
+    }
+
+    pub const fn get(self) -> u8 {
+        self.0.get()
+    }
+}
+
+impl Default for EveryNthFrame {
+    fn default() -> Self {
+        Self::new(MIN_EVERY_NTH_FRAME).expect("default capture stride is valid")
+    }
+}
+
+impl<'de> Deserialize<'de> for EveryNthFrame {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        deserialize_validated(deserializer, Self::new)
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct LaunchBrowser {
     pub executable: Option<PathBuf>,
     pub profile: ManagedProfile,
     pub initial_url: Option<String>,
+    #[serde(default)]
+    #[schemars(default)]
+    pub every_nth_frame: EveryNthFrame,
 }
 
 impl LaunchBrowser {
@@ -35,6 +94,7 @@ impl LaunchBrowser {
             executable: None,
             profile,
             initial_url: None,
+            every_nth_frame: EveryNthFrame::default(),
         }
     }
 }
@@ -62,11 +122,15 @@ impl Default for ManagedProfile {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct AttachBrowser {
     pub endpoint: String,
+    pub every_nth_frame: EveryNthFrame,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
 struct AttachBrowserWire {
     endpoint: String,
+    #[serde(default)]
+    #[schemars(default)]
+    every_nth_frame: EveryNthFrame,
 }
 
 delegate_json_schema!(AttachBrowser => AttachBrowserWire);
@@ -77,7 +141,15 @@ impl AttachBrowser {
         if endpoint.trim().is_empty() {
             return Err(invalid("browser endpoint must not be empty"));
         }
-        Ok(Self { endpoint })
+        Ok(Self {
+            endpoint,
+            every_nth_frame: EveryNthFrame::default(),
+        })
+    }
+
+    pub fn with_every_nth_frame(mut self, every_nth_frame: EveryNthFrame) -> Self {
+        self.every_nth_frame = every_nth_frame;
+        self
     }
 }
 
@@ -87,6 +159,7 @@ impl<'de> Deserialize<'de> for AttachBrowser {
     ) -> std::result::Result<Self, D::Error> {
         deserialize_validated(deserializer, |wire: AttachBrowserWire| {
             Self::new(wire.endpoint)
+                .map(|request| request.with_every_nth_frame(wire.every_nth_frame))
         })
     }
 }

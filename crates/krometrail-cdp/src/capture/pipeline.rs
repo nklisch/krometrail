@@ -1092,6 +1092,7 @@ fn status_from_state(
         state.last_frame_session_time,
         state.ack_latency.summary(),
         state.frame_cadence.summary(),
+        krometrail_core::EveryNthFrame::default(),
     )
     .map_err(|_| ())
 }

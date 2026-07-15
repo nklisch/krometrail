@@ -8,6 +8,7 @@ use crate::{
     error::{Result, invalid},
     ids::SessionId,
     lifecycle::SessionLifecycle,
+    ports::EveryNthFrame,
     time::ObservedTime,
     validation::deserialize_validated,
 };
@@ -330,6 +331,7 @@ pub struct TargetCaptureStatus {
     last_frame_session_time: Option<crate::time::SessionTime>,
     ack_latency: CaptureTimingSummary,
     frame_cadence: CaptureTimingSummary,
+    every_nth_frame: EveryNthFrame,
 }
 
 #[derive(Deserialize)]
@@ -343,6 +345,7 @@ struct TargetCaptureStatusWire {
     last_frame_session_time: Option<crate::time::SessionTime>,
     ack_latency: CaptureTimingSummary,
     frame_cadence: CaptureTimingSummary,
+    every_nth_frame: EveryNthFrame,
 }
 
 impl TargetCaptureStatus {
@@ -357,6 +360,7 @@ impl TargetCaptureStatus {
         last_frame_session_time: Option<crate::time::SessionTime>,
         ack_latency: CaptureTimingSummary,
         frame_cadence: CaptureTimingSummary,
+        every_nth_frame: EveryNthFrame,
     ) -> Result<Self> {
         if attachment_generation == 0 {
             return Err(invalid("capture attachment generation must be non-zero"));
@@ -387,6 +391,7 @@ impl TargetCaptureStatus {
             last_frame_session_time,
             ack_latency,
             frame_cadence,
+            every_nth_frame,
         })
     }
 
@@ -425,6 +430,10 @@ impl TargetCaptureStatus {
     pub const fn frame_cadence(&self) -> &CaptureTimingSummary {
         &self.frame_cadence
     }
+
+    pub const fn every_nth_frame(&self) -> EveryNthFrame {
+        self.every_nth_frame
+    }
 }
 
 impl<'de> Deserialize<'de> for TargetCaptureStatus {
@@ -443,6 +452,7 @@ impl<'de> Deserialize<'de> for TargetCaptureStatus {
                 wire.last_frame_session_time,
                 wire.ack_latency,
                 wire.frame_cadence,
+                wire.every_nth_frame,
             )
         })
     }
@@ -460,6 +470,7 @@ pub struct RecordingSession {
     disk_budget: DiskBudgetBytes,
     capabilities: Vec<CapabilityId>,
     statistics: CaptureStatistics,
+    every_nth_frame: EveryNthFrame,
 }
 
 #[derive(Deserialize)]
@@ -474,9 +485,11 @@ struct RecordingSessionWire {
     disk_budget: DiskBudgetBytes,
     capabilities: Vec<CapabilityId>,
     statistics: CaptureStatistics,
+    every_nth_frame: EveryNthFrame,
 }
 
 impl RecordingSession {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: SessionId,
         origin: ObservedTime,
@@ -485,6 +498,7 @@ impl RecordingSession {
         profile: ProfileRef,
         disk_budget: DiskBudgetBytes,
         capabilities: Vec<CapabilityId>,
+        every_nth_frame: EveryNthFrame,
     ) -> Result<Self> {
         Self::from_parts(
             id,
@@ -497,6 +511,7 @@ impl RecordingSession {
             disk_budget,
             capabilities,
             CaptureStatistics::default(),
+            every_nth_frame,
         )
     }
 
@@ -512,6 +527,7 @@ impl RecordingSession {
         disk_budget: DiskBudgetBytes,
         capabilities: Vec<CapabilityId>,
         statistics: CaptureStatistics,
+        every_nth_frame: EveryNthFrame,
     ) -> Result<Self> {
         let session = Self {
             id,
@@ -524,6 +540,7 @@ impl RecordingSession {
             disk_budget,
             capabilities,
             statistics,
+            every_nth_frame,
         };
         session.validate()?;
         Ok(session)
@@ -588,6 +605,10 @@ impl RecordingSession {
         &self.capabilities
     }
 
+    pub const fn every_nth_frame(&self) -> EveryNthFrame {
+        self.every_nth_frame
+    }
+
     pub const fn statistics(&self) -> &CaptureStatistics {
         &self.statistics
     }
@@ -631,6 +652,7 @@ impl<'de> Deserialize<'de> for RecordingSession {
                 wire.disk_budget,
                 wire.capabilities,
                 wire.statistics,
+                wire.every_nth_frame,
             )
         })
     }
@@ -660,6 +682,7 @@ mod tests {
             ProfileRef::managed(crate::ProfileIdentity::new("profile").unwrap()),
             DiskBudgetBytes::new(1024).unwrap(),
             vec![CapabilityId::Control],
+            EveryNthFrame::default(),
         )
         .unwrap()
     }
@@ -682,6 +705,7 @@ mod tests {
             ProfileRef::External,
             DiskBudgetBytes::new(1024).unwrap(),
             vec![CapabilityId::Control],
+            EveryNthFrame::default(),
         )
         .unwrap();
         let encoded = serde_json::to_string(&attached).unwrap();
@@ -759,6 +783,7 @@ mod tests {
                 None,
                 empty.clone(),
                 empty.clone(),
+                EveryNthFrame::default(),
             )
             .is_err()
         );
@@ -773,6 +798,7 @@ mod tests {
                 None,
                 empty.clone(),
                 empty.clone(),
+                EveryNthFrame::default(),
             )
             .is_err()
         );
@@ -787,6 +813,7 @@ mod tests {
                 None,
                 empty.clone(),
                 empty.clone(),
+                EveryNthFrame::default(),
             )
             .is_err()
         );
@@ -801,6 +828,7 @@ mod tests {
                 Some(SessionTime::ZERO),
                 empty.clone(),
                 empty.clone(),
+                EveryNthFrame::default(),
             )
             .is_err()
         );
@@ -815,9 +843,43 @@ mod tests {
                 None,
                 empty.clone(),
                 empty,
+                EveryNthFrame::default(),
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn status_round_trips_requested_stride_without_changing_statistics() {
+        let target = crate::ids::TargetId::from_uuid(UUID.parse().unwrap());
+        let status = TargetCaptureStatus::new(
+            target,
+            1,
+            CaptureStreamState::Capturing,
+            CaptureStatistics::new(2, 2, 2, 0, 2, 0).unwrap(),
+            4,
+            0,
+            Some(SessionTime::from_nanos(2)),
+            CaptureTimingSummary::empty(),
+            CaptureTimingSummary::empty(),
+            EveryNthFrame::new(23).unwrap(),
+        )
+        .unwrap();
+        let encoded = serde_json::to_string(&status).unwrap();
+        assert!(encoded.contains("every_nth_frame"));
+        let decoded = serde_json::from_str::<TargetCaptureStatus>(&encoded).unwrap();
+        assert_eq!(decoded, status);
+        assert_eq!(decoded.every_nth_frame().get(), 23);
+        assert_eq!(decoded.statistics().accepted_frames(), 2);
+    }
+
+    #[test]
+    fn recording_session_round_trips_requested_stride() {
+        let mut value = serde_json::to_value(session()).unwrap();
+        value["every_nth_frame"] = serde_json::json!(41);
+        let decoded = serde_json::from_value::<RecordingSession>(value).unwrap();
+        assert_eq!(decoded.every_nth_frame().get(), 41);
+        assert_eq!(decoded.statistics(), &CaptureStatistics::default());
     }
 
     #[test]
