@@ -127,3 +127,18 @@ pure-kernel exactness tests pass.
 - Exactness evidence: the Rust test matrix passed for both normalization scales and clean, masked, gapped, equal-timestamp, and threshold cases. Context and direct `FrameComparison` values, selection plans/reasons/roles, difference and motion cores, manifests, PNG bytes, and SHA-256 output digests matched.
 - Performance evidence: the Rust 1.85 release smoke at 30 frames/1920x1080/identity/clean reported baseline `2M+B = 78` classified passes and predicted shared-context `M+B = 49`, a reduction of 29 adjacent passes and 60,134,400 classifier calls; predicted trace budget was 2,384 bytes. This is pure-kernel accounting, not an end-to-end service claim.
 - Verification: `rustup run 1.85.0 cargo fmt --all -- --check`, workspace locked check, workspace locked test, workspace locked clippy with `-D warnings`, temporal-vision all-target tests, and focused ignored release benchmark smoke all passed. The pre-existing `.work/bin/work-view` working-tree modification was preserved and not staged.
+
+## Review rollback disposition
+
+The accepted STANDARD feature review rejected the pure pair-context optimization
+for this cycle. The authoritative result was only 4.71% faster at 60 frames
+and 2.79% faster at 120 frames, below the required 20% target. The pure context
+implementation from `c54ddc3` was mechanically removed and the temporal-vision
+code was restored to the low-risk baseline state before that commit.
+
+The implementation evidence above remains intentionally preserved: this child
+is a completed experimental checkpoint, not erased history. Review blockers
+eliminated by deletion included same-decay motion single-consumption, missing
+production cancellation checkpoints as exposed by the context contract, and
+stale motion benchmark accounting. The opt-1 baseline benchmark scaffold was
+retained; no re-review is required under the standard one-pass disposition.

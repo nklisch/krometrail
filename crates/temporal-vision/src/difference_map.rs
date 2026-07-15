@@ -1,12 +1,11 @@
-use std::{collections::BTreeMap, num::NonZeroUsize, sync::Arc};
+use std::{collections::BTreeMap, num::NonZeroUsize};
 
 use crate::{
-    AlgorithmDescriptor, ArtifactKind, ArtifactManifest, EncodedImage, ErrorCode, EvidenceClass,
-    FrameSequence, GeneratedArtifact, MeasurementParameters, NormalizationKind, NormalizationStep,
-    NormalizedSequence, ParameterValue, Parameters, PixelDimensions, PixelRect, Result, Rgb8,
-    Timestamp, VisionError, generator_descriptor,
-    measure::linear_luminance,
-    pair_analysis::{PairAnalysisContext, build_pair_analysis_context},
+    AlgorithmDescriptor, ArtifactKind, ArtifactManifest, BinaryMask, EncodedImage, ErrorCode,
+    EvidenceClass, FrameSequence, GeneratedArtifact, MeasurementParameters, NormalizationKind,
+    NormalizationStep, NormalizedSequence, ParameterValue, Parameters, PixelDimensions, PixelRect,
+    Result, Rgb8, Timestamp, VisionError, generator_descriptor,
+    measure::{classify_pixel_change, intersecting_gap_count, linear_luminance},
     render::{
         canvas::{BLACK, Canvas, MUTED, PANEL, WARNING, WHITE, canvas_limit_error},
         font::{CELL_WIDTH, draw_text, ellipsize},
@@ -122,9 +121,10 @@ impl DifferenceMapParameters {
     }
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub(crate) struct DifferenceAccumulators {
     dimensions: PixelDimensions,
+    analysis_mask: Option<BinaryMask>,
     change_count: Box<[u32]>,
     comparable_count: Box<[u32]>,
     magnitude_sum: Box<[u64]>,
@@ -134,85 +134,11 @@ pub(crate) struct DifferenceAccumulators {
 }
 
 impl DifferenceAccumulators {
-    pub(crate) fn empty<F>(
-        normalized: &NormalizedSequence<F>,
-        limits: DifferenceMapLimits,
-    ) -> Result<Self> {
-        let pixel_count = normalized.dimensions().pixel_count()?;
-        let accumulator_bytes = pixel_count
-            .checked_mul(ACCUMULATOR_BYTES_PER_PIXEL)
-            .ok_or_else(accumulator_limit_error)?;
-        if accumulator_bytes > limits.max_accumulator_bytes() {
-            return Err(accumulator_limit_error());
-        }
-        Ok(Self {
-            dimensions: normalized.dimensions(),
-            change_count: vec![0; pixel_count].into_boxed_slice(),
-            comparable_count: vec![0; pixel_count].into_boxed_slice(),
-            magnitude_sum: vec![0; pixel_count].into_boxed_slice(),
-            weighted_time_sum: vec![0; pixel_count].into_boxed_slice(),
-            first_change_offset: vec![0; pixel_count].into_boxed_slice(),
-            last_change_offset: vec![0; pixel_count].into_boxed_slice(),
-        })
-    }
-
-    pub(crate) fn record_comparable(&mut self, pixel: usize) -> Result<()> {
-        self.comparable_count[pixel] = self.comparable_count[pixel]
-            .checked_add(1)
-            .ok_or_else(accumulator_limit_error)?;
-        Ok(())
-    }
-
-    pub(crate) fn record_change(
-        &mut self,
-        pixel: usize,
-        later_offset: u64,
-        weighted_square: u128,
-    ) -> Result<()> {
-        let magnitude = u64::try_from(weighted_square).map_err(|_| accumulator_limit_error())?;
-        let count = self.change_count[pixel]
-            .checked_add(1)
-            .ok_or_else(accumulator_limit_error)?;
-        self.change_count[pixel] = count;
-        self.magnitude_sum[pixel] = self.magnitude_sum[pixel]
-            .checked_add(magnitude)
-            .ok_or_else(accumulator_limit_error)?;
-        let weighted_time = u128::from(later_offset)
-            .checked_mul(weighted_square)
-            .ok_or_else(accumulator_limit_error)?;
-        self.weighted_time_sum[pixel] = self.weighted_time_sum[pixel]
-            .checked_add(weighted_time)
-            .ok_or_else(accumulator_limit_error)?;
-        if count == 1 {
-            self.first_change_offset[pixel] = later_offset;
-        }
-        self.last_change_offset[pixel] = later_offset;
-        Ok(())
-    }
-
     pub(crate) fn accumulate<F>(
         normalized: &NormalizedSequence<F>,
         measurement: MeasurementParameters,
         limits: DifferenceMapLimits,
     ) -> Result<Self> {
-        let context =
-            build_pair_analysis_context(normalized, measurement, Some(limits), None, || Ok(()))?;
-        context
-            .into_difference()
-            .map(|core| {
-                Arc::try_unwrap(core).unwrap_or_else(|_| {
-                    panic!("difference core remains uniquely owned after context build")
-                })
-            })
-            .ok_or_else(accumulator_limit_error)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn accumulate_direct<F>(
-        normalized: &NormalizedSequence<F>,
-        measurement: MeasurementParameters,
-        limits: DifferenceMapLimits,
-    ) -> Result<Self> {
         let pixel_count = normalized.dimensions().pixel_count()?;
         let accumulator_bytes = pixel_count
             .checked_mul(ACCUMULATOR_BYTES_PER_PIXEL)
@@ -220,8 +146,10 @@ impl DifferenceAccumulators {
         if accumulator_bytes > limits.max_accumulator_bytes() {
             return Err(accumulator_limit_error());
         }
+
         let mut accumulators = Self {
             dimensions: normalized.dimensions(),
+            analysis_mask: normalized.analysis_mask().cloned(),
             change_count: vec![0; pixel_count].into_boxed_slice(),
             comparable_count: vec![0; pixel_count].into_boxed_slice(),
             magnitude_sum: vec![0; pixel_count].into_boxed_slice(),
@@ -232,10 +160,11 @@ impl DifferenceAccumulators {
         let range_start = normalized.frames()[0].timestamp().as_nanos();
         let width = usize::try_from(normalized.dimensions().width())
             .map_err(|_| accumulator_limit_error())?;
+
         for frames in normalized.frames().windows(2) {
             let earlier = &frames[0];
             let later = &frames[1];
-            if crate::measure::intersecting_gap_count(
+            if intersecting_gap_count(
                 normalized.gap_ranges(),
                 earlier.timestamp(),
                 later.timestamp(),
@@ -256,23 +185,45 @@ impl DifferenceAccumulators {
             {
                 let x = u32::try_from(pixel % width).map_err(|_| accumulator_limit_error())?;
                 let y = u32::try_from(pixel / width).map_err(|_| accumulator_limit_error())?;
-                if normalized
-                    .analysis_mask()
+                if accumulators
+                    .analysis_mask
+                    .as_ref()
                     .is_some_and(|mask| mask.includes(x, y) != Some(true))
                 {
                     continue;
                 }
-                accumulators.record_comparable(pixel)?;
+                accumulators.comparable_count[pixel] = accumulators.comparable_count[pixel]
+                    .checked_add(1)
+                    .ok_or_else(accumulator_limit_error)?;
                 let before: &[u16; 3] = before
                     .try_into()
                     .expect("chunks_exact yields three-channel pixels");
                 let after: &[u16; 3] = after
                     .try_into()
                     .expect("chunks_exact yields three-channel pixels");
-                let change = crate::measure::classify_pixel_change(before, after, measurement)?;
-                if change.changed {
-                    accumulators.record_change(pixel, later_offset, change.weighted_square)?;
+                let change = classify_pixel_change(before, after, measurement)?;
+                if !change.changed {
+                    continue;
                 }
+                let magnitude =
+                    u64::try_from(change.weighted_square).map_err(|_| accumulator_limit_error())?;
+                let count = accumulators.change_count[pixel]
+                    .checked_add(1)
+                    .ok_or_else(accumulator_limit_error)?;
+                accumulators.change_count[pixel] = count;
+                accumulators.magnitude_sum[pixel] = accumulators.magnitude_sum[pixel]
+                    .checked_add(magnitude)
+                    .ok_or_else(accumulator_limit_error)?;
+                let weighted_time = u128::from(later_offset)
+                    .checked_mul(change.weighted_square)
+                    .ok_or_else(accumulator_limit_error)?;
+                accumulators.weighted_time_sum[pixel] = accumulators.weighted_time_sum[pixel]
+                    .checked_add(weighted_time)
+                    .ok_or_else(accumulator_limit_error)?;
+                if count == 1 {
+                    accumulators.first_change_offset[pixel] = later_offset;
+                }
+                accumulators.last_change_offset[pixel] = later_offset;
             }
         }
         Ok(accumulators)
@@ -280,7 +231,7 @@ impl DifferenceAccumulators {
 }
 
 pub(crate) struct DifferenceMapData {
-    accumulators: Arc<DifferenceAccumulators>,
+    accumulators: DifferenceAccumulators,
     range_start: Timestamp,
     range_duration_ns: u64,
     effective_separation_ns: u64,
@@ -294,30 +245,11 @@ impl DifferenceMapData {
         normalized: &NormalizedSequence<F>,
         parameters: DifferenceMapParameters,
     ) -> Result<Self> {
-        let accumulators = Arc::new(DifferenceAccumulators::accumulate(
+        let accumulators = DifferenceAccumulators::accumulate(
             normalized,
             parameters.measurement,
             parameters.limits,
-        )?);
-        Self::from_accumulators(normalized, parameters, accumulators)
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn build_with_context<F>(
-        normalized: &NormalizedSequence<F>,
-        parameters: DifferenceMapParameters,
-        context: &PairAnalysisContext<'_>,
-    ) -> Result<Self> {
-        context.ensure_normalized(normalized, parameters.measurement)?;
-        let accumulators = Arc::clone(context.difference().ok_or_else(accumulator_limit_error)?);
-        Self::from_accumulators(normalized, parameters, accumulators)
-    }
-
-    fn from_accumulators<F>(
-        normalized: &NormalizedSequence<F>,
-        parameters: DifferenceMapParameters,
-        accumulators: Arc<DifferenceAccumulators>,
-    ) -> Result<Self> {
+        )?;
         let range_start = normalized.frames()[0].timestamp();
         let range_duration_ns = normalized
             .frames()
@@ -551,141 +483,6 @@ where
         parameters.limits.max_output_bytes(),
     )?;
 
-    let mut normalization = normalized.normalization_steps().to_vec();
-    normalization.push(parameters.measurement.provenance_step()?);
-    normalization.push(display_step()?);
-    let manifest = ArtifactManifest::from_sequence(
-        artifact_id,
-        ArtifactKind::DifferenceMap,
-        EvidenceClass::SourceDerived,
-        {
-            let descriptor = generator_descriptor(ArtifactKind::DifferenceMap);
-            AlgorithmDescriptor::new(descriptor.name, descriptor.version)?
-        },
-        sequence,
-        vec![
-            sequence.frames()[parameters.reference_frame_index]
-                .id()
-                .clone(),
-        ],
-        normalization,
-        manifest_parameters(parameters, &data)?,
-        layout.image,
-        hash,
-    )?;
-    Ok(GeneratedArtifact::new(
-        EncodedImage::new(layout.image, bytes),
-        manifest,
-    ))
-}
-
-/// Render a difference map from a request-local pair-analysis context.
-pub fn render_difference_map_with_context<A, F, M, G, P>(
-    artifact_id: A,
-    sequence: &FrameSequence<F, M, G, P>,
-    normalized: &NormalizedSequence<F>,
-    parameters: DifferenceMapParameters,
-    context: &PairAnalysisContext<'_>,
-) -> Result<DifferenceMapArtifact<A, F, M, G>>
-where
-    F: Clone + Eq,
-    M: Clone + Eq,
-    G: Clone + Eq,
-    P: AsRef<[u8]>,
-{
-    validate_normalized_source(sequence, normalized, parameters.reference_frame_index)?;
-    let data = DifferenceMapData::build_with_context(normalized, parameters, context)?;
-    let layout = DifferenceMapLayout::new(data.dimensions())?;
-    let canvas_bytes = layout
-        .image
-        .pixel_count()?
-        .checked_mul(3)
-        .ok_or_else(canvas_limit_error)?;
-    if canvas_bytes > parameters.limits.max_output_bytes() {
-        return Err(canvas_limit_error());
-    }
-
-    let mut canvas = Canvas::new(
-        layout.image,
-        parameters.background.channels(),
-        parameters.limits.max_output_bytes(),
-    )?;
-    draw_composite(&mut canvas, layout, sequence, normalized, parameters, &data)?;
-    let (bytes, hash) = crate::encode::encode_png(
-        layout.image,
-        canvas.pixels(),
-        parameters.limits.max_output_bytes(),
-    )?;
-
-    let mut normalization = normalized.normalization_steps().to_vec();
-    normalization.push(parameters.measurement.provenance_step()?);
-    normalization.push(display_step()?);
-    let manifest = ArtifactManifest::from_sequence(
-        artifact_id,
-        ArtifactKind::DifferenceMap,
-        EvidenceClass::SourceDerived,
-        {
-            let descriptor = generator_descriptor(ArtifactKind::DifferenceMap);
-            AlgorithmDescriptor::new(descriptor.name, descriptor.version)?
-        },
-        sequence,
-        vec![
-            sequence.frames()[parameters.reference_frame_index]
-                .id()
-                .clone(),
-        ],
-        normalization,
-        manifest_parameters(parameters, &data)?,
-        layout.image,
-        hash,
-    )?;
-    Ok(GeneratedArtifact::new(
-        EncodedImage::new(layout.image, bytes),
-        manifest,
-    ))
-}
-
-#[cfg(test)]
-pub(crate) fn render_difference_map_direct<A, F, M, G, P>(
-    artifact_id: A,
-    sequence: &FrameSequence<F, M, G, P>,
-    normalized: &NormalizedSequence<F>,
-    parameters: DifferenceMapParameters,
-) -> Result<DifferenceMapArtifact<A, F, M, G>>
-where
-    F: Clone + Eq,
-    M: Clone + Eq,
-    G: Clone + Eq,
-    P: AsRef<[u8]>,
-{
-    validate_normalized_source(sequence, normalized, parameters.reference_frame_index)?;
-    let accumulators = DifferenceAccumulators::accumulate_direct(
-        normalized,
-        parameters.measurement,
-        parameters.limits,
-    )?;
-    let data =
-        DifferenceMapData::from_accumulators(normalized, parameters, Arc::new(accumulators))?;
-    let layout = DifferenceMapLayout::new(data.dimensions())?;
-    let canvas_bytes = layout
-        .image
-        .pixel_count()?
-        .checked_mul(3)
-        .ok_or_else(canvas_limit_error)?;
-    if canvas_bytes > parameters.limits.max_output_bytes() {
-        return Err(canvas_limit_error());
-    }
-    let mut canvas = Canvas::new(
-        layout.image,
-        parameters.background.channels(),
-        parameters.limits.max_output_bytes(),
-    )?;
-    draw_composite(&mut canvas, layout, sequence, normalized, parameters, &data)?;
-    let (bytes, hash) = crate::encode::encode_png(
-        layout.image,
-        canvas.pixels(),
-        parameters.limits.max_output_bytes(),
-    )?;
     let mut normalization = normalized.normalization_steps().to_vec();
     normalization.push(parameters.measurement.provenance_step()?);
     normalization.push(display_step()?);
@@ -1187,8 +984,8 @@ fn unsigned_usize(value: usize) -> Result<ParameterValue> {
 mod tests {
     use super::*;
     use crate::{
-        BinaryMask, DeclaredGap, Frame, FrameSequence, IntegerScale, Marker,
-        NormalizationParameters, PixelFormat, ProcessingLimits, TimeRange, normalize_sequence,
+        DeclaredGap, Frame, FrameSequence, IntegerScale, Marker, NormalizationParameters,
+        PixelFormat, ProcessingLimits, TimeRange, normalize_sequence,
     };
 
     fn normalized(
@@ -1297,14 +1094,14 @@ mod tests {
             DifferenceMapData {
                 accumulators: DifferenceAccumulators {
                     dimensions: PixelDimensions::new(3, 1).unwrap(),
+                    analysis_mask: None,
                     change_count: vec![2, 1, 0].into_boxed_slice(),
                     comparable_count: vec![2, 4, 0].into_boxed_slice(),
                     magnitude_sum: vec![100, 50, 0].into_boxed_slice(),
                     weighted_time_sum: vec![1_000, 500, 0].into_boxed_slice(),
                     first_change_offset: vec![1, 1, 0].into_boxed_slice(),
                     last_change_offset: vec![9, 1, 0].into_boxed_slice(),
-                }
-                .into(),
+                },
                 range_start: Timestamp::ZERO,
                 range_duration_ns: 10,
                 effective_separation_ns: 5,

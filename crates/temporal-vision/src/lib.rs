@@ -66,7 +66,6 @@ mod geometry;
 mod measure;
 mod motion_history;
 mod normalize;
-mod pair_analysis;
 mod provenance;
 mod render;
 mod select;
@@ -75,7 +74,7 @@ mod sequence;
 pub use artifact::{EncodedImage, GeneratedArtifact};
 pub use difference_map::{
     DifferenceMapArtifact, DifferenceMapLimits, DifferenceMapParameters, FrequencyMode,
-    TimePalette, render_difference_map, render_difference_map_with_context,
+    TimePalette, render_difference_map,
 };
 pub use error::{ErrorCode, Result, VisionError};
 pub use filmstrip::{
@@ -92,14 +91,11 @@ pub use measure::{
 };
 pub use motion_history::{
     MotionDecay, MotionHistoryArtifact, MotionHistoryParameters, MotionHistoryPlan,
-    build_motion_history_plan, generate_motion_history, generate_motion_history_with_context,
+    build_motion_history_plan, generate_motion_history,
 };
 pub use normalize::{
     IntegerScale, NormalizationParameters, NormalizedFrame, NormalizedSequence, ProcessingLimits,
     Rgb8, normalize_sequence,
-};
-pub use pair_analysis::{
-    PairAnalysisContext, build_pair_analysis_context_for_consumers, pair_analysis_memory_bytes,
 };
 pub use provenance::{
     AlgorithmDescriptor, ArtifactKind, ArtifactManifest, EvidenceClass, FiniteNumber,
@@ -108,7 +104,6 @@ pub use provenance::{
 };
 pub use render::{
     ArtifactLabels, RenderLimits, StoryboardArtifacts, StoryboardParameters, generate_storyboard,
-    generate_storyboard_with_context,
 };
 pub use select::{
     OmittedAnchor, SelectedFrame, SelectionReason, StoryboardSelection, StoryboardTileLimit,

@@ -114,3 +114,20 @@ final implementation checkpoint before the parent feature review.
 - Acceptance disposition: against the authoritative supplied baselines B60=1,048.717 ms and B120=2,108.262 ms, the final context medians were 999.354 ms and 2,049.344 ms: 4.71% and 2.79% faster, below the required 20% target (thresholds 838.974 ms and 1,686.610 ms). This is an honest miss, so the optimization is left at the achieved bounded context and this feature adds no lower-level or parallel work.
 - Distributions/counters: context cold wall distributions were B60 `[996.250, 997.345, 999.354, 1,000.497, 1,001.882]` ms and B120 `[2,043.220, 2,044.905, 2,049.344, 2,076.290, 2,077.391]` ms; motion cells were B60 `[1,025.907, 1,028.511, 1,030.963, 1,031.412, 1,036.479]` ms and B120 `[2,084.721, 2,101.841, 2,125.889, 2,141.215, 2,145.983]` ms. Peak RSS maxima were 722,060 KiB at 60 and 1,388,980 KiB at 120 versus 1,357,328 KiB supplied B120 (2.33% above). Allocated-byte deltas were 1,298,107,871 (60), 2,560,106,341 (120), 1,318,544,518 (60 motion), and 2,596,324,672 (120 motion). Representative external `perf stat` counters (including test startup) were 60: task-clock 1,255.34 ms, cycles 4,728,805,696, instructions 20,369,357,013, cache-misses 7,819,247, branch-misses 4,140,712; 120: 2,292.97 ms, 9,290,998,316, 39,531,123,085, 10,719,078, and 5,029,991.
 - Pair reduction: clean no-motion context reports 99/199 classified passes and 51,321,600/103,161,600 classifier calls at 60/120, reducing 59/119 passes and 30,585,600/61,689,600 calls from the baseline formulas. Motion reports 177/357 pass and 91,756,800/185,068,800 call reductions.
+
+## Review rollback disposition
+
+The accepted STANDARD feature review rejected shipping the production grouping
+optimization. The authoritative result was only 4.71% faster at 60 frames and
+2.79% faster at 120 frames, below the required 20% target. Production/service
+pair-context code from `269caba` (and its pure-context dependency from
+`c54ddc3`) was mechanically removed, restoring the low-risk pre-context
+baseline rather than patching the review findings.
+
+This completed child remains the record of the production experiment and its
+adjudication evidence. Reviewer blockers eliminated by deletion included the
+public storyboard context source/anchor validation gap, missing production
+cancellation checkpoints, same-decay motion single-consumption, and stale
+motion benchmark accounting. The opt-1 baseline/equivalence benchmark
+scaffold remains retained. Standard policy requires no re-review after the
+verified rollback.

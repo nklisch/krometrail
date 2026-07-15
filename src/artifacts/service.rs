@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     sync::Arc,
     time::Instant,
 };
@@ -11,7 +11,6 @@ use krometrail_core::{
     ArtifactSourceFingerprint, ArtifactStore, ErrorCode, FrameSource, IdSource, KrometrailError,
     NonEmptyText, PortFuture, Result, StoredArtifact,
 };
-use sha2::{Digest, Sha256};
 use temporal_vision::{ArtifactKind, generator_descriptor};
 
 use super::{
@@ -21,9 +20,8 @@ use super::{
         ADAPTER_VERSION, EpochInput, EpochPlan, WorkCancellation, decode_plan, validate_and_plan,
     },
     generators::{
-        GeneratedOutput, PreparedGenerator, analysis_context_spec, estimated_normalized_bytes,
-        generate, generate_with_context, normalization_identity, normalize, prepare_generator,
-        vision_error,
+        PreparedGenerator, estimated_normalized_bytes, generate, normalization_identity, normalize,
+        prepare_generator,
     },
     scheduler::{
         ArtifactScheduler, ArtifactWorkLimits, cancelled_error, controlled, deadline_error,
@@ -39,39 +37,20 @@ pub(crate) struct TemporalVisionArtifactService {
     ids: Arc<dyn IdSource>,
     scheduler: Arc<ArtifactScheduler>,
     flights: Arc<SingleFlight>,
-    pair_context_enabled: bool,
 }
 
 #[derive(Clone)]
 struct Slot {
-    ordinal: usize,
     epoch_index: usize,
     generator_index: usize,
     kind: ArtifactKind,
     cache: krometrail_core::ArtifactCacheMetadata,
     sources: Vec<ArtifactSourceFingerprint>,
     prepared: Arc<PreparedGenerator>,
-    analysis_identity: Option<[u8; 32]>,
 }
 
 #[derive(Clone)]
 struct WorkSlot(Slot);
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-enum AnalysisGroupKey {
-    Shared {
-        epoch_index: usize,
-        identity: [u8; 32],
-    },
-    Direct {
-        epoch_index: usize,
-        cache_key: krometrail_core::ArtifactCacheKey,
-    },
-    Generator {
-        epoch_index: usize,
-        generator_index: usize,
-    },
-}
 
 struct Available {
     artifact: StoredArtifact,
@@ -91,14 +70,7 @@ impl TemporalVisionArtifactService {
             ids,
             scheduler: Arc::new(ArtifactScheduler::new(limits)?),
             flights: Arc::new(SingleFlight::new()),
-            pair_context_enabled: true,
         })
-    }
-
-    #[cfg(test)]
-    pub(crate) fn with_pair_context_enabled(mut self, enabled: bool) -> Self {
-        self.pair_context_enabled = enabled;
-        self
     }
 
     async fn generate_inner(
@@ -190,12 +162,6 @@ impl TemporalVisionArtifactService {
                                 adapter_version: ADAPTER_VERSION,
                                 decoder_profile: DECODER_PROFILE,
                             });
-                            let analysis_identity = analysis_identity(
-                                &prepared,
-                                plan,
-                                cache.source_fingerprint,
-                                cache.visual_epoch_hash,
-                            )?;
                             slot_metadata.push((
                                 plan.descriptor.index,
                                 generator_index as u32,
@@ -204,14 +170,12 @@ impl TemporalVisionArtifactService {
                             slots.push((
                                 ordinal,
                                 Slot {
-                                    ordinal,
                                     epoch_index,
                                     generator_index,
                                     kind: *kind,
                                     cache,
                                     sources: plan.source_fingerprints.clone(),
                                     prepared: Arc::clone(&prepared),
-                                    analysis_identity,
                                 },
                             ));
                             ordinal += 1;
@@ -371,63 +335,32 @@ impl TemporalVisionArtifactService {
             return Ok(result);
         }
 
-        // Preserve the first pending slot's ordinal as the publication order,
-        // while coalescing only exact analysis identities. Region filmstrips
-        // stay direct and therefore receive one private group each.
-        let mut groups: Vec<(AnalysisGroupKey, Vec<WorkSlot>)> = Vec::new();
-        for slot in pending_slots {
-            let key = if self.pair_context_enabled {
-                slot_group_key(&slot)
-            } else {
-                AnalysisGroupKey::Generator {
-                    epoch_index: slot.0.epoch_index,
-                    generator_index: slot.0.generator_index,
-                }
-            };
-            if let Some((_, group)) = groups.iter_mut().find(|(group_key, _)| *group_key == key) {
-                group.push(slot);
-            } else {
-                groups.push((key, vec![slot]));
-            }
-        }
-
         let mut normalized_estimates = HashSet::new();
         let mut normalized_bytes = 0_usize;
         let mut epoch_indices = HashSet::new();
         let mut output_reservation = 0_usize;
-        for (_, group) in &groups {
-            for slot in group {
-                epoch_indices.insert(slot.0.epoch_index);
-                if let Some(identity) = normalization_identity(&slot.0.prepared)? {
-                    if normalized_estimates.insert((slot.0.epoch_index, identity.to_vec())) {
-                        normalized_bytes = normalized_bytes
-                            .checked_add(estimated_normalized_bytes(
-                                &slot.0.prepared,
-                                &plans[slot.0.epoch_index],
-                            )?)
-                            .ok_or_else(|| limit_error("normalized memory estimate overflows"))?;
-                    }
+        for slot in &pending_slots {
+            epoch_indices.insert(slot.0.epoch_index);
+            if let Some(identity) = normalization_identity(&slot.0.prepared)? {
+                if normalized_estimates.insert((slot.0.epoch_index, identity.to_vec())) {
+                    normalized_bytes = normalized_bytes
+                        .checked_add(estimated_normalized_bytes(
+                            &slot.0.prepared,
+                            &plans[slot.0.epoch_index],
+                        )?)
+                        .ok_or_else(|| limit_error("normalized memory estimate overflows"))?;
                 }
-                output_reservation = output_reservation
-                    .checked_add(self.scheduler.limits().max_output_bytes_each.get())
-                    .ok_or_else(|| limit_error("output memory reservation overflows"))?
-                    .min(self.scheduler.limits().max_output_bytes_total.get());
             }
+            output_reservation = output_reservation
+                .checked_add(self.scheduler.limits().max_output_bytes_each.get())
+                .ok_or_else(|| limit_error("output memory reservation overflows"))?
+                .min(self.scheduler.limits().max_output_bytes_total.get());
         }
         if normalized_bytes > self.scheduler.limits().max_normalized_bytes.get() {
             return Err(limit_error(
                 "artifact flight exceeds normalized or output memory limits",
             ));
         }
-        let context_bytes = groups.iter().try_fold(0_usize, |total, (_, group)| {
-            total
-                .checked_add(estimate_group_context_bytes(
-                    group,
-                    &plans,
-                    self.scheduler.limits(),
-                )?)
-                .ok_or_else(|| limit_error("pair-analysis memory estimate overflows"))
-        })?;
         let decoded_bytes = epoch_indices
             .into_iter()
             .try_fold(0_usize, |total, index| {
@@ -437,7 +370,6 @@ impl TemporalVisionArtifactService {
             })?;
         let reservation = decoded_bytes
             .checked_add(normalized_bytes)
-            .and_then(|value| value.checked_add(context_bytes))
             .and_then(|value| value.checked_add(output_reservation))
             .ok_or_else(|| limit_error("combined artifact memory estimate overflows"))?;
         let _memory = self
@@ -448,28 +380,16 @@ impl TemporalVisionArtifactService {
 
         let mut decoded: HashMap<usize, Arc<EpochInput>> = HashMap::new();
         let mut normalized = HashMap::new();
-        let mut generator_ids: HashMap<(usize, usize), Vec<ArtifactId>> = HashMap::new();
-        let mut ordered_slots: Vec<&WorkSlot> =
-            groups.iter().flat_map(|(_, group)| group.iter()).collect();
-        ordered_slots.sort_by_key(|slot| slot.0.ordinal);
-        for slot in ordered_slots {
-            generator_ids
+        let mut groups: BTreeMap<(usize, usize), Vec<WorkSlot>> = BTreeMap::new();
+        for slot in pending_slots {
+            groups
                 .entry((slot.0.epoch_index, slot.0.generator_index))
-                .or_insert_with(|| {
-                    slot.0
-                        .prepared
-                        .request
-                        .output_kinds()
-                        .iter()
-                        .map(|_| ArtifactId::from_uuid(*self.ids.next().as_uuid()))
-                        .collect()
-                });
+                .or_default()
+                .push(slot);
         }
         let mut total_output_bytes = 0_usize;
-        let mut pending_publications: Vec<(WorkSlot, GeneratedOutput)> = Vec::new();
 
-        for (group_key, group) in groups {
-            let epoch_index = group_key.epoch_index();
+        for ((epoch_index, _), group) in groups {
             cancellation.check()?;
             let epoch = match decoded.get(&epoch_index) {
                 Some(epoch) => Arc::clone(epoch),
@@ -538,91 +458,33 @@ impl TemporalVisionArtifactService {
                 None
             };
 
-            let mut generator_inputs = Vec::new();
-            let mut seen_generators = HashSet::new();
-            for slot in &group {
-                if seen_generators.insert(slot.0.generator_index) {
-                    let prepared = Arc::clone(&slot.0.prepared);
-                    let ids = generator_ids
-                        .get(&(slot.0.epoch_index, slot.0.generator_index))
-                        .cloned()
-                        .expect("every pending generator has reserved artifact IDs");
-                    generator_inputs.push((slot.0.generator_index, prepared, ids));
-                }
-            }
+            let ids: Vec<_> = prepared
+                .request
+                .output_kinds()
+                .iter()
+                .map(|_| ArtifactId::from_uuid(*self.ids.next().as_uuid()))
+                .collect();
             let _generator = self
                 .scheduler
                 .acquire_generator(Arc::clone(&generator_semaphore), deadline, &cancellation)
                 .await?;
             let epoch_for_generate = Arc::clone(&epoch);
+            let prepared_for_generate = Arc::clone(&prepared);
             let normalized_for_generate = normalized_sequence.clone();
             let limits = self.scheduler.limits();
             let generated = self
                 .scheduler
                 .run_blocking(deadline, &cancellation, move || {
-                    let context_specs = generator_inputs
-                        .iter()
-                        .map(|(_, prepared, _)| analysis_context_spec(prepared, limits))
-                        .collect::<Result<Vec<_>>>()?;
-                    let mut context = if matches!(group_key, AnalysisGroupKey::Shared { .. })
-                        && context_specs.iter().any(Option::is_some)
-                    {
-                        let first = context_specs
-                            .iter()
-                            .find_map(Option::as_ref)
-                            .expect("a temporal generator has a context specification");
-                        let motions = context_specs
-                            .iter()
-                            .filter_map(|spec| spec.as_ref())
-                            .filter_map(|spec| spec.motion_parameters.clone())
-                            .collect::<Vec<_>>();
-                        Some(
-                            temporal_vision::build_pair_analysis_context_for_consumers(
-                                normalized_for_generate.as_deref().ok_or_else(|| {
-                                    generation_error("analysis normalization is missing")
-                                })?,
-                                first.measurement,
-                                context_specs
-                                    .iter()
-                                    .filter_map(|spec| spec.as_ref())
-                                    .find_map(|spec| spec.difference_limits),
-                                &motions,
-                            )
-                            .map_err(vision_error)?,
-                        )
-                    } else {
-                        None
-                    };
-                    let mut generated = Vec::new();
-                    for (generator_index, prepared, ids) in generator_inputs {
-                        let outputs = if let Some(context) = context.as_mut() {
-                            generate_with_context(
-                                &epoch_for_generate,
-                                &prepared,
-                                &ids,
-                                normalized_for_generate.as_deref(),
-                                context,
-                                limits,
-                            )
-                        } else {
-                            generate(
-                                &epoch_for_generate,
-                                &prepared,
-                                &ids,
-                                normalized_for_generate.as_deref(),
-                                limits,
-                            )
-                        };
-                        match outputs {
-                            Ok(outputs) => generated.push((generator_index, Ok(outputs))),
-                            Err(error) if is_fatal(&error) => return Err(error),
-                            Err(error) => generated.push((generator_index, Err(error))),
-                        }
-                    }
-                    Ok(generated)
+                    generate(
+                        &epoch_for_generate,
+                        &prepared_for_generate,
+                        &ids,
+                        normalized_for_generate.as_deref(),
+                        limits,
+                    )
                 })
                 .await;
-            let generated = match generated {
+            let outputs = match generated {
                 Ok(outputs) => outputs,
                 Err(error) => {
                     if is_fatal(&error) {
@@ -634,30 +496,13 @@ impl TemporalVisionArtifactService {
                     continue;
                 }
             };
-            let mut by_generator_kind = HashMap::new();
-            let mut generator_errors = HashMap::new();
-            for (generator_index, outputs) in generated {
-                match outputs {
-                    Ok(outputs) => {
-                        by_generator_kind.extend(
-                            outputs
-                                .into_iter()
-                                .map(|output| ((generator_index, output.kind), output)),
-                        );
-                    }
-                    Err(error) => {
-                        generator_errors.insert(generator_index, error);
-                    }
-                }
-            }
+            let by_kind: HashMap<_, _> = outputs
+                .into_iter()
+                .map(|output| (output.kind, output))
+                .collect();
             for slot in group {
                 cancellation.check()?;
-                if let Some(error) = generator_errors.get(&slot.0.generator_index) {
-                    result.insert(slot.0.cache.cache_key, Err(error.clone()));
-                    continue;
-                }
-                let Some(output) = by_generator_kind.remove(&(slot.0.generator_index, slot.0.kind))
-                else {
+                let Some(output) = by_kind.get(&slot.0.kind) else {
                     result.insert(
                         slot.0.cache.cache_key,
                         Err(generation_error(
@@ -676,44 +521,40 @@ impl TemporalVisionArtifactService {
                     );
                     continue;
                 }
-                pending_publications.push((slot.clone(), output));
-            }
-        }
-        pending_publications.sort_by_key(|(slot, _)| slot.0.ordinal);
-        for (slot, output) in pending_publications {
-            cancellation.check()?;
-            let publication = ArtifactPublication::new(
-                plans[slot.0.epoch_index].frames[0].metadata().session_id(),
-                plans[slot.0.epoch_index].frames[0].metadata().target_id(),
-                slot.0.sources.clone(),
-                slot.0.cache.clone(),
-                output.manifest,
-                NonEmptyText::new("image/png").unwrap(),
-                output.bytes,
-            )?
-            .with_cancellation(Arc::new(cancellation.clone()));
-            match self.artifacts.publish_artifact(publication).await {
-                Ok(ArtifactPublish::Published(artifact)) => {
-                    result.insert(
-                        slot.0.cache.cache_key,
-                        Ok(FlightValue {
-                            artifact,
-                            generated: true,
-                        }),
-                    );
-                }
-                Ok(ArtifactPublish::Existing(artifact)) => {
-                    result.insert(
-                        slot.0.cache.cache_key,
-                        Ok(FlightValue {
-                            artifact,
-                            generated: false,
-                        }),
-                    );
-                }
-                Err(error) if is_fatal(&error) => return Err(error),
-                Err(error) => {
-                    result.insert(slot.0.cache.cache_key, Err(error));
+                cancellation.check()?;
+                let publication = ArtifactPublication::new(
+                    plans[slot.0.epoch_index].frames[0].metadata().session_id(),
+                    plans[slot.0.epoch_index].frames[0].metadata().target_id(),
+                    slot.0.sources.clone(),
+                    slot.0.cache.clone(),
+                    output.manifest.clone(),
+                    NonEmptyText::new("image/png").unwrap(),
+                    Arc::clone(&output.bytes),
+                )?
+                .with_cancellation(Arc::new(cancellation.clone()));
+                match self.artifacts.publish_artifact(publication).await {
+                    Ok(ArtifactPublish::Published(artifact)) => {
+                        result.insert(
+                            slot.0.cache.cache_key,
+                            Ok(FlightValue {
+                                artifact,
+                                generated: true,
+                            }),
+                        );
+                    }
+                    Ok(ArtifactPublish::Existing(artifact)) => {
+                        result.insert(
+                            slot.0.cache.cache_key,
+                            Ok(FlightValue {
+                                artifact,
+                                generated: false,
+                            }),
+                        );
+                    }
+                    Err(error) if is_fatal(&error) => return Err(error),
+                    Err(error) => {
+                        result.insert(slot.0.cache.cache_key, Err(error));
+                    }
                 }
             }
         }
@@ -730,103 +571,6 @@ impl ArtifactGeneration for TemporalVisionArtifactService {
         let service = self.clone();
         Box::pin(async move { service.generate_inner(request, context).await })
     }
-}
-
-fn slot_group_key(slot: &WorkSlot) -> AnalysisGroupKey {
-    match slot.0.analysis_identity {
-        Some(identity) => AnalysisGroupKey::Shared {
-            epoch_index: slot.0.epoch_index,
-            identity,
-        },
-        None => AnalysisGroupKey::Direct {
-            epoch_index: slot.0.epoch_index,
-            cache_key: slot.0.cache.cache_key,
-        },
-    }
-}
-
-impl AnalysisGroupKey {
-    fn epoch_index(self) -> usize {
-        match self {
-            Self::Shared { epoch_index, .. }
-            | Self::Direct { epoch_index, .. }
-            | Self::Generator { epoch_index, .. } => epoch_index,
-        }
-    }
-}
-
-fn analysis_identity(
-    prepared: &PreparedGenerator,
-    plan: &EpochPlan,
-    source_fingerprint: [u8; 32],
-    visual_epoch_hash: [u8; 32],
-) -> Result<Option<[u8; 32]>> {
-    let Some(normalization) = normalization_identity(prepared)? else {
-        return Ok(None);
-    };
-    let measurement = match &prepared.request {
-        krometrail_core::ArtifactGeneratorRequest::Storyboard(request) => request.noise_floor,
-        krometrail_core::ArtifactGeneratorRequest::DifferenceMap(request) => request.noise_floor,
-        krometrail_core::ArtifactGeneratorRequest::MotionHistory(request) => request.noise_floor,
-        krometrail_core::ArtifactGeneratorRequest::RegionFilmstrip(_) => return Ok(None),
-    };
-    let gaps = serde_json::to_vec(&plan.gaps)
-        .map_err(|_| generation_error("could not encode analysis gap identity"))?;
-    let mut hasher = Sha256::new();
-    for field in [
-        b"krometrail-pair-analysis-identity-v1".as_slice(),
-        ADAPTER_VERSION.as_bytes(),
-        DECODER_PROFILE.as_bytes(),
-        &source_fingerprint,
-        &visual_epoch_hash,
-        normalization.as_ref(),
-        &measurement.to_be_bytes(),
-        gaps.as_slice(),
-    ] {
-        hasher.update((field.len() as u64).to_be_bytes());
-        hasher.update(field);
-    }
-    Ok(Some(hasher.finalize().into()))
-}
-
-fn estimate_group_context_bytes(
-    group: &[WorkSlot],
-    plans: &[EpochPlan],
-    limits: ArtifactWorkLimits,
-) -> Result<usize> {
-    if !matches!(slot_group_key(&group[0]), AnalysisGroupKey::Shared { .. }) {
-        return Ok(0);
-    }
-    let prepared = &group[0].0.prepared;
-    let normalized_bytes = estimated_normalized_bytes(prepared, &plans[group[0].0.epoch_index])?;
-    let per_frame = 6_usize;
-    let frame_count = plans[group[0].0.epoch_index].frames.len();
-    let pixels = normalized_bytes
-        .checked_div(
-            per_frame
-                .checked_mul(frame_count)
-                .ok_or_else(|| limit_error("pair-analysis pixel estimate overflows"))?,
-        )
-        .ok_or_else(|| limit_error("pair-analysis pixel estimate is not integral"))?;
-    let mut has_difference = false;
-    let mut motion_decays = Vec::new();
-    for slot in group {
-        if let Some(spec) = analysis_context_spec(&slot.0.prepared, limits)? {
-            has_difference |= spec.difference_limits.is_some();
-            if let Some(motion) = spec.motion_parameters {
-                if !motion_decays.iter().any(|decay| *decay == motion.decay()) {
-                    motion_decays.push(motion.decay());
-                }
-            }
-        }
-    }
-    temporal_vision::pair_analysis_memory_bytes(
-        pixels,
-        frame_count.saturating_sub(1),
-        has_difference,
-        motion_decays.len(),
-    )
-    .map_err(vision_error)
 }
 
 fn handle(artifact: StoredArtifact, disposition: ArtifactCacheDisposition) -> ArtifactHandle {

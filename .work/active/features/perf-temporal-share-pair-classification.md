@@ -1,7 +1,7 @@
 ---
 id: perf-temporal-share-pair-classification
 kind: feature
-stage: review
+stage: done
 tags: [perf, visual, testing]
 parent: null
 depends_on: []
@@ -653,3 +653,26 @@ the exact distributions, counters, reservations, cache dispositions, output
 bytes/manifests/hashes, and gate results live in child opt-3's implementation
 notes. `cargo fmt --all -- --check`, full locked workspace check/test, and
 full locked workspace clippy with `-D warnings` pass.
+
+## Review and rollback disposition
+
+The accepted STANDARD feature review completed as one independent pass. The
+optimization hypothesis failed its authoritative gate: the context candidate
+was only 4.71% faster at 60 frames and 2.79% faster at 120 frames, against the
+required at-least-20% improvement. The paired context-disabled production
+comparison is retained as evidence, but it is not the acceptance baseline.
+
+The low-risk opt-1 baseline/equivalence scaffold from `518c5c3` is retained,
+including `crates/temporal-vision/tests/pair_classification_perf.rs`. Production
+and pure pair-context implementation from `c54ddc3` and `269caba` was
+mechanically removed, restoring the code to the pre-context baseline. The
+review blockers were eliminated by deletion rather than patched: same-decay
+motion single-consumption, the public storyboard context source/anchor
+validation gap, missing production cancellation checkpoints, and stale motion
+benchmark accounting no longer exist in the retained code path. The opt-2 and
+opt-3 bodies remain unchanged as experimental implementation evidence, with
+rollback dispositions appended to their records.
+
+No lower-level, normalization, cache, parallelism, Chrome, model, network, or
+other feature work was introduced. The feature is closed as a measured negative
+result. Standard policy requires no re-review after this verified rollback.
