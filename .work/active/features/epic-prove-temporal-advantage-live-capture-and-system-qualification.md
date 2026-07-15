@@ -1,7 +1,7 @@
 ---
 id: epic-prove-temporal-advantage-live-capture-and-system-qualification
 kind: feature
-stage: review
+stage: done
 tags: [testing, infra, visual]
 parent: epic-prove-temporal-advantage
 depends_on: [epic-prove-temporal-advantage-benchmark-corpus-and-manifest-contracts, epic-prove-temporal-advantage-deterministic-scoring-and-artifact-conditions]
@@ -527,5 +527,8 @@ prior run output. Disabled paths write nothing; authorized blocked/skipped prefl
 only honest canonical statuses; no fallback measurements or Chrome invocation were used here.
 
 Verification: Rust 1.85.0 locked default and `qualification-support` workspace check/test/Clippy
-plus formatting passed with no live variables; the ignored integration test was not run. The parent
-remains at `stage: review` and this fix does not initiate a second review.
+plus formatting passed with no live variables; the ignored integration test was not run. The parent remained at `stage: review` for host adjudication and this fix did not initiate a second review.
+
+## Review decision
+
+**Approved.** An independent GLM-5.2 standard integrated review found the production authorities, dual opt-in, privacy boundaries, timing/cache semantics, manifest validation, and non-claims sound, but blocked approval because the lower-level parts lacked one operator-runnable composition and ignored real-browser entry point. That material finding was accepted and fixed in `64b7c57` with one root `run_live_qualification` orchestration and canonical-output integration test. Rust 1.85 default and `qualification-support` formatting, check, test, and Clippy gates pass without live variables. Actual operator-authorized browser evidence remains explicitly uncollected and no live/platform/model/advantage claim is made. The remaining review advisories do not block the code/harness deliverable. Per standard policy, no re-review was run; the feature advances to `done`.
