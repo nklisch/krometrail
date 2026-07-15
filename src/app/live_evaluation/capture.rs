@@ -33,7 +33,8 @@ use temporal_evaluation::{
 
 use super::fixture_observation::{
     FixtureSequenceObservation, FixtureStateObservation, FrameGeometry,
-    MovementSequenceObservation, TemporalFixtureObservation, observe_fixture_frame_with_geometry,
+    MovementSequenceObservation, TemporalFixtureObservation,
+    observe_fixture_frame_with_expected_geometry,
 };
 use super::{
     BrowserPreflight, LiveQualificationConfig, OptInDecision, QualificationLifecycle,
@@ -531,7 +532,7 @@ pub async fn capture_connected_session(
             .ok_or_else(|| live_error(ErrorCode::InvalidInput, "matrix case is not canonical"))?;
         let url = lifecycle.temporal_benchmark_url(&trial.case_id, trial.duration_ms);
         navigate(&session, target_id, url).await?;
-        verify_viewport(&session, target_id).await?;
+        verify_viewport(&session, target_id, lifecycle.viewport()).await?;
         let interaction_id = run_fixture(&session, target_id).await?;
         let interval = resolve_source_interval_for_interaction(
             &authorities,
@@ -540,8 +541,17 @@ pub async fn capture_connected_session(
             interaction_id,
         )
         .await;
-        measurements
-            .push(measure_trial(trial, case, interaction_id, interval, &authorities).await?);
+        measurements.push(
+            measure_trial(
+                trial,
+                case,
+                interaction_id,
+                interval,
+                &authorities,
+                lifecycle.viewport(),
+            )
+            .await?,
+        );
     }
     let capture = summarize_capture(definition, &measurements)?;
     let manifest_trials = canonical_manifest_trials(definition)?;
@@ -591,7 +601,8 @@ pub(crate) async fn run_opted_in_capture(
             return Err(error);
         }
     };
-    let wrapper = qualification_wrapper(installation, lifecycle.viewport());
+    let wrapper =
+        qualification_wrapper(installation, lifecycle.viewport(), config.wrapper_variant());
     let initial_url =
         lifecycle.temporal_benchmark_url(&definition.cases[0].case_id, definition.duration_ms[0]);
     let session = match runtime
@@ -623,6 +634,7 @@ pub(crate) async fn run_opted_in_capture(
 pub(crate) fn qualification_wrapper(
     installation: &krometrail_core::BrowserInstallation,
     viewport: krometrail_cdp::qualification_support::ChromeViewport,
+    variant: krometrail_cdp::qualification_support::ChromeWrapperVariant,
 ) -> Option<krometrail_cdp::qualification_support::ChromeWrapper> {
     #[cfg(unix)]
     {
@@ -630,7 +642,7 @@ pub(crate) fn qualification_wrapper(
             krometrail_cdp::qualification_support::ChromeWrapper::new_with_viewport(
                 installation.executable.clone(),
                 installation.product,
-                krometrail_cdp::qualification_support::ChromeWrapperVariant::DefaultDpi,
+                variant,
                 viewport,
             ),
         )
@@ -724,6 +736,7 @@ async fn navigate(
 async fn verify_viewport(
     session: &Arc<dyn BrowserSessionPort>,
     target_id: TargetId,
+    expected: krometrail_cdp::qualification_support::ChromeViewport,
 ) -> krometrail_core::Result<()> {
     let request =
         BrowserOperationRequest::InspectPage(krometrail_core::InspectPageRequest::new(target_id));
@@ -737,9 +750,9 @@ async fn verify_viewport(
         ));
     };
     let viewport = page.viewport;
-    if viewport.layout_viewport.size.width.round() as u32 != VIEWPORT_WIDTH
-        || viewport.layout_viewport.size.height.round() as u32 != VIEWPORT_HEIGHT
-        || (viewport.device_scale_factor.get() - 1.0).abs() > f64::EPSILON
+    if viewport.layout_viewport.size.width.round() as u32 != expected.width
+        || viewport.layout_viewport.size.height.round() as u32 != expected.height
+        || (viewport.device_scale_factor.get() - expected.scale_factor()).abs() > f64::EPSILON
     {
         return Err(live_error(
             ErrorCode::InvalidInput,
@@ -826,6 +839,7 @@ async fn measure_trial(
     interaction_id: InteractionId,
     interval: krometrail_core::Result<ResolvedSourceInterval>,
     authorities: &IntervalAuthorities<'_>,
+    expected_viewport: krometrail_cdp::qualification_support::ChromeViewport,
 ) -> krometrail_core::Result<CaptureTrialMeasurement> {
     let ResolvedSourceInterval {
         interval,
@@ -878,7 +892,7 @@ async fn measure_trial(
         .iter()
         .map(|frame| {
             let metadata = frame.metadata();
-            observe_fixture_frame_with_geometry(
+            observe_fixture_frame_with_expected_geometry(
                 frame.bytes(),
                 case,
                 FrameGeometry {
@@ -887,19 +901,45 @@ async fn measure_trial(
                     device_scale_factor_milli: (metadata.device_scale_factor().get() * 1_000.0)
                         .round() as u16,
                 },
+                FrameGeometry {
+                    width: expected_viewport.width,
+                    height: expected_viewport.height,
+                    device_scale_factor_milli: expected_viewport.device_scale_factor_milli,
+                },
             )
         })
         .collect::<Vec<_>>();
     let raw_frames = encoded.iter().map(EncodedFrame::bytes).collect::<Vec<_>>();
-    let sequence = super::fixture_observation::observe_fixture_sequence(&raw_frames, case);
+    let observed_geometry = encoded
+        .first()
+        .map(|frame| FrameGeometry {
+            width: frame.metadata().viewport().width(),
+            height: frame.metadata().viewport().height(),
+            device_scale_factor_milli: (frame.metadata().device_scale_factor().get() * 1_000.0)
+                .round() as u16,
+        })
+        .unwrap_or(FrameGeometry::CANONICAL);
+    let sequence = super::fixture_observation::observe_fixture_sequence_with_expected_geometry(
+        &raw_frames,
+        case,
+        observed_geometry,
+        FrameGeometry {
+            width: expected_viewport.width,
+            height: expected_viewport.height,
+            device_scale_factor_milli: expected_viewport.device_scale_factor_milli,
+        },
+    );
     let status = trial_status(case, &interval, &observations, &sequence);
     let first_metadata = encoded.first().map(EncodedFrame::metadata);
-    let observed_viewport = first_metadata.map(|metadata| Viewport {
-        width: metadata.viewport().width(),
-        height: metadata.viewport().height(),
-    });
     let observed_device_scale_factor = first_metadata
         .map(|metadata| (metadata.device_scale_factor().get() * 1_000.0).round() as u16);
+    let observed_viewport = first_metadata.map(|metadata| {
+        let scale = metadata.device_scale_factor().get().max(1.0);
+        Viewport {
+            width: (f64::from(metadata.viewport().width()) / scale).round() as u32,
+            height: (f64::from(metadata.viewport().height()) / scale).round() as u32,
+        }
+    });
     let failure = match status {
         EvaluationStatus::Pass => None,
         EvaluationStatus::Fail => Some(failure_for_error(ErrorCode::BudgetExhausted)),

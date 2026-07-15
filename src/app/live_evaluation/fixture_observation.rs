@@ -87,15 +87,39 @@ pub fn observe_fixture_frame_with_geometry(
     definition: &CaseDefinition,
     geometry: FrameGeometry,
 ) -> TemporalFixtureObservation {
+    observe_fixture_frame_with_expected_geometry(
+        bytes,
+        definition,
+        geometry,
+        FrameGeometry::CANONICAL,
+    )
+}
+
+/// Observe a frame against a lane's expected CSS viewport/scale. High-DPI screencasts may carry
+/// physical pixels at a larger image size; they are reduced to the declared CSS viewport for the
+/// fixture predicate, while the original encoded frame and observed metadata remain authoritative
+/// in the production store and manifest.
+pub fn observe_fixture_frame_with_expected_geometry(
+    bytes: &[u8],
+    definition: &CaseDefinition,
+    geometry: FrameGeometry,
+    expected: FrameGeometry,
+) -> TemporalFixtureObservation {
     let unknown = |reason: UnknownReason| TemporalFixtureObservation {
         case_id: definition.case_id.clone(),
         state: FixtureStateObservation::Unknown(reason.clone()),
         subject: SubjectObservation::Unknown(reason),
     };
-    if geometry.width != VIEWPORT_WIDTH || geometry.height != VIEWPORT_HEIGHT {
+    if geometry.width == 0
+        || geometry.height == 0
+        || expected.width == 0
+        || expected.height == 0
+        || geometry.device_scale_factor_milli == 0
+        || expected.device_scale_factor_milli == 0
+    {
         return unknown(UnknownReason::ViewportMismatch);
     }
-    if geometry.device_scale_factor_milli != 1_000 {
+    if geometry.device_scale_factor_milli != expected.device_scale_factor_milli {
         return unknown(UnknownReason::ScaleMismatch);
     }
     if !valid_geometry(definition.affected_region) {
@@ -112,6 +136,15 @@ pub fn observe_fixture_frame_with_geometry(
     if image.dimensions() != (geometry.width, geometry.height) {
         return unknown(UnknownReason::ViewportMismatch);
     }
+    let image = if image.dimensions() == (expected.width, expected.height) {
+        image
+    } else {
+        image.resize_exact(
+            expected.width,
+            expected.height,
+            image::imageops::FilterType::Nearest,
+        )
+    };
     classify(&image, definition)
 }
 
@@ -122,9 +155,25 @@ pub fn observe_fixture_sequence(
     frames: &[&[u8]],
     definition: &CaseDefinition,
 ) -> FixtureSequenceObservation {
+    observe_fixture_sequence_with_expected_geometry(
+        frames,
+        definition,
+        FrameGeometry::CANONICAL,
+        FrameGeometry::CANONICAL,
+    )
+}
+
+pub fn observe_fixture_sequence_with_expected_geometry(
+    frames: &[&[u8]],
+    definition: &CaseDefinition,
+    geometry: FrameGeometry,
+    expected: FrameGeometry,
+) -> FixtureSequenceObservation {
     let raw = frames
         .iter()
-        .map(|bytes| observe_fixture_frame(bytes, definition))
+        .map(|bytes| {
+            observe_fixture_frame_with_expected_geometry(bytes, definition, geometry, expected)
+        })
         .collect::<Vec<_>>();
     let mut observations = raw.clone();
     let stable_indices = raw

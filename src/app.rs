@@ -34,6 +34,9 @@ use krometrail_store::{
 #[cfg(all(test, feature = "qualification-support"))]
 pub(crate) mod live_evaluation;
 
+#[cfg(all(test, feature = "qualification-support"))]
+pub(crate) mod platform_evidence;
+
 pub(crate) struct RuntimeDependencies {
     pub clock: Arc<dyn MonotonicClock>,
     pub wall_clock: Arc<dyn WallClock>,

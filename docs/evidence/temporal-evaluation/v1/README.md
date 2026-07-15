@@ -68,11 +68,36 @@ separate platform evidence; an unresolved gap there does not block later agent-e
 trials on a declared reference host. Live qualification does not invoke a model and emits no
 model answer, transcript, or thesis result.
 
+## Platform lane contract
+
+Platform evidence is a test-only adapter over the same `run_live_qualification` composition; it
+is not a second browser, recording store, artifact service, manifest authority, or product command.
+The one registry in `crates/temporal-evaluation/src/platform.rs` owns this canonical order:
+
+1. `linux_stable_chrome_reference_host` — required stable Chrome reference host;
+2. `macos_chrome_default_dpi` — required stable Chrome at observed scale one;
+3. `macos_chrome_high_dpi` — required stable Chrome at observed scale at least 1.5;
+4. `linux_chromium_optional` — optional Chromium at observed scale one.
+
+A platform run carries its typed lane/profile declaration in the existing `RunManifest`; the
+existing qualification measurements remain authoritative for browser identity, environment,
+viewport, observed scale, timings, gaps, retention, and cleanup. Requested wrapper flags are
+configuration only. In particular, a high-DPI request with observed scale one is rejected and
+cannot produce a passing high-DPI record. Unknown, duplicate, wrong-platform, wrong-product,
+wrong-profile, wrong-viewport, and out-of-band scale declarations fail validation. Missing optional
+Chromium remains an explicit skip and cannot satisfy Chrome or cross-platform coverage.
+
+The shared runner checks both explicit opt-in gates before fixture validation, discovery, loopback
+server startup, profile creation, store opening, or output preparation. Ordinary locked checks do
+not launch Chrome; each authorized run remains under the existing real-browser lock and writes
+only its ignored run output below `target/temporal-evaluation/live/`.
+
 ## Authoritative inputs and generation
 
 - `benchmark-definition.json` is the one current v1 benchmark-definition input.
 - `benchmark-definition.schema.json` is generated from `BenchmarkDefinition`.
-- `run-manifest.schema.json` is generated from `RunManifest`.
+- `run-manifest.schema.json` is generated from `RunManifest`, including the optional typed platform
+  lane declaration used only by platform-evidence runs.
 - `sample-manifest.json` is generated from `RunManifest::sample()` and canonicalized by the same
   serializer used by consumers.
 - `evaluation-result.schema.json` is generated from `EvaluationResultRecord`.

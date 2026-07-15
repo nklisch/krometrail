@@ -1,7 +1,7 @@
 ---
 id: epic-prove-temporal-advantage-platform-evidence-collection-lane-contract-and-shared-runner
 kind: story
-stage: implementing
+stage: done
 tags: [testing, browser, infra]
 parent: epic-prove-temporal-advantage-platform-evidence-collection
 depends_on: [epic-prove-temporal-advantage-live-capture-and-system-qualification]
@@ -59,3 +59,36 @@ capture/system qualification and does not itself require Chrome during ordinary 
 
 Implementation and default tests do not collect evidence. An operator must later authorize each
 required live lane and provide its local browser installation; macOS may remain unavailable.
+
+## Implementation notes
+
+- Added the sole registry in `crates/temporal-evaluation/src/platform.rs`, with the exact four
+  lanes, canonical `ALL`/`REQUIRED` order, typed profile, scale band, viewport, environment,
+  product, and claim role. `validate_platform_lane` validates an existing manifest without reading
+  files or launching a browser; requested wrapper scale is never used as observed evidence.
+- Added the optional typed `RunManifest.platform` declaration and registered
+  `platform-evidence-v1` profile. Existing non-platform contract/live manifests remain valid;
+  platform manifests use the registry-owned platform non-claims and existing qualification
+  measurements for observed facts. Regenerated `run-manifest.schema.json` and updated its digest
+  assertion through `generate-run-manifest`.
+- Added test-only `src/app/platform_evidence.rs`. It derives every live configuration value from
+  the lane registry, checks both opt-in gates before any validation/discovery/resource boundary,
+  invokes the existing `run_live_qualification` composition, and validates the returned manifest.
+  The existing lifecycle, lock, fixture server, production connector, single `RecordingStore`
+  graph, cleanup, and ignored output boundary remain authoritative.
+- Generalized the existing qualification viewport/wrapper and fixture predicates to carry the
+  declared lane scale while normalizing high-DPI fixture pixels to the fixed CSS viewport for
+  observation. This does not alter source-frame authority or accept a wrapper flag as proof.
+- Added deterministic/privacy/canonical platform tests, including unknown/wrong identity
+  rejection, high-DPI requested-scale versus observed-scale-one rejection, explicit non-passing
+  cleanup/failure behavior, and disabled-run side-effect protection. No Chrome, model, download,
+  network fallback, or live evidence was used.
+
+## Verification
+
+- `rustup run 1.85.0 cargo fmt --all -- --check`
+- `rustup run 1.85.0 cargo check --workspace --all-targets --locked`
+- `rustup run 1.85.0 cargo test --workspace --all-targets --locked`
+- `rustup run 1.85.0 cargo clippy --workspace --all-targets --locked -- -D warnings`
+- The same workspace check/test/clippy gates passed with `--features qualification-support`,
+  with both live opt-in environment variables unset. The ignored live tests were not run.

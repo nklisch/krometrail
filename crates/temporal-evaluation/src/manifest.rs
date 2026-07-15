@@ -13,7 +13,10 @@ use crate::{
     },
     privacy,
 };
-use crate::{ContractError, DURATIONS_MS, FIXTURE_ROOT, VIEWPORT_HEIGHT, VIEWPORT_WIDTH};
+use crate::{
+    ContractError, DURATIONS_MS, FIXTURE_ROOT, PLATFORM_EVIDENCE_PROFILE, PLATFORM_NON_CLAIMS,
+    PlatformLaneDeclaration, VIEWPORT_HEIGHT, VIEWPORT_WIDTH,
+};
 
 pub const MANIFEST_SCHEMA_VERSION: u16 = 1;
 pub const MANIFEST_KIND: &str = "temporal_benchmark_run";
@@ -521,6 +524,10 @@ pub struct RunManifest {
     pub environment: EnvironmentIdentity,
     pub browser: BrowserAvailability,
     pub krometrail: KrometrailIdentity,
+    /// Present only for a platform-evidence run. The live qualification block remains the
+    /// authority for observed browser, viewport, scale, timing, gap, and cleanup facts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub platform: Option<PlatformLaneDeclaration>,
     pub model: ModelAvailability,
     pub prompt: ManifestPrompt,
     pub artifact: ArtifactIdentity,
@@ -672,6 +679,7 @@ impl RunManifest {
                 },
                 adapter_versions: Vec::new(),
             },
+            platform: None,
             model: ModelAvailability::NotRequired,
             prompt,
             artifact: ArtifactIdentity {
@@ -759,11 +767,14 @@ impl RunManifest {
         validate_environment(&self.environment)?;
         validate_browser(&self.browser)?;
         validate_krometrail(&self.krometrail)?;
+        validate_platform_declaration(self)?;
         validate_model(&self.model)?;
         self.prompt.validate()?;
         let expected_prompt = match run_mode(&self.run)? {
             ManifestRunMode::Debugging => PromptId::Debugging,
-            ManifestRunMode::Qualification => PromptId::CaptureQualification,
+            ManifestRunMode::Qualification | ManifestRunMode::PlatformQualification => {
+                PromptId::CaptureQualification
+            }
             ManifestRunMode::Contract
             | ManifestRunMode::Capture
             | ManifestRunMode::Interpretation => canonical_conditions()
@@ -819,6 +830,7 @@ enum ManifestRunMode {
     Interpretation,
     Debugging,
     Qualification,
+    PlatformQualification,
 }
 
 fn run_mode(value: &RunConfiguration) -> Result<ManifestRunMode> {
@@ -828,6 +840,7 @@ fn run_mode(value: &RunConfiguration) -> Result<ManifestRunMode> {
         "interpretation-v1" => Ok(ManifestRunMode::Interpretation),
         "debugging-v1" => Ok(ManifestRunMode::Debugging),
         LIVE_QUALIFICATION_PROFILE => Ok(ManifestRunMode::Qualification),
+        PLATFORM_EVIDENCE_PROFILE => Ok(ManifestRunMode::PlatformQualification),
         _ => Err(ContractError::new(
             "run threshold profile is not registered",
         )),
@@ -842,7 +855,9 @@ fn validate_run(value: &RunConfiguration) -> Result<()> {
         ManifestRunMode::Interpretation | ManifestRunMode::Debugging => {
             MatrixOrder::SeededFisherYates
         }
-        ManifestRunMode::Qualification => MatrixOrder::FamilyCaseDurationRepetition,
+        ManifestRunMode::Qualification | ManifestRunMode::PlatformQualification => {
+            MatrixOrder::FamilyCaseDurationRepetition
+        }
     };
     if value.seed != MATRIX_SEED || value.order_policy != expected_order {
         return Err(ContractError::new(
@@ -865,12 +880,18 @@ fn validate_run(value: &RunConfiguration) -> Result<()> {
     if value.device_scale_factor == 0 {
         return Err(ContractError::new("device scale factor must be positive"));
     }
-    if matches!(run_mode(value)?, ManifestRunMode::Qualification)
-        && value.device_scale_factor != 1_000
-    {
-        return Err(ContractError::new(
-            "live qualification requires device scale one",
-        ));
+    match run_mode(value)? {
+        ManifestRunMode::Qualification if value.device_scale_factor != 1_000 => {
+            return Err(ContractError::new(
+                "live qualification requires device scale one",
+            ));
+        }
+        ManifestRunMode::PlatformQualification if value.device_scale_factor == 0 => {
+            return Err(ContractError::new(
+                "platform qualification requires a positive declared device scale",
+            ));
+        }
+        _ => {}
     }
     if matches!(value.image_format, ImageFormat::Jpeg)
         && !matches!(value.image_quality, Some(1..=100))
@@ -926,6 +947,20 @@ fn validate_trials(values: &[TrialIdentity], run: &RunConfiguration) -> Result<(
         privacy::validate_safe_text(&trial.case_id, "trial.case_id", privacy::MAX_SHORT_TEXT)?;
     }
     Ok(())
+}
+
+fn validate_platform_declaration(manifest: &RunManifest) -> Result<()> {
+    let platform_mode = manifest.run.threshold_profile == PLATFORM_EVIDENCE_PROFILE;
+    match (&manifest.platform, platform_mode) {
+        (Some(declaration), true) => declaration.validate(),
+        (None, true) => Err(ContractError::new(
+            "platform qualification requires a platform lane declaration",
+        )),
+        (Some(_), false) => Err(ContractError::new(
+            "platform lane declaration requires the platform qualification profile",
+        )),
+        (None, false) => Ok(()),
+    }
 }
 
 fn validate_environment(value: &EnvironmentIdentity) -> Result<()> {
@@ -1182,23 +1217,34 @@ fn validate_failure(value: &FailureRecord, label: &str) -> Result<()> {
 
 fn validate_qualification(manifest: &RunManifest) -> Result<()> {
     let mode = run_mode(&manifest.run)?;
+    let platform = mode == ManifestRunMode::PlatformQualification;
     match (&manifest.qualification, mode) {
-        (None, ManifestRunMode::Qualification) => Err(ContractError::new(
-            "live qualification profile requires qualification measurements",
-        )),
-        (Some(_), mode) if mode != ManifestRunMode::Qualification => Err(ContractError::new(
-            "qualification measurements are only valid for the live qualification profile",
+        (None, ManifestRunMode::Qualification | ManifestRunMode::PlatformQualification) => Err(
+            ContractError::new("qualification profile requires qualification measurements"),
+        ),
+        (
+            Some(_),
+            ManifestRunMode::Contract
+            | ManifestRunMode::Capture
+            | ManifestRunMode::Interpretation
+            | ManifestRunMode::Debugging,
+        ) => Err(ContractError::new(
+            "qualification measurements are only valid for a qualification profile",
         )),
         (None, _) => Ok(()),
-        (Some(value), ManifestRunMode::Qualification) => validate_live_qualification(value),
-        (Some(_), _) => Err(ContractError::new(
-            "qualification measurements are only valid for the live qualification profile",
-        )),
+        (Some(value), ManifestRunMode::Qualification | ManifestRunMode::PlatformQualification) => {
+            validate_live_qualification(value, platform)
+        }
     }
 }
 
-fn validate_live_qualification(value: &LiveQualification) -> Result<()> {
-    if value.profile != LIVE_QUALIFICATION_PROFILE {
+fn validate_live_qualification(value: &LiveQualification, platform: bool) -> Result<()> {
+    let expected_profile = if platform {
+        PLATFORM_EVIDENCE_PROFILE
+    } else {
+        LIVE_QUALIFICATION_PROFILE
+    };
+    if value.profile != expected_profile {
         return Err(ContractError::new(
             "qualification profile is not registered",
         ));
@@ -1235,11 +1281,15 @@ fn validate_live_qualification(value: &LiveQualification) -> Result<()> {
     validate_capture_measurements(&value.capture, capture_gate.status)?;
     let canonical_capture_observation = value.capture.observed_viewport.width == VIEWPORT_WIDTH
         && value.capture.observed_viewport.height == VIEWPORT_HEIGHT
-        && value.capture.observed_device_scale_factor == 1_000;
+        && if platform {
+            value.capture.observed_device_scale_factor > 0
+        } else {
+            value.capture.observed_device_scale_factor == 1_000
+        };
     if !canonical_capture_observation
         && !matches!(
             capture_gate.status,
-            EvaluationStatus::Blocked | EvaluationStatus::Skipped
+            EvaluationStatus::Blocked | EvaluationStatus::Inconclusive | EvaluationStatus::Skipped
         )
     {
         return Err(ContractError::new(
@@ -1623,7 +1673,9 @@ fn required_repetitions(mode: ManifestRunMode) -> u16 {
         ManifestRunMode::Contract => 1,
         ManifestRunMode::Capture => CAPTURE_REPETITIONS,
         ManifestRunMode::Interpretation | ManifestRunMode::Debugging => INTERPRETATION_REPETITIONS,
-        ManifestRunMode::Qualification => CAPTURE_REPETITIONS,
+        ManifestRunMode::Qualification | ManifestRunMode::PlatformQualification => {
+            CAPTURE_REPETITIONS
+        }
     }
 }
 
@@ -1723,7 +1775,10 @@ fn validate_outcome(manifest: &RunManifest) -> Result<()> {
             "a passing interpretation requires observed model identity",
         ));
     }
-    if mode == ManifestRunMode::Qualification {
+    if matches!(
+        mode,
+        ManifestRunMode::Qualification | ManifestRunMode::PlatformQualification
+    ) {
         let expected = manifest
             .rows
             .iter()
@@ -1905,15 +1960,20 @@ fn validate_outcome(manifest: &RunManifest) -> Result<()> {
     for non_claim in &manifest.non_claims {
         privacy::validate_safe_text(non_claim, "manifest.non_claims", privacy::MAX_LONG_TEXT)?;
     }
-    if mode == ManifestRunMode::Qualification
-        && manifest.non_claims
-            != LIVE_NON_CLAIMS
-                .iter()
-                .map(|claim| (*claim).to_owned())
-                .collect::<Vec<_>>()
-    {
+    let expected_non_claims = match mode {
+        ManifestRunMode::PlatformQualification => PLATFORM_NON_CLAIMS
+            .iter()
+            .map(|claim| (*claim).to_owned())
+            .collect::<Vec<_>>(),
+        ManifestRunMode::Qualification => LIVE_NON_CLAIMS
+            .iter()
+            .map(|claim| (*claim).to_owned())
+            .collect::<Vec<_>>(),
+        _ => Vec::new(),
+    };
+    if !expected_non_claims.is_empty() && manifest.non_claims != expected_non_claims {
         return Err(ContractError::new(
-            "live qualification non-claims do not match the canonical registry",
+            "qualification non-claims do not match the canonical registry",
         ));
     }
     Ok(())

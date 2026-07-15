@@ -26,7 +26,8 @@ use krometrail_core::{
 use krometrail_store::RecordingStore;
 use temporal_evaluation::{
     Architecture, BrowserAvailability, EnvironmentIdentity, FailureRecord, Platform,
-    QualificationEvidenceMode, RunFailureCode, RunManifest,
+    PlatformLaneDeclaration, PlatformProfile, QualificationEvidenceMode, RunFailureCode,
+    RunManifest,
 };
 
 mod barriers;
@@ -77,6 +78,9 @@ pub struct LiveQualificationConfig {
     pub run_id: String,
     pub optional_browser: bool,
     pub retention_budget: DiskBudgetBytes,
+    /// Platform identity changes only the declared qualification profile and expected capture
+    /// scale; all production authorities remain shared with the normal live path.
+    pub platform: Option<PlatformLaneDeclaration>,
 }
 
 impl Default for LiveQualificationConfig {
@@ -89,11 +93,39 @@ impl Default for LiveQualificationConfig {
             run_id: format!("run-{}", std::process::id()),
             optional_browser: false,
             retention_budget: DiskBudgetBytes::default(),
+            platform: None,
         }
     }
 }
 
 impl LiveQualificationConfig {
+    pub fn viewport(&self) -> ChromeViewport {
+        self.platform
+            .map_or(ChromeViewport::LIVE, |platform| ChromeViewport {
+                width: platform.viewport.width,
+                height: platform.viewport.height,
+                device_scale_factor_milli: platform.declared_device_scale_factor,
+            })
+    }
+
+    pub fn qualification_profile(&self) -> &'static str {
+        self.platform
+            .map_or(temporal_evaluation::LIVE_QUALIFICATION_PROFILE, |_| {
+                temporal_evaluation::PLATFORM_EVIDENCE_PROFILE
+            })
+    }
+
+    pub fn wrapper_variant(&self) -> krometrail_cdp::qualification_support::ChromeWrapperVariant {
+        match self.platform.map(|platform| platform.profile) {
+            Some(PlatformProfile::HighDpi) => {
+                krometrail_cdp::qualification_support::ChromeWrapperVariant::HighDpi
+            }
+            Some(PlatformProfile::DefaultDpi) | None => {
+                krometrail_cdp::qualification_support::ChromeWrapperVariant::DefaultDpi
+            }
+        }
+    }
+
     pub fn run_root(&self) -> PathBuf {
         let run_id = if safe_path_component(&self.run_id) {
             self.run_id.as_str()
@@ -181,7 +213,7 @@ impl QualificationLifecycle {
             fixture_url,
             server,
             profile_root: config.profile_root(),
-            viewport: ChromeViewport::LIVE,
+            viewport: config.viewport(),
         })
     }
 
@@ -518,17 +550,27 @@ fn live_error(code: ErrorCode, message: &'static str) -> KrometrailError {
 /// report finalization. A missing or incomplete stage is represented in the canonical manifest;
 /// it is never replaced with a fabricated pass.
 pub async fn run_live_qualification(config: LiveQualificationConfig) -> Result<RunManifest> {
-    if OptInDecision::from_environment() != OptInDecision::Authorized {
+    run_live_qualification_with_decision(config, OptInDecision::from_environment()).await
+}
+
+/// Test-only injection seam for platform lanes. The public environment wrapper above remains the
+/// only operator entry point; this seam lets deterministic tests prove the two-gate barrier
+/// without mutating process environment or launching a browser.
+pub async fn run_live_qualification_with_decision(
+    config: LiveQualificationConfig,
+    decision: OptInDecision,
+) -> Result<RunManifest> {
+    if decision != OptInDecision::Authorized {
         return Err(live_error(
             ErrorCode::InvalidLifecycleTransition,
-            "live qualification requires both explicit opt-in environment gates",
+            "live qualification requires both explicit opt-in gates",
         ));
     }
 
     // This is a pure committed-fixture/definition check. It intentionally precedes browser
     // discovery so drift cannot create a managed profile or loopback listener.
     let definition = capture::validate_fixture_before_launch()?;
-    let preflight = run_preflight(config.clone()).await?;
+    let preflight = run_preflight_with_decision(config.clone(), decision).await?;
     let Some(browser) = preflight.browser.as_ref() else {
         return Err(live_error(
             ErrorCode::BrowserNotFound,
@@ -568,7 +610,11 @@ pub async fn run_live_qualification(config: LiveQualificationConfig) -> Result<R
         }
     };
 
-    let wrapper = capture::qualification_wrapper(installation, lifecycle.viewport());
+    let wrapper = capture::qualification_wrapper(
+        installation,
+        lifecycle.viewport(),
+        config.wrapper_variant(),
+    );
     let initial_url =
         lifecycle.temporal_benchmark_url(&definition.cases[0].case_id, definition.duration_ms[0]);
     let session = match runtime
@@ -688,6 +734,7 @@ fn base_observations(
     let mut observations = report::QualificationObservations::contract_seed();
     observations.browser = browser;
     observations.optional_configuration = config.optional_browser;
+    observations.platform = config.platform;
     observations.evidence_mode = QualificationEvidenceMode::OperatorAuthorizedLiveCapture;
     observations.retention_budget = config.retention_budget;
     observations.environment = Some(EnvironmentIdentity {

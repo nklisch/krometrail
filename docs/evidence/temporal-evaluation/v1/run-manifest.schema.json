@@ -49,6 +49,17 @@
         "type": "string"
       }
     },
+    "platform": {
+      "description": "Present only for a platform-evidence run. The live qualification block remains the\nauthority for observed browser, viewport, scale, timing, gap, and cleanup facts.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PlatformLaneDeclaration"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "prompt": {
       "$ref": "#/$defs/ManifestPrompt"
     },
@@ -1228,6 +1239,58 @@
         "macos",
         "windows",
         "other"
+      ]
+    },
+    "PlatformLaneDeclaration": {
+      "description": "The declaration embedded in a platform run manifest. It contains requested identity only;\nobserved scale and browser identity remain in the existing qualification measurements.",
+      "type": "object",
+      "properties": {
+        "browser_product": {
+          "$ref": "#/$defs/BrowserProduct"
+        },
+        "declared_device_scale_factor": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "lane": {
+          "$ref": "#/$defs/PlatformLaneId"
+        },
+        "platform": {
+          "$ref": "#/$defs/Platform"
+        },
+        "profile": {
+          "$ref": "#/$defs/PlatformProfile"
+        },
+        "viewport": {
+          "$ref": "#/$defs/Viewport"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "lane",
+        "profile",
+        "platform",
+        "browser_product",
+        "viewport",
+        "declared_device_scale_factor"
+      ]
+    },
+    "PlatformLaneId": {
+      "type": "string",
+      "enum": [
+        "linux_stable_chrome_reference_host",
+        "macos_chrome_default_dpi",
+        "macos_chrome_high_dpi",
+        "linux_chromium_optional"
+      ]
+    },
+    "PlatformProfile": {
+      "type": "string",
+      "enum": [
+        "default_dpi",
+        "high_dpi"
       ]
     },
     "PromptId": {

@@ -21,8 +21,7 @@ use krometrail_core::{
 };
 use serde::Serialize;
 use temporal_evaluation::{
-    ControlQualificationMeasurements, EvaluationStatus, RunFailureCode, VIEWPORT_HEIGHT,
-    VIEWPORT_WIDTH, Viewport,
+    ControlQualificationMeasurements, EvaluationStatus, RunFailureCode, Viewport,
 };
 
 use super::{
@@ -390,9 +389,10 @@ async fn inspect_viewport(
     };
     let width = page.viewport.layout_viewport.size.width.round() as u32;
     let height = page.viewport.layout_viewport.size.height.round() as u32;
-    if width != VIEWPORT_WIDTH
-        || height != VIEWPORT_HEIGHT
-        || (page.viewport.device_scale_factor.get() - 1.0).abs() > f64::EPSILON
+    let expected = context.lifecycle.viewport();
+    if width != expected.width
+        || height != expected.height
+        || (page.viewport.device_scale_factor.get() - expected.scale_factor()).abs() > f64::EPSILON
     {
         return Err(live_error(
             ErrorCode::InvalidInput,
@@ -1140,7 +1140,11 @@ pub(crate) async fn run_opted_in_control(
     };
     let lifecycle = QualificationLifecycle::start(&config, &preflight).await?;
     let runtime = super::build_qualification_runtime(&config, OptInDecision::Authorized)?;
-    let wrapper = super::capture::qualification_wrapper(installation, lifecycle.viewport());
+    let wrapper = super::capture::qualification_wrapper(
+        installation,
+        lifecycle.viewport(),
+        config.wrapper_variant(),
+    );
     let initial_url = krometrail_cdp::qualification_support::verified_interactions_fixture_url();
     let session = runtime
         .dependencies

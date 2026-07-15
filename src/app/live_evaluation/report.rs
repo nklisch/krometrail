@@ -24,7 +24,8 @@ use temporal_evaluation::{
     EvidenceAvailability, FailureRecord, ImageFormat, KrometrailIdentity, LIVE_NON_CLAIMS,
     LIVE_QUALIFICATION_PROFILE, LatencyQualificationMeasurements, LiveQualification, MANIFEST_KIND,
     MANIFEST_SCHEMA_VERSION, ManifestFixture, ManifestPrompt, ManifestRow, MatrixOrder,
-    ModelAvailability, NamedVersion, QualificationEvidenceMode, QualificationGateId,
+    ModelAvailability, NamedVersion, PLATFORM_EVIDENCE_PROFILE, PLATFORM_NON_CLAIMS,
+    PlatformLaneDeclaration, QualificationEvidenceMode, QualificationGateId,
     QualificationGateResult, RecoveryQualificationMeasurements, ResourceQualificationMeasurements,
     RetentionQualificationMeasurements, RetentionState, RevisionIdentity, RunConfiguration,
     RunFailureCode, RunManifest, ScorerIdentity, ScoringDimensionId, ScoringIdentity,
@@ -58,6 +59,7 @@ pub struct QualificationObservations {
     pub krometrail: Option<KrometrailIdentity>,
     pub browser: BrowserAvailability,
     pub optional_configuration: bool,
+    pub platform: Option<PlatformLaneDeclaration>,
     pub evidence_mode: QualificationEvidenceMode,
     pub retention_budget: DiskBudgetBytes,
     pub capture: Option<CaptureQualificationRun>,
@@ -80,6 +82,7 @@ impl Default for QualificationObservations {
                 recovery: "provide the declared local browser and retry the authorized run".into(),
             },
             optional_configuration: false,
+            platform: None,
             evidence_mode: QualificationEvidenceMode::CodeHarness,
             retention_budget: DiskBudgetBytes::default(),
             capture: None,
@@ -272,8 +275,12 @@ pub fn assemble_manifest(observations: QualificationObservations) -> Result<RunM
         QualificationGateId::ALL
     );
 
+    let qualification_profile = observations
+        .platform
+        .as_ref()
+        .map_or(LIVE_QUALIFICATION_PROFILE, |_| PLATFORM_EVIDENCE_PROFILE);
     let qualification = LiveQualification {
-        profile: LIVE_QUALIFICATION_PROFILE.into(),
+        profile: qualification_profile.into(),
         evidence_mode: observations.evidence_mode,
         gates,
         capture: capture_measurements,
@@ -332,15 +339,21 @@ pub fn assemble_manifest(observations: QualificationObservations) -> Result<RunM
                 width: VIEWPORT_WIDTH,
                 height: VIEWPORT_HEIGHT,
             },
-            device_scale_factor: temporal_evaluation::DEVICE_SCALE_FACTOR_MILLI,
+            device_scale_factor: observations
+                .platform
+                .as_ref()
+                .map_or(temporal_evaluation::DEVICE_SCALE_FACTOR_MILLI, |platform| {
+                    platform.declared_device_scale_factor
+                }),
             image_format: ImageFormat::Png,
             image_quality: None,
             retention_budget_bytes: observations.retention_budget.get(),
-            threshold_profile: LIVE_QUALIFICATION_PROFILE.into(),
+            threshold_profile: qualification_profile.into(),
         },
         environment,
         browser: observations.browser,
         krometrail,
+        platform: observations.platform,
         model: ModelAvailability::NotRequired,
         prompt: qualification_prompt()?,
         artifact: artifact_identity(
@@ -357,10 +370,17 @@ pub fn assemble_manifest(observations: QualificationObservations) -> Result<RunM
         rows,
         qualification: Some(qualification),
         status,
-        non_claims: LIVE_NON_CLAIMS
-            .iter()
-            .map(|claim| (*claim).into())
-            .collect(),
+        non_claims: if qualification_profile == PLATFORM_EVIDENCE_PROFILE {
+            PLATFORM_NON_CLAIMS
+                .iter()
+                .map(|claim| (*claim).into())
+                .collect()
+        } else {
+            LIVE_NON_CLAIMS
+                .iter()
+                .map(|claim| (*claim).into())
+                .collect()
+        },
         failure,
     };
     if manifest.status == EvaluationStatus::Pass {

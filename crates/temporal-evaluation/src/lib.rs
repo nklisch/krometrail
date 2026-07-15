@@ -11,6 +11,7 @@ mod interval;
 mod manifest;
 mod matrix;
 mod packaging;
+mod platform;
 mod privacy;
 mod prompts;
 mod result;
@@ -55,6 +56,11 @@ pub use packaging::{
     EvidenceReferenceKind, NonClaimId, ProgressiveConditionEvidence, ProgressiveRetrievalRecord,
     SourceFrameAvailability, TemporalBundleEvidence, UNIFORM_SOURCE_FRAME_SLOTS,
     require_one_source_interval,
+};
+pub use platform::{
+    PLATFORM_EVIDENCE_PROFILE, PLATFORM_NON_CLAIMS, PlatformClaimRole, PlatformDeclaration,
+    PlatformLaneDeclaration, PlatformLaneDefinition, PlatformLaneId, PlatformProfile,
+    validate_platform_lane,
 };
 pub use prompts::{
     AnswerKind, AnswerRegion, AnswerTruth, AnswerValidationContext, DebuggingAnswer,
