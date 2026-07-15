@@ -1,7 +1,7 @@
 ---
 id: epic-prove-temporal-advantage-deterministic-scoring-and-artifact-conditions
 kind: feature
-stage: review
+stage: done
 tags: [testing, visual]
 parent: epic-prove-temporal-advantage
 depends_on:
@@ -841,3 +841,7 @@ locked `cargo fmt --all -- --check`, `cargo check --workspace --all-targets --lo
 benchmark/manifest/result artifacts. The feature remains at `stage: review`; this accepted finding
 was fixed and verified without a re-review. Advisory findings A1–A5 remain intentionally
 unimplemented.
+
+## Review decision
+
+**Approved.** The single standard independent review was performed by `zai/glm-5.2` after implementation by `openai-codex/gpt-5.6-luna`. Its one material per-frame-retention finding was accepted, repaired in `541d084`, and verified through partially retained A/B result round trips plus the full Rust 1.85 workspace and generation gates. The remaining observations are advisory and non-material to the current deterministic contract. Per standard review policy, no repeat review was run. The feature advances to `done`.
