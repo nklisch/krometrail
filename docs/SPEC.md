@@ -47,6 +47,7 @@ Each session has:
 - one or more page targets;
 - a monotonic session clock;
 - capture statistics;
+- immutable capture configuration, including the requested relative frame stride;
 - capability configuration.
 
 Krometrail discovers page targets created within the controlled browser. Each target has an independent visual stream and timeline identity.
@@ -57,7 +58,9 @@ The session records target creation, closure, navigation, visibility changes, an
 
 Visual capture starts automatically for recordable page targets.
 
-Krometrail requests every available screencast frame by default rather than deliberately reducing the stream to a low fixed sampling rate. Actual capture cadence depends on Chrome, page visibility, rendering activity, resolution, encoding cost, and local system load.
+The launch and attach requests accept one optional `every_nth_frame` relative stride. It is an integer from 1 through 60 and defaults to 1. Krometrail passes the value to CDP `Page.startScreencast.everyNthFrame`. This is a best-effort sampling request, not an exact FPS contract: actual capture cadence still depends on Chrome, page visibility, rendering activity, resolution, encoding cost, local system load, and whether frames reach and pass the bounded ingestion path.
+
+The requested stride is immutable for the browser connection and recording session. Krometrail does not change it by stopping and restarting capture mid-session; a caller that needs a different stride starts a new session. A stride greater than 1 intentionally reduces capture probability and is reported as capture configuration provenance. It does not turn ordinary queue drops, persistence failures, visibility pauses, or other known losses into deliberate stride events, and those losses remain separate capture gaps.
 
 Each captured frame records:
 
@@ -231,7 +234,7 @@ The status surface reports:
 - pinned usage;
 - oldest retained time;
 - newest retained time;
-- capture cadence;
+- requested `every_nth_frame` stride and observed capture cadence;
 - recorded and dropped frames;
 - whether eviction or recording is blocked.
 
@@ -291,6 +294,7 @@ Every generated visual artifact records:
 
 - artifact identifier and type;
 - session and target;
+- the session capture-configuration identity, including requested `every_nth_frame`, when the artifact comes from browser capture;
 - resolved time range;
 - ordered source-frame identifiers;
 - omitted-frame count;

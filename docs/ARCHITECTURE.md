@@ -221,6 +221,14 @@ For each target it owns:
 
 Target creation and closure do not affect unrelated target streams. A target-level failure is reported without terminating the browser session unless the browser connection itself is lost. Target state is reduced by one serialized state machine; asynchronous transport and process tasks only submit inputs or execute emitted effects. Outbound session events use bounded subscriber channels with revision-gap recovery through `targets()`; cdpkit's private upstream queue is not represented as a measurable product metric.
 
+## Capture Configuration Flow
+
+Capture cadence is a session-owned part of the browser connection contract, not a process-wide configuration authority. The core browser port owns the typed `every_nth_frame` value and validates the inclusive 1..=60 boundary with a default of 1 on both launch and attach requests. The MCP lifecycle tools generate their schemas from those same request types, so humans and agents use one public contract.
+
+At connection composition time, the CDP adapter copies the validated value into the immutable capture assembly used by every target stream and every reconnect generation in that session. Each `Page.startScreencast` command receives the value as `everyNthFrame`; no target, reconnect path, or status observer can select a replacement. A different value requires a new browser connection/session rather than an unrecorded mid-stream restart.
+
+The requested stride is recorded alongside session and target capture status and in evaluation capture identities and claim traceability. It is interpreted as a deliberate sampling choice, while observed cadence, queue/persistence loss, visibility gaps, and other capture gaps remain independent evidence. The capture pipeline does not derive continuity or missing-frame claims from the stride or from ordinal arithmetic.
+
 ## Frame Ingestion
 
 Frame ingestion is designed around CDP’s limited screencast window.
@@ -247,7 +255,7 @@ segment writer
 
 The event-reading task never performs image decoding, artifact generation, or synchronous disk I/O.
 
-The ingestion queue is bounded. On receiving a frame, Krometrail immediately starts and completes the CDP acknowledgement before decoding and attempting bounded handoff. The event's `sessionId` integer is an opaque acknowledgement token in this boundary: it is echoed to `Page.screencastFrameAck` and is not persisted or compared. After acknowledgement, Krometrail assigns a per-target `CaptureOrdinal` that continues across attachment generations within the recording session. It deterministically orders observations but does not detect Chrome-side or transport-side loss; only explicit known loss and lifecycle events create gaps. Ack latency therefore measures only the interval from returned frame to acknowledgement completion, not frame receive wait or a wire-enqueue timestamp. When enqueue fails because the queue is saturated, Krometrail records an explicit capture gap after acknowledgement rather than stalling the browser connection or growing memory without limit.
+The ingestion queue is bounded. On receiving a frame, Krometrail immediately starts and completes the CDP acknowledgement before decoding and attempting bounded handoff. The event's `sessionId` integer is an opaque acknowledgement token in this boundary: it is echoed to `Page.screencastFrameAck` and is not persisted or compared. After acknowledgement, Krometrail assigns a per-target `CaptureOrdinal` that continues across attachment generations within the recording session. It deterministically orders observations but does not detect Chrome-side or transport-side loss; only explicit known loss and lifecycle events create gaps. Ack latency therefore measures only the interval from returned frame to acknowledgement completion, not frame receive wait or a wire-enqueue timestamp. When enqueue fails because the queue is saturated, Krometrail records an explicit capture gap after acknowledgement rather than stalling the browser connection or growing memory without limit. A deliberate `everyNthFrame` stride is applied by Chrome before this ingestion path and is not represented as a queue drop or inferred gap.
 
 Compressed image bytes are stored without transcoding during ingestion.
 
@@ -527,11 +535,11 @@ Tool handlers do not contain CDP commands, SQL, image processing, or retention l
 
 Large binary outputs are persisted and returned as MCP resources or file references. A response can additionally include one context-sized image for immediate inspection.
 
-Tool schemas derive from the same Rust contracts used by application services. Generated schemas are build artifacts, not hand-maintained duplicates.
+Tool schemas derive from the same Rust contracts used by application services. Generated schemas are build artifacts, not hand-maintained duplicates. In particular, `start_browser` and `attach_browser` expose the same generated `every_nth_frame` field from the core launch and attach requests.
 
 ## Configuration
 
-Configuration is validated once at process startup.
+Process-wide configuration is validated once at process startup. Per-session capture choices are validated when the launch or attach request crosses the core/MCP boundary and then remain immutable for that connection.
 
 Configuration sources follow explicit precedence:
 
@@ -547,11 +555,14 @@ Configuration covers:
 - initial URL;
 - disk budget and data directory;
 - screencast format, quality, and maximum dimensions;
-- enabled capabilities;
+- process-wide enabled capabilities;
+- per-session capture stride supplied by the launch or attach request;
 - ingestion and analysis concurrency;
 - logging.
 
-Invalid configuration prevents startup and identifies the failing value.
+Invalid process configuration prevents startup and identifies the failing value. An invalid session request is rejected before browser connection/capture setup and identifies the failing field. There is no parallel CLI, environment-variable, or configuration-file authority for the session capture stride.
+
+Qualification manifests record the requested stride in capture configuration identity, and evaluation claim/result traceability binds claims to that identity rather than treating reduced sampling as ordinary transport loss.
 
 ## Failure Isolation
 
