@@ -20,11 +20,11 @@ use krometrail_core::{
     BrowserInstallation, BrowserOperationContext, BrowserOperationRequest, BrowserOperationResult,
     BrowserOperationScope, BrowserOwnership, BrowserSessionEvent, BrowserSessionEvents,
     BrowserSessionPort, BrowserSessionState, BrowserStatus, BrowserStopOutcome,
-    CurrentReferenceGeometryRequest, ErrorCode, IdSource, IdValue, InteractionAnchor,
-    InteractionTiming, KrometrailError, MonotonicClock, NonEmptyText, ObservationPart, PageChange,
-    PageOperationOutcome, PageOperationResult, PageSelection, PageStatus, PortFuture, ProfileRef,
-    ResolvedReferenceGeometry, Result, SessionId, SessionOrigin, TargetCaptureStatus,
-    TargetVisibility,
+    CurrentReferenceGeometryRequest, ErrorCode, EveryNthFrame, IdSource, IdValue,
+    InteractionAnchor, InteractionTiming, KrometrailError, MonotonicClock, NonEmptyText,
+    ObservationPart, PageChange, PageOperationOutcome, PageOperationResult, PageSelection,
+    PageStatus, PortFuture, ProfileRef, ResolvedReferenceGeometry, Result, SessionId,
+    SessionOrigin, TargetCaptureStatus, TargetVisibility,
 };
 use serde_json::Value;
 use tokio::{
@@ -254,6 +254,7 @@ impl BrowserConnector for ProductionBrowserConnector {
         let interaction_evidence = self.interaction_evidence.clone();
         let control_clock = Arc::clone(&self.clock);
         let ids = Arc::clone(&self.ids);
+        let every_nth_frame = requested_every_nth_frame(&request);
         Box::pin(async move {
             // Keep a launched browser in its paired Drop guard until transport setup succeeds.
             // Splitting process/profile ownership before this point could release a temporary
@@ -333,6 +334,7 @@ impl BrowserConnector for ProductionBrowserConnector {
                     });
                     let coordinator = CaptureCoordinator::new(
                         assembly.config.clone(),
+                        every_nth_frame,
                         CaptureDependencies {
                             clock: Arc::clone(&assembly.clock),
                             ids: Arc::clone(&assembly.ids),
@@ -400,6 +402,7 @@ impl BrowserConnector for ProductionBrowserConnector {
                 command_tx,
                 session_id,
                 session_origin,
+                every_nth_frame,
                 capture: capture.clone(),
                 browser_events: Arc::clone(&browser_events),
                 interaction_evidence,
@@ -433,6 +436,13 @@ impl BrowserConnector for ProductionBrowserConnector {
             };
             Ok(Arc::new(session) as Arc<dyn BrowserSessionPort>)
         })
+    }
+}
+
+fn requested_every_nth_frame(request: &BrowserConnectRequest) -> EveryNthFrame {
+    match request {
+        BrowserConnectRequest::Launch(request) => request.every_nth_frame,
+        BrowserConnectRequest::Attach(request) => request.every_nth_frame,
     }
 }
 
@@ -489,6 +499,7 @@ pub(crate) struct SessionShared {
     command_tx: mpsc::Sender<SupervisorCommand>,
     session_id: SessionId,
     session_origin: SessionOrigin,
+    every_nth_frame: EveryNthFrame,
     capture: Option<Arc<CaptureRuntime>>,
     browser_events: Arc<SessionDomainAuthority>,
     interaction_evidence: Option<Arc<dyn krometrail_core::InteractionEvidenceSink>>,
@@ -580,6 +591,7 @@ impl BrowserSessionPort for ProductionSession {
         let ownership = self.shared.ownership;
         let profile = self.shared.profile.clone();
         let capture = self.shared.capture.clone();
+        let every_nth_frame = self.shared.every_nth_frame;
         Box::pin(async move {
             let capture_statuses = capture
                 .as_ref()
@@ -600,7 +612,7 @@ impl BrowserSessionPort for ProductionSession {
                 pages,
                 capture_statuses,
                 retention,
-                krometrail_core::EveryNthFrame::default(),
+                every_nth_frame,
             )
         })
     }
@@ -822,6 +834,24 @@ mod tests {
         );
     }
 
+    #[test]
+    fn request_stride_is_extracted_before_launch_or_attach_consumes_the_request() {
+        let stride = EveryNthFrame::new(23).unwrap();
+        let launch = BrowserConnectRequest::Launch(krometrail_core::LaunchBrowser {
+            executable: None,
+            profile: krometrail_core::ManagedProfile::Temporary,
+            initial_url: None,
+            every_nth_frame: stride,
+        });
+        let attach = BrowserConnectRequest::Attach(
+            krometrail_core::AttachBrowser::new("ws://127.0.0.1:9222/devtools/browser/fake")
+                .unwrap()
+                .with_every_nth_frame(stride),
+        );
+        assert_eq!(requested_every_nth_frame(&launch), stride);
+        assert_eq!(requested_every_nth_frame(&attach), stride);
+    }
+
     #[tokio::test]
     async fn session_domain_restore_is_ordered_and_has_no_redundant_commands() {
         let calls = Arc::new(Mutex::new(Vec::new()));
@@ -1021,6 +1051,7 @@ mod tests {
             command_tx,
             session_id: SessionId::from_uuid(Uuid::new_v4()),
             session_origin: SessionOrigin::new(krometrail_core::ObservedTime::from_nanos(0)),
+            every_nth_frame: EveryNthFrame::default(),
             capture: None,
             interaction_evidence: None,
             operation_cancellation: OperationCancellation::default(),
@@ -1636,6 +1667,7 @@ mod tests {
         let coordinator = Arc::new(
             CaptureCoordinator::new(
                 CaptureConfig::default(),
+                EveryNthFrame::default(),
                 CaptureDependencies {
                     clock: Arc::new(ShutdownTestClock),
                     ids: Arc::new(ShutdownTestIds),

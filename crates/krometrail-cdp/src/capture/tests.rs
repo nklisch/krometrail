@@ -426,6 +426,7 @@ struct TestTransport {
     frame_receivers: Mutex<HashMap<TransportSessionId, mpsc::Receiver<NamedEvent>>>,
     visibility_receivers: Mutex<HashMap<TransportSessionId, mpsc::Receiver<NamedEvent>>>,
     calls: Mutex<Vec<String>>,
+    start_params: Mutex<Vec<serde_json::Value>>,
     ack_watch: watch::Sender<usize>,
     ack_count: AtomicU64,
     ack_tokens: Mutex<Vec<i64>>,
@@ -455,6 +456,7 @@ impl TestTransport {
             frame_receivers: Mutex::new(frame_receivers),
             visibility_receivers: Mutex::new(visibility_receivers),
             calls: Mutex::new(Vec::new()),
+            start_params: Mutex::new(Vec::new()),
             ack_watch,
             ack_count: AtomicU64::new(0),
             ack_tokens: Mutex::new(Vec::new()),
@@ -533,6 +535,10 @@ impl TestTransport {
             .unwrap();
     }
 
+    fn start_params(&self) -> Vec<serde_json::Value> {
+        self.start_params.lock().unwrap().clone()
+    }
+
     async fn wait_for_acks(&self, count: usize) {
         let mut receiver = self.ack_watch.subscribe();
         while *receiver.borrow() < count {
@@ -549,6 +555,9 @@ impl CdpTransport for TestTransport {
         params: serde_json::Value,
     ) -> TransportFuture<'_, Result<serde_json::Value, TransportError>> {
         self.calls.lock().unwrap().push(method.to_owned());
+        if method == "Page.startScreencast" {
+            self.start_params.lock().unwrap().push(params.clone());
+        }
         if method == "Page.screencastFrameAck" {
             if let Some(token) = params.get("sessionId").and_then(serde_json::Value::as_i64) {
                 self.ack_tokens.lock().unwrap().push(token);
@@ -634,8 +643,9 @@ fn target_with(
     }
 }
 
-fn coordinator(
+fn coordinator_with_stride(
     config: CaptureConfig,
+    every_nth_frame: krometrail_core::EveryNthFrame,
     clock: Arc<TestClock>,
     ids: Arc<TestIds>,
     sink: Arc<TestSink>,
@@ -643,6 +653,7 @@ fn coordinator(
 ) -> CaptureCoordinator {
     CaptureCoordinator::new(
         config,
+        every_nth_frame,
         CaptureDependencies {
             clock,
             ids,
@@ -652,6 +663,75 @@ fn coordinator(
         observer,
     )
     .unwrap()
+}
+
+fn coordinator(
+    config: CaptureConfig,
+    clock: Arc<TestClock>,
+    ids: Arc<TestIds>,
+    sink: Arc<TestSink>,
+    observer: Arc<TestObserver>,
+) -> CaptureCoordinator {
+    coordinator_with_stride(
+        config,
+        krometrail_core::EveryNthFrame::default(),
+        clock,
+        ids,
+        sink,
+        observer,
+    )
+}
+
+#[tokio::test]
+async fn start_screencast_forwards_the_immutable_stride_for_jpeg_and_png() {
+    for (format, expected_format) in [(ImageFormat::Jpeg, "jpeg"), (ImageFormat::Png, "png")] {
+        let ack_completed = Arc::new(AtomicBool::new(false));
+        let transport =
+            TestTransport::new(Arc::clone(&ack_completed), Arc::new(Mutex::new(Vec::new())));
+        let sink = Arc::new(TestSink::new(
+            ack_completed,
+            Arc::new(Mutex::new(Vec::new())),
+        ));
+        let mut config = CaptureConfig {
+            format,
+            ..CaptureConfig::default()
+        };
+        if format == ImageFormat::Png {
+            config.jpeg_quality = None;
+        }
+        let coordinator = coordinator_with_stride(
+            config,
+            krometrail_core::EveryNthFrame::new(7).unwrap(),
+            Arc::new(TestClock::new()),
+            Arc::new(TestIds::new()),
+            Arc::clone(&sink),
+            Arc::new(TestObserver::default()),
+        );
+        let capture_target = target();
+        coordinator
+            .start_target(
+                capture_target.clone(),
+                Arc::clone(&transport) as Arc<dyn CdpTransport>,
+            )
+            .await
+            .unwrap();
+        let start = transport
+            .start_params()
+            .into_iter()
+            .next()
+            .expect("capture starts after subscriptions");
+        assert_eq!(start["format"], expected_format);
+        assert_eq!(start["everyNthFrame"], 7);
+        assert_eq!(coordinator.every_nth_frame().get(), 7);
+        assert_eq!(coordinator.statuses()[0].every_nth_frame().get(), 7);
+        coordinator
+            .stop_target(
+                &capture_target,
+                CaptureStopReason::TargetClosed,
+                tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+            )
+            .await;
+    }
 }
 
 #[tokio::test]
@@ -843,6 +923,7 @@ async fn budget_pause_keeps_acknowledging_records_loss_and_resumes_hidden_state(
             queue_capacity: NonZeroUsize::new(1).unwrap(),
             ..CaptureConfig::default()
         },
+        krometrail_core::EveryNthFrame::default(),
         CaptureDependencies {
             clock: Arc::new(TestClock::new()),
             ids: Arc::new(TestIds::new()),
@@ -939,6 +1020,7 @@ async fn stopping_while_budget_paused_cancels_the_wait() {
     retention.pause();
     let coordinator = CaptureCoordinator::new(
         CaptureConfig::default(),
+        krometrail_core::EveryNthFrame::default(),
         CaptureDependencies {
             clock: Arc::new(TestClock::new()),
             ids: Arc::new(TestIds::new()),
@@ -1105,6 +1187,7 @@ fn equal_or_backwards_clock_samples_are_clamped_without_reordering() {
     let runtime = pipeline::StreamRuntime::new(
         target(),
         CaptureConfig::default(),
+        krometrail_core::EveryNthFrame::default(),
         CaptureDependencies {
             clock: Arc::new(TestClock::new()),
             ids: Arc::new(TestIds::new()),

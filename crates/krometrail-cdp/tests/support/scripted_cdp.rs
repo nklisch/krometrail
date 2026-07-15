@@ -9,7 +9,8 @@ use std::{
 };
 
 use krometrail_cdp::{
-    CdpTransport, CommandScope, NamedEvent, TransportError, TransportEvents, TransportFuture,
+    CdpTransport, CdpTransportFactory, CommandScope, NamedEvent, TransportError, TransportEvents,
+    TransportFuture,
 };
 use serde_json::{Value, json};
 use tokio::sync::{Notify, mpsc};
@@ -265,6 +266,37 @@ impl ScriptedCdp {
             }
             _ => Value::Object(Default::default()),
         })
+    }
+}
+
+/// A deterministic physical-connection seam. Each connect consumes one pre-scripted transport;
+/// callers retain the handles so a test can sever exactly one generation without touching the
+/// replacement connection.
+#[derive(Clone, Debug, Default)]
+pub struct ScriptedCdpFactory {
+    connections: Arc<Mutex<VecDeque<Arc<ScriptedCdp>>>>,
+}
+
+impl ScriptedCdpFactory {
+    pub fn new(connections: impl IntoIterator<Item = Arc<ScriptedCdp>>) -> Self {
+        Self {
+            connections: Arc::new(Mutex::new(connections.into_iter().collect())),
+        }
+    }
+}
+
+impl CdpTransportFactory for ScriptedCdpFactory {
+    fn connect(
+        &self,
+        _browser_websocket_url: &str,
+    ) -> TransportFuture<'_, Result<Arc<dyn CdpTransport>, TransportError>> {
+        let connection = self
+            .connections
+            .lock()
+            .unwrap()
+            .pop_front()
+            .ok_or(TransportError::ConnectFailed);
+        Box::pin(async move { connection.map(|connection| connection as Arc<dyn CdpTransport>) })
     }
 }
 

@@ -11,7 +11,9 @@ use std::{
     time::Duration,
 };
 
-use krometrail_core::{ImageFormat, PixelDimensions, SessionId, SessionOrigin, TargetId};
+use krometrail_core::{
+    EveryNthFrame, ImageFormat, PixelDimensions, SessionId, SessionOrigin, TargetId,
+};
 
 use crate::transport::{CdpTransport, TransportError, TransportSessionId};
 
@@ -160,6 +162,7 @@ struct StreamKey {
 
 pub(crate) struct CaptureCoordinator {
     config: CaptureConfig,
+    every_nth_frame: EveryNthFrame,
     dependencies: CaptureDependencies,
     observer: Arc<dyn CaptureObserver>,
     streams: Mutex<std::collections::HashMap<StreamKey, Arc<pipeline::StreamRuntime>>>,
@@ -194,12 +197,14 @@ pub(crate) struct CaptureShutdownOutcome {
 impl CaptureCoordinator {
     pub(crate) fn new(
         config: CaptureConfig,
+        every_nth_frame: EveryNthFrame,
         dependencies: CaptureDependencies,
         observer: Arc<dyn CaptureObserver>,
     ) -> Result<Self, CaptureError> {
         config.validate()?;
         Ok(Self {
             config,
+            every_nth_frame,
             dependencies,
             observer,
             streams: Mutex::new(std::collections::HashMap::new()),
@@ -245,6 +250,10 @@ impl CaptureCoordinator {
         at: krometrail_core::SessionTime,
     ) {
         pipeline::suspend_target(self, target, at).await;
+    }
+
+    pub(crate) fn every_nth_frame(&self) -> EveryNthFrame {
+        self.every_nth_frame
     }
 
     pub(crate) fn statuses(&self) -> Vec<krometrail_core::TargetCaptureStatus> {

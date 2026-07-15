@@ -10,8 +10,8 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use krometrail_core::{
     CaptureGap, CaptureGapReason, CaptureOrdinal, CaptureStatistics, CaptureStreamState,
     CaptureTimingSummary, CaptureWarning, CapturedFrame, DeviceScaleFactor, EncodedFrame,
-    ErrorCode, FrameId, GapId, ImageFormat, PixelDimensions, SessionRange, SessionTime, SourceTime,
-    TargetCaptureStatus,
+    ErrorCode, EveryNthFrame, FrameId, GapId, ImageFormat, PixelDimensions, SessionRange,
+    SessionTime, SourceTime, TargetCaptureStatus,
 };
 use serde_json::{Value, json};
 use tokio::{
@@ -134,6 +134,7 @@ pub(super) struct StreamRuntime {
     target: CaptureTarget,
     ordinals: Arc<OrdinalRegistry>,
     config: super::CaptureConfig,
+    every_nth_frame: EveryNthFrame,
     dependencies: CaptureDependencies,
     observer: Arc<dyn CaptureObserver>,
     transport: Arc<dyn CdpTransport>,
@@ -213,6 +214,7 @@ impl StreamRuntime {
     pub(super) fn new(
         target: CaptureTarget,
         config: super::CaptureConfig,
+        every_nth_frame: EveryNthFrame,
         dependencies: CaptureDependencies,
         observer: Arc<dyn CaptureObserver>,
         transport: Arc<dyn CdpTransport>,
@@ -222,6 +224,7 @@ impl StreamRuntime {
             target,
             ordinals,
             config: config.clone(),
+            every_nth_frame,
             dependencies,
             observer,
             transport,
@@ -316,7 +319,8 @@ impl StreamRuntime {
                 return false;
             }
             state.state = next;
-            status_from_state(&self.target, &state).expect("runtime state maintains invariants")
+            status_from_state(&self.target, &state, self.every_nth_frame)
+                .expect("runtime state maintains invariants")
         };
         self.observer.status_changed(status);
         true
@@ -517,7 +521,8 @@ impl StreamRuntime {
 
     pub(super) fn status(&self) -> TargetCaptureStatus {
         let state = self.state.lock().expect("capture state lock poisoned");
-        status_from_state(&self.target, &state).expect("runtime state maintains invariants")
+        status_from_state(&self.target, &state, self.every_nth_frame)
+            .expect("runtime state maintains invariants")
     }
 
     fn fail(&self) {
@@ -528,6 +533,25 @@ impl StreamRuntime {
             .expect("capture control lock poisoned")
             .sender = None;
     }
+}
+
+fn start_screencast_params(config: &super::CaptureConfig, every_nth_frame: EveryNthFrame) -> Value {
+    let mut params = match config.format {
+        ImageFormat::Jpeg => json!({
+            "format": "jpeg",
+            "quality": config.jpeg_quality.expect("validated JPEG quality"),
+        }),
+        ImageFormat::Png => json!({"format": "png"}),
+    };
+    let object = params
+        .as_object_mut()
+        .expect("screencast start parameters are an object");
+    object.insert("everyNthFrame".into(), json!(every_nth_frame.get()));
+    if let Some(maximum) = config.max_dimensions {
+        object.insert("maxWidth".into(), json!(maximum.width()));
+        object.insert("maxHeight".into(), json!(maximum.height()));
+    }
+    params
 }
 
 pub(super) async fn start_target(
@@ -586,6 +610,7 @@ pub(super) async fn start_target(
     let runtime = Arc::new(StreamRuntime::new(
         target,
         coordinator.config.clone(),
+        coordinator.every_nth_frame,
         coordinator.dependencies.clone(),
         Arc::clone(&coordinator.observer),
         Arc::clone(&transport),
@@ -609,21 +634,7 @@ pub(super) async fn start_target(
     });
     runtime.set_tasks(frame_task, visibility_task, worker_task);
 
-    let mut start_params = match runtime.config.format {
-        ImageFormat::Jpeg => json!({
-            "format": "jpeg",
-            "quality": runtime.config.jpeg_quality.expect("validated JPEG quality"),
-            "everyNthFrame": 1,
-        }),
-        ImageFormat::Png => json!({"format": "png", "everyNthFrame": 1}),
-    };
-    if let Some(maximum) = runtime.config.max_dimensions {
-        let object = start_params
-            .as_object_mut()
-            .expect("screencast start parameters are an object");
-        object.insert("maxWidth".into(), json!(maximum.width()));
-        object.insert("maxHeight".into(), json!(maximum.height()));
-    }
+    let start_params = start_screencast_params(&runtime.config, runtime.every_nth_frame);
     if let Err(error) = transport.send_raw(&scope, START_METHOD, start_params).await {
         runtime.close_acceptance();
         runtime.abort_readers();
@@ -1081,6 +1092,7 @@ pub(super) async fn shutdown(
 fn status_from_state(
     target: &CaptureTarget,
     state: &RuntimeState,
+    every_nth_frame: EveryNthFrame,
 ) -> Result<TargetCaptureStatus, ()> {
     TargetCaptureStatus::new(
         target.target_id,
@@ -1092,7 +1104,7 @@ fn status_from_state(
         state.last_frame_session_time,
         state.ack_latency.summary(),
         state.frame_cadence.summary(),
-        krometrail_core::EveryNthFrame::default(),
+        every_nth_frame,
     )
     .map_err(|_| ())
 }

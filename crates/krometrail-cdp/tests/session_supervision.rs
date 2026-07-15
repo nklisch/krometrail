@@ -4,19 +4,71 @@ mod support;
 
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicU64, AtomicUsize, Ordering},
 };
 use std::time::Duration;
 
 use krometrail_cdp::{
-    CdpTransport, CdpTransportFactory, CommandScope, NamedEvent, ProductionBrowserConnector,
-    ReconnectPolicy, SupervisorConfig, TransportError, TransportEvents, TransportFuture,
+    CaptureConfig, CdpTransport, CdpTransportFactory, CommandScope, NamedEvent,
+    ProductionBrowserConnector, ReconnectPolicy, SupervisorConfig, TransportError, TransportEvents,
+    TransportFuture,
 };
 use krometrail_core::{
     AttachBrowser, BrowserConnectRequest, BrowserConnector, BrowserSessionEvent,
-    BrowserSessionState, BrowserStopOutcome, TargetLifecycle,
+    BrowserSessionState, BrowserStopOutcome, ByteOffset, CaptureGapReason, EncodedFrame,
+    EveryNthFrame, FrameAddress, IdSource, IdValue, ImageFormat, MonotonicClock, ObservedTime,
+    PortFuture, RecordingSink, SegmentId, SessionId, TargetLifecycle,
 };
 use serde_json::{Value, json};
+use uuid::Uuid;
+
+#[derive(Debug, Default)]
+struct CaptureTestSink;
+
+impl RecordingSink for CaptureTestSink {
+    fn append_frame(
+        &self,
+        _frame: EncodedFrame,
+    ) -> PortFuture<'_, krometrail_core::Result<FrameAddress>> {
+        Box::pin(std::future::ready(Ok(FrameAddress::new(
+            SegmentId::from_uuid(Uuid::from_u128(1)),
+            ByteOffset::new(1),
+        ))))
+    }
+
+    fn append_gap(
+        &self,
+        _gap: krometrail_core::CaptureGap,
+    ) -> PortFuture<'_, krometrail_core::Result<()>> {
+        Box::pin(std::future::ready(Ok(())))
+    }
+
+    fn flush(&self, _session_id: SessionId) -> PortFuture<'_, krometrail_core::Result<()>> {
+        Box::pin(std::future::ready(Ok(())))
+    }
+}
+
+#[derive(Debug, Default)]
+struct CaptureTestClock;
+
+impl MonotonicClock for CaptureTestClock {
+    fn now(&self) -> ObservedTime {
+        ObservedTime::from_nanos(0)
+    }
+}
+
+#[derive(Debug, Default)]
+struct CaptureTestIds {
+    next: AtomicU64,
+}
+
+impl IdSource for CaptureTestIds {
+    fn next(&self) -> IdValue {
+        IdValue::from_uuid(Uuid::from_u128(
+            self.next.fetch_add(1, Ordering::Relaxed).saturating_add(1) as u128,
+        ))
+    }
+}
 
 #[test]
 fn reconnect_policy_is_finite_and_fixture_is_static() {
@@ -38,6 +90,209 @@ fn reconnect_policy_is_finite_and_fixture_is_static() {
 }
 
 #[tokio::test]
+async fn scripted_capture_preserves_stride_for_jpeg_png_dynamic_and_reconnect_generations() {
+    for (format, jpeg_quality) in [(ImageFormat::Jpeg, Some(80)), (ImageFormat::Png, None)] {
+        let stride = EveryNthFrame::new(7).unwrap();
+        let initial = Arc::new(support::scripted_cdp::ScriptedCdp::chrome());
+        initial.hold_events_open();
+        initial.push_response(
+            "Target.attachToTarget",
+            json!({"sessionId": "probe-session"}),
+        );
+        initial.push_response("Target.attachToTarget", json!({"sessionId": "session-a"}));
+        initial.push_response("Target.attachToTarget", json!({"sessionId": "session-b"}));
+
+        let reconnected = Arc::new(support::scripted_cdp::ScriptedCdp::chrome());
+        reconnected.hold_events_open();
+        let reconnected_targets = json!({"targetInfos": [
+            {"targetId": "target-a", "type": "page", "url": "http://fixture/", "title": "fixture"},
+            {"targetId": "target-b", "type": "page", "url": "http://dynamic/", "title": "dynamic"}
+        ]});
+        // Compatibility probing and connection setup each take a target snapshot.
+        reconnected.push_response("Target.getTargets", reconnected_targets.clone());
+        reconnected.push_response("Target.getTargets", reconnected_targets);
+        reconnected.push_response(
+            "Target.attachToTarget",
+            json!({"sessionId": "probe-session-reconnected"}),
+        );
+        reconnected.push_response(
+            "Target.attachToTarget",
+            json!({"sessionId": "session-a-reconnected"}),
+        );
+        reconnected.push_response(
+            "Target.attachToTarget",
+            json!({"sessionId": "session-b-reconnected"}),
+        );
+        let factory = Arc::new(support::scripted_cdp::ScriptedCdpFactory::new([
+            Arc::clone(&initial),
+            Arc::clone(&reconnected),
+        ]));
+        let connector = ProductionBrowserConnector::new(
+            Arc::new(krometrail_cdp::SystemChromeLauncher::new(
+                krometrail_cdp::LauncherConfig::default(),
+            )),
+            factory,
+        )
+        .with_capture(
+            Arc::new(CaptureTestClock),
+            Arc::new(CaptureTestIds::default()),
+            Arc::new(CaptureTestSink),
+            Arc::new(support::retention::AlwaysAvailableRetention),
+            CaptureConfig {
+                format,
+                jpeg_quality,
+                ..CaptureConfig::default()
+            },
+        )
+        .with_config(SupervisorConfig {
+            reconnect: ReconnectPolicy {
+                delays: vec![Duration::ZERO].into_boxed_slice(),
+                attempt_timeout: Duration::from_secs(1),
+            },
+            subscriber_capacity: 64,
+            reconnect_target_limit: 8,
+            reconnect_attach_concurrency: 2,
+        });
+        let session = connector
+            .connect(BrowserConnectRequest::Attach(
+                AttachBrowser::new("ws://127.0.0.1:9222/devtools/browser/fake")
+                    .unwrap()
+                    .with_every_nth_frame(stride),
+            ))
+            .await
+            .unwrap();
+        let mut events = session.subscribe().await.unwrap();
+        initial
+            .wait_for_command_count("Page.startScreencast", 1)
+            .await;
+        let initial_status = session.status().await.unwrap();
+        assert_eq!(initial_status.every_nth_frame, stride);
+        assert_eq!(initial_status.capture.len(), 1);
+        assert_eq!(initial_status.capture[0].every_nth_frame(), stride);
+        assert_start_commands_are_subscribed(&initial);
+        let expected_start = if format == ImageFormat::Jpeg {
+            json!({"format": "jpeg", "quality": 80, "everyNthFrame": 7})
+        } else {
+            json!({"format": "png", "everyNthFrame": 7})
+        };
+        assert_eq!(start_params(&initial), vec![expected_start]);
+
+        initial.push_event(
+            "Target.targetCreated",
+            json!({"targetInfo": {
+                "targetId": "target-b", "type": "page", "url": "http://dynamic/", "title": "dynamic"
+            }}),
+        );
+        initial
+            .wait_for_command_count("Page.startScreencast", 2)
+            .await;
+        let dynamic_status = session.status().await.unwrap();
+        assert_eq!(dynamic_status.capture.len(), 2);
+        assert!(
+            dynamic_status
+                .capture
+                .iter()
+                .all(|status| status.every_nth_frame() == stride)
+        );
+        assert_start_commands_are_subscribed(&initial);
+
+        let initial_target_id = dynamic_status
+            .pages
+            .iter()
+            .find(|page| page.target.target.browser_target_key() == "target-a")
+            .expect("initial target")
+            .target
+            .target
+            .id();
+        initial.disconnect();
+        reconnected
+            .wait_for_command_count("Page.startScreencast", 2)
+            .await;
+        let restored_status = session.status().await.unwrap();
+        assert_eq!(restored_status.every_nth_frame, stride);
+        assert_eq!(restored_status.capture.len(), 2);
+        assert!(
+            restored_status
+                .capture
+                .iter()
+                .all(|status| status.every_nth_frame() == stride)
+        );
+        let restored_target = restored_status
+            .pages
+            .iter()
+            .find(|page| page.target.target.browser_target_key() == "target-a")
+            .expect("restored initial target");
+        assert_eq!(restored_target.target.target.id(), initial_target_id);
+        assert_eq!(restored_target.target.attachment_generation, 2);
+        assert_start_commands_are_subscribed(&reconnected);
+        assert!(
+            start_params(&reconnected)
+                .iter()
+                .all(|params| params["everyNthFrame"] == 7)
+        );
+
+        let mut saw_capture_status = false;
+        let mut saw_disconnect_gap = false;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !(saw_capture_status && saw_disconnect_gap) {
+                match events.next().await.unwrap() {
+                    Some(BrowserSessionEvent::CaptureStateChanged { status }) => {
+                        saw_capture_status |= status.every_nth_frame() == stride;
+                    }
+                    Some(BrowserSessionEvent::CaptureGapDeclared { gap }) => {
+                        saw_disconnect_gap |= gap.reason()
+                            == &CaptureGapReason::BrowserDisconnected
+                            && gap.estimated_missing_frames().is_none();
+                    }
+                    Some(_) => {}
+                    None => break,
+                }
+            }
+        })
+        .await
+        .expect("capture status and disconnect gap events are scripted");
+        assert!(saw_capture_status);
+        assert!(saw_disconnect_gap);
+        assert_eq!(session.stop().await.unwrap(), BrowserStopOutcome::Detached);
+    }
+}
+
+fn start_params(script: &support::scripted_cdp::ScriptedCdp) -> Vec<Value> {
+    script
+        .command_calls()
+        .into_iter()
+        .filter(|call| call.method == "Page.startScreencast")
+        .map(|call| call.params)
+        .collect()
+}
+
+fn assert_start_commands_are_subscribed(script: &support::scripted_cdp::ScriptedCdp) {
+    let activity = script.activity();
+    let mut starts = 0;
+    for (index, item) in activity.iter().enumerate() {
+        if matches!(
+            item,
+            support::scripted_cdp::ScriptedActivity::Command { method, .. }
+                if method == "Page.startScreencast"
+        ) {
+            starts += 1;
+            let subscribed = activity[..index].iter().any(|item| {
+                matches!(
+                    item,
+                    support::scripted_cdp::ScriptedActivity::Subscription { method, .. }
+                        if method == "Page.screencastFrame"
+                )
+            });
+            assert!(
+                subscribed,
+                "start screencast must follow frame subscription"
+            );
+        }
+    }
+    assert!(starts > 0);
+}
+
+#[tokio::test]
 async fn production_supervisor_rebuilds_after_a_transport_event_stream_closes() {
     let factory = Arc::new(ScriptedReconnectFactory::default());
     let connector = ProductionBrowserConnector::new(
@@ -55,9 +310,12 @@ async fn production_supervisor_rebuilds_after_a_transport_event_stream_closes() 
         reconnect_target_limit: 8,
         reconnect_attach_concurrency: 2,
     });
+    let stride = EveryNthFrame::new(23).unwrap();
     let session = connector
         .connect(BrowserConnectRequest::Attach(
-            AttachBrowser::new("ws://127.0.0.1:9222/devtools/browser/fake").unwrap(),
+            AttachBrowser::new("ws://127.0.0.1:9222/devtools/browser/fake")
+                .unwrap()
+                .with_every_nth_frame(stride),
         ))
         .await
         .unwrap();
@@ -94,6 +352,7 @@ async fn production_supervisor_rebuilds_after_a_transport_event_stream_closes() 
     }
     assert!(saw_ready, "reconnect did not publish Ready");
     assert_eq!(session.status().await.unwrap().pages.len(), 1);
+    assert_eq!(session.status().await.unwrap().every_nth_frame, stride);
     assert_eq!(session.stop().await.unwrap(), BrowserStopOutcome::Detached);
 
     let terminal_count = tokio::time::timeout(Duration::from_secs(1), async {
