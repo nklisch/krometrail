@@ -331,8 +331,8 @@ async fn run_case(config: Config, repetition: usize) -> RunReport {
         Mode::Concurrent => 2,
         Mode::Sequential => config.sliding_windows,
     };
-    let expected_decode_calls = request_count as u64;
-    let expected_normalize_calls = request_count as u64;
+    let expected_decode_calls = config.frames.saturating_mul(request_count) as u64;
+    let expected_normalize_calls = config.frames.saturating_mul(request_count) as u64;
     let current_request_memory_reservation_bytes = request_memory_reservation(config.frames);
     let current_total_requested_memory_bytes =
         current_request_memory_reservation_bytes.saturating_mul(request_count);

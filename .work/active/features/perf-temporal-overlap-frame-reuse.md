@@ -1,7 +1,7 @@
 ---
 id: perf-temporal-overlap-frame-reuse
 kind: feature
-stage: review
+stage: done
 tags: [perf, visual, storage, testing]
 parent: null
 depends_on: []
@@ -498,3 +498,7 @@ parallel, persistent-cache, or other speculative follow-up was introduced.
 Rust 1.85 fmt, locked workspace check/test/clippy, and the retained release
 benchmark smoke passed after rollback. `.work/bin/work-view` remains the
 pre-existing modified working-tree file and was not staged.
+
+## Review decision
+
+**Approved as a measured rejection.** An independent GPT-5.5 standard integrated review verified that `4b6858c` restores all product code exactly to the pre-optimization `97c4ea0` state, leaving only the ignored benchmark and substrate evidence. It independently confirmed the hard-gate arithmetic, Rust 1.85 gates, and rollback smoke. The observed manifest/hash variation came from concurrent opaque artifact-ID allocation in the benchmark comparison while PNG bytes matched; it does not establish a product stale-pixel defect, but it correctly prevented the candidate from satisfying its stricter exactness gate. The review's sole advisory was accepted: the retained scaffold now reports expected decode/normalize calls per frame rather than per request. No material blocker remains. Per standard policy, no re-review was run; the feature advances to `done` with no reuse mechanism shipped.
