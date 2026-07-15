@@ -384,6 +384,7 @@ pub struct DurationQualificationMeasurement {
     pub observed_count: u32,
     pub eligibility_rate_basis_points: u16,
     pub coverage_rate_basis_points: u16,
+    pub status: EvaluationStatus,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -1212,6 +1213,20 @@ fn validate_live_qualification(value: &LiveQualification) -> Result<()> {
         }
     }
     validate_capture_measurements(&value.capture)?;
+    let canonical_capture_observation = value.capture.observed_viewport.width == VIEWPORT_WIDTH
+        && value.capture.observed_viewport.height == VIEWPORT_HEIGHT
+        && value.capture.observed_device_scale_factor == 1_000;
+    if !canonical_capture_observation
+        && value
+            .gates
+            .iter()
+            .find(|gate| gate.gate == crate::QualificationGateId::CaptureEnvelope)
+            .is_none_or(|gate| gate.status != EvaluationStatus::Blocked)
+    {
+        return Err(ContractError::new(
+            "noncanonical capture observation must block the capture envelope",
+        ));
+    }
     validate_control_measurements(&value.control)?;
     validate_retention_measurements(&value.retention)?;
     validate_recovery_measurements(&value.recovery)?;
@@ -1240,12 +1255,12 @@ fn validate_capture_measurements(value: &CaptureQualificationMeasurements) -> Re
             "qualification capture matrix is not canonical",
         ));
     }
-    if value.observed_viewport.width != VIEWPORT_WIDTH
-        || value.observed_viewport.height != VIEWPORT_HEIGHT
-        || value.observed_device_scale_factor != 1_000
+    if value.observed_viewport.width == 0
+        || value.observed_viewport.height == 0
+        || value.observed_device_scale_factor == 0
     {
         return Err(ContractError::new(
-            "qualification capture observation does not match the canonical viewport",
+            "qualification capture observation must report a positive viewport and scale",
         ));
     }
     if value.gap_count != value.gap_ids.len() as u64 {
@@ -1254,6 +1269,18 @@ fn validate_capture_measurements(value: &CaptureQualificationMeasurements) -> Re
         ));
     }
     validate_unique_ids(&value.gap_ids, "qualification.gap_ids")?;
+    if value.per_duration.len() != DURATIONS_MS.len()
+        || value
+            .per_duration
+            .iter()
+            .map(|measurement| measurement.duration_ms)
+            .collect::<Vec<_>>()
+            != DURATIONS_MS
+    {
+        return Err(ContractError::new(
+            "qualification duration measurements must cover the canonical matrix exactly once",
+        ));
+    }
     for measurement in &value.per_duration {
         if !DURATIONS_MS.contains(&measurement.duration_ms) {
             return Err(ContractError::new(

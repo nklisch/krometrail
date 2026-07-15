@@ -61,6 +61,7 @@ fn live_manifest() -> RunManifest {
                     observed_count: 1,
                     eligibility_rate_basis_points: 10_000,
                     coverage_rate_basis_points: 10_000,
+                    status: EvaluationStatus::Pass,
                 })
                 .collect(),
         },
@@ -175,6 +176,27 @@ fn live_failed_gate_can_support_fail_without_a_failed_trial_row() {
     manifest.status = EvaluationStatus::Fail;
     manifest.failure = Some(failure(RunFailureCode::Threshold));
     manifest.validate().unwrap();
+}
+
+#[test]
+fn wrong_capture_viewport_is_recordable_only_as_a_blocked_profile() {
+    let mut manifest = live_manifest();
+    let qualification = manifest.qualification.as_mut().unwrap();
+    qualification.capture.observed_viewport.width = 801;
+    qualification.gates[0].status = EvaluationStatus::Blocked;
+    qualification.gates[0].failure = Some(failure(RunFailureCode::Unavailable));
+    manifest.status = EvaluationStatus::Blocked;
+    manifest.failure = Some(failure(RunFailureCode::Unavailable));
+    for row in &mut manifest.rows {
+        row.status = EvaluationStatus::Blocked;
+        row.failure = Some(failure(RunFailureCode::Unavailable));
+    }
+    manifest.validate().unwrap();
+
+    let mut unsafe_pass = manifest;
+    unsafe_pass.qualification.as_mut().unwrap().gates[0].status = EvaluationStatus::Pass;
+    unsafe_pass.qualification.as_mut().unwrap().gates[0].failure = None;
+    assert!(unsafe_pass.validate().is_err());
 }
 
 #[test]

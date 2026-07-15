@@ -573,6 +573,9 @@
           "type": "integer",
           "format": "uint32",
           "minimum": 0
+        },
+        "status": {
+          "$ref": "#/$defs/EvaluationStatus"
         }
       },
       "additionalProperties": false,
@@ -581,7 +584,8 @@
         "eligible_count",
         "observed_count",
         "eligibility_rate_basis_points",
-        "coverage_rate_basis_points"
+        "coverage_rate_basis_points",
+        "status"
       ]
     },
     "EnvironmentIdentity": {

@@ -17,9 +17,7 @@ use super::{
     TemporalVisionArtifactService, browser_event_config, open_storage_with_budget,
 };
 use krometrail_cdp::qualification_support::{ChromeViewport, FixtureServer, real_browser_lock};
-use krometrail_cdp::{
-    CaptureConfig, LauncherConfig, ProductionBrowserConnector, SystemChromeLauncher,
-};
+use krometrail_cdp::{LauncherConfig, ProductionBrowserConnector, SystemChromeLauncher};
 use krometrail_core::{
     BrowserConnector, BrowserInstallation, BrowserProduct, DiskBudgetBytes, ErrorCode, IdSource,
     KrometrailError, MonotonicClock, NonEmptyText, Result,
@@ -28,6 +26,11 @@ use krometrail_store::RecordingStore;
 use temporal_evaluation::{
     EvaluationStatus, FailureRecord, LiveQualification, RunFailureCode, RunManifest,
 };
+
+mod capture;
+mod fixture_observation;
+
+pub(crate) use capture::qualification_capture_config;
 
 pub const LIVE_CAPTURE_ENV: &str = "KROMETRAIL_LIVE_CAPTURE_EVALUATION";
 pub const REAL_BROWSER_ENV: &str = "KROMETRAIL_REAL_CHROME_TESTS";
@@ -162,6 +165,10 @@ impl QualificationLifecycle {
 
     pub fn fixture_url(&self) -> &str {
         &self.fixture_url
+    }
+
+    pub fn temporal_benchmark_url(&self, case_id: &str, duration_ms: u16) -> String {
+        self.server.temporal_benchmark_url(case_id, duration_ms)
     }
 
     pub fn profile_root(&self) -> &Path {
@@ -366,7 +373,7 @@ pub fn build_qualification_runtime(
             Arc::clone(&ids),
             Arc::clone(&storage.recording),
             Arc::clone(&storage.retention),
-            CaptureConfig::default(),
+            qualification_capture_config(),
         )
         .with_browser_events(
             Arc::clone(&clock),

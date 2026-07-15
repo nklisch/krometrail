@@ -1,7 +1,7 @@
 ---
 id: epic-prove-temporal-advantage-live-capture-and-system-qualification-duration-capture-timing-and-movement
 kind: story
-stage: implementing
+stage: done
 tags: [testing, visual]
 parent: epic-prove-temporal-advantage-live-capture-and-system-qualification
 depends_on: [epic-prove-temporal-advantage-live-capture-and-system-qualification-opt-in-harness-and-live-run-contract]
@@ -55,19 +55,46 @@ feature.
 
 ## Acceptance evidence
 
-- [ ] Scripted tests prove matrix ordering, interval-window construction, source/observed/session
+- [x] Scripted tests prove matrix ordering, interval-window construction, source/observed/session
       clock separation, declared gap propagation, and exact manifest row identities.
-- [ ] Real-run code uses the one production capture session/recording authority and observable
+- [x] Real-run code uses the one production capture session/recording authority and observable
       fixture barriers, not sleeps or intended-duration assumptions.
-- [ ] All canonical cases/durations/repetitions are represented; movement reversal, teleport,
+- [x] All canonical cases/durations/repetitions are represented; movement reversal, teleport,
       flicker/layout, and stable cases have explicit state observations.
-- [ ] Pixel observation returns unknown on decode/scale/geometry mismatch and cannot turn missing
+- [x] Pixel observation returns unknown on decode/scale/geometry mismatch and cannot turn missing
       source frames or declared gaps into passing evidence.
-- [ ] A wrong viewport/device scale produces an honest blocked result; no high-DPI claim is made.
-- [ ] Tests use no browser unless the feature-specific opt-in is present; design/ordinary
+- [x] A wrong viewport/device scale produces an honest blocked result; no high-DPI claim is made.
+- [x] Tests use no browser unless the feature-specific opt-in is present; design/ordinary
       verification does not launch Chrome.
 
 ## Ordering
 
 This checkpoint depends on the opt-in harness and manifest contract. Control reliability must wait
 for its interaction-anchor and settled-capture data, so the next child depends on this one.
+
+## Implementation notes
+
+- Execution capability: feature-owning Luna worker, inline implementation; the capture and
+  observation surfaces share the existing production ports and one recording store.
+- Review weight: standard parent-feature review; this child advanced directly to done after green
+  verification and does not enter a child-story review lane.
+- Files changed: `src/app/live_evaluation/capture.rs`,
+  `src/app/live_evaluation/fixture_observation.rs`, `src/app/live_evaluation.rs`,
+  `src/app.rs`, qualification static fixture serving, live manifest measurement/schema contracts,
+  and generated run-manifest schema artifacts.
+- Tests added: fake `TemporalQuery`/`FrameSource`/`CaptureGapStore`/interaction-anchor interval
+  checks; canonical matrix and manifest identity checks; barrier ordering and bounded-window checks;
+  fixture hash drift checks; retained-byte reversal/teleport/flicker/layout/stable predicates;
+  viewport/scale/decode unknown checks; and blocked noncanonical viewport contract coverage.
+- Verification: Rust 1.85 locked workspace fmt/check/test/clippy passed with the default no-live
+  environment; feature-gated root scripted tests and CDP qualification-support tests passed. The
+  ignored real-run test was not invoked, no live environment variables were set, and Chrome was not
+  launched.
+- Simplification: reused the canonical matrix, `SourceInterval`, production temporal query,
+  capture-gap, frame, interaction, and recording authorities; added no second case list, capture
+  runtime, renderer, gap inference, high-DPI lane, or product command. The static qualification
+  server serves the committed temporal fixture through the existing readiness barrier.
+- Discrepancies from design: the live runner is intentionally an ignored test-only entry point and
+  was not used to produce operator evidence during ordinary verification; actual system-capture
+  evidence remains for the final operator story.
+- Adjacent issues parked: none.

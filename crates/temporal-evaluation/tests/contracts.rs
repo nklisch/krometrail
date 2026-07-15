@@ -30,7 +30,7 @@ const DEFINITION_SCHEMA_DIGEST: &str =
 const MANIFEST_DIGEST: &str =
     "sha256:7881c4b05db700757f52a6f5be854bb0c7c8e403bf66970fcfaa3922ac74c134";
 const MANIFEST_SCHEMA_DIGEST: &str =
-    "sha256:a268f0b0f7446e5dd849dff5753fde92ce5a752155ddd020540064fdbe8f344a";
+    "sha256:06662af68e3b4dc35f4e0f4cc187b5077e8884c0f4d268ee7bef5788d27f93a4";
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")

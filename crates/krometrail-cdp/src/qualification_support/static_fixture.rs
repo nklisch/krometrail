@@ -12,6 +12,14 @@ pub const INDEX_HTML: &str =
     include_str!("../../../../tests/fixtures/browser/cdp-transport-gate/index.html");
 pub const ANIMATION_JS: &str =
     include_str!("../../../../tests/fixtures/browser/cdp-transport-gate/animation.js");
+pub const TEMPORAL_BENCHMARK_INDEX: &str =
+    include_str!("../../../../tests/fixtures/browser/temporal-benchmark/index.html");
+pub const TEMPORAL_BENCHMARK_CSS: &str =
+    include_str!("../../../../tests/fixtures/browser/temporal-benchmark/benchmark.css");
+pub const TEMPORAL_BENCHMARK_JS: &str =
+    include_str!("../../../../tests/fixtures/browser/temporal-benchmark/benchmark.js");
+pub const TEMPORAL_BENCHMARK_README: &str =
+    include_str!("../../../../tests/fixtures/browser/temporal-benchmark/README.md");
 
 pub fn contains_stable_fixture_markers() -> bool {
     INDEX_HTML.contains("CDP") && !ANIMATION_JS.trim().is_empty()
@@ -59,6 +67,14 @@ impl FixtureServer {
         format!("http://127.0.0.1:{}/index.html", self.address.port())
     }
 
+    /// Returns the exact benchmark route; case and duration come from the canonical matrix.
+    pub fn temporal_benchmark_url(&self, case_id: &str, duration_ms: u16) -> String {
+        format!(
+            "http://127.0.0.1:{}/temporal-benchmark/index.html?case={case_id}&duration_ms={duration_ms}",
+            self.address.port()
+        )
+    }
+
     pub fn address(&self) -> SocketAddr {
         self.address
     }
@@ -99,6 +115,26 @@ fn serve_fixture(mut stream: TcpStream) {
             "200 OK",
             "text/javascript; charset=utf-8",
             ANIMATION_JS.as_bytes(),
+        ),
+        "/temporal-benchmark" | "/temporal-benchmark/index.html" => (
+            "200 OK",
+            "text/html; charset=utf-8",
+            TEMPORAL_BENCHMARK_INDEX.as_bytes(),
+        ),
+        "/temporal-benchmark/benchmark.css" => (
+            "200 OK",
+            "text/css; charset=utf-8",
+            TEMPORAL_BENCHMARK_CSS.as_bytes(),
+        ),
+        "/temporal-benchmark/benchmark.js" => (
+            "200 OK",
+            "text/javascript; charset=utf-8",
+            TEMPORAL_BENCHMARK_JS.as_bytes(),
+        ),
+        "/temporal-benchmark/README.md" => (
+            "200 OK",
+            "text/markdown; charset=utf-8",
+            TEMPORAL_BENCHMARK_README.as_bytes(),
         ),
         _ => (
             "404 Not Found",
