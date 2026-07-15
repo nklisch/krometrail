@@ -899,7 +899,11 @@ const SRGB8_TO_LINEAR16: [u16; 256] = [
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{DeclaredGap, FrameRegion, Marker, PixelFormat};
+    use crate::{
+        ArtifactLabels, DeclaredGap, FrameRegion, Marker, MeasurementParameters, PixelFormat,
+        RenderLimits, StoryboardParameters, StoryboardTileLimit, generate_storyboard,
+    };
+    use sha2::{Digest, Sha256};
 
     fn frame(id: u8, dimensions: PixelDimensions, pixels: Vec<u8>) -> Frame<u8, Box<[u8]>> {
         Frame::new(
@@ -932,55 +936,135 @@ mod tests {
     }
 
     #[test]
-    fn opaque_full_frame_fast_path_matches_general_kernel() {
-        let dimensions = PixelDimensions::new(2, 2).unwrap();
-        let source = vec![
-            255, 0, 0, 255, 0, 128, 255, 255, 32, 64, 96, 255, 200, 180, 160, 255,
-        ];
-        let source_frame = frame(1, dimensions, source);
-        let crop = PixelRect::new(0, 0, dimensions.width(), dimensions.height()).unwrap();
-        let capacity = dimensions.pixel_count().unwrap() * 3;
-        let fast = normalize_frame(
-            &source_frame,
-            crop,
-            dimensions,
-            IntegerScale::IDENTITY,
-            [0; 3],
-            true,
-        )
-        .unwrap();
-        let general = normalize_frame_general(
-            &source_frame,
-            crop,
-            dimensions,
-            IntegerScale::IDENTITY,
-            [0; 3],
-            capacity,
-        )
-        .unwrap();
-        assert_eq!(fast, general);
+    fn opaque_full_frame_fast_path_matches_reference_across_rectangular_scales() {
+        let dimensions = PixelDimensions::new(40, 24).unwrap();
+        let sequence = opaque_rectangular_sequence(dimensions);
 
-        let downscale = IntegerScale::down(NonZeroU8::new(2).unwrap()).unwrap();
-        let down_dimensions = PixelDimensions::new(1, 1).unwrap();
-        let fast_down = normalize_frame(
-            &source_frame,
-            crop,
-            down_dimensions,
-            downscale,
-            [0; 3],
-            true,
+        for (factor, scale) in [
+            (1, IntegerScale::IDENTITY),
+            (2, IntegerScale::down(NonZeroU8::new(2).unwrap()).unwrap()),
+            (4, IntegerScale::down(NonZeroU8::new(4).unwrap()).unwrap()),
+            (8, IntegerScale::down(NonZeroU8::new(8).unwrap()).unwrap()),
+        ] {
+            let parameters = NormalizationParameters::new(
+                Rgb8::new(19, 37, 73),
+                None,
+                scale,
+                ProcessingLimits::default(),
+            );
+            let optimized = normalize_sequence(&sequence, parameters).unwrap();
+            let crop = optimized.source_crop();
+            let capacity = optimized.dimensions().pixel_count().unwrap() * 3;
+            assert!(sequence.frames().iter().all(|frame| {
+                can_use_opaque_full_frame_fast_path(
+                    frame,
+                    crop,
+                    optimized.dimensions(),
+                    scale,
+                    true,
+                )
+            }));
+
+            // Keep the old general traversal as the executable reference oracle. Comparing the
+            // complete sequence catches row-stride and block-boundary errors that a tiny fixture
+            // cannot expose, including the final row of the factor-eight output.
+            let mut reference = optimized.clone();
+            reference.frames = sequence
+                .frames()
+                .iter()
+                .map(|frame| {
+                    normalize_frame_general(
+                        frame,
+                        crop,
+                        optimized.dimensions(),
+                        scale,
+                        parameters.background.channels().map(linear_channel),
+                        capacity,
+                    )
+                })
+                .collect::<Result<Vec<_>>>()
+                .unwrap()
+                .into_boxed_slice();
+            assert_eq!(optimized, reference, "opaque scale factor {factor}");
+
+            if factor == 4 {
+                let labels = ArtifactLabels::new(
+                    "Opaque normalization equivalence",
+                    "rectangular generated fixture",
+                )
+                .unwrap();
+                let request = StoryboardParameters::new(
+                    Timestamp::from_nanos(2),
+                    StoryboardTileLimit::new(5).unwrap(),
+                    MeasurementParameters::new(0),
+                    labels,
+                    RenderLimits::default(),
+                );
+                let optimized_artifacts =
+                    generate_storyboard(41_u8, Some(42_u8), &sequence, &optimized, request.clone())
+                        .unwrap();
+                let reference_artifacts =
+                    generate_storyboard(41_u8, Some(42_u8), &sequence, &reference, request)
+                        .unwrap();
+                assert_eq!(optimized_artifacts, reference_artifacts);
+                for (optimized_artifact, reference_artifact) in [
+                    (
+                        optimized_artifacts.storyboard(),
+                        reference_artifacts.storyboard(),
+                    ),
+                    (
+                        optimized_artifacts.orientation().unwrap(),
+                        reference_artifacts.orientation().unwrap(),
+                    ),
+                ] {
+                    assert_eq!(
+                        &optimized_artifact.image().bytes()[..8],
+                        b"\x89PNG\r\n\x1a\n"
+                    );
+                    assert_eq!(
+                        optimized_artifact.image().bytes(),
+                        reference_artifact.image().bytes()
+                    );
+                    assert_eq!(optimized_artifact.manifest(), reference_artifact.manifest());
+                    let output_digest: [u8; 32] =
+                        Sha256::digest(optimized_artifact.image().bytes()).into();
+                    assert_eq!(
+                        optimized_artifact.manifest().output_hash().as_bytes(),
+                        &output_digest
+                    );
+                }
+            }
+        }
+    }
+
+    fn opaque_rectangular_sequence(
+        dimensions: PixelDimensions,
+    ) -> FrameSequence<u8, u8, u8, Box<[u8]>> {
+        let frames = (0_u8..5)
+            .map(|frame_index| {
+                let mut pixels = vec![0_u8; dimensions.rgba8_byte_len().unwrap()];
+                for y in 0..dimensions.height() {
+                    for x in 0..dimensions.width() {
+                        let offset = ((y * dimensions.width() + x) * 4) as usize;
+                        pixels[offset..offset + 4].copy_from_slice(&[
+                            (x * 13 + y * 7 + u32::from(frame_index) * 19) as u8,
+                            (x * 5 + y * 17 + u32::from(frame_index) * 29 + x * y) as u8,
+                            (x * 23 + y * 3 + u32::from(frame_index) * 11 + x * y * 2) as u8,
+                            u8::MAX,
+                        ]);
+                    }
+                }
+                frame(frame_index, dimensions, pixels)
+            })
+            .collect();
+        FrameSequence::new(
+            frames,
+            Vec::<Marker<u8>>::new(),
+            Vec::<DeclaredGap<u8>>::new(),
+            None,
+            None,
         )
-        .unwrap();
-        let general_down = normalize_frame_general(
-            &source_frame,
-            crop,
-            down_dimensions,
-            downscale,
-            [0; 3],
-            down_dimensions.pixel_count().unwrap() * 3,
-        )
-        .unwrap();
-        assert_eq!(fast_down, general_down);
+        .unwrap()
     }
 
     #[test]

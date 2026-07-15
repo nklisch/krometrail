@@ -80,19 +80,21 @@ cache identity, or algorithm versions.
 
 ## Acceptance budget
 
-- [x] Existing temporal-vision tests plus new focused opaque/full-frame,
-      alpha, crop, identity, up-scale, and down-scale equality tests pass.
-- [x] Normalized buffers, manifests, generated PNG bytes, and hashes remain byte
-      identical for representative opaque and alpha inputs.
-- [x] On the same host and Rust 1.85 release command, five measured repetitions
-      show at least **15% lower normalization wall time** at both 30 frames
-      (baseline 351.599 ms) and 120 frames (baseline 1,218.810 ms), with no
-      greater than 5% regression at 2 frames (baseline 26.011 ms).
-- [x] Cold 120-frame production-policy artifact generation does not regress wall
-      time by more than 5% from 2,583.599 ms and does not increase peak RSS by
-      more than 5% from 1,375,468 KiB.
-- [x] The optimized path remains deterministic and does not reduce capture
-      headroom by adding unbounded work, threads, or retained buffers.
+- [x] Existing temporal-vision tests plus a multi-row, nontrivial rectangular
+      opaque fixture compare the optimized full-domain kernel with the preserved
+      general/reference kernel at identity and downscale factors 2, 4, and 8.
+- [x] The factor-4 comparison also runs the storyboard/orientation PNG and
+      manifest/hash path; buffers, PNG bytes, manifests, and output hashes match.
+- [x] On the same host and Rust 1.85 release scaffold, five repetitions show
+      lower normalization wall time at 30-frame identity and 120-frame down-2;
+      the two-frame identity run has no greater than a 5% regression.
+- [x] The committed production-policy scaffold is ignored by ordinary tests,
+      accepts frame-count/repetition parameters, reports exact output digests,
+      and performs no browser, network, or model work.
+- [x] RSS methodology and repeated E2E distributions are recorded without
+      turning a browser-free scaffold result into a cross-harness claim. The
+      optimized path remains deterministic and adds no unbounded work, threads,
+      or retained buffers.
 
 ## Scout disposition
 
@@ -109,58 +111,75 @@ This story was emitted by `perf-design` discovery with `gate_origin: perf-design
 
 ## Implementation notes
 
-- Execution capability: GPT-5.6 Luna inline implementation; the change is one
-  cohesive normalization-module optimization with no ownership split.
-- Review weight: standard default, but the caller explicitly requested
-  `implementing -> review` without running the standalone review lane.
-- Files changed: `crates/temporal-vision/src/normalize.rs`.
-- Tests added: private kernel equality coverage for opaque identity and exact
-  opaque down-2 output, plus path-selection coverage rejecting alpha, crop,
-  upscale, and restricted-domain inputs. Existing alpha, crop, mask, identity,
-  upscale, downscale, provenance, and limit tests remain green.
-- Implementation: `normalize_sequence` only permits the fast path for an
-  unrequested crop and unrestricted domain. Identity uses direct packed
-  row-major transfer-table conversion; opaque downscale uses the existing
-  non-overlapping box average and round-half-up rule over direct source rows.
-  General alpha, crop, upscale, downscale, mask, and restricted-domain inputs
-  retain the existing kernel and all provenance/cache identity strings are
-  unchanged.
-- Benchmark harness: recreated temporarily under `/tmp` with Rust 1.85.0,
-  `--release`, locked/offline dependencies, 1920x1080 opaque PNGs with a moving
-  256px patch, and removed from the repository after measurement. A temporary
-  real-`RecordingStore` production-policy harness also ran the cold 120-frame
-  storyboard + orientation + difference-map request; neither harness is a
-  committed scaffold.
-- Normalization distributions, five repetitions each (ms; before -> after):
-  `2: mean 22.913 -> 9.348 (59.2% lower)`, `30: mean 354.557 -> 140.826
-  (60.3% lower)`, `120: mean 1,186.888 -> 553.965 (53.3% lower)`. The five
-  before/after samples were respectively `[22.814, 22.782, 22.757, 22.832,
-  23.380]` -> `[9.466, 9.360, 9.358, 9.269, 9.286]`,
-  `[382.056, 359.829, 359.694, 341.177, 330.030]` ->
-  `[149.264, 138.496, 138.454, 138.111, 139.803]`, and
-  `[1,217.854, 1,183.112, 1,212.795, 1,162.970, 1,157.707]` ->
-  `[558.883, 557.188, 548.797, 552.266, 552.693]`.
-- Output evidence: normalized digest
-  `dc815f40241de22f466233a7d6624b582d93503a871ec8801c83d03ec737d1be`,
-  storyboard PNG SHA-256
-  `b0e2665a32d4204c5c840112ee653114d5f90e488ea4a00924cb3115ef046613`,
-  difference-map PNG SHA-256
-  `0789ce05abb16a0dff3d2243d2ba2ec87a05a55a120447fab28eea53da6a2616`, and
-  matching storyboard/difference manifest SHA-256 values before and after.
-  The production-policy run also matched orientation bytes and manifests.
-- Cold production-policy 120-frame result: baseline-harness `1,965.824 ms`,
-  optimized `1,994.995 ms` (1.5% same-harness variation); against the recorded
-  discovery baseline `2,583.599 ms`, this is 22.8% lower. Peak RSS was
-  `1,393,504 -> 1,394,252 KiB` in the same harness (+0.007%), and the
-  optimized absolute value is 1.4% above the recorded `1,375,468 KiB` baseline,
-  within the 5% budget.
-- Verification: `cargo fmt --all -- --check`, workspace check, workspace test
-  (706 passed, 1 ignored), and workspace clippy with `-D warnings` all pass.
-- Simplification: none beyond splitting the old general kernel from the
-  narrowly selected fast path; no dependencies, LUTs, threads, caches, or
-  adjacent work were added.
-- Discrepancies from design: the measured 120-frame FitLimits case is down-2,
-  so the same opaque full-frame specialization includes an exact downscale
-  traversal; the general downscale path remains untouched for all excluded
-  inputs.
+- Execution capability: GPT-5.6 Luna inline review-fix implementation; the
+  accepted comments remain within the existing normalization story.
+- Review weight: standard bounded review already completed; the caller requested
+  no re-review and host approval at `stage: review`.
+- Files changed: `crates/temporal-vision/src/normalize.rs`,
+  `crates/temporal-vision/tests/temporal_normalize_perf.rs`, and this story.
+- Tests added: a 40x24 opaque rectangular, five-frame fixture compares every
+  normalized RGB16 buffer with `normalize_frame_general` at identity and down-2,
+  down-4, and down-8. The down-4 case also compares storyboard and orientation
+  PNG bytes, manifests, and manifest output hashes. Alpha, crop, mask, upscale,
+  and restricted-domain selection tests remain unchanged.
+- Implementation: unchanged behavior boundary. `normalize_sequence` only permits
+  the fast path for an unrequested crop and unrestricted domain. Identity uses
+  direct packed row-major transfer-table conversion; opaque downscale uses the
+  existing non-overlapping box average and round-half-up rule over direct source
+  rows. General alpha, crop, upscale, restricted-domain, and excluded downscale
+  inputs retain the old kernel and all provenance/cache identity strings.
+- Reproducible benchmark scaffold: committed as the ignored integration test
+  `crates/temporal-vision/tests/temporal_normalize_perf.rs`. It uses only
+  in-memory opaque frames and the production storyboard + orientation +
+  difference-map policy. `PERF_TEMPORAL_FRAMES`,
+  `PERF_TEMPORAL_REPETITIONS`, `PERF_TEMPORAL_SCALE`, width, and height are
+  parameterized; every repetition prints normalization time, E2E time, RSS/HWM
+  readings, normalized digest, three manifest-plus-PNG digests, and a combined
+  output digest. `#[ignore]` keeps it out of ordinary tests, and it never
+  launches Chrome, opens a network connection, or calls a model.
+- Benchmark command and harness: build/run with
+  `rustup run 1.85.0 cargo test -p temporal-vision --release --locked
+  --test temporal_normalize_perf -- --ignored --exact
+  production_policy_release_profile --nocapture`, setting
+  `PERF_TEMPORAL_FRAMES` and `PERF_TEMPORAL_REPETITIONS`. Baseline runs used the
+  isolated parent-commit worktree with the byte-identical scaffold and separate
+  release target directories; optimized runs used this worktree. All five-run
+  output digests matched: for 120/down-2 the combined digest was
+  `d8492bc099fe1042f78d6cb65afae9c9d03e49e4b160ae85ae5f3589a5e587ae`.
+- Normalization distributions (ms, baseline -> optimized; five repetitions):
+  `2/identity: [21.730, 21.591, 19.882, 19.679, 19.823] ->
+  [10.108, 10.033, 7.660, 7.710, 7.766]`, mean `20.541 -> 8.655`
+  (`57.86%` lower); `30/identity: [325.224, 323.899, 297.560, 298.858,
+  300.455] -> [152.169, 140.248, 118.709, 119.078, 119.501]`, mean
+  `309.199 -> 129.941` (`57.97%` lower); `120/down-2: [1,246.347,
+  1,252.786, 1,189.855, 1,148.193, 1,181.338] -> [573.015, 555.667,
+  475.773, 466.980, 490.406]`, mean `1,203.704 -> 512.368` (`57.43%`
+  lower). These are the same-harness normalization-stage measurements.
+- Production-policy E2E distributions (ms, including normalization and all
+  three in-memory outputs) were `30/identity: [2,576.359, 2,598.935,
+  2,543.180, 2,547.086, 2,579.035] -> [2,429.041, 2,412.906, 2,371.676,
+  2,370.815, 2,391.060]`, mean `2,568.919 -> 2,395.100`; and `120/down-2:
+  [3,478.484, 3,444.250, 3,361.152, 3,303.194, 3,350.348] -> [2,814.138,
+  2,730.555, 2,637.618, 2,628.762, 2,659.850]`, mean `3,387.486 ->
+  2,694.185`. The two-frame E2E distribution was `[330.086, 328.583, 323.697,
+  322.981, 323.321] -> [350.242, 329.173, 314.146, 311.982, 312.149]`,
+  mean `325.734 -> 323.538`; this is inconclusive. The prior same-harness
+  real-RecordingStore one-run remains `1,965.824 -> 1,994.995` (`+1.5%`),
+  within the 5% budget. No cross-harness 22.8% attribution is retained.
+- RSS methodology and evidence: each scaffold run reads Linux `/proc/self/status`
+  `VmHWM` (process high-water mark), with `VmRSS` also reported. The repeated
+  distributions above used one process per variant with five repetitions; the
+  120/down-2 maximum HWM was `1,380,356 -> 1,380,264 KiB` (`-0.0067%`). The
+  earlier same-harness record is corrected explicitly: `1,393,504 -> 1,394,252
+  KiB` is `+0.0537%`, not `+0.007%`. These measurements remain within budget and
+  are not presented as cross-harness evidence.
+- Verification: Rust 1.85.0 `cargo fmt --all -- --check`, full workspace
+  `cargo check --workspace --all-targets --locked`, full workspace
+  `cargo test --workspace --all-targets --locked` (706 passed, 0 failed, 2
+  ignored), and full workspace clippy with `-D warnings` all pass. The focused
+  ignored release smoke also passes with 4 frames, 1 repetition, 64x48,
+  down-2, and matching normalized/artifact/output digests.
+- Simplification: no dependencies, LUTs, threads, caches, or adjacent perf work
+  were added. The only structural addition is the narrow committed ignored
+  scaffold needed to make the evidence reproducible.
 - Adjacent issues parked: none.
