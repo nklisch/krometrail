@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 use crate::{ContractError, Result};
 
 /// Serializes a contract with deterministic object-key ordering and a final newline.
-pub fn canonical_json<T: serde::Serialize>(value: &T) -> Result<Vec<u8>> {
+pub fn canonical_json<T: serde::Serialize + ?Sized>(value: &T) -> Result<Vec<u8>> {
     let value = serde_json::to_value(value)?;
     let value = sort_value(value);
     let mut bytes = serde_json::to_vec_pretty(&value)?;

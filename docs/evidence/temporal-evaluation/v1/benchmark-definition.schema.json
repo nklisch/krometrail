@@ -12,6 +12,12 @@
         "$ref": "#/$defs/CaseDefinition"
       }
     },
+    "conditions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/EvidenceCondition"
+      }
+    },
     "device_scale_factor_milli": {
       "type": "integer",
       "format": "uint16",
@@ -30,11 +36,23 @@
     "fixture": {
       "$ref": "#/$defs/FixtureIdentity"
     },
+    "input_identities": {
+      "$ref": "#/$defs/InputIdentities"
+    },
+    "matrix": {
+      "$ref": "#/$defs/MatrixDefinition"
+    },
+    "prompts": {
+      "$ref": "#/$defs/PromptSet"
+    },
     "schema_version": {
       "type": "integer",
       "format": "uint16",
       "maximum": 65535,
       "minimum": 0
+    },
+    "scoring": {
+      "$ref": "#/$defs/ScoringVocabulary"
     },
     "viewport_height": {
       "type": "integer",
@@ -56,9 +74,54 @@
     "viewport_height",
     "device_scale_factor_milli",
     "duration_ms",
-    "cases"
+    "cases",
+    "matrix",
+    "conditions",
+    "prompts",
+    "scoring",
+    "input_identities"
   ],
   "$defs": {
+    "AnswerKind": {
+      "type": "string",
+      "enum": [
+        "interpretation",
+        "debugging"
+      ]
+    },
+    "ArtifactContract": {
+      "type": "object",
+      "properties": {
+        "algorithm": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ArtifactKind"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "algorithm",
+        "version"
+      ]
+    },
+    "ArtifactKind": {
+      "type": "string",
+      "enum": [
+        "final_screenshot",
+        "uniform_storyboard",
+        "change_aware_storyboard",
+        "before_during_after",
+        "difference_map",
+        "temporal_debug_bundle",
+        "source_frame",
+        "region_filmstrip"
+      ]
+    },
     "CaseDefinition": {
       "type": "object",
       "properties": {
@@ -133,12 +196,99 @@
         "intentional"
       ]
     },
+    "ConditionId": {
+      "type": "string",
+      "enum": [
+        "A-final-screenshot",
+        "B-uniform-storyboard",
+        "C-change-aware-storyboard",
+        "D-temporal-bundle",
+        "E-progressive-source"
+      ]
+    },
+    "ConditionInput": {
+      "type": "string",
+      "enum": [
+        "final_screenshot",
+        "current_page_observation",
+        "uniform_source_storyboard",
+        "change_aware_source_storyboard",
+        "before_during_after_composite",
+        "difference_map",
+        "capture_summary",
+        "evidence_references",
+        "source_frame_retrieval",
+        "region_filmstrip_retrieval"
+      ]
+    },
     "DurationMode": {
       "type": "string",
       "enum": [
         "defect_interval",
         "transition_interval",
         "observation_window"
+      ]
+    },
+    "EvaluationStatus": {
+      "type": "string",
+      "enum": [
+        "pass",
+        "fail",
+        "inconclusive",
+        "blocked",
+        "skipped"
+      ]
+    },
+    "EvidenceCondition": {
+      "type": "object",
+      "properties": {
+        "artifacts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ArtifactContract"
+          }
+        },
+        "condition_id": {
+          "$ref": "#/$defs/ConditionId"
+        },
+        "initial_source_frame_tile_limit": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "inputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ConditionInput"
+          }
+        },
+        "prompt_id": {
+          "$ref": "#/$defs/PromptId"
+        },
+        "retrieval_budget": {
+          "$ref": "#/$defs/RetrievalBudget"
+        },
+        "scoring_dimension_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ScoringDimensionId"
+          }
+        },
+        "source_interval_policy": {
+          "$ref": "#/$defs/SourceIntervalPolicy"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "condition_id",
+        "source_interval_policy",
+        "inputs",
+        "artifacts",
+        "initial_source_frame_tile_limit",
+        "retrieval_budget",
+        "prompt_id",
+        "scoring_dimension_ids"
       ]
     },
     "FixtureFile": {
@@ -178,6 +328,95 @@
         "name",
         "root_relative_path",
         "files"
+      ]
+    },
+    "InputIdentities": {
+      "type": "object",
+      "properties": {
+        "conditions_sha256": {
+          "type": "string"
+        },
+        "matrix_sha256": {
+          "type": "string"
+        },
+        "prompts_sha256": {
+          "type": "string"
+        },
+        "scoring_sha256": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "matrix_sha256",
+        "conditions_sha256",
+        "prompts_sha256",
+        "scoring_sha256"
+      ]
+    },
+    "MatrixDefinition": {
+      "type": "object",
+      "properties": {
+        "capture_order": {
+          "$ref": "#/$defs/MatrixOrder"
+        },
+        "capture_repetitions": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "interpretation_order": {
+          "$ref": "#/$defs/MatrixOrder"
+        },
+        "interpretation_repetitions": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "required_families": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CaseFamily"
+          }
+        },
+        "seed": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "stable_controls_required": {
+          "type": "boolean"
+        },
+        "status_rules": {
+          "$ref": "#/$defs/StatusRules"
+        },
+        "supplemental_families": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CaseFamily"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "seed",
+        "capture_repetitions",
+        "interpretation_repetitions",
+        "capture_order",
+        "interpretation_order",
+        "required_families",
+        "supplemental_families",
+        "stable_controls_required",
+        "status_rules"
+      ]
+    },
+    "MatrixOrder": {
+      "type": "string",
+      "enum": [
+        "family_case_duration_repetition",
+        "seeded_fisher_yates"
       ]
     },
     "PhaseBoundary": {
@@ -268,6 +507,64 @@
         "end"
       ]
     },
+    "PromptId": {
+      "type": "string",
+      "enum": [
+        "interpretation-v1",
+        "debugging-v1"
+      ]
+    },
+    "PromptSet": {
+      "type": "object",
+      "properties": {
+        "templates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PromptTemplate"
+          }
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "templates"
+      ]
+    },
+    "PromptTemplate": {
+      "type": "object",
+      "properties": {
+        "answer_kind": {
+          "$ref": "#/$defs/AnswerKind"
+        },
+        "id": {
+          "$ref": "#/$defs/PromptId"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "system_prompt": {
+          "type": "string"
+        },
+        "task_prompt": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "version",
+        "answer_kind",
+        "system_prompt",
+        "task_prompt",
+        "sha256"
+      ]
+    },
     "Rect": {
       "type": "object",
       "properties": {
@@ -298,6 +595,126 @@
         "y",
         "width",
         "height"
+      ]
+    },
+    "RetrievalBudget": {
+      "type": "object",
+      "properties": {
+        "region_filmstrips": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "source_frame_requests": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "source_frames_per_request": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "source_frame_requests",
+        "source_frames_per_request",
+        "region_filmstrips"
+      ]
+    },
+    "ScoringDimension": {
+      "type": "object",
+      "properties": {
+        "allowed_values": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "contributes_to_thesis": {
+          "type": "boolean"
+        },
+        "id": {
+          "$ref": "#/$defs/ScoringDimensionId"
+        },
+        "requires_ground_truth": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "allowed_values",
+        "requires_ground_truth",
+        "contributes_to_thesis"
+      ]
+    },
+    "ScoringDimensionId": {
+      "type": "string",
+      "enum": [
+        "transient_defect_identification",
+        "state_order",
+        "affected_region",
+        "motion_behavior",
+        "gap_uncertainty",
+        "stable_control_false_positive"
+      ]
+    },
+    "ScoringVocabulary": {
+      "type": "object",
+      "properties": {
+        "dimensions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ScoringDimension"
+          }
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "dimensions"
+      ]
+    },
+    "SourceIntervalPolicy": {
+      "type": "string",
+      "enum": [
+        "same_captured_source_interval"
+      ]
+    },
+    "StatusRules": {
+      "type": "object",
+      "properties": {
+        "blocked_precondition": {
+          "$ref": "#/$defs/EvaluationStatus"
+        },
+        "complete": {
+          "$ref": "#/$defs/EvaluationStatus"
+        },
+        "insufficient_evidence": {
+          "$ref": "#/$defs/EvaluationStatus"
+        },
+        "optional_unavailable": {
+          "$ref": "#/$defs/EvaluationStatus"
+        },
+        "threshold_failure": {
+          "$ref": "#/$defs/EvaluationStatus"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "complete",
+        "threshold_failure",
+        "insufficient_evidence",
+        "blocked_precondition",
+        "optional_unavailable"
       ]
     },
     "TimeInterval": {

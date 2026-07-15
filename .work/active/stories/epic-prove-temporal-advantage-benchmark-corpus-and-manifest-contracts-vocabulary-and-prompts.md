@@ -1,7 +1,7 @@
 ---
 id: epic-prove-temporal-advantage-benchmark-corpus-and-manifest-contracts-vocabulary-and-prompts
 kind: story
-stage: implementing
+stage: done
 tags: [testing, visual]
 parent: epic-prove-temporal-advantage-benchmark-corpus-and-manifest-contracts
 depends_on: [epic-prove-temporal-advantage-benchmark-corpus-and-manifest-contracts-corpus]
@@ -89,17 +89,38 @@ may invent a spelling or alias for these values.
 
 ## Acceptance evidence
 
-- [ ] The definition contains all five conditions, exact tile/retrieval budgets, prompt IDs and
+- [x] The definition contains all five conditions, exact tile/retrieval budgets, prompt IDs and
       hashes, scoring IDs, seed, fixed duration order, repetition minima, and order policy.
-- [ ] Canonical matrix generation produces the same ordered capture rows and randomized trial
+- [x] Canonical matrix generation produces the same ordered capture rows and randomized trial
       order on repeated runs and across platforms.
-- [ ] Prompt validation rejects unknown answer fields, unbounded strings, invalid enum values,
+- [x] Prompt validation rejects unknown answer fields, unbounded strings, invalid enum values,
       missing evidence references, or a claim of certainty with an unresolved gap.
-- [ ] The definition does not reveal a case label or defect mechanism in the model-facing prompt
+- [x] The definition does not reveal a case label or defect mechanism in the model-facing prompt
       templates or condition metadata.
-- [ ] The matrix explicitly marks the required family coverage and makes partial, missing, or
+- [x] The matrix explicitly marks the required family coverage and makes partial, missing, or
       unsupported rows `inconclusive`, `blocked`, or optional `skipped` according to the feature
       status rules rather than treating them as passing controls.
+
+## Implementation notes
+
+- **Execution capability**: inline feature-owning worker with direct-read integration mapping;
+  the existing corpus contract was the correct boundary for this cohesive extension.
+- **Review weight**: standard, inherited from project default; child stories advance directly to
+  `done` after verification and do not enter review.
+- **Files changed**: added `matrix.rs`, `conditions.rs`, `prompts.rs`, and `vocabulary.rs`; extended
+  `corpus.rs`/`lib.rs`; regenerated the canonical definition and JSON Schema; expanded corpus
+  contract tests.
+- **Tests added**: deterministic capture and seeded Fisher–Yates trial ordering, exact A–E
+  condition budgets, coverage status transitions, one scoring registry, prompt hash/non-leak
+  checks, unknown-field answer rejection, bounded answers, and input-identity checks.
+- **Simplification**: kept all condition, prompt, scoring, and status variants in typed registries;
+  no run manifest, scoring implementation, Chrome/artifact execution, CI output handling, or
+  compatibility alias was added.
+- **Discrepancies from design**: none; the definition remains the single current prepublic
+  contract and the authoritative generator remains the existing Rust binary.
+- **Adjacent issues parked**: none.
+- **Verification**: Rust 1.85 locked workspace fmt, check, test, and clippy gates pass; the
+  definition and schema were regenerated with `generate-benchmark-definition`.
 
 ## Ordering
 

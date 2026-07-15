@@ -820,6 +820,189 @@
       "variant": "caret"
     }
   ],
+  "conditions": [
+    {
+      "artifacts": [
+        {
+          "algorithm": "current-observation",
+          "kind": "final_screenshot",
+          "version": "1.0.0"
+        }
+      ],
+      "condition_id": "A-final-screenshot",
+      "initial_source_frame_tile_limit": 1,
+      "inputs": [
+        "final_screenshot",
+        "current_page_observation"
+      ],
+      "prompt_id": "interpretation-v1",
+      "retrieval_budget": {
+        "region_filmstrips": 0,
+        "source_frame_requests": 0,
+        "source_frames_per_request": 0
+      },
+      "scoring_dimension_ids": [
+        "transient_defect_identification",
+        "state_order",
+        "affected_region",
+        "motion_behavior",
+        "gap_uncertainty",
+        "stable_control_false_positive"
+      ],
+      "source_interval_policy": "same_captured_source_interval"
+    },
+    {
+      "artifacts": [
+        {
+          "algorithm": "uniform-source-storyboard",
+          "kind": "uniform_storyboard",
+          "version": "1.0.0"
+        }
+      ],
+      "condition_id": "B-uniform-storyboard",
+      "initial_source_frame_tile_limit": 8,
+      "inputs": [
+        "uniform_source_storyboard"
+      ],
+      "prompt_id": "interpretation-v1",
+      "retrieval_budget": {
+        "region_filmstrips": 0,
+        "source_frame_requests": 0,
+        "source_frames_per_request": 0
+      },
+      "scoring_dimension_ids": [
+        "transient_defect_identification",
+        "state_order",
+        "affected_region",
+        "motion_behavior",
+        "gap_uncertainty",
+        "stable_control_false_positive"
+      ],
+      "source_interval_policy": "same_captured_source_interval"
+    },
+    {
+      "artifacts": [
+        {
+          "algorithm": "temporal-storyboard",
+          "kind": "change_aware_storyboard",
+          "version": "1.1.0"
+        }
+      ],
+      "condition_id": "C-change-aware-storyboard",
+      "initial_source_frame_tile_limit": 8,
+      "inputs": [
+        "change_aware_source_storyboard"
+      ],
+      "prompt_id": "interpretation-v1",
+      "retrieval_budget": {
+        "region_filmstrips": 0,
+        "source_frame_requests": 0,
+        "source_frames_per_request": 0
+      },
+      "scoring_dimension_ids": [
+        "transient_defect_identification",
+        "state_order",
+        "affected_region",
+        "motion_behavior",
+        "gap_uncertainty",
+        "stable_control_false_positive"
+      ],
+      "source_interval_policy": "same_captured_source_interval"
+    },
+    {
+      "artifacts": [
+        {
+          "algorithm": "temporal-storyboard",
+          "kind": "before_during_after",
+          "version": "1.1.0"
+        },
+        {
+          "algorithm": "temporal-storyboard",
+          "kind": "change_aware_storyboard",
+          "version": "1.1.0"
+        },
+        {
+          "algorithm": "temporal-difference-map",
+          "kind": "difference_map",
+          "version": "v1"
+        },
+        {
+          "algorithm": "temporal-debug-bundle",
+          "kind": "temporal_debug_bundle",
+          "version": "1.0.0"
+        }
+      ],
+      "condition_id": "D-temporal-bundle",
+      "initial_source_frame_tile_limit": 8,
+      "inputs": [
+        "before_during_after_composite",
+        "change_aware_source_storyboard",
+        "difference_map",
+        "capture_summary",
+        "evidence_references"
+      ],
+      "prompt_id": "interpretation-v1",
+      "retrieval_budget": {
+        "region_filmstrips": 0,
+        "source_frame_requests": 0,
+        "source_frames_per_request": 0
+      },
+      "scoring_dimension_ids": [
+        "transient_defect_identification",
+        "state_order",
+        "affected_region",
+        "motion_behavior",
+        "gap_uncertainty",
+        "stable_control_false_positive"
+      ],
+      "source_interval_policy": "same_captured_source_interval"
+    },
+    {
+      "artifacts": [
+        {
+          "algorithm": "temporal-debug-bundle",
+          "kind": "temporal_debug_bundle",
+          "version": "1.0.0"
+        },
+        {
+          "algorithm": "retained-source-frame",
+          "kind": "source_frame",
+          "version": "1.0.0"
+        },
+        {
+          "algorithm": "region-filmstrip",
+          "kind": "region_filmstrip",
+          "version": "1.0.0"
+        }
+      ],
+      "condition_id": "E-progressive-source",
+      "initial_source_frame_tile_limit": 8,
+      "inputs": [
+        "before_during_after_composite",
+        "change_aware_source_storyboard",
+        "difference_map",
+        "capture_summary",
+        "evidence_references",
+        "source_frame_retrieval",
+        "region_filmstrip_retrieval"
+      ],
+      "prompt_id": "interpretation-v1",
+      "retrieval_budget": {
+        "region_filmstrips": 1,
+        "source_frame_requests": 2,
+        "source_frames_per_request": 4
+      },
+      "scoring_dimension_ids": [
+        "transient_defect_identification",
+        "state_order",
+        "affected_region",
+        "motion_behavior",
+        "gap_uncertainty",
+        "stable_control_false_positive"
+      ],
+      "source_interval_policy": "same_captured_source_interval"
+    }
+  ],
   "device_scale_factor_milli": 1000,
   "duration_ms": [
     16,
@@ -850,7 +1033,129 @@
     "name": "temporal-benchmark",
     "root_relative_path": "tests/fixtures/browser/temporal-benchmark"
   },
+  "input_identities": {
+    "conditions_sha256": "sha256:507ab51e84af716f9b5e67a05210a6c58105675ccf471c757189cf110029503d",
+    "matrix_sha256": "sha256:e0cd45ad9eac4783ea0154495024a96d0bd525185d82bf696cde090e1e66f6ed",
+    "prompts_sha256": "sha256:d6967bbc948f0e31f9710247ec8b2fbaa091c5345e49fdb379bfd1bddd7c2fd1",
+    "scoring_sha256": "sha256:bfb5f2441a97cb011e043e685b78d4eeeee9088abd4d5544eb4591eec2a21533"
+  },
+  "matrix": {
+    "capture_order": "family_case_duration_repetition",
+    "capture_repetitions": 30,
+    "interpretation_order": "seeded_fisher_yates",
+    "interpretation_repetitions": 10,
+    "required_families": [
+      "movement_reversal",
+      "flicker",
+      "transient_layout"
+    ],
+    "seed": 5427487694229099073,
+    "stable_controls_required": true,
+    "status_rules": {
+      "blocked_precondition": "blocked",
+      "complete": "pass",
+      "insufficient_evidence": "inconclusive",
+      "optional_unavailable": "skipped",
+      "threshold_failure": "fail"
+    },
+    "supplemental_families": [
+      "dom_opaque_motion"
+    ]
+  },
+  "prompts": {
+    "templates": [
+      {
+        "answer_kind": "interpretation",
+        "id": "interpretation-v1",
+        "sha256": "sha256:20a8ac9b6afdf979175fe9a6214c3a9a78a3e9015ae047f3ffa31fd858740397",
+        "system_prompt": "You inspect browser evidence as an observation task. Describe only visible sequence, region, and uncertainty supported by supplied evidence. Do not infer causes, diagnoses, or hidden implementation details. If a capture gap or missing source prevents a claim, use uncertain and name the limitation. Return only the JSON object required by the answer contract.",
+        "task_prompt": "Inspect the supplied browser evidence and return JSON. State whether a temporary visible state occurred; list visible state order; identify the affected region or unknown; classify motion or visual behavior; judge defective, intentional, or uncertain; list uncertainty reasons; and cite opaque evidence references. Do not use labels not visible in the evidence.",
+        "version": "1"
+      },
+      {
+        "answer_kind": "debugging",
+        "id": "debugging-v1",
+        "sha256": "sha256:2b35db61b41969c6a58209ee14a76a56f2e2e8f04eae4594cffa3efb72fa6804",
+        "system_prompt": "You are completing a bounded browser debugging task after inspecting supplied evidence. Keep observation, diagnosis, patch, and verification separate. Do not claim a cause not supported by the repository or evidence. Return only the JSON object required by the answer contract.",
+        "task_prompt": "Reproduce the reported browser behavior, record whether reproduction succeeded, summarize the supported diagnosis, record whether a focused patch was applied, and state whether final-state and temporal verification succeeded. Use opaque evidence references and uncertainty when verification is unavailable.",
+        "version": "1"
+      }
+    ],
+    "version": "1"
+  },
   "schema_version": 1,
+  "scoring": {
+    "dimensions": [
+      {
+        "allowed_values": [
+          "defective",
+          "intentional",
+          "uncertain"
+        ],
+        "contributes_to_thesis": true,
+        "id": "transient_defect_identification",
+        "requires_ground_truth": true
+      },
+      {
+        "allowed_values": [
+          "baseline",
+          "changed",
+          "final",
+          "intentional_motion",
+          "unknown"
+        ],
+        "contributes_to_thesis": true,
+        "id": "state_order",
+        "requires_ground_truth": true
+      },
+      {
+        "allowed_values": [
+          "match",
+          "mismatch",
+          "unknown"
+        ],
+        "contributes_to_thesis": true,
+        "id": "affected_region",
+        "requires_ground_truth": true
+      },
+      {
+        "allowed_values": [
+          "monotonic",
+          "reversal",
+          "teleport",
+          "flicker",
+          "layout_shift",
+          "none",
+          "uncertain"
+        ],
+        "contributes_to_thesis": true,
+        "id": "motion_behavior",
+        "requires_ground_truth": true
+      },
+      {
+        "allowed_values": [
+          "calibrated",
+          "overclaim",
+          "underclaim",
+          "not_applicable"
+        ],
+        "contributes_to_thesis": true,
+        "id": "gap_uncertainty",
+        "requires_ground_truth": false
+      },
+      {
+        "allowed_values": [
+          "positive",
+          "negative",
+          "uncertain"
+        ],
+        "contributes_to_thesis": true,
+        "id": "stable_control_false_positive",
+        "requires_ground_truth": true
+      }
+    ],
+    "version": "1"
+  },
   "viewport_height": 450,
   "viewport_width": 800
 }

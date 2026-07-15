@@ -3,7 +3,13 @@ use std::collections::BTreeSet;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{ContractError, Result, canonical};
+use crate::{
+    ContractError, Result, canonical,
+    conditions::{EvidenceCondition, canonical_conditions},
+    matrix::MatrixDefinition,
+    prompts::PromptSet,
+    vocabulary::ScoringVocabulary,
+};
 
 pub const BENCHMARK_SCHEMA_VERSION: u16 = 1;
 pub const BENCHMARK_ID: &str = "temporal-advantage-corpus-v1";
@@ -156,6 +162,31 @@ pub struct FixtureIdentity {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct InputIdentities {
+    pub matrix_sha256: String,
+    pub conditions_sha256: String,
+    pub prompts_sha256: String,
+    pub scoring_sha256: String,
+}
+
+impl InputIdentities {
+    fn from_parts(
+        matrix: &MatrixDefinition,
+        conditions: &[EvidenceCondition],
+        prompts: &PromptSet,
+        scoring: &ScoringVocabulary,
+    ) -> Result<Self> {
+        Ok(Self {
+            matrix_sha256: crate::sha256_prefixed(&canonical::canonical_json(matrix)?),
+            conditions_sha256: crate::sha256_prefixed(&canonical::canonical_json(conditions)?),
+            prompts_sha256: crate::sha256_prefixed(&canonical::canonical_json(prompts)?),
+            scoring_sha256: crate::sha256_prefixed(&canonical::canonical_json(scoring)?),
+        })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct BenchmarkDefinition {
     pub schema_version: u16,
     pub benchmark_id: String,
@@ -165,10 +196,22 @@ pub struct BenchmarkDefinition {
     pub device_scale_factor_milli: u16,
     pub duration_ms: Vec<u16>,
     pub cases: Vec<CaseDefinition>,
+    pub matrix: MatrixDefinition,
+    pub conditions: Vec<EvidenceCondition>,
+    pub prompts: PromptSet,
+    pub scoring: ScoringVocabulary,
+    pub input_identities: InputIdentities,
 }
 
 impl BenchmarkDefinition {
     pub fn canonical() -> Self {
+        let matrix = MatrixDefinition::canonical();
+        let conditions = canonical_conditions();
+        let prompts = PromptSet::canonical();
+        let scoring = ScoringVocabulary::canonical();
+        let input_identities =
+            InputIdentities::from_parts(&matrix, &conditions, &prompts, &scoring)
+                .expect("canonical benchmark inputs must hash");
         Self {
             schema_version: BENCHMARK_SCHEMA_VERSION,
             benchmark_id: BENCHMARK_ID.into(),
@@ -178,6 +221,11 @@ impl BenchmarkDefinition {
             device_scale_factor_milli: DEVICE_SCALE_FACTOR_MILLI,
             duration_ms: DURATIONS_MS.to_vec(),
             cases: expected_cases(),
+            matrix,
+            conditions,
+            prompts,
+            scoring,
+            input_identities,
         }
     }
 
@@ -213,6 +261,48 @@ impl BenchmarkDefinition {
             ));
         }
         validate_fixture(&self.fixture)?;
+
+        let expected_matrix = MatrixDefinition::canonical();
+        if self.matrix != expected_matrix {
+            return Err(ContractError::new(
+                "matrix does not match the current deterministic trial contract",
+            ));
+        }
+        self.matrix.validate()?;
+        let expected_conditions = canonical_conditions();
+        if self.conditions != expected_conditions {
+            return Err(ContractError::new(
+                "conditions do not match the current A-E evidence contract",
+            ));
+        }
+        for condition in &self.conditions {
+            condition.validate()?;
+        }
+        let expected_prompts = PromptSet::canonical();
+        if self.prompts != expected_prompts {
+            return Err(ContractError::new(
+                "prompts do not match the current model-facing contract",
+            ));
+        }
+        self.prompts.validate()?;
+        let expected_scoring = ScoringVocabulary::canonical();
+        if self.scoring != expected_scoring {
+            return Err(ContractError::new(
+                "scoring vocabulary does not match the current contract",
+            ));
+        }
+        self.scoring.validate()?;
+        let expected_identities = InputIdentities::from_parts(
+            &self.matrix,
+            &self.conditions,
+            &self.prompts,
+            &self.scoring,
+        )?;
+        if self.input_identities != expected_identities {
+            return Err(ContractError::new(
+                "input identities do not match their canonical contract inputs",
+            ));
+        }
 
         let expected = expected_cases();
         if self.cases != expected {

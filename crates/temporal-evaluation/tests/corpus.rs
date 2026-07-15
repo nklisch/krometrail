@@ -2,7 +2,10 @@ use std::fs;
 use std::path::PathBuf;
 
 use temporal_evaluation::{
-    BENCHMARK_ID, BenchmarkDefinition, DURATIONS_MS, FixtureFile, benchmark_definition_schema,
+    AnswerRegion, AnswerTruth, AnswerValidationContext, BENCHMARK_ID, BenchmarkDefinition,
+    ConditionId, DURATIONS_MS, DebuggingAnswer, FixtureFile, InterpretationAnswer, Judgment,
+    MATRIX_SEED, MotionBehavior, ScoringDimensionId, StateLabel, UncertaintyReason,
+    benchmark_definition_schema, parse_interpretation_answer, validate_debugging_answer,
 };
 
 const DEFINITION_BYTES: &[u8] =
@@ -122,6 +125,203 @@ fn canonical_case_registry_has_exact_phase_duration_and_final_state_contracts() 
             .iter()
             .filter(|case| case.intent == temporal_evaluation::CaseIntent::Intentional)
             .all(|case| case.defect_interval.is_none())
+    );
+}
+
+#[test]
+fn deterministic_capture_and_interpretation_matrices_are_platform_independent() {
+    let definition = definition();
+    let capture = definition
+        .matrix
+        .capture_trials(&definition.cases, &definition.duration_ms)
+        .unwrap();
+    let capture_again = definition
+        .matrix
+        .capture_trials(&definition.cases, &definition.duration_ms)
+        .unwrap();
+    assert_eq!(capture, capture_again);
+    assert_eq!(capture.len(), 13 * 5 * 30);
+    assert_eq!(
+        capture.first().unwrap().trial_id,
+        "capture:movement-reversal/basic/16/0"
+    );
+    assert_eq!(
+        capture[29].trial_id,
+        "capture:movement-reversal/basic/16/29"
+    );
+    assert_eq!(capture[30].trial_id, "capture:movement-reversal/basic/33/0");
+    assert_eq!(
+        capture.last().unwrap().trial_id,
+        "capture:stable/smooth-panel/200/29"
+    );
+
+    let conditions = ConditionId::ALL.to_vec();
+    let interpretation = definition
+        .matrix
+        .interpretation_trials(&definition.cases, &definition.duration_ms, &conditions)
+        .unwrap();
+    let interpretation_again = definition
+        .matrix
+        .interpretation_trials(&definition.cases, &definition.duration_ms, &conditions)
+        .unwrap();
+    assert_eq!(interpretation, interpretation_again);
+    assert_eq!(interpretation.len(), 13 * 5 * 5 * 10);
+    assert!(
+        interpretation
+            .iter()
+            .all(|trial| conditions.contains(&trial.condition_id))
+    );
+    assert_eq!(definition.matrix.seed, MATRIX_SEED);
+}
+
+#[test]
+fn matrix_coverage_uses_explicit_non_passing_statuses() {
+    let matrix = &definition().matrix;
+    assert_eq!(
+        matrix.coverage_status(true, 0, 10),
+        temporal_evaluation::EvaluationStatus::Blocked
+    );
+    assert_eq!(
+        matrix.coverage_status(true, 9, 10),
+        temporal_evaluation::EvaluationStatus::Inconclusive
+    );
+    assert_eq!(
+        matrix.coverage_status(true, 10, 10),
+        temporal_evaluation::EvaluationStatus::Pass
+    );
+    assert_eq!(
+        matrix.coverage_status(false, 0, 10),
+        temporal_evaluation::EvaluationStatus::Skipped
+    );
+    assert_eq!(
+        matrix.coverage_status(false, 10, 10),
+        temporal_evaluation::EvaluationStatus::Pass
+    );
+}
+
+#[test]
+fn conditions_and_scoring_vocabulary_are_one_exact_registry() {
+    let definition = definition();
+    assert_eq!(
+        definition
+            .conditions
+            .iter()
+            .map(|condition| condition.condition_id)
+            .collect::<Vec<_>>(),
+        ConditionId::ALL
+    );
+    assert_eq!(
+        definition
+            .scoring
+            .dimensions
+            .iter()
+            .map(|dimension| dimension.id)
+            .collect::<Vec<_>>(),
+        ScoringDimensionId::ALL
+    );
+    for condition in &definition.conditions {
+        assert_eq!(condition.scoring_dimension_ids, ScoringDimensionId::ALL);
+        assert_eq!(
+            condition.source_interval_policy,
+            temporal_evaluation::SourceIntervalPolicy::SameCapturedSourceInterval
+        );
+    }
+    let serialized = serde_json::to_string(&definition.conditions).unwrap();
+    for forbidden in [
+        "movement-reversal",
+        "flicker",
+        "transient-layout",
+        "dom-opaque",
+        "stable-control",
+        "case_id",
+        "variant",
+        "ground truth",
+    ] {
+        assert!(
+            !serialized.contains(forbidden),
+            "condition leaks {forbidden}"
+        );
+    }
+}
+
+#[test]
+fn prompts_have_exact_hashes_bounded_answers_and_no_fixture_metadata() {
+    let definition = definition();
+    definition.prompts.validate().unwrap();
+    for template in &definition.prompts.templates {
+        assert_eq!(template.sha256, template.computed_sha256().unwrap());
+        let text = format!("{} {}", template.system_prompt, template.task_prompt).to_lowercase();
+        for forbidden in [
+            "movement-reversal",
+            "flicker",
+            "transient layout",
+            "dom-opaque",
+            "stable control",
+            "case id",
+            "variant",
+            "ground truth",
+        ] {
+            assert!(!text.contains(forbidden), "prompt leaks {forbidden}");
+        }
+    }
+
+    let answer = InterpretationAnswer {
+        temporary_state: AnswerTruth::Uncertain,
+        state_order: vec![StateLabel::Baseline, StateLabel::Unknown],
+        affected_region: AnswerRegion::Unknown,
+        motion_behavior: MotionBehavior::Uncertain,
+        judgment: Judgment::Uncertain,
+        uncertainty_reasons: vec![UncertaintyReason::CaptureGap],
+        evidence_refs: vec!["frame_1".into()],
+    };
+    let bytes = serde_json::to_vec(&answer).unwrap();
+    parse_interpretation_answer(
+        &bytes,
+        AnswerValidationContext {
+            unresolved_capture_gap: true,
+            missing_source: false,
+        },
+    )
+    .unwrap();
+
+    let mut invalid = serde_json::to_value(answer).unwrap();
+    invalid["unexpected"] = serde_json::json!(true);
+    assert!(
+        parse_interpretation_answer(
+            serde_json::to_string(&invalid).unwrap().as_bytes(),
+            AnswerValidationContext {
+                unresolved_capture_gap: false,
+                missing_source: false,
+            },
+        )
+        .is_err()
+    );
+
+    let debugging = DebuggingAnswer {
+        reproduced: AnswerTruth::Yes,
+        diagnosis: "supported diagnosis".into(),
+        patch_applied: AnswerTruth::Yes,
+        final_state_verified: AnswerTruth::Yes,
+        temporal_behavior_verified: AnswerTruth::Yes,
+        evidence_refs: vec!["artifact_1".into()],
+    };
+    validate_debugging_answer(&debugging).unwrap();
+    let mut invalid_debugging = debugging;
+    invalid_debugging.diagnosis = "x".repeat(513);
+    assert!(validate_debugging_answer(&invalid_debugging).is_err());
+}
+
+#[test]
+fn input_identities_change_when_a_canonical_definition_input_changes() {
+    let definition = definition();
+    let mut changed = definition.clone();
+    changed.matrix.seed = definition.matrix.seed.wrapping_add(1);
+    assert!(changed.validate().is_err());
+    assert_ne!(
+        definition.input_identities.matrix_sha256,
+        temporal_evaluation::sha256_prefixed(
+            &temporal_evaluation::canonical_json(&changed.matrix).unwrap()
+        )
     );
 }
 
