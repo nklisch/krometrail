@@ -1,14 +1,14 @@
 ---
 id: epic-prove-temporal-advantage-live-capture-and-system-qualification-manifest-status-and-operator-evidence
 kind: story
-stage: implementing
+stage: done
 tags: [testing, infra, visual]
 parent: epic-prove-temporal-advantage-live-capture-and-system-qualification
 depends_on: [epic-prove-temporal-advantage-live-capture-and-system-qualification-retention-recovery-and-performance]
 release_binding: null
 gate_origin: null
 created: 2026-07-14
-updated: 2026-07-14
+updated: 2026-07-15
 ---
 
 # Finalize honest live qualification evidence
@@ -54,23 +54,58 @@ and that the existing high-DPI evidence gap remains owned by platform evidence.
 
 ## Acceptance evidence
 
-- [ ] Canonical manifest bytes round-trip deterministically, include every registered gate exactly
+- [x] Canonical manifest bytes round-trip deterministically, include every registered gate exactly
       once, preserve source/observed/session clocks and gap IDs, and contain no private paths,
       payloads, model data, raw page text, credentials, or remote URLs.
-- [ ] Status tests cover no-opt-in/no-output, required browser blocked, optional Chromium skipped,
+- [x] Status tests cover no-opt-in/no-output, required browser blocked, optional Chromium skipped,
       incomplete/inconclusive, complete fail, complete pass, cleanup failure, and finalization
       failure.
-- [ ] A passing manifest cannot contain a missing measurement, unresolved gap, unavailable
+- [x] A passing manifest cannot contain a missing measurement, unresolved gap, unavailable
       resource, wrong viewport/scale, failed control observation, failed retention/recovery gate,
       or cleanup failure.
-- [ ] Output is written only under ignored `target/temporal-evaluation/`; no product command or
+- [x] Output is written only under ignored `target/temporal-evaluation/`; no product command or
       generated documentation is changed.
-- [ ] Operator instructions distinguish qualification from authorized live evidence and state
+- [x] Operator instructions distinguish qualification from authorized live evidence and state
       high-DPI/model/cross-platform/advantage non-claims and required local blockers.
-- [ ] Final verification runs the standard Rust gates without launching Chrome; the live path is
+- [x] Final verification runs the standard Rust gates without launching Chrome; the live path is
       not invoked during design or ordinary tests.
 
 ## Ordering
 
 This is the final sequential checkpoint. It depends on all concrete capture, control, retention,
 recovery, resource, and latency measurements and makes the feature ready for integrated review.
+
+## Implementation notes
+
+- Execution capability: inline feature-owner implementation; this final checkpoint joined existing
+  production measurement records without adding a second runtime, store, or result schema.
+- Review weight: standard integrated parent-feature review; this child advanced directly to `done`.
+- Files changed: `src/app/live_evaluation/report.rs`, `src/app/live_evaluation.rs`,
+  `crates/temporal-evaluation/src/{lib.rs,manifest.rs,matrix.rs}`,
+  `crates/temporal-evaluation/tests/{contracts.rs,live_qualification.rs}`,
+  `docs/evidence/temporal-evaluation/v1/{README.md,run-manifest.schema.json}`.
+- Tests added or strengthened: canonical assembler and gate-order/status-precedence coverage;
+  required-browser blocked and optional-Chromium skipped assembly; missing measurement, gap,
+  resource, control, retention/recovery, and cleanup non-passing invariants; atomic round-trip and
+  safe finalization-error output; fixed non-claims and explicit code/harness versus authorized-live
+  evidence mode.
+- Simplification: removed the prior duplicate finalization implementation from the composition
+  module and kept one report authority for status aggregation, cleanup finalization, safe output
+  paths, and atomic publication.
+- Discrepancies from design: the existing `RunManifest` was extended in place with a typed
+  `qualification.evidence_mode` so the output explicitly distinguishes code/harness qualification
+  from operator-authorized live capture; no parallel schema was introduced.
+- Adjacent issues parked: none.
+
+## Verification evidence
+
+- Rust 1.85 locked fmt, default workspace check/test/clippy, qualification-support workspace
+  check/test/clippy, and qualification-support CDP check/test/clippy all passed.
+- Final default verification reported 704 passing tests and 1 ignored; qualification-support
+  verification reported 717 passing tests and 2 ignored. No live variables were enabled, ignored
+  live tests were not invoked, and Chrome was not launched.
+- The actual operator-authorized live qualification has **not** been run; no production browser
+  identity, live source frames, live gaps, resource samples, latency measurements, or live pass
+  are claimed by this implementation.
+- `.work/bin/work-view` remains the intentional 772736-byte user modification and was not
+  checked out, overwritten, staged, or committed.

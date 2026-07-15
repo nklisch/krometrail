@@ -23,9 +23,7 @@ use krometrail_core::{
     KrometrailError, MonotonicClock, NonEmptyText, Result,
 };
 use krometrail_store::RecordingStore;
-use temporal_evaluation::{
-    EvaluationStatus, FailureRecord, LiveQualification, RunFailureCode, RunManifest,
-};
+use temporal_evaluation::{FailureRecord, RunFailureCode};
 
 mod barriers;
 mod capture;
@@ -33,6 +31,7 @@ mod control;
 mod fixture_observation;
 mod latency;
 mod recovery;
+mod report;
 mod resource_usage;
 mod retention;
 
@@ -71,6 +70,7 @@ impl OptInDecision {
 pub struct LiveQualificationConfig {
     pub output_root: PathBuf,
     pub browser_product: BrowserProduct,
+    pub run_id: String,
     pub optional_browser: bool,
     pub retention_budget: DiskBudgetBytes,
 }
@@ -82,6 +82,7 @@ impl Default for LiveQualificationConfig {
         Self {
             output_root,
             browser_product: BrowserProduct::Chrome,
+            run_id: format!("run-{}", std::process::id()),
             optional_browser: false,
             retention_budget: DiskBudgetBytes::default(),
         }
@@ -89,16 +90,27 @@ impl Default for LiveQualificationConfig {
 }
 
 impl LiveQualificationConfig {
+    pub fn run_root(&self) -> PathBuf {
+        let run_id = if safe_path_component(&self.run_id) {
+            self.run_id.as_str()
+        } else {
+            "invalid-run-id"
+        };
+        self.output_root
+            .join(self.browser_product.as_str())
+            .join(run_id)
+    }
+
     pub fn data_root(&self) -> PathBuf {
-        self.output_root.join("store")
+        self.run_root().join("store")
     }
 
     pub fn profile_root(&self) -> PathBuf {
-        self.output_root.join("profiles")
+        self.run_root().join("profiles")
     }
 
     pub fn output_path(&self) -> PathBuf {
-        self.output_root.join("run-manifest.json")
+        self.run_root().join("run-manifest.json")
     }
 
     pub fn uses_optional_linux_chromium(&self) -> bool {
@@ -446,116 +458,16 @@ impl CleanupObservation {
             && self.lock_released
             && self.remaining_managed_resources == 0
     }
-
-    fn apply(&self, qualification: &mut LiveQualification) {
-        qualification.cleanup = temporal_evaluation::CleanupQualificationMeasurements {
-            server_stopped: self.server_stopped,
-            profile_deleted: self.profile_deleted,
-            store_flushed: self.store_flushed,
-            lock_released: self.lock_released,
-            output_finalized: true,
-            remaining_managed_resources: self.remaining_managed_resources,
-        };
-        if !self.is_clean() {
-            if let Some(gate) = qualification
-                .gates
-                .iter_mut()
-                .find(|gate| gate.gate == temporal_evaluation::QualificationGateId::Cleanup)
-            {
-                gate.status = EvaluationStatus::Inconclusive;
-                gate.failure = Some(FailureRecord {
-                    code: RunFailureCode::Cleanup,
-                    phase: "cleanup".into(),
-                    reason: "managed qualification resources remain after cleanup".into(),
-                    recovery: "remove the remaining managed resources before retrying".into(),
-                    retryable: true,
-                });
-            }
-        }
-    }
 }
 
-/// Finalize exactly one existing `RunManifest` after cleanup. The path is fixed to the ignored
-/// qualification boundary and never enters the manifest.
-pub async fn finalize_manifest(
-    mut run: RunManifest,
-    cleanup: CleanupObservation,
-) -> Result<PathBuf> {
-    if OptInDecision::from_environment() != OptInDecision::Authorized {
-        return Err(live_error(
-            ErrorCode::InvalidLifecycleTransition,
-            "live manifest finalization requires both explicit opt-in gates",
-        ));
-    }
-    finalize_manifest_at(
-        &mut run,
-        cleanup,
-        &LiveQualificationConfig::default().output_path(),
-    )
-}
-
-fn finalize_manifest_at(
-    run: &mut RunManifest,
-    cleanup: CleanupObservation,
-    path: &Path,
-) -> Result<PathBuf> {
-    let Some(qualification) = run.qualification.as_mut() else {
-        return Err(live_error(
-            ErrorCode::InvalidInput,
-            "live manifest finalization requires qualification measurements",
-        ));
-    };
-    cleanup.apply(qualification);
-    if !cleanup.is_clean() && run.status == EvaluationStatus::Pass {
-        run.status = EvaluationStatus::Inconclusive;
-        run.failure = Some(FailureRecord {
-            code: RunFailureCode::Cleanup,
-            phase: "cleanup".into(),
-            reason: "qualification cleanup did not complete".into(),
-            recovery: "remove the remaining managed resources before retrying".into(),
-            retryable: true,
-        });
-    }
-    run.validate().map_err(|error| {
-        live_error(
-            ErrorCode::InvalidInput,
-            "live manifest failed final validation",
-        )
-        .with_recovery(NonEmptyText::new(error.to_string()).expect("contract error text"))
-    })?;
-    let bytes = run.canonical_bytes().map_err(|_| {
-        live_error(
-            ErrorCode::PersistenceFailed,
-            "live manifest could not be canonicalized",
-        )
-    })?;
-    let parent = path.parent().ok_or_else(|| {
-        live_error(
-            ErrorCode::PersistenceFailed,
-            "live output boundary is invalid",
-        )
-    })?;
-    fs::create_dir_all(parent).map_err(|_| {
-        live_error(
-            ErrorCode::PersistenceFailed,
-            "live output boundary could not be prepared",
-        )
-    })?;
-    let temporary = path.with_extension("json.partial");
-    fs::write(&temporary, bytes).map_err(|_| {
-        live_error(
-            ErrorCode::PersistenceFailed,
-            "live manifest could not be written",
-        )
-    })?;
-    fs::rename(&temporary, path).map_err(|_| {
-        let _ = fs::remove_file(&temporary);
-        live_error(
-            ErrorCode::PersistenceFailed,
-            "live manifest could not be finalized",
-        )
-    })?;
-    Ok(path.to_owned())
+fn safe_path_component(value: &str) -> bool {
+    !value.is_empty()
+        && value != "."
+        && value != ".."
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
 }
 
 fn remove_tree(path: &Path) -> bool {
@@ -667,11 +579,25 @@ mod tests {
     fn output_root_is_the_only_default_boundary() {
         let config = LiveQualificationConfig::default();
         assert!(
-            config
-                .output_path()
-                .ends_with("target/temporal-evaluation/live/run-manifest.json")
+            config.output_path().ends_with(
+                format!(
+                    "target/temporal-evaluation/live/chrome/{}/run-manifest.json",
+                    config.run_id
+                )
+                .as_str()
+            )
         );
         assert!(config.data_root().starts_with(&config.output_root));
         assert!(config.profile_root().starts_with(&config.output_root));
+
+        let unsafe_config = LiveQualificationConfig {
+            run_id: "../private".into(),
+            ..config
+        };
+        assert!(
+            unsafe_config
+                .run_root()
+                .ends_with("target/temporal-evaluation/live/chrome/invalid-run-id")
+        );
     }
 }

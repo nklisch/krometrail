@@ -1,7 +1,7 @@
 ---
 id: epic-prove-temporal-advantage-live-capture-and-system-qualification
 kind: feature
-stage: implementing
+stage: review
 tags: [testing, infra, visual]
 parent: epic-prove-temporal-advantage
 depends_on: [epic-prove-temporal-advantage-benchmark-corpus-and-manifest-contracts, epic-prove-temporal-advantage-deterministic-scoring-and-artifact-conditions]
@@ -480,7 +480,26 @@ and later authorized model lanes.
   `ArtifactCacheDisposition`; `Mixed` is distinct from all-generated `Cold`, all-hit `Warm`, and
   `Unavailable`. The direct artifact pair remains the uncached `<5 s` target and the repeated
   all-hit bundle remains the warm `<1 s` target. The first bundle is intentionally recorded as
-  mixed when the direct request has warmed its shared difference-map key; the final report story
-  was not started.
+  mixed when the direct request has warmed its shared difference-map key.
 - Adjacent decisions: the high-DPI gap remains owned by platform evidence; no backlog item was
   created because it is an explicit upstream contract/blocker rather than an incidental bug.
+
+## Integrated implementation evidence
+
+- The final checkpoint is implemented in one report authority: it assembles registry-ordered
+  qualification gates, derives honest status precedence, carries typed evidence mode and fixed
+  live non-claims, validates complete-pass invariants, and atomically publishes only beneath the
+  ignored `target/temporal-evaluation/live/<browser>/<run>/` boundary with a safe finalization-error
+  report. The prior duplicate finalizer was removed from the composition module.
+- The child checkpoint is legitimately `done`; all preceding capture, control, retention/recovery,
+  and latency authorities remain its inputs. The parent feature stays at `stage: review` for the
+  integrated feature review.
+- Final focused verification: `cargo fmt --all -- --check`; root report tests (5 passed) with
+  `--features qualification-support`; `temporal-evaluation` live qualification tests (9 passed);
+  and manifest contract tests (5 passed). Prior Rust 1.85 locked default, qualification-support,
+  and qualification-support CDP check/test/clippy gates remain applicable; no code correction was
+  made after those full gates.
+- Actual operator-authorized live evidence was **not run and remains uncollected**: no live browser
+  identity, source frames, gaps, resource samples, latency measurements, or live pass is claimed.
+  No Chrome, model, paid/remote service, performance/report follow-up, or backlog work was started;
+  `.work/bin/work-view` was not restored, staged, or committed.

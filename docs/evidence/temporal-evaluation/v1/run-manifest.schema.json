@@ -787,6 +787,9 @@
         "control": {
           "$ref": "#/$defs/ControlQualificationMeasurements"
         },
+        "evidence_mode": {
+          "$ref": "#/$defs/QualificationEvidenceMode"
+        },
         "gates": {
           "type": "array",
           "items": {
@@ -812,6 +815,7 @@
       "additionalProperties": false,
       "required": [
         "profile",
+        "evidence_mode",
         "gates",
         "capture",
         "control",
@@ -1232,6 +1236,13 @@
         "interpretation-v1",
         "debugging-v1",
         "capture-qualification-v1"
+      ]
+    },
+    "QualificationEvidenceMode": {
+      "type": "string",
+      "enum": [
+        "code_harness",
+        "operator_authorized_live_capture"
       ]
     },
     "QualificationGateId": {

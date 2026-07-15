@@ -8,6 +8,22 @@ pub const CAPTURE_REPETITIONS: u16 = 30;
 pub const INTERPRETATION_REPETITIONS: u16 = 10;
 pub const LIVE_QUALIFICATION_PROFILE: &str = "live-qualification-v1";
 
+/// The fixed boundary for a live system qualification. These strings describe what the
+/// production capture/storage measurement does not establish; they are deliberately not reused
+/// as model-evaluation or product-thesis claims.
+pub const LIVE_NON_CLAIMS: [&str; 10] = [
+    "No model call or model data was used.",
+    "No remote or paid service was used.",
+    "Only the declared default-DPI capture configuration was measured.",
+    "This run makes no high-DPI conclusion; high-DPI evidence belongs to platform evidence.",
+    "This run makes no cross-platform conclusion.",
+    "This run makes no model-effectiveness conclusion.",
+    "This run makes no temporal-advantage uplift conclusion.",
+    "This run makes no production-scale stability claim.",
+    "A local pass qualifies only the declared configuration on the declared reference host.",
+    "macOS and high-DPI evidence are separate platform evidence and do not block later agent-effectiveness trials on a declared reference host.",
+];
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum EvaluationStatus {

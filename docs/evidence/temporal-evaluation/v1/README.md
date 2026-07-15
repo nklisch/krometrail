@@ -33,6 +33,41 @@ result and traceability semantics, is always `thesis_eligibility=not_eligible`, 
 browser evidence, a capture result, a model-comprehension result, a debugging qualification, or a
 product-thesis assessment.
 
+## Test-only live qualification opt-in
+
+The live qualification harness is not a product command. It is an ignored, test-only path that
+requires both explicit authorizations:
+
+```text
+KROMETRAIL_REAL_CHROME_TESTS=1 \\
+KROMETRAIL_LIVE_CAPTURE_EVALUATION=1 \\
+  cargo test --features qualification-support -- --ignored
+```
+
+Do not set either variable for ordinary verification. The authorized path uses the production
+browser, capture, store, retention, query, and artifact authorities and writes one canonical
+`run-manifest.json` below:
+
+```text
+target/temporal-evaluation/live/<browser-product>/<run-id>/
+```
+
+A missing required browser is `blocked`; missing optional Linux Chromium is `skipped`; incomplete
+source, gaps, unavailable resources, retention loss, or unsupported measurements remain
+`inconclusive` or `blocked`; only complete threshold evidence can be `pass`. Finalization writes
+only after capture flush, browser/profile/server cleanup, lock release, and staging cleanup have
+been observed. A finalization error is a safe error report, never a passing result.
+
+The manifest records `evidence_mode` as either `code_harness` or
+`operator_authorized_live_capture`; a code/harness run is never live browser evidence. A local
+`pass` qualifies only the declared browser, operating system, viewport, device scale, capture
+settings, fixture revision, and reference-host configuration. It does not claim a model
+call or model effectiveness, remote or paid-service behavior, high-DPI behavior, cross-platform
+parity, temporal-advantage uplift, or production-scale stability. macOS and high-DPI belong to
+separate platform evidence; an unresolved gap there does not block later agent-effectiveness
+trials on a declared reference host. Live qualification does not invoke a model and emits no
+model answer, transcript, or thesis result.
+
 ## Authoritative inputs and generation
 
 - `benchmark-definition.json` is the one current v1 benchmark-definition input.

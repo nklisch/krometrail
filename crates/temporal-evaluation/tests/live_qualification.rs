@@ -1,9 +1,10 @@
 use temporal_evaluation::{
     BrowserAvailability, BrowserProduct, CacheDisposition, CaptureQualificationMeasurements,
     CleanupQualificationMeasurements, ControlQualificationMeasurements, DURATIONS_MS,
-    DurationQualificationMeasurement, EvaluationStatus, FailureRecord, LIVE_QUALIFICATION_PROFILE,
-    LatencyQualificationMeasurements, LiveQualification, QualificationGateId,
-    QualificationGateResult, RecoveryQualificationMeasurements, ResourceQualificationMeasurements,
+    DurationQualificationMeasurement, EvaluationStatus, FailureRecord, LIVE_NON_CLAIMS,
+    LIVE_QUALIFICATION_PROFILE, LatencyQualificationMeasurements, LiveQualification,
+    QualificationEvidenceMode, QualificationGateId, QualificationGateResult,
+    RecoveryQualificationMeasurements, ResourceQualificationMeasurements,
     RetentionQualificationMeasurements, RunFailureCode, RunManifest, VIEWPORT_HEIGHT,
     VIEWPORT_WIDTH, Viewport,
 };
@@ -32,6 +33,7 @@ fn live_manifest() -> RunManifest {
         .unwrap();
     run.qualification = Some(LiveQualification {
         profile: LIVE_QUALIFICATION_PROFILE.into(),
+        evidence_mode: QualificationEvidenceMode::OperatorAuthorizedLiveCapture,
         gates: QualificationGateId::ALL
             .into_iter()
             .map(|gate| QualificationGateResult {
@@ -90,11 +92,11 @@ fn live_manifest() -> RunManifest {
             staged_artifacts_recovered: true,
         },
         resources: ResourceQualificationMeasurements {
-            sample_count: 0,
-            rss_bytes: Vec::new(),
-            cpu_millis: Vec::new(),
-            browser_child_accounting_available: false,
-            unavailable_reason: Some("platform resource adapter unavailable".into()),
+            sample_count: 1,
+            rss_bytes: vec![1],
+            cpu_millis: vec![1],
+            browser_child_accounting_available: true,
+            unavailable_reason: None,
         },
         latency: LatencyQualificationMeasurements {
             source_interval_id: "interval-1".into(),
@@ -102,13 +104,16 @@ fn live_manifest() -> RunManifest {
                 width: VIEWPORT_WIDTH,
                 height: VIEWPORT_HEIGHT,
             },
-            frame_width: VIEWPORT_WIDTH,
-            frame_height: VIEWPORT_HEIGHT,
-            warm_cache: CacheDisposition::Unavailable,
-            temporal_query_elapsed_ms: Vec::new(),
-            artifact_elapsed_ms: Vec::new(),
-            sample_count: 0,
-            threshold_profile_ids: vec!["not-applicable".into()],
+            frame_width: 1_920,
+            frame_height: 1_080,
+            warm_cache: CacheDisposition::Warm,
+            temporal_query_elapsed_ms: vec![1, 1],
+            artifact_elapsed_ms: vec![1, 1],
+            sample_count: 4,
+            threshold_profile_ids: vec![
+                "evaluation-cached-temporal-bundle-below-1s".into(),
+                "evaluation-uncached-storyboard-difference-map-below-5s".into(),
+            ],
         },
         cleanup: CleanupQualificationMeasurements {
             server_stopped: true,
@@ -119,6 +124,10 @@ fn live_manifest() -> RunManifest {
             remaining_managed_resources: 0,
         },
     });
+    run.non_claims = LIVE_NON_CLAIMS
+        .iter()
+        .map(|claim| (*claim).into())
+        .collect();
     run
 }
 
@@ -209,6 +218,87 @@ fn live_privacy_rejects_unsafe_measurement_text() {
         .resources
         .unavailable_reason = Some("https://127.0.0.1/private".into());
     assert!(manifest.validate().is_err());
+}
+
+#[test]
+fn live_non_claims_are_fixed_and_configuration_scoped() {
+    let manifest = live_manifest();
+    assert_eq!(
+        manifest.qualification.as_ref().unwrap().evidence_mode,
+        QualificationEvidenceMode::OperatorAuthorizedLiveCapture
+    );
+    assert_eq!(
+        manifest.non_claims,
+        LIVE_NON_CLAIMS
+            .iter()
+            .map(|claim| (*claim).to_owned())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        manifest
+            .non_claims
+            .iter()
+            .any(|claim| claim.contains("declared configuration"))
+    );
+    assert!(
+        manifest
+            .non_claims
+            .iter()
+            .any(|claim| claim.contains("macOS") && claim.contains("high-DPI"))
+    );
+}
+
+#[test]
+fn passing_live_manifest_rejects_missing_measurements_and_cleanup() {
+    let mut missing_resource = live_manifest();
+    let qualification = missing_resource.qualification.as_mut().unwrap();
+    qualification.resources.sample_count = 0;
+    qualification.resources.rss_bytes.clear();
+    qualification.resources.cpu_millis.clear();
+    qualification.resources.unavailable_reason =
+        Some("platform resource measurement unavailable".into());
+    assert!(missing_resource.validate().is_err());
+
+    let mut unresolved_gap = live_manifest();
+    let qualification = unresolved_gap.qualification.as_mut().unwrap();
+    qualification.capture.gap_ids = vec!["gap-1".into()];
+    qualification.capture.gap_count = 1;
+    unresolved_gap.artifact.gap_ids = vec!["gap-1".into()];
+    assert!(unresolved_gap.validate().is_err());
+
+    let mut failed_control = live_manifest();
+    failed_control
+        .qualification
+        .as_mut()
+        .unwrap()
+        .control
+        .failed_observation_ids = vec!["control:failed".into()];
+    assert!(failed_control.validate().is_err());
+
+    let mut cleanup_failure = live_manifest();
+    cleanup_failure
+        .qualification
+        .as_mut()
+        .unwrap()
+        .cleanup
+        .remaining_managed_resources = 1;
+    assert!(cleanup_failure.validate().is_err());
+}
+
+#[test]
+fn live_status_precedence_rejects_a_lower_status_claim() {
+    let mut manifest = live_manifest();
+    let qualification = manifest.qualification.as_mut().unwrap();
+    qualification.gates[0].status = EvaluationStatus::Fail;
+    qualification.gates[0].failure = Some(failure(RunFailureCode::Threshold));
+    qualification.gates[1].status = EvaluationStatus::Inconclusive;
+    qualification.gates[1].failure = Some(failure(RunFailureCode::InsufficientEvidence));
+    manifest.status = EvaluationStatus::Fail;
+    manifest.failure = Some(failure(RunFailureCode::Threshold));
+    assert!(manifest.validate().is_err());
+    manifest.status = EvaluationStatus::Inconclusive;
+    manifest.failure = Some(failure(RunFailureCode::InsufficientEvidence));
+    manifest.validate().unwrap();
 }
 
 #[test]

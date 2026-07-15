@@ -39,15 +39,15 @@ pub use manifest::{
     ImageFormat, KrometrailIdentity, LatencyQualificationMeasurements, LiveQualification,
     MANIFEST_KIND, MANIFEST_SCHEMA_VERSION, ManifestFixture, ManifestPrompt, ManifestRow,
     ModelAvailability, ModelInputLimits, NamedVersion, OutputIdentity, Platform,
-    QualificationGateResult, RecoveryQualificationMeasurements, ResourceQualificationMeasurements,
-    RetentionQualificationMeasurements, RetentionState, RevisionIdentity, RunConfiguration,
-    RunFailureCode, RunManifest, ScorerIdentity, ScoringIdentity, TimeRangeMs, TrialIdentity,
-    Viewport, run_manifest_schema, sample_manifest,
+    QualificationEvidenceMode, QualificationGateResult, RecoveryQualificationMeasurements,
+    ResourceQualificationMeasurements, RetentionQualificationMeasurements, RetentionState,
+    RevisionIdentity, RunConfiguration, RunFailureCode, RunManifest, ScorerIdentity,
+    ScoringIdentity, TimeRangeMs, TrialIdentity, Viewport, run_manifest_schema, sample_manifest,
 };
 pub use matrix::{
     CAPTURE_REPETITIONS, CaptureTrial, EvaluationStatus, INTERPRETATION_REPETITIONS,
-    InterpretationTrial, LIVE_QUALIFICATION_PROFILE, MATRIX_SEED, MatrixDefinition, MatrixOrder,
-    QualificationGateId, StatusRules,
+    InterpretationTrial, LIVE_NON_CLAIMS, LIVE_QUALIFICATION_PROFILE, MATRIX_SEED,
+    MatrixDefinition, MatrixOrder, QualificationGateId, StatusRules,
 };
 pub use packaging::{
     ArtifactCacheIdentity, ArtifactEvidenceReference, CONDITION_PACKAGER_VERSION,

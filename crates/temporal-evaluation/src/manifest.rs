@@ -8,7 +8,8 @@ use crate::{
     MatrixOrder, PromptId, PromptTemplate, Result, ScoringDimensionId, canonical_json,
     conditions::canonical_conditions,
     matrix::{
-        CAPTURE_REPETITIONS, INTERPRETATION_REPETITIONS, LIVE_QUALIFICATION_PROFILE, MATRIX_SEED,
+        CAPTURE_REPETITIONS, INTERPRETATION_REPETITIONS, LIVE_NON_CLAIMS,
+        LIVE_QUALIFICATION_PROFILE, MATRIX_SEED,
     },
     privacy,
 };
@@ -484,10 +485,18 @@ pub struct QualificationGateResult {
     pub failure: Option<FailureRecord>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum QualificationEvidenceMode {
+    CodeHarness,
+    OperatorAuthorizedLiveCapture,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct LiveQualification {
     pub profile: String,
+    pub evidence_mode: QualificationEvidenceMode,
     pub gates: Vec<QualificationGateResult>,
     pub capture: CaptureQualificationMeasurements,
     pub control: ControlQualificationMeasurements,
@@ -1218,19 +1227,23 @@ fn validate_live_qualification(value: &LiveQualification) -> Result<()> {
             (_, Some(failure)) => validate_failure(failure, "qualification.gate.failure")?,
         }
     }
-    validate_capture_measurements(&value.capture)?;
+    let capture_gate = value
+        .gates
+        .iter()
+        .find(|gate| gate.gate == crate::QualificationGateId::CaptureEnvelope)
+        .expect("gate registry validation guarantees capture envelope");
+    validate_capture_measurements(&value.capture, capture_gate.status)?;
     let canonical_capture_observation = value.capture.observed_viewport.width == VIEWPORT_WIDTH
         && value.capture.observed_viewport.height == VIEWPORT_HEIGHT
         && value.capture.observed_device_scale_factor == 1_000;
     if !canonical_capture_observation
-        && value
-            .gates
-            .iter()
-            .find(|gate| gate.gate == crate::QualificationGateId::CaptureEnvelope)
-            .is_none_or(|gate| gate.status != EvaluationStatus::Blocked)
+        && !matches!(
+            capture_gate.status,
+            EvaluationStatus::Blocked | EvaluationStatus::Skipped
+        )
     {
         return Err(ContractError::new(
-            "noncanonical capture observation must block the capture envelope",
+            "noncanonical capture observation must block or skip the capture envelope",
         ));
     }
     validate_control_measurements(&value.control)?;
@@ -1238,11 +1251,6 @@ fn validate_live_qualification(value: &LiveQualification) -> Result<()> {
     validate_recovery_measurements(&value.recovery)?;
     validate_resource_measurements(&value.resources)?;
     validate_latency_measurements(&value.latency)?;
-    if value.cleanup.remaining_managed_resources > 0 && value.cleanup.output_finalized {
-        return Err(ContractError::new(
-            "finalized qualification cannot claim zero cleanup while resources remain",
-        ));
-    }
     Ok(())
 }
 
@@ -1255,18 +1263,22 @@ fn validate_rate(value: u16, label: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_capture_measurements(value: &CaptureQualificationMeasurements) -> Result<()> {
+fn validate_capture_measurements(
+    value: &CaptureQualificationMeasurements,
+    gate_status: EvaluationStatus,
+) -> Result<()> {
     if value.requested_durations_ms != DURATIONS_MS || value.repetitions == 0 {
         return Err(ContractError::new(
             "qualification capture matrix is not canonical",
         ));
     }
-    if value.observed_viewport.width == 0
+    if (value.observed_viewport.width == 0
         || value.observed_viewport.height == 0
-        || value.observed_device_scale_factor == 0
+        || value.observed_device_scale_factor == 0)
+        && matches!(gate_status, EvaluationStatus::Pass | EvaluationStatus::Fail)
     {
         return Err(ContractError::new(
-            "qualification capture observation must report a positive viewport and scale",
+            "decisive qualification capture observation must report a positive viewport and scale",
         ));
     }
     if value.gap_count != value.gap_ids.len() as u64 {
@@ -1306,8 +1318,8 @@ fn validate_capture_measurements(value: &CaptureQualificationMeasurements) -> Re
 }
 
 fn validate_control_measurements(value: &ControlQualificationMeasurements) -> Result<()> {
-    validate_unique_ids(&value.scenario_ids, "qualification.control.scenario_ids")?;
-    validate_unique_ids(
+    validate_unique_trial_ids(&value.scenario_ids, "qualification.control.scenario_ids")?;
+    validate_unique_trial_ids(
         &value.failed_observation_ids,
         "qualification.control.failed_observation_ids",
     )?;
@@ -1366,6 +1378,90 @@ fn validate_latency_measurements(value: &LatencyQualificationMeasurements) -> Re
         return Err(ContractError::new(
             "qualification latency sample count is inconsistent",
         ));
+    }
+    Ok(())
+}
+
+fn validate_complete_qualification(value: &LiveQualification) -> Result<()> {
+    if value.capture.source_frame_count == 0
+        || value.capture.observed_frame_count == 0
+        || value.capture.source_time_sample_count == 0
+        || value.capture.gap_count != 0
+        || value.capture.per_duration.iter().any(|measurement| {
+            measurement.status != EvaluationStatus::Pass
+                || measurement.eligible_count == 0
+                || measurement.observed_count == 0
+        })
+    {
+        return Err(ContractError::new(
+            "a passing qualification requires complete gap-free capture measurements",
+        ));
+    }
+    if value.control.attempts == 0
+        || value.control.successes != value.control.attempts
+        || !value.control.failed_observation_ids.is_empty()
+        || value.control.success_rate_basis_points != 10_000
+    {
+        return Err(ContractError::new(
+            "a passing qualification requires successful observed control operations",
+        ));
+    }
+    if value.retention.peak_usage_bytes > value.retention.budget_bytes
+        || !value.retention.pinned_interval_preserved
+    {
+        return Err(ContractError::new(
+            "a passing qualification requires bounded retention and preserved pinned evidence",
+        ));
+    }
+    if !value.recovery.reopened
+        || !value.recovery.reconciled
+        || !value.recovery.staged_artifacts_recovered
+    {
+        return Err(ContractError::new(
+            "a passing qualification requires successful recovery and reconciliation",
+        ));
+    }
+    if value.resources.sample_count == 0
+        || value.resources.rss_bytes.len() != value.resources.sample_count as usize
+        || value.resources.cpu_millis.len() != value.resources.sample_count as usize
+        || !value.resources.browser_child_accounting_available
+        || value.resources.unavailable_reason.is_some()
+    {
+        return Err(ContractError::new(
+            "a passing qualification requires complete resource measurements",
+        ));
+    }
+    if value.latency.frame_width != 1_920
+        || value.latency.frame_height != 1_080
+        || value.latency.warm_cache != CacheDisposition::Warm
+        || value.latency.sample_count == 0
+        || value.latency.temporal_query_elapsed_ms.is_empty()
+        || value.latency.artifact_elapsed_ms.is_empty()
+    {
+        return Err(ContractError::new(
+            "a passing qualification requires complete scoped latency measurements",
+        ));
+    }
+    if !value.cleanup.server_stopped
+        || !value.cleanup.profile_deleted
+        || !value.cleanup.store_flushed
+        || !value.cleanup.lock_released
+        || value.cleanup.remaining_managed_resources != 0
+    {
+        return Err(ContractError::new(
+            "a passing qualification requires complete cleanup evidence",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_unique_trial_ids(values: &[String], label: &str) -> Result<()> {
+    let mut ids = BTreeSet::new();
+    for value in values {
+        privacy::validate_trial_id(value, label)?;
+        if !ids.insert(value) {
+            return Err(ContractError::new(format!("{label} must be unique")));
+        }
     }
     Ok(())
 }
@@ -1627,6 +1723,36 @@ fn validate_outcome(manifest: &RunManifest) -> Result<()> {
             "a passing interpretation requires observed model identity",
         ));
     }
+    if mode == ManifestRunMode::Qualification {
+        let expected = manifest
+            .rows
+            .iter()
+            .map(|row| row.status)
+            .chain(
+                manifest
+                    .qualification
+                    .as_ref()
+                    .expect("qualification mode validation guarantees measurements")
+                    .gates
+                    .iter()
+                    .map(|gate| gate.status),
+            )
+            .max_by_key(|status| status.precedence())
+            .unwrap_or(EvaluationStatus::Inconclusive);
+        if manifest.status != expected {
+            return Err(ContractError::new(
+                "qualification status does not follow blocked/skipped/inconclusive/fail/pass precedence",
+            ));
+        }
+        if expected == EvaluationStatus::Pass {
+            validate_complete_qualification(
+                manifest
+                    .qualification
+                    .as_ref()
+                    .expect("qualification mode validation guarantees measurements"),
+            )?;
+        }
+    }
     match manifest.status {
         EvaluationStatus::Pass => {
             if manifest.failure.is_some()
@@ -1675,6 +1801,7 @@ fn validate_outcome(manifest: &RunManifest) -> Result<()> {
                 ContractError::new("an inconclusive run requires an explicit failure")
             })?;
             if !rows_incomplete
+                && !qualification_gates_incomplete
                 && !matches!(
                     failure.code,
                     RunFailureCode::InsufficientEvidence
@@ -1706,7 +1833,16 @@ fn validate_outcome(manifest: &RunManifest) -> Result<()> {
                 && !manifest
                     .rows
                     .iter()
-                    .any(|row| row.status == EvaluationStatus::Blocked))
+                    .any(|row| row.status == EvaluationStatus::Blocked)
+                && !manifest
+                    .qualification
+                    .as_ref()
+                    .is_some_and(|qualification| {
+                        qualification
+                            .gates
+                            .iter()
+                            .any(|gate| gate.status == EvaluationStatus::Blocked)
+                    }))
             {
                 return Err(ContractError::new(
                     "blocked status must name an unavailable dependency",
@@ -1735,6 +1871,18 @@ fn validate_outcome(manifest: &RunManifest) -> Result<()> {
                             failure.code == RunFailureCode::OptionalUnavailable
                         })
                 })
+                || (manifest.qualification.is_some()
+                    && !manifest
+                        .qualification
+                        .as_ref()
+                        .is_some_and(|qualification| {
+                            qualification.gates.iter().all(|gate| {
+                                gate.status == EvaluationStatus::Skipped
+                                    && gate.failure.as_ref().is_some_and(|failure| {
+                                        failure.code == RunFailureCode::OptionalUnavailable
+                                    })
+                            })
+                        }))
             {
                 return Err(ContractError::new(
                     "only the optional Linux Chromium configuration with explicitly skipped rows and optional-unavailability failures may be skipped",
@@ -1756,6 +1904,17 @@ fn validate_outcome(manifest: &RunManifest) -> Result<()> {
     }
     for non_claim in &manifest.non_claims {
         privacy::validate_safe_text(non_claim, "manifest.non_claims", privacy::MAX_LONG_TEXT)?;
+    }
+    if mode == ManifestRunMode::Qualification
+        && manifest.non_claims
+            != LIVE_NON_CLAIMS
+                .iter()
+                .map(|claim| (*claim).to_owned())
+                .collect::<Vec<_>>()
+    {
+        return Err(ContractError::new(
+            "live qualification non-claims do not match the canonical registry",
+        ));
     }
     Ok(())
 }
