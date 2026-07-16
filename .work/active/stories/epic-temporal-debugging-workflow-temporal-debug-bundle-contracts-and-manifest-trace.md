@@ -5,7 +5,7 @@ stage: done
 tags: [visual, browser, storage, agent-ux]
 parent: epic-temporal-debugging-workflow-temporal-debug-bundle
 depends_on: []
-release_binding: null
+release_binding: 1.0.0
 gate_origin: null
 created: 2026-07-14
 updated: 2026-07-14

@@ -5,7 +5,7 @@ stage: done
 tags: [browser, testing, infra]
 parent: epic-rust-cdp-capture-foundation-cross-platform-capture-smoke
 depends_on: [epic-rust-cdp-capture-foundation-cross-platform-capture-smoke-harness]
-release_binding: null
+release_binding: 1.0.0
 gate_origin: null
 created: 2026-07-13
 updated: 2026-07-13

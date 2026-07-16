@@ -5,7 +5,7 @@ stage: done
 tags: [visual, browser, testing]
 parent: configurable-capture-cadence
 depends_on: [configurable-capture-cadence-mcp-generated-contracts]
-release_binding: null
+release_binding: 1.0.0
 gate_origin: null
 created: 2026-07-15
 updated: 2026-07-15

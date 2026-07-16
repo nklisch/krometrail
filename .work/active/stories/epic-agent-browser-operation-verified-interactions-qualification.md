@@ -5,7 +5,7 @@ stage: done
 tags: [browser, agent-ux, testing]
 parent: epic-agent-browser-operation-verified-interactions
 depends_on: [epic-agent-browser-operation-verified-interactions-keyboard-and-form-actions, epic-agent-browser-operation-verified-interactions-upload-and-dialog]
-release_binding: null
+release_binding: 1.0.0
 gate_origin: null
 created: 2026-07-13
 updated: 2026-07-13

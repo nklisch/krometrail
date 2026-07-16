@@ -5,7 +5,7 @@ stage: done
 tags: [refactor, storage]
 parent: refactor-centralize-temporal-observation-row-decoding
 depends_on: []
-release_binding: null
+release_binding: 1.0.0
 gate_origin: refactor-design
 created: 2026-07-14
 updated: 2026-07-14

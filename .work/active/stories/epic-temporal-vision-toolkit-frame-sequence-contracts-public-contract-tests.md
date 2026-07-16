@@ -5,7 +5,7 @@ stage: done
 tags: [visual, testing]
 parent: epic-temporal-vision-toolkit-frame-sequence-contracts
 depends_on: [epic-temporal-vision-toolkit-frame-sequence-contracts-provenance-manifest]
-release_binding: null
+release_binding: 1.0.0
 gate_origin: null
 created: 2026-07-13
 updated: 2026-07-13

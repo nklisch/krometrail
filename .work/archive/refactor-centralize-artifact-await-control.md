@@ -5,7 +5,7 @@ stage: done
 tags: [refactor, visual, storage]
 parent: null
 depends_on: [epic-temporal-debugging-workflow-artifact-generation-and-cache]
-release_binding: null
+release_binding: 1.0.0
 gate_origin: refactor-design
 archived_atop: v0.2.20
 git_ref: 438d933

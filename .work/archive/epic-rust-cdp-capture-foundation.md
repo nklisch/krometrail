@@ -5,7 +5,7 @@ stage: done
 tags: [browser, infra]
 parent: null
 depends_on: []
-release_binding: null
+release_binding: 1.0.0
 gate_origin: null
 archived_atop: v0.2.20
 git_ref: 2dc681d

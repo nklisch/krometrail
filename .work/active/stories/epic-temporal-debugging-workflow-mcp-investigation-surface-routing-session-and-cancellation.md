@@ -6,7 +6,7 @@ tags: [agent-ux, visual, browser]
 parent: epic-temporal-debugging-workflow-mcp-investigation-surface
 depends_on:
   - epic-temporal-debugging-workflow-mcp-investigation-surface-contracts-registries-and-resource-read
-release_binding: null
+release_binding: 1.0.0
 gate_origin: null
 created: 2026-07-14
 updated: 2026-07-14

@@ -5,7 +5,7 @@ stage: done
 tags: [browser, agent-ux]
 parent: epic-agent-browser-operation-waits-and-batches
 depends_on: [epic-agent-browser-operation-waits-and-batches-wait-executor]
-release_binding: null
+release_binding: 1.0.0
 gate_origin: null
 created: 2026-07-13
 updated: 2026-07-13

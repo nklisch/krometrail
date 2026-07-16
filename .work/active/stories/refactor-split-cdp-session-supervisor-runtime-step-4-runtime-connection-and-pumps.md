@@ -5,7 +5,7 @@ stage: done
 tags: [refactor, browser]
 parent: refactor-split-cdp-session-supervisor-runtime
 depends_on: [refactor-split-cdp-session-supervisor-runtime-step-3-reconnect-transaction]
-release_binding: null
+release_binding: 1.0.0
 gate_origin: null
 created: 2026-07-14
 updated: 2026-07-14

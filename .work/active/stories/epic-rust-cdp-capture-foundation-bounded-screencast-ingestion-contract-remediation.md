@@ -5,7 +5,7 @@ stage: done
 tags: [browser]
 parent: epic-rust-cdp-capture-foundation-bounded-screencast-ingestion
 depends_on: [epic-rust-cdp-capture-foundation-bounded-screencast-ingestion-supervised-wiring]
-release_binding: null
+release_binding: 1.0.0
 gate_origin: null
 created: 2026-07-13
 updated: 2026-07-13

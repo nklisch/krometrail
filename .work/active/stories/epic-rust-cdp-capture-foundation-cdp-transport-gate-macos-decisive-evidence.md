@@ -5,7 +5,7 @@ stage: done
 tags: [browser, infra, testing]
 parent: epic-rust-cdp-capture-foundation-cdp-transport-gate
 depends_on: [epic-rust-cdp-capture-foundation-cdp-transport-gate-cdpkit-linux-qualification, epic-rust-cdp-capture-foundation-cdp-transport-gate-fixture-hashing-cross-platform, epic-rust-cdp-capture-foundation-cdp-transport-gate-rss-evidence-validity, epic-rust-cdp-capture-foundation-cdp-transport-gate-macos-rss-compile-fix]
-release_binding: null
+release_binding: 1.0.0
 gate_origin: null
 created: 2026-07-12
 updated: 2026-07-12

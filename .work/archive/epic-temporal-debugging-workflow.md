@@ -5,7 +5,7 @@ stage: done
 tags: [visual, storage, agent-ux]
 parent: null
 depends_on: [epic-temporal-vision-toolkit, epic-durable-browser-memory, epic-agent-browser-operation]
-release_binding: null
+release_binding: 1.0.0
 gate_origin: null
 archived_atop: v0.2.20
 git_ref: d9a1b56

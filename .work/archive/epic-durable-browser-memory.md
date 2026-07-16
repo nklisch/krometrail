@@ -5,7 +5,7 @@ stage: done
 tags: [storage, browser]
 parent: null
 depends_on: [epic-rust-cdp-capture-foundation]
-release_binding: null
+release_binding: 1.0.0
 gate_origin: null
 archived_atop: v0.2.20
 git_ref: b81940b

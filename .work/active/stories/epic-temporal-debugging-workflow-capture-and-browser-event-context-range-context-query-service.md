@@ -5,7 +5,7 @@ stage: done
 tags: [browser, storage, agent-ux]
 parent: epic-temporal-debugging-workflow-capture-and-browser-event-context
 depends_on: [epic-temporal-debugging-workflow-capture-and-browser-event-context-schema-v5-retention-and-recovery]
-release_binding: null
+release_binding: 1.0.0
 gate_origin: null
 created: 2026-07-14
 updated: 2026-07-14

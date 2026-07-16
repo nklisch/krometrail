@@ -5,7 +5,7 @@ stage: done
 tags: [browser, agent-ux]
 parent: epic-agent-browser-operation-browser-page-lifecycle
 depends_on: [epic-agent-browser-operation-browser-page-lifecycle-selected-page-targets]
-release_binding: null
+release_binding: 1.0.0
 gate_origin: null
 created: 2026-07-13
 updated: 2026-07-13

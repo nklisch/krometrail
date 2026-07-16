@@ -5,7 +5,7 @@ stage: done
 tags: [storage, browser]
 parent: epic-durable-browser-memory-segment-format
 depends_on: []
-release_binding: null
+release_binding: 1.0.0
 gate_origin: null
 created: 2026-07-13
 updated: 2026-07-13

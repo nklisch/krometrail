@@ -5,7 +5,7 @@ stage: done
 tags: [bug, browser, infra, testing]
 parent: epic-rust-cdp-capture-foundation-cdp-transport-gate
 depends_on: [epic-rust-cdp-capture-foundation-cdp-transport-gate-evidence-v2-contract, epic-rust-cdp-capture-foundation-cdp-transport-gate-candidate-contract-endpoint-binding, epic-rust-cdp-capture-foundation-cdp-transport-gate-runtime-determinism]
-release_binding: null
+release_binding: 1.0.0
 gate_origin: null
 created: 2026-07-12
 updated: 2026-07-12

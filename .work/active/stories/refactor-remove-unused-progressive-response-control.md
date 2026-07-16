@@ -5,7 +5,7 @@ stage: done
 tags: [refactor, agent-ux]
 parent: null
 depends_on: [epic-temporal-debugging-workflow-mcp-investigation-surface]
-release_binding: null
+release_binding: 1.0.0
 gate_origin: refactor-design
 created: 2026-07-14
 updated: 2026-07-14

@@ -5,7 +5,7 @@ stage: done
 tags: [bug, infra, tests]
 parent: epic-rust-cdp-capture-foundation-rust-runtime-contracts
 depends_on: [epic-rust-cdp-capture-foundation-rust-runtime-contracts-rust-installer-gate]
-release_binding: null
+release_binding: 1.0.0
 gate_origin: null
 created: 2026-07-12
 updated: 2026-07-12

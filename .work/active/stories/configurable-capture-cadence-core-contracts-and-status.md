@@ -5,7 +5,7 @@ stage: done
 tags: [browser, visual, testing]
 parent: configurable-capture-cadence
 depends_on: []
-release_binding: null
+release_binding: 1.0.0
 gate_origin: null
 created: 2026-07-15
 updated: 2026-07-15

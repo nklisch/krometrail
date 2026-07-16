@@ -5,7 +5,7 @@ stage: done
 tags: [perf, visual, testing]
 parent: perf-temporal-share-pair-classification
 depends_on: [perf-temporal-share-pair-classification-opt-1-baseline-equivalence]
-release_binding: null
+release_binding: 1.0.0
 gate_origin: perf-design
 created: 2026-07-15
 updated: 2026-07-15

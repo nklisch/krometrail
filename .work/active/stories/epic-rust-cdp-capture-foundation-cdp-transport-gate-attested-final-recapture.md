@@ -5,7 +5,7 @@ stage: done
 tags: [bug, browser, infra, testing]
 parent: epic-rust-cdp-capture-foundation-cdp-transport-gate
 depends_on: [epic-rust-cdp-capture-foundation-cdp-transport-gate-process-tree-runtime-root, epic-rust-cdp-capture-foundation-cdp-transport-gate-trace-reconstructability, epic-rust-cdp-capture-foundation-cdp-transport-gate-decisive-config-redaction, epic-rust-cdp-capture-foundation-cdp-transport-gate-browser-revision-identity, epic-rust-cdp-capture-foundation-cdp-transport-gate-workflow-config-digest-order]
-release_binding: null
+release_binding: 1.0.0
 gate_origin: null
 created: 2026-07-12
 updated: 2026-07-12

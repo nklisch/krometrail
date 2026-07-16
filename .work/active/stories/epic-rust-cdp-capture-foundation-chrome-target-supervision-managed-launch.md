@@ -5,7 +5,7 @@ stage: done
 tags: [browser]
 parent: epic-rust-cdp-capture-foundation-chrome-target-supervision
 depends_on: [epic-rust-cdp-capture-foundation-chrome-target-supervision-transport-adapter]
-release_binding: null
+release_binding: 1.0.0
 gate_origin: null
 created: 2026-07-12
 updated: 2026-07-12

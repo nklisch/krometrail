@@ -5,7 +5,7 @@ stage: done
 tags: [storage, browser, testing]
 parent: epic-durable-browser-memory-recovery
 depends_on: [epic-durable-browser-memory-recovery-engine]
-release_binding: null
+release_binding: 1.0.0
 gate_origin: null
 created: 2026-07-13
 updated: 2026-07-13

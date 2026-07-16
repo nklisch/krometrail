@@ -5,7 +5,7 @@ stage: done
 tags: [testing, infra, visual]
 parent: epic-prove-temporal-advantage-live-capture-and-system-qualification
 depends_on: [epic-prove-temporal-advantage-live-capture-and-system-qualification-retention-recovery-and-performance]
-release_binding: null
+release_binding: 1.0.0
 gate_origin: null
 created: 2026-07-14
 updated: 2026-07-15

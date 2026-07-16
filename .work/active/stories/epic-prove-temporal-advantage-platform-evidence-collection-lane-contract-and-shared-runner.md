@@ -5,7 +5,7 @@ stage: done
 tags: [testing, browser, infra]
 parent: epic-prove-temporal-advantage-platform-evidence-collection
 depends_on: [epic-prove-temporal-advantage-live-capture-and-system-qualification]
-release_binding: null
+release_binding: 1.0.0
 gate_origin: null
 created: 2026-07-15
 updated: 2026-07-15

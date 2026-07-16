@@ -5,7 +5,7 @@ stage: done
 tags: [agent-ux, visual, browser, storage]
 parent: epic-temporal-debugging-workflow-mcp-investigation-surface
 depends_on: []
-release_binding: null
+release_binding: 1.0.0
 gate_origin: null
 created: 2026-07-14
 updated: 2026-07-14

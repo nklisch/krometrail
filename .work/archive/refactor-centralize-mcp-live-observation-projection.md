@@ -5,7 +5,7 @@ stage: done
 tags: [refactor, agent-ux]
 parent: null
 depends_on: []
-release_binding: null
+release_binding: 1.0.0
 gate_origin: refactor-design
 archived_atop: v0.2.20
 git_ref: c4aeb4d

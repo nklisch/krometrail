@@ -5,7 +5,7 @@ stage: done
 tags: [refactor, infra]
 parent: null
 depends_on: []
-release_binding: null
+release_binding: 1.0.0
 gate_origin: refactor-design
 created: 2026-07-12
 updated: 2026-07-12

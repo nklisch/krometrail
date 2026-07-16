@@ -5,7 +5,7 @@ stage: done
 tags: [bug, browser, infra, testing]
 parent: epic-rust-cdp-capture-foundation-cdp-transport-gate
 depends_on: [epic-rust-cdp-capture-foundation-cdp-transport-gate-drift-trace-authenticity, epic-rust-cdp-capture-foundation-cdp-transport-gate-provenance-redaction-hardening, epic-rust-cdp-capture-foundation-cdp-transport-gate-capture-deadline-ack-semantics, epic-rust-cdp-capture-foundation-cdp-transport-gate-architecture-ack-order]
-release_binding: null
+release_binding: 1.0.0
 gate_origin: null
 created: 2026-07-12
 updated: 2026-07-12

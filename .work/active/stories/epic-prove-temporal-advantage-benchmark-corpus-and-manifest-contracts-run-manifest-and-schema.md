@@ -5,7 +5,7 @@ stage: done
 tags: [testing, visual, browser, storage]
 parent: epic-prove-temporal-advantage-benchmark-corpus-and-manifest-contracts
 depends_on: [epic-prove-temporal-advantage-benchmark-corpus-and-manifest-contracts-vocabulary-and-prompts]
-release_binding: null
+release_binding: 1.0.0
 gate_origin: null
 created: 2026-07-14
 updated: 2026-07-14

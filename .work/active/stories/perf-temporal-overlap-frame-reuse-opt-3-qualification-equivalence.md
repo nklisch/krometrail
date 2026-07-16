@@ -5,7 +5,7 @@ stage: done
 tags: [perf, visual, storage, testing]
 parent: perf-temporal-overlap-frame-reuse
 depends_on: [perf-temporal-overlap-frame-reuse-opt-2-scheduler-service-integration]
-release_binding: null
+release_binding: 1.0.0
 gate_origin: perf-design
 created: 2026-07-15
 updated: 2026-07-15

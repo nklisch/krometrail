@@ -5,7 +5,7 @@ stage: done
 tags: [testing, visual]
 parent: epic-prove-temporal-advantage-deterministic-scoring-and-artifact-conditions
 depends_on: [epic-prove-temporal-advantage-deterministic-scoring-and-artifact-conditions-structured-scorer-and-ground-truth]
-release_binding: null
+release_binding: 1.0.0
 gate_origin: null
 created: 2026-07-14
 updated: 2026-07-14

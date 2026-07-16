@@ -5,7 +5,7 @@ stage: done
 tags: [browser, agent-ux]
 parent: epic-agent-browser-operation-mcp-control-surface
 depends_on: [epic-agent-browser-operation-mcp-control-surface-registry-and-session]
-release_binding: null
+release_binding: 1.0.0
 gate_origin: null
 created: 2026-07-14
 updated: 2026-07-14
