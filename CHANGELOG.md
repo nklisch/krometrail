@@ -4,11 +4,16 @@
 
 ### Plugin distribution
 
+- Published first-party native Claude Code and Codex marketplaces with one portable Krometrail evidence-literacy skill, MCP configuration, isolated install/remove qualification, and remote pointers from the nklisch skills catalogs.
 - Added package-owned Claude Code and Codex MCP launchers that install the exact release coupled to the plugin version into private per-user data on first activation.
 - Added exact checksum and executable-identity verification, HTTPS redirect allowlisting, bounded downloads, symlink and ownership defenses, atomic publication, and warm offline startup.
 - Kept standalone binary installation independent while making native plugin installation sufficient for MCP activation.
 - Derived native manifests, first-party catalog entries, and the launcher version marker atomically from Cargo's sole release version authority.
-- Added hermetic bootstrap fault coverage and isolated native Claude/Codex install, activation, tool/resource discovery, update-layout, and removal qualification.
+- Added ordinary-CI hermetic bootstrap fault and Linux/macOS x64/arm64 mapping coverage, plus isolated native Claude/Codex install, activation, tool/resource discovery, update-layout, and removal qualification.
+
+### Fixes
+
+- Corrected the Linux arm64 release workflow to install `cross` from its real `v0.2.5` upstream tag.
 
 ## v1.0.0 — 2026-07-15
 

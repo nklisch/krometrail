@@ -36,3 +36,7 @@ No archived stubs were unbound. The operator confirmed the complete post-v1.0.0 
 - **gate-cruft** (2026-07-16) — no findings after Rust warnings, shell reachability, release-helper, plugin packaging, test-value, comments, compatibility, and validation-layer inspection.
 - **gate-docs** (2026-07-16) — no rolling-foundation, README, changelog, plugin-skill, pattern-reference, generated-file, or doc-placement drift.
 - **gate-patterns** (2026-07-16) — 2 new patterns codified (`exact-release-managed-activation`, `hermetic-release-boundary-fixtures`); no inconsistencies.
+
+## Changelog
+
+The operator approved the `v1.0.1` changelog entry for shipping on 2026-07-16.
