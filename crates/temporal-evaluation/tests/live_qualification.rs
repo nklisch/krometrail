@@ -144,6 +144,7 @@ fn failure(code: RunFailureCode) -> FailureRecord {
 #[test]
 fn live_profile_round_trips_and_excludes_outcomes_from_input_digest() {
     let manifest = live_manifest();
+    assert_eq!(manifest.krometrail.capture_config.every_nth_frame, 1);
     manifest.validate().unwrap();
     let digest = manifest.input_digest().unwrap();
     let bytes = manifest.canonical_bytes().unwrap();

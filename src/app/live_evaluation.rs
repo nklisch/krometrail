@@ -648,10 +648,9 @@ pub async fn run_live_qualification_with_decision(
         }
     };
 
-    let observed_browser = session
-        .status()
-        .await
-        .ok()
+    let browser_status = session.status().await.ok();
+    let observed_browser = browser_status
+        .as_ref()
         .map(|status| {
             report::observed_browser(&status.compatibility.version, "live-qualification-cdp")
         })
@@ -719,6 +718,14 @@ pub async fn run_live_qualification_with_decision(
     let runtime_cleanup = runtime.cleanup();
     let cleanup = merge_cleanup(lifecycle_cleanup, runtime_cleanup, stop_succeeded);
     let mut observations = base_observations(&config, observed_browser);
+    if let Some(status) = browser_status {
+        observations
+            .krometrail
+            .as_mut()
+            .expect("contract seed provides Krometrail identity")
+            .capture_config
+            .every_nth_frame = status.every_nth_frame().get();
+    }
     observations.capture = capture;
     observations.control = control;
     observations.retention = retention;

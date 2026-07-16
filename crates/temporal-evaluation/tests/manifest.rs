@@ -33,6 +33,32 @@ fn generated_manifest_schema_matches_the_committed_schema() {
 }
 
 #[test]
+fn capture_stride_identity_has_strict_bounds_in_validation_and_schema() {
+    let mut minimum = sample_manifest();
+    minimum.krometrail.capture_config.every_nth_frame = 1;
+    assert!(minimum.validate().is_ok());
+
+    let mut maximum = sample_manifest();
+    maximum.krometrail.capture_config.every_nth_frame = 60;
+    assert!(maximum.validate().is_ok());
+
+    for invalid in [0, 61] {
+        let mut manifest = sample_manifest();
+        manifest.krometrail.capture_config.every_nth_frame = invalid;
+        assert!(
+            manifest.validate().is_err(),
+            "stride {invalid} must be rejected"
+        );
+    }
+
+    let schema = serde_json::to_value(run_manifest_schema()).unwrap();
+    let stride_schema = &schema["$defs"]["CaptureConfigIdentity"]["properties"]["every_nth_frame"];
+    assert_eq!(stride_schema["type"], "integer");
+    assert_eq!(stride_schema["minimum"], 1);
+    assert_eq!(stride_schema["maximum"], 60);
+}
+
+#[test]
 fn status_and_dependency_contradictions_are_rejected() {
     let mut blocked_without_reason = sample_manifest();
     blocked_without_reason.status = EvaluationStatus::Blocked;
@@ -117,6 +143,22 @@ fn observed_inputs_and_retained_claim_evidence_are_required_for_decisive_runs() 
     }];
     capture.rows[0].retention_state = temporal_evaluation::RetentionState::Retained;
     assert!(capture.validate().is_ok());
+
+    let canonical = capture.canonical_bytes().unwrap();
+    let input_digest = capture.input_digest().unwrap();
+    let mut changed_stride = capture.clone();
+    changed_stride.krometrail.capture_config.every_nth_frame = 60;
+    assert!(changed_stride.validate().is_ok());
+    assert_ne!(changed_stride.canonical_bytes().unwrap(), canonical);
+    assert_ne!(changed_stride.input_digest().unwrap(), input_digest);
+    assert_eq!(
+        changed_stride.rows[0].accepted_claims,
+        capture.rows[0].accepted_claims
+    );
+    assert_eq!(
+        changed_stride.artifact.output_ids,
+        capture.artifact.output_ids
+    );
 
     let mut missing_browser = capture.clone();
     missing_browser.browser = BrowserAvailability::NotRequired;

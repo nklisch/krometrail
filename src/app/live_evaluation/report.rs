@@ -115,6 +115,7 @@ impl QualificationObservations {
                 cargo_lock_sha256: ZERO_SHA256.into(),
                 rust_toolchain: "rustc-1.85.0".into(),
                 capture_config: temporal_evaluation::CaptureConfigIdentity {
+                    every_nth_frame: temporal_evaluation::MIN_EVERY_NTH_FRAME,
                     queue_capacity: 1,
                     max_active_streams: 1,
                     ack_timeout_ms: 1_000,
@@ -1304,6 +1305,7 @@ mod tests {
     fn blocked_and_optional_skip_assembly_never_writes_a_passing_result() {
         let blocked = assemble_manifest(QualificationObservations::contract_seed()).unwrap();
         assert_eq!(blocked.status, EvaluationStatus::Blocked);
+        assert_eq!(blocked.krometrail.capture_config.every_nth_frame, 1);
         assert!(blocked.failure.is_some());
         assert!(
             blocked
@@ -1328,6 +1330,7 @@ mod tests {
         };
         let skipped = assemble_manifest(skipped_input).unwrap();
         assert_eq!(skipped.status, EvaluationStatus::Skipped);
+        assert_eq!(skipped.krometrail.capture_config.every_nth_frame, 1);
         assert!(
             skipped
                 .qualification

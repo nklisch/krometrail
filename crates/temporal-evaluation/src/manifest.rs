@@ -20,6 +20,8 @@ use crate::{
 
 pub const MANIFEST_SCHEMA_VERSION: u16 = 1;
 pub const MANIFEST_KIND: &str = "temporal_benchmark_run";
+pub const MIN_EVERY_NTH_FRAME: u8 = 1;
+pub const MAX_EVERY_NTH_FRAME: u8 = 60;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -234,6 +236,8 @@ pub struct NamedVersion {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CaptureConfigIdentity {
+    #[schemars(range(min = 1, max = 60))]
+    pub every_nth_frame: u8,
     pub queue_capacity: u16,
     pub max_active_streams: u16,
     pub ack_timeout_ms: u64,
@@ -672,6 +676,7 @@ impl RunManifest {
                 cargo_lock_sha256: zero_hash.to_owned(),
                 rust_toolchain: "rustc-1.85.0".to_owned(),
                 capture_config: CaptureConfigIdentity {
+                    every_nth_frame: MIN_EVERY_NTH_FRAME,
                     queue_capacity: 1,
                     max_active_streams: 1,
                     ack_timeout_ms: 1_000,
@@ -1082,6 +1087,12 @@ fn validate_krometrail(value: &KrometrailIdentity) -> Result<()> {
         "krometrail.rust_toolchain",
         privacy::MAX_SHORT_TEXT,
     )?;
+    if !(MIN_EVERY_NTH_FRAME..=MAX_EVERY_NTH_FRAME).contains(&value.capture_config.every_nth_frame)
+    {
+        return Err(ContractError::new(
+            "capture config every_nth_frame must be between 1 and 60",
+        ));
+    }
     if value.capture_config.queue_capacity == 0 || value.capture_config.max_active_streams == 0 {
         return Err(ContractError::new(
             "capture config capacities must be positive",

@@ -58,6 +58,7 @@
     "adapter_versions": [],
     "capture_config": {
       "ack_timeout_ms": 1000,
+      "every_nth_frame": 1,
       "max_active_streams": 1,
       "queue_capacity": 1,
       "shutdown_timeout_ms": 1000

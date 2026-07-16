@@ -28,9 +28,9 @@ const DEFINITION_DIGEST: &str =
 const DEFINITION_SCHEMA_DIGEST: &str =
     "sha256:2068c69ee0b9c6a3edc7072d1cfa6f63fe98094dcb7906288ab82cf3f6fbc36a";
 const MANIFEST_DIGEST: &str =
-    "sha256:7881c4b05db700757f52a6f5be854bb0c7c8e403bf66970fcfaa3922ac74c134";
+    "sha256:3c2a88efe3c1c47e43014b8fdd18b9efbc830c47d9204619741a80483b70ed59";
 const MANIFEST_SCHEMA_DIGEST: &str =
-    "sha256:80069d18b74888eb005a18a81a3374368d6e061542ea3877d2b076938a6f9db3";
+    "sha256:b43f3e304e58e088793cd9a0ee5fb5ecbe296934573d976013b1a4ea2c5dd6cf";
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")

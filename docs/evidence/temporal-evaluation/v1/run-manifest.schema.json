@@ -341,6 +341,12 @@
           "format": "uint64",
           "minimum": 0
         },
+        "every_nth_frame": {
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 60,
+          "minimum": 1
+        },
         "max_active_streams": {
           "type": "integer",
           "format": "uint16",
@@ -361,6 +367,7 @@
       },
       "additionalProperties": false,
       "required": [
+        "every_nth_frame",
         "queue_capacity",
         "max_active_streams",
         "ack_timeout_ms",

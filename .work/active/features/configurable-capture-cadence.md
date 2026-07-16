@@ -1,7 +1,7 @@
 ---
 id: configurable-capture-cadence
 kind: feature
-stage: implementing
+stage: review
 tags: [browser, agent-ux, visual, testing]
 parent: null
 depends_on: []
@@ -377,6 +377,12 @@ The feature is not complete until all four checkpoints are verified. Child stori
 - **Generated evaluation drift**: adding a required manifest identity field changes the canonical
   sample/schema. The existing generator and byte-stability test are the only regeneration path; a
   design-only commit intentionally leaves generated files unchanged until implementation.
+
+## Final child checkpoint
+
+The evaluation provenance child is complete. Its manifest identity, live status projection, digest
+and retained-evidence tests, generated sample/schema, and Rust 1.85 qualification-support gates
+are verified. The feature is ready for integrated review.
 
 ## Review and implementation notes
 
