@@ -230,24 +230,28 @@ mod tests {
     use super::*;
     use crate::registry::lifecycle_tool_names;
     use krometrail_core::{
-        AnalysisScale, AnchorScope, ArtifactFailurePolicy, ArtifactGenerationRequest,
-        ArtifactGeneratorRequest, ArtifactLabelsRequest, BROWSER_OPERATION_REGISTRY,
-        BrowserCompatibility, BrowserConnectRequest, BrowserConnector, BrowserEventDetailRequest,
-        BrowserEventFilter, BrowserInstallation, BrowserOperationContext, BrowserOperationRequest,
-        BrowserOperationResult, BrowserOwnership, BrowserProduct, BrowserProductVersion,
-        BrowserSessionEvent, BrowserSessionEvents, BrowserSessionPort, BrowserSessionState,
-        BrowserStatus, BrowserStopOutcome, BrowserVersion, CapabilityId, CapabilitySupport,
-        CaptureStatistics, CaptureStreamState, CaptureTimingSummary, EveryNthFrame, FrameId,
-        GenerateArtifactsRequest, NormalizationRequest, OutputLimitsRequest, PageStatus,
-        PortFuture, ProfileRef, ProgressiveEvidence, ProgressiveEvidenceContext,
-        ProgressiveEvidenceRequest, ProgressiveEvidenceResult, ProgressiveRegion,
-        RangeResolutionOptions, RegionFilmstripEvidenceRequest, RendererCapability, ResolvedRange,
+        AnalysisScale, AnchorScope, ArtifactCacheDisposition, ArtifactEvidenceHandle,
+        ArtifactFailurePolicy, ArtifactGenerationRequest, ArtifactGenerationResult,
+        ArtifactGeneratorRequest, ArtifactHandle, ArtifactLabelsRequest, ArtifactOutcome,
+        ArtifactRead, BROWSER_OPERATION_REGISTRY, BrowserCompatibility, BrowserConnectRequest,
+        BrowserConnector, BrowserEventDetailRequest, BrowserEventFilter, BrowserInstallation,
+        BrowserOperationContext, BrowserOperationRequest, BrowserOperationResult, BrowserOwnership,
+        BrowserProduct, BrowserProductVersion, BrowserSessionEvent, BrowserSessionEvents,
+        BrowserSessionPort, BrowserSessionState, BrowserStatus, BrowserStopOutcome, BrowserVersion,
+        BundleArtifactEvidence, BundleContextEvidence, BundleDegradation, CapabilityId,
+        CapabilitySupport, CaptureStatistics, CaptureStreamState, CaptureTimingSummary,
+        EffectiveBundlePolicy, EveryNthFrame, EvidenceScope, FrameId, GenerateArtifactsRequest,
+        NonEmptyText, NormalizationRequest, OutputLimitsRequest, PageStatus, PortFuture,
+        ProfileRef, ProgressiveEvidence, ProgressiveEvidenceContext, ProgressiveEvidenceRequest,
+        ProgressiveEvidenceResult, ProgressiveRegion, RangeResolutionOptions,
+        RegionFilmstripEvidenceRequest, RendererCapability, ResolvedRange,
         ResolvedRangeEvidenceRequest, RetentionStatus, SessionId, SessionOrigin, SessionRange,
-        SessionTime, SourceFrameSelection, SourceFramesRequest, SourceReadLimitsRequest,
-        StoryboardRequest, TargetCaptureStatus, TargetId, TemporalContext, TemporalContextQuery,
+        SessionTime, Sha256Digest, SourceFrameSelection, SourceFramesRequest,
+        SourceReadLimitsRequest, StoryboardRequest, TEMPORAL_DEBUG_BUNDLE_POLICY_VERSION,
+        TargetCaptureStatus, TargetId, TemporalContext, TemporalContextQuery,
         TemporalContextRequest, TemporalDebugBundle, TemporalDebugBundleContext,
-        TemporalDebugBundleRequest, TemporalDebugBundles, TemporalQueryRequest,
-        TemporalRangeAnchor, TemporalRangeAnchorKind,
+        TemporalDebugBundleRequest, TemporalDebugBundles, TemporalDebugHeader,
+        TemporalQueryRequest, TemporalRangeAnchor, TemporalRangeAnchorKind,
     };
     use serde_json::{Value, json};
     use std::{
@@ -382,6 +386,59 @@ mod tests {
         }
     }
 
+    struct TemporalSuccessSpy {
+        bundle: TemporalDebugBundle,
+        artifact_read: ArtifactRead,
+        mismatched_artifact_read: ArtifactRead,
+        progressive_calls: AtomicUsize,
+    }
+
+    impl TemporalDebugBundles for TemporalSuccessSpy {
+        fn bundle(
+            &self,
+            _request: TemporalDebugBundleRequest,
+            _context: TemporalDebugBundleContext,
+        ) -> PortFuture<'_, krometrail_core::Result<TemporalDebugBundle>> {
+            Box::pin(std::future::ready(Ok(self.bundle.clone())))
+        }
+    }
+
+    impl ProgressiveEvidence for TemporalSuccessSpy {
+        fn execute(
+            &self,
+            request: ProgressiveEvidenceRequest,
+            _context: ProgressiveEvidenceContext,
+        ) -> PortFuture<'_, krometrail_core::Result<ProgressiveEvidenceResult>> {
+            let call = self.progressive_calls.fetch_add(1, Ordering::SeqCst) + 1;
+            let ProgressiveEvidenceRequest::RetrieveArtifact(_) = request else {
+                return Box::pin(std::future::ready(Err(KrometrailError::new(
+                    krometrail_core::ErrorCode::Unsupported,
+                    NonEmptyText::new("fixture only serves artifact reads").unwrap(),
+                ))));
+            };
+            let read = if call <= 2 {
+                self.artifact_read.clone()
+            } else {
+                self.mismatched_artifact_read.clone()
+            };
+            Box::pin(std::future::ready(Ok(
+                ProgressiveEvidenceResult::RetrieveArtifact(Box::new(read)),
+            )))
+        }
+    }
+
+    impl TemporalContextQuery for TemporalSuccessSpy {
+        fn context(
+            &self,
+            _request: TemporalContextRequest,
+        ) -> PortFuture<'_, krometrail_core::Result<TemporalContext>> {
+            Box::pin(std::future::ready(Err(KrometrailError::new(
+                krometrail_core::ErrorCode::Unsupported,
+                NonEmptyText::new("fixture does not serve context reads").unwrap(),
+            ))))
+        }
+    }
+
     fn dependencies_with_spy(
         browser: Arc<dyn BrowserConnector>,
         spy: Arc<TemporalSpy>,
@@ -434,6 +491,164 @@ mod tests {
             .unwrap(),
         )
         .unwrap()
+    }
+
+    fn artifact_id() -> krometrail_core::ArtifactId {
+        "00000000-0000-0000-0000-000000000004".parse().unwrap()
+    }
+
+    fn mismatched_artifact_id() -> krometrail_core::ArtifactId {
+        "00000000-0000-0000-0000-000000000005".parse().unwrap()
+    }
+
+    fn successful_bundle_fixture() -> (Arc<TemporalSuccessSpy>, String, Arc<[u8]>) {
+        let range = resolved_range();
+        let scope = EvidenceScope::new(session_id(), target_id()).unwrap();
+        let bytes: Arc<[u8]> = Arc::from(b"\x89PNG\r\n\x1a\npayload".as_slice());
+        let digest = Sha256Digest::digest(&bytes);
+        let dimensions = temporal_vision::PixelDimensions::new(1, 1).unwrap();
+        let sequence: temporal_vision::FrameSequence<
+            FrameId,
+            krometrail_core::ArtifactMarkerId,
+            krometrail_core::GapId,
+            Box<[u8]>,
+        > = temporal_vision::FrameSequence::new(
+            vec![
+                temporal_vision::Frame::new(
+                    frame_id(),
+                    temporal_vision::Timestamp::from_nanos(0),
+                    dimensions,
+                    temporal_vision::PixelFormat::Rgba8SrgbStraight,
+                    vec![0, 0, 0, 255].into_boxed_slice(),
+                )
+                .unwrap(),
+            ],
+            Vec::new(),
+            Vec::new(),
+            None,
+            None,
+        )
+        .unwrap();
+        let manifest_for = |id| {
+            temporal_vision::ArtifactManifest::from_sequence(
+                id,
+                temporal_vision::ArtifactKind::DifferenceMap,
+                temporal_vision::EvidenceClass::SourceDerived,
+                temporal_vision::AlgorithmDescriptor::new("mcp-fixture", "1").unwrap(),
+                &sequence,
+                Vec::new(),
+                Vec::new(),
+                temporal_vision::Parameters::empty(),
+                dimensions,
+                temporal_vision::OutputHash::from_bytes(*digest.as_bytes()),
+            )
+            .unwrap()
+        };
+        let artifact_manifest = manifest_for(artifact_id());
+        let mismatched_manifest = manifest_for(mismatched_artifact_id());
+        let media_type = NonEmptyText::new("image/png").unwrap();
+        let artifact = ArtifactHandle {
+            artifact_id: artifact_id(),
+            cache: ArtifactCacheDisposition::Generated,
+            media_type: media_type.clone(),
+            encoded_byte_len: bytes.len() as u64,
+            manifest: artifact_manifest.clone(),
+        };
+        let artifact_read = ArtifactRead::new(
+            ArtifactEvidenceHandle::new(
+                artifact_id(),
+                scope,
+                media_type.clone(),
+                digest,
+                bytes.len() as u64,
+                artifact_manifest,
+            )
+            .unwrap(),
+            Arc::clone(&bytes),
+        )
+        .unwrap();
+        let mismatched_artifact_read = ArtifactRead::new(
+            ArtifactEvidenceHandle::new(
+                mismatched_artifact_id(),
+                scope,
+                media_type,
+                digest,
+                bytes.len() as u64,
+                mismatched_manifest,
+            )
+            .unwrap(),
+            Arc::clone(&bytes),
+        )
+        .unwrap();
+        let generator = ArtifactGeneratorRequest::Storyboard(StoryboardRequest {
+            anchor: SessionTime::from_nanos(5),
+            tile_limit: 3,
+            noise_floor: 0,
+            normalization: NormalizationRequest::new(
+                None,
+                temporal_vision::Rgb8::new(0, 0, 0),
+                AnalysisScale::Identity,
+            )
+            .unwrap(),
+            labels: ArtifactLabelsRequest::new(
+                NonEmptyText::new("fixture").unwrap(),
+                NonEmptyText::new("mcp").unwrap(),
+            ),
+            include_orientation: false,
+            output: OutputLimitsRequest::new(64, 64, 1024).unwrap(),
+        });
+        let (requested_query, _, _) = bundle_request().into_parts();
+        let effective = EffectiveBundlePolicy::new(
+            NonEmptyText::new(TEMPORAL_DEBUG_BUNDLE_POLICY_VERSION).unwrap(),
+            range.resolved_anchor.effective_time,
+            vec![generator],
+            ArtifactFailurePolicy::AllowPartial,
+            BrowserEventFilter::default(),
+            krometrail_core::BrowserEventSelection::compact_default(),
+            Vec::new(),
+        )
+        .unwrap();
+        let bundle = TemporalDebugBundle::new(
+            requested_query,
+            range.clone(),
+            effective,
+            TemporalDebugHeader::new(
+                NonEmptyText::new("fixture temporal bundle").unwrap(),
+                Vec::new(),
+            )
+            .unwrap(),
+            Vec::new(),
+            BundleArtifactEvidence::Available(ArtifactGenerationResult {
+                range,
+                epochs: Vec::new(),
+                outcomes: vec![ArtifactOutcome::Available {
+                    epoch_index: 0,
+                    generator_index: 0,
+                    artifact,
+                }],
+            }),
+            BundleContextEvidence::Unavailable {
+                error: KrometrailError::new(
+                    krometrail_core::ErrorCode::Unsupported,
+                    NonEmptyText::new("fixture context is intentionally absent").unwrap(),
+                ),
+            },
+            Vec::new(),
+            vec![BundleDegradation::ContextUnavailable],
+        )
+        .unwrap();
+        let uri =
+            crate::resources::EvidenceResourceUri::artifact(scope, artifact_id()).canonical_uri();
+        (
+            Arc::new(TemporalSuccessSpy {
+                bundle,
+                artifact_read,
+                mismatched_artifact_read,
+                progressive_calls: AtomicUsize::new(0),
+            }),
+            uri,
+            bytes,
+        )
     }
 
     #[test]
@@ -1008,6 +1223,68 @@ mod tests {
         response
     }
 
+    async fn invoke_bundle_and_read_resource(
+        dependencies: McpDependencies,
+        arguments: Value,
+        uri: &str,
+    ) -> (Value, Value, Value) {
+        let service = build_service(
+            dependencies,
+            McpConfig::new(vec![
+                CapabilityId::TemporalVision,
+                CapabilityId::BrowserEvents,
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+        let (client_io, server_io) = tokio::io::duplex(256 * 1024);
+        let server_task = tokio::spawn(async move {
+            let running = service.server.serve(server_io).await.unwrap();
+            running.waiting().await.unwrap();
+        });
+        let (read, mut write) = tokio::io::split(client_io);
+        let mut read = BufReader::new(read);
+        send_json(
+            &mut write,
+            json!({
+                "jsonrpc":"2.0","id":1,"method":"initialize","params":{
+                    "protocolVersion":"2025-06-18","capabilities":{},
+                    "clientInfo":{"name":"temporal-artifact-resource-test","version":"1"}
+                }
+            }),
+        )
+        .await;
+        let initialized = read_json(&mut read).await;
+        assert_eq!(initialized["result"]["protocolVersion"], "2025-06-18");
+        send_json(
+            &mut write,
+            json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+        )
+        .await;
+        send_json(
+            &mut write,
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"temporal_debug_bundle","arguments":arguments}}),
+        )
+        .await;
+        let bundle = read_json(&mut read).await;
+        send_json(
+            &mut write,
+            json!({"jsonrpc":"2.0","id":3,"method":"resources/read","params":{"uri":uri}}),
+        )
+        .await;
+        let resource = read_json(&mut read).await;
+        send_json(
+            &mut write,
+            json!({"jsonrpc":"2.0","id":4,"method":"resources/read","params":{"uri":uri}}),
+        )
+        .await;
+        let mismatch = read_json(&mut read).await;
+        drop(write);
+        drop(read);
+        let _ = server_task.await;
+        (bundle, resource, mismatch)
+    }
+
     #[tokio::test]
     async fn temporal_routes_dispatch_exact_domain_requests_and_reject_invalid_input_before_calls()
     {
@@ -1340,6 +1617,72 @@ mod tests {
         assert!(matches!(server_task.await.unwrap(), QuitReason::Closed));
         owner.shutdown().await.unwrap();
         assert_eq!(stop_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn successful_temporal_bundle_exposes_canonical_artifact_resource_end_to_end() {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+        let (spy, uri, bytes) = successful_bundle_fixture();
+        let arguments = serde_json::to_value(bundle_request()).unwrap();
+        let dependencies = McpDependencies {
+            browser: Arc::new(UnusedConnector),
+            temporal_debug_bundles: Arc::clone(&spy) as Arc<dyn TemporalDebugBundles>,
+            progressive_evidence: Arc::clone(&spy) as Arc<dyn ProgressiveEvidence>,
+            temporal_context: spy as Arc<dyn TemporalContextQuery>,
+        };
+        let (bundle, resource, mismatch) =
+            invoke_bundle_and_read_resource(dependencies, arguments, &uri).await;
+
+        assert_eq!(bundle["result"]["isError"], false);
+        let structured = &bundle["result"]["structuredContent"];
+        assert_eq!(structured["status"], "succeeded");
+        let image_metadata = &structured["images"][0]["metadata"];
+        assert_eq!(image_metadata["kind"], "artifact");
+        assert_eq!(image_metadata["media_type"], "image/png");
+        assert_eq!(image_metadata["encoded_byte_len"], bytes.len());
+        assert_eq!(image_metadata["width"], 1);
+        assert_eq!(image_metadata["height"], 1);
+        let structured_resource = &structured["resources"][0];
+        assert_eq!(structured_resource["uri"], uri);
+        assert_eq!(structured_resource["mime_type"], "image/png");
+        assert_eq!(structured_resource["encoded_byte_len"], bytes.len());
+        let output_hash = structured["result"]["artifacts"]["outcomes"][0]["artifact"]["manifest"]
+            ["output_hash"]
+            .as_str()
+            .unwrap();
+        assert_eq!(output_hash, Sha256Digest::digest(&bytes).to_string());
+
+        let content = bundle["result"]["content"].as_array().unwrap();
+        let inline = content
+            .iter()
+            .find(|item| item["type"] == "image")
+            .expect("successful artifact must be inline in the bundle");
+        assert_eq!(inline["mimeType"], "image/png");
+        assert_eq!(
+            STANDARD.decode(inline["data"].as_str().unwrap()).unwrap(),
+            bytes.as_ref()
+        );
+        let link = content
+            .iter()
+            .find(|item| item["type"] == "resource_link")
+            .expect("bundle must publish a ResourceLink");
+        assert_eq!(link["uri"], uri);
+        assert_eq!(link["mimeType"], "image/png");
+        assert_eq!(link["size"], bytes.len());
+
+        assert_eq!(resource["result"]["contents"][0]["uri"], uri);
+        assert_eq!(resource["result"]["contents"][0]["mimeType"], "image/png");
+        assert_eq!(
+            STANDARD
+                .decode(resource["result"]["contents"][0]["blob"].as_str().unwrap())
+                .unwrap(),
+            bytes.as_ref()
+        );
+        assert_eq!(
+            mismatch["error"]["message"],
+            "resource handle identity mismatch"
+        );
     }
 
     #[tokio::test]

@@ -718,14 +718,14 @@ pub async fn run_live_qualification_with_decision(
     let runtime_cleanup = runtime.cleanup();
     let cleanup = merge_cleanup(lifecycle_cleanup, runtime_cleanup, stop_succeeded);
     let mut observations = base_observations(&config, observed_browser);
-    if let Some(status) = browser_status {
-        observations
+    report::project_capture_config(
+        &mut observations
             .krometrail
             .as_mut()
             .expect("contract seed provides Krometrail identity")
-            .capture_config
-            .every_nth_frame = status.every_nth_frame().get();
-    }
+            .capture_config,
+        browser_status.as_ref(),
+    );
     observations.capture = capture;
     observations.control = control;
     observations.retention = retention;

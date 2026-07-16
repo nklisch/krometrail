@@ -13,8 +13,8 @@ use std::{
 };
 
 use krometrail_core::{
-    BrowserProduct as CoreBrowserProduct, BrowserVersion, DiskBudgetBytes, ErrorCode,
-    KrometrailError, Result,
+    BrowserProduct as CoreBrowserProduct, BrowserStatus, BrowserVersion, DiskBudgetBytes,
+    ErrorCode, KrometrailError, Result,
 };
 use serde::Serialize;
 use temporal_evaluation::{
@@ -147,6 +147,17 @@ pub fn observed_browser(
         protocol_version: version.protocol_version().into(),
         revision: version.revision().into(),
         capability_id: capability_id.into(),
+    }
+}
+
+/// Project the session-owned capture request into the canonical live identity. The `None` case
+/// is the pre-session/default path and intentionally leaves the contract seed unchanged.
+pub(crate) fn project_capture_config(
+    capture_config: &mut temporal_evaluation::CaptureConfigIdentity,
+    status: Option<&BrowserStatus>,
+) {
+    if let Some(status) = status {
+        capture_config.every_nth_frame = status.every_nth_frame().get();
     }
 }
 
@@ -1267,7 +1278,89 @@ pub fn output_path(config: &LiveQualificationConfig) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use krometrail_core::{
+        BrowserCompatibility, BrowserOwnership, BrowserProductVersion, BrowserSessionState,
+        CapabilitySupport, EveryNthFrame, ProfileRef, RendererCapability, RetentionStatus,
+    };
     use temporal_evaluation::BrowserProduct;
+
+    fn browser_status(stride: EveryNthFrame) -> BrowserStatus {
+        let version = BrowserVersion::new(
+            CoreBrowserProduct::Chrome,
+            BrowserProductVersion::new("1").unwrap(),
+            "revision",
+            "1.3",
+            "agent",
+            "1",
+        )
+        .unwrap();
+        let compatibility = BrowserCompatibility::new(
+            version,
+            RendererCapability::ALL
+                .iter()
+                .map(|capability| CapabilitySupport::new(*capability, true, true, None).unwrap())
+                .collect(),
+        )
+        .unwrap();
+        BrowserStatus::new(
+            "00000000-0000-0000-0000-000000000001".parse().unwrap(),
+            BrowserSessionState::Ready,
+            BrowserOwnership::Attached,
+            ProfileRef::External,
+            compatibility,
+            None,
+            Vec::new(),
+            Vec::new(),
+            RetentionStatus::empty(krometrail_core::DiskBudgetBytes::default()),
+            stride,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn browser_status_stride_reaches_manifest_identity_and_input_digest() {
+        let status = browser_status(EveryNthFrame::new(37).unwrap());
+        let mut observations = QualificationObservations::contract_seed();
+        project_capture_config(
+            &mut observations
+                .krometrail
+                .as_mut()
+                .expect("contract seed provides identity")
+                .capture_config,
+            Some(&status),
+        );
+        let projected = assemble_manifest(observations).unwrap();
+        assert_eq!(projected.krometrail.capture_config.every_nth_frame, 37);
+        assert_eq!(
+            serde_json::to_value(&projected).unwrap()["krometrail"]["capture_config"]["every_nth_frame"],
+            37
+        );
+
+        let default = assemble_manifest(QualificationObservations::contract_seed()).unwrap();
+        assert_ne!(
+            projected.input_digest().unwrap(),
+            default.input_digest().unwrap()
+        );
+
+        let mut no_session = QualificationObservations::contract_seed();
+        project_capture_config(
+            &mut no_session
+                .krometrail
+                .as_mut()
+                .expect("contract seed provides identity")
+                .capture_config,
+            None,
+        );
+        assert_eq!(
+            no_session
+                .krometrail
+                .as_ref()
+                .expect("contract seed provides identity")
+                .capture_config
+                .every_nth_frame,
+            temporal_evaluation::MIN_EVERY_NTH_FRAME
+        );
+    }
 
     #[test]
     fn gate_statuses_follow_registry_order_and_precedence() {

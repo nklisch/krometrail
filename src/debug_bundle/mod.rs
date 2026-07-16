@@ -1,14 +1,9 @@
 //! Temporal debug bundle policy, marker assembly, and focus extraction.
 //!
-//! This module owns the pure, versioned `temporal-debug-bundle-v1` evidence
-//! policy: the exact artifact generator requests, bounded privacy-safe marker
-//! assembly, and deterministic major-change focus extraction. It produces the
-//! inputs the bundle service (Unit 3) composes into one `TemporalDebugBundle`;
-//! it does not perform generation, event correlation, or orchestration.
-//!
-//! The functions and types here are `pub(crate)` for the upcoming
-//! `TemporalDebugBundleService` (Unit 3 — bounded composition). They are
-//! exercised by focused tests until the service wires them into `RuntimeDependencies`.
+//! The wired [`TemporalDebugBundleService`] composes the existing temporal-query,
+//! artifact-generation, context, and timeline ports. This module keeps the
+//! versioned policy plus its pure marker and visual-focus helpers alongside that
+//! service; it performs no browser or storage I/O itself.
 
 mod error;
 mod focus;
@@ -27,8 +22,7 @@ use krometrail_core::{
 };
 use policy::policy_version;
 
-// Re-exported for the upcoming `TemporalDebugBundleService` (Unit 3). They are
-// exercised by focused tests until the service wires them into composition.
+// Keep the service and its pure policy helpers together as the bundle composition boundary.
 pub(crate) use error::controlled;
 pub(crate) use focus::extract_focus_times;
 pub(crate) use header::{BrowserEventEvidenceState, VisualEvidenceState, compose_header};

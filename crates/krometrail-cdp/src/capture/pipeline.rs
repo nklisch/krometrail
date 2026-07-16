@@ -901,21 +901,16 @@ pub(super) async fn stop_target(
         .cloned();
     let Some(runtime) = runtime else {
         return CaptureStopOutcome {
-            reason,
             complete: true,
             abandoned_accepted_frames: 0,
-            emitted_gap_count: 0,
         };
     };
     if runtime.state() == CaptureStreamState::Stopped {
         return CaptureStopOutcome {
-            reason,
             complete: true,
             abandoned_accepted_frames: 0,
-            emitted_gap_count: 0,
         };
     }
-    let before_gaps = runtime.status().statistics().gap_count();
     runtime.close_acceptance();
     runtime.transition(Transition::Stop);
     runtime.abort_readers();
@@ -963,7 +958,6 @@ pub(super) async fn stop_target(
     } else {
         Transition::Deadline
     });
-    let after_gaps = runtime.status().statistics().gap_count();
     // Remove only the exact stopped runtime. The StreamKey includes attachment_generation, so a
     // newer replacement has a different key and cannot be erased by this stop.
     {
@@ -987,10 +981,8 @@ pub(super) async fn stop_target(
         | CaptureStopReason::Cancelled => {}
     }
     CaptureStopOutcome {
-        reason,
         complete,
         abandoned_accepted_frames: abandoned,
-        emitted_gap_count: after_gaps.saturating_sub(before_gaps),
     }
 }
 
@@ -1062,17 +1054,16 @@ pub(super) async fn shutdown(
         .map(|runtime| runtime.target.clone())
         .collect();
     targets.sort_by_key(|target| (target.target_id, target.attachment_generation));
-    let mut outcomes = Vec::with_capacity(targets.len());
+    let mut targets_complete = true;
     for target in targets {
-        outcomes.push(
-            stop_target(
-                coordinator,
-                &target,
-                CaptureStopReason::SessionStopping,
-                deadline,
-            )
-            .await,
-        );
+        let outcome = stop_target(
+            coordinator,
+            &target,
+            CaptureStopReason::SessionStopping,
+            deadline,
+        )
+        .await;
+        targets_complete &= outcome.complete;
     }
     let flush_attempted = true;
     let flush_succeeded =
@@ -1080,9 +1071,8 @@ pub(super) async fn shutdown(
             .await
             .is_ok_and(|result| result.is_ok());
     coordinator.ordinals.clear();
-    let complete = flush_succeeded && outcomes.iter().all(|outcome| outcome.complete);
+    let complete = flush_succeeded && targets_complete;
     super::CaptureShutdownOutcome {
-        targets: outcomes,
         flush_attempted,
         flush_succeeded,
         complete,

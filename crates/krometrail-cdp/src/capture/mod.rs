@@ -180,15 +180,12 @@ pub(crate) enum CaptureStopReason {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CaptureStopOutcome {
-    pub(crate) reason: CaptureStopReason,
     pub(crate) complete: bool,
     pub(crate) abandoned_accepted_frames: u64,
-    pub(crate) emitted_gap_count: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CaptureShutdownOutcome {
-    pub(crate) targets: Vec<CaptureStopOutcome>,
     pub(crate) flush_attempted: bool,
     pub(crate) flush_succeeded: bool,
     pub(crate) complete: bool,

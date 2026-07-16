@@ -1,7 +1,7 @@
 ---
 id: gate-tests-temporal-mcp-successful-artifact-resource-seam
 kind: story
-stage: implementing
+stage: review
 tags: [testing, agent-ux, visual]
 parent: null
 depends_on: []
@@ -30,3 +30,17 @@ Return a successful temporal bundle containing a stored artifact, invoke `tempor
 
 ## Test location (suggested)
 `crates/krometrail-mcp/src/{server.rs,response.rs,resources.rs}`
+
+## Implementation notes
+
+- Added a browser-free MCP JSON-RPC integration test using a successful fake bundle/progressive evidence seam.
+- The test invokes `temporal_debug_bundle`, asserts structured artifact metadata and provenance hash, verifies the inline PNG bytes and MIME, follows the canonical `ResourceLink` through `resources/read`, and verifies exact URI/MIME/blob identity.
+- The same route is exercised with a mismatched returned artifact handle and must reject the read with `resource handle identity mismatch`; no browser, model, network, or duplicate implementation path is involved.
+
+## Verification
+
+- `cargo test -p krometrail-mcp --locked` — 23 passed.
+- Full locked workspace and `qualification-support` test variants passed.
+- Rust 1.85 fmt, check, and Clippy `-D warnings` passed.
+
+Implementation is complete; this standalone story is left at `stage: review` for one bounded independent review.

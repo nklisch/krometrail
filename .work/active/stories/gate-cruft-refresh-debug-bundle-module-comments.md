@@ -1,7 +1,7 @@
 ---
 id: gate-cruft-refresh-debug-bundle-module-comments
 kind: story
-stage: implementing
+stage: review
 tags: [cleanup, documentation, visual]
 parent: null
 depends_on: []
@@ -29,3 +29,15 @@ The module comments describe `TemporalDebugBundleService` as upcoming and not wi
 ## Removal
 
 Replace pre-integration scaffolding language with a concise description of the currently wired service and its pure policy/marker/focus helpers. Change no runtime behavior or future foundation intent.
+
+## Implementation notes
+
+- Updated `src/debug_bundle/mod.rs` to describe the production-wired `TemporalDebugBundleService` and the colocated pure policy, marker, and focus helpers.
+- Removed only stale “upcoming service” and “not wired” wording; runtime code and foundation documents are unchanged.
+
+## Verification
+
+- `cargo test -p krometrail-mcp --locked` and full workspace tests passed.
+- Rust 1.85 fmt, check, and Clippy `-D warnings` passed.
+
+Implementation is complete; this standalone story is left at `stage: review` for one bounded independent review.
