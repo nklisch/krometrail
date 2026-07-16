@@ -29,3 +29,4 @@ Add hermetic launcher/installer fixtures and upgrade the native Claude/Codex smo
 - Native qualification verifies the exact v1.0.0 identity, representative tools, both resource templates, skill discovery, uninstall behavior, Claude-owned data cleanup, and Codex fallback data persistence without invoking a model or Chrome.
 - Updated README, installation/development guides, agent navigation, plugin setup guidance, stable compatibility policy, changelog, and generated `llms-full.txt`, including operator-controlled Claude auto-update and explicit Codex lifecycle behavior.
 - Passed native Claude/Codex lifecycle qualification, plugin validators, docs build, shell/static contracts, and the complete locked Rust fmt/check/test/clippy gate.
+- Added a warm-path regression proving that even a version-correct binary behind a symlink is rejected before its `--version` or MCP entry point can execute; native and distribution suites pass after the review fix.

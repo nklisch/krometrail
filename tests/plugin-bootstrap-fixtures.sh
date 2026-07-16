@@ -150,13 +150,29 @@ fi
 [[ ! -s "$STATE/fail.stdout" ]] || fail "failed bootstrap wrote to stdout"
 grep -Fq 'checksum verification failed' "$STATE/fail.stderr" || fail "failed update did not explain checksum rejection"
 
-# Unsafe destinations and redirects fail before publication.
+# Unsafe cold and warm destinations fail before publication or execution.
 mkdir "$STATE/real-root"
 ln -s "$STATE/real-root" "$STATE/symlink-root"
 if run_launcher "$STATE/plugin-100" "$STATE/symlink-root" mcp >/dev/null 2>"$STATE/symlink.stderr"; then
   fail "symlinked managed root was accepted"
 fi
 grep -Fq 'contains a symlink' "$STATE/symlink.stderr" || fail "symlink rejection was not explicit"
+
+warm_real="$STATE/warm-real-root"
+mkdir -p "$warm_real/versions/1.0.0"
+chmod 700 "$warm_real" "$warm_real/versions" "$warm_real/versions/1.0.0"
+cat >"$warm_real/versions/1.0.0/krometrail" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >>"$STATE/unsafe-warm-executions"
+if [ "\${1:-}" = --version ]; then printf 'krometrail 1.0.0\n'; else printf 'unsafe-warm\n'; fi
+EOF
+chmod 700 "$warm_real/versions/1.0.0/krometrail"
+ln -s "$warm_real" "$STATE/warm-symlink-root"
+if FAKE_CURL_MODE=fail run_launcher "$STATE/plugin-100" "$STATE/warm-symlink-root" mcp >/dev/null 2>"$STATE/warm-symlink.stderr"; then
+  fail "warm symlinked managed root was accepted"
+fi
+[[ ! -e "$STATE/unsafe-warm-executions" ]] || fail "unsafe warm binary executed before path validation"
+grep -Fq 'contains a symlink' "$STATE/warm-symlink.stderr" || fail "warm symlink rejection was not explicit"
 
 if FAKE_CURL_MODE=untrusted-redirect run_launcher "$STATE/plugin-100" "$STATE/redirect-root" mcp >/dev/null 2>"$STATE/redirect.stderr"; then
   fail "untrusted redirect was accepted"

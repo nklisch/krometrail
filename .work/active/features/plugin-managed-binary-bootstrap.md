@@ -1,7 +1,7 @@
 ---
 id: plugin-managed-binary-bootstrap
 kind: feature
-stage: review
+stage: done
 tags: [distribution, mcp, security]
 parent: null
 depends_on: [agent-plugin-distribution]
@@ -121,3 +121,7 @@ Add hermetic installer/launcher fixtures for cold install, warm no-network start
 ## Implementation outcome
 
 The package-owned launcher and hardened installer now make native plugin activation sufficient on supported POSIX hosts while leaving standalone installations untouched. Cargo-derived release synchronization, fault-injected lifecycle fixtures, native Claude/Codex discovery, offline warm start, update layout, data ownership, operator guidance, generated docs, and the full Rust/distribution gates are verified.
+
+## Review outcome
+
+A standard independent GPT-5.5 review rejected the first pass because a valid-looking warm binary could execute before the installer-only ownership and symlink checks. The finding was accepted. The installer now exposes a no-network `verify-existing` path that validates every managed path component, user ownership, private permissions, regular-file identity, and exact binary identity before the launcher executes anything. A regression fixture proves that a warm binary behind a symlink is never invoked. Hermetic, distribution, and native Claude/Codex lifecycle qualification all pass after the fix. Per standard review policy, the accepted blocker was fixed and verified without a second review pass; the feature is approved.

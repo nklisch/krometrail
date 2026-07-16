@@ -11,6 +11,7 @@ MAX_REDIRECTS=4
 
 VERSION="${1:-}"
 MANAGED_ROOT="${2:-}"
+MODE="${3:-install}"
 
 fail() {
   printf 'krometrail plugin install error: %s\n' "$1" >&2
@@ -30,12 +31,21 @@ case "$MANAGED_ROOT" in
   *..*|*//*|*[[:cntrl:]]*) fail "managed data path contains an unsafe component" ;;
 esac
 
-for command in awk cat chmod curl dirname id mkdir mktemp mv sed stat tr uname wc; do
+case "$MODE" in
+  install|verify-existing) ;;
+  *) fail "unsupported installer mode" ;;
+esac
+
+for command in awk dirname id stat; do
   command -v "$command" >/dev/null 2>&1 || fail "$command is required"
 done
 
 path_owner() {
   stat -c '%u' "$1" 2>/dev/null || stat -f '%u' "$1" 2>/dev/null
+}
+
+path_mode() {
+  stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null
 }
 
 validate_existing_path() {
@@ -49,6 +59,45 @@ validate_existing_path() {
   done
 }
 
+require_private_owner() {
+  path="$1"
+  description="$2"
+  owner=$(path_owner "$path") || fail "could not verify $description owner"
+  [ "$owner" = "$(id -u)" ] || fail "$description must be owned by the current user"
+  mode=$(path_mode "$path") || fail "could not verify $description permissions"
+  case "$mode" in
+    *00) ;;
+    *) fail "$description must not be accessible by group or other users" ;;
+  esac
+}
+
+VERSIONS_DIR="$MANAGED_ROOT/versions"
+VERSION_DIR="$VERSIONS_DIR/$VERSION"
+DESTINATION="$VERSION_DIR/krometrail"
+
+verify_existing_destination() {
+  validate_existing_path "$MANAGED_ROOT"
+  [ -d "$MANAGED_ROOT" ] && [ -w "$MANAGED_ROOT" ] || fail "managed data directory is not writable"
+  require_private_owner "$MANAGED_ROOT" "managed data directory"
+  for directory in "$VERSIONS_DIR" "$VERSION_DIR"; do
+    [ -d "$directory" ] && [ ! -L "$directory" ] || fail "managed release directory is unavailable or unsafe"
+    require_private_owner "$directory" "managed release directory"
+  done
+  [ -f "$DESTINATION" ] && [ ! -L "$DESTINATION" ] || fail "managed binary destination is not a regular file"
+  require_private_owner "$DESTINATION" "managed binary"
+  identity=$("$DESTINATION" --version 2>/dev/null) || fail "managed binary could not report its version"
+  [ "$identity" = "krometrail $VERSION" ] || fail "managed binary identity does not match v$VERSION"
+}
+
+if [ "$MODE" = verify-existing ]; then
+  verify_existing_destination
+  exit 0
+fi
+
+for command in cat chmod curl mkdir mktemp mv sed tr uname wc; do
+  command -v "$command" >/dev/null 2>&1 || fail "$command is required"
+done
+
 validate_existing_path "$MANAGED_ROOT"
 mkdir -p "$MANAGED_ROOT" || fail "could not create managed data directory"
 validate_existing_path "$MANAGED_ROOT"
@@ -57,8 +106,6 @@ owner=$(path_owner "$MANAGED_ROOT") || fail "could not verify managed data direc
 [ "$owner" = "$(id -u)" ] || fail "managed data directory must be owned by the current user"
 chmod 700 "$MANAGED_ROOT" || fail "could not make managed data directory private"
 
-VERSIONS_DIR="$MANAGED_ROOT/versions"
-VERSION_DIR="$VERSIONS_DIR/$VERSION"
 mkdir -p "$VERSION_DIR" || fail "could not create managed release directory"
 for directory in "$VERSIONS_DIR" "$VERSION_DIR"; do
   [ ! -L "$directory" ] || fail "managed release directory must not be a symlink"
@@ -67,7 +114,6 @@ for directory in "$VERSIONS_DIR" "$VERSION_DIR"; do
   chmod 700 "$directory" || fail "could not make managed release directory private"
 done
 
-DESTINATION="$VERSION_DIR/krometrail"
 if [ -e "$DESTINATION" ] || [ -L "$DESTINATION" ]; then
   [ -f "$DESTINATION" ] && [ ! -L "$DESTINATION" ] || fail "managed binary destination is not a regular file"
   owner=$(path_owner "$DESTINATION") || fail "could not verify managed binary owner"

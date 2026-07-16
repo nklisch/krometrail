@@ -41,18 +41,17 @@ case "$MANAGED_ROOT" in
 esac
 
 MANAGED_BINARY="$MANAGED_ROOT/versions/$EXPECTED_VERSION/krometrail"
-expected_identity="krometrail $EXPECTED_VERSION"
+
+[ -x "$INSTALLER" ] || {
+  printf 'krometrail plugin error: managed installer is missing or not executable\n' >&2
+  exit 1
+}
 
 managed_binary_is_current() {
-  [ -f "$MANAGED_BINARY" ] && [ ! -L "$MANAGED_BINARY" ] &&
-    [ "$("$MANAGED_BINARY" --version 2>/dev/null || true)" = "$expected_identity" ]
+  "$INSTALLER" "$EXPECTED_VERSION" "$MANAGED_ROOT" verify-existing 2>/dev/null
 }
 
 if ! managed_binary_is_current; then
-  [ -x "$INSTALLER" ] || {
-    printf 'krometrail plugin error: managed installer is missing or not executable\n' >&2
-    exit 1
-  }
   printf 'krometrail plugin: installing managed release v%s\n' "$EXPECTED_VERSION" >&2
   "$INSTALLER" "$EXPECTED_VERSION" "$MANAGED_ROOT"
 fi

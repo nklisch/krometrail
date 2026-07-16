@@ -86,6 +86,8 @@ jq -e '
 [[ "$(cat "$PLUGIN_VERSION")" == "$cargo_version" ]] || fail "plugin version marker does not match Cargo"
 [[ -x "$LAUNCHER" && -x "$MANAGED_INSTALLER" ]] || fail "plugin bootstrap scripts must be executable"
 require_text "$LAUNCHER" 'exec "$MANAGED_BINARY" "$@"'
+require_text "$LAUNCHER" 'verify-existing'
+require_text "$MANAGED_INSTALLER" 'verify_existing_destination'
 require_text "$MANAGED_INSTALLER" 'checksum verification failed'
 require_text "$MANAGED_INSTALLER" 'release-assets.githubusercontent.com'
 

@@ -30,3 +30,4 @@ Build the package-owned `krometrail` launcher, exact version marker, hardened ma
 - Split native MCP declarations: Claude uses `CLAUDE_PLUGIN_ROOT`/`CLAUDE_PLUGIN_DATA`; Codex uses its verified plugin-relative `cwd` normalization and a direct server map.
 - Hermetic fixtures prove cold install, warm offline start, side-by-side version update, concurrent convergence, checksum failure preservation, symlink rejection, redirect rejection, and stdout isolation.
 - Native Claude health loading installed v1.0.0 automatically in under one second; Codex listed the installed plugin-relative launcher and cwd exactly.
+- Review hardening moved ownership, private-mode, parent-symlink, regular-file, and exact identity checks ahead of every warm execution through a no-network installer verification mode.
