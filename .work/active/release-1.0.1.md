@@ -31,4 +31,4 @@ No archived stubs were unbound. The operator confirmed the complete post-v1.0.0 
 
 ## Gate runs
 
-Pending.
+- **gate-security** (2026-07-16) — 1 Medium release hardening item deferred to backlog by operator; 1 Low ambient finding already tracked as `gate-security-redact-nested-browser-event-secrets`; no Critical or High findings.
