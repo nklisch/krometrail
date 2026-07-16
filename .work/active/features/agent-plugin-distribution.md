@@ -1,7 +1,7 @@
 ---
 id: agent-plugin-distribution
 kind: feature
-stage: implementing
+stage: review
 tags: [distribution, mcp, documentation]
 parent: null
 depends_on: []
@@ -128,3 +128,14 @@ Static checks bind package identity, current descriptions, pointers, MCP command
 - Native plugin schemas are evolving. Qualification uses the installed `claude plugin validate` and real Codex marketplace commands, while static tests keep failures legible.
 - Native plugin installation cannot portably install an executable. Setup therefore remains an explicit, verified agent action and MCP activation may require a harness restart.
 - A sibling Codex catalog touches unrelated entries. Generate faithful explicit-source entries and verify discovery for the whole catalog rather than silently dropping existing plugins.
+
+## Implementation notes
+
+- **Execution capability:** cohesive inline feature implementation; package, catalogs, docs, and native lifecycle tests shared one identity and were safer under one owner.
+- Built the shared Claude/Codex package under `plugin/` with one evidence-literacy skill and direct stdio MCP declaration.
+- Published first-party native catalogs and committed the sibling publisher update on `../skills` branch `feat/krometrail-agent-plugin`.
+- Added ordinary static distribution contracts and an opt-in real native CLI smoke using isolated homes and the published v1.0.0 binary.
+- Corrected one qualification-discovered documentation bug: exact artifact and source-frame reads are MCP resources, not tool calls.
+- Corrected stale post-release installer and documentation language and regenerated `docs/public/llms-full.txt`.
+- Verification: Claude plugin/marketplace validator; open skill validator; plugin/distribution shell contracts; isolated Claude/Codex install/remove; MCP initialize, 37-tool discovery, and two resource templates; v1.0.0 checksum/identity installer; VitePress build; complete locked Rust fmt/check/test/clippy gate.
+- Final egress order after review: push Krometrail, verify sibling remote installs resolve 1.0.0, then publish the sibling branch.
