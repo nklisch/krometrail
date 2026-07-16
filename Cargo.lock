@@ -719,7 +719,7 @@ dependencies = [
 
 [[package]]
 name = "krometrail"
-version = "0.2.20"
+version = "1.0.0"
 dependencies = [
  "clap",
  "image",
@@ -740,7 +740,7 @@ dependencies = [
 
 [[package]]
 name = "krometrail-cdp"
-version = "0.2.20"
+version = "1.0.0"
 dependencies = [
  "base64",
  "cdpkit",
@@ -763,7 +763,7 @@ dependencies = [
 
 [[package]]
 name = "krometrail-core"
-version = "0.2.20"
+version = "1.0.0"
 dependencies = [
  "schemars",
  "serde",
@@ -777,7 +777,7 @@ dependencies = [
 
 [[package]]
 name = "krometrail-mcp"
-version = "0.2.20"
+version = "1.0.0"
 dependencies = [
  "base64",
  "futures-util",
@@ -795,7 +795,7 @@ dependencies = [
 
 [[package]]
 name = "krometrail-store"
-version = "0.2.20"
+version = "1.0.0"
 dependencies = [
  "crc32fast",
  "krometrail-core",
@@ -1316,7 +1316,7 @@ dependencies = [
 
 [[package]]
 name = "temporal-evaluation"
-version = "0.2.20"
+version = "1.0.0"
 dependencies = [
  "schemars",
  "serde",
@@ -1327,7 +1327,7 @@ dependencies = [
 
 [[package]]
 name = "temporal-vision"
-version = "0.2.20"
+version = "1.0.0"
 dependencies = [
  "libc",
  "png 0.17.16",
