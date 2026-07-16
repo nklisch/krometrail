@@ -1,7 +1,7 @@
 ---
 id: human-centered-documentation-site
 kind: feature
-stage: review
+stage: done
 tags: [prose, documentation, agent-ux]
 parent: null
 depends_on: []
@@ -96,3 +96,17 @@ Three independent passes shaped the rewrite: GLM 5.2 audited information archite
 - **Simplification:** removed research and foundation documents from primary navigation; replaced the contributor-first guide with a task-ordered user journey; consolidated duplicated setup prose; removed source-code pointers, future configuration prose, registry terminology, and exact tool counts from public reference pages; reduced `llms-full.txt` from an indiscriminate repository-doc glob to eight practical usage documents.
 - **Discrepancies from design:** none. The homepage uses VitePress's home layout rather than a plain document layout to make the new hierarchy visible without introducing custom styling.
 - **Adjacent issues parked:** none.
+
+## Review (2026-07-16)
+
+**Verdict:** Approve
+
+**Blockers:** none
+
+**Important:** none
+
+**Nits:** “four command-line entry points” could be read as conflating flags and subcommands, though the table is explicit; “Before / during / after” could be labeled as an orientation view. Both are clear in context and do not warrant churn.
+
+**Rejected:** none
+
+**Notes:** Standard-weight single independent pass by a fresh GLM 5.2 reviewer. The reviewer verified the first-use journey, voice, commands, plugin contracts, navigation and links, generated-document curation, local-data and capture-limit claims, and every acceptance criterion. Review relied on the already-green documentation build and distribution contracts while independently inspecting their outputs and contract sources. No material current-cycle findings remain.
