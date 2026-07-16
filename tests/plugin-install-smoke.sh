@@ -24,37 +24,37 @@ trap cleanup EXIT
 
 CLAUDE_HOME="$STATE/claude-home"
 CODEX_HOME_DIR="$STATE/codex-home"
-INSTALL_DIR="$STATE/bin"
-mkdir -p "$CLAUDE_HOME" "$CODEX_HOME_DIR" "$INSTALL_DIR"
+CODEX_DATA="$STATE/codex-data"
+mkdir -p "$CLAUDE_HOME" "$CODEX_HOME_DIR" "$CODEX_DATA"
 
 fail() {
   echo "plugin install smoke failure: $*" >&2
   exit 1
 }
 
-# The published installer proves the binary lifecycle independently from plugin state.
-release_version="${KROMETRAIL_RELEASE_VERSION:-v1.0.0}"
-KROMETRAIL_INSTALL_DIR="$INSTALL_DIR" \
-  sh "$ROOT/scripts/install.sh" --version "$release_version" --no-modify-path >/dev/null
-[[ "$($INSTALL_DIR/krometrail --version)" == "krometrail ${release_version#v}" ]] || \
-  fail "installed binary identity does not match $release_version"
-"$INSTALL_DIR/krometrail" --help | grep -Fq 'mcp' || fail "installed binary does not expose mcp"
+release_version="v$(cat "$ROOT/plugin/version")"
+if [[ -n "${KROMETRAIL_RELEASE_VERSION:-}" && "$KROMETRAIL_RELEASE_VERSION" != "$release_version" ]]; then
+  fail "requested release $KROMETRAIL_RELEASE_VERSION does not match plugin $release_version"
+fi
 
-# Exercise the published stdio server itself: initialize, discover representative tools, and verify
-# that exact artifact/frame reads remain MCP resources rather than invented tool calls.
-python3 - "$INSTALL_DIR/krometrail" <<'PY'
+cat >"$STATE/probe_mcp.py" <<'PY'
 import json
+import os
 import select
 import subprocess
 import sys
 
+cwd = sys.argv[1]
+command = sys.argv[2:]
 process = subprocess.Popen(
-    [sys.argv[1], "mcp"],
+    command,
+    cwd=cwd,
     stdin=subprocess.PIPE,
     stdout=subprocess.PIPE,
     stderr=subprocess.PIPE,
     text=True,
     bufsize=1,
+    env=os.environ.copy(),
 )
 
 
@@ -64,9 +64,9 @@ def send(message):
 
 
 def receive():
-    ready, _, _ = select.select([process.stdout], [], [], 10)
+    ready, _, _ = select.select([process.stdout], [], [], 30)
     if not ready:
-        raise RuntimeError("MCP response timed out: " + process.stderr.read(2000))
+        raise RuntimeError("MCP response timed out: " + process.stderr.read(4000))
     return json.loads(process.stdout.readline())
 
 
@@ -104,41 +104,53 @@ process.wait(timeout=10)
 assert process.returncode == 0, process.stderr.read()
 PY
 
-export PATH="$INSTALL_DIR:$PATH"
-
-# Claude: register, install, inspect the materialized package, then remove every native layer.
+# Claude: native plugin loading resolves package/data placeholders and starts the launcher automatically.
 HOME="$CLAUDE_HOME" claude plugin marketplace add "$ROOT" --scope user >/dev/null
 HOME="$CLAUDE_HOME" claude plugin install krometrail@krometrail --scope user >/dev/null
 HOME="$CLAUDE_HOME" claude plugin list --json >"$STATE/claude-list.json"
 claude_path="$(jq -r '.[] | select(.id == "krometrail@krometrail") | .installPath' "$STATE/claude-list.json")"
 [[ -n "$claude_path" && "$claude_path" != "null" ]] || fail "Claude did not report the installed plugin"
 [[ -f "$claude_path/skills/krometrail/SKILL.md" ]] || fail "Claude install omitted the complete skill"
-[[ -f "$claude_path/.mcp.json" ]] || fail "Claude install omitted the MCP declaration"
-jq -e '.[] | select(.id == "krometrail@krometrail") | .mcpServers.krometrail.command == "krometrail"' \
-  "$STATE/claude-list.json" >/dev/null || fail "Claude did not load the direct MCP command"
+[[ -x "$claude_path/bin/krometrail" && -x "$claude_path/scripts/install-managed.sh" ]] || fail "Claude install omitted executable bootstrap files"
+jq -e '.[] | select(.id == "krometrail@krometrail") |
+  .mcpServers.krometrail.command == "${CLAUDE_PLUGIN_ROOT}/bin/krometrail" and
+  .mcpServers.krometrail.env.KROMETRAIL_MANAGED_ROOT == "${CLAUDE_PLUGIN_DATA}"' \
+  "$STATE/claude-list.json" >/dev/null || fail "Claude did not load the managed MCP declaration"
+HOME="$CLAUDE_HOME" MCP_TIMEOUT=60000 claude mcp list >"$STATE/claude-mcp.txt" 2>&1
+(grep -F 'plugin:krometrail:krometrail:' "$STATE/claude-mcp.txt" | grep -Fq 'Connected') || fail "Claude did not start the managed MCP server"
+claude_data="$CLAUDE_HOME/.claude/plugins/data/krometrail-krometrail"
+claude_binary="$claude_data/versions/${release_version#v}/krometrail"
+[[ -x "$claude_binary" ]] || fail "Claude activation did not install the managed binary"
+[[ "$($claude_binary --version)" == "krometrail ${release_version#v}" ]] || fail "Claude managed binary has the wrong identity"
+HOME="$CLAUDE_HOME" KROMETRAIL_MANAGED_ROOT="$claude_data" \
+  python3 "$STATE/probe_mcp.py" "$claude_path" "$claude_path/bin/krometrail" mcp
 HOME="$CLAUDE_HOME" claude plugin details krometrail@krometrail >"$STATE/claude-details.txt"
 grep -Eq 'Skills \(1\).*krometrail' "$STATE/claude-details.txt" || fail "Claude did not discover the Krometrail skill"
 HOME="$CLAUDE_HOME" claude plugin uninstall krometrail@krometrail --scope user >/dev/null
 HOME="$CLAUDE_HOME" claude plugin marketplace remove krometrail --scope user >/dev/null
-HOME="$CLAUDE_HOME" claude plugin list --json | jq -e 'all(.[]; .id != "krometrail@krometrail")' >/dev/null || \
-  fail "Claude plugin remained installed after removal"
+[[ ! -e "$claude_data" ]] || fail "Claude uninstall did not remove managed plugin data"
 
-# Codex: use its native catalog and explicit component pointers under an isolated CODEX_HOME.
+# Codex: native loading resolves cwd against the installed plugin; invoking that declaration bootstraps MCP.
 CODEX_HOME="$CODEX_HOME_DIR" codex plugin marketplace add "$ROOT" --json >/dev/null
 CODEX_HOME="$CODEX_HOME_DIR" codex plugin add krometrail@krometrail --json >"$STATE/codex-add.json"
 codex_path="$(jq -r '.installedPath' "$STATE/codex-add.json")"
 [[ -n "$codex_path" && "$codex_path" != "null" ]] || fail "Codex did not report the installed plugin"
 [[ -f "$codex_path/skills/krometrail/SKILL.md" ]] || fail "Codex install omitted the complete skill"
-[[ -f "$codex_path/.mcp.json" ]] || fail "Codex install omitted the MCP declaration"
-CODEX_HOME="$CODEX_HOME_DIR" codex plugin list --json >"$STATE/codex-list.json"
-jq -e '.installed[] | select(.pluginId == "krometrail@krometrail" and .enabled == true)' \
-  "$STATE/codex-list.json" >/dev/null || fail "Codex did not enable the installed plugin"
+[[ -x "$codex_path/bin/krometrail" && -x "$codex_path/scripts/install-managed.sh" ]] || fail "Codex install omitted executable bootstrap files"
+CODEX_HOME="$CODEX_HOME_DIR" codex mcp list --json >"$STATE/codex-mcp.json"
+jq -e --arg cwd "$codex_path/." '.[] | select(.name == "krometrail") |
+  .transport.command == "sh" and
+  .transport.args == ["bin/krometrail", "mcp"] and
+  .transport.cwd == $cwd' "$STATE/codex-mcp.json" >/dev/null || fail "Codex did not resolve the plugin-relative MCP declaration"
+HOME="$CODEX_HOME_DIR" XDG_DATA_HOME="$CODEX_DATA" CODEX_HOME="$CODEX_HOME_DIR" \
+  python3 "$STATE/probe_mcp.py" "$codex_path" sh bin/krometrail mcp
+codex_binary="$CODEX_DATA/krometrail/plugin/versions/${release_version#v}/krometrail"
+[[ -x "$codex_binary" ]] || fail "Codex activation did not install the managed binary"
+[[ "$($codex_binary --version)" == "krometrail ${release_version#v}" ]] || fail "Codex managed binary has the wrong identity"
 CODEX_HOME="$CODEX_HOME_DIR" codex debug prompt-input 'probe skills' >"$STATE/codex-prompt.json"
 grep -Fq 'krometrail:krometrail' "$STATE/codex-prompt.json" || fail "Codex did not expose the Krometrail skill to the model"
 CODEX_HOME="$CODEX_HOME_DIR" codex plugin remove krometrail@krometrail >/dev/null
 CODEX_HOME="$CODEX_HOME_DIR" codex plugin marketplace remove krometrail >/dev/null
-CODEX_HOME="$CODEX_HOME_DIR" codex plugin list --json | \
-  jq -e 'all(.installed[]; .pluginId != "krometrail@krometrail")' >/dev/null || \
-  fail "Codex plugin remained installed after removal"
+[[ -x "$codex_binary" ]] || fail "Codex removal unexpectedly deleted fallback XDG managed data"
 
-printf 'plugin install smoke: ok (%s)\n' "$release_version"
+printf 'plugin install smoke: ok (%s, managed bootstrap)\n' "$release_version"

@@ -1,7 +1,7 @@
 # Setup and activation
 
-Plugin installation, binary installation, MCP activation, and tool discovery are separate checks.
-Do not report Krometrail ready until each required layer is observed.
+Plugin installation, managed-binary activation, MCP connection, and tool discovery are separately
+observable checks. Do not report Krometrail ready until the layers needed for the task are observed.
 
 ## 1. Install the native plugin
 
@@ -31,73 +31,68 @@ codex plugin marketplace add nklisch/skills
 codex plugin add krometrail@nklisch-skills
 ```
 
-A successful plugin install means the harness has the skill and MCP declaration. It does not mean the
-`krometrail` executable exists.
+The plugin contains the skill, MCP declaration, and a managed launcher. On its first MCP activation,
+the launcher downloads the exact Krometrail release declared by that plugin version, verifies the
+published checksum and executable identity, and stores it in private per-user plugin data. This cold
+start needs network access. Later starts use the verified local binary without a network request.
 
-## 2. Verify or install the binary
+Installing or updating the plugin is the operator's consent boundary for this release-coupled managed
+binary. Merely loading this skill must not run a separate installer or modify a standalone installation.
 
-Check first:
+## 2. Activate and verify MCP
 
-```bash
-command -v krometrail
-krometrail --version
-krometrail --help
-```
+Restart or reload the harness after installing or updating the plugin. The native declaration starts
+the package-owned launcher; it does not depend on `krometrail` being on `PATH`.
 
-If it is missing and the user has asked to set up Krometrail, use the canonical installer:
+Confirm all relevant layers:
+
+- native plugin details show the Krometrail skill and MCP component;
+- MCP status reports the Krometrail server connected;
+- the tool list includes browser lifecycle, observation/control, and temporal evidence tools;
+- `temporal-artifact` and `temporal-source-frame` resource templates are available.
+
+The first activation can take longer while the release is downloaded and verified. Installer progress
+and failures appear on stderr so the MCP protocol on stdout remains valid. Do not run the launcher or
+`krometrail mcp` in an ordinary terminal as a health command; it is a stdio protocol server and waits
+for an MCP client.
+
+## 3. Standalone CLI and fallback MCP setup
+
+The plugin-managed binary is private to the plugin and intentionally does not add a command to `PATH`.
+If the user also wants the standalone CLI, or native plugin MCP loading is unavailable, install the
+independent binary only after that request:
 
 ```bash
 curl -fsSL https://krometrail.dev/install.sh | sh
-```
-
-The installer selects the platform asset, verifies `checksums.txt`, executes the candidate's exact
-`--version` identity before replacement, and installs atomically. It supports Linux and macOS on x64
-and arm64. Windows uses the published `.exe` asset directly.
-
-If installation was not part of the user's request, explain the missing binary and ask before running
-networked installation. Do not substitute a JavaScript-package fallback: the current product is the Rust binary.
-
-The default destination is `~/.local/bin/krometrail`. If the current agent process does not inherit a
-new shell profile, either restart the harness or add the directory to that process before verifying:
-
-```bash
 export PATH="$HOME/.local/bin:$PATH"
 krometrail --version
 ```
 
-## 3. Activate and verify MCP
+The standalone installer selects the platform asset, verifies `checksums.txt`, executes the candidate's
+exact `--version` identity before replacement, and installs atomically. It supports Linux and macOS on
+x64 and arm64. Windows uses the published `.exe` asset directly.
 
-The plugin declares this stdio server:
-
-```json
-{
-  "command": "krometrail",
-  "args": ["mcp"]
-}
-```
-
-Restart or reload the harness after installing the binary or changing plugin state. Confirm that the
-Krometrail tool list includes browser lifecycle, observation/control, and temporal evidence tools,
-and that the `temporal-artifact` and `temporal-source-frame` resource templates are available. Do not
-run `krometrail mcp` in an ordinary terminal as a health command; it is a stdio protocol server
-and waits for an MCP client.
-
-If native plugin MCP loading is unavailable, configure the same direct command through the harness's
-normal MCP lifecycle rather than copying plugin cache files:
+After a standalone install, fallback harness configuration can use the direct command:
 
 ```bash
 claude mcp add --scope user krometrail -- krometrail mcp
 codex mcp add krometrail -- krometrail mcp
 ```
 
-Use each command's `--help` as the authority if the installed harness version differs.
+Use each command's `--help` as the authority if the installed harness version differs. Never copy
+files from a native plugin cache into manual configuration.
 
 ## Troubleshooting boundaries
 
-- **Skill visible, tools absent:** inspect plugin details and MCP status; the binary may be missing from
-  the harness process's `PATH`, or the harness may need a restart.
-- **Server exits immediately:** run `krometrail --version` and `krometrail doctor` outside MCP. Preserve
-  the exact error rather than replacing the direct command with a downloader.
+- **Skill visible, tools absent:** inspect plugin details and MCP status, restart the harness, and
+  preserve any launcher error from stderr. `PATH` is not required for native plugin activation.
+- **Managed download fails:** check HTTPS access to the GitHub release and asset hosts and confirm the
+  plugin version has a matching published release. Never bypass checksum or identity verification.
+- **Offline first start:** restore network access for one verified cold activation. Once installed, the
+  same plugin version starts offline.
+- **Server exits after a verified install:** if a standalone binary exists, run `krometrail --version`
+  and `krometrail doctor` outside MCP for diagnostics. Do not replace the native launcher with a shell
+  downloader.
 - **Browser not found:** install a supported local Chrome/Chromium build or pass an explicit executable
   through `start_browser` as advertised by its tool schema.
 - **Attach fails:** use an explicitly configured local Chromium debugging endpoint. Do not expose or
@@ -120,9 +115,12 @@ codex plugin remove krometrail@krometrail
 codex plugin add krometrail@krometrail
 ```
 
-For the sibling marketplace, substitute `nklisch-skills` as the marketplace name.
+For the sibling marketplace, substitute `nklisch-skills` as the marketplace name. On the next MCP
+activation, a new plugin version verifies and installs its exact matching binary alongside the prior
+managed version. Krometrail never polls `latest`, never updates during a warm start, and never changes
+an independently installed CLI.
 
-Remove native state with the matching lifecycle:
+Remove native plugin state with the matching lifecycle:
 
 ```bash
 claude plugin uninstall krometrail@krometrail --scope user
@@ -132,6 +130,8 @@ codex plugin remove krometrail@krometrail
 codex plugin marketplace remove krometrail
 ```
 
-Plugin removal does not remove the independently installed binary or retained local Krometrail data.
-Remove those only when the user explicitly requests it and after identifying how the binary was
-installed.
+Claude owns its plugin data lifecycle. Codex's fallback managed data is stored under
+`${XDG_DATA_HOME:-$HOME/.local/share}/krometrail/plugin` and can outlive plugin removal so an offline
+rollback remains possible. Independently installed binaries and retained browser evidence are always
+separate. Delete managed versions, standalone binaries, or retained evidence only when the user
+explicitly requests cleanup and after identifying the exact path and ownership.

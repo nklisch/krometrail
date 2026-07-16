@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.0.1 — 2026-07-16
+
+### Plugin distribution
+
+- Added package-owned Claude Code and Codex MCP launchers that install the exact release coupled to the plugin version into private per-user data on first activation.
+- Added exact checksum and executable-identity verification, HTTPS redirect allowlisting, bounded downloads, symlink and ownership defenses, atomic publication, and warm offline startup.
+- Kept standalone binary installation independent while making native plugin installation sufficient for MCP activation.
+- Derived native manifests, first-party catalog entries, and the launcher version marker atomically from Cargo's sole release version authority.
+- Added hermetic bootstrap fault coverage and isolated native Claude/Codex install, activation, tool/resource discovery, update-layout, and removal qualification.
+
 ## v1.0.0 — 2026-07-15
 
 ### Features

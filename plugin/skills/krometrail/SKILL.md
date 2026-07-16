@@ -18,9 +18,9 @@ question, and do not force every investigation through the same sequence.
 Use the MCP tool descriptions as the authority for current arguments and response schemas. Tool names
 may receive a harness-specific `krometrail` prefix.
 
-If the Krometrail tools are unavailable, or the MCP server reports that the executable is missing,
-read [setup and activation](references/setup.md). Plugin installation and binary installation are
-separate facts. Never download or install the executable merely because this skill loaded.
+If the Krometrail tools are unavailable, read [setup and activation](references/setup.md). Native
+plugin activation manages its exact release binary automatically; a standalone CLI installation is a
+separate, optional fact. Never run a separate installer merely because this skill loaded.
 
 ## Choose evidence by question
 

@@ -143,7 +143,9 @@ for term in \
   grep -Fiq -- "$term" "$EVIDENCE" "$SKILL" || fail "evidence guidance is missing: $term"
 done
 require_text "$SETUP" 'https://krometrail.dev/install.sh'
-require_text "$SETUP" 'Plugin installation, binary installation, MCP activation, and tool discovery are separate checks.'
+require_text "$SETUP" 'Plugin installation, managed-binary activation, MCP connection, and tool discovery are separately'
+require_text "$SETUP" 'does not depend on `krometrail` being on `PATH`'
+require_text "$SETUP" 'never polls `latest`'
 require_text "$SETUP" 'claude plugin install krometrail@krometrail'
 require_text "$SETUP" 'codex plugin add krometrail@krometrail'
 if grep -Fq -- '`retrieve_artifact`' "$SKILL" || grep -Fq -- '`retrieve_source_frame`' "$SKILL"; then

@@ -44,7 +44,7 @@ krometrail --version
 krometrail doctor
 ```
 
-The stable `v1.0.0` release and its five assets are published at [GitHub Releases](https://github.com/nklisch/krometrail/releases/tag/v1.0.0). Linux assets are statically linked musl binaries. Windows remains a best-effort direct-download `.exe` and is not supported by the POSIX installer.
+Stable releases and their five assets are published at [GitHub Releases](https://github.com/nklisch/krometrail/releases/latest). Linux assets are statically linked musl binaries. Windows remains a best-effort direct-download `.exe` and is not supported by the POSIX installer.
 
 For a source build instead:
 
@@ -54,7 +54,7 @@ bash scripts/dev-install.sh
 
 ### Claude Code and Codex plugin
 
-The native plugin provides the shared Krometrail skill and configures the local stdio MCP server as `krometrail mcp`:
+The native plugin provides the shared Krometrail skill and a managed launcher for the local stdio MCP server:
 
 ```bash
 # Claude Code
@@ -66,7 +66,7 @@ codex plugin marketplace add nklisch/krometrail
 codex plugin add krometrail@krometrail
 ```
 
-Plugin installation does not install the executable. Install and verify the binary separately, then restart or reload the harness so it can activate the MCP server. The skill explains how to choose current screenshots, structured snapshots, temporal bundles, storyboards, difference maps, region filmstrips, motion history, source frames, and browser events without imposing one debugging workflow.
+On first MCP activation, the plugin downloads and verifies the exact Krometrail release it declares into private per-user plugin data; later starts are offline and perform no update check. A standalone `krometrail` command remains an optional, separate installation. The skill explains how to choose current screenshots, structured snapshots, temporal bundles, storyboards, difference maps, region filmstrips, motion history, source frames, and browser events without imposing one debugging workflow.
 
 See the [full installation guide](https://krometrail.dev/guide/installation) for update, removal, alternate marketplace, and activation details.
 
@@ -98,7 +98,7 @@ bun run docs:build
 
 ## Release
 
-Cargo.toml is the sole product version source. The release helper is retained as Bun tooling because it updates Cargo, runs the Rust gate, and performs the repository's release commit/tag/push workflow:
+Cargo.toml is the sole product version source. The release helper is retained as Bun tooling because it updates Cargo and all derived plugin/catalog versions atomically, runs the Rust gate, and performs the repository's release commit/tag/push workflow:
 
 ```bash
 bun scripts/bump-version.ts patch

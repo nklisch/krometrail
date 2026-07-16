@@ -73,4 +73,4 @@ The release matrix builds and checksums these stable asset names:
 - `krometrail-darwin-arm64`
 - `krometrail-windows-x64.exe`
 
-The public installer rejects the preserved `v0.2.20` TypeScript/DAP release and older versions before downloading. Stable `v1.0.0` assets, checksums, and build-provenance attestations are published. See the [installation guide](installation.md) for binary and native agent-plugin paths. Use `scripts/dev-install.sh` to install a local host release build into `~/.local/bin`.
+The public installer rejects the preserved `v0.2.20` TypeScript/DAP release and older versions before downloading. Stable assets, checksums, and build-provenance attestations are published for each release. See the [installation guide](installation.md) for standalone and plugin-managed binary paths. Use `scripts/dev-install.sh` to install a local host release build into `~/.local/bin`.

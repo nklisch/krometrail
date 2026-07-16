@@ -4,13 +4,14 @@ Krometrail is a Rust 2024 workspace for local browser control and temporal visua
 
 ## Stable Release Contract
 
-Krometrail v1.0.0 is a published stable binary and agent-plugin surface. The workspace crates are not separately published, but users may depend on the executable, installer and asset names, MCP tools/schemas/resources, retained evidence, and plugin package.
+Krometrail v1.x is a published stable binary and agent-plugin surface. The workspace crates are not separately published, but users may depend on the executable, installer and asset names, MCP tools/schemas/resources, retained evidence, plugin package, and release-coupled managed launcher.
 
 - Treat observable 1.x behavior and persisted formats as compatibility contracts. Make breaking changes through an explicit major-version boundary; use versioned migrations or clear incompatibility failures when retained user data is affected.
 - Keep unpublished Rust internals clean and direct. Do not add compatibility shims for private types or hypothetical crate consumers, but do not use crate privacy to dismiss externally observable behavior.
 - Keep foundation documents current with the supported contract. Git carries history; current docs should not preserve superseded runtime instructions.
 - Name the concrete consumer or retained-data boundary when compatibility affects a design decision, and keep compatibility work proportional to that real dependency.
 - Continue validating inputs, invariants, privacy, and failure behavior rigorously; stable status adds compatibility obligations without weakening correctness requirements.
+- Keep Cargo.toml as the sole release version authority. Plugin and catalog versions are derived projections, and each plugin release must select exactly the matching verified binary without polling `latest` or mutating standalone installations.
 
 ## Project Structure
 
