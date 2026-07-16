@@ -4,12 +4,12 @@
 
 ## Current state
 
-The current executable exposes `--version`, `--help`, and `doctor`. The first two succeed; `doctor` reports that browser transport is not yet available. Browser capture, storage, temporal analysis, MCP tools, and debugger commands are not currently exposed.
+The current executable exposes `--version`, `--help`, `doctor`, and `mcp`. `doctor` discovers local browser installations without launching. `mcp` exposes lifecycle, browser-control, temporal investigation, retention, browser-event, and retained artifact/source-frame resource surfaces over stdio; controlled capture and durable recording are implemented behind the same runtime.
 
 ## Contributor docs
 
 - [Development](/guide/development): Rust build, test, lint, run, release, and docs tooling.
-- [MCP configuration](/guide/mcp-configuration): current MCP status and intended Electron renderer boundary.
+- [MCP configuration](/guide/mcp-configuration): configure the implemented local MCP stdio server and its browser/evidence boundary.
 - [Runtime reference](/reference/runtime): current executable contract.
 - [Configuration](/reference/configuration): current configuration status.
 - [Documentation navigation](/agents): source-of-truth order.

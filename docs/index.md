@@ -17,7 +17,7 @@ cargo run -- doctor
 cargo run -- mcp
 ```
 
-`doctor` reports discovered browser installations without launching. `mcp` serves the registry-derived browser-control tools over protocol-only stdio and keeps controlled-browser capture and recording assembled behind the same runtime. Temporal investigation tools remain future-facing contracts in the foundation documents.
+`doctor` reports discovered browser installations without launching. `mcp` serves the implemented MCP surface over protocol-only stdio: lifecycle tools, 24 registry-derived browser-control tools, temporal investigation and retention tools, browser-event queries, and retained artifact/source-frame resources. Controlled-browser capture and durable recording are assembled behind the same runtime.
 
 ## Start here
 

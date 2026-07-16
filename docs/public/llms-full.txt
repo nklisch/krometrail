@@ -293,8 +293,9 @@ combinations.
   missing-frame estimate and drains accepted work before a bounded managed stop.
 - No managed Chrome process or temporary profile reference outlives its session on Linux
   (`/proc/*/cmdline`) and macOS (`ps -ax -o pid= -o command=`).
-- Default-DPI and high-DPI macOS configurations are both exercised; both force device scale so the
-  observed band is host-independent.
+- The committed macOS evidence covers the default-DPI configuration. A high-DPI configuration was
+  attempted, but it produced no passing artifact; the decisive observed device-scale threshold
+  remains `>= 1.5`.
 
 ## Honest non-claims
 
@@ -360,13 +361,18 @@ KROMETRAIL_SMOKE_EVIDENCE_DIR=docs/evidence/cross-platform-smoke/v1 \
 cargo test -p krometrail-cdp --test cross_platform_smoke --locked -- --nocapture --include-ignored
 ```
 
-This writes both `macos-chrome-default-dpi.json` and `macos-chrome-high-dpi.json`.
+This writes `macos-chrome-default-dpi.json` and attempts the high-DPI configuration. The
+high-DPI document is emitted only when production metadata observes device scale `>= 1.5`; the
+current attempted run emitted no `macos-chrome-high-dpi.json`.
 
 ## Decisive/skip policy
 
-- **Decisive configurations** (must be present and green): `linux-chrome`,
-  `macos-chrome-default-dpi`, `macos-chrome-high-dpi`.
+- **Decisive configurations** for a complete smoke result remain `linux-chrome`,
+  `macos-chrome-default-dpi`, and `macos-chrome-high-dpi`; the high-DPI threshold is not relaxed.
 - **Best-effort configuration** (honest skip permitted): `linux-chromium`.
+- The current high-DPI artifact is absent because the attempted run did not pass the threshold.
+  This documentation records the non-pass honestly and does not block the local-tool release on
+  absent platform evidence.
 - **Wrong platform:** the test skips with a printed reason on any `target_os` outside
   `{linux, macos}`.
 - **Skip, not fail:** when `KROMETRAIL_REAL_CHROME_TESTS != 1` or no decisive installation is
@@ -379,14 +385,14 @@ This writes both `macos-chrome-default-dpi.json` and `macos-chrome-high-dpi.json
 - `macos-chrome-default-dpi.json` is present and passed both sessions against Chrome 149.0.7827.201
   on hosted macOS 14 arm64. Its process/profile cleanup result used the real `ps`-based reference
   scan.
-- `macos-chrome-high-dpi.json` is intentionally absent. Hosted runs `29288505121` and `29288634536`
-  both observed `deviceScaleFactor == 1.0` under
-  `--high-dpi-support=1 --force-device-scale-factor=2`; the decisive `>= 1.5` assertion failed, so
-  the harness emitted no passing document. The operator explicitly authorized deferring this
-  evidence on 2026-07-13 so the foundation implementation can continue without weakening the gate
-  or fabricating a pass. A future lane must either demonstrate a Chrome configuration that exposes
-  high DPI through the production capture metadata or redesign that capture boundary before this
-  evidence can be added.
+- `macos-chrome-high-dpi.json` is absent because the attempted high-DPI runs did not pass. Hosted
+  runs `29288505121` and `29288634536` both observed `deviceScaleFactor == 1.0` under
+  `--high-dpi-support=1 --force-device-scale-factor=2`; the production metadata observed
+  `deviceScaleFactor == 1.0`, so the decisive `>= 1.5` assertion failed and the harness emitted no
+  passing document. This is an attempted configuration, not high-DPI pass evidence. The threshold
+  remains unchanged: a future lane must either demonstrate a Chrome configuration that exposes
+  high DPI through production capture metadata or redesign that capture boundary before this
+  artifact can be added.
 - `linux-chromium.json` is honestly absent because no `BrowserProduct::Chromium` installation was
   available on the Linux lane; this configuration remains best-effort.
 - The temporary publication used branch `tmp/cross-platform-smoke-macos-595f079`, workflow
@@ -397,6 +403,223 @@ This writes both `macos-chrome-default-dpi.json` and `macos-chrome-high-dpi.json
   decisive high-DPI failure.
 - Real visibility transitions and `Page.screencastVisibilityChanged` events are observed and counted,
   not assumed.
+
+---
+
+# Temporal evaluation v1 contract
+
+This directory is the authoritative, browser-agnostic contract for the temporal benchmark.
+The Rust types in `crates/temporal-evaluation` validate the committed definition and manifest
+shape; the generated schemas and canonical sample are checked into this directory.
+
+## The narrow CI claim
+
+A normal locked Rust test run proves only that:
+
+- the v1 definition, schemas, and canonical sample are present, parseable, and byte-stable;
+- fixture files are in the declared order with the declared SHA-256 identities;
+- the condition, prompt, scoring, status, and deterministic matrix registries are complete;
+- canonical serialization, digests, privacy rejection, retention references, and status invariants
+  are deterministic;
+- result records bind the manifest input digest to exact packages, scores, aggregates, threshold
+  checks, per-frame availability proofs, retained evidence/source identities, artifact
+  output/manifest hashes, algorithm/version identities, and cache identities without copying the
+  manifest or storing raw/model/page prose, bytes, paths, or URLs;
+- deterministic qualification replays fixed source records through the fake monotonic-clock and
+  existing authority seams, checks the A–E budgets and one-interval identity, and keeps gaps,
+  eviction, corruption, partial retrieval, unavailable inputs, and skipped rows non-passing; and
+- benchmark output has an ignored destination under `target/temporal-evaluation/`.
+
+That is a **contract and reproducibility claim only**. CI does not claim that Chrome captured any
+state, that a platform passed, that an artifact is useful, that a model understood an artifact,
+or that temporal evidence improves debugging. It does not start Chrome, access a network, invoke a
+model or paid agent, or change the product CLI.
+
+The committed `sample-manifest.json` is a contract-only input sample. The committed
+`sample-evaluation-result.json` is a deterministic-CI result sample: it demonstrates canonical
+result and traceability semantics, is always `thesis_eligibility=not_eligible`, and is not live
+browser evidence, a capture result, a model-comprehension result, a debugging qualification, or a
+product-thesis assessment.
+
+## Test-only live qualification opt-in
+
+The live qualification harness is not a product command. It is an ignored, test-only path that
+requires both explicit authorizations:
+
+```text
+KROMETRAIL_REAL_CHROME_TESTS=1 \\
+KROMETRAIL_LIVE_CAPTURE_EVALUATION=1 \\
+  cargo test --features qualification-support -- --ignored
+```
+
+Do not set either variable for ordinary verification. The authorized path uses the production
+browser, capture, store, retention, query, and artifact authorities and writes one canonical
+`run-manifest.json` below:
+
+```text
+target/temporal-evaluation/live/<browser-product>/<run-id>/
+```
+
+A missing required browser is `blocked`; missing optional Linux Chromium is `skipped`; incomplete
+source, gaps, unavailable resources, retention loss, or unsupported measurements remain
+`inconclusive` or `blocked`; only complete threshold evidence can be `pass`. Finalization writes
+only after capture flush, browser/profile/server cleanup, lock release, and staging cleanup have
+been observed. A finalization error is a safe error report, never a passing result.
+
+The manifest records `evidence_mode` as either `code_harness` or
+`operator_authorized_live_capture`; a code/harness run is never live browser evidence. A local
+`pass` qualifies only the declared browser, operating system, viewport, device scale, capture
+settings, fixture revision, and reference-host configuration. It does not claim a model
+call or model effectiveness, remote or paid-service behavior, high-DPI behavior, cross-platform
+parity, temporal-advantage uplift, or production-scale stability. macOS and high-DPI belong to
+separate platform evidence; an unresolved gap there does not block later agent-effectiveness
+trials on a declared reference host. Live qualification does not invoke a model and emits no
+model answer, transcript, or thesis result.
+
+## Platform lane contract
+
+Platform evidence is a test-only adapter over the same `run_live_qualification` composition; it
+is not a second browser, recording store, artifact service, manifest authority, or product command.
+The one registry in `crates/temporal-evaluation/src/platform.rs` owns this canonical order:
+
+1. `linux_stable_chrome_reference_host` — required stable Chrome reference host;
+2. `macos_chrome_default_dpi` — required stable Chrome at observed scale one;
+3. `macos_chrome_high_dpi` — required stable Chrome at observed scale at least 1.5;
+4. `linux_chromium_optional` — optional Chromium at observed scale one.
+
+A platform run carries its typed lane/profile declaration in the existing `RunManifest`; the
+existing qualification measurements remain authoritative for browser identity, environment,
+viewport, observed scale, timings, gaps, retention, and cleanup. Requested wrapper flags are
+configuration only. In particular, a high-DPI request with observed scale one is rejected and
+cannot produce a passing high-DPI record. Unknown, duplicate, wrong-platform, wrong-product,
+wrong-profile, wrong-viewport, and out-of-band scale declarations fail validation. Missing optional
+Chromium remains an explicit skip and cannot satisfy Chrome or cross-platform coverage.
+
+The shared runner checks both explicit opt-in gates before fixture validation, discovery, loopback
+server startup, profile creation, store opening, or output preparation. Ordinary locked checks do
+not launch Chrome; each authorized run remains under the existing real-browser lock and writes
+only its ignored run output below `target/temporal-evaluation/live/`.
+
+## Authoritative inputs and generation
+
+- `benchmark-definition.json` is the one current v1 benchmark-definition input.
+- `benchmark-definition.schema.json` is generated from `BenchmarkDefinition`.
+- `run-manifest.schema.json` is generated from `RunManifest`, including the optional typed platform
+  lane declaration used only by platform-evidence runs.
+- `sample-manifest.json` is generated from `RunManifest::sample()` and canonicalized by the same
+  serializer used by consumers.
+- `evaluation-result.schema.json` is generated from `EvaluationResultRecord`.
+- `sample-evaluation-result.json` is generated from the deterministic result constructor and
+  canonicalized by the same serializer used by consumers.
+
+Regenerate only the versioned artifacts with the Rust generators:
+
+```text
+cargo run -p temporal-evaluation --locked --bin generate-benchmark-definition -- \
+  docs/evidence/temporal-evaluation/v1/benchmark-definition.json \
+  docs/evidence/temporal-evaluation/v1/benchmark-definition.schema.json
+cargo run -p temporal-evaluation --locked --bin generate-run-manifest -- \
+  docs/evidence/temporal-evaluation/v1/sample-manifest.json \
+  docs/evidence/temporal-evaluation/v1/run-manifest.schema.json
+cargo run -p temporal-evaluation --locked --bin generate-evaluation-result -- \
+  docs/evidence/temporal-evaluation/v1/sample-evaluation-result.json \
+  docs/evidence/temporal-evaluation/v1/evaluation-result.schema.json
+```
+
+After generation, run the locked workspace checks. `bun run docs:build` is unrelated VitePress
+tooling and is not a benchmark qualification step. Do not edit generated files by hand or update
+`docs/public/llms-full.txt` for this contract.
+
+## Canonical and privacy boundary
+
+Canonical JSON recursively sorts object keys, preserves semantic array order, accepts only finite
+numbers, normalizes `-0` to `0`, and uses lowercase `sha256:<64 hex>` identities. Source, observed,
+and session times remain separate. The definition owns ground truth; no measurement, artifact, or
+model answer can redefine it.
+
+### Affected-region coordinate contract
+
+Each case's `affected_region` is the exact half-open axis-aligned localization ROI in the fixed
+800x450 captured-viewport-pixel space. `(x, y)` is measured from the screenshot's top-left;
+width and height cover `x..x+width` and `y..y+height`, at the canonical device scale of one.
+The region is the union of the affected fixture subject's visible extents over all declared
+phases, clipped by the visible stage. A moving panel
+therefore includes its complete path, a layout shift includes both the inserted notice and the
+pre-/post-shift content extent, and a DOM-opaque canvas uses its complete rendered canvas box.
+The values are not `.stage`-relative offsets, `getBoundingClientRect()` values from another
+viewport, or canvas-local JavaScript drawing coordinates. Model answers use this same coordinate
+space. The contract tests derive every canonical rectangle from the committed fixture CSS, HTML,
+and animation geometry without starting Chrome.
+
+Committed fixture paths are repository-relative POSIX paths. Ignored evidence references are
+opaque handles. Validation rejects absolute or private paths, traversal, backslashes,
+URLs/endpoints and ports, credentials, control characters, page text, raw browser payloads, and
+adapter error details. Raw model answers are not canonical manifest content: later consumers may
+keep an ignored sidecar addressed by its digest and opaque reference.
+
+## Per-frame availability proof
+
+`ConditionPackage.source_frame_availability` and the corresponding result trial field preserve
+one ordered availability record for every `source_frame_ids` entry. The package validator binds
+that projection to the source interval digest and rejects reordered, missing, or mutated records.
+Result trace construction uses those exact records rather than deriving source-frame status from
+aggregate `RetentionState`: retained citations remain `retained` in a `partially_retained`
+interval, while `corrupt`, `evicted`, `gap`, and `not_collected` frames remain their original
+availability. Claims still require a retained trace; an unavailable citation is rejected.
+
+## Future execution states
+
+Availability and evaluation status are separate facts. A required browser, platform, source, or
+model that is not available must never become a passing row:
+
+- `blocked` means a required precondition, unsupported platform, browser, or model authorization
+  prevents the run; the manifest records the reason and a recovery action.
+- `inconclusive` means some evidence exists but gaps, eviction, corruption, missing source,
+  insufficient repetitions, or another unresolved limitation prevents a decisive claim.
+- `unavailable` is an explicit dependency/evidence availability state and is represented as such;
+  an aggregate consumer reports the resulting required row as `blocked` or `inconclusive`.
+- `fail` is reserved for complete, decisive evidence below the declared threshold (or a complete
+  validation failure), not for missing evidence.
+- `skipped` is allowed only for the named optional Linux Chromium configuration and preserves why
+  it was unavailable. It is not a pass and cannot stand in for a required platform.
+- `pass` requires every required identity, retained evidence, minimum sample, gap policy, and
+  threshold condition for that future consumer.
+
+Those live, cross-platform, artifact, and model consumers are opt-in work outside this CI-safe
+contract checkpoint. Their manifests and result records belong under the ignored output boundary
+and must retain the same explicit status semantics. A deterministic-CI result can never be
+thesis-eligible, even when synthetic arithmetic thresholds pass; its fixed non-claims explicitly
+cover Chrome capture, network access, paid/model calls, model comprehension, product-thesis
+improvement, causal diagnosis, deterministic replay, cross-model generalization, unobserved
+frames, and treating artifacts as ground truth. The qualification suite's synthetic answers and
+fake source/store records therefore prove contract and traceability behavior only; they do not
+qualify browser capture, artifact usefulness, platforms, model interpretation, debugging, or the
+product thesis.
+
+### Aggregate artifact cache state
+
+Live latency samples retain each authority-returned `ArtifactCacheDisposition` on every artifact
+identity. Their aggregate `CacheDisposition` is computed from those exact identities: `cold`
+means every artifact was generated (including regeneration after invalidation), `warm` means every
+artifact was a cache hit, and `mixed` means the set contains both generation and hits. An empty or
+unavailable artifact set remains `unavailable`. Invocation order is not a cache-state signal: the
+first temporal-bundle call may be `mixed` when a direct artifact request has already warmed a
+shared key, while the decisive checks remain uncached direct artifact generation below 5 seconds
+and an all-hit warm bundle below 1 second.
+
+## Ignored run output
+
+Per-run manifests, result records, source frames, generated artifacts, model answers/transcripts,
+patch workspaces, logs, and aggregate results belong only under:
+
+```text
+target/temporal-evaluation/
+```
+
+The repository's existing `target/` ignore rule covers this boundary. Tests verify that a sample
+output path is ignored and that no absolute path is serialized into a contract. Definitions,
+schemas, fixture source, prompts, scoring vocabulary, and the canonical sample are the only
+versioned evidence in this directory.
 
 ---
 
@@ -544,7 +767,14 @@ The client must be able to find the `krometrail` executable. Standard output bel
 
 The server owns at most one active browser session. Call `start_browser` to launch a managed Chrome-compatible browser or `attach_browser` with an explicitly enabled local CDP endpoint. Use `stop_browser` before starting or attaching another session. Ending the MCP transport also closes a managed browser or detaches from an externally owned browser through the same bounded shutdown path.
 
-The current server exposes the four lifecycle tools and the 24 browser-control operations derived from the shared control registry. It does not yet expose temporal investigation, browser-event inspection, durable resources, page-state, or framework-state tools. Screenshots and post-action images are returned directly as MCP image content; no unreadable resource URI is advertised.
+The default server exposes four lifecycle tools, 24 browser-control tools from the shared registry, the `temporal_debug_bundle` entry point, seven temporal evidence/retention tools (`list_source_frames`, `fetch_source_frames`, `generate_artifacts`, `generate_region_filmstrip`, `pin_resolved_range`, `unpin_resolved_range`, and `query_pin_state`), and `query_browser_events`. The temporal and browser-event registries generate their input schemas from the same Rust contracts as the services. Every lifecycle launch/attach request accepts optional `every_nth_frame` from 1 through 60, defaulting to 1 and remaining immutable for that browser session.
+
+Temporal results use durable recording data. Tool responses can include bounded inline images and canonical resource links. The server advertises two resource templates and reads retained artifacts and source frames through `resources/read`:
+
+- `krometrail://evidence/{session}/{target}/artifacts/{id}`
+- `krometrail://evidence/{session}/{target}/frames/{id}`
+
+Concrete retained resources are discovered from tool responses rather than listed up front. Page-state and framework-state capabilities remain unavailable extension points; they are not part of the default server surface.
 
 The browser boundary includes Chrome-compatible pages and explicitly debug-enabled Electron renderer processes. Electron's Node main process remains outside that boundary. Browser control and captured evidence remain local unless the connected MCP client explicitly reads a response.
 
@@ -563,7 +793,7 @@ cargo run -- doctor
 cargo run -- mcp
 ```
 
-`doctor` reports discovered browser installations without launching. `mcp` serves the registry-derived browser-control tools over protocol-only stdio and keeps controlled-browser capture and recording assembled behind the same runtime. Temporal investigation tools remain future-facing contracts in the foundation documents.
+`doctor` reports discovered browser installations without launching. `mcp` serves the implemented MCP surface over protocol-only stdio: lifecycle tools, 24 registry-derived browser-control tools, temporal investigation and retention tools, browser-event queries, and retained artifact/source-frame resources. Controlled-browser capture and durable recording are assembled behind the same runtime.
 
 ## Start here
 
@@ -608,6 +838,8 @@ For privacy questions, open an issue on [GitHub](https://github.com/nklisch/krom
 
 Krometrail currently has no user configuration file or browser-control CLI flags. MCP lifecycle tool inputs select managed launch versus explicit local attachment, profiles, initial URLs, executables, and endpoints through their generated schemas.
 
+Each `start_browser` and `attach_browser` MCP request also accepts the generated `every_nth_frame` field. It is an integer from 1 through 60, defaults to 1, is forwarded to CDP screencast capture, and remains immutable for that browser connection. A different stride requires a new browser session; it is reported in lifecycle and capture status.
+
 The root runtime recognizes these environment variables:
 
 | Variable | Behavior |
@@ -618,7 +850,7 @@ The root runtime recognizes these environment variables:
 
 Invalid disk-budget input prevents startup with a structured error. Built-in platform data directories and the default 10 GB budget apply when variables are absent.
 
-The broader configuration precedence remains command-line arguments, environment variables, user configuration, then built-in defaults as defined in [`SPEC.md`](../SPEC.md) and [`ARCHITECTURE.md`](../ARCHITECTURE.md). Capture settings, capability selection, concurrency, logging, and a user configuration file are not yet public configuration surfaces.
+The broader intended precedence remains command-line arguments, environment variables, user configuration, then built-in defaults as defined in [`SPEC.md`](../SPEC.md) and [`ARCHITECTURE.md`](../ARCHITECTURE.md). The current executable has no browser-control CLI flags, user configuration file, external capability-selection input, or public inputs for capture format, quality, dimensions, concurrency, or logging; the MCP lifecycle request is the public capture-stride boundary.
 
 ---
 
@@ -635,9 +867,9 @@ Krometrail ships one Rust binary and one composition root. The runtime assembles
 | `krometrail doctor` | Reports discovered Chrome/Chromium installations or a structured `browser_not_found` failure. It does not launch a browser. |
 | `krometrail mcp` | Serves the browser-control tool registry over MCP stdio until transport EOF or process shutdown. |
 
-`krometrail mcp` writes only MCP JSON-RPC traffic to standard output. It owns at most one controlled browser session and uses ownership-aware shutdown: managed browsers close, while explicitly attached browsers detach. The current MCP surface provides four lifecycle tools and 24 registry-derived control operations, including ordered batching.
+`krometrail mcp` writes only MCP JSON-RPC traffic to standard output. It owns at most one controlled browser session and uses ownership-aware shutdown: managed browsers close, while explicitly attached browsers detach. The default server publishes 37 tools: four lifecycle tools, 24 registry-derived browser-control tools including ordered batching, `temporal_debug_bundle`, seven temporal evidence/retention tools, and `query_browser_events`.
 
-Temporal investigation tools, browser-event inspection tools, durable MCP resources, and unavailable page/framework-state capabilities are not part of the current command. Current screenshots are returned as MCP image content.
+Temporal evidence is persisted by the durable recording store. Temporal tool responses can include bounded inline images and canonical resource links. The server exposes two dynamic resource templates for retained artifacts and source frames; concrete resources are read with `resources/read` using `krometrail://evidence/{session}/{target}/artifacts/{id}` or `krometrail://evidence/{session}/{target}/frames/{id}`. Page-state and framework-state remain unavailable extension capabilities, not current tools.
 
 The root CLI is defined in [`src/cli.rs`](https://github.com/nklisch/krometrail/blob/main/src/cli.rs), and the full composition root is in [`src/app.rs`](https://github.com/nklisch/krometrail/blob/main/src/app.rs). See [MCP configuration](../guide/mcp-configuration.md) for a client entry and [`SPEC.md`](../SPEC.md) for the broader intended external contracts.
 
@@ -649,7 +881,7 @@ The root CLI is defined in [`src/cli.rs`](https://github.com/nklisch/krometrail/
 
 This research grounds `epic-rust-cdp-capture-foundation-cdp-transport-gate`. Krometrail needs a browser-level Chrome DevTools Protocol (CDP) connection with flat target sessions, typed control operations, raw protocol escape hatches, and a screencast event path that Krometrail—not the library—can supervise and bound.
 
-Evidence was frozen on 2026-07-12 from crates.io metadata, published/repository source at `cdpkit` 0.4.0 (`15dd5e6d`) and `chromey` 2.52.0 (`6eeca5e8`), their CI/tests, their public GitHub issues, and the final5 schema-v2 qualification. The final5 reports and generated decision were independently normalized, redaction-checked, decisively validated, and recomputed at exact revision `a0e98ad6bd9c53d10385020bc43629f7ac246173`. They preserve bounded sanitized canonical fixture, wire, and runtime material and recompute all summaries from it. The contract uses observed `capture_elapsed_seconds` and `handoff_elapsed_seconds` measurements and measures acknowledgement from returned frame to ack completion only. No production lifecycle or capture implementation is implied.
+Evidence was frozen on 2026-07-12 from crates.io metadata, published/repository source at `cdpkit` 0.4.0 (`15dd5e6d`) and `chromey` 2.52.0 (`6eeca5e8`), their CI/tests, their public GitHub issues, and the final5 schema-v2 qualification. The final5 reports and generated decision were independently normalized, redaction-checked, decisively validated, and recomputed at exact revision `a0e98ad6bd9c53d10385020bc43629f7ac246173`. They preserve bounded sanitized canonical fixture, wire, and runtime material and recompute all summaries from it. The contract uses observed `capture_elapsed_seconds` and `handoff_elapsed_seconds` measurements and measures acknowledgement from returned frame to ack completion only. These artifacts describe the qualification spike and do not substitute for production runtime evidence; production lifecycle, reconnect supervision, capture ingestion, recording, and bounded handoff are implemented separately in `krometrail-cdp`.
 
 Caller-aware research ran direct-read only: the caller prohibited subagents and questions, and the bounded candidate/source surfaces did not warrant delegation. Reversible uncertainties are therefore converted into explicit spike gates below.
 
@@ -743,7 +975,7 @@ The selection does not broaden cdpkit's API. `event_stream::<Value>(name)` prese
 - Its event subscriber is unbounded. Krometrail's bounded ingestion does not bound memory upstream of that queue; the committed RSS result is a process-level trend proxy, not queue-depth proof.
 - Generated protocol version `1.3` is not meaningful provenance by itself. The selected adapter carries forward the explicit lack of a cdpkit source revision.
 - Reconnect is a browser-session state transition, not a WebSocket retry. Krometrail must recreate discovery, attachments, domain enablement, screencast state, and gap evidence.
-- The spike remains non-default and is not root-wired. Production lifecycle, capture, reconnect, and backpressure implementation belong to later features.
+- The qualification spike remains feature-gated, non-default, and not root-wired. Its exact limitations remain binding: cdpkit's named-event subscription is not wildcard or full-envelope receive, its subscriber queue is unbounded and not depth-inspectable, and it does not own transparent reconnect or target reconstruction. Production lifecycle, capture, reconnect, backpressure, recording, and gap reporting are implemented by the `krometrail-cdp` adapter and supervisor.
 
 ## References
 

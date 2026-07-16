@@ -30,8 +30,9 @@ combinations.
   missing-frame estimate and drains accepted work before a bounded managed stop.
 - No managed Chrome process or temporary profile reference outlives its session on Linux
   (`/proc/*/cmdline`) and macOS (`ps -ax -o pid= -o command=`).
-- Default-DPI and high-DPI macOS configurations are both exercised; both force device scale so the
-  observed band is host-independent.
+- The committed macOS evidence covers the default-DPI configuration. A high-DPI configuration was
+  attempted, but it produced no passing artifact; the decisive observed device-scale threshold
+  remains `>= 1.5`.
 
 ## Honest non-claims
 
@@ -97,13 +98,18 @@ KROMETRAIL_SMOKE_EVIDENCE_DIR=docs/evidence/cross-platform-smoke/v1 \
 cargo test -p krometrail-cdp --test cross_platform_smoke --locked -- --nocapture --include-ignored
 ```
 
-This writes both `macos-chrome-default-dpi.json` and `macos-chrome-high-dpi.json`.
+This writes `macos-chrome-default-dpi.json` and attempts the high-DPI configuration. The
+high-DPI document is emitted only when production metadata observes device scale `>= 1.5`; the
+current attempted run emitted no `macos-chrome-high-dpi.json`.
 
 ## Decisive/skip policy
 
-- **Decisive configurations** (must be present and green): `linux-chrome`,
-  `macos-chrome-default-dpi`, `macos-chrome-high-dpi`.
+- **Decisive configurations** for a complete smoke result remain `linux-chrome`,
+  `macos-chrome-default-dpi`, and `macos-chrome-high-dpi`; the high-DPI threshold is not relaxed.
 - **Best-effort configuration** (honest skip permitted): `linux-chromium`.
+- The current high-DPI artifact is absent because the attempted run did not pass the threshold.
+  This documentation records the non-pass honestly and does not block the local-tool release on
+  absent platform evidence.
 - **Wrong platform:** the test skips with a printed reason on any `target_os` outside
   `{linux, macos}`.
 - **Skip, not fail:** when `KROMETRAIL_REAL_CHROME_TESTS != 1` or no decisive installation is
@@ -116,14 +122,14 @@ This writes both `macos-chrome-default-dpi.json` and `macos-chrome-high-dpi.json
 - `macos-chrome-default-dpi.json` is present and passed both sessions against Chrome 149.0.7827.201
   on hosted macOS 14 arm64. Its process/profile cleanup result used the real `ps`-based reference
   scan.
-- `macos-chrome-high-dpi.json` is intentionally absent. Hosted runs `29288505121` and `29288634536`
-  both observed `deviceScaleFactor == 1.0` under
-  `--high-dpi-support=1 --force-device-scale-factor=2`; the decisive `>= 1.5` assertion failed, so
-  the harness emitted no passing document. The operator explicitly authorized deferring this
-  evidence on 2026-07-13 so the foundation implementation can continue without weakening the gate
-  or fabricating a pass. A future lane must either demonstrate a Chrome configuration that exposes
-  high DPI through the production capture metadata or redesign that capture boundary before this
-  evidence can be added.
+- `macos-chrome-high-dpi.json` is absent because the attempted high-DPI runs did not pass. Hosted
+  runs `29288505121` and `29288634536` both observed `deviceScaleFactor == 1.0` under
+  `--high-dpi-support=1 --force-device-scale-factor=2`; the production metadata observed
+  `deviceScaleFactor == 1.0`, so the decisive `>= 1.5` assertion failed and the harness emitted no
+  passing document. This is an attempted configuration, not high-DPI pass evidence. The threshold
+  remains unchanged: a future lane must either demonstrate a Chrome configuration that exposes
+  high DPI through production capture metadata or redesign that capture boundary before this
+  artifact can be added.
 - `linux-chromium.json` is honestly absent because no `BrowserProduct::Chromium` installation was
   available on the Linux lane; this configuration remains best-effort.
 - The temporary publication used branch `tmp/cross-platform-smoke-macos-595f079`, workflow

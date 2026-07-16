@@ -1,29 +1,30 @@
 # Krometrail
 
-Krometrail is a Rust foundation for local browser control and temporal visual evidence for coding agents. The repository currently contains the Rust workspace, domain contracts, composition root, and classified browser target fixtures. Browser transport, persistence, MCP tools, and temporal artifact generation are designed in the foundation documents but are not exposed by the current executable yet.
+Krometrail is a Rust runtime for local browser control and temporal visual evidence for coding agents. The binary exposes browser discovery through `doctor` and the local MCP server through `mcp`; browser transport, controlled capture, durable recording, lifecycle/control/temporal MCP tools and resources, and per-session `every_nth_frame` capture configuration are implemented. Rich page-state and framework-state capabilities remain future extension points.
 
 ## Current executable
 
-The Rust binary currently exposes only a deliberately small surface:
+The current executable surface is intentionally small:
 
 ```bash
 cargo run -- --version
 cargo run -- --help
 cargo run -- doctor
+cargo run -- mcp
 ```
 
-`--version` and `--help` succeed. `doctor` currently fails explicitly because browser transport has not been implemented; it must not be treated as a successful capture check.
+`--version` and `--help` report the binary contract. `doctor` discovers local Chrome/Chromium installations without launching. `mcp` serves the local MCP surface over stdio: browser lifecycle and 24 registry-derived control tools, temporal investigation and retention tools, browser-event queries, and retained temporal-evidence resources.
 
 ## Workspace
 
 ```text
 Cargo.toml                 # workspace and root krometrail binary
-src/                        # composition root, CLI, and runtime placeholders
+src/                        # composition root, CLI, and runtime wiring
 crates/
   krometrail-core/          # browser, recording, timeline, capability, and port contracts
-  krometrail-cdp/           # reserved CDP adapter boundary
-  krometrail-store/         # reserved recording-store boundary
-  krometrail-mcp/           # reserved MCP boundary
+  krometrail-cdp/           # production CDP adapter and capture/control supervision
+  krometrail-store/         # durable recording index, segments, retention, and artifacts
+  krometrail-mcp/           # MCP stdio server, generated schemas, tools, and resources
   temporal-vision/          # browser-agnostic visual-analysis boundary
 tests/rust-runtime-smoke.rs # executable contract tests
 tests/fixtures/browser/    # standalone browser target applications
@@ -102,7 +103,7 @@ Read [`docs/agents.md`](docs/agents.md) first. The five authoritative foundation
 | [`VISUAL-EVIDENCE.md`](docs/VISUAL-EVIDENCE.md) | Temporal artifact vocabulary and provenance |
 | [`EVALUATION.md`](docs/EVALUATION.md) | Capture, artifact, browser-control, and agent-evaluation criteria |
 
-Current contributor instructions are in [`docs/guide/development.md`](docs/guide/development.md). The current MCP page explains why no MCP configuration should be added yet and links the intended boundary contracts; it does not advertise an unavailable command.
+Current contributor instructions are in [`docs/guide/development.md`](docs/guide/development.md). The [MCP configuration guide](docs/guide/mcp-configuration.md) documents the implemented local stdio server and its lifecycle, control, temporal, event, and resource surfaces.
 
 ## License
 

@@ -78,13 +78,16 @@ crates/
 
   krometrail-mcp/
     src/
-      registry/              # Capability-driven tool registration
-      tools/                 # Thin tool handlers
-      resources/             # Artifact and frame resource access
-      schemas/               # Generated public schemas
-      response/              # Text, image, and structured responses
+      config.rs              # Capability selection and injected service ports
+      lib.rs                 # MCP adapter exports
+      registry.rs            # Lifecycle and registry-derived tool routing
+      resources.rs           # Canonical artifact/source-frame resource reads
+      response.rs            # Structured, image, and resource-link responses
+      schema.rs              # Generated input-schema projection
+      server.rs              # MCP stdio protocol and server capabilities
+      session.rs             # Single active browser-session ownership
 
-  temporal-vision/           # Provisional neutral name
+  temporal-vision/           # Browser-agnostic temporal visual-analysis crate
     src/
       frame.rs               # Generic timestamped frame model
       sequence.rs            # Validated frame sequences
@@ -128,16 +131,19 @@ ordering, and exhaustive round-trip coverage share one source of truth. The root
 process adapter supplies collision-resistant UUID v4 values through the core
 `IdSource` port; randomness remains outside the infrastructure-free domain.
 
-The following identifiers are intentionally deferred to browser-control work and
-are not implemented foundation types:
+Structured snapshot identifiers are implemented domain types shared by observation
+and action requests:
 
 ```text
-SnapshotGeneration  # owned by the target/snapshot control boundary
-NodeReference       # owned by the structured snapshot/action boundary
+SnapshotGeneration  # non-zero generation for one target snapshot
+SnapshotNodeId      # non-zero local node identity within a snapshot
+NodeReference       # target, generation, and node identity
 ```
 
-The future browser-control contract will define their lifecycle and ownership
-before they are added to the core registry.
+`PageSnapshot` owns one generation and validates preorder nodes, target scope, and
+actionable references. The CDP control adapter owns the active per-target registry,
+backing DOM-node bindings, document fingerprint, and attachment-generation fence;
+its stale-reference boundary is described below.
 
 The core timeline contains ordered observations:
 
@@ -203,7 +209,9 @@ The CDP adapter owns:
 
 The adapter exposes typed domain operations through ports defined by `krometrail-core`.
 
-The current schema-v2 Linux/macOS reports and generated decision in `docs/evidence/cdp-transport/v2/` are final5 qualification artifacts from exact revision `a0e98ad6bd9c53d10385020bc43629f7ac246173`; they were independently normalized, redaction-checked, decisively validated, and recomputed from bounded canonical fixture, wire-observation, runtime, canonical configuration, and clean source-attestation material. The superseded reports and decision from exact revision `07b0990c0d9e4fea9057fcab5c35e56691ff69eb` remain byte-for-byte preserved under `docs/evidence/cdp-transport/v2/historical/final-v2-07b0990/`. The contract names observed `capture_elapsed_seconds` and `handoff_elapsed_seconds` measurements, keeps the configured 120-second global hard stop authoritative when frame minima are unmet, and measures acknowledgement only from returned frame to ack completion. Post-receive ack p99/max are Linux `0.214389/0.889178 ms` and macOS `0.582458/12.67025 ms`; handoff follows acknowledgement. The adapter preserves cdpkit's named-event-params-only escape hatch: it is not wildcard or full-envelope receive, and its subscriber queue depth is not inspectable. Krometrail therefore owns reconnect/session restoration, cancellation, target rebuild, and later bounded frame handoff. A cdpkit routing, decoder, lifecycle patch, or fork would invalidate the selection and trigger the documented fallback rules. The final decision selects exact cdpkit 0.4.0 without a waiver.
+The production adapter uses exact cdpkit 0.4.0 behind the replaceable `krometrail-cdp::transport` boundary. `ProductionBrowserConnector` composes browser discovery and launch, compatibility probing, flat target sessions, supervised reconnect and target restoration, capture configuration, bounded frame handoff, recording, browser-event collection, and ownership-aware shutdown. The production path acknowledges each screencast frame before bounded handoff and records known loss as explicit capture-gap evidence.
+
+The qualification spike remains a separate feature-gated, non-default test surface. Its cdpkit limitations remain binding: named-event parameters are not wildcard or full-envelope receive, the subscriber queue is unbounded and its depth is not inspectable, and cdpkit does not transparently reconnect or rebuild targets. Krometrail retains those responsibilities in the production supervisor; a routing, decoder, lifecycle patch, or fork would require a new transport decision.
 
 A compatibility probe runs when connecting. It reports browser and protocol versions, identifies Electron renderer endpoints when detectable, and verifies the required domains before recording begins. Renderer support is decided from observed protocol capabilities rather than the host application's brand. The production `krometrail-cdp` adapter composes that probe with `ChromeLauncher`, a cdpkit transport seam, and a single-writer target/session supervisor. The supervisor subscribes to target events before enabling discovery and auto-attach, reconciles an initial snapshot, and rebuilds exact-key flat sessions after reconnect. Spike features remain non-default and are not root-wired.
 
@@ -217,7 +225,7 @@ For each target it owns:
 - flat CDP session attachment and attachment generation;
 - target lifecycle, including pre-suspension lifecycle during reconnect;
 - current URL/title projection and visibility;
-- future snapshot generation (deferred to browser-control work).
+- the active structured-snapshot generation and reference registry.
 
 Target creation and closure do not affect unrelated target streams. A target-level failure is reported without terminating the browser session unless the browser connection itself is lost. Target state is reduced by one serialized state machine; asynchronous transport and process tasks only submit inputs or execute emitted effects. Outbound session events use bounded subscriber channels with revision-gap recovery through `targets()`; cdpkit's private upstream queue is not represented as a measurable product metric.
 
@@ -275,32 +283,31 @@ CPU-intensive image work runs outside asynchronous I/O tasks on a bounded worker
 
 ## Structured Snapshots and References
 
-Structured snapshots and actionable node references are deferred browser-control
-work. That future boundary will define a snapshot generation owned by the
-target/snapshot control lifecycle and a `NodeReference` owned by the structured
-snapshot/action boundary:
+The core observation boundary owns validated structured snapshots and actionable
+references. A `PageSnapshot` contains a target-scoped, non-zero generation and
+preorder accessibility nodes. Each actionable node carries a `NodeReference`:
 
 ```text
 NodeReference
+  target_id
   generation
-  local_node_key
+  node_id
 ```
 
-A node reference will resolve through snapshot-local metadata to CDP accessibility
-and DOM information once that control contract is implemented.
+The production CDP control adapter's per-target `SnapshotRegistry` retains the
+active generation, attachment generation, document fingerprint, and backing DOM
+node bindings. Before an action or reference-based region request it:
 
-Before an action, the future control adapter will:
+1. verifies the reference target and active generation;
+2. verifies the attachment generation and current document fingerprint;
+3. resolves the backing DOM node;
+4. checks the requested visibility or actionability requirement;
+5. obtains current geometry and dispatches the operation.
 
-1. reject references from an expired generation;
-2. resolve the current backing node;
-3. obtain current action geometry;
-4. verify visibility and actionability;
-5. dispatch input;
-6. record the interaction result.
-
-Navigation will invalidate the active snapshot generation. Material page changes can also invalidate references. Krometrail prefers an explicit stale-reference failure over guessing at a replacement node.
-
-Coordinate actions bypass structured references and declare their coordinate space explicitly.
+Navigation, document replacement, target closure, reconnect, and a fresh snapshot
+invalidate the old generation. The adapter returns a structured stale-reference
+error instead of guessing at a replacement node. Coordinate actions bypass
+structured references and declare their coordinate space explicitly.
 
 ## Interaction Execution
 
@@ -535,7 +542,7 @@ Tool handlers do not contain CDP commands, SQL, image processing, or retention l
 
 Large binary outputs are persisted and returned as MCP resources or file references. A response can additionally include one context-sized image for immediate inspection.
 
-Tool schemas derive from the same Rust contracts used by application services. Generated schemas are build artifacts, not hand-maintained duplicates. In particular, `start_browser` and `attach_browser` expose the same generated `every_nth_frame` field from the core launch and attach requests.
+Tool schemas derive from the same Rust contracts used by application services. Generated schemas are build artifacts, not hand-maintained duplicates. In particular, `start_browser` and `attach_browser` expose the same generated `every_nth_frame` field from the core launch and attach requests. The flat MCP adapter modules are `config.rs`, `registry.rs`, `resources.rs`, `response.rs`, `schema.rs`, `server.rs`, and `session.rs`; there are no parallel directory-based tool, schema, or response registries.
 
 ## Configuration
 

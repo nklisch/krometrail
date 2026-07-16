@@ -1,6 +1,6 @@
 # Krometrail
 
-Krometrail is a Rust 2024 workspace for local browser control and temporal visual evidence. The binary exposes `--version`, `--help`, browser-discovery `doctor`, and the `mcp` stdio browser-control server. Browser transport, controlled capture, recording storage, and 24 registry-derived control operations are implemented; temporal investigation tools and artifact resources remain future capabilities.
+Krometrail is a Rust 2024 workspace for local browser control and temporal visual evidence. The binary exposes `--version`, `--help`, browser-discovery `doctor`, and the `mcp` stdio server. Browser transport, controlled capture, durable recording storage, 24 registry-derived control operations, temporal investigation and retention tools, browser-event queries, artifact/source-frame resources, and per-session `every_nth_frame` are implemented; page-state and framework-state capabilities remain future extension points.
 
 ## Prepublic Development Status
 
@@ -22,9 +22,9 @@ src/
   app.rs        Composition root and injected runtime ports
 crates/
   krometrail-core/   Domain identities, time, lifecycle, recording, timeline, capabilities, errors, and ports
-  krometrail-cdp/    Reserved CDP adapter boundary
-  krometrail-store/  Reserved recording-store boundary
-  krometrail-mcp/    MCP stdio, generated schemas, dynamic tools, responses, and session ownership
+  krometrail-cdp/    Production CDP adapter, control, capture, and session supervision
+  krometrail-store/  Durable recording index, segments, retention, recovery, and artifacts
+  krometrail-mcp/    MCP stdio, generated schemas, registry-derived tools, and evidence resources
   temporal-vision/   Browser-agnostic visual-analysis boundary
 tests/
   rust-runtime-smoke.rs  Binary contract checks
@@ -66,7 +66,7 @@ cargo run -- --help
 cargo run -- doctor
 ```
 
-`doctor` is discovery-only: it reports discovered Chrome/Chromium installations or a structured `browser_not_found` failure without launching. `mcp` reserves stdout for JSON-RPC and must exit cleanly on stdin EOF.
+`doctor` is discovery-only: it reports discovered Chrome/Chromium installations or a structured `browser_not_found` failure without launching. `mcp` serves lifecycle, browser-control, temporal, browser-event, and retained-evidence resource surfaces over stdio; stdout is reserved for JSON-RPC and the server exits cleanly on stdin EOF.
 
 For documentation development only:
 
