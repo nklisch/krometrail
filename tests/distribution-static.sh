@@ -304,6 +304,84 @@ fi
 ( cd "$tmp" && bun bump-version.ts patch --dry-run )
 require_text "$tmp/Cargo.toml" 'version = "1.3.0"'
 
+# Krometrail releases derive plugin metadata from Cargo's sole version authority.
+# Exercise successful projection and all-file rollback with a fake Cargo runner.
+plugin_version_tmp="$(mktemp -d)"
+mkdir -p "$plugin_version_tmp/plugin/.claude-plugin" "$plugin_version_tmp/plugin/.codex-plugin" \
+  "$plugin_version_tmp/.claude-plugin" "$plugin_version_tmp/.agents/plugins" "$plugin_version_tmp/bin"
+cat >"$plugin_version_tmp/Cargo.toml" <<'EOF'
+[package]
+name = "krometrail"
+version = "1.2.3"
+edition = "2024"
+
+[workspace.package]
+version = "1.2.3"
+EOF
+cat >"$plugin_version_tmp/Cargo.lock" <<'EOF'
+# fixture lock
+version = 4
+
+[[package]]
+name = "krometrail"
+version = "1.2.3"
+EOF
+for manifest in \
+  plugin/.claude-plugin/plugin.json \
+  plugin/.codex-plugin/plugin.json \
+  .claude-plugin/marketplace.json \
+  .agents/plugins/marketplace.json; do
+  printf '{"name":"krometrail","version":"1.2.3"}\n' >"$plugin_version_tmp/$manifest"
+done
+printf '1.2.3\n' >"$plugin_version_tmp/plugin/version"
+cat >"$plugin_version_tmp/bin/cargo" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == update ]]; then
+  sed '0,/version = "1.2.3"/s//version = "1.2.4"/' Cargo.lock >Cargo.lock.next
+  mv Cargo.lock.next Cargo.lock
+elif [[ "${PLUGIN_VERSION_FAIL:-0}" == 1 && "${1:-}" == check ]]; then
+  exit 17
+fi
+EOF
+chmod +x "$plugin_version_tmp/bin/cargo"
+cp "$BUMP" "$plugin_version_tmp/bump-version.ts"
+(
+  cd "$plugin_version_tmp"
+  PATH="$plugin_version_tmp/bin:$PATH" bun bump-version.ts patch --prepare
+)
+test "$(grep -Ec '^version = "1\.2\.4"$' "$plugin_version_tmp/Cargo.toml")" -eq 2 || fail "plugin prepare did not update Cargo versions"
+for manifest in \
+  plugin/.claude-plugin/plugin.json \
+  plugin/.codex-plugin/plugin.json \
+  .claude-plugin/marketplace.json \
+  .agents/plugins/marketplace.json; do
+  require_text "$plugin_version_tmp/$manifest" '"version":"1.2.4"'
+done
+test "$(cat "$plugin_version_tmp/plugin/version")" = "1.2.4" || fail "plugin prepare did not update the launcher version"
+
+# Restore the fixture, force a release-gate failure, and prove every projection rolls back.
+sed -i 's/1\.2\.4/1.2.3/g' "$plugin_version_tmp/Cargo.toml" "$plugin_version_tmp/Cargo.lock" \
+  "$plugin_version_tmp/plugin/.claude-plugin/plugin.json" \
+  "$plugin_version_tmp/plugin/.codex-plugin/plugin.json" \
+  "$plugin_version_tmp/.claude-plugin/marketplace.json" \
+  "$plugin_version_tmp/.agents/plugins/marketplace.json" \
+  "$plugin_version_tmp/plugin/version"
+cp -R "$plugin_version_tmp" "$plugin_version_tmp.before"
+if (
+  cd "$plugin_version_tmp"
+  PLUGIN_VERSION_FAIL=1 PATH="$plugin_version_tmp/bin:$PATH" bun bump-version.ts patch --prepare
+) >/dev/null 2>&1; then
+  fail "plugin version projection accepted a failed release gate"
+fi
+for file in \
+  Cargo.toml Cargo.lock plugin/version \
+  plugin/.claude-plugin/plugin.json plugin/.codex-plugin/plugin.json \
+  .claude-plugin/marketplace.json .agents/plugins/marketplace.json; do
+  cmp -s "$plugin_version_tmp/$file" "$plugin_version_tmp.before/$file" || fail "failed release did not restore $file"
+done
+rm -rf "$plugin_version_tmp" "$plugin_version_tmp.before"
+
 # Exercise lock refresh validation with duplicate package names. The fake Cargo
 # command keeps this test hermetic while the bump helper still performs its
 # real parser, multiset comparison, and rollback behavior.

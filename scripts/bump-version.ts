@@ -85,7 +85,7 @@ let updatedCargo = originalCargo.slice(0, packageStart) + updatedPackageSection 
 
 // Workspace members inherit their crate version from [workspace.package]. Keep
 // that Cargo-owned metadata in sync without treating it as another product
-// version source; package.json and plugin metadata are intentionally untouched.
+// version source. Krometrail plugin versions are derived separately below.
 const workspacePackage = findTomlSection(updatedCargo, "[workspace.package]");
 if (workspacePackage) {
 	const workspaceVersions = [...workspacePackage.content.matchAll(/^\s*version\s*=\s*"([^"]+)"\s*(?:#.*)?$/gm)];
@@ -121,6 +121,51 @@ if (mode === "dry-run") {
 	console.log("Dry run: no files, commits, tags, or pushes changed.");
 	process.exit(0);
 }
+
+// Cargo.toml remains the sole version authority. These files are distribution
+// projections that must move atomically with a Krometrail release so the plugin
+// launcher can install the exact binary its package declares.
+type DerivedVersionUpdate = {
+	path: string;
+	original: string;
+	updated: string;
+};
+
+const derivedVersionPaths = rootPackageName === "krometrail"
+	? [
+		"plugin/.claude-plugin/plugin.json",
+		"plugin/.codex-plugin/plugin.json",
+		".claude-plugin/marketplace.json",
+		".agents/plugins/marketplace.json",
+	]
+	: [];
+
+async function prepareDerivedVersionUpdates(): Promise<DerivedVersionUpdate[]> {
+	const updates: DerivedVersionUpdate[] = [];
+	for (const path of derivedVersionPaths) {
+		const original = await Bun.file(path).text();
+		const matches = [...original.matchAll(/"version"\s*:\s*"([^"]+)"/g)];
+		if (matches.length !== 1 || matches[0][1] !== current) {
+			throw new Error(`${path} must contain exactly one version equal to ${current}`);
+		}
+		const updated = original.replace(
+			/("version"\s*:\s*")[^"]+("\s*)/,
+			`$1${nextVersion}$2`,
+		);
+		updates.push({ path, original, updated });
+	}
+	if (rootPackageName === "krometrail") {
+		const path = "plugin/version";
+		const original = await Bun.file(path).text();
+		if (original !== `${current}\n`) {
+			throw new Error(`${path} must contain exactly ${current}`);
+		}
+		updates.push({ path, original, updated: `${nextVersion}\n` });
+	}
+	return updates;
+}
+
+const derivedVersionUpdates = await prepareDerivedVersionUpdates();
 
 function run(command: string[], capture = false): string {
 	const result = Bun.spawnSync(command, {
@@ -222,6 +267,9 @@ function verifyLockRefresh(original: string | undefined, updated: string, expect
 await Bun.write(cargoPath, updatedCargo);
 
 try {
+	for (const update of derivedVersionUpdates) {
+		await Bun.write(update.path, update.updated);
+	}
 	console.log("Refreshing only workspace package versions in Cargo.lock...");
 	run(["cargo", "update", "-p", rootPackageName, "--precise", nextVersion]);
 	const refreshedLock = await Bun.file(lockPath).text();
@@ -239,6 +287,9 @@ try {
 	} else {
 		await Bun.write(lockPath, originalLock);
 	}
+	for (const update of derivedVersionUpdates) {
+		await Bun.write(update.path, update.original);
+	}
 	throw error;
 }
 
@@ -247,7 +298,7 @@ if (mode === "prepare") {
 	process.exit(0);
 }
 
-run(["git", "add", cargoPath, lockPath]);
+run(["git", "add", cargoPath, lockPath, ...derivedVersionUpdates.map((update) => update.path)]);
 run(["git", "commit", "-m", `Release v${nextVersion}`]);
 run(["git", "tag", `v${nextVersion}`]);
 run(["git", "push"]);
