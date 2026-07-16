@@ -145,3 +145,10 @@ Static checks bind package identity, current descriptions, pointers, MCP command
 **Approved — standard weight, one independent GPT-5.5 pass.** The reviewer found no material blockers across native schemas, source identities, MCP activation, current registry accuracy, evidence semantics, installer safety, lifecycle tests, release docs, or sibling catalog parity.
 
 One non-blocking documentation suggestion was accepted: setup verification now names the `temporal-artifact` and `temporal-source-frame` resource templates in addition to the tool list. Per standard policy, the accepted suggestion is verified locally without a second independent pass.
+
+## Publication evidence
+
+- Krometrail `main` published the canonical plugin, catalogs, skill, setup guidance, and qualification tests at `bdf909e`.
+- `nklisch/skills` PR [#43](https://github.com/nklisch/skills/pull/43) merged the native Codex catalog and current Krometrail pointer as `a57f2a2`.
+- Fresh isolated Claude and Codex installs from the published `nklisch/skills` marketplace both resolved `krometrail@nklisch-skills` version `1.0.0`, loaded the direct `krometrail mcp` declaration, and discovered the shared skill.
+- GitHub release `v1.0.0` remains immutably anchored at `d973c65`; its five assets, checksums, and build-provenance attestation were separately verified after the successful release rerun.
