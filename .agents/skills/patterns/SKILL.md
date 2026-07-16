@@ -16,6 +16,8 @@ Available patterns:
 - [registry-declared-surfaces.md](registry-declared-surfaces.md) — One registry declaration drives identities, metadata, schemas, and registration.
 - [bounded-loss-accounting.md](bounded-loss-accounting.md) — Bounded streams report every rejected or missed observation as explicit evidence quality state.
 - [single-writer-effect-reducer.md](single-writer-effect-reducer.md) — Serialized inputs produce deterministic state and an explicit effect queue.
+- [exact-release-managed-activation.md](exact-release-managed-activation.md) — Plugin/runtime activation derives one exact release version, verifies it before execution, and avoids unconstrained latest-driven updates.
+- [hermetic-release-boundary-fixtures.md](hermetic-release-boundary-fixtures.md) — Distribution tests shadow external commands and release assets in temp state to verify release seams without network or user-home mutation.
 - [layered-cdp-qualification.md](layered-cdp-qualification.md) — Deterministic doubles, boundary fault injection, and explicit real-browser qualification form one test ladder.
 - [ordered-sql-migrations.md](ordered-sql-migrations.md) — Immutable numbered SQL revisions are centrally ordered and transactionally applied.
 - [canonical-json-schema-artifacts.md](canonical-json-schema-artifacts.md) — Rust models generate canonical checked-in JSON and schemas verified by digest and byte equality.
