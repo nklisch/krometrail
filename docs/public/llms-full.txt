@@ -1,728 +1,128 @@
 # Krometrail Documentation
 
-> Current contributor and runtime-reference documentation for Krometrail's Rust browser-capture foundation.
+> Browser memory for coding agents: install Krometrail, use it to inspect transient browser behavior, and troubleshoot the local connection.
 
-# CDP transport qualification evidence (historical)
+A screenshot tells your coding agent what a page **is**. Krometrail preserves what the page **did**.
 
-This directory contains retained version-1 machine-readable evidence. It is obsolete and is not accepted by the strict version-2 contract under `../v2/`; reports and the decision remain byte-for-byte historical records. Raw runner logs and browser profiles remain outside Git under `target/`.
+While your agent works in a controlled Chrome or Chromium browser, Krometrail records the visible timeline. If a component flashes, an animation moves backward, hydration briefly shows the wrong layout, or focus jumps and settles before the next screenshot, the evidence is already there.
 
-## Selected transport
+## Install for your agent
 
-The historical Rust decision selected exact published `cdpkit` **0.4.0** (`Cargo.lock` checksum `c3fdb566d913b31e0014391a94c0db4ed871dbb76577dd1b2f2c5f6df158bfaa`) because both reports passed the then-current 13 gates. That is not a current qualification claim. Phase 2 wire-authenticity remediation changed the qualification harness after these reports were captured; the reports and `decision.json` are retained unchanged and must not be treated as refreshed decisive evidence until both platforms are requalified.
+The native plugin is the easiest path. It gives Claude Code or Codex the Krometrail skill, connects the local MCP server, and manages the matching binary for you.
 
-- Linux report: `cdpkit-linux.json`
-  - SHA-256: `081259729e2495e999745bcd7caa509ec7effc844f50b2a4d786d6cc744c7feb`
-  - Platform: Linux x86_64; Chrome 149.0.7827.155
-- macOS report: `cdpkit-macos.json`
-  - SHA-256: `3ffe94f405038fd8d9efd9fa7f8acbf15e8cb02c1f9e19bf24397f180981d401`
-  - Platform: macOS aarch64; Chrome 149.0.7827.201
-
-Both reports use schema version 1, the same exact candidate, fixture digest, and unchanged configuration: at least 60 seconds, 1,000 frames, 10 seconds of capacity-1 saturation, and 100 saturation attempts. Every gate is present and `pass`; no platform exception or threshold waiver exists. They are now explicitly historical/obsolete inputs: the strict contract additionally requires a positive `hard_stop_seconds` and observed disconnect/rebuild elapsed fields, which these unchanged reports do not contain. They must not be edited or used for a new decision; both platforms require fresh qualification.
-
-## Validation and decision reproduction
-
-From the repository root:
+### Claude Code
 
 ```bash
-cargo run -p krometrail-cdp --features cdp-spike --bin cdp-transport-gate -- \
-  schema --output /tmp/cdp-transport-schema.json
-cargo run -p krometrail-cdp --features cdp-spike --bin cdp-transport-gate -- \
-  validate-and-normalize --input docs/evidence/cdp-transport/v1/cdpkit-linux.json \
-  --output /tmp/cdpkit-linux.normalized.json
-cargo run -p krometrail-cdp --features cdp-spike --bin cdp-transport-gate -- \
-  validate-and-normalize --input docs/evidence/cdp-transport/v1/cdpkit-macos.json \
-  --output /tmp/cdpkit-macos.normalized.json
-cargo run -p krometrail-cdp --features cdp-spike --bin cdp-transport-gate -- \
-  decide --linux-report docs/evidence/cdp-transport/v1/cdpkit-linux.json \
-  --macos-report docs/evidence/cdp-transport/v1/cdpkit-macos.json \
-  --output /tmp/decision.json
-sha256sum docs/evidence/cdp-transport/v1/cdpkit-linux.json \
-  docs/evidence/cdp-transport/v1/cdpkit-macos.json
-cmp /tmp/decision.json docs/evidence/cdp-transport/v1/decision.json
-```
-
-The decision command verifies schema decoding, strict fields, complete gate registry, observed deadline measurements, measured thresholds, candidate/version/checksum consistency, Linux/macOS platform identity, fixture/configuration consistency, and redaction before hashing the exact report bytes. Against the retained historical reports it now fails during strict decoding/validation by design; re-run it only after fresh Linux and macOS reports are captured. The schema is generated from the Rust evidence types; `schema.json` is not a separate source of truth.
-
-## Gate interpretation and limitations
-
-The 13 gates cover deterministic routing, typed domains, flat-session isolation, browser/session raw commands, named raw event parameters, protocol-drift survival, sustained screencast, prompt acknowledgement, bounded handoff saturation, RSS trend, disconnect cleanup, and explicit reconnect/session rebuild.
-
-The decision preserves these limitations exactly:
-
-- cdpkit exposes **named event parameters**, not wildcard or full-envelope receive. The remediated runner binds unknown-event/additive-field/unknown-enum fixtures to a candidate-only observed-wire trace; it does not call those fixtures real-Chrome measurements.
-- cdpkit's event subscriber is unbounded and its queue depth is not inspectable; the continuously drained RSS and handoff counters are process-level proxies only and do not prove the hidden queue is bounded.
-- acknowledgement latency is a receive-to-ack-completion proxy, not a wire-enqueue timestamp.
-- Krometrail owns reconnect/session restoration, bounded handoff, backpressure, capture gaps, cancellation, and flush behavior.
-
-`chromey` was not tested because no cdpkit lifecycle, ordering, or sustained-capture failure was demonstrated. An owned Tokio/tokio-tungstenite transport remains the fallback if a later cdpkit integration needs a fork, loses raw protocol evolution before a preserved boundary, misroutes sessions, or obscures acknowledgement/backpressure. Neither fallback is wired or selected by this evidence.
-
-The spike remains non-default and is not root-wired. This rollup selects the mechanism for the later production adapter; it does not implement production lifecycle, capture, reconnect, or core-port changes.
-
----
-
-# CDP transport qualification evidence v2
-
-This directory contains the **current schema-v2 qualification reports and generated decision**. They were independently normalized, decisively validated, and regenerated from the ignored final5 inputs at exact revision `a0e98ad6bd9c53d10385020bc43629f7ac246173`. The bounded sanitized candidate trace, wire observations, runtime assertions, canonical configuration, source attestation, thresholds, and redaction checks all pass. The schema remains the Rust-generated v2 contract at [`schema.json`](./schema.json).
-
-- [`cdpkit-linux.json`](./cdpkit-linux.json) — clean Linux qualification
-- [`cdpkit-macos.json`](./cdpkit-macos.json) — hosted manual `workflow_dispatch` run `29212145045`
-- [`decision.json`](./decision.json) — generated solely by `decide_from_files`
-- `historical/final-v2-07b0990/` — byte-for-byte prior canonical reports and decision from revision `07b0990c0d9e4fea9057fcab5c35e56691ff69eb`
-- `historical/README.md` — earlier prior-v2 provenance
-
-## Final qualification identity
-
-Both reports were captured from exact revision `a0e98ad6bd9c53d10385020bc43629f7ac246173` and use exact `cdpkit` `0.4.0`, Cargo checksum `c3fdb566d913b31e0014391a94c0db4ed871dbb76577dd1b2f2c5f6df158bfaa`.
-
-| Identity | Value |
-| --- | --- |
-| Linux report SHA-256 | `c5ed8bfab9cb829f0d1e1622755667084abc09129ed1f2928cdc5f577d3761f8` |
-| macOS report SHA-256 | `7b2d7c61d61400f47281423d35ea57d51b1292cc78a95c4d7cef3118476c2264` |
-| Generated decision SHA-256 | `dfbd51c9e7a1f8e051c173df35962bc6f443d2b5c28037e406c3a72beda6472a` |
-| Configuration SHA-256 | `sha256:06388b5f8ad042093d22408dedb8d02d5a04a9e59d485158edc533334bab956e` |
-| Browser fixture identity | `sha256sum-of-ordered-fixture-files:9b42ae730d12a95772a946bf55e4838a5443b6cb4c536424570219041b6e2a68:84ba666539a996012a781637c1a894d8c7a4789cfca84661bd7cf8b79efa2e13` |
-| Candidate-contract fixture digest | `sha256:622fb296e0b50bf0dc81123c5f54a797040cdc48bd6b5f9ca96167bbe87fce76` |
-| Candidate-contract trace digest | `sha256:33ccc161726cc35f68e6a260c129a06f9050af4a616a76c8b957525f557a6e00` |
-| Candidate-contract observations | `942` |
-| Source-attestation digest | `sha256:96acbed658fb89a71a90107ac0bfec0ab78860e57f95a374cc9e183d672a4c5a` |
-
-The source attestation is embedded identically in both reports and was independently recomputed against the exact clean checkout. `validate-decisive` rejected any revision, tracked relevant-file, relevant-untracked-file, canonical configuration, threshold, or redaction mismatch before this evidence was installed.
-
-### Source attestation file digests
-
-| File | SHA-256 |
-| --- | --- |
-| `.github/workflows/cdp-transport-gate.yml` | `sha256:a62d4b38e926757ad05384e6228e9450677d27cea57feb533d1e0097d8b0bf01` |
-| `Cargo.lock` | `sha256:19921d3f80b037a62b0a8b07f283f1533e2d5a03928360090d78bec6fbdcc73f` |
-| `Cargo.toml` | `sha256:e199dbd2f92a7574b6c46159b8578992e079e11f636199c4ca03a82ce41afeb2` |
-| `crates/krometrail-cdp/Cargo.toml` | `sha256:0b90eb4381925ee6aad8b4c5f62527a108380740c818cefe4e4572e801045058` |
-| `crates/krometrail-cdp/src/bin/cdp-transport-gate.rs` | `sha256:f67e3bd25133b1914af9cfd852fcbe932f014956f79d036c4a93b8c43a332017` |
-| `crates/krometrail-cdp/src/spike/cdpkit_adapter.rs` | `sha256:6b743cf84e23da7e38a0eeb66a2f4cfea5b9d06dc42943b49d9bcbf12b614c31` |
-| `crates/krometrail-cdp/src/spike/chrome_harness.rs` | `sha256:a4df3be0454cda3cbbcfd8ebdfe7481262607dcf077a4bffb826080adbeed498` |
-| `crates/krometrail-cdp/src/spike/contract.rs` | `sha256:7cda1c1e86d54a3f27816d45c4ec680fc80d4b458cc8b2a026d30c79d4b05c34` |
-| `crates/krometrail-cdp/src/spike/error.rs` | `sha256:4da7b931559d8fa66f6dd3c34a132bce3514089583912396fb6846f7593f8ca5` |
-| `crates/krometrail-cdp/src/spike/evidence.rs` | `sha256:ffd749ad1962bb70091c1e7e1461d02e11a661dd4c1ba02cc04b9a6f39e8b38d` |
-| `crates/krometrail-cdp/src/spike/fake.rs` | `sha256:07f2613c18c01a3dfe546f6c9b4fb579e740a421e2b622c9ad1c41277a28d8bd` |
-| `crates/krometrail-cdp/src/spike/fixture_server.rs` | `sha256:8f7db255c22c6791e61ef0362eec4c76867eab6e4e7f8d98389f8172ac2ea87c` |
-| `crates/krometrail-cdp/src/spike/mod.rs` | `sha256:745e0e75d052709d79df62f961ea2f9bdcf46eb14f681403b405ae57e31b6ff4` |
-| `crates/krometrail-cdp/src/spike/scenarios.rs` | `sha256:012c6c23062bb49abd791abe0ec1496080ea96334f2a0accd8cd60903334501e` |
-| `crates/krometrail-cdp/src/spike/scripted_peer.rs` | `sha256:d4765e4bac6118dcb7f1b3d9a9822e0b75fc3d224bb26d855f226c1d9ac1b452` |
-| `crates/krometrail-cdp/tests/cdpkit_transport_contract.rs` | `sha256:c5be17cf5056d96b6d11f18ac68f65b6a994c187869f351d21ca234d56d4df0c` |
-| `crates/krometrail-cdp/tests/fixtures/protocol/additive-field.json` | `sha256:72be8368a42eb36816a4d08942f8d7b7ad18790000db5a96cca532f699b203e5` |
-| `crates/krometrail-cdp/tests/fixtures/protocol/unknown-enum.json` | `sha256:98189617ef6632ce738917ed88c1d273bc95f65f33300311f3f58c34cafe4a89` |
-| `crates/krometrail-cdp/tests/fixtures/protocol/unknown-event.json` | `sha256:de70ce94d3a5af666382a9ca2077d6cb3756a647d6e54a1139397029c848ed78` |
-| `crates/krometrail-cdp/tests/transport_contract.rs` | `sha256:6202f9061b475a2c192c1eb22dadd81b94559cd9e534188733f82c5c08d89095` |
-| `scripts/cdp-transport-gate-cross-worktree.sh` | `sha256:4d0f1e293c631414d88c5b91c108d47cc9313fe5ef32ba12cef19a7f7bd29705` |
-| `tests/fixtures/browser/cdp-transport-gate/animation.js` | `sha256:84ba666539a996012a781637c1a894d8c7a4789cfca84661bd7cf8b79efa2e13` |
-| `tests/fixtures/browser/cdp-transport-gate/index.html` | `sha256:9b42ae730d12a95772a946bf55e4838a5443b6cb4c536424570219041b6e2a68` |
-
-## Raw and sanitized provenance
-
-The parent qualification supplied these ignored final5 inputs:
-
-```text
-target/cdp-transport-gate/final5/cdpkit-linux.json
-  sha256 c5ed8bfab9cb829f0d1e1622755667084abc09129ed1f2928cdc5f577d3761f8
-target/cdp-transport-gate/final5/cdpkit-macos.json
-  sha256 7b2d7c61d61400f47281423d35ea57d51b1292cc78a95c4d7cef3118476c2264
-target/cdp-transport-gate/final5/decision.json
-  sha256 dfbd51c9e7a1f8e051c173df35962bc6f443d2b5c28037e406c3a72beda6472a
-```
-
-Each report input was strict-normalized to an ignored output and compared byte-for-byte before installation. The generated decision was independently recomputed from only those normalized reports and compared byte-for-byte:
-
-```bash
-GATE_SHA=a0e98ad6bd9c53d10385020bc43629f7ac246173
-for platform in linux macos; do
-  cargo run --locked -p krometrail-cdp --features cdp-spike-cdpkit \
-    --bin cdp-transport-gate -- validate-and-normalize \
-    --input target/cdp-transport-gate/final5/cdpkit-${platform}.json \
-    --output target/cdp-transport-gate/final5/cdpkit-${platform}.normalized.json
-  cmp -- target/cdp-transport-gate/final5/cdpkit-${platform}.json \
-    target/cdp-transport-gate/final5/cdpkit-${platform}.normalized.json
-  cargo run --locked -p krometrail-cdp --features cdp-spike-cdpkit \
-    --bin cdp-transport-gate -- validate-decisive \
-    --repo-root "$PWD" --input target/cdp-transport-gate/final5/cdpkit-${platform}.normalized.json \
-    --platform "$platform" --expected-git-revision "$GATE_SHA"
-done
-cargo run --locked -p krometrail-cdp --features cdp-spike-cdpkit \
-  --bin cdp-transport-gate -- decide --repo-root "$PWD" \
-  --linux-report target/cdp-transport-gate/final5/cdpkit-linux.normalized.json \
-  --macos-report target/cdp-transport-gate/final5/cdpkit-macos.normalized.json \
-  --output target/cdp-transport-gate/final5/decision.recomputed.json
-cmp -- target/cdp-transport-gate/final5/decision.json \
-  target/cdp-transport-gate/final5/decision.recomputed.json
-```
-
-The normalized report digests are therefore exactly the current canonical digests above. The Rust normalizer and decisive validator recursively reject absolute/private paths, HTTP/WS endpoints, IP endpoints, credentials, usernames, email identities, bracketed IPv6, encoded endpoint forms, and secret-bearing failure text. They also reject unknown fields, non-canonical configuration, threshold drift, mismatched duplicated trace/result/digest fields, and any gate failure; the installed reports contain no leakage or failures.
-
-The hosted macOS capture used manual `workflow_dispatch` run `29212145045`, exact ref/SHA verification, the full default, spike, cdpkit, and documentation/schema checks, unchanged candidate tests, the real-Chrome gate, normalization, and decisive validation. The local Linux capture used the clean exact revision and the same canonical configuration. No macOS-only waiver or threshold change was used. The temporary hosted branch remains intentionally untouched; its authorized deletion is parent-owned.
-
-## Configuration and exact fixture contract
-
-Every decisive report and decision uses the one canonical configuration below. The Rust report, CLI, workflow, and decision validators reject any field deviation, even when a caller recomputes a matching digest (for example, a `999999`-second hard stop).
-
-```text
-minimum_seconds=60
-minimum_frames=1000
-saturation_seconds=10
-saturation_attempts=100
-hard_stop_seconds=120
-configuration_sha256=sha256:06388b5f8ad042093d22408dedb8d02d5a04a9e59d485158edc533334bab956e
-```
-
-The observed capture and handoff elapsed measurements are positive, meet their configured thresholds, and remain strictly below the 120-second hard stop. Sanitization applies recursively to candidate trace values and rejects hostnames with ports, email identities, bracketed IPv6, percent-encoded URLs/endpoints after bounded repeated decoding, and generic endpoint or user credentials. Field-specific identity allowlists preserve browser, Rust, candidate, revision, digest, fixture, and summary evidence that is valid by contract.
-
-The three ordered committed drift fixtures were consumed through the cdpkit path. Exact observed methods were `Protocol.unknownEvent`, `Runtime.additiveField`, and `Runtime.unknownEnum`; the additive fixture carried `new_field: 7`, and the unknown-enum fixture carried `value: future-value`. The candidate trace has 942 observations, three fixtures, zero routing cross-delivery, event-before-response, detach-during-pending, socket closure, two explicit reconnects, and two rebuilt sessions. Linux and macOS candidate-contract fixture digest, trace digest, observations, and complete wire/runtime result object are byte-for-byte equal.
-
-## All 13 gate measurements
-
-Every gate is `pass` with `failure: null` on both reports. Values below are the complete runner-emitted measurement maps.
-
-### Linux (`x86_64`, Chrome/149.0.7827.155, rustc 1.95.0)
-
-| Gate | Measurements |
-| --- | --- |
-| deterministic-routing | `commands=200.0`, `events=200.0`, `cross_delivery=0.0` |
-| typed-domains | `typed_operations=5.0` |
-| flat-session-isolation | `sessions=2.0`, `commands_per_session=100.0`, `events_per_session=100.0`, `cross_delivery=0.0` |
-| raw-browser-command | `commands=1.0` |
-| raw-session-command | `commands=1.0` |
-| named-raw-event-params | `named_events=1.0` |
-| protocol-drift-survival | `fixtures=3.0`, `connection_survived=1.0`, `wildcard_envelope_available=0.0` |
-| sustained-screencast | `capture_elapsed_seconds=60.015619792`, `frames_received=3601.0`, `frames_acknowledged=3601.0`, `handoff_accepted=1.0`, `handoff_dropped=3600.0`, `handoff_elapsed_seconds=60.015619792`, `saturation_attempts=3601.0`, `ack_latency_ms_p50=0.13815`, `ack_latency_ms_p95=0.17198`, `ack_latency_ms_p99=0.214389`, `ack_latency_ms_max=0.889178`, `rss_samples=51.0`, `rss_sampling_interval_seconds=1.0`, `rss_warmup_seconds=10.0`, `rss_first_window_median_bytes=15519744.0`, `rss_last_window_median_bytes=15519744.0`, `rss_peak_bytes=15544320.0`, `rss_theil_sen_bytes_per_minute=0.0`, `upstream_queue_depth_available=0.0` |
-| prompt-acknowledgement | `ack_before_handoff=1.0`, `ack_latency_ms_p50=0.13815`, `ack_latency_ms_p95=0.17198`, `ack_latency_ms_p99=0.214389`, `ack_latency_ms_max=0.889178` |
-| bounded-handoff-saturation | `handoff_attempts=3601.0`, `handoff_accepted=1.0`, `handoff_dropped=3600.0`, `handoff_elapsed_seconds=60.015619792` |
-| bounded-memory-proxy | `rss_samples=51.0`, `rss_sampling_interval_seconds=1.0`, `rss_warmup_seconds=10.0`, `rss_growth_bytes=0.0`, `rss_first_window_median_bytes=15519744.0`, `rss_last_window_median_bytes=15519744.0`, `rss_peak_bytes=15544320.0`, `rss_theil_sen_bytes_per_minute=0.0`, `upstream_queue_depth_available=0.0` |
-| disconnect-cleanup | `pending_command_started=1.0`, `pending_calls_closed=1.0`, `subscriptions_closed=1.0`, `close_reason_observed=1.0`, `pending_command_elapsed_seconds=0.036807502`, `subscription_elapsed_seconds=0.036811722` |
-| explicit-reconnect-rebuild | `connections=2.0`, `sessions_rebuilt=2.0`, `elapsed_seconds=0.219646228` |
-
-### macOS (`aarch64`, Chrome/149.0.7827.201, rustc 1.97.0)
-
-| Gate | Measurements |
-| --- | --- |
-| deterministic-routing | `commands=200.0`, `events=200.0`, `cross_delivery=0.0` |
-| typed-domains | `typed_operations=5.0` |
-| flat-session-isolation | `sessions=2.0`, `commands_per_session=100.0`, `events_per_session=100.0`, `cross_delivery=0.0` |
-| raw-browser-command | `commands=1.0` |
-| raw-session-command | `commands=1.0` |
-| named-raw-event-params | `named_events=1.0` |
-| protocol-drift-survival | `fixtures=3.0`, `connection_survived=1.0`, `wildcard_envelope_available=0.0` |
-| sustained-screencast | `capture_elapsed_seconds=60.012583042`, `frames_received=3566.0`, `frames_acknowledged=3566.0`, `handoff_accepted=1.0`, `handoff_dropped=3565.0`, `handoff_elapsed_seconds=60.012583042`, `saturation_attempts=3566.0`, `ack_latency_ms_p50=0.183792`, `ack_latency_ms_p95=0.28049999999999997`, `ack_latency_ms_p99=0.582458`, `ack_latency_ms_max=12.67025`, `rss_samples=51.0`, `rss_sampling_interval_seconds=1.0`, `rss_warmup_seconds=10.0`, `rss_first_window_median_bytes=13041664.0`, `rss_last_window_median_bytes=13090816.0`, `rss_peak_bytes=13090816.0`, `rss_theil_sen_bytes_per_minute=67025.45454545454`, `upstream_queue_depth_available=0.0` |
-| prompt-acknowledgement | `ack_before_handoff=1.0`, `ack_latency_ms_p50=0.183792`, `ack_latency_ms_p95=0.28049999999999997`, `ack_latency_ms_p99=0.582458`, `ack_latency_ms_max=12.67025` |
-| bounded-handoff-saturation | `handoff_attempts=3566.0`, `handoff_accepted=1.0`, `handoff_dropped=3565.0`, `handoff_elapsed_seconds=60.012583042` |
-| bounded-memory-proxy | `rss_samples=51.0`, `rss_sampling_interval_seconds=1.0`, `rss_warmup_seconds=10.0`, `rss_growth_bytes=49152.0`, `rss_first_window_median_bytes=13041664.0`, `rss_last_window_median_bytes=13090816.0`, `rss_peak_bytes=13090816.0`, `rss_theil_sen_bytes_per_minute=67025.45454545454`, `upstream_queue_depth_available=0.0` |
-| disconnect-cleanup | `pending_command_started=1.0`, `pending_calls_closed=1.0`, `subscriptions_closed=1.0`, `close_reason_observed=1.0`, `pending_command_elapsed_seconds=0.3884075`, `subscription_elapsed_seconds=0.388418625` |
-| explicit-reconnect-rebuild | `connections=2.0`, `sessions_rebuilt=2.0`, `elapsed_seconds=3.285154` |
-
-The acknowledgement contract is receive → ack completion → bounded handoff. Both reports show equal received/acknowledged frame counts, `ack_before_handoff=1`, explicit handoff drops, post-receive ack latency below the p99/max limits, and measured elapsed handoff. The 120-second hard stop remains the authoritative configured deadline when the frame minimum is unmet. Disconnect cleanup is below one second and explicit reconnect/session rebuild is below five seconds on both platforms. RSS uses 51 one-second samples with a 10-second warmup; the report retains the process-level limitation that cdpkit's subscriber queue depth is not introspectable.
-
-## Limitations and workflow
-
-- cdpkit exposes named event params through an unbounded subscriber; wildcard/full-envelope receive and queue-depth introspection are unavailable.
-- Ack latency values are receive-to-ack-completion proxies, not wire-enqueue timestamps.
-- RSS is a process-level proxy from a continuously drained reader; it does not prove the hidden cdpkit subscriber queue is bounded.
-- The candidate-contract trace digest is attached to the structured candidate contract and report limitations.
-- The workflow is manual-only `workflow_dispatch` with exact ref plus full SHA inputs; there is no push trigger. Default, spike, cdpkit, schema, normalization, decisive, documentation, and full quality gates remain required. Raw artifacts and profiles remain under ignored `target/`; no path, endpoint, credential, username, or other host identity is committed.
-
-## Historical and failed runs
-
-The superseded 07b0990 canonical reports and decision were copied byte-for-byte into `historical/final-v2-07b0990/` before installing these final5 reports. Their original digests are Linux `a7195eda1667e613b1b3f857fd56cc60153500544493a86afac8448706d20270`, macOS `46901e41bb2a4bb674d76d9dce41fc4200032280cd9720daaaad965ee89d257b`, and decision `91f9032315dd3501068e1dd692b12fbda7ce0d7a57c9b5a49444db73c2a5c015`. Earlier prior-v2 artifacts remain directly under `historical/`.
-
-Earlier failed attempts remain documented in repository history and the historical narratives. No threshold was waived and no fallback rule was invoked: if a decisive gate had failed, the report would have remained a schema-valid failure and the conditional chromey/owned-transport selection rules would have applied.
-
----
-
-# Historical schema-v2 qualification artifacts
-
-The direct files in this directory are the earlier prior-v2 reports and generated decision. The superseded 07b0990 canonical reports and decision are preserved byte-for-byte in `final-v2-07b0990/`. All files remain available for audit and are not current qualification inputs.
-
-| File | Original role | SHA-256 | Bytes |
-| --- | --- | --- | ---: |
-| [`cdpkit-linux.json`](./cdpkit-linux.json) | Prior accepted Linux v2 report from revision `3d7c96ccf20862c47ab70ffbd7f724dceedfb4d2` | `0d11c4c8168d8ef2e988b2f71400696dc8a9521add23ba645b9ea65a03e0b148` | 6,951 |
-| [`cdpkit-macos.json`](./cdpkit-macos.json) | Prior accepted hosted macOS v2 report, workflow run `29202919716`, same revision | `c206b1a04651421b8b88f42d75920800a75ee85ed83756f8792191a5e9b3b998` | 6,944 |
-| [`decision.json`](./decision.json) | Prior generated v2 decision selecting `adopt_cdpkit` | `0288aa9a379b467042409ac27056107b443ea0d91bd21fc4fc8c2beae44c075b` | 13,546 |
-
-The direct historical reports and decision are retained byte-for-byte. The nested `final-v2-07b0990/` set is likewise byte-for-byte preserved from exact revision `07b0990c0d9e4fea9057fcab5c35e56691ff69eb`. The current v2 directory contains the independently validated final5 Linux and macOS reports and regenerated decision; this directory is retained provenance, not a qualification input.
-
----
-
-# Historical final-v2 evidence from `07b0990`
-
-These files preserve the prior canonical schema-v2 Linux/macOS reports and generated decision byte-for-byte. They were superseded by the independently validated final5 evidence from exact revision `a0e98ad6bd9c53d10385020bc43629f7ac246173`; do not use them as current qualification inputs.
-
-| File | SHA-256 | Provenance |
-| --- | --- | --- |
-| `cdpkit-linux.json` | `a7195eda1667e613b1b3f857fd56cc60153500544493a86afac8448706d20270` | exact revision `07b0990c0d9e4fea9057fcab5c35e56691ff69eb`, clean Linux run |
-| `cdpkit-macos.json` | `46901e41bb2a4bb674d76d9dce41fc4200032280cd9720daaaad965ee89d257b` | exact revision `07b0990c0d9e4fea9057fcab5c35e56691ff69eb`, hosted run `29207244853` |
-| `decision.json` | `91f9032315dd3501068e1dd692b12fbda7ce0d7a57c9b5a49444db73c2a5c015` | generated from those prior reports |
-
-The current canonical files are the sibling files in `../../` and use final5 digests Linux `c5ed8bfab9cb829f0d1e1622755667084abc09129ed1f2928cdc5f577d3761f8`, macOS `7b2d7c61d61400f47281423d35ea57d51b1292cc78a95c4d7cef3118476c2264`, and decision `dfbd51c9e7a1f8e051c173df35962bc6f443d2b5c28037e406c3a72beda6472a`.
-
----
-
-# Cross-platform capture smoke evidence
-
-This directory holds the schema, a canonical sample, and the manual evidence policy for the
-production-path capture fidelity smoke. The smoke proves that the current Krometrail capture
-pipeline (`ProductionBrowserConnector` + cdpkit 0.4.0 + supervised targets + bounded ingestion)
-captures frames, reports loss honestly, and cleans up after itself on supported platform/Chrome
-combinations.
-
-## Files
-
-- `schema.json` — Draft 2020-12 JSON Schema for `CrossPlatformSmokeEvidence`.
-- `sample.json` — Hand-authored, schema-valid canonical example pinned to the serializer's
-  canonical byte layout. The deterministic round-trip test asserts that
-  `serde_json::to_vec_pretty(&CrossPlatformSmokeEvidence::sample())` equals this file byte-for-byte.
-- `linux-chrome.json` — Decisive Linux Chrome evidence from revision
-  `595f079ce9772e3974f65bdc62ad70b01c17dbce`.
-- `macos-chrome-default-dpi.json` — Decisive macOS default-DPI evidence from revision
-  `4dfc78b2a6e91c3404fc58c3c8b98c5b6d662fdc` and hosted run `29288634536`.
-- `README.md` — This file: provenance, measurements, honest non-claims, lane/convention notes,
-  exact manual commands, and the decisive/skip policy.
-
-## What this smoke proves
-
-- A managed Chrome launch through the shared headless wrapper starts, reaches `Ready`, and records
-  runtime browser/protocol identity.
-- At least 30 non-empty JPEG frames are captured with strict per-target `CaptureOrdinal`
-  continuity, non-decreasing observed/session clocks, and JPEG dimensions matching
-  `metadata.image()`.
-- A capacity-one, blocked-sink session declares `IngestionQueueSaturated` honestly with a positive
-  missing-frame estimate and drains accepted work before a bounded managed stop.
-- No managed Chrome process or temporary profile reference outlives its session on Linux
-  (`/proc/*/cmdline`) and macOS (`ps -ax -o pid= -o command=`).
-- The committed macOS evidence covers the default-DPI configuration. A high-DPI configuration was
-  attempted, but it produced no passing artifact; the decisive observed device-scale threshold
-  remains `>= 1.5`.
-
-## Honest non-claims
-
-Every evidence document carries a `non_claims` array repeating these limits:
-
-- **No transport requalification.** The cdpkit 0.4.0 selection, 60 s / 1 000-frame sustained
-  saturation, deterministic wire assertions, and ack p99/max thresholds are owned by
-  `docs/evidence/cdp-transport/v2/`.
-- **No host-speed percentile threshold.** Ack/cadence histograms are diagnostics with internal
-  consistency checks only (samples ≥ N, percentiles monotonic); no `p99 ≤ X ms` claim is made.
-- **No product-thesis capture-probability threshold.** The 100 ms / 95 % and 50 ms / 80 % capture
-  envelope and the 25 pp agent-improvement bar belong to the evaluation epic.
-- **No duration sweep, visual-defect corpus, artifact comparison, or storage validation.** Those
-  are owned by the evaluation epic.
-- **No claim that Chrome's acknowledgement token changes, orders frames, or detects skipped browser
-  frames.**
-
-## Measurements
-
-Each session records:
-
-- `frame_count`, `source_time_samples`, `image_dimensions`, `viewport`, `device_scale_factor`
-- `capture_ordinal_range.min` and `.max`
-- `observed_clock_span_nanos`, `session_clock_span_nanos`
-- `ack_latency_nanos` and `frame_cadence_nanos` as `{samples, p50, p95, p99, max}`
-- Declared gaps as `{reason, count}`
-- `visibility_events` count (usually zero)
-
-The provenance block records git revision, Rust toolchain, cdpkit version, discovered installation,
-runtime `BrowserVersion`, the forced-DPI wrapper variant, and a snapshot of the actual `CaptureConfig`
-used (fidelity uses `CaptureConfig::default()` verbatim; loss-reporting overrides only
-`queue_capacity` to `1`).
-
-## Lane/convention notes
-
-- Evidence is written by the test to `$KROMETRAIL_SMOKE_EVIDENCE_DIR` (default: a unique temp path).
-  The test never mutates the source tree during `cargo test`; the operator commits the produced JSON.
-- The smoke is opt-in via `KROMETRAIL_REAL_CHROME_TESTS=1`.
-- `ChromeWrapperVariant::DefaultDpi` forces `--force-device-scale-factor=1`;
-  `ChromeWrapperVariant::HighDpi` adds `--high-dpi-support=1 --force-device-scale-factor=2`.
-- Linux Chrome and Linux Chromium are selected explicitly by `BrowserProduct`, not by
-  first-discovered order.
-
-## Manual evidence procedure
-
-### Linux lane (Chrome required; Chromium optional)
-
-```bash
-KROMETRAIL_REAL_CHROME_TESTS=1 \
-KROMETRAIL_SMOKE_EVIDENCE_DIR=docs/evidence/cross-platform-smoke/v1 \
-cargo test -p krometrail-cdp --test cross_platform_smoke --locked -- --nocapture --include-ignored
-```
-
-This writes `linux-chrome.json` always and `linux-chromium.json` only when a
-`BrowserProduct::Chromium` installation is discovered. If Chromium is absent, the run prints
-`not_installed` and continues.
-
-### macOS lane (Chrome required)
-
-```bash
-KROMETRAIL_REAL_CHROME_TESTS=1 \
-KROMETRAIL_SMOKE_EVIDENCE_DIR=docs/evidence/cross-platform-smoke/v1 \
-cargo test -p krometrail-cdp --test cross_platform_smoke --locked -- --nocapture --include-ignored
-```
-
-This writes `macos-chrome-default-dpi.json` and attempts the high-DPI configuration. The
-high-DPI document is emitted only when production metadata observes device scale `>= 1.5`; the
-current attempted run emitted no `macos-chrome-high-dpi.json`.
-
-## Decisive/skip policy
-
-- **Decisive configurations** for a complete smoke result remain `linux-chrome`,
-  `macos-chrome-default-dpi`, and `macos-chrome-high-dpi`; the high-DPI threshold is not relaxed.
-- **Best-effort configuration** (honest skip permitted): `linux-chromium`.
-- The current high-DPI artifact is absent because the attempted run did not pass the threshold.
-  This documentation records the non-pass honestly and does not block the local-tool release on
-  absent platform evidence.
-- **Wrong platform:** the test skips with a printed reason on any `target_os` outside
-  `{linux, macos}`.
-- **Skip, not fail:** when `KROMETRAIL_REAL_CHROME_TESTS != 1` or no decisive installation is
-  discovered, the test skips cleanly with the exact reason printed to `--nocapture` output.
-
-## Evidence that exists vs. honestly absent
-
-- `linux-chrome.json` is present and passed both fidelity and capacity-one loss-reporting sessions
-  against Chrome 149.0.7827.155 on Linux x86_64.
-- `macos-chrome-default-dpi.json` is present and passed both sessions against Chrome 149.0.7827.201
-  on hosted macOS 14 arm64. Its process/profile cleanup result used the real `ps`-based reference
-  scan.
-- `macos-chrome-high-dpi.json` is absent because the attempted high-DPI runs did not pass. Hosted
-  runs `29288505121` and `29288634536` both observed `deviceScaleFactor == 1.0` under
-  `--high-dpi-support=1 --force-device-scale-factor=2`; the production metadata observed
-  `deviceScaleFactor == 1.0`, so the decisive `>= 1.5` assertion failed and the harness emitted no
-  passing document. This is an attempted configuration, not high-DPI pass evidence. The threshold
-  remains unchanged: a future lane must either demonstrate a Chrome configuration that exposes
-  high DPI through production capture metadata or redesign that capture boundary before this
-  artifact can be added.
-- `linux-chromium.json` is honestly absent because no `BrowserProduct::Chromium` installation was
-  available on the Linux lane; this configuration remains best-effort.
-- The temporary publication used branch `tmp/cross-platform-smoke-macos-595f079`, workflow
-  `CDP transport macOS gate`, workflow patch commit
-  `a99d18e1c0bb8e07fed80c278cc05e59494bb21a`, and evidence commit
-  `4dfc78b2a6e91c3404fc58c3c8b98c5b6d662fdc`. Run `29288505121` first exposed the high-DPI
-  failure; run `29288634536` retained and uploaded the valid default-DPI document before the same
-  decisive high-DPI failure.
-- Real visibility transitions and `Page.screencastVisibilityChanged` events are observed and counted,
-  not assumed.
-
----
-
-# Temporal evaluation v1 contract
-
-This directory is the authoritative, browser-agnostic contract for the temporal benchmark.
-The Rust types in `crates/temporal-evaluation` validate the committed definition and manifest
-shape; the generated schemas and canonical sample are checked into this directory.
-
-## The narrow CI claim
-
-A normal locked Rust test run proves only that:
-
-- the v1 definition, schemas, and canonical sample are present, parseable, and byte-stable;
-- fixture files are in the declared order with the declared SHA-256 identities;
-- the condition, prompt, scoring, status, and deterministic matrix registries are complete;
-- canonical serialization, digests, privacy rejection, retention references, and status invariants
-  are deterministic;
-- result records bind the manifest input digest to exact packages, scores, aggregates, threshold
-  checks, per-frame availability proofs, retained evidence/source identities, artifact
-  output/manifest hashes, algorithm/version identities, and cache identities without copying the
-  manifest or storing raw/model/page prose, bytes, paths, or URLs;
-- deterministic qualification replays fixed source records through the fake monotonic-clock and
-  existing authority seams, checks the A–E budgets and one-interval identity, and keeps gaps,
-  eviction, corruption, partial retrieval, unavailable inputs, and skipped rows non-passing; and
-- benchmark output has an ignored destination under `target/temporal-evaluation/`.
-
-That is a **contract and reproducibility claim only**. CI does not claim that Chrome captured any
-state, that a platform passed, that an artifact is useful, that a model understood an artifact,
-or that temporal evidence improves debugging. It does not start Chrome, access a network, invoke a
-model or paid agent, or change the product CLI.
-
-The committed `sample-manifest.json` is a contract-only input sample. The committed
-`sample-evaluation-result.json` is a deterministic-CI result sample: it demonstrates canonical
-result and traceability semantics, is always `thesis_eligibility=not_eligible`, and is not live
-browser evidence, a capture result, a model-comprehension result, a debugging qualification, or a
-product-thesis assessment.
-
-## Test-only live qualification opt-in
-
-The live qualification harness is not a product command. It is an ignored, test-only path that
-requires both explicit authorizations:
-
-```text
-KROMETRAIL_REAL_CHROME_TESTS=1 \\
-KROMETRAIL_LIVE_CAPTURE_EVALUATION=1 \\
-  cargo test --features qualification-support -- --ignored
-```
-
-Do not set either variable for ordinary verification. The authorized path uses the production
-browser, capture, store, retention, query, and artifact authorities and writes one canonical
-`run-manifest.json` below:
-
-```text
-target/temporal-evaluation/live/<browser-product>/<run-id>/
-```
-
-A missing required browser is `blocked`; missing optional Linux Chromium is `skipped`; incomplete
-source, gaps, unavailable resources, retention loss, or unsupported measurements remain
-`inconclusive` or `blocked`; only complete threshold evidence can be `pass`. Finalization writes
-only after capture flush, browser/profile/server cleanup, lock release, and staging cleanup have
-been observed. A finalization error is a safe error report, never a passing result.
-
-The manifest records `evidence_mode` as either `code_harness` or
-`operator_authorized_live_capture`; a code/harness run is never live browser evidence. A local
-`pass` qualifies only the declared browser, operating system, viewport, device scale, capture
-settings, fixture revision, and reference-host configuration. It does not claim a model
-call or model effectiveness, remote or paid-service behavior, high-DPI behavior, cross-platform
-parity, temporal-advantage uplift, or production-scale stability. macOS and high-DPI belong to
-separate platform evidence; an unresolved gap there does not block later agent-effectiveness
-trials on a declared reference host. Live qualification does not invoke a model and emits no
-model answer, transcript, or thesis result.
-
-## Platform lane contract
-
-Platform evidence is a test-only adapter over the same `run_live_qualification` composition; it
-is not a second browser, recording store, artifact service, manifest authority, or product command.
-The one registry in `crates/temporal-evaluation/src/platform.rs` owns this canonical order:
-
-1. `linux_stable_chrome_reference_host` — required stable Chrome reference host;
-2. `macos_chrome_default_dpi` — required stable Chrome at observed scale one;
-3. `macos_chrome_high_dpi` — required stable Chrome at observed scale at least 1.5;
-4. `linux_chromium_optional` — optional Chromium at observed scale one.
-
-A platform run carries its typed lane/profile declaration in the existing `RunManifest`; the
-existing qualification measurements remain authoritative for browser identity, environment,
-viewport, observed scale, timings, gaps, retention, and cleanup. Requested wrapper flags are
-configuration only. In particular, a high-DPI request with observed scale one is rejected and
-cannot produce a passing high-DPI record. Unknown, duplicate, wrong-platform, wrong-product,
-wrong-profile, wrong-viewport, and out-of-band scale declarations fail validation. Missing optional
-Chromium remains an explicit skip and cannot satisfy Chrome or cross-platform coverage.
-
-The shared runner checks both explicit opt-in gates before fixture validation, discovery, loopback
-server startup, profile creation, store opening, or output preparation. Ordinary locked checks do
-not launch Chrome; each authorized run remains under the existing real-browser lock and writes
-only its ignored run output below `target/temporal-evaluation/live/`.
-
-## Authoritative inputs and generation
-
-- `benchmark-definition.json` is the one current v1 benchmark-definition input.
-- `benchmark-definition.schema.json` is generated from `BenchmarkDefinition`.
-- `run-manifest.schema.json` is generated from `RunManifest`, including the optional typed platform
-  lane declaration used only by platform-evidence runs.
-- `sample-manifest.json` is generated from `RunManifest::sample()` and canonicalized by the same
-  serializer used by consumers.
-- `evaluation-result.schema.json` is generated from `EvaluationResultRecord`.
-- `sample-evaluation-result.json` is generated from the deterministic result constructor and
-  canonicalized by the same serializer used by consumers.
-
-Regenerate only the versioned artifacts with the Rust generators:
-
-```text
-cargo run -p temporal-evaluation --locked --bin generate-benchmark-definition -- \
-  docs/evidence/temporal-evaluation/v1/benchmark-definition.json \
-  docs/evidence/temporal-evaluation/v1/benchmark-definition.schema.json
-cargo run -p temporal-evaluation --locked --bin generate-run-manifest -- \
-  docs/evidence/temporal-evaluation/v1/sample-manifest.json \
-  docs/evidence/temporal-evaluation/v1/run-manifest.schema.json
-cargo run -p temporal-evaluation --locked --bin generate-evaluation-result -- \
-  docs/evidence/temporal-evaluation/v1/sample-evaluation-result.json \
-  docs/evidence/temporal-evaluation/v1/evaluation-result.schema.json
-```
-
-After generation, run the locked workspace checks. `bun run docs:build` is unrelated VitePress
-tooling and is not a benchmark qualification step. Do not edit generated files by hand or update
-`docs/public/llms-full.txt` for this contract.
-
-## Canonical and privacy boundary
-
-Canonical JSON recursively sorts object keys, preserves semantic array order, accepts only finite
-numbers, normalizes `-0` to `0`, and uses lowercase `sha256:<64 hex>` identities. Source, observed,
-and session times remain separate. The definition owns ground truth; no measurement, artifact, or
-model answer can redefine it.
-
-### Affected-region coordinate contract
-
-Each case's `affected_region` is the exact half-open axis-aligned localization ROI in the fixed
-800x450 captured-viewport-pixel space. `(x, y)` is measured from the screenshot's top-left;
-width and height cover `x..x+width` and `y..y+height`, at the canonical device scale of one.
-The region is the union of the affected fixture subject's visible extents over all declared
-phases, clipped by the visible stage. A moving panel
-therefore includes its complete path, a layout shift includes both the inserted notice and the
-pre-/post-shift content extent, and a DOM-opaque canvas uses its complete rendered canvas box.
-The values are not `.stage`-relative offsets, `getBoundingClientRect()` values from another
-viewport, or canvas-local JavaScript drawing coordinates. Model answers use this same coordinate
-space. The contract tests derive every canonical rectangle from the committed fixture CSS, HTML,
-and animation geometry without starting Chrome.
-
-Committed fixture paths are repository-relative POSIX paths. Ignored evidence references are
-opaque handles. Validation rejects absolute or private paths, traversal, backslashes,
-URLs/endpoints and ports, credentials, control characters, page text, raw browser payloads, and
-adapter error details. Raw model answers are not canonical manifest content: later consumers may
-keep an ignored sidecar addressed by its digest and opaque reference.
-
-## Per-frame availability proof
-
-`ConditionPackage.source_frame_availability` and the corresponding result trial field preserve
-one ordered availability record for every `source_frame_ids` entry. The package validator binds
-that projection to the source interval digest and rejects reordered, missing, or mutated records.
-Result trace construction uses those exact records rather than deriving source-frame status from
-aggregate `RetentionState`: retained citations remain `retained` in a `partially_retained`
-interval, while `corrupt`, `evicted`, `gap`, and `not_collected` frames remain their original
-availability. Claims still require a retained trace; an unavailable citation is rejected.
-
-## Future execution states
-
-Availability and evaluation status are separate facts. A required browser, platform, source, or
-model that is not available must never become a passing row:
-
-- `blocked` means a required precondition, unsupported platform, browser, or model authorization
-  prevents the run; the manifest records the reason and a recovery action.
-- `inconclusive` means some evidence exists but gaps, eviction, corruption, missing source,
-  insufficient repetitions, or another unresolved limitation prevents a decisive claim.
-- `unavailable` is an explicit dependency/evidence availability state and is represented as such;
-  an aggregate consumer reports the resulting required row as `blocked` or `inconclusive`.
-- `fail` is reserved for complete, decisive evidence below the declared threshold (or a complete
-  validation failure), not for missing evidence.
-- `skipped` is allowed only for the named optional Linux Chromium configuration and preserves why
-  it was unavailable. It is not a pass and cannot stand in for a required platform.
-- `pass` requires every required identity, retained evidence, minimum sample, gap policy, and
-  threshold condition for that future consumer.
-
-Those live, cross-platform, artifact, and model consumers are opt-in work outside this CI-safe
-contract checkpoint. Their manifests and result records belong under the ignored output boundary
-and must retain the same explicit status semantics. A deterministic-CI result can never be
-thesis-eligible, even when synthetic arithmetic thresholds pass; its fixed non-claims explicitly
-cover Chrome capture, network access, paid/model calls, model comprehension, product-thesis
-improvement, causal diagnosis, deterministic replay, cross-model generalization, unobserved
-frames, and treating artifacts as ground truth. The qualification suite's synthetic answers and
-fake source/store records therefore prove contract and traceability behavior only; they do not
-qualify browser capture, artifact usefulness, platforms, model interpretation, debugging, or the
-product thesis.
-
-### Aggregate artifact cache state
-
-Live latency samples retain each authority-returned `ArtifactCacheDisposition` on every artifact
-identity. Their aggregate `CacheDisposition` is computed from those exact identities: `cold`
-means every artifact was generated (including regeneration after invalidation), `warm` means every
-artifact was a cache hit, and `mixed` means the set contains both generation and hits. An empty or
-unavailable artifact set remains `unavailable`. Invocation order is not a cache-state signal: the
-first temporal-bundle call may be `mixed` when a direct artifact request has already warmed a
-shared key, while the decisive checks remain uncached direct artifact generation below 5 seconds
-and an all-hit warm bundle below 1 second.
-
-## Ignored run output
-
-Per-run manifests, result records, source frames, generated artifacts, model answers/transcripts,
-patch workspaces, logs, and aggregate results belong only under:
-
-```text
-target/temporal-evaluation/
-```
-
-The repository's existing `target/` ignore rule covers this boundary. Tests verify that a sample
-output path is ignored and that no absolute path is serialized into a contract. Definitions,
-schemas, fixture source, prompts, scoring vocabulary, and the canonical sample are the only
-versioned evidence in this directory.
-
----
-
-# Development
-
-## Requirements
-
-Install Rust 1.85 or newer. The supported product development environments are Linux and macOS. Windows binaries are produced as a best-effort release artifact but Windows is not a supported development environment.
-
-The browser runtime targets locally installed Chrome or a compatible Chromium browser. It can launch a managed browser or attach to an explicitly debug-enabled Chrome/Electron renderer endpoint through MCP. Electron's Node main process is not part of the browser boundary.
-
-Linux release artifacts target `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`, so they are statically linked against musl and do not inherit a glibc minimum from the GitHub runner. Local development builds remain native Cargo builds for the host environment.
-
-Bun is optional repository tooling. It is used for VitePress documentation and selected browser fixture applications, never for the Krometrail product runtime.
-
-## Rust quality gate
-
-Run these commands from the repository root:
-
-```bash
-cargo fmt --all -- --check
-cargo check --workspace --all-targets --locked
-cargo test --workspace --all-targets --locked
-cargo clippy --workspace --all-targets --locked -- -D warnings
-```
-
-`cargo fmt --all` can apply formatting when needed. The other commands compile and test all six workspace crates plus the root binary.
-
-## Run the binary
-
-Run the current executable contract with:
-
-```bash
-cargo run -- --version
-cargo run -- --help
-cargo run -- doctor
-cargo run -- mcp
-```
-
-`doctor` performs browser discovery without launching. `mcp` owns standard output for protocol traffic and serves the registry-derived browser-control tools until transport EOF or shutdown. It uses the same full runtime composition as controlled-browser capture and recording.
-
-## Documentation and fixtures
-
-Install the JavaScript tooling only when working on the docs site or a preserved browser target:
-
-```bash
-bun install --frozen-lockfile
-bun run docs:dev
-bun run docs:build
-bun run docs:preview
-```
-
-`bun run docs:build` regenerates `docs/public/llms-full.txt` and builds the VitePress site. Browser fixtures are standalone applications; consult the [fixture classification](https://github.com/nklisch/krometrail/blob/main/tests/fixtures/browser/README.md) for their uses and launch details.
-
-## Release preparation
-
-Stable Rust releases are published from the root `Cargo.toml`, the sole product-version authority. The Bun release helper updates Cargo metadata, runs the Rust quality gate, and creates the repository release commit/tag/push workflow:
-
-```bash
-bun scripts/bump-version.ts patch
-# minor, major, or an explicit x.y.z version are also accepted
-```
-
-GitHub Actions builds and checksums these stable asset names. The Linux rows use the pinned `houseabsolute/actions-rust-cross` action with the `v0.2.5` cross tag, digest-pinned toolchain images in `Cross.toml`, and fixed musl targets; each matrix artifact must run `--version` in its matching architecture before attestation and upload. The arm64 smoke gate uses explicit QEMU emulation on the x86_64 Linux runner.
-
-The release matrix builds and checksums these stable asset names:
-
-- `krometrail-linux-x64`
-- `krometrail-linux-arm64`
-- `krometrail-darwin-x64`
-- `krometrail-darwin-arm64`
-- `krometrail-windows-x64.exe`
-
-The public installer rejects the preserved `v0.2.20` TypeScript/DAP release and older versions before downloading. Stable assets, checksums, and build-provenance attestations are published for each release. See the [installation guide](installation.md) for standalone and plugin-managed binary paths. Use `scripts/dev-install.sh` to install a local host release build into `~/.local/bin`.
-
----
-
-# Installation
-
-Krometrail supports two separate installation modes:
-
-1. the native agent plugin, which contributes the skill, MCP declaration, and a private managed binary;
-2. the optional standalone `krometrail` executable for terminal or manual MCP use.
-
-The native plugin does not require the standalone command to be on `PATH`. Each layer remains independently observable and removable.
-
-## Install the native agent plugin
-
-Use one marketplace source.
-
-### First-party marketplace
-
-```bash
-# Claude Code
 claude plugin marketplace add nklisch/krometrail --scope user
 claude plugin install krometrail@krometrail --scope user
+```
 
-# Codex
+### Codex
+
+```bash
 codex plugin marketplace add nklisch/krometrail
 codex plugin add krometrail@krometrail
 ```
 
-### nklisch skills marketplace
+Restart or reload your agent after installation. The first activation downloads and verifies the release paired with the plugin; later starts use the verified local copy.
+
+Prefer a standalone command or manual MCP setup?
+
+```bash
+curl -fsSL https://krometrail.dev/install.sh | sh
+krometrail doctor
+```
+
+[Compare installation options →](/guide/installation)
+
+## Ask your agent to look back
+
+You do not need to predict the exact frame or script the capture. Describe the symptom and ask your agent to inspect what happened around the interaction.
+
+> Use Krometrail to reproduce the settings-panel animation. It sometimes moves backward before it settles. Inspect the temporal evidence around that interaction and show me the relevant source frames.
+
+Your agent can start with a compact temporal bundle, then zoom into a small region or retrieve exact frames when the first view is not enough.
+
+[See practical prompts and workflows →](/guide/using-krometrail)
+
+## What Krometrail helps investigate
+
+- a component flickers before settling;
+- an animation reverses direction or overshoots;
+- a loading state appears and disappears too quickly;
+- hydration briefly renders the wrong layout;
+- scrolling or focus jumps unexpectedly;
+- two updates compete before the page stabilizes;
+- a canvas or game surface shows the wrong intermediate frame.
+
+The final screenshot can look completely correct. The recorded interval still shows the sequence that led there.
+
+## A normal debugging loop
+
+1. Your agent opens and uses the page through Krometrail.
+2. You reproduce the visual problem.
+3. The agent inspects the interval around the action as compact still-image evidence.
+4. It retrieves source frames or a focused filmstrip when more detail is needed.
+5. It changes the application and repeats the interaction to verify the transition—not only the final state.
+
+Krometrail preserves evidence. Your coding agent still interprets it and finds the cause.
+
+## Local, bounded, and honest about gaps
+
+Captured frames, browser events, and generated artifacts remain local unless your connected agent explicitly reads them through MCP. Recording uses a configurable disk budget and evicts old unpinned evidence when needed.
+
+Krometrail does not promise to capture every browser-rendered frame or diagnose defects automatically. Chrome visibility, rendering activity, and local load can affect capture. Known gaps are reported with the evidence so your agent can avoid claiming more than the recording supports.
+
+---
+
+# Install Krometrail
+
+Choose the path that matches how you want to use it:
+
+| You want to… | Install |
+| --- | --- |
+| Let Claude Code or Codex manage Krometrail | The native plugin (recommended) |
+| Run terminal checks or configure MCP yourself | The standalone `krometrail` command |
+
+You do not need both. The plugin-managed binary and a standalone installation are separate and do not update or remove each other.
+
+## Recommended: install the native plugin
+
+The plugin gives your agent the Krometrail skill, a local MCP connection, and a private managed binary.
+
+Use one marketplace source.
+
+### Claude Code
+
+```bash
+claude plugin marketplace add nklisch/krometrail --scope user
+claude plugin install krometrail@krometrail --scope user
+```
+
+### Codex
+
+```bash
+codex plugin marketplace add nklisch/krometrail
+codex plugin add krometrail@krometrail
+```
+
+Restart or reload Claude Code or Codex after installation. Then confirm that:
+
+- the Krometrail skill is available;
+- MCP reports Krometrail as connected;
+- browser-control and temporal-evidence tools are visible.
+
+Your agent may ask for permission before launching or controlling a browser. Krometrail follows the harness and operator approval policy rather than auto-allowing every action.
+
+### First activation
+
+The first MCP activation downloads the exact Krometrail release paired with the plugin, verifies its checksum and version, and stores it in private per-user plugin data. That first start needs HTTPS access to GitHub release and asset hosts. Later starts of the same version use the verified local binary without an update check.
+
+The managed binary is private to the plugin. It does not add `krometrail` to your shell's `PATH`.
+
+### Alternate marketplace
+
+If you already use the `nklisch/skills` marketplace, install the same canonical plugin from there instead:
 
 ```bash
 # Claude Code
@@ -734,26 +134,11 @@ codex plugin marketplace add nklisch/skills
 codex plugin add krometrail@nklisch-skills
 ```
 
-Both sources install the canonical package from Krometrail's `plugin/` directory. The sibling marketplace stores pointers, not a copied skill or manifest.
+Use one marketplace source, not both.
 
-### Managed binary activation
+## Optional: install the standalone command
 
-The plugin declares one local stdio server through its package-owned launcher. On first MCP activation, that launcher downloads the exact release coupled to the plugin version, verifies the selected asset against the release checksum, executes its exact version identity, and publishes it atomically into private per-user plugin data. Progress and errors use stderr; stdout is reserved for MCP.
-
-This cold activation needs HTTPS access to the GitHub release and asset hosts. Warm starts use the verified local binary directly and do not poll the network. Updating the plugin selects its matching binary on the next activation without modifying an independently installed CLI. Prior managed versions remain available for an offline plugin rollback.
-
-Restart or reload Claude Code or Codex after installation or update. Confirm that:
-
-- native plugin details show the Krometrail skill and MCP component;
-- MCP status reports Krometrail connected;
-- browser lifecycle, observation/control, temporal evidence, and browser-event tools are visible;
-- the `temporal-artifact` and `temporal-source-frame` resource templates are available.
-
-The plugin intentionally does not auto-allow all browser-control tools. Harness and operator permission policy remains authoritative.
-
-## Install the standalone binary
-
-Install this only when you also want the `krometrail` terminal command or need manual MCP configuration. The public POSIX installer supports Linux and macOS on x64 and arm64:
+Install the command when you want terminal checks or manual MCP configuration. The installer supports Linux and macOS on x64 and arm64:
 
 ```bash
 curl -fsSL https://krometrail.dev/install.sh | sh
@@ -761,39 +146,49 @@ krometrail --version
 krometrail doctor
 ```
 
-It selects the release asset for the current host, verifies it against `checksums.txt`, requires the temporary binary's exact `krometrail <selected-semver>` identity, and replaces an existing installation only after all checks pass. The legacy `v0.2.20` TypeScript/DAP cutoff remains blocked so an old runtime cannot be presented as a current Rust installation.
+`krometrail doctor` discovers a local Chrome or compatible Chromium installation without launching it.
 
-Linux release assets target `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`; they are statically linked against musl. Stable public asset names are:
-
-- `krometrail-linux-x64`
-- `krometrail-linux-arm64`
-- `krometrail-darwin-x64`
-- `krometrail-darwin-arm64`
-- `krometrail-windows-x64.exe`
-
-Windows is a best-effort direct-download artifact, not an installer-supported or supported development environment. Verify its matching checksum before use.
-
-### Select a version or destination
+The default destination is `~/.local/bin/krometrail`. If your shell cannot find it, restart the shell or add the directory to the current session:
 
 ```bash
-curl -fsSL https://krometrail.dev/install.sh | sh -s -- --version v1.0.0
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+### Choose a version or destination
+
+```bash
+curl -fsSL https://krometrail.dev/install.sh | sh -s -- --version v1.0.1
 KROMETRAIL_INSTALL_DIR="$HOME/bin" curl -fsSL https://krometrail.dev/install.sh | sh
 ```
 
-The default destination is `~/.local/bin/krometrail`. Restart the shell or add that directory to the current process if it is not already on `PATH`.
+The installer selects the release for the current host, verifies it against the published checksums, checks the binary's exact version, and replaces an existing installation only after those checks pass.
 
-A standalone binary can be registered directly when native plugin MCP loading is unavailable:
+Windows is a best-effort direct-download `.exe` from [GitHub Releases](https://github.com/nklisch/krometrail/releases/latest). It is not supported by the one-line installer or as a development environment. Verify the matching checksum before use.
+
+## Connect a standalone binary to your agent
+
+Register the local MCP server when native plugin loading is unavailable or you deliberately prefer manual setup:
 
 ```bash
 claude mcp add --scope user krometrail -- krometrail mcp
 codex mcp add krometrail -- krometrail mcp
 ```
 
-`krometrail mcp` is a protocol server, not an interactive health command; use `krometrail --version` and `krometrail doctor` for terminal checks.
+Your MCP client starts `krometrail mcp`; you do not run it as an interactive terminal command. Use `krometrail --version` and `krometrail doctor` for terminal checks.
+
+See [Manual MCP configuration](mcp-configuration.md) for a JSON client entry.
+
+## Try it
+
+After restarting your agent, ask:
+
+> Use Krometrail to open `http://localhost:3000`, describe the current page, and tell me whether the Krometrail browser session is recording.
+
+Then continue with the [agent workflow and example prompts](using-krometrail.md).
 
 ## Update
 
-Refresh native plugin state with the harness lifecycle:
+### Plugin
 
 ```bash
 # Claude Code
@@ -806,9 +201,11 @@ codex plugin remove krometrail@krometrail
 codex plugin add krometrail@krometrail
 ```
 
-Substitute `nklisch-skills` when that is the registered marketplace. Claude Code can also auto-update an operator-enabled marketplace and its installed plugins after startup; enable or disable that through Claude's plugin manager or marketplace settings. Krometrail itself does not change that setting. After a plugin update, the next MCP activation installs the exact new binary when needed. Codex updates remain explicit with the native commands above. The managed launcher performs no background poll or independent `latest` lookup.
+Substitute `nklisch-skills` when that is your marketplace. After an update, the next MCP activation installs the new plugin's matching binary. Krometrail does not poll `latest` or alter a separately installed command.
 
-The standalone binary installer remains safe to rerun and validates the new candidate before replacement:
+### Standalone command
+
+Rerun the installer. It validates the new candidate before replacing the existing binary:
 
 ```bash
 curl -fsSL https://krometrail.dev/install.sh | sh
@@ -826,23 +223,210 @@ codex plugin remove krometrail@krometrail
 codex plugin marketplace remove krometrail
 ```
 
-Claude owns the lifecycle of its plugin data. Codex's fallback managed versions live under `${XDG_DATA_HOME:-$HOME/.local/share}/krometrail/plugin` and can remain after plugin removal to support offline rollback. Plugin removal never deletes an independently installed executable or retained local recordings. Remove managed versions, standalone binaries, or evidence only after identifying their exact paths and confirming the user wants them removed.
-
-## Local development install
-
-To build the current source with the locked Cargo graph and copy the host release binary to `~/.local/bin`:
-
-```bash
-bash scripts/dev-install.sh
-```
-
-Set `KROMETRAIL_INSTALL_DIR` to choose another destination. This development helper uses the host's native Cargo target; it is separate from the release workflow's reproducible musl Linux matrix.
+Removing the plugin does not delete a separately installed command or retained browser evidence. Confirm exact paths and ownership before deleting managed versions, standalone binaries, or recordings.
 
 ---
 
-# MCP configuration
+# Use Krometrail with your agent
 
-Krometrail exposes its browser-control surface through the `mcp` command and standard input/output transport. A typical MCP client entry is:
+Krometrail is most useful when the final screenshot is not enough.
+
+Your agent can operate the browser normally and inspect the current page. Meanwhile, Krometrail records the controlled renderer. If the page flickers, shifts, reverses, or briefly shows the wrong state, you can ask the agent to look back at the interaction instead of trying to catch the moment manually.
+
+## Start with the symptom
+
+Describe what you saw in ordinary language. You do not need to name a Krometrail tool or know which artifact will help.
+
+> Open `http://localhost:3000/settings` with Krometrail and reproduce the panel animation. The panel sometimes appears to move backward before it settles. Inspect what happened around the interaction and tell me which visible states appeared, in order.
+
+Your agent may ask for permission before it launches or controls a browser. Krometrail intentionally follows your agent harness and operator approval policy.
+
+## Useful requests
+
+### A short-lived flash
+
+> Use Krometrail to submit the form. The success state briefly flashes the wrong color. Inspect the temporal evidence around the submission, then show me the source frame where the wrong color appears.
+
+### A layout jump
+
+> Record the page while it loads. Check whether the main content shifts after the initial render, identify the affected region, and correlate it with any navigation or browser errors.
+
+### Motion in one small area
+
+> Reproduce the cart animation and inspect only the cart region as a filmstrip. I want to see whether the badge overshoots or reverses before reaching its final position.
+
+### A canvas or game surface
+
+> Use Krometrail while triggering the player movement. Inspect the visual timeline for a teleport or incorrect intermediate frame. Do not rely on DOM state—the problem is inside the canvas.
+
+### Verify a fix
+
+> Repeat the same interaction after my patch. Compare the visible sequence with the original symptom and verify that the transition is fixed, not just the final screenshot.
+
+## What your agent does
+
+A typical investigation is short:
+
+1. **Work normally.** The agent starts a controlled browser, navigates, clicks, types, or scrolls. Recording begins with the browser session.
+2. **Reproduce the symptom.** Tell the agent what looked wrong, especially when the final state appears correct.
+3. **Inspect the interval.** The agent asks for evidence around the interaction or a selected time range.
+4. **Zoom in when needed.** It requests a focused region or exact source frames rather than loading the entire recording.
+5. **Fix and repeat.** The agent changes the application and verifies the same transition again.
+
+These are choices, not mandatory stages. A current screenshot may be enough for a current-state question. Temporal evidence earns its keep when sequence and timing matter.
+
+## What the evidence means
+
+Krometrail reorganizes recorded frames into still images an agent can inspect:
+
+- **Before / during / after** gives a quick orientation around an interaction.
+- **Storyboard** shows representative frames in chronological order.
+- **Difference map** shows where pixels changed and roughly when; it does not explain why.
+- **Region filmstrip** keeps a small area readable across several moments.
+- **Motion history** highlights repeated movement or broad oscillation without claiming direction.
+- **Source frames** are the underlying visual record behind every derived artifact.
+- **Browser events** add nearby console, exception, navigation, and request context.
+
+Generated artifacts are compact, lossy views. When a detail matters, ask the agent to inspect the source frames behind it.
+
+## Ask for careful conclusions
+
+A useful prompt tells the agent how to handle uncertainty:
+
+> Inspect the temporal bundle around the last interaction. Describe the observed sequence, cite the relevant source frames, and tell me whether capture gaps limit the conclusion. Do not infer a cause from a difference map alone.
+
+Known capture gaps are shown with the evidence. A gap means unseen behavior may have occurred; it does not prove the missing interval was stable.
+
+## When to keep evidence
+
+Old unpinned recording segments can be evicted when the local disk budget is reached. For a longer investigation, ask your agent to pin the relevant interval and unpin it when the work is complete.
+
+## Finish the session
+
+When Krometrail launched the browser for the task, ask your agent to stop it when finished unless you want the controlled session left open.
+
+---
+
+# Troubleshooting
+
+Start with the symptom you can observe. Plugin-managed installs and standalone installs have different checks.
+
+## The plugin is installed, but Krometrail tools are missing
+
+1. Restart or reload Claude Code or Codex after installing or updating the plugin.
+2. Confirm the Krometrail plugin is enabled and includes both the skill and MCP component.
+3. Check your agent's MCP status for a Krometrail connection or startup error.
+4. On first activation, allow time for the plugin to download and verify its matching release.
+
+The native plugin uses a private managed binary. It does **not** require a standalone `krometrail` command on `PATH`.
+
+## First activation cannot download the managed binary
+
+The first plugin activation needs HTTPS access to the Krometrail GitHub release and asset hosts. Later starts of the same plugin version use the verified local copy without checking the network.
+
+If the download fails:
+
+- confirm the machine can reach GitHub releases;
+- preserve the launcher error shown by your agent's MCP status or stderr;
+- verify that the installed plugin version has a matching published Krometrail release;
+- do not bypass checksum or executable-identity verification.
+
+## A standalone install cannot find Chrome or Chromium
+
+Run:
+
+```bash
+krometrail doctor
+```
+
+`doctor` only discovers supported local browsers; it does not launch one. If it reports `browser_not_found`, install Chrome or a compatible Chromium browser, or have your agent pass an explicit executable through Krometrail's browser-start request.
+
+## The shell cannot find `krometrail`
+
+The standalone installer writes to `~/.local/bin` by default. Restart your shell or add that directory to the current session:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+krometrail --version
+```
+
+This check applies only to a standalone installation. A native plugin-managed binary is private to the plugin and is not added to `PATH`.
+
+## Manual MCP setup cannot start the server
+
+Check the standalone binary first:
+
+```bash
+krometrail --version
+krometrail doctor
+```
+
+Then confirm your MCP client starts this command:
+
+```text
+krometrail mcp
+```
+
+Do not run `krometrail mcp` as an interactive health check. It is a standard-input/output protocol server and waits for an MCP client; an apparently idle terminal is expected.
+
+See [Manual MCP configuration](mcp-configuration.md) for client commands and JSON configuration.
+
+## The agent asks for permission before controlling the browser
+
+This is expected. The plugin does not bypass your agent harness's tool-approval policy. Review and approve the requested browser lifecycle or control action according to your local policy.
+
+## Krometrail cannot start another browser session
+
+One MCP server owns at most one active browser session. Ask the agent to stop the current controlled browser or detach from the current external browser before starting or attaching another one.
+
+## Attaching to Chrome or Electron fails
+
+Krometrail can attach only to an explicitly enabled **local** Chrome-compatible debugging endpoint.
+
+For Electron, the endpoint exposes Chromium renderer targets. Krometrail does not inspect or control Electron's Node main process. Confirm the application enabled local remote debugging and that the agent is using the correct endpoint.
+
+Do not expose a debugging endpoint on a public network interface.
+
+## Evidence has gaps or an interval is unavailable
+
+Chrome can pause or reduce screencast delivery for hidden tabs, and local load or bounded ingestion can create known capture gaps. Krometrail reports those gaps rather than treating the interval as continuously observed.
+
+If older evidence was evicted, reproduce the interaction and ask the agent to pin the new interval while investigating it. If pinned evidence consumes the disk budget, capture pauses instead of deleting protected data; unpin ranges you no longer need.
+
+## Windows installation
+
+The one-line installer supports Linux and macOS on x64 and arm64. Windows is a best-effort direct-download `.exe` from [GitHub Releases](https://github.com/nklisch/krometrail/releases/latest), not an installer-supported or supported development environment. Verify the matching checksum before use.
+
+## Report a problem
+
+Open an issue on [GitHub](https://github.com/nklisch/krometrail/issues) with:
+
+- `krometrail --version` for a standalone install, or the plugin version for a managed install;
+- operating system and browser version;
+- `krometrail doctor` output when browser discovery is involved;
+- the MCP startup error or relevant stderr text;
+- the smallest reproduction you can share safely.
+
+Captured browser content stays local. Share screenshots, frames, URLs, or page data only when you intend to include them in the report.
+
+---
+
+# Manual MCP configuration
+
+If you installed the native Claude Code or Codex plugin, you do not need this page—the plugin already declares and manages Krometrail's MCP server.
+
+Use manual configuration when you installed the standalone `krometrail` command or your MCP client cannot load the native plugin.
+
+## Add Krometrail from the command line
+
+```bash
+claude mcp add --scope user krometrail -- krometrail mcp
+codex mcp add krometrail -- krometrail mcp
+```
+
+Restart or reload the client, then check its MCP status for a connected Krometrail server.
+
+## Generic MCP client entry
 
 ```json
 {
@@ -855,54 +439,98 @@ Krometrail exposes its browser-control surface through the `mcp` command and sta
 }
 ```
 
-The client must be able to find the `krometrail` executable. Standard output belongs exclusively to MCP JSON-RPC traffic; startup and runtime failures are reported on standard error.
+The MCP client must be able to find `krometrail` on `PATH`. The default standalone install location is `~/.local/bin/krometrail`.
 
-The server owns at most one active browser session. Call `start_browser` to launch a managed Chrome-compatible browser or `attach_browser` with an explicitly enabled local CDP endpoint. Use `stop_browser` before starting or attaching another session. Ending the MCP transport also closes a managed browser or detaches from an externally owned browser through the same bounded shutdown path.
+## Do not run `mcp` as a health check
 
-The default server exposes four lifecycle tools, 24 browser-control tools from the shared registry, the `temporal_debug_bundle` entry point, seven temporal evidence/retention tools (`list_source_frames`, `fetch_source_frames`, `generate_artifacts`, `generate_region_filmstrip`, `pin_resolved_range`, `unpin_resolved_range`, and `query_pin_state`), and `query_browser_events`. The temporal and browser-event registries generate their input schemas from the same Rust contracts as the services. Every lifecycle launch/attach request accepts optional `every_nth_frame` from 1 through 60, defaulting to 1 and remaining immutable for that browser session.
+`krometrail mcp` is a standard-input/output protocol server. It waits for an MCP client and writes protocol traffic—not a user interface—to standard output. Use these checks in a terminal instead:
 
-Temporal results use durable recording data. Tool responses can include bounded inline images and canonical resource links. The server advertises two resource templates and reads retained artifacts and source frames through `resources/read`:
+```bash
+krometrail --version
+krometrail doctor
+```
 
-- `krometrail://evidence/{session}/{target}/artifacts/{id}`
-- `krometrail://evidence/{session}/{target}/frames/{id}`
+Startup and runtime failures from the MCP server are written to standard error so they do not corrupt protocol traffic.
 
-Concrete retained resources are discovered from tool responses rather than listed up front. Page-state and framework-state capabilities remain unavailable extension points; they are not part of the default server surface.
+## What the connection gives your agent
 
-The browser boundary includes Chrome-compatible pages and explicitly debug-enabled Electron renderer processes. Electron's Node main process remains outside that boundary. Browser control and captured evidence remain local unless the connected MCP client explicitly reads a response.
+The server exposes browser lifecycle and page control, current screenshots and structured snapshots, temporal visual evidence, nearby browser events, and retained artifact/source-frame reads.
+
+One MCP server owns at most one active browser session. Stop or detach from the current session before starting or attaching another one. Ending the MCP transport closes a Krometrail-managed browser or detaches from an externally owned browser.
+
+Browser control and captured evidence stay local unless the connected agent explicitly reads a response or artifact through MCP.
+
+For practical requests, see [Use Krometrail with your agent](using-krometrail.md). For startup failures, see [Troubleshooting](troubleshooting.md).
 
 ---
 
-# Krometrail
+# Command reference
 
-Krometrail is a Rust foundation for local browser control and temporal visual evidence for coding agents.
+Krometrail provides four command-line entry points:
 
-The current executable provides browser discovery and the local MCP browser-control boundary:
+| Command | What it does |
+| --- | --- |
+| `krometrail --version` | Prints the installed version. |
+| `krometrail --help` | Lists the available command surface. |
+| `krometrail doctor` | Finds local Chrome and Chromium installations without launching a browser. Returns a structured `browser_not_found` error when none is available. |
+| `krometrail mcp` | Serves Krometrail to an MCP client over standard input and output until the client disconnects or the process stops. |
+
+## `doctor`
+
+Use `doctor` as the terminal health check for browser discovery:
 
 ```bash
-cargo run -- --version
-cargo run -- --help
-cargo run -- doctor
-cargo run -- mcp
+krometrail doctor
 ```
 
-`doctor` reports discovered browser installations without launching. `mcp` serves the implemented MCP surface over protocol-only stdio: lifecycle tools, 24 registry-derived browser-control tools, temporal investigation and retention tools, browser-event queries, and retained artifact/source-frame resources. Controlled-browser capture and durable recording are assembled behind the same runtime.
+It does not launch a browser, change a profile, or start recording.
 
-## Start here
+## `mcp`
 
-- [Installation guide](guide/installation) — managed native Claude Code/Codex setup plus optional standalone binary installation.
-- [Development guide](guide/development) — build, test, lint, run, release, and docs tooling.
-- [Documentation navigation](agents) — source-of-truth order and current contributor pages.
-- [Runtime reference](reference/runtime) — the current command contract.
-- [MCP configuration](guide/mcp-configuration) — current MCP status and Electron renderer boundary.
-- [Configuration](reference/configuration) — current configuration status.
+An MCP client starts this command for you:
 
-## Foundation documents
+```text
+krometrail mcp
+```
 
-- [Vision](VISION)
-- [Specification](SPEC)
-- [Architecture](ARCHITECTURE)
-- [Visual evidence](VISUAL-EVIDENCE)
-- [Evaluation](EVALUATION)
+It is not an interactive terminal command. Standard output is reserved for MCP protocol messages; diagnostics go to standard error.
+
+The MCP server gives an agent:
+
+- managed browser launch or explicit local attachment;
+- page navigation, inspection, interaction, and current screenshots;
+- continuous recording during the controlled session;
+- temporal bundles, storyboards, difference maps, filmstrips, motion history, and source frames;
+- nearby console, exception, navigation, and request metadata;
+- local retention and pinning of important intervals.
+
+The server owns at most one active browser session. A Krometrail-managed browser closes when the session or MCP transport ends; an externally owned browser is detached rather than closed.
+
+See [Manual MCP configuration](../guide/mcp-configuration.md) to connect a standalone binary.
+
+---
+
+# Configuration reference
+
+Krometrail currently has no user configuration file or browser-control command-line flags. Your agent selects browser launch or local attachment, profile, initial URL, executable, and endpoint through Krometrail's MCP browser tools.
+
+## Environment variables
+
+| Variable | What it changes |
+| --- | --- |
+| `KROMETRAIL_DATA_DIR` | Local recording, index, and managed-profile data root. |
+| `KROMETRAIL_DISK_BUDGET_BYTES` | Positive global recording budget in decimal bytes. |
+| `KROMETRAIL_PROFILE_ROOT` | Managed-browser profile directory. |
+
+When these variables are absent, Krometrail uses the platform data directory and a 10 GB disk budget. An invalid disk-budget value prevents startup and reports the failing setting.
+
+## Capture stride
+
+A browser start or attach request can set `every_nth_frame` from 1 through 60. It defaults to 1.
+
+This is a relative request to Chrome, not an exact frames-per-second setting. The value remains fixed for that browser session; start a new session to use another stride. Krometrail reports the requested stride separately from observed cadence and known capture gaps.
+
+Higher values intentionally sample fewer frames. They do not hide queue drops, storage failures, visibility pauses, or other known losses.
 
 ---
 
@@ -923,164 +551,3 @@ Captured browser data remains on the user's machine unless the user or connected
 ## Contact
 
 For privacy questions, open an issue on [GitHub](https://github.com/nklisch/krometrail/issues).
-
----
-
-# Configuration
-
-Krometrail currently has no user configuration file or browser-control CLI flags. MCP lifecycle tool inputs select managed launch versus explicit local attachment, profiles, initial URLs, executables, and endpoints through their generated schemas.
-
-Each `start_browser` and `attach_browser` MCP request also accepts the generated `every_nth_frame` field. It is an integer from 1 through 60, defaults to 1, is forwarded to CDP screencast capture, and remains immutable for that browser connection. A different stride requires a new browser session; it is reported in lifecycle and capture status.
-
-The root runtime recognizes these environment variables:
-
-| Variable | Behavior |
-| --- | --- |
-| `KROMETRAIL_DATA_DIR` | Overrides the local recording/index and managed-profile data root. |
-| `KROMETRAIL_DISK_BUDGET_BYTES` | Sets the positive global recording budget in decimal bytes. |
-| `KROMETRAIL_PROFILE_ROOT` | Overrides the managed-browser profile directory. |
-
-Invalid disk-budget input prevents startup with a structured error. Built-in platform data directories and the default 10 GB budget apply when variables are absent.
-
-The broader intended precedence remains command-line arguments, environment variables, user configuration, then built-in defaults as defined in [`SPEC.md`](../SPEC.md) and [`ARCHITECTURE.md`](../ARCHITECTURE.md). The current executable has no browser-control CLI flags, user configuration file, external capability-selection input, or public inputs for capture format, quality, dimensions, concurrency, or logging; the MCP lifecycle request is the public capture-stride boundary.
-
----
-
-# Runtime reference
-
-Krometrail ships one Rust binary and one composition root. The runtime assembles browser transport, controlled-browser capture, recording storage, and retention before dispatching a command.
-
-## Commands
-
-| Command | Current behavior |
-| --- | --- |
-| `krometrail --version` | Prints the Cargo package version and exits successfully. |
-| `krometrail --help` | Prints the available command surface and exits successfully. |
-| `krometrail doctor` | Reports discovered Chrome/Chromium installations or a structured `browser_not_found` failure. It does not launch a browser. |
-| `krometrail mcp` | Serves the browser-control tool registry over MCP stdio until transport EOF or process shutdown. |
-
-`krometrail mcp` writes only MCP JSON-RPC traffic to standard output. It owns at most one controlled browser session and uses ownership-aware shutdown: managed browsers close, while explicitly attached browsers detach. The default server publishes 37 tools: four lifecycle tools, 24 registry-derived browser-control tools including ordered batching, `temporal_debug_bundle`, seven temporal evidence/retention tools, and `query_browser_events`.
-
-Temporal evidence is persisted by the durable recording store. Temporal tool responses can include bounded inline images and canonical resource links. The server exposes two dynamic resource templates for retained artifacts and source frames; concrete resources are read with `resources/read` using `krometrail://evidence/{session}/{target}/artifacts/{id}` or `krometrail://evidence/{session}/{target}/frames/{id}`. Page-state and framework-state remain unavailable extension capabilities, not current tools.
-
-The root CLI is defined in [`src/cli.rs`](https://github.com/nklisch/krometrail/blob/main/src/cli.rs), and the full composition root is in [`src/app.rs`](https://github.com/nklisch/krometrail/blob/main/src/app.rs). See [MCP configuration](../guide/mcp-configuration.md) for a client entry and [`SPEC.md`](../SPEC.md) for the broader intended external contracts.
-
----
-
-# Rust CDP Transport Research — 2026-07-12
-
-## Context and method
-
-This research grounds `epic-rust-cdp-capture-foundation-cdp-transport-gate`. Krometrail needs a browser-level Chrome DevTools Protocol (CDP) connection with flat target sessions, typed control operations, raw protocol escape hatches, and a screencast event path that Krometrail—not the library—can supervise and bound.
-
-Evidence was frozen on 2026-07-12 from crates.io metadata, published/repository source at `cdpkit` 0.4.0 (`15dd5e6d`) and `chromey` 2.52.0 (`6eeca5e8`), their CI/tests, their public GitHub issues, and the final5 schema-v2 qualification. The final5 reports and generated decision were independently normalized, redaction-checked, decisively validated, and recomputed at exact revision `a0e98ad6bd9c53d10385020bc43629f7ac246173`. They preserve bounded sanitized canonical fixture, wire, and runtime material and recompute all summaries from it. The contract uses observed `capture_elapsed_seconds` and `handoff_elapsed_seconds` measurements and measures acknowledgement from returned frame to ack completion only. These artifacts describe the qualification spike and do not substitute for production runtime evidence; production lifecycle, reconnect supervision, capture ingestion, recording, and bounded handoff are implemented separately in `krometrail-cdp`.
-
-Caller-aware research ran direct-read only: the caller prohibited subagents and questions, and the bounded candidate/source surfaces did not warrant delegation. Reversible uncertainties are therefore converted into explicit spike gates below.
-
-## Project gates
-
-A viable transport must provide:
-
-1. compatible maintenance, license, and minimum supported Rust version (MSRV);
-2. typed Page, Target, Runtime, Accessibility, and Input commands;
-3. browser-level commands over the browser WebSocket;
-4. flat target attachment and correct `sessionId` command/event routing;
-5. arbitrary command send and named raw event subscription without waiting for regenerated bindings;
-6. `Page.startScreencast`, `Page.screencastFrame`, and prompt `Page.screencastFrameAck`;
-7. an explicit protocol-drift strategy;
-8. connection loss surfaced cleanly so Krometrail owns reconnect and target restoration; and
-9. deterministic fake-WebSocket tests plus real-browser qualification.
-
-## Evidence matrix
-
-| Gate | `cdpkit` 0.4.0 | `chromey` 2.52.0 | Minimal owned transport |
-|---|---|---|---|
-| Health / license / MSRV | MIT OR Apache-2.0; Rust 1.75. Released 2026-06-26, 8 releases since 2026-02, but only 406 total downloads, one contributor, one star: active but very young and single-maintainer. | MIT OR Apache-2.0; Rust 1.70. Released 2026-07-03, 290k total downloads, 50 stars, mostly one maintainer: active with materially more field use. | Krometrail's MIT / Rust 1.85 policy; `tokio-tungstenite` 0.30.0 itself requires Rust 1.85. Maintenance burden transfers to Krometrail. |
-| Typed required domains | Source-generated modules expose Page, Target, Runtime, Accessibility, Input, and Browser commands, including `GetFullAxTree`, `DispatchMouseEvent`, `Evaluate`, `GetVersion`, and `SetAutoAttach`. | Generated `spider_chromiumoxide_cdp` commands cover the same domains; public `Browser::execute<T: Command>` and `Page::execute<T: Command>` are typed. | Must generate a pinned, narrow contract from official protocol JSON/PDL. Hand-copying a growing command set is not acceptable. |
-| Browser-level connection | `CDP` is explicitly browser-level; typed and raw commands sent through `&CDP` omit `sessionId`. Direct browser-WebSocket and `/json/version` discovery APIs exist. | `Browser::connect` discovers `/json/version`; `Browser::execute` submits commands without a session. | Straightforward envelope routing, but discovery, limits, timeouts, close behavior, and pending-request cleanup become owned code. |
-| Flat sessions / routing | `AttachToTarget` and `SetAutoAttach` default `flatten: Some(true)` in 0.4.0. `Session`/`OwnedSession` insert `sessionId`; event listeners filter it. Source and mock tests pass, but real target ordering is unproved. | Handler initialization sets `flatten(true)` and maintains session-to-target maps. It has substantial mock and real-Chrome tests, but issue #8 documents a prior target/session ordering hang fixed in March 2026. | Full control and best observability, but Krometrail must correctly own correlation, detach races, and pending calls. |
-| Raw command | `Sender::send_raw(method, Value)` works at browser or session scope and returns `Value`. | No direct method-string API, but public, unsealed `Command` and `Method` traits allow a local generic value command. This is an adapter shim, not a first-class API. | Native by design. |
-| Raw event subscription | `Sender::event_stream::<Value>(name)` subscribes before dispatch and session-filters, but returns only `params`; there is no wildcard/full-envelope stream. Typed decode failures are logged and skipped. | `CustomEvent` supports named event subscriptions and `CdpEvent::Other`, but events pass through the generated event decoder first. Issue #5 is real protocol-drift evidence: one newly observed enum value caused WebSocket event deserialization failures until bindings changed. No wildcard/full-envelope public stream. | Can preserve `{method, sessionId, params}` before optional typed decoding and is the strongest drift boundary. |
-| Screencast / ack | Typed `StartScreencast`, `ScreencastFrame`, and `ScreencastFrameAck(i64)` signatures exist. Per-subscription channels are intentionally unbounded since 0.3.2, so the spike must prove the reader can receive, immediately ack, then hand off to Krometrail's bounded queue without unbounded buildup; enqueue failure records a capture gap. | Typed event and convenience `Page::start_screencast` / `ack_screencast` exist. Internal event listeners are also unbounded. Real sustained screencast behavior is not covered by the inspected tests. | Can make receive → ack → bounded handoff explicit, measure ack only from returned frame to ack completion, and record failed enqueue as a capture gap, at the cost of transport code. |
-| Protocol drift | Generated from the official tip-of-tree JSON, but 0.4.0 records only protocol version `1.3`, not the source commit/date. Raw commands and `Value` events reduce binding lag; provenance remains weak. | Generated PDL is checked in but published provenance is likewise not pinned. Issue #5 shows drift has broken event decoding in practice. | Pin the official `devtools-protocol` commit in generated output and keep raw envelopes authoritative; regeneration and compatibility fixtures become Krometrail responsibilities. |
-| Reconnect ownership | No transparent reconnect. `CloseReason`, `is_closed`, pending-call draining, and closed event streams give Krometrail a usable supervision signal. This matches the architecture. | Retry settings cover initial connection attempts. Runtime connection loss ends the handler; Krometrail still needs to reconstruct browser/target state. | Explicitly Krometrail-owned and easiest to model, but also easiest to get subtly wrong. |
-| Testability | Compact `connect_ws` boundary and mock-WebSocket tests cover raw send, session routing, event filtering, disconnect, timeout, and concurrency. Release CI tests only mocks; no real Chrome gate was found. | Rich fake-CDP and real-Chrome integration suites run under Xvfb in CI. The larger handler has more ordering/state behavior to understand and bypass. | Best if designed around an injected connector/duplex; highest initial test-writing cost. |
-
-## Source-level API shape
-
-`cdpkit` has the most direct fit for Krometrail's adapter boundary:
-
-```rust
-use cdpkit::{page, target, CDP, Sender};
-use futures::StreamExt;
-
-let cdp = CDP::connect_ws(browser_ws_url).await?;
-let attached = target::methods::AttachToTarget::new(target_id).send(&cdp).await?;
-let session = cdp.owned_session(attached.session_id);
-
-let mut frames = page::events::ScreencastFrame::subscribe(&session);
-page::methods::StartScreencast::new().send(&session).await?;
-while let Some(frame) = frames.next().await {
-    let ack_started = std::time::Instant::now();
-    page::methods::ScreencastFrameAck::new(frame.session_id)
-        .send(&session)
-        .await?;
-    let _ack_latency = ack_started.elapsed(); // returned frame → ack completion only
-    // Only then attempt Krometrail's bounded handoff; failed enqueue is a capture gap.
-}
-
-let raw = session
-    .send_raw("Page.getLayoutMetrics", serde_json::json!({}))
-    .await?;
-```
-
-The important limitation is equally concrete: `event_stream::<Value>("Domain.event")` gives raw event parameters for one named event, not every incoming raw envelope. The spike must not accidentally claim broader escape-hatch semantics.
-
-## Selection outcome: exact cdpkit 0.4.0
-
-### Qualification evidence
-
-The current reports and decision are decisive inputs after the trace-reconstructability repair. The prior 07b0990 reports and decision remain byte-for-byte preserved under `docs/evidence/cdp-transport/v2/historical/final-v2-07b0990/`; the earlier prior-v2 set remains under `historical/`.
-
-- `docs/evidence/cdp-transport/v2/cdpkit-linux.json` — SHA-256 `c5ed8bfab9cb829f0d1e1622755667084abc09129ed1f2928cdc5f577d3761f8`; Linux x86_64, Chrome 149.0.7827.155.
-- `docs/evidence/cdp-transport/v2/cdpkit-macos.json` — SHA-256 `7b2d7c61d61400f47281423d35ea57d51b1292cc78a95c4d7cef3118476c2264`; macOS aarch64, Chrome 149.0.7827.201, hosted run `29212145045`.
-- `docs/evidence/cdp-transport/v2/decision.json` — generated solely by `decide_from_files`; SHA-256 `dfbd51c9e7a1f8e051c173df35962bc6f443d2b5c28037e406c3a72beda6472a`.
-
-Both reports bind exact `cdpkit` 0.4.0 and Cargo checksum `c3fdb566d913b31e0014391a94c0db4ed871dbb76577dd1b2f2c5f6df158bfaa` to revision `a0e98ad6bd9c53d10385020bc43629f7ac246173`, configuration digest `sha256:06388b5f8ad042093d22408dedb8d02d5a04a9e59d485158edc533334bab956e`, source-attestation digest `sha256:96acbed658fb89a71a90107ac0bfec0ab78860e57f95a374cc9e183d672a4c5a`, browser fixture digest `sha256sum-of-ordered-fixture-files:9b42ae730d12a95772a946bf55e4838a5443b6cb4c536424570219041b6e2a68:84ba666539a996012a781637c1a894d8c7a4789cfca84661bd7cf8b79efa2e13`, and candidate-contract fixture/trace digests `sha256:622fb296e0b50bf0dc81123c5f54a797040cdc48bd6b5f9ca96167bbe87fce76` / `sha256:33ccc161726cc35f68e6a260c129a06f9050af4a616a76c8b957525f557a6e00` with 942 observations. The decision validates the complete 13-gate registry, canonical configuration, source attestation, redaction contract, and platform-labelled gates without waivers.
-
-### 1. Exact cdpkit 0.4.0
-
-The generated final5 decision selects exact `cdpkit` 0.4.0: its source API maps cleanly to Krometrail's replaceable transport adapter and leaves reconnect ownership in the right layer. The remediation harness derives candidate routing, ordering, detach, close, and rebuild assertions from one observed wire controller. Real-Chrome routing counts are derived from unique correlated command/event tokens. The sustained runs remain continuously drained RSS/counter proxies; they do not prove that cdpkit's hidden unbounded subscriber queue is bounded. Linux measured 3,601 frames in 60.015619792 seconds and macOS measured 3,566 frames in 60.012583042 seconds. In both reports the exact order is receive → ack completion → bounded handoff: ack p99/max were Linux 0.214389/0.889178 ms and macOS 0.582458/12.67025 ms, with handoff elapsed equal to the measured capture elapsed. Both runs passed the same 60-second, 1,000-frame, 10-second saturation, 100-attempt, 120-second hard-stop, ack, RSS, disconnect, redaction, and trace-reconstruction thresholds.
-
-The selection does not broaden cdpkit's API. `event_stream::<Value>(name)` preserves parameters for one named event only; it is not wildcard or full-envelope receive. The subscriber remains unbounded and queue depth remains uninspectable. Krometrail must acknowledge before its bounded handoff, own backpressure and capture-gap policy, and own reconnect/session restoration.
-
-### 2. Selection rules carried forward
-
-- **Adopt `cdpkit` behind `krometrail-cdp::transport` only if every mandatory gate passes unchanged.** A small adapter for domain errors and bounded handoff is expected; patching/forking its routing, event decoder, or lifecycle is a failure.
-- **Spike `chromey` with the same harness only if `cdpkit` fails on demonstrated real-browser lifecycle, target ordering, or sustained-capture behavior that chromey's mature handler may solve.** Adopt it only if typed commands, a local generic raw-command wrapper, named raw event subscription, and explicit reconnect ownership all pass without importing its crawling/network-policy behavior into core contracts.
-- **Go directly to a minimal owned transport if either candidate loses unknown events before a raw boundary, cannot expose reliable session routing, requires a fork, or obscures prompt ack/backpressure.** The owned fallback should use Tokio plus `tokio-tungstenite`, keep raw envelopes as the source of truth, and generate the supported typed command/event subset from a pinned official protocol revision.
-- **Do not weaken a gate to select a library.** If both libraries fail, the evidence justifies the owned cost.
-
-## Implementation constraints
-
-- `cdpkit` is unusually young and single-maintainer; pin exactly `=0.4.0` and keep the production adapter narrow and replaceable.
-- Its event subscriber is unbounded. Krometrail's bounded ingestion does not bound memory upstream of that queue; the committed RSS result is a process-level trend proxy, not queue-depth proof.
-- Generated protocol version `1.3` is not meaningful provenance by itself. The selected adapter carries forward the explicit lack of a cdpkit source revision.
-- Reconnect is a browser-session state transition, not a WebSocket retry. Krometrail must recreate discovery, attachments, domain enablement, screencast state, and gap evidence.
-- The qualification spike remains feature-gated, non-default, and not root-wired. Its exact limitations remain binding: cdpkit's named-event subscription is not wildcard or full-envelope receive, its subscriber queue is unbounded and not depth-inspectable, and it does not own transparent reconnect or target reconstruction. Production lifecycle, capture, reconnect, backpressure, recording, and gap reporting are implemented by the `krometrail-cdp` adapter and supervisor.
-
-## References
-
-- [`cdpkit` 0.4.0 on crates.io](https://crates.io/crates/cdpkit/0.4.0) — version, license, MSRV, release metadata.
-- [`cdpkit` 0.4.0 source](https://github.com/yie1d/cdpkit-rs/tree/15dd5e6d87a03517d5dc2f0b0d49efb90ea2f1ea) — inspected implementation and tests.
-- [`cdpkit::Sender` and session APIs](https://github.com/yie1d/cdpkit-rs/blob/15dd5e6d87a03517d5dc2f0b0d49efb90ea2f1ea/cdpkit/src/lib.rs) — typed/raw send, event stream, browser and session handles.
-- [`cdpkit` message routing](https://github.com/yie1d/cdpkit-rs/blob/15dd5e6d87a03517d5dc2f0b0d49efb90ea2f1ea/cdpkit/src/inner.rs) — envelope correlation, session routing, raw event params, close cleanup.
-- [`cdpkit` 0.4.0 changelog](https://github.com/yie1d/cdpkit-rs/blob/15dd5e6d87a03517d5dc2f0b0d49efb90ea2f1ea/CHANGELOG.md) — flatten defaults, unbounded channels, timeout/close changes.
-- [`chromey` 2.52.0 on crates.io](https://crates.io/crates/chromey/2.52.0) — version, license, MSRV, release metadata.
-- [`chromey` 2.52.0 source](https://github.com/spider-rs/chromey/tree/6eeca5e8) — inspected handler, protocol bindings, tests, and CI.
-- [`chromey` browser API](https://github.com/spider-rs/chromey/blob/6eeca5e8/src/browser.rs) and [page API](https://github.com/spider-rs/chromey/blob/6eeca5e8/src/page.rs) — typed execute, event listeners, screencast/ack.
-- [`chromey` issue #5](https://github.com/spider-rs/chromey/issues/5) — real event-deserialization failure from protocol drift.
-- [`chromey` PR #8](https://github.com/spider-rs/chromey/pull/8) — real target/session ordering hang and repair.
-- [`chromey` issue #4](https://github.com/spider-rs/chromey/issues/4) — typed high-level behavior drift around Runtime contexts.
-- [`tokio-tungstenite` 0.30.0](https://crates.io/crates/tokio-tungstenite/0.30.0) — current owned-transport WebSocket candidate and Rust 1.85 MSRV.
-- [Official CDP browser protocol](https://chromedevtools.github.io/devtools-protocol/tot/) and [source repository](https://github.com/ChromeDevTools/devtools-protocol) — authoritative evolving protocol definitions.

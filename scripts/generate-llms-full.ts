@@ -1,53 +1,39 @@
 /**
- * Generates llms-full.txt for the Krometrail docs site.
+ * Generates llms-full.txt from the practical Krometrail documentation.
  *
- * Reads current contributor and reference pages, strips YAML frontmatter, and writes one
- * deterministic document. Foundation documents remain separately authoritative and are
- * linked from the generated guide rather than duplicated here.
+ * The public bundle is intentionally curated around installation, use, troubleshooting,
+ * and current runtime behavior. Foundation, research, evidence archives, and contributor
+ * mechanics remain available at their own URLs without crowding an agent's usage context.
  */
 
 const HEADER = `# Krometrail Documentation
 
-> Current contributor and runtime-reference documentation for Krometrail's Rust browser-capture foundation.
+> Browser memory for coding agents: install Krometrail, use it to inspect transient browser behavior, and troubleshoot the local connection.
 
 `;
 
-const EXCLUDED_DIRS = [".vitepress", "node_modules"];
-const FOUNDATION_DOCS = ["ARCHITECTURE.md", "EVALUATION.md", "SPEC.md", "VISION.md", "VISUAL-EVIDENCE.md", "agents.md"];
+const PUBLIC_DOCS = [
+	"index.md",
+	"guide/installation.md",
+	"guide/using-krometrail.md",
+	"guide/troubleshooting.md",
+	"guide/mcp-configuration.md",
+	"reference/runtime.md",
+	"reference/configuration.md",
+	"legal/privacy.md",
+] as const;
 
 function stripFrontmatter(content: string): string {
-	// Strip YAML frontmatter: opening ---, content, closing ---
 	return content.replace(/^---\n[\s\S]*?\n---\n?/, "");
 }
 
 async function main(): Promise<void> {
 	const docsDir = new URL("../docs/", import.meta.url).pathname;
 	const outPath = new URL("../docs/public/llms-full.txt", import.meta.url).pathname;
-
-	const glob = new Bun.Glob("**/*.md");
-	const files: string[] = [];
-
-	for await (const relPath of glob.scan({ cwd: docsDir, onlyFiles: true })) {
-		// Exclude paths that start with any excluded directory
-		const parts = relPath.split("/");
-		if (parts.some((part) => EXCLUDED_DIRS.includes(part))) {
-			continue;
-		}
-		// Keep foundation documents and navigation as separate sources of truth.
-		if (FOUNDATION_DOCS.includes(relPath)) {
-			continue;
-		}
-		files.push(relPath);
-	}
-
-	// Sort for deterministic output
-	files.sort();
-
 	const sections: string[] = [];
 
-	for (const relPath of files) {
-		const fullPath = `${docsDir}${relPath}`;
-		const raw = await Bun.file(fullPath).text();
+	for (const relPath of PUBLIC_DOCS) {
+		const raw = await Bun.file(`${docsDir}${relPath}`).text();
 		const stripped = stripFrontmatter(raw).trim();
 		if (stripped.length > 0) {
 			sections.push(stripped);
@@ -59,13 +45,12 @@ async function main(): Promise<void> {
 	await Bun.write(outPath, output);
 
 	console.log(`Generated ${outPath}`);
-	console.log(`  ${files.length} files included`);
+	console.log(`  ${PUBLIC_DOCS.length} files included`);
 }
 
-// Only run main when executed directly (not imported for tests)
 if (import.meta.main) {
-	main().catch((err) => {
-		console.error("Error generating llms-full.txt:", err);
+	main().catch((error) => {
+		console.error("Error generating llms-full.txt:", error);
 		process.exit(1);
 	});
 }

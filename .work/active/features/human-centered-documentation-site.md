@@ -1,7 +1,7 @@
 ---
 id: human-centered-documentation-site
 kind: feature
-stage: implementing
+stage: review
 tags: [prose, documentation, agent-ux]
 parent: null
 depends_on: []
@@ -58,3 +58,41 @@ Consolidate duplicated setup and runtime explanations, remove internal capabilit
 - Setup claims remain exact for both Claude Code and Codex plugin commands and the standalone installer.
 - Privacy/local-first behavior and limitations remain accurate without dominating the main journey.
 - `bun run docs:build` succeeds, generated docs are current, and internal links resolve.
+
+## Editorial synthesis
+
+Three independent passes shaped the rewrite: GLM 5.2 audited information architecture, GPT-5.6 Luna focused voice and copy, and Kimi K2.7 walked the Claude Code, Codex, and standalone journeys. Their common finding was structural rather than cosmetic: the product's strongest language already exists in the vision, but the site hides it behind a contributor-first hierarchy.
+
+### Voice
+
+- Lead with the contrast: screenshots show what a page is; Krometrail preserves what it did.
+- Name recognizable failures—flicker, reversals, layout shifts, hydration flashes, focus jumps, and canvas motion—before naming artifacts or protocols.
+- Be confident about preserved evidence, but never claim perfect frame capture, automatic diagnosis, or causal proof.
+- Prefer verbs and visible behavior over implementation nouns. Avoid “registry-derived,” “composition root,” tool counts, release mechanics, and Rust identity on user surfaces.
+- Keep the local-first and capture-gap caveats near the claims they qualify rather than using them as the opening pitch.
+
+### Chosen information architecture
+
+- **Top navigation:** Install; Use with your agent; Troubleshooting; a secondary Reference menu.
+- **Guide sidebar:** Installation → Use with your agent → Troubleshooting, followed by Manual MCP setup and a clearly separated Contributor section.
+- **Reference sidebar:** Runtime commands and configuration.
+- Foundation, evaluation, evidence archives, and research remain directly addressable and authoritative, but leave the primary navigation and onboarding path.
+
+### Page responsibilities
+
+- The homepage earns interest, makes both installation paths immediately visible, and explains the normal debugging loop.
+- Installation helps the reader choose a path, run exact commands, verify activation, then progressively discloses update/removal/advanced mechanics.
+- Use with your agent supplies practical prompts, sets permission expectations, explains the evidence ladder in plain language, and closes with fix-and-verify.
+- Troubleshooting starts from observed symptoms and safe checks; it never suggests running `krometrail mcp` interactively.
+- Runtime and configuration remain compact, current-state references without source-code pointers or future-contract prose.
+
+## Implementation notes
+
+- **Execution capability:** inline GPT-5.6 authoring with read-only editorial input from GLM 5.2, GPT-5.6 Luna, and Kimi K2.7. One owner retained voice and information-architecture coherence across the site; the independent passes supplied distinct product, copy, and first-use lenses.
+- **Review weight:** standard (project default).
+- **Files changed:** rewrote `docs/index.md`, `docs/guide/installation.md`, `docs/guide/mcp-configuration.md`, `docs/reference/runtime.md`, `docs/reference/configuration.md`, and `README.md`; added `docs/guide/using-krometrail.md` and `docs/guide/troubleshooting.md`; reorganized `docs/.vitepress/config.ts`; aligned `docs/agents.md` and `docs/guide/development.md`; curated the generated agent surface through `scripts/generate-llms-full.ts` and regenerated `docs/public/llms-full.txt`.
+- **Tests added/removed:** none. `bun run docs:build` validates VitePress rendering, links, sitemap generation, and the generated agent documentation; `bash tests/distribution-static.sh` validates release, installer, and plugin documentation contracts.
+- **Verification:** the documentation build and distribution contracts pass. End-user command searches show Cargo invocation only in the explicit development guide and retained transport-evidence instructions. Primary pages no longer use implementation-first phrases or hard-coded tool counts.
+- **Simplification:** removed research and foundation documents from primary navigation; replaced the contributor-first guide with a task-ordered user journey; consolidated duplicated setup prose; removed source-code pointers, future configuration prose, registry terminology, and exact tool counts from public reference pages; reduced `llms-full.txt` from an indiscriminate repository-doc glob to eight practical usage documents.
+- **Discrepancies from design:** none. The homepage uses VitePress's home layout rather than a plain document layout to make the new hierarchy visible without introducing custom styling.
+- **Adjacent issues parked:** none.

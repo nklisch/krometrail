@@ -1,11 +1,24 @@
 ---
-title: MCP Configuration
-description: Configure Krometrail browser control over local MCP stdio.
+title: Manual MCP configuration
+description: Connect a standalone Krometrail binary to an MCP client over local standard input and output.
 ---
 
-# MCP configuration
+# Manual MCP configuration
 
-Krometrail exposes its browser-control surface through the `mcp` command and standard input/output transport. A typical MCP client entry is:
+If you installed the native Claude Code or Codex plugin, you do not need this page—the plugin already declares and manages Krometrail's MCP server.
+
+Use manual configuration when you installed the standalone `krometrail` command or your MCP client cannot load the native plugin.
+
+## Add Krometrail from the command line
+
+```bash
+claude mcp add --scope user krometrail -- krometrail mcp
+codex mcp add krometrail -- krometrail mcp
+```
+
+Restart or reload the client, then check its MCP status for a connected Krometrail server.
+
+## Generic MCP client entry
 
 ```json
 {
@@ -18,17 +31,25 @@ Krometrail exposes its browser-control surface through the `mcp` command and sta
 }
 ```
 
-The client must be able to find the `krometrail` executable. Standard output belongs exclusively to MCP JSON-RPC traffic; startup and runtime failures are reported on standard error.
+The MCP client must be able to find `krometrail` on `PATH`. The default standalone install location is `~/.local/bin/krometrail`.
 
-The server owns at most one active browser session. Call `start_browser` to launch a managed Chrome-compatible browser or `attach_browser` with an explicitly enabled local CDP endpoint. Use `stop_browser` before starting or attaching another session. Ending the MCP transport also closes a managed browser or detaches from an externally owned browser through the same bounded shutdown path.
+## Do not run `mcp` as a health check
 
-The default server exposes four lifecycle tools, 24 browser-control tools from the shared registry, the `temporal_debug_bundle` entry point, seven temporal evidence/retention tools (`list_source_frames`, `fetch_source_frames`, `generate_artifacts`, `generate_region_filmstrip`, `pin_resolved_range`, `unpin_resolved_range`, and `query_pin_state`), and `query_browser_events`. The temporal and browser-event registries generate their input schemas from the same Rust contracts as the services. Every lifecycle launch/attach request accepts optional `every_nth_frame` from 1 through 60, defaulting to 1 and remaining immutable for that browser session.
+`krometrail mcp` is a standard-input/output protocol server. It waits for an MCP client and writes protocol traffic—not a user interface—to standard output. Use these checks in a terminal instead:
 
-Temporal results use durable recording data. Tool responses can include bounded inline images and canonical resource links. The server advertises two resource templates and reads retained artifacts and source frames through `resources/read`:
+```bash
+krometrail --version
+krometrail doctor
+```
 
-- `krometrail://evidence/{session}/{target}/artifacts/{id}`
-- `krometrail://evidence/{session}/{target}/frames/{id}`
+Startup and runtime failures from the MCP server are written to standard error so they do not corrupt protocol traffic.
 
-Concrete retained resources are discovered from tool responses rather than listed up front. Page-state and framework-state capabilities remain unavailable extension points; they are not part of the default server surface.
+## What the connection gives your agent
 
-The browser boundary includes Chrome-compatible pages and explicitly debug-enabled Electron renderer processes. Electron's Node main process remains outside that boundary. Browser control and captured evidence remain local unless the connected MCP client explicitly reads a response.
+The server exposes browser lifecycle and page control, current screenshots and structured snapshots, temporal visual evidence, nearby browser events, and retained artifact/source-frame reads.
+
+One MCP server owns at most one active browser session. Stop or detach from the current session before starting or attaching another one. Ending the MCP transport closes a Krometrail-managed browser or detaches from an externally owned browser.
+
+Browser control and captured evidence stay local unless the connected agent explicitly reads a response or artifact through MCP.
+
+For practical requests, see [Use Krometrail with your agent](using-krometrail.md). For startup failures, see [Troubleshooting](troubleshooting.md).

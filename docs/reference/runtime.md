@@ -1,23 +1,48 @@
 ---
-title: Runtime reference
-description: The command surface currently shipped by the Rust Krometrail binary.
+title: Command reference
+description: Commands provided by the installed Krometrail binary.
 ---
 
-# Runtime reference
+# Command reference
 
-Krometrail ships one Rust binary and one composition root. The runtime assembles browser transport, controlled-browser capture, recording storage, and retention before dispatching a command.
+Krometrail provides four command-line entry points:
 
-## Commands
-
-| Command | Current behavior |
+| Command | What it does |
 | --- | --- |
-| `krometrail --version` | Prints the Cargo package version and exits successfully. |
-| `krometrail --help` | Prints the available command surface and exits successfully. |
-| `krometrail doctor` | Reports discovered Chrome/Chromium installations or a structured `browser_not_found` failure. It does not launch a browser. |
-| `krometrail mcp` | Serves the browser-control tool registry over MCP stdio until transport EOF or process shutdown. |
+| `krometrail --version` | Prints the installed version. |
+| `krometrail --help` | Lists the available command surface. |
+| `krometrail doctor` | Finds local Chrome and Chromium installations without launching a browser. Returns a structured `browser_not_found` error when none is available. |
+| `krometrail mcp` | Serves Krometrail to an MCP client over standard input and output until the client disconnects or the process stops. |
 
-`krometrail mcp` writes only MCP JSON-RPC traffic to standard output. It owns at most one controlled browser session and uses ownership-aware shutdown: managed browsers close, while explicitly attached browsers detach. The default server publishes 37 tools: four lifecycle tools, 24 registry-derived browser-control tools including ordered batching, `temporal_debug_bundle`, seven temporal evidence/retention tools, and `query_browser_events`.
+## `doctor`
 
-Temporal evidence is persisted by the durable recording store. Temporal tool responses can include bounded inline images and canonical resource links. The server exposes two dynamic resource templates for retained artifacts and source frames; concrete resources are read with `resources/read` using `krometrail://evidence/{session}/{target}/artifacts/{id}` or `krometrail://evidence/{session}/{target}/frames/{id}`. Page-state and framework-state remain unavailable extension capabilities, not current tools.
+Use `doctor` as the terminal health check for browser discovery:
 
-The root CLI is defined in [`src/cli.rs`](https://github.com/nklisch/krometrail/blob/main/src/cli.rs), and the full composition root is in [`src/app.rs`](https://github.com/nklisch/krometrail/blob/main/src/app.rs). See [MCP configuration](../guide/mcp-configuration.md) for a client entry and [`SPEC.md`](../SPEC.md) for the broader intended external contracts.
+```bash
+krometrail doctor
+```
+
+It does not launch a browser, change a profile, or start recording.
+
+## `mcp`
+
+An MCP client starts this command for you:
+
+```text
+krometrail mcp
+```
+
+It is not an interactive terminal command. Standard output is reserved for MCP protocol messages; diagnostics go to standard error.
+
+The MCP server gives an agent:
+
+- managed browser launch or explicit local attachment;
+- page navigation, inspection, interaction, and current screenshots;
+- continuous recording during the controlled session;
+- temporal bundles, storyboards, difference maps, filmstrips, motion history, and source frames;
+- nearby console, exception, navigation, and request metadata;
+- local retention and pinning of important intervals.
+
+The server owns at most one active browser session. A Krometrail-managed browser closes when the session or MCP transport ends; an externally owned browser is detached rather than closed.
+
+See [Manual MCP configuration](../guide/mcp-configuration.md) to connect a standalone binary.

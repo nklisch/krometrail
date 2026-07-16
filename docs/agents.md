@@ -12,13 +12,18 @@ Read these five documents first. They define Krometrail's current direction and 
 
 The foundation documents intentionally describe capabilities that are being built in stages. The current executable state is documented in [the development guide](guide/development.md) and the [runtime reference](reference/runtime.md); do not turn an intended capability into a command example until its implementation exists.
 
+## Public documentation
+
+- [Installation](guide/installation.md) — choose the Claude Code/Codex plugin or standalone binary path.
+- [Use Krometrail with your agent](guide/using-krometrail.md) — practical prompts, evidence choices, and fix-verification workflow.
+- [Troubleshooting](guide/troubleshooting.md) — plugin activation, browser discovery, MCP, permission, and storage recovery.
+- [Manual MCP configuration](guide/mcp-configuration.md) — connect a standalone binary to an MCP client.
+- [Command reference](reference/runtime.md) — the installed binary's command surface.
+- [Configuration reference](reference/configuration.md) — current environment and per-session capture settings.
+
 ## Contributor documentation
 
-- [Installation](guide/installation.md) — managed native Claude Code/Codex setup plus optional standalone binary installation.
 - [Development](guide/development.md) — Rust build, test, lint, run, release, and docs-tooling commands.
-- [MCP configuration](guide/mcp-configuration.md) — configure the current local browser-control server over MCP stdio.
-- [Runtime reference](reference/runtime.md) — the small command surface currently shipped by the binary.
-- [Configuration](reference/configuration.md) — current configuration status and the authoritative future contracts.
 - [Browser fixtures](https://github.com/nklisch/krometrail/blob/main/tests/fixtures/browser/README.md) — retained target applications and their current uses.
 
 ## Versioned technology research

@@ -2,7 +2,7 @@ import { defineConfig } from "vitepress";
 
 export default defineConfig({
 	title: "Krometrail",
-	description: "Rust foundations for local browser control and temporal visual evidence",
+	description: "Browser memory for coding agents — inspect the visual moments a screenshot misses",
 	lang: "en-US",
 	appearance: "dark",
 	lastUpdated: true,
@@ -36,13 +36,25 @@ if (typeof requestIdleCallback === 'function') {
 		],
 		["link", { rel: "icon", type: "image/svg+xml", href: "/favicon.svg" }],
 		["meta", { property: "og:type", content: "website" }],
-		["meta", { property: "og:title", content: "Krometrail — Rust browser capture foundation" }],
-		["meta", { property: "og:description", content: "Rust foundations for local browser control and temporal visual evidence" }],
+		["meta", { property: "og:title", content: "Krometrail — Browser memory for coding agents" }],
+		[
+			"meta",
+			{
+				property: "og:description",
+				content: "Catch flicker, layout jumps, reversed motion, and other transient browser bugs that disappear before the next screenshot",
+			},
+		],
 		["meta", { property: "og:image", content: "https://krometrail.dev/og-image.png" }],
 		["meta", { property: "og:url", content: "https://krometrail.dev/" }],
 		["meta", { name: "twitter:card", content: "summary_large_image" }],
-		["meta", { name: "twitter:title", content: "Krometrail — Rust browser capture foundation" }],
-		["meta", { name: "twitter:description", content: "Rust foundations for local browser control and temporal visual evidence" }],
+		["meta", { name: "twitter:title", content: "Krometrail — Browser memory for coding agents" }],
+		[
+			"meta",
+			{
+				name: "twitter:description",
+				content: "Catch the visual moments a screenshot misses",
+			},
+		],
 	],
 
 	themeConfig: {
@@ -50,44 +62,46 @@ if (typeof requestIdleCallback === 'function') {
 		siteTitle: "Krometrail",
 
 		nav: [
-			{ text: "Guide", link: "/guide/development" },
+			{ text: "Install", link: "/guide/installation" },
+			{ text: "Use with your agent", link: "/guide/using-krometrail" },
+			{ text: "Troubleshooting", link: "/guide/troubleshooting" },
 			{
-				text: "Foundation",
+				text: "Reference",
 				items: [
-					{ text: "Vision", link: "/VISION" },
-					{ text: "Specification", link: "/SPEC" },
-					{ text: "Architecture", link: "/ARCHITECTURE" },
-					{ text: "Visual Evidence", link: "/VISUAL-EVIDENCE" },
-					{ text: "Evaluation", link: "/EVALUATION" },
+					{ text: "Commands", link: "/reference/runtime" },
+					{ text: "Configuration", link: "/reference/configuration" },
+					{ text: "Manual MCP setup", link: "/guide/mcp-configuration" },
+					{ text: "Development", link: "/guide/development" },
 				],
 			},
-			{ text: "Reference", link: "/reference/runtime" },
-			{ text: "Research", link: "/research/rust-cdp-transport-2026-07" },
 		],
 
 		sidebar: {
 			"/guide/": [
 				{
-					text: "Contributor guide",
+					text: "Start here",
 					items: [
-						{ text: "Development", link: "/guide/development" },
-						{ text: "MCP configuration", link: "/guide/mcp-configuration" },
+						{ text: "Install Krometrail", link: "/guide/installation" },
+						{ text: "Use with your agent", link: "/guide/using-krometrail" },
+						{ text: "Troubleshooting", link: "/guide/troubleshooting" },
 					],
+				},
+				{
+					text: "Manual setup",
+					items: [{ text: "MCP configuration", link: "/guide/mcp-configuration" }],
+				},
+				{
+					text: "Contributors",
+					items: [{ text: "Development", link: "/guide/development" }],
 				},
 			],
 			"/reference/": [
 				{
 					text: "Reference",
 					items: [
-						{ text: "Runtime", link: "/reference/runtime" },
+						{ text: "Commands", link: "/reference/runtime" },
 						{ text: "Configuration", link: "/reference/configuration" },
 					],
-				},
-			],
-			"/research/": [
-				{
-					text: "Technology research",
-					items: [{ text: "Rust CDP transport — 2026-07", link: "/research/rust-cdp-transport-2026-07" }],
 				},
 			],
 		},

@@ -1,22 +1,26 @@
 ---
-title: Configuration
-description: Current Rust runtime configuration and intended precedence.
+title: Configuration reference
+description: Current Krometrail data, storage, profile, and capture settings.
 ---
 
-# Configuration
+# Configuration reference
 
-Krometrail currently has no user configuration file or browser-control CLI flags. MCP lifecycle tool inputs select managed launch versus explicit local attachment, profiles, initial URLs, executables, and endpoints through their generated schemas.
+Krometrail currently has no user configuration file or browser-control command-line flags. Your agent selects browser launch or local attachment, profile, initial URL, executable, and endpoint through Krometrail's MCP browser tools.
 
-Each `start_browser` and `attach_browser` MCP request also accepts the generated `every_nth_frame` field. It is an integer from 1 through 60, defaults to 1, is forwarded to CDP screencast capture, and remains immutable for that browser connection. A different stride requires a new browser session; it is reported in lifecycle and capture status.
+## Environment variables
 
-The root runtime recognizes these environment variables:
-
-| Variable | Behavior |
+| Variable | What it changes |
 | --- | --- |
-| `KROMETRAIL_DATA_DIR` | Overrides the local recording/index and managed-profile data root. |
-| `KROMETRAIL_DISK_BUDGET_BYTES` | Sets the positive global recording budget in decimal bytes. |
-| `KROMETRAIL_PROFILE_ROOT` | Overrides the managed-browser profile directory. |
+| `KROMETRAIL_DATA_DIR` | Local recording, index, and managed-profile data root. |
+| `KROMETRAIL_DISK_BUDGET_BYTES` | Positive global recording budget in decimal bytes. |
+| `KROMETRAIL_PROFILE_ROOT` | Managed-browser profile directory. |
 
-Invalid disk-budget input prevents startup with a structured error. Built-in platform data directories and the default 10 GB budget apply when variables are absent.
+When these variables are absent, Krometrail uses the platform data directory and a 10 GB disk budget. An invalid disk-budget value prevents startup and reports the failing setting.
 
-The broader intended precedence remains command-line arguments, environment variables, user configuration, then built-in defaults as defined in [`SPEC.md`](../SPEC.md) and [`ARCHITECTURE.md`](../ARCHITECTURE.md). The current executable has no browser-control CLI flags, user configuration file, external capability-selection input, or public inputs for capture format, quality, dimensions, concurrency, or logging; the MCP lifecycle request is the public capture-stride boundary.
+## Capture stride
+
+A browser start or attach request can set `every_nth_frame` from 1 through 60. It defaults to 1.
+
+This is a relative request to Chrome, not an exact frames-per-second setting. The value remains fixed for that browser session; start a new session to use another stride. Krometrail reports the requested stride separately from observed cadence and known capture gaps.
+
+Higher values intentionally sample fewer frames. They do not hide queue drops, storage failures, visibility pauses, or other known losses.

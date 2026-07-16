@@ -28,18 +28,17 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 
 `cargo fmt --all` can apply formatting when needed. The other commands compile and test all six workspace crates plus the root binary.
 
-## Run the binary
+## Run a development build
 
-Run the current executable contract with:
+Run the checkout through Cargo:
 
 ```bash
 cargo run -- --version
 cargo run -- --help
 cargo run -- doctor
-cargo run -- mcp
 ```
 
-`doctor` performs browser discovery without launching. `mcp` owns standard output for protocol traffic and serves the registry-derived browser-control tools until transport EOF or shutdown. It uses the same full runtime composition as controlled-browser capture and recording.
+`doctor` performs browser discovery without launching. For MCP development, configure a client to launch `cargo run -- mcp`; do not use it as an interactive health check. The command reserves standard output for protocol traffic and waits for the client to send requests.
 
 ## Documentation and fixtures
 
