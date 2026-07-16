@@ -1,0 +1,33 @@
+---
+id: gate-docs-correct-high-dpi-evidence-claim
+kind: story
+stage: implementing
+tags: [documentation, testing, browser]
+parent: null
+depends_on: []
+release_binding: 1.0.0
+gate_origin: docs
+created: 2026-07-15
+updated: 2026-07-15
+---
+
+# Correct the cross-platform high-DPI evidence claim
+
+## Drift category
+Contradictory qualification documentation
+
+## Location
+- Doc: `docs/evidence/cross-platform-smoke/v1/README.md:33-34,119-122`
+- Contradicting evidence: absent `macos-chrome-high-dpi.json` and the README's recorded failed `>= 1.5` observation
+
+## Current doc text
+
+> Default-DPI and high-DPI macOS configurations are both exercised; both force device scale.
+
+## Contradiction
+
+A high-DPI attempt ran, but production metadata observed scale one, the decisive assertion failed, and no passing high-DPI artifact exists.
+
+## Required edit
+
+Describe attempted execution separately from passing evidence, retain the explicit absent-artifact/non-claim boundary, and regenerate public documentation with `bun run docs:build`. Do not weaken the high-DPI threshold or block the local-tool release on absent evidence.
