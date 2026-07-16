@@ -1,0 +1,16 @@
+{
+  "name": "krometrail",
+  "description": "Krometrail browser control and temporal visual evidence for AI agents.",
+  "owner": {
+    "name": "nklisch"
+  },
+  "plugins": [
+    {
+      "name": "krometrail",
+      "source": "./plugin",
+      "description": "Control a local Chromium browser and inspect transient behavior with source-linked temporal visual evidence.",
+      "category": "development",
+      "version": "1.0.0"
+    }
+  ]
+}
