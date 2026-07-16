@@ -2,15 +2,15 @@
 
 Krometrail is a Rust 2024 workspace for local browser control and temporal visual evidence. The binary exposes `--version`, `--help`, browser-discovery `doctor`, and the `mcp` stdio server. Browser transport, controlled capture, durable recording storage, 24 registry-derived control operations, temporal investigation and retention tools, browser-event queries, artifact/source-frame resources, and per-session `every_nth_frame` are implemented; page-state and framework-state capabilities remain future extension points.
 
-## Prepublic Development Status
+## Stable Release Contract
 
-Krometrail is unreleased and has no external users. No Krometrail Rust crate has been published, and the only realistic consumers today are development agents operating in this repository.
+Krometrail v1.0.0 is a published stable binary and agent-plugin surface. The workspace crates are not separately published, but users may depend on the executable, installer and asset names, MCP tools/schemas/resources, retained evidence, and plugin package.
 
-- Do not preserve backward compatibility, deprecation paths, legacy APIs, serialized shapes, schema versions, or migration steps solely for hypothetical users or unpublished crates.
-- Prefer the cleanest current design and make breaking changes directly when they improve it. Remove superseded surfaces instead of carrying compatibility shims.
-- Treat foundation-document contracts as intended product design, not as obligations to previously shipped consumers.
-- Preserve compatibility only when a concrete current repository dependency, checked-in fixture, or explicitly retained local-data requirement is identified. State that dependency specifically rather than assuming one exists.
-- Continue validating inputs, invariants, privacy, and failure behavior rigorously; prepublic status removes compatibility burden, not correctness requirements.
+- Treat observable 1.x behavior and persisted formats as compatibility contracts. Make breaking changes through an explicit major-version boundary; use versioned migrations or clear incompatibility failures when retained user data is affected.
+- Keep unpublished Rust internals clean and direct. Do not add compatibility shims for private types or hypothetical crate consumers, but do not use crate privacy to dismiss externally observable behavior.
+- Keep foundation documents current with the supported contract. Git carries history; current docs should not preserve superseded runtime instructions.
+- Name the concrete consumer or retained-data boundary when compatibility affects a design decision, and keep compatibility work proportional to that real dependency.
+- Continue validating inputs, invariants, privacy, and failure behavior rigorously; stable status adds compatibility obligations without weakening correctness requirements.
 
 ## Project Structure
 
