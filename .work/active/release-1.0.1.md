@@ -34,3 +34,4 @@ No archived stubs were unbound. The operator confirmed the complete post-v1.0.0 
 - **gate-security** (2026-07-16) — 1 Medium release hardening item deferred to backlog by operator; 1 Low ambient finding already tracked as `gate-security-redact-nested-browser-event-secrets`; no Critical or High findings.
 - **gate-tests** (2026-07-16) — 2 release-relevant gaps (1 High, 1 Medium), both fixed and verified: ordinary CI now runs the hermetic bootstrap suite, which covers all supported platform mappings and unsupported-host failures.
 - **gate-cruft** (2026-07-16) — no findings after Rust warnings, shell reachability, release-helper, plugin packaging, test-value, comments, compatibility, and validation-layer inspection.
+- **gate-docs** (2026-07-16) — no rolling-foundation, README, changelog, plugin-skill, pattern-reference, generated-file, or doc-placement drift.
