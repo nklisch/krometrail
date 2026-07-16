@@ -112,7 +112,7 @@ codex plugin remove krometrail@krometrail
 codex plugin add krometrail@krometrail
 ```
 
-Substitute `nklisch-skills` when that is the registered marketplace. The next MCP activation installs the exact new binary when needed; there is no background poll or independent `latest` lookup.
+Substitute `nklisch-skills` when that is the registered marketplace. Claude Code can also auto-update an operator-enabled marketplace and its installed plugins after startup; enable or disable that through Claude's plugin manager or marketplace settings. Krometrail itself does not change that setting. After a plugin update, the next MCP activation installs the exact new binary when needed. Codex updates remain explicit with the native commands above. The managed launcher performs no background poll or independent `latest` lookup.
 
 The standalone binary installer remains safe to rerun and validates the new candidate before replacement:
 

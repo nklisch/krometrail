@@ -1,7 +1,7 @@
 ---
 id: plugin-managed-binary-bootstrap
 kind: feature
-stage: implementing
+stage: review
 tags: [distribution, mcp, security]
 parent: null
 depends_on: [agent-plugin-distribution]
@@ -57,12 +57,12 @@ This approach was chosen over a SessionStart hook, which may run after MCP start
 The installer accepts no caller-selected version or destination: both come from package-controlled inputs. It maps supported host/architecture pairs to stable release assets; performs bounded manual HTTPS redirects through an allowlist; rejects malformed or duplicate checksum entries; validates private user-owned non-symlink directories; executes the candidate's exact `--version`; and atomically publishes with private permissions. Concurrent installers may race only by publishing independently verified identical artifacts.
 
 **Acceptance criteria:**
-- [ ] A plugin with no system `krometrail` installs and starts its exact managed release on first MCP activation.
-- [ ] A matching managed binary starts with no network access or mutation.
-- [ ] A changed plugin version installs/selects that version without replacing an older version directory or touching a standalone binary.
-- [ ] Failed downloads, checksums, identity checks, unsafe paths, unsupported hosts, and missing prerequisites fail before MCP execution and preserve prior versions.
-- [ ] Bootstrap emits no stdout; successful execution presents the normal MCP 2025-06-18 tools/resources.
-- [ ] Claude uses native root/data placeholders; Codex loads the direct-map config and resolves its relative cwd inside the plugin.
+- [x] A plugin with no system `krometrail` installs and starts its exact managed release on first MCP activation.
+- [x] A matching managed binary starts with no network access or mutation.
+- [x] A changed plugin version installs/selects that version without replacing an older version directory or touching a standalone binary.
+- [x] Failed downloads, checksums, identity checks, unsafe paths, unsupported hosts, and missing prerequisites fail before MCP execution and preserve prior versions.
+- [x] Bootstrap emits no stdout; successful execution presents the normal MCP 2025-06-18 tools/resources.
+- [x] Claude uses native root/data placeholders; Codex loads the direct-map config and resolves its relative cwd inside the plugin.
 
 ### 2. Release-version synchronization
 
@@ -73,10 +73,10 @@ The installer accepts no caller-selected version or destination: both come from 
 Extend the Cargo-authoritative release transaction so a Krometrail bump derives all plugin version metadata from the root package version, validates each file began at the current value, rolls every derived file back if release checks fail, and stages them in the release commit. Non-Krometrail fixture repositories keep the helper's generic Cargo-only behavior.
 
 **Acceptance criteria:**
-- [ ] One patch prepare changes Cargo root/workspace/lock plus both manifests, both first-party catalog entries, and `plugin/version` to the same value.
-- [ ] Dry-run changes nothing; a failed prepare restores every source and derived file.
-- [ ] Release mode stages all version-bearing files before the immutable tag is created.
-- [ ] Static contracts reject any Cargo/plugin/catalog/launcher version drift.
+- [x] One patch prepare changes Cargo root/workspace/lock plus both manifests, both first-party catalog entries, and `plugin/version` to the same value.
+- [x] Dry-run changes nothing; a failed prepare restores every source and derived file.
+- [x] Release mode stages all version-bearing files before the immutable tag is created.
+- [x] Static contracts reject any Cargo/plugin/catalog/launcher version drift.
 
 ### 3. Lifecycle qualification and operator guidance
 
@@ -87,11 +87,11 @@ Extend the Cargo-authoritative release transaction so a Krometrail bump derives 
 Add hermetic installer/launcher fixtures for cold install, warm no-network start, version transition, concurrency, and failure preservation. The opt-in native smoke installs the plugin into isolated Claude/Codex homes, invokes each installed MCP declaration rather than a separately installed binary, and verifies tool/resource discovery. Documentation distinguishes automatic managed synchronization from native plugin marketplace update policy and standalone installer updates.
 
 **Acceptance criteria:**
-- [ ] Hermetic fixtures cover every material failure boundary without network, Chrome, or model calls.
-- [ ] Isolated Claude and Codex plugin installs bootstrap their managed binary and complete MCP discovery with no binary pre-seeded on PATH.
-- [ ] Claude auto-update is described as operator opt-in for third-party marketplaces; Codex update behavior uses its native supported lifecycle.
-- [ ] Plugin uninstall/removal guidance states whether managed data is automatically deleted or requires explicit cleanup on each harness.
-- [ ] Direct binary users retain the checksum-verifying installer and manual rerun update path.
+- [x] Hermetic fixtures cover every material failure boundary without network, Chrome, or model calls.
+- [x] Isolated Claude and Codex plugin installs bootstrap their managed binary and complete MCP discovery with no binary pre-seeded on PATH.
+- [x] Claude auto-update is described as operator opt-in for third-party marketplaces; Codex update behavior uses its native supported lifecycle.
+- [x] Plugin uninstall/removal guidance states whether managed data is automatically deleted or requires explicit cleanup on each harness.
+- [x] Direct binary users retain the checksum-verifying installer and manual rerun update path.
 
 ## Implementation order
 
@@ -117,3 +117,7 @@ Add hermetic installer/launcher fixtures for cold install, warm no-network start
 - Automatic startup installation is a higher-trust network boundary. Exact version pinning, checksums, redirect allowlisting, identity execution, and private atomic publication are mandatory; no fallback may weaken them.
 - Codex does not document MCP `PLUGIN_ROOT` substitution. Its config must rely only on the loader's tested plugin-relative `cwd` normalization.
 - Offline first activation cannot succeed without a cached managed binary. The error must say that explicitly and direct users to the standalone installer or a later retry; it must not claim the plugin is ready.
+
+## Implementation outcome
+
+The package-owned launcher and hardened installer now make native plugin activation sufficient on supported POSIX hosts while leaving standalone installations untouched. Cargo-derived release synchronization, fault-injected lifecycle fixtures, native Claude/Codex discovery, offline warm start, update layout, data ownership, operator guidance, generated docs, and the full Rust/distribution gates are verified.

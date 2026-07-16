@@ -115,10 +115,12 @@ codex plugin remove krometrail@krometrail
 codex plugin add krometrail@krometrail
 ```
 
-For the sibling marketplace, substitute `nklisch-skills` as the marketplace name. On the next MCP
-activation, a new plugin version verifies and installs its exact matching binary alongside the prior
-managed version. Krometrail never polls `latest`, never updates during a warm start, and never changes
-an independently installed CLI.
+For the sibling marketplace, substitute `nklisch-skills` as the marketplace name. Claude Code can
+also auto-update a marketplace and its installed plugins after startup when the operator enables that
+marketplace setting; Krometrail does not enable it. Codex updates remain explicit. On the next MCP
+activation after a plugin change, the new package verifies and installs its exact matching binary
+alongside the prior managed version. Krometrail never polls `latest`, never updates during a warm
+start, and never changes an independently installed CLI.
 
 Remove native plugin state with the matching lifecycle:
 
