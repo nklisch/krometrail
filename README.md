@@ -34,25 +34,41 @@ The Rust workspace is the product runtime. The browser fixtures are test applica
 
 ## Installation
 
-No Rust GitHub release has been published yet. The public POSIX installer is
-intentionally guarded: it rejects the preserved `v0.2.20` TypeScript/DAP
-release and every older version, so it cannot present the legacy runtime as a
-Rust installation.
+### Binary
 
-For current use, build and install the Rust binary from source:
+The public installer selects the current Linux or macOS x64/arm64 release asset, verifies `checksums.txt`, validates the candidate's exact version identity, and replaces an existing binary atomically:
+
+```bash
+curl -fsSL https://krometrail.dev/install.sh | sh
+krometrail --version
+krometrail doctor
+```
+
+The stable `v1.0.0` release and its five assets are published at [GitHub Releases](https://github.com/nklisch/krometrail/releases/tag/v1.0.0). Linux assets are statically linked musl binaries. Windows remains a best-effort direct-download `.exe` and is not supported by the POSIX installer.
+
+For a source build instead:
 
 ```bash
 bash scripts/dev-install.sh
 ```
 
-Linux x64 and arm64 release assets will be statically linked musl binaries when
-the first post-cutoff Rust release is published. The public asset names remain
-`krometrail-linux-x64`, `krometrail-linux-arm64`, `krometrail-darwin-x64`, and
-`krometrail-darwin-arm64`. Windows remains a best-effort direct-download
-artifact and is not supported by the installer.
+### Claude Code and Codex plugin
 
-See the [full installation guide](https://krometrail.dev/guide/installation)
-for the current source-install path and future release behavior.
+The native plugin provides the shared Krometrail skill and configures the local stdio MCP server as `krometrail mcp`:
+
+```bash
+# Claude Code
+claude plugin marketplace add nklisch/krometrail --scope user
+claude plugin install krometrail@krometrail --scope user
+
+# Codex
+codex plugin marketplace add nklisch/krometrail
+codex plugin add krometrail@krometrail
+```
+
+Plugin installation does not install the executable. Install and verify the binary separately, then restart or reload the harness so it can activate the MCP server. The skill explains how to choose current screenshots, structured snapshots, temporal bundles, storyboards, difference maps, region filmstrips, motion history, source frames, and browser events without imposing one debugging workflow.
+
+See the [full installation guide](https://krometrail.dev/guide/installation) for update, removal, alternate marketplace, and activation details.
 
 ## Development
 

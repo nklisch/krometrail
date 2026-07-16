@@ -33,7 +33,7 @@ separate facts. Never download or install the executable merely because this ski
 | Where did pixels change? | difference map; it shows location and accumulation, not cause |
 | How did one small area evolve? | `generate_region_filmstrip` with a declared fixed region |
 | Was there repeated movement or broad oscillation? | motion-history artifact; it shows accumulated recent change, not inherent direction |
-| What exactly was retained? | `list_source_frames`, `fetch_source_frames`, or `retrieve_source_frame` |
+| What exactly was retained? | `list_source_frames`, `fetch_source_frames`, or the source-frame MCP resource links returned in evidence |
 | Did console, exception, network, or navigation evidence coincide? | compact events in a debug bundle or detailed `query_browser_events` |
 | Will evidence need to survive eviction during a longer investigation? | `pin_resolved_range`, `query_pin_state`, then `unpin_resolved_range` when protection is no longer needed |
 
@@ -68,8 +68,9 @@ references cannot represent the surface.
 ### Inspect time
 
 - Compact investigation: `temporal_debug_bundle`
-- Artifact generation/read: `generate_artifacts`, `generate_region_filmstrip`, `retrieve_artifact`
-- Source detail: `list_source_frames`, `fetch_source_frames`, `retrieve_source_frame`
+- Artifact generation: `generate_artifacts`, `generate_region_filmstrip`
+- Source detail: `list_source_frames`, `fetch_source_frames`
+- Full artifact/source reads: `krometrail://evidence/...` MCP resource links returned by tools
 - Retention: `pin_resolved_range`, `unpin_resolved_range`, `query_pin_state`
 - Correlated context: `query_browser_events`
 

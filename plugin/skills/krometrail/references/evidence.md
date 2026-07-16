@@ -64,10 +64,9 @@ frame rather than relying on the inline preview.
 
 Choose the least detail that answers the question, then drill down only where uncertainty remains:
 
-- `retrieve_artifact` reads one generated output by scoped evidence identity.
+- Artifact and exact source-frame reads use the `krometrail://evidence/...` MCP resource links returned by tools. They are resource reads, not separate tool calls.
 - `list_source_frames` shows ordered retained frame metadata and availability for a resolved range.
 - `fetch_source_frames` returns a selected batch.
-- `retrieve_source_frame` reads one exact retained frame.
 - `generate_region_filmstrip` isolates a declared region without requiring a full-frame artifact to
   make fine detail legible.
 - `query_browser_events` provides more chronological event detail than the compact bundle selection.

@@ -56,18 +56,14 @@ bun run docs:preview
 
 ## Release preparation
 
-No Rust GitHub release has been published yet; current Rust use is source-build
-only. When the first post-cutoff Rust release is ready, the root `Cargo.toml`
-will own the product version. The Bun release helper updates Cargo metadata,
-runs the Rust quality gate, and creates the repository release commit/tag/push
-workflow:
+Stable Rust releases are published from the root `Cargo.toml`, the sole product-version authority. The Bun release helper updates Cargo metadata, runs the Rust quality gate, and creates the repository release commit/tag/push workflow:
 
 ```bash
 bun scripts/bump-version.ts patch
 # minor, major, or an explicit x.y.z version are also accepted
 ```
 
-GitHub Actions builds and checksums these stable asset names. The Linux rows use the pinned `houseabsolute/actions-rust-cross` action with cross 0.2.5, digest-pinned toolchain images in `Cross.toml`, and fixed musl targets; each matrix artifact must run `--version` in its matching architecture before attestation and upload. The arm64 smoke gate uses explicit QEMU emulation on the x86_64 Linux runner.
+GitHub Actions builds and checksums these stable asset names. The Linux rows use the pinned `houseabsolute/actions-rust-cross` action with the `v0.2.5` cross tag, digest-pinned toolchain images in `Cross.toml`, and fixed musl targets; each matrix artifact must run `--version` in its matching architecture before attestation and upload. The arm64 smoke gate uses explicit QEMU emulation on the x86_64 Linux runner.
 
 The release matrix builds and checksums these stable asset names:
 
@@ -77,4 +73,4 @@ The release matrix builds and checksums these stable asset names:
 - `krometrail-darwin-arm64`
 - `krometrail-windows-x64.exe`
 
-The public installer is guarded until that post-cutoff release exists: it rejects the preserved `v0.2.20` TypeScript/DAP release before downloading it. See the [installation guide](installation.md) for the current source-install path. Use `scripts/dev-install.sh` to install a local host release build into `~/.local/bin`.
+The public installer rejects the preserved `v0.2.20` TypeScript/DAP release and older versions before downloading. Stable `v1.0.0` assets, checksums, and build-provenance attestations are published. See the [installation guide](installation.md) for binary and native agent-plugin paths. Use `scripts/dev-install.sh` to install a local host release build into `~/.local/bin`.

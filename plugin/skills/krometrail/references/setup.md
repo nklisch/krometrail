@@ -115,7 +115,7 @@ claude plugin update krometrail@krometrail
 
 # Codex: refresh the catalog, then reinstall if a newer plugin is available
 codex plugin marketplace upgrade krometrail
-codex plugin remove krometrail
+codex plugin remove krometrail@krometrail
 codex plugin add krometrail@krometrail
 ```
 
@@ -127,7 +127,7 @@ Remove native state with the matching lifecycle:
 claude plugin uninstall krometrail@krometrail --scope user
 claude plugin marketplace remove krometrail --scope user
 
-codex plugin remove krometrail
+codex plugin remove krometrail@krometrail
 codex plugin marketplace remove krometrail
 ```
 
