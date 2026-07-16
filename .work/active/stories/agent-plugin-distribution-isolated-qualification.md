@@ -26,6 +26,6 @@ Add static package contracts, opt-in native Claude/Codex install/remove smoke co
 
 - Added `tests/plugin-static.sh` and wired it into the ordinary distribution contract gate.
 - Added opt-in `tests/plugin-install-smoke.sh` using isolated Claude/Codex homes and the published v1.0.0 installer.
-- The smoke verified checksum/identity installation, MCP 2025-06-18 initialization, 37 discovered tools, artifact/source resource templates, complete skill/MCP materialization, and native removal in both harnesses without launching Chrome or a model.
+- The smoke verified checksum/identity installation, MCP 2025-06-18 initialization, 37 discovered tools, artifact/source resource templates, Claude component inventory, Codex model-visible skill discovery, complete skill/MCP materialization, and native removal in both harnesses without launching Chrome or a model.
 - Updated README and installation/development guides from pre-release claims to the published binary and native plugin lifecycle; regenerated `docs/public/llms-full.txt`.
 - Verified plugin/marketplace JSON, Claude native validation, open skill validation, shell syntax/static contracts, documentation build, and isolated install/remove lifecycle.

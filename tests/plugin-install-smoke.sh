@@ -116,6 +116,8 @@ claude_path="$(jq -r '.[] | select(.id == "krometrail@krometrail") | .installPat
 [[ -f "$claude_path/.mcp.json" ]] || fail "Claude install omitted the MCP declaration"
 jq -e '.[] | select(.id == "krometrail@krometrail") | .mcpServers.krometrail.command == "krometrail"' \
   "$STATE/claude-list.json" >/dev/null || fail "Claude did not load the direct MCP command"
+HOME="$CLAUDE_HOME" claude plugin details krometrail@krometrail >"$STATE/claude-details.txt"
+grep -Eq 'Skills \(1\).*krometrail' "$STATE/claude-details.txt" || fail "Claude did not discover the Krometrail skill"
 HOME="$CLAUDE_HOME" claude plugin uninstall krometrail@krometrail --scope user >/dev/null
 HOME="$CLAUDE_HOME" claude plugin marketplace remove krometrail --scope user >/dev/null
 HOME="$CLAUDE_HOME" claude plugin list --json | jq -e 'all(.[]; .id != "krometrail@krometrail")' >/dev/null || \
@@ -131,6 +133,8 @@ codex_path="$(jq -r '.installedPath' "$STATE/codex-add.json")"
 CODEX_HOME="$CODEX_HOME_DIR" codex plugin list --json >"$STATE/codex-list.json"
 jq -e '.installed[] | select(.pluginId == "krometrail@krometrail" and .enabled == true)' \
   "$STATE/codex-list.json" >/dev/null || fail "Codex did not enable the installed plugin"
+CODEX_HOME="$CODEX_HOME_DIR" codex debug prompt-input 'probe skills' >"$STATE/codex-prompt.json"
+grep -Fq 'krometrail:krometrail' "$STATE/codex-prompt.json" || fail "Codex did not expose the Krometrail skill to the model"
 CODEX_HOME="$CODEX_HOME_DIR" codex plugin remove krometrail@krometrail >/dev/null
 CODEX_HOME="$CODEX_HOME_DIR" codex plugin marketplace remove krometrail >/dev/null
 CODEX_HOME="$CODEX_HOME_DIR" codex plugin list --json | \
