@@ -579,7 +579,7 @@ mod tests {
             atomic::{AtomicUsize, Ordering},
             mpsc as std_mpsc,
         },
-        task::{Context, Poll, Wake, Waker},
+        task::{Context, Poll},
         thread::ThreadId,
     };
 
@@ -590,12 +590,6 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-
-    struct NoopWaker;
-
-    impl Wake for NoopWaker {
-        fn wake(self: Arc<Self>) {}
-    }
 
     fn test_frame(session_id: SessionId, ordinal: u64) -> EncodedFrame {
         EncodedFrame::new(
@@ -751,8 +745,7 @@ mod tests {
         let mut first = Box::pin(sink.append_indexable(test_frame(session_id, 1)));
         let mut second = Box::pin(sink.append_indexable(test_frame(session_id, 2)));
         let mut cancelled = Box::pin(sink.append_indexable(test_frame(session_id, 3)));
-        let waker = Waker::from(Arc::new(NoopWaker));
-        let mut context = Context::from_waker(&waker);
+        let mut context = Context::from_waker(std::task::Waker::noop());
 
         assert!(matches!(first.as_mut().poll(&mut context), Poll::Pending));
         let worker_thread = entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();

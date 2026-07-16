@@ -75,23 +75,14 @@ mod tests {
             Arc, Mutex,
             atomic::{AtomicU64, Ordering},
         },
-        task::{Context, Poll, Wake, Waker},
+        task::{Context, Poll},
         time::{Duration, SystemTime},
     };
 
     const UUID: &str = "123e4567-e89b-12d3-a456-426614174000";
 
-    struct NoopWaker;
-
-    impl Wake for NoopWaker {
-        fn wake(self: Arc<Self>) {}
-
-        fn wake_by_ref(self: &Arc<Self>) {}
-    }
-
     fn block_on<T>(future: PortFuture<'_, T>) -> T {
-        let waker = Waker::from(Arc::new(NoopWaker));
-        let mut context = Context::from_waker(&waker);
+        let mut context = Context::from_waker(std::task::Waker::noop());
         let mut future = future;
         loop {
             match Pin::new(&mut future).poll(&mut context) {

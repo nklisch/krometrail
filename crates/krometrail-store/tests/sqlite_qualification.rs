@@ -1,8 +1,7 @@
 use std::{
     future::Future,
     pin::Pin,
-    sync::Arc,
-    task::{Context, Poll, Wake, Waker},
+    task::{Context, Poll},
     time::{Duration, Instant},
 };
 
@@ -15,12 +14,6 @@ use krometrail_store::{IndexStoreConfig, SqliteIndex};
 use rusqlite::Connection;
 use tempfile::TempDir;
 use uuid::Uuid;
-
-struct NoopWaker;
-
-impl Wake for NoopWaker {
-    fn wake(self: Arc<Self>) {}
-}
 
 fn open(directory: &TempDir, timeout: Duration) -> (std::path::PathBuf, SqliteIndex) {
     let path = directory.path().join("index.sqlite3");
@@ -84,8 +77,7 @@ fn unpolled_operations_do_nothing_and_polled_transactions_finish_or_roll_back() 
     assert_eq!(count, 0);
     drop(connection);
 
-    let waker = Waker::from(Arc::new(NoopWaker));
-    let mut context = Context::from_waker(&waker);
+    let mut context = Context::from_waker(std::task::Waker::noop());
     let mut completed = index.append(observation(5));
     assert!(matches!(
         Pin::new(&mut completed).poll(&mut context),
