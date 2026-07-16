@@ -77,8 +77,9 @@ The plugin declares this stdio server:
 ```
 
 Restart or reload the harness after installing the binary or changing plugin state. Confirm that the
-Krometrail tool list includes browser lifecycle, observation/control, and temporal evidence tools.
-Do not run `krometrail mcp` in an ordinary terminal as a health command; it is a stdio protocol server
+Krometrail tool list includes browser lifecycle, observation/control, and temporal evidence tools,
+and that the `temporal-artifact` and `temporal-source-frame` resource templates are available. Do not
+run `krometrail mcp` in an ordinary terminal as a health command; it is a stdio protocol server
 and waits for an MCP client.
 
 If native plugin MCP loading is unavailable, configure the same direct command through the harness's

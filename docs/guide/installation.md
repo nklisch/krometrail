@@ -84,7 +84,7 @@ The plugin declares one local stdio server:
 }
 ```
 
-After the binary and plugin are installed, restart or reload Claude Code or Codex. Confirm that Krometrail browser lifecycle, observation/control, temporal evidence, and browser-event tools are visible. `krometrail mcp` is a protocol server, not an interactive health command; use `krometrail --version` and `krometrail doctor` for terminal checks.
+After the binary and plugin are installed, restart or reload Claude Code or Codex. Confirm that Krometrail browser lifecycle, observation/control, temporal evidence, and browser-event tools are visible, together with the `temporal-artifact` and `temporal-source-frame` resource templates. `krometrail mcp` is a protocol server, not an interactive health command; use `krometrail --version` and `krometrail doctor` for terminal checks.
 
 The plugin intentionally does not auto-allow all browser-control tools. Harness and operator permission policy remains authoritative.
 

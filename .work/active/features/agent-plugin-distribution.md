@@ -1,7 +1,7 @@
 ---
 id: agent-plugin-distribution
 kind: feature
-stage: review
+stage: done
 tags: [distribution, mcp, documentation]
 parent: null
 depends_on: []
@@ -139,3 +139,9 @@ Static checks bind package identity, current descriptions, pointers, MCP command
 - Corrected stale post-release installer and documentation language and regenerated `docs/public/llms-full.txt`.
 - Verification: Claude plugin/marketplace validator; open skill validator; plugin/distribution shell contracts; isolated Claude/Codex install/remove; MCP initialize, 37-tool discovery, and two resource templates; v1.0.0 checksum/identity installer; VitePress build; complete locked Rust fmt/check/test/clippy gate.
 - Final egress order after review: push Krometrail, verify sibling remote installs resolve 1.0.0, then publish the sibling branch.
+
+## Review decision
+
+**Approved — standard weight, one independent GPT-5.5 pass.** The reviewer found no material blockers across native schemas, source identities, MCP activation, current registry accuracy, evidence semantics, installer safety, lifecycle tests, release docs, or sibling catalog parity.
+
+One non-blocking documentation suggestion was accepted: setup verification now names the `temporal-artifact` and `temporal-source-frame` resource templates in addition to the tool list. Per standard policy, the accepted suggestion is verified locally without a second independent pass.
