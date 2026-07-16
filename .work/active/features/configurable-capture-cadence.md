@@ -1,7 +1,7 @@
 ---
 id: configurable-capture-cadence
 kind: feature
-stage: review
+stage: done
 tags: [browser, agent-ux, visual, testing]
 parent: null
 depends_on: []
@@ -393,3 +393,7 @@ are verified. The feature is ready for integrated review.
   advisory review is not required for this bounded prepublic contract change.
 - **Scope guard**: implementation must not touch `.work/bin/work-view`, add a product command, edit
   `docs/public/llms-full.txt`, or regenerate evaluation artifacts in this design commit.
+
+## Review decision
+
+**Approved.** An independent GPT-5.5 standard integrated review found no material blockers or advisories. It verified the single `EveryNthFrame` authority and exact `1..=60` bounds/default; launch and attach forwarding; immutable session, dynamic-target, and reconnect behavior; JPEG/PNG CDP parameters; status/event consistency; generated MCP rejection before connector invocation; manifest provenance and digest binding; generated schema/sample exactness; and the absence of parallel settings, compatibility paths, dynamic mutation, or stride-derived gap semantics. Rust 1.85 default and `qualification-support` formatting, check, test, and Clippy gates pass. No fix or re-review was needed. The feature advances to `done`.
