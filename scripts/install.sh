@@ -56,7 +56,7 @@ Usage:
   curl -fsSL https://krometrail.dev/install.sh | sh -s -- [OPTIONS]
 
 Options:
-  --version VERSION        Install a specific post-cutoff version (e.g. v0.2.21)
+  --version VERSION        Install a specific current version (e.g. v1.0.0)
   --install-dir DIR        Install to DIR (default: ~/.local/bin)
   --no-modify-path         Don't offer to modify shell PATH
   -h, --help               Show this help
@@ -244,7 +244,7 @@ reject_legacy_release() {
 	fi
 	if is_legacy_release_version "$VERSION"; then
 		err "Release ${VERSION} is blocked: v${LEGACY_RELEASE_CUTOFF} is the immutable legacy TypeScript/DAP boundary."
-		err "No Rust GitHub release newer than v${LEGACY_RELEASE_CUTOFF} is available yet; build from source instead."
+		err "Choose a release newer than v${LEGACY_RELEASE_CUTOFF}, or build from source instead."
 		exit 1
 	fi
 }

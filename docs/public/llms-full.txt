@@ -880,7 +880,7 @@ cargo run -- mcp
 
 ## Start here
 
-- [Installation guide](guide/installation) — current source installation and guarded future release installs.
+- [Installation guide](guide/installation) — verified binary installation plus native Claude Code and Codex plugin setup.
 - [Development guide](guide/development) — build, test, lint, run, release, and docs tooling.
 - [Documentation navigation](agents) — source-of-truth order and current contributor pages.
 - [Runtime reference](reference/runtime) — the current command contract.

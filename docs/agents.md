@@ -14,7 +14,7 @@ The foundation documents intentionally describe capabilities that are being buil
 
 ## Contributor documentation
 
-- [Installation](guide/installation.md) — current source installation and guarded future release installs.
+- [Installation](guide/installation.md) — verified binary installation plus native Claude Code and Codex plugin setup.
 - [Development](guide/development.md) — Rust build, test, lint, run, release, and docs-tooling commands.
 - [MCP configuration](guide/mcp-configuration.md) — configure the current local browser-control server over MCP stdio.
 - [Runtime reference](reference/runtime.md) — the small command surface currently shipped by the binary.
