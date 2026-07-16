@@ -267,4 +267,5 @@ updated: 2026-07-15
 ## Gate runs
 
 - **gate-security** (2026-07-15) — 6 accepted findings: 0 critical, 1 high, 3 medium, 2 low. Four release-bound items created; two defense-in-depth items parked. One proposed signed-manifest requirement was not emitted because GitHub release HTTPS, immutable tag verification, checksums, and existing build-provenance attestations already provide a proportional local-tool release boundary; mutable privileged action refs are tracked separately as the material supply-chain issue.
-- Remaining configured gates pending: tests, cruft, docs, patterns.
+- **gate-tests** (2026-07-15) — 3 accepted findings: 0 critical, 1 high, 1 medium, 1 low. Two release-bound test items created and one ambient cleanup parked. The known absent macOS high-DPI evidence was not duplicated: it is already tracked by the unfinished, unbound platform-evidence lane and is explicitly not a 1.0 release prerequisite.
+- Remaining configured gates pending: cruft, docs, patterns.
