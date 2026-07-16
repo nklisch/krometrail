@@ -24,16 +24,29 @@ pub(crate) fn ensure_private_directory(path: &Path) -> io::Result<()> {
     fs::create_dir_all(path)
 }
 
+fn existing_regular_file(path: &Path) -> io::Result<fs::Metadata> {
+    // `symlink_metadata` is intentional: permission hardening must not follow an
+    // extension-shaped link into operator-owned or unrelated storage.
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.file_type().is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "permission policy requires a regular file",
+        ));
+    }
+    Ok(metadata)
+}
+
 #[cfg(unix)]
 pub(crate) fn tighten_existing_file(path: &Path) -> io::Result<()> {
-    let mut permissions = fs::metadata(path)?.permissions();
+    let mut permissions = existing_regular_file(path)?.permissions();
     permissions.set_mode(0o600);
     fs::set_permissions(path, permissions)
 }
 
 #[cfg(not(unix))]
-pub(crate) fn tighten_existing_file(_path: &Path) -> io::Result<()> {
-    Ok(())
+pub(crate) fn tighten_existing_file(path: &Path) -> io::Result<()> {
+    existing_regular_file(path).map(|_| ())
 }
 
 #[cfg(unix)]

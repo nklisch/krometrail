@@ -1,7 +1,7 @@
 ---
 id: gate-security-pin-release-action-shas
 kind: story
-stage: review
+stage: done
 tags: [security, infra]
 parent: null
 depends_on: []
@@ -49,3 +49,7 @@ Pin every third-party and first-party action in the privileged release workflow 
 
 - `bash -n tests/distribution-static.sh`
 - `bash tests/distribution-static.sh` -> `distribution contracts: ok`
+
+## Review decision
+
+**Approved directly.** Immutable action SHAs, retained version comments, scoped publication permissions, and the distribution contract test satisfy the supply-chain finding. No re-review was run; the story advances from `review` to `done`. No Chrome, network, push, or unrelated finding was added.

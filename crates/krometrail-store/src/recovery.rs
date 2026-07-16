@@ -189,6 +189,16 @@ fn discover(directory: &Path) -> krometrail_core::Result<BTreeMap<SegmentId, Can
         let entry = entry.map_err(|_| {
             shutdown_error("recording segments cannot be enumerated during recovery")
         })?;
+        // `DirEntry::file_type` does not follow symlinks. Recovery only owns
+        // regular segment files; unrelated directories, links, devices, and
+        // sockets must not reach permission, read, or repair operations.
+        if !entry
+            .file_type()
+            .map_err(|_| shutdown_error("recording segments cannot be inspected during recovery"))?
+            .is_file()
+        {
+            continue;
+        }
         let path = entry.path();
         let Some(extension) = path.extension().and_then(|value| value.to_str()) else {
             continue;

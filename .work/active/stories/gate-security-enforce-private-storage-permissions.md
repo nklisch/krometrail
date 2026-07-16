@@ -1,7 +1,7 @@
 ---
 id: gate-security-enforce-private-storage-permissions
 kind: story
-stage: review
+stage: done
 tags: [security, storage, browser]
 parent: null
 depends_on: []
@@ -43,3 +43,15 @@ Apply owner-only directory and file permissions on supported Unix platforms at t
 - `cargo test -p krometrail-cdp launcher::profile::tests --locked` -> 4 passed
 - `rustup run 1.85.0 cargo check --workspace --all-targets --locked` -> passed
 - `rustup run 1.85.0 cargo clippy --workspace --all-targets --locked -- -D warnings` -> passed
+
+## Review remediation (2026-07-15)
+
+The accepted standard-review blocker is fixed narrowly at the segment recovery boundary. Discovery now uses the non-following `DirEntry::file_type` check and skips symlinks, directories, devices, sockets, and other non-regular candidates before permission, read, or repair work. The existing-file permission helper now uses `symlink_metadata` on every platform and refuses anything that is not a regular file before Unix `0600` tightening; legitimate regular segment recovery and the existing `0700`/`0600` policy remain unchanged.
+
+The Unix recovery regression creates both `<uuid>.open` and `<uuid>.kts` symlinks to valid header-only sentinel files outside the managed segment directory. It proves recovery returns no indexed segments or frames, leaves both symlinks in place, and preserves each sentinel's mode and bytes. The non-regular directory candidate is also explicitly skipped.
+
+Fix verification passed `rustup run 1.85.0 cargo test -p krometrail-store --test recovery --locked` (14 passed), `rustup run 1.85.0 cargo test -p krometrail-store --lib --locked` (39 passed), Rust 1.85 formatting, full workspace check, full workspace tests, and full workspace Clippy with warnings denied. No Chrome, network, push, or unrelated finding was involved. Per standard policy, no re-review was run.
+
+## Review decision
+
+**Approved after remediation.** The accepted symlink/non-regular recovery blocker is resolved and verified. The story advances from `review` to `done` without a repeat review.

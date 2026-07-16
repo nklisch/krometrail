@@ -626,18 +626,98 @@ async fn damaged_sealed_footer_is_repaired_without_reindexing_valid_frames() {
 }
 
 #[test]
-fn file_operation_failures_are_persistence_failures() {
+fn non_regular_segment_publications_are_ignored() {
     let fixture = Fixture::new();
     let index = fixture.index();
     let segment_id = SegmentId::from_uuid(id(93));
-    fs::create_dir(
-        fixture
-            .segments_directory()
-            .join(format!("{segment_id}.open")),
+    let path = fixture
+        .segments_directory()
+        .join(format!("{segment_id}.open"));
+    fs::create_dir(&path).unwrap();
+
+    assert_eq!(recover(index.as_ref()).unwrap(), RecoveryReport::default());
+    assert!(path.is_dir());
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_segment_publications_are_skipped_without_touching_targets() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    let fixture = Fixture::new();
+    let index = fixture.index();
+    let outside = TempDir::new().unwrap();
+    let open_id = SegmentId::from_uuid(id(94));
+    let sealed_id = SegmentId::from_uuid(id(95));
+    let open_target = outside.path().join("open-sentinel");
+    let sealed_target = outside.path().join("sealed-sentinel");
+    let open_bytes = SegmentHeader::new(
+        open_id,
+        SessionId::from_uuid(id(96)),
+        TargetId::from_uuid(id(97)),
+        SessionTime::from_nanos(1),
+        ObservedTime::from_nanos(2),
+        3,
+        4,
     )
-    .unwrap();
-    let error = recover(index.as_ref()).unwrap_err();
-    assert_eq!(error.code, ErrorCode::PersistenceFailed);
+    .encode();
+    let sealed_bytes = SegmentHeader::new(
+        sealed_id,
+        SessionId::from_uuid(id(98)),
+        TargetId::from_uuid(id(99)),
+        SessionTime::from_nanos(5),
+        ObservedTime::from_nanos(6),
+        7,
+        8,
+    )
+    .encode();
+    fs::write(&open_target, &open_bytes).unwrap();
+    fs::write(&sealed_target, &sealed_bytes).unwrap();
+    for path in [&open_target, &sealed_target] {
+        let mut permissions = fs::metadata(path).unwrap().permissions();
+        permissions.set_mode(0o641);
+        fs::set_permissions(path, permissions).unwrap();
+    }
+    let open_mode = fs::metadata(&open_target).unwrap().permissions().mode() & 0o777;
+    let sealed_mode = fs::metadata(&sealed_target).unwrap().permissions().mode() & 0o777;
+    let open_path = open_segment_path(&fixture.segments_directory(), open_id);
+    let sealed_path = sealed_segment_path(&fixture.segments_directory(), sealed_id);
+    symlink(&open_target, &open_path).unwrap();
+    symlink(&sealed_target, &sealed_path).unwrap();
+
+    assert_eq!(recover(index.as_ref()).unwrap(), RecoveryReport::default());
+    assert!(
+        fs::symlink_metadata(&open_path)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert!(
+        fs::symlink_metadata(&sealed_path)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(fs::read(&open_target).unwrap(), open_bytes);
+    assert_eq!(fs::read(&sealed_target).unwrap(), sealed_bytes);
+    assert_eq!(
+        fs::metadata(&open_target).unwrap().permissions().mode() & 0o777,
+        open_mode
+    );
+    assert_eq!(
+        fs::metadata(&sealed_target).unwrap().permissions().mode() & 0o777,
+        sealed_mode
+    );
+
+    let connection = fixture.connection();
+    let (segments, frames): (u32, u32) = connection
+        .query_row(
+            "SELECT (SELECT count(*) FROM segments), (SELECT count(*) FROM frames)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((segments, frames), (0, 0));
 }
 
 #[test]

@@ -1,7 +1,7 @@
 ---
 id: gate-security-validate-initial-browser-url
 kind: story
-stage: review
+stage: done
 tags: [security, browser]
 parent: null
 depends_on: []
@@ -41,3 +41,7 @@ Validate the initial navigation value at the core external boundary against the 
 
 - `cargo test -p krometrail-core initial_url_tests --locked` -> 2 passed
 - `cargo test --workspace --all-targets --locked` -> passed
+
+## Review decision
+
+**Approved directly.** Core-boundary URL validation, preserved allowlisted navigation schemes, switch rejection, and schema/focused tests satisfy the injection finding. No re-review was run; the story advances from `review` to `done`. No Chrome, network, push, or unrelated finding was added.

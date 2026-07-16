@@ -1,7 +1,7 @@
 ---
 id: gate-security-eliminate-cdp-port-allocation-race
 kind: story
-stage: review
+stage: done
 tags: [security, browser]
 parent: null
 depends_on: []
@@ -42,3 +42,7 @@ Use Chrome's child-owned ephemeral debugging endpoint (`--remote-debugging-port=
 - `cargo test -p krometrail-cdp launcher::startup::tests --locked` -> 4 passed
 - `cargo test -p krometrail-cdp launcher::profile::tests --locked` -> 4 passed
 - No real Chrome was required.
+
+## Review decision
+
+**Approved directly.** The managed child-owned debugging endpoint, profile-scoped handoff validation, process cleanup, and focused startup/profile tests satisfy the security finding. No re-review was run; the story advances from `review` to `done`. No Chrome, network, push, or unrelated finding was added.
