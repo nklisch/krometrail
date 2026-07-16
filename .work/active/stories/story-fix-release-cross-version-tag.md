@@ -1,7 +1,7 @@
 ---
 id: story-fix-release-cross-version-tag
 kind: story
-stage: review
+stage: done
 tags: [bug, infra]
 parent: null
 depends_on: []
@@ -36,3 +36,7 @@ Pass the exact upstream tag `v0.2.5` and update the release static contract. Pre
 - **Confirmation:** upstream `refs/tags/v0.2.5` resolves to `f8151ae777290430cf2108efacf3976d9528500b`; unprefixed `refs/tags/0.2.5` is absent; distribution/installer/version-helper contract suite passes; diff check passes.
 - **Original reproduction:** GitHub Actions run `29469495815`, Linux arm64 job, failed with `revspec '0.2.5' not found` before any build.
 - **Adjacent issues parked:** none.
+
+## Review decision
+
+**Approved in the bounded standalone-story lane.** The patch changes only the action input and its static regression contract, preserves the pinned action and release matrix, resolves to the real upstream `v0.2.5` tag, and directly addresses the observed CI failure. Distribution contracts pass and no broader release behavior changed.
