@@ -26,7 +26,7 @@ cargo test --workspace --all-targets --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
-`cargo fmt --all` can apply formatting when needed. The other commands compile and test all five workspace crates plus the root binary.
+`cargo fmt --all` can apply formatting when needed. The other commands compile and test all six workspace crates plus the root binary.
 
 ## Run the binary
 

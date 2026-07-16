@@ -1,7 +1,7 @@
 ---
 id: gate-docs-refresh-rust-cdp-transport-guidance
 kind: story
-stage: review
+stage: done
 tags: [documentation, browser]
 parent: null
 depends_on: []
@@ -41,3 +41,8 @@ Update the skill and research reference in place to current implementation statu
 - Discrepancies from design: none.
 - Verification evidence: `bun run docs:build` passed after the research edit; `cargo fmt --all -- --check`, workspace check/test/clippy, and the cross-platform smoke schema suite passed under Rust 1.95.0 (project MSRV 1.85).
 - Adjacent issues parked: none.
+
+
+## Review decision
+
+**Approved.** Independent GPT-5.5 standard bounded review found no material blocker. Documentation build, generated-output stability, Rust 1.85 workspace gates, doc tests, and focused MCP/CDP checks pass. The one workspace-count advisory was corrected before completion; no re-review was required.

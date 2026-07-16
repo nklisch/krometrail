@@ -1,7 +1,7 @@
 ---
 id: gate-cruft-refresh-current-runtime-documentation
 kind: story
-stage: review
+stage: done
 tags: [cleanup, documentation, agent-ux]
 parent: null
 depends_on: []
@@ -39,3 +39,8 @@ Update README, project agent current-state guidance, docs index/guide/reference 
 - Discrepancies from design: none.
 - Verification evidence: `bun run docs:build` passed (VitePress render/link build, 14 source files); `cargo fmt --all -- --check`, workspace check/test/clippy, and the cross-platform smoke schema suite passed under Rust 1.95.0 (project MSRV 1.85). The generated full file was regenerated after Rust verification because the temporal-evaluation contract test intentionally requires it to be unchanged while tests run.
 - Adjacent issues parked: none.
+
+
+## Review decision
+
+**Approved.** Independent GPT-5.5 standard bounded review found no material blocker. Documentation build, generated-output stability, Rust 1.85 workspace gates, doc tests, and focused MCP/CDP checks pass. The one workspace-count advisory was corrected before completion; no re-review was required.
