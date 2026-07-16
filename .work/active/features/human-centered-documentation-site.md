@@ -1,7 +1,7 @@
 ---
 id: human-centered-documentation-site
 kind: feature
-stage: drafting
+stage: implementing
 tags: [prose, documentation, agent-ux]
 parent: null
 depends_on: []
@@ -31,3 +31,30 @@ Rewrite the voice so it is concrete, confident, and memorable without becoming i
 ## Simplification opportunity
 
 Consolidate duplicated setup and runtime explanations, remove internal capability inventories from landing pages, reduce top-level navigation, and stop presenting foundation/research documents as end-user starting points. Preserve one authoritative installation path and one contributor path rather than repeating mixed-audience instructions across the homepage, README, and guides.
+
+## Outline
+
+### Public journey
+
+1. `docs/index.md`: a product landing page that names the transient-browser problem, shows what an agent can do with Krometrail, and offers plugin and one-line binary installation immediately.
+2. `docs/guide/installation.md`: short choice-first setup for Claude Code, Codex, or standalone use, followed by verification, updates, removal, and advanced/manual setup.
+3. `docs/guide/using-krometrail.md`: a human-facing workflow showing when to ask an agent to use Krometrail, representative prompts, what evidence it can inspect, and what remains local.
+4. `docs/guide/troubleshooting.md`: practical setup and browser-discovery recovery without protocol internals.
+5. `docs/reference/runtime.md` and `docs/reference/configuration.md`: concise operator reference with installed-binary commands and current configuration only.
+
+### Information architecture and secondary surfaces
+
+- Rework `docs/.vitepress/config.ts` around `What it does`, `Install`, `Use with your agent`, `Troubleshooting`, and a subdued reference/contributor path.
+- Keep foundation, evaluation, evidence, and research documents available by direct URL and for maintainers/agents, but remove them from primary navigation and user onboarding.
+- Rewrite `README.md` as a concise repository landing page that mirrors the public promise and routes users to the site; retain development commands only under a clearly secondary contributor section.
+- Update `scripts/generate-llms-full.ts` only as needed so generated agent-facing documentation reflects the new user documentation rather than describing the site as a Rust contributor reference.
+
+### Acceptance criteria
+
+- Every end-user command invokes `krometrail`; `cargo run -- ...` appears only in contributor/development context.
+- The homepage shows a plugin path and one-line binary path before technical explanation.
+- Primary navigation contains no research, architecture, specification, evaluation, or evidence-archive entry.
+- Copy leads with recognizable visual-motion/transient-state problems and agent outcomes, not language/runtime/protocol internals or tool counts.
+- Setup claims remain exact for both Claude Code and Codex plugin commands and the standalone installer.
+- Privacy/local-first behavior and limitations remain accurate without dominating the main journey.
+- `bun run docs:build` succeeds, generated docs are current, and internal links resolve.
