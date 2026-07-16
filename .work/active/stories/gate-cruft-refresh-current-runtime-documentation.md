@@ -1,7 +1,7 @@
 ---
 id: gate-cruft-refresh-current-runtime-documentation
 kind: story
-stage: drafting
+stage: implementing
 tags: [cleanup, documentation, agent-ux]
 parent: null
 depends_on: []

@@ -1,7 +1,7 @@
 ---
 id: gate-tests-nondefault-cadence-live-provenance
 kind: story
-stage: drafting
+stage: implementing
 tags: [testing, browser, visual]
 parent: null
 depends_on: []

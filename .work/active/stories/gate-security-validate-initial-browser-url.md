@@ -1,7 +1,7 @@
 ---
 id: gate-security-validate-initial-browser-url
 kind: story
-stage: drafting
+stage: implementing
 tags: [security, browser]
 parent: null
 depends_on: []

@@ -1,7 +1,7 @@
 ---
 id: gate-cruft-refresh-debug-bundle-module-comments
 kind: story
-stage: drafting
+stage: implementing
 tags: [cleanup, documentation, visual]
 parent: null
 depends_on: []

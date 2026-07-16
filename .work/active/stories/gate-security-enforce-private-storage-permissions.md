@@ -1,7 +1,7 @@
 ---
 id: gate-security-enforce-private-storage-permissions
 kind: story
-stage: drafting
+stage: implementing
 tags: [security, storage, browser]
 parent: null
 depends_on: []

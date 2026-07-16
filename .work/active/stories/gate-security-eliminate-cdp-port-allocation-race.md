@@ -1,7 +1,7 @@
 ---
 id: gate-security-eliminate-cdp-port-allocation-race
 kind: story
-stage: drafting
+stage: implementing
 tags: [security, browser]
 parent: null
 depends_on: []
