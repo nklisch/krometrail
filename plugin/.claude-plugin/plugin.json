@@ -1,11 +1,11 @@
 {
-	"name": "krometrail",
-	"description": "Rust foundations for local browser control and temporal visual evidence.",
-	"version": "0.2.20",
-	"author": {
-		"name": "nklisch"
-	},
-	"homepage": "https://krometrail.dev",
-	"repository": "https://github.com/nklisch/krometrail",
-	"license": "MIT"
+  "name": "krometrail",
+  "version": "1.0.0",
+  "description": "Local Chromium control and temporal visual evidence for AI agents.",
+  "author": {
+    "name": "nklisch"
+  },
+  "homepage": "https://krometrail.dev",
+  "repository": "https://github.com/nklisch/krometrail",
+  "license": "MIT"
 }

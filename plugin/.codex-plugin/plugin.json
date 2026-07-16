@@ -1,0 +1,35 @@
+{
+  "name": "krometrail",
+  "version": "1.0.0",
+  "description": "Local Chromium control and temporal visual evidence for AI agents.",
+  "author": {
+    "name": "nklisch"
+  },
+  "homepage": "https://krometrail.dev",
+  "repository": "https://github.com/nklisch/krometrail",
+  "license": "MIT",
+  "keywords": [
+    "browser",
+    "cdp",
+    "mcp",
+    "temporal-visual-evidence",
+    "debugging"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Krometrail",
+    "shortDescription": "Browser control and temporal visual evidence",
+    "longDescription": "Control a local Chromium browser, retain continuous visual evidence, and inspect transient behavior through source-linked storyboards, difference maps, filmstrips, motion history, and browser events.",
+    "developerName": "nklisch",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Read",
+      "Bash"
+    ],
+    "defaultPrompt": [
+      "Use Krometrail to inspect the browser evidence relevant to this problem. Follow my debugging direction and explain any capture gaps or evidence limits."
+    ],
+    "websiteURL": "https://krometrail.dev"
+  }
+}
