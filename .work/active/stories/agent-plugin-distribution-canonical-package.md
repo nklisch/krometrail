@@ -5,7 +5,7 @@ stage: done
 tags: [distribution, mcp, documentation]
 parent: agent-plugin-distribution
 depends_on: []
-release_binding: null
+release_binding: 1.0.1
 gate_origin: null
 created: 2026-07-16
 updated: 2026-07-15

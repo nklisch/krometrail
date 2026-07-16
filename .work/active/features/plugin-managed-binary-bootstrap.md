@@ -5,7 +5,7 @@ stage: done
 tags: [distribution, mcp, security]
 parent: null
 depends_on: [agent-plugin-distribution]
-release_binding: null
+release_binding: 1.0.1
 gate_origin: null
 created: 2026-07-16
 updated: 2026-07-15

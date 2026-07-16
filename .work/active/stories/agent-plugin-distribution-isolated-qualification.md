@@ -5,7 +5,7 @@ stage: done
 tags: [distribution, testing, documentation]
 parent: agent-plugin-distribution
 depends_on: [agent-plugin-distribution-canonical-package, agent-plugin-distribution-marketplace-publication]
-release_binding: null
+release_binding: 1.0.1
 gate_origin: null
 created: 2026-07-16
 updated: 2026-07-15

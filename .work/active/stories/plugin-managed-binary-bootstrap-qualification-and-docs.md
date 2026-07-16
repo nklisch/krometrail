@@ -5,7 +5,7 @@ stage: done
 tags: [distribution, testing, documentation]
 parent: plugin-managed-binary-bootstrap
 depends_on: [plugin-managed-binary-bootstrap-launcher-and-installer, plugin-managed-binary-bootstrap-release-version-sync]
-release_binding: null
+release_binding: 1.0.1
 gate_origin: null
 created: 2026-07-16
 updated: 2026-07-15
