@@ -1,7 +1,7 @@
 ---
 id: gate-tests-temporal-mcp-successful-artifact-resource-seam
 kind: story
-stage: review
+stage: done
 tags: [testing, agent-ux, visual]
 parent: null
 depends_on: []
@@ -44,3 +44,10 @@ Return a successful temporal bundle containing a stored artifact, invoke `tempor
 - Rust 1.85 fmt, check, and Clippy `-D warnings` passed.
 
 Implementation is complete; this standalone story is left at `stage: review` for one bounded independent review.
+
+
+## Review decision
+
+**Approved.** Independent GPT-5.5 standard bounded review found no material blocker. Rust 1.85 focused, full workspace, and qualification-support gates pass. No re-review was required.
+
+Advisory: the test asserts the emitted `ResourceLink` equals the canonical URI before exercising the real read/mismatch path, but could later extract that URI directly from response content. Existing coverage is sufficient for this release.
