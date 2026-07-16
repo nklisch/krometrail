@@ -1,7 +1,7 @@
 ---
 id: gate-security-enforce-private-storage-permissions
 kind: story
-stage: implementing
+stage: review
 tags: [security, storage, browser]
 parent: null
 depends_on: []
@@ -29,3 +29,17 @@ Recording/index/segment and managed-profile roots are created with platform defa
 ## Remediation direction
 
 Apply owner-only directory and file permissions on supported Unix platforms at the creation boundary, validate existing managed roots, and preserve explicit operator-owned custom paths. Define a proportional cross-platform policy without introducing remote encryption, authentication, or disabling local evidence storage.
+
+## Implementation evidence
+
+- Krometrail-owned Unix directories use mode `0700`; index, segment, artifact, lock, temporary, and managed-profile files use mode `0600` at creation/open boundaries.
+- Existing managed profile trees are tightened without following symlinks, stale endpoint files are removed only after exclusive profile ownership, and Chrome inherits `umask(077)` so files created during launch remain private.
+- Existing index/segment/artifact roots are protected proportionally while explicit local storage paths remain supported. Non-Unix builds compile with an explicit no-op for Unix mode enforcement and retain native ACL/locking responsibility; no encryption, authentication, or storage removal was introduced.
+- Focused Unix regression tests verify index/segment/artifact modes and managed-profile root/file/lock modes.
+
+## Verification
+
+- `cargo test -p krometrail-store --lib --locked` -> 39 passed
+- `cargo test -p krometrail-cdp launcher::profile::tests --locked` -> 4 passed
+- `rustup run 1.85.0 cargo check --workspace --all-targets --locked` -> passed
+- `rustup run 1.85.0 cargo clippy --workspace --all-targets --locked -- -D warnings` -> passed

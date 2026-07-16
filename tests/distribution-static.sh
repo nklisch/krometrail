@@ -77,9 +77,19 @@ test "$attest_line" -lt "$upload_line" || fail "release asset attestation must p
 
 require_text "$RELEASE" "sha256sum"
 require_text "$RELEASE" "dist/checksums.txt"
-require_text "$RELEASE" "actions/attest-build-provenance@v2"
-require_text "$RELEASE" "actions/upload-artifact@v4"
-require_text "$RELEASE" "actions/download-artifact@v4"
+require_text "$RELEASE" "actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be"
+require_text "$RELEASE" "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
+require_text "$RELEASE" "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093"
+
+# Every release workflow action is immutable. The inline comments retain the
+# human-readable reviewed channel while the full SHA is the executable ref.
+while IFS= read -r uses_line; do
+	uses_ref="${uses_line##*@}"
+	uses_ref="${uses_ref%%[[:space:]]*}"
+	if [[ ! "$uses_ref" =~ ^[0-9a-f]{40}$ ]]; then
+		fail "release action is not pinned to a full commit SHA: $uses_line"
+	fi
+done < <(grep -E '^[[:space:]]*uses:' "$RELEASE")
 
 # The installer deliberately spells out the supported platform mapping so an
 # asset rename cannot silently produce a broken download URL.

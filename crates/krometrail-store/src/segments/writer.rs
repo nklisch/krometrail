@@ -15,7 +15,7 @@ use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
 use super::{SEGMENT_HEADER_LEN, SealedFooter, SegmentHeader, encode_frame_record};
-use crate::persistence_error;
+use crate::{permissions, persistence_error};
 
 pub const OPEN_SEGMENT_EXTENSION: &str = "open";
 pub const SEALED_SEGMENT_EXTENSION: &str = "kts";
@@ -177,7 +177,7 @@ impl SegmentWriter {
                 "segment writer queue capacity must be greater than zero",
             ));
         }
-        fs::create_dir_all(&config.directory)
+        permissions::ensure_private_directory(&config.directory)
             .map_err(|error| io_error("create the segment directory", error))?;
         verify_writable(&config.directory)?;
 
@@ -471,11 +471,10 @@ fn open_segment(
 fn create_open_file(directory: &Path) -> krometrail_core::Result<(SegmentId, File)> {
     for _ in 0..4 {
         let segment_id = SegmentId::from_uuid(Uuid::new_v4());
-        match OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(open_segment_path(directory, segment_id))
-        {
+        let mut options = OpenOptions::new();
+        options.create_new(true).write(true);
+        permissions::configure_private_file(&mut options);
+        match options.open(open_segment_path(directory, segment_id)) {
             Ok(file) => return Ok((segment_id, file)),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(io_error("create an open segment", error)),
@@ -537,9 +536,10 @@ pub fn sealed_segment_path(directory: &Path, segment_id: SegmentId) -> PathBuf {
 
 fn verify_writable(directory: &Path) -> krometrail_core::Result<()> {
     let probe = directory.join(format!(".write-probe-{}", Uuid::new_v4()));
-    let file = OpenOptions::new()
-        .create_new(true)
-        .write(true)
+    let mut options = OpenOptions::new();
+    options.create_new(true).write(true);
+    permissions::configure_private_file(&mut options);
+    let file = options
         .open(&probe)
         .map_err(|error| io_error("verify segment-directory writability", error))?;
     drop(file);
@@ -688,6 +688,30 @@ mod tests {
             .unwrap();
         let error = sink.flush_indexable(session_id).await.unwrap_err();
         assert!(error.message.as_str().contains("sealed-segment"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn created_segment_files_are_owner_only_on_unix() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = TempDir::new().unwrap();
+        let sink = SegmentWriter::open(config(&directory)).unwrap();
+        sink.append_indexable(test_frame(SessionId::from_uuid(Uuid::from_u128(9)), 1))
+            .await
+            .unwrap();
+        let path = fs::read_dir(directory.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == OPEN_SEGMENT_EXTENSION)
+            })
+            .unwrap();
+        assert_eq!(
+            fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 
     struct BlockingDirectorySync {

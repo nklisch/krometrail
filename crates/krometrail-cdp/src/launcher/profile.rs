@@ -7,6 +7,9 @@ use std::{
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
+
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use thiserror::Error;
 
 static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -47,6 +50,7 @@ impl ProfileLease {
     ) -> Result<Self, ProfileError> {
         let root = root.as_ref();
         fs::create_dir_all(root).map_err(|_| ProfileError::Root)?;
+        tighten_directory(root).map_err(|_| ProfileError::Root)?;
         let root = fs::canonicalize(root).map_err(|_| ProfileError::Root)?;
         match requested {
             ManagedProfile::Reusable { name } => Self::acquire_reusable(&root, name),
@@ -75,6 +79,7 @@ impl ProfileLease {
         validate_name(name.as_str())?;
         let profiles_root = root.join("profiles");
         fs::create_dir_all(&profiles_root).map_err(|_| ProfileError::Prepare)?;
+        tighten_directory(&profiles_root).map_err(|_| ProfileError::Prepare)?;
         let profiles_root = fs::canonicalize(&profiles_root).map_err(|_| ProfileError::Prepare)?;
         if !profiles_root.starts_with(root) {
             return Err(ProfileError::InvalidName);
@@ -85,8 +90,10 @@ impl ProfileLease {
         if !path.starts_with(&profiles_root) || path != profiles_root.join(name.as_str()) {
             return Err(ProfileError::InvalidName);
         }
+        tighten_tree(&path).map_err(|_| ProfileError::Prepare)?;
         let lock_path = path.join(".krometrail.lock");
         let lock = exclusive_lock(&lock_path)?;
+        let _ = fs::remove_file(path.join("DevToolsActivePort"));
         Ok(Self {
             path,
             lock_path,
@@ -100,6 +107,7 @@ impl ProfileLease {
     fn acquire_temporary(root: &Path) -> Result<Self, ProfileError> {
         let directory = root.join("tmp");
         fs::create_dir_all(&directory).map_err(|_| ProfileError::Root)?;
+        tighten_directory(&directory).map_err(|_| ProfileError::Root)?;
         let directory = fs::canonicalize(&directory).map_err(|_| ProfileError::Root)?;
         if !directory.starts_with(root) {
             return Err(ProfileError::Root);
@@ -107,6 +115,7 @@ impl ProfileLease {
         let sequence = TEMPORARY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let path = directory.join(format!("profile-{}-{sequence}", std::process::id()));
         fs::create_dir(&path).map_err(|_| ProfileError::Prepare)?;
+        tighten_directory(&path).map_err(|_| ProfileError::Prepare)?;
         let lock_path = path.join(".krometrail.lock");
         let lock = exclusive_lock(&lock_path)?;
         Ok(Self {
@@ -124,8 +133,10 @@ impl ProfileLease {
 
     fn cleanup(&mut self) {
         // Dropping the file before deleting the directory is required on Windows. Reusable
-        // profile data is intentionally retained even if lock cleanup itself fails.
+        // profile data is intentionally retained even if lock cleanup itself fails. Removing the
+        // active-port handoff avoids a stale endpoint being mistaken for a future launch.
         self.lock.take();
+        let _ = fs::remove_file(self.path.join("DevToolsActivePort"));
         let _ = fs::remove_file(&self.lock_path);
         if self.cleanup_temporary {
             let _ = fs::remove_dir_all(&self.path);
@@ -154,14 +165,63 @@ fn validate_name(name: &str) -> Result<(), ProfileError> {
 }
 
 fn exclusive_lock(path: &Path) -> Result<File, ProfileError> {
-    OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(path)
-        .map_err(|error| match error.kind() {
-            io::ErrorKind::AlreadyExists => ProfileError::InUse,
-            _ => ProfileError::Prepare,
-        })
+    let mut options = OpenOptions::new();
+    options.create_new(true).write(true);
+    private_file_options(&mut options);
+    options.open(path).map_err(|error| match error.kind() {
+        io::ErrorKind::AlreadyExists => ProfileError::InUse,
+        _ => ProfileError::Prepare,
+    })
+}
+
+#[cfg(unix)]
+fn private_file_options(options: &mut OpenOptions) {
+    options.mode(0o600);
+}
+
+#[cfg(not(unix))]
+fn private_file_options(_options: &mut OpenOptions) {}
+
+#[cfg(unix)]
+fn tighten_directory(path: &Path) -> io::Result<()> {
+    let mut permissions = fs::metadata(path)?.permissions();
+    permissions.set_mode(0o700);
+    fs::set_permissions(path, permissions)
+}
+
+#[cfg(not(unix))]
+fn tighten_directory(_path: &Path) -> io::Result<()> {
+    // Windows ACLs are not representable through the standard library's mode API. Managed
+    // profiles still retain exclusive Krometrail locking; platform ACL hardening is explicit
+    // future infrastructure rather than a false cross-platform mode claim.
+    Ok(())
+}
+
+#[cfg(unix)]
+fn tighten_file(path: &Path) -> io::Result<()> {
+    let mut permissions = fs::metadata(path)?.permissions();
+    permissions.set_mode(0o600);
+    fs::set_permissions(path, permissions)
+}
+
+#[cfg(not(unix))]
+fn tighten_file(_path: &Path) -> io::Result<()> {
+    Ok(())
+}
+
+fn tighten_tree(path: &Path) -> io::Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        return Ok(());
+    }
+    if metadata.is_dir() {
+        for entry in fs::read_dir(path)? {
+            tighten_tree(&entry?.path())?;
+        }
+        tighten_directory(path)
+    } else {
+        tighten_file(path)
+    }
 }
 
 #[cfg(test)]
@@ -195,6 +255,58 @@ mod tests {
         drop(lease);
         assert!(path.exists());
         drop(ProfileLease::acquire(&root, &profile).unwrap());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_profile_roots_files_and_lock_are_owner_only_and_stale_endpoint_is_removed() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = root();
+        let path = root.join("profiles").join("named");
+        fs::create_dir_all(&path).unwrap();
+        fs::write(path.join("Preferences"), b"profile").unwrap();
+        fs::write(
+            path.join("DevToolsActivePort"),
+            b"9222\n/devtools/browser/stale\n",
+        )
+        .unwrap();
+        fs::set_permissions(path.join("Preferences"), fs::Permissions::from_mode(0o644)).unwrap();
+
+        let lease = ProfileLease::acquire(
+            &root,
+            &ManagedProfile::Reusable {
+                name: ProfileIdentity::new("named").unwrap(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            fs::metadata(&root).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(lease.path()).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(lease.path().join("Preferences"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert_eq!(
+            fs::metadata(lease.path().join(".krometrail.lock"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert!(!lease.path().join("DevToolsActivePort").exists());
+        drop(lease);
         let _ = fs::remove_dir_all(root);
     }
 

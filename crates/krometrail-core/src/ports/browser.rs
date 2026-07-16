@@ -1,6 +1,7 @@
 use std::{num::NonZeroU8, path::PathBuf, sync::Arc};
 
 use serde::{Deserialize, Serialize};
+use url::Url;
 
 use crate::{
     browser::{
@@ -77,15 +78,42 @@ impl<'de> Deserialize<'de> for EveryNthFrame {
     }
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(default)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
 pub struct LaunchBrowser {
     pub executable: Option<PathBuf>,
     pub profile: ManagedProfile,
     pub initial_url: Option<String>,
+    pub every_nth_frame: EveryNthFrame,
+}
+
+#[derive(Default, Deserialize, schemars::JsonSchema)]
+#[serde(default)]
+struct LaunchBrowserWire {
+    executable: Option<PathBuf>,
+    profile: ManagedProfile,
+    initial_url: Option<String>,
     #[serde(default)]
     #[schemars(default)]
-    pub every_nth_frame: EveryNthFrame,
+    every_nth_frame: EveryNthFrame,
+}
+
+delegate_json_schema!(LaunchBrowser => LaunchBrowserWire);
+
+impl<'de> Deserialize<'de> for LaunchBrowser {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        deserialize_validated(deserializer, |wire: LaunchBrowserWire| {
+            let request = Self {
+                executable: wire.executable,
+                profile: wire.profile,
+                initial_url: wire.initial_url,
+                every_nth_frame: wire.every_nth_frame,
+            };
+            request.validate()?;
+            Ok(request)
+        })
+    }
 }
 
 impl LaunchBrowser {
@@ -96,6 +124,93 @@ impl LaunchBrowser {
             initial_url: None,
             every_nth_frame: EveryNthFrame::default(),
         }
+    }
+
+    /// Validates launch input before it reaches a browser adapter. The public
+    /// fields remain available to trusted in-process callers, while external
+    /// JSON uses this same constructor through `Deserialize`.
+    pub fn validate(&self) -> Result<()> {
+        if let Some(url) = self.initial_url.as_deref() {
+            validate_initial_browser_url(url)?;
+        }
+        Ok(())
+    }
+}
+
+const MAX_INITIAL_BROWSER_URL_BYTES: usize = 2 * 1024 * 1024;
+
+fn validate_initial_browser_url(value: &str) -> Result<()> {
+    if value.is_empty() || value.len() > MAX_INITIAL_BROWSER_URL_BYTES {
+        return Err(invalid(
+            "initial browser URL is empty or exceeds its input limit",
+        ));
+    }
+    if value != value.trim() || value.starts_with('-') {
+        return Err(invalid(
+            "initial browser URL must be a trimmed URL, not a browser switch",
+        ));
+    }
+    if value.chars().any(char::is_control) {
+        return Err(invalid(
+            "initial browser URL must not contain control characters",
+        ));
+    }
+    let parsed =
+        Url::parse(value).map_err(|_| invalid("initial browser URL must use an absolute URL"))?;
+    match parsed.scheme() {
+        // These schemes cover remote pages plus the local fixture/tooling forms. `about` and
+        // `data` intentionally remain available because they are useful for local smoke tests
+        // and do not provide a way to reinterpret the argument as a Chrome switch.
+        "http" | "https" if parsed.host_str().is_some() => Ok(()),
+        "file" | "about" | "data" => Ok(()),
+        "http" | "https" => Err(invalid("initial browser network URL must include a host")),
+        _ => Err(invalid(
+            "initial browser URL scheme is not supported; use http, https, file, about, or data",
+        )),
+    }
+}
+
+#[cfg(test)]
+mod initial_url_tests {
+    use super::*;
+
+    #[test]
+    fn launch_url_validation_preserves_local_tool_schemes_and_rejects_switches() {
+        for value in [
+            "http://127.0.0.1:4173/fixture",
+            "https://example.test/",
+            "file:///tmp/fixture/index.html",
+            "about:blank",
+            "data:text/html,%3Ch1%3Elocal%3C%2Fh1%3E",
+        ] {
+            let request = serde_json::from_value::<LaunchBrowser>(serde_json::json!({
+                "initial_url": value,
+            }));
+            assert!(request.is_ok(), "expected URL to be accepted: {value}");
+        }
+
+        for value in [
+            "--no-sandbox",
+            "-remote-debugging-port=9222",
+            "javascript:alert(1)",
+            "chrome://settings",
+            "relative/path",
+            " https://example.test/",
+        ] {
+            let request = serde_json::from_value::<LaunchBrowser>(serde_json::json!({
+                "initial_url": value,
+            }));
+            assert!(request.is_err(), "expected URL to be rejected: {value}");
+        }
+    }
+
+    #[test]
+    fn launch_schema_keeps_the_generated_initial_url_contract() {
+        let schema = serde_json::to_value(schemars::schema_for!(LaunchBrowser)).unwrap();
+        let types = schema["properties"]["initial_url"]["type"]
+            .as_array()
+            .expect("optional URL schema should contain nullable types");
+        assert!(types.iter().any(|value| value == "string"));
     }
 }
 

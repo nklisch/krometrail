@@ -2,6 +2,7 @@
 
 pub(crate) mod artifacts;
 pub mod index;
+mod permissions;
 pub mod recovery;
 pub mod segments;
 

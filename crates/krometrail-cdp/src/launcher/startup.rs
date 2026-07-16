@@ -9,8 +9,8 @@ use super::{
 use crate::LocalCdpEndpoint;
 use krometrail_core::{BrowserInstallation, LaunchBrowser};
 use std::{
-    net::TcpListener,
-    path::PathBuf,
+    fs,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     time::{Duration, Instant},
 };
@@ -208,17 +208,14 @@ impl SystemChromeLauncher {
                 return Err(profile_error(error));
             }
         };
-        let port = match free_loopback_port() {
-            Ok(port) => port,
-            Err(_) => {
-                emit_launch_failed("port_unavailable");
-                return Err(LaunchError::SpawnFailed);
-            }
-        };
+        // Chrome owns allocation of the debugging port. The profile-scoped active-port file is
+        // the child-published handoff, so there is no free-port bind/drop window for another
+        // local process to claim.
+        remove_devtools_active_port(profile.path());
         let mut command = Command::new(&executable);
         command
             .arg("--remote-debugging-address=127.0.0.1")
-            .arg(format!("--remote-debugging-port={port}"))
+            .arg("--remote-debugging-port=0")
             .arg("--no-first-run")
             .arg("--no-default-browser-check")
             .arg(format!("--user-data-dir={}", profile.path().display()))
@@ -248,13 +245,14 @@ impl SystemChromeLauncher {
         );
         let endpoint = match tokio::time::timeout(
             self.config.startup_timeout,
-            wait_for_endpoint(port, &mut process),
+            wait_for_endpoint(profile.path(), &mut process),
         )
         .await
         {
             Ok(Ok(endpoint)) => endpoint,
             Ok(Err(error)) => {
                 process.force_kill_now();
+                remove_devtools_active_port(profile.path());
                 emit_launch_failed(match &error {
                     LaunchError::ProcessTerminated => "process_terminated",
                     _ => "endpoint_unavailable",
@@ -263,6 +261,7 @@ impl SystemChromeLauncher {
             }
             Err(_) => {
                 process.force_kill_now();
+                remove_devtools_active_port(profile.path());
                 emit_launch_failed("startup_timeout");
                 return Err(LaunchError::StartupTimeout);
             }
@@ -305,28 +304,102 @@ pub async fn attach_endpoint(input: impl AsRef<str>) -> Result<LocalCdpEndpoint,
         .map_err(|_| LaunchError::EndpointUnavailable)
 }
 
-async fn wait_for_endpoint(
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DevToolsActivePort {
     port: u16,
+    browser_path: String,
+}
+
+fn parse_devtools_active_port(contents: &str) -> Result<DevToolsActivePort, &'static str> {
+    let mut lines = contents.lines();
+    let port = lines
+        .next()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .and_then(|line| line.parse::<u16>().ok())
+        .filter(|port| *port != 0)
+        .ok_or("active port is not a non-zero TCP port")?;
+    let browser_path = lines
+        .next()
+        .map(str::trim)
+        .filter(|line| {
+            line.strip_prefix("/devtools/browser/").is_some_and(|id| {
+                !id.is_empty()
+                    && id.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')
+                    })
+            })
+        })
+        .ok_or("active port browser path is invalid")?;
+    if lines.next().is_some() {
+        return Err("active port file has unexpected extra lines");
+    }
+    Ok(DevToolsActivePort {
+        port,
+        browser_path: browser_path.to_owned(),
+    })
+}
+
+fn read_devtools_active_port(profile: &Path) -> Result<DevToolsActivePort, &'static str> {
+    let path = profile.join("DevToolsActivePort");
+    let contents = fs::read_to_string(path).map_err(|_| "active port file is not readable")?;
+    parse_devtools_active_port(&contents)
+}
+
+fn remove_devtools_active_port(profile: &Path) {
+    match fs::remove_file(profile.join("DevToolsActivePort")) {
+        Ok(()) => tracing::debug!("removed stale Chrome active-port file"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => tracing::debug!(?error, "could not remove Chrome active-port file"),
+    }
+}
+
+async fn wait_for_endpoint(
+    profile: &Path,
     process: &mut ManagedChromeProcess,
 ) -> Result<LocalCdpEndpoint, LaunchError> {
-    let input = format!("http://127.0.0.1:{port}");
     loop {
         if !process.is_alive() {
             return Err(LaunchError::ProcessTerminated);
         }
-        match LocalCdpEndpoint::resolve(&input).await {
-            Ok(endpoint) => return Ok(endpoint),
-            Err(error) => {
-                tracing::debug!(?error, port, "browser endpoint probe not ready");
+        match read_devtools_active_port(profile) {
+            Ok(active) => {
+                let input = format!("http://127.0.0.1:{}", active.port);
+                match LocalCdpEndpoint::resolve(&input).await {
+                    Ok(endpoint)
+                        if endpoint.browser_websocket_url().path() == active.browser_path =>
+                    {
+                        // Check the child again after discovery so a stale profile file cannot
+                        // win a termination race between the initial liveness check and HTTP
+                        // readiness probing.
+                        if process.is_alive() {
+                            return Ok(endpoint);
+                        }
+                        return Err(LaunchError::ProcessTerminated);
+                    }
+                    Ok(endpoint) => {
+                        tracing::debug!(
+                            port = active.port,
+                            discovered_path = endpoint.browser_websocket_url().path(),
+                            active_path = active.browser_path,
+                            "browser endpoint path does not match the profile active-port file"
+                        );
+                    }
+                    Err(error) => {
+                        tracing::debug!(
+                            ?error,
+                            port = active.port,
+                            "browser endpoint probe not ready"
+                        );
+                    }
+                }
             }
+            Err(error) => tracing::debug!(?error, "browser active-port file not ready"),
         }
-        tokio::time::sleep(Duration::from_millis(25)).await;
+        // The startup deadline is the bound. Yielding avoids an arbitrary sleep and lets the
+        // child process publish its file and socket without reintroducing port allocation logic.
+        tokio::task::yield_now().await;
     }
-}
-
-fn free_loopback_port() -> std::io::Result<u16> {
-    let listener = TcpListener::bind(("127.0.0.1", 0))?;
-    Ok(listener.local_addr()?.port())
 }
 
 fn emit_launch_failed(reason: &'static str) {
@@ -374,5 +447,53 @@ mod tests {
         let _ = ManagedProfile::Reusable {
             name: ProfileIdentity::new("profile").unwrap(),
         };
+    }
+
+    #[test]
+    fn active_port_file_parser_accepts_chrome_output_and_rejects_tampering_shapes() {
+        assert_eq!(
+            parse_devtools_active_port("43127\n/devtools/browser/browser-id-1\n"),
+            Ok(DevToolsActivePort {
+                port: 43127,
+                browser_path: "/devtools/browser/browser-id-1".to_owned(),
+            })
+        );
+        for contents in [
+            "0\n/devtools/browser/id\n",
+            "9222\n/devtools/page/id\n",
+            "9222\n/devtools/browser/id/extra\n",
+            "9222\n/devtools/browser/id\nattacker\n",
+            "not-a-port\n/devtools/browser/id\n",
+        ] {
+            assert!(
+                parse_devtools_active_port(contents).is_err(),
+                "{contents:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn endpoint_wait_reports_process_exit_without_an_active_port() {
+        let profile = tempfile::tempdir().unwrap();
+        let mut command = if cfg!(windows) {
+            let mut command = Command::new("cmd");
+            command.args(["/C", "exit 0"]);
+            command
+        } else {
+            let mut command = Command::new("sh");
+            command.args(["-c", "exit 0"]);
+            command
+        };
+        command.stdout(Stdio::null()).stderr(Stdio::null());
+        let child = command.spawn().unwrap();
+        let mut process = ManagedChromeProcess::from_child(child);
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            wait_for_endpoint(profile.path(), &mut process),
+        )
+        .await
+        .expect("a terminated child must not wait for the startup deadline");
+        assert!(matches!(result, Err(LaunchError::ProcessTerminated)));
+        process.force_kill_now();
     }
 }

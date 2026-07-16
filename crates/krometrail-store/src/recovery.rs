@@ -15,7 +15,7 @@ use crate::{
         maintenance::{UsageClass, UsageEntry},
         reconcile,
     },
-    persistence_error,
+    permissions, persistence_error,
     segments::{
         OPEN_SEGMENT_EXTENSION, RecordSpan, SEALED_FOOTER_LEN, SEALED_SEGMENT_EXTENSION,
         SEGMENT_HEADER_LEN, SealedFooter, SegmentHeader, Trailing, read_frame_at,
@@ -84,6 +84,8 @@ struct NormalizedSegment {
 /// into the index after their files have been sealed and synced.
 pub fn recover(index: &SqliteIndex) -> krometrail_core::Result<RecoveryReport> {
     let directory = index.segments_directory();
+    permissions::tighten_existing_directory(directory)
+        .map_err(|_| persistence_error("could not protect recording segments"))?;
     let initial = discover(directory)?;
     let mut report = RecoveryReport::default();
     let mut quarantined = BTreeSet::new();
@@ -223,6 +225,9 @@ enum FileAnalysisError {
 }
 
 fn analyze_file(candidate: &Candidate) -> Result<Analysis, FileAnalysisError> {
+    permissions::tighten_existing_file(&candidate.path).map_err(|error| {
+        FileAnalysisError::Operational(io_error("protect a segment during recovery", error))
+    })?;
     let bytes = fs::read(&candidate.path).map_err(|error| {
         FileAnalysisError::Operational(io_error("read a segment during recovery", error))
     })?;

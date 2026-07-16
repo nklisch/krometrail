@@ -752,6 +752,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "thiserror",
  "tokio",
  "tokio-tungstenite 0.30.0",
@@ -770,6 +771,7 @@ dependencies = [
  "sha2",
  "temporal-vision",
  "thiserror",
+ "url",
  "uuid",
 ]
 

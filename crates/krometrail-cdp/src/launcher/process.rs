@@ -248,8 +248,18 @@ impl ManagedChromeProcess {
         {
             use std::os::unix::process::CommandExt;
             // The standard API performs setpgid in the child before exec, avoiding a parent-side
-            // race where a fast browser could exit before its group was isolated.
+            // race where a fast browser could exit before its group was isolated. The private
+            // umask is inherited by Chrome helpers so profile files created after launch remain
+            // owner-only rather than depending on the caller's umask.
             command.process_group(0);
+            unsafe {
+                command.pre_exec(|| {
+                    // SAFETY: `umask` is async-signal-safe and the callback runs between fork and
+                    // exec, where no Rust allocation or locking is performed.
+                    libc::umask(0o077);
+                    Ok(())
+                });
+            }
         }
     }
 }

@@ -12,7 +12,7 @@ use std::{
 use krometrail_core::{ArtifactId, CancellationSignal, ErrorCode, KrometrailError, NonEmptyText};
 use tokio::sync::oneshot;
 
-use crate::persistence_error;
+use crate::{permissions, persistence_error};
 
 const FILE_QUEUE_CAPACITY: usize = 8;
 
@@ -45,8 +45,21 @@ pub(crate) enum PublicationPhase {
 
 impl ArtifactFiles {
     pub(crate) fn open(directory: PathBuf) -> krometrail_core::Result<Self> {
-        fs::create_dir_all(&directory)
+        permissions::ensure_private_directory(&directory)
             .map_err(|error| io_error("create the artifact directory", error))?;
+        for entry in fs::read_dir(&directory)
+            .map_err(|error| io_error("inspect the artifact directory", error))?
+        {
+            let entry = entry.map_err(|error| io_error("inspect an artifact file", error))?;
+            if entry
+                .file_type()
+                .map_err(|error| io_error("inspect an artifact file type", error))?
+                .is_file()
+            {
+                permissions::tighten_existing_file(&entry.path())
+                    .map_err(|error| io_error("protect an existing artifact file", error))?;
+            }
+        }
         let (commands, receiver) = mpsc::sync_channel(FILE_QUEUE_CAPACITY);
         let worker_directory = directory.clone();
         std::thread::Builder::new()
@@ -174,9 +187,10 @@ fn publish_file(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(io_error("remove a stale artifact temporary file", error)),
     }
-    let mut file = OpenOptions::new()
-        .create_new(true)
-        .write(true)
+    let mut options = OpenOptions::new();
+    options.create_new(true).write(true);
+    permissions::configure_private_file(&mut options);
+    let mut file = options
         .open(&temp)
         .map_err(|error| io_error("create an artifact temporary file", error))?;
     file.write_all(bytes)
@@ -249,6 +263,41 @@ fn io_error(action: &str, error: std::io::Error) -> KrometrailError {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn artifact_directory_and_publication_are_owner_only_on_unix() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = TempDir::new().unwrap();
+        let files = ArtifactFiles::open(directory.path().join("artifacts")).unwrap();
+        let id = ArtifactId::from_uuid(uuid::Uuid::from_u128(99));
+        files
+            .publish(
+                id,
+                Arc::from(&b"png"[..]),
+                Arc::new(AtomicBool::new(false)),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            fs::metadata(files.directory())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(files.final_path(id))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
 
     #[tokio::test]
     async fn failpoints_leave_only_explicit_recoverable_file_states() {

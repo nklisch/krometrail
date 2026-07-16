@@ -57,9 +57,14 @@ impl SqliteIndex {
             .parent()
             .filter(|path| !path.as_os_str().is_empty())
             .ok_or_else(|| persistence_error("metadata database requires a parent directory"))?;
+        let parent_existed = parent.exists();
         fs::create_dir_all(parent)
             .map_err(|_| persistence_error("could not create the metadata directory"))?;
-        fs::create_dir_all(&config.segments_directory)
+        if !parent_existed {
+            crate::permissions::tighten_existing_directory(parent)
+                .map_err(|_| persistence_error("could not protect the metadata directory"))?;
+        }
+        crate::permissions::ensure_private_directory(&config.segments_directory)
             .map_err(|_| persistence_error("could not create the segment directory"))?;
 
         let mut connection = Connection::open_with_flags(
@@ -69,6 +74,8 @@ impl SqliteIndex {
                 | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )
         .map_err(|_| persistence_error("could not open the metadata database"))?;
+        crate::permissions::tighten_existing_file(&config.database_path)
+            .map_err(|_| persistence_error("could not protect the metadata database"))?;
         connection
             .busy_timeout(config.busy_timeout)
             .map_err(|_| persistence_error("could not configure metadata lock contention"))?;
@@ -98,6 +105,22 @@ impl SqliteIndex {
             ));
         }
         migrations::migrate(&mut connection)?;
+        for suffix in ["-wal", "-shm", "-journal"] {
+            let sidecar = config.database_path.with_file_name(format!(
+                "{}{}",
+                config
+                    .database_path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("index.sqlite3"),
+                suffix
+            ));
+            if sidecar.exists() {
+                crate::permissions::tighten_existing_file(&sidecar).map_err(|_| {
+                    persistence_error("could not protect a metadata database sidecar")
+                })?;
+            }
+        }
         Ok(Self {
             connection: Mutex::new(connection),
             database_path: config.database_path,
@@ -157,6 +180,36 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn open_protects_index_and_segment_paths_on_unix() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = TempDir::new().unwrap();
+        let index = SqliteIndex::open(IndexStoreConfig {
+            database_path: directory.path().join("index.sqlite3"),
+            segments_directory: directory.path().join("segments"),
+            busy_timeout: Duration::from_millis(321),
+        })
+        .unwrap();
+        assert_eq!(
+            std::fs::metadata(index.database_path())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert_eq!(
+            std::fs::metadata(index.segments_directory())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+    }
 
     #[test]
     fn open_applies_and_retains_required_connection_settings() {

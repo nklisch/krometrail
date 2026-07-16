@@ -8,7 +8,7 @@ use tokio::sync::oneshot;
 
 use crate::{
     index::deletion::{DeletionBatch, DeletionObjectKind},
-    persistence_error,
+    permissions, persistence_error,
 };
 
 const REMOVAL_QUEUE_CAPACITY: usize = 16;
@@ -49,9 +49,9 @@ impl RemovalWorker {
     ) -> krometrail_core::Result<Self> {
         let artifacts_directory = data_directory.join("artifacts");
         let trash_directory = data_directory.join(".trash");
-        fs::create_dir_all(&artifacts_directory)
+        permissions::ensure_private_directory(&artifacts_directory)
             .map_err(|error| io_error("create the artifact directory", error))?;
-        fs::create_dir_all(&trash_directory)
+        permissions::ensure_private_directory(&trash_directory)
             .map_err(|error| io_error("create the deletion staging directory", error))?;
         let (commands, receiver) = mpsc::sync_channel(REMOVAL_QUEUE_CAPACITY);
         let state = WorkerState {
@@ -129,7 +129,7 @@ impl WorkerState {
 
     fn stage(&self, batch: &DeletionBatch) -> krometrail_core::Result<()> {
         let staging = self.staging_directory(batch);
-        fs::create_dir_all(&staging)
+        permissions::ensure_private_directory(&staging)
             .map_err(|error| io_error("create a deletion batch staging directory", error))?;
         for (position, object) in batch.objects.iter().enumerate() {
             let source = match object.kind {
