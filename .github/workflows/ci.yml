@@ -78,6 +78,7 @@ jobs:
           bash -n scripts/dev-install.sh
           bash -n tests/distribution-static.sh
           bash -n tests/installer-fixtures.sh
+          bash -n tests/plugin-bootstrap-fixtures.sh
 
       - name: Check distribution contracts
         run: bash tests/distribution-static.sh

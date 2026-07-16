@@ -17,8 +17,15 @@ fail() {
 make_release() {
   local version="$1"
   local dir="$STATE/releases/$version"
+  local assets=(
+    krometrail-linux-x64
+    krometrail-linux-arm64
+    krometrail-darwin-x64
+    krometrail-darwin-arm64
+  )
   mkdir -p "$dir"
-  cat >"$dir/krometrail-linux-x64" <<EOF
+  for asset in "${assets[@]}"; do
+    cat >"$dir/$asset" <<EOF
 #!/bin/sh
 if [ "\${1:-}" = "--version" ]; then
   printf 'krometrail $version\\n'
@@ -26,8 +33,9 @@ if [ "\${1:-}" = "--version" ]; then
 fi
 printf 'managed-$version:%s\\n' "\$*"
 EOF
-  chmod 700 "$dir/krometrail-linux-x64"
-  sha256sum "$dir/krometrail-linux-x64" | sed 's#  .*#  krometrail-linux-x64#' >"$dir/checksums.txt"
+    chmod 700 "$dir/$asset"
+  done
+  (cd "$dir" && sha256sum "${assets[@]}" >checksums.txt)
 }
 
 mkdir -p "$STATE/fake-bin" "$STATE/releases"
@@ -37,8 +45,8 @@ make_release 1.0.1
 cat >"$STATE/fake-bin/uname" <<'EOF'
 #!/bin/sh
 case "${1:-}" in
-  -s|'') printf 'Linux\n' ;;
-  -m) printf 'x86_64\n' ;;
+  -s|'') printf '%s\n' "${FAKE_UNAME_OS:-Linux}" ;;
+  -m) printf '%s\n' "${FAKE_UNAME_ARCH:-x86_64}" ;;
   *) exit 1 ;;
 esac
 EOF
@@ -72,7 +80,9 @@ version=$(printf '%s' "$url" | sed -n 's#.*releases/download/v\([0-9][0-9.]*\)/.
 [ -n "$version" ] || exit 23
 case "$url" in
   */checksums.txt) source="$FIXTURE_RELEASES/$version/checksums.txt" ;;
-  */krometrail-linux-x64) source="$FIXTURE_RELEASES/$version/krometrail-linux-x64" ;;
+  */krometrail-linux-x64|*/krometrail-linux-arm64|*/krometrail-darwin-x64|*/krometrail-darwin-arm64)
+    source="$FIXTURE_RELEASES/$version/${url##*/}"
+    ;;
   *) exit 24 ;;
 esac
 [ -f "$source" ] || exit 25
@@ -100,6 +110,8 @@ run_launcher() {
   PATH="$STATE/fake-bin:$PATH" \
     NETWORK_LOG="$STATE/network.log" \
     FIXTURE_RELEASES="$STATE/releases" \
+    FAKE_UNAME_OS="${FAKE_UNAME_OS:-Linux}" \
+    FAKE_UNAME_ARCH="${FAKE_UNAME_ARCH:-x86_64}" \
     KROMETRAIL_MANAGED_ROOT="$managed" \
     "$plugin/bin/krometrail" "$@"
 }
@@ -120,6 +132,39 @@ FAKE_CURL_MODE=fail warm_stdout=$(run_launcher "$STATE/plugin-100" "$managed" pr
 [[ "$warm_stdout" == 'managed-1.0.0:probe' ]] || fail "warm offline start failed"
 cmp -s "$STATE/network.log" "$STATE/network.before" || fail "warm start performed network work"
 [[ ! -s "$STATE/warm.stderr" ]] || fail "warm start emitted bootstrap diagnostics"
+
+# Every supported host partition selects its exact stable release asset.
+while read -r host_os host_arch expected_asset; do
+  platform_root="$STATE/platform-${host_os}-${host_arch}"
+  : >"$STATE/network.log"
+  platform_stdout=$(FAKE_UNAME_OS="$host_os" FAKE_UNAME_ARCH="$host_arch" \
+    run_launcher "$STATE/plugin-100" "$platform_root" platform 2>"$STATE/platform.stderr")
+  [[ "$platform_stdout" == 'managed-1.0.0:platform' ]] || fail "$host_os/$host_arch bootstrap failed"
+  grep -Fq "/$expected_asset" "$STATE/network.log" || fail "$host_os/$host_arch selected the wrong asset"
+  [[ -x "$platform_root/versions/1.0.0/krometrail" ]] || fail "$host_os/$host_arch did not publish a managed binary"
+done <<'EOF'
+Linux x86_64 krometrail-linux-x64
+Linux aarch64 krometrail-linux-arm64
+Darwin x86_64 krometrail-darwin-x64
+Darwin arm64 krometrail-darwin-arm64
+EOF
+
+# Unsupported host partitions fail explicitly without stdout or publication.
+if FAKE_UNAME_OS=FreeBSD run_launcher "$STATE/plugin-100" "$STATE/unsupported-os" mcp \
+  >"$STATE/unsupported-os.stdout" 2>"$STATE/unsupported-os.stderr"; then
+  fail "unsupported operating system was accepted"
+fi
+[[ ! -s "$STATE/unsupported-os.stdout" ]] || fail "unsupported operating system wrote to stdout"
+[[ ! -e "$STATE/unsupported-os/versions/1.0.0/krometrail" ]] || fail "unsupported operating system published a binary"
+grep -Fq 'unsupported on FreeBSD' "$STATE/unsupported-os.stderr" || fail "unsupported operating system error was not explicit"
+
+if FAKE_UNAME_ARCH=riscv64 run_launcher "$STATE/plugin-100" "$STATE/unsupported-arch" mcp \
+  >"$STATE/unsupported-arch.stdout" 2>"$STATE/unsupported-arch.stderr"; then
+  fail "unsupported architecture was accepted"
+fi
+[[ ! -s "$STATE/unsupported-arch.stdout" ]] || fail "unsupported architecture wrote to stdout"
+[[ ! -e "$STATE/unsupported-arch/versions/1.0.0/krometrail" ]] || fail "unsupported architecture published a binary"
+grep -Fq 'architecture riscv64' "$STATE/unsupported-arch.stderr" || fail "unsupported architecture error was not explicit"
 
 # A new plugin version installs alongside the old release and selects itself.
 copy_plugin 1.0.1 "$STATE/plugin-101"

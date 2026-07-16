@@ -10,6 +10,7 @@ PAGES="$ROOT/.github/workflows/deploy-pages.yml"
 INSTALLER="$ROOT/scripts/install.sh"
 DEV_INSTALLER="$ROOT/scripts/dev-install.sh"
 INSTALLER_FIXTURES="$ROOT/tests/installer-fixtures.sh"
+PLUGIN_BOOTSTRAP_FIXTURES="$ROOT/tests/plugin-bootstrap-fixtures.sh"
 PLUGIN_STATIC="$ROOT/tests/plugin-static.sh"
 VALIDATE="$ROOT/scripts/validate-release-tag.sh"
 VERIFY_TAG="$ROOT/scripts/verify-release-tag-identity.sh"
@@ -473,6 +474,7 @@ cmp -s "$lock_tmp/Cargo.lock" "$lock_tmp/Cargo.lock.before" || fail "failed lock
 rm -rf "$lock_tmp"
 
 bash "$INSTALLER_FIXTURES"
+bash "$PLUGIN_BOOTSTRAP_FIXTURES"
 bash "$PLUGIN_STATIC"
 
 echo "distribution contracts: ok"
