@@ -56,7 +56,7 @@ fi
 # comments: every matrix artifact must execute --version before attestation and
 # upload, with explicit arm64 emulation when native capacity is unavailable.
 require_text "$RELEASE" 'houseabsolute/actions-rust-cross@21b0f18dc621b25bfae556ff2791fca4173121e8'
-require_text "$RELEASE" 'cross-version: 0.2.5'
+require_text "$RELEASE" 'cross-version: v0.2.5'
 require_text "$CROSS_CONFIG" '[target.x86_64-unknown-linux-musl]'
 require_text "$CROSS_CONFIG" '[target.aarch64-unknown-linux-musl]'
 require_text "$CROSS_CONFIG" 'ghcr.io/cross-rs/x86_64-unknown-linux-musl@sha256:'

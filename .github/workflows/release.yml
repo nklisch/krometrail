@@ -112,7 +112,7 @@ jobs:
           command: build
           target: ${{ matrix.target }}
           args: "--locked --release"
-          cross-version: 0.2.5
+          cross-version: v0.2.5
 
       - name: Build native release binary
         if: contains(matrix.target, 'linux-musl') == false
