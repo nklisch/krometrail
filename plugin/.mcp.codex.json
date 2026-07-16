@@ -1,0 +1,10 @@
+{
+  "krometrail": {
+    "command": "sh",
+    "args": [
+      "bin/krometrail",
+      "mcp"
+    ],
+    "cwd": "."
+  }
+}

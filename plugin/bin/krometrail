@@ -1,0 +1,65 @@
+#!/bin/sh
+# Package-owned Krometrail launcher. stdout is reserved for the MCP child.
+set -eu
+
+PLUGIN_ROOT=$(CDPATH= cd -P "$(dirname "$0")/.." && pwd)
+VERSION_FILE="$PLUGIN_ROOT/version"
+INSTALLER="$PLUGIN_ROOT/scripts/install-managed.sh"
+
+[ -f "$VERSION_FILE" ] || {
+  printf 'krometrail plugin error: missing version marker\n' >&2
+  exit 1
+}
+EXPECTED_VERSION=$(cat "$VERSION_FILE")
+printf '%s\n' "$EXPECTED_VERSION" | awk '
+  length($0) <= 64 && $0 ~ /^[0-9]+[.][0-9]+[.][0-9]+$/ { valid=1 }
+  END { exit(valid ? 0 : 1) }
+' || {
+  printf 'krometrail plugin error: invalid version marker\n' >&2
+  exit 1
+}
+
+if [ -n "${KROMETRAIL_MANAGED_ROOT:-}" ]; then
+  MANAGED_ROOT=$KROMETRAIL_MANAGED_ROOT
+elif [ -n "${PLUGIN_DATA:-}" ]; then
+  MANAGED_ROOT=$PLUGIN_DATA
+elif [ -n "${CLAUDE_PLUGIN_DATA:-}" ]; then
+  MANAGED_ROOT=$CLAUDE_PLUGIN_DATA
+elif [ -n "${XDG_DATA_HOME:-}" ]; then
+  MANAGED_ROOT=$XDG_DATA_HOME/krometrail/plugin
+else
+  : "${HOME:?HOME is required when no plugin data directory is available}"
+  MANAGED_ROOT=$HOME/.local/share/krometrail/plugin
+fi
+
+case "$MANAGED_ROOT" in
+  /*) ;;
+  *)
+    printf 'krometrail plugin error: managed data path must be absolute\n' >&2
+    exit 1
+    ;;
+esac
+
+MANAGED_BINARY="$MANAGED_ROOT/versions/$EXPECTED_VERSION/krometrail"
+expected_identity="krometrail $EXPECTED_VERSION"
+
+managed_binary_is_current() {
+  [ -f "$MANAGED_BINARY" ] && [ ! -L "$MANAGED_BINARY" ] &&
+    [ "$("$MANAGED_BINARY" --version 2>/dev/null || true)" = "$expected_identity" ]
+}
+
+if ! managed_binary_is_current; then
+  [ -x "$INSTALLER" ] || {
+    printf 'krometrail plugin error: managed installer is missing or not executable\n' >&2
+    exit 1
+  }
+  printf 'krometrail plugin: installing managed release v%s\n' "$EXPECTED_VERSION" >&2
+  "$INSTALLER" "$EXPECTED_VERSION" "$MANAGED_ROOT"
+fi
+
+managed_binary_is_current || {
+  printf 'krometrail plugin error: managed release v%s is unavailable after installation\n' "$EXPECTED_VERSION" >&2
+  exit 1
+}
+
+exec "$MANAGED_BINARY" "$@"

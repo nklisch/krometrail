@@ -1,10 +1,13 @@
 {
   "mcpServers": {
     "krometrail": {
-      "command": "krometrail",
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/krometrail",
       "args": [
         "mcp"
-      ]
+      ],
+      "env": {
+        "KROMETRAIL_MANAGED_ROOT": "${CLAUDE_PLUGIN_DATA}"
+      }
     }
   }
 }

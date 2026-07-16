@@ -16,7 +16,7 @@
     "debugging"
   ],
   "skills": "./skills/",
-  "mcpServers": "./.mcp.json",
+  "mcpServers": "./.mcp.codex.json",
   "interface": {
     "displayName": "Krometrail",
     "shortDescription": "Browser control and temporal visual evidence",

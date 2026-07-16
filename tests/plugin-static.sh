@@ -7,7 +7,11 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PLUGIN="$ROOT/plugin"
 CLAUDE_MANIFEST="$PLUGIN/.claude-plugin/plugin.json"
 CODEX_MANIFEST="$PLUGIN/.codex-plugin/plugin.json"
-MCP="$PLUGIN/.mcp.json"
+CLAUDE_MCP="$PLUGIN/.mcp.json"
+CODEX_MCP="$PLUGIN/.mcp.codex.json"
+PLUGIN_VERSION="$PLUGIN/version"
+LAUNCHER="$PLUGIN/bin/krometrail"
+MANAGED_INSTALLER="$PLUGIN/scripts/install-managed.sh"
 SKILL="$PLUGIN/skills/krometrail/SKILL.md"
 EVIDENCE="$PLUGIN/skills/krometrail/references/evidence.md"
 SETUP="$PLUGIN/skills/krometrail/references/setup.md"
@@ -27,13 +31,14 @@ require_text() {
 }
 
 for file in \
-  "$CLAUDE_MANIFEST" "$CODEX_MANIFEST" "$MCP" "$SKILL" "$EVIDENCE" "$SETUP" \
-  "$OPENAI" "$CLAUDE_MARKETPLACE" "$CODEX_MARKETPLACE"; do
+  "$CLAUDE_MANIFEST" "$CODEX_MANIFEST" "$CLAUDE_MCP" "$CODEX_MCP" "$PLUGIN_VERSION" \
+  "$LAUNCHER" "$MANAGED_INSTALLER" "$SKILL" "$EVIDENCE" "$SETUP" "$OPENAI" \
+  "$CLAUDE_MARKETPLACE" "$CODEX_MARKETPLACE"; do
   [[ -f "$file" ]] || fail "missing ${file#"$ROOT/"}"
 done
 
 command -v jq >/dev/null 2>&1 || fail "jq is required"
-jq empty "$CLAUDE_MANIFEST" "$CODEX_MANIFEST" "$MCP" "$CLAUDE_MARKETPLACE" "$CODEX_MARKETPLACE"
+jq empty "$CLAUDE_MANIFEST" "$CODEX_MANIFEST" "$CLAUDE_MCP" "$CODEX_MCP" "$CLAUDE_MARKETPLACE" "$CODEX_MARKETPLACE"
 
 cargo_version="$(awk '
   /^\[package\][[:space:]]*$/ { in_package=1; next }
@@ -54,16 +59,35 @@ for manifest in "$CLAUDE_MANIFEST" "$CODEX_MANIFEST"; do
 done
 
 jq -e '
+  .mcpServers == "./.mcp.json"
+' "$CLAUDE_MANIFEST" >/dev/null || fail "Claude MCP component pointer is incomplete"
+
+jq -e '
   .skills == "./skills/" and
-  .mcpServers == "./.mcp.json" and
+  .mcpServers == "./.mcp.codex.json" and
   .interface.displayName == "Krometrail"
 ' "$CODEX_MANIFEST" >/dev/null || fail "Codex component pointers are incomplete"
 
 jq -e '
   keys == ["mcpServers"] and
   (.mcpServers | keys) == ["krometrail"] and
-  .mcpServers.krometrail == {"command":"krometrail","args":["mcp"]}
-' "$MCP" >/dev/null || fail "MCP must be the direct krometrail mcp stdio command"
+  .mcpServers.krometrail == {
+    "command":"${CLAUDE_PLUGIN_ROOT}/bin/krometrail",
+    "args":["mcp"],
+    "env":{"KROMETRAIL_MANAGED_ROOT":"${CLAUDE_PLUGIN_DATA}"}
+  }
+' "$CLAUDE_MCP" >/dev/null || fail "Claude MCP must launch the package-owned managed binary"
+
+jq -e '
+  keys == ["krometrail"] and
+  .krometrail == {"command":"sh","args":["bin/krometrail","mcp"],"cwd":"."}
+' "$CODEX_MCP" >/dev/null || fail "Codex MCP must launch relative to the installed plugin root"
+
+[[ "$(cat "$PLUGIN_VERSION")" == "$cargo_version" ]] || fail "plugin version marker does not match Cargo"
+[[ -x "$LAUNCHER" && -x "$MANAGED_INSTALLER" ]] || fail "plugin bootstrap scripts must be executable"
+require_text "$LAUNCHER" 'exec "$MANAGED_BINARY" "$@"'
+require_text "$MANAGED_INSTALLER" 'checksum verification failed'
+require_text "$MANAGED_INSTALLER" 'release-assets.githubusercontent.com'
 
 jq -e '.permissions.allow == []' "$PLUGIN/settings.json" >/dev/null || \
   fail "plugin must not silently auto-allow browser-control tools"
@@ -134,7 +158,7 @@ fi
 
 # The sibling marketplace is a publisher, never a copied package authority.
 SKILLS_REPO="${KROMETRAIL_SKILLS_REPO:-$ROOT/../skills}"
-if [[ -d "$SKILLS_REPO/.git" ]]; then
+if [[ -n "${KROMETRAIL_SKILLS_REPO:-}" || ( -f "$SKILLS_REPO/.claude-plugin/marketplace.json" && -f "$SKILLS_REPO/.agents/plugins/marketplace.json" ) ]]; then
   sibling_claude="$SKILLS_REPO/.claude-plugin/marketplace.json"
   sibling_codex="$SKILLS_REPO/.agents/plugins/marketplace.json"
   [[ -f "$sibling_claude" && -f "$sibling_codex" ]] || fail "sibling native catalogs are incomplete"
