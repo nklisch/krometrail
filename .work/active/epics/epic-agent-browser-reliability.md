@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-reliability
 kind: epic
-stage: drafting
+stage: implementing
 tags: [browser, agent-ux, storage, security]
 parent: null
 depends_on: []
@@ -47,3 +47,36 @@ Implementation must preserve the stable-release contract: changes are additive o
 ## Simplification opportunity
 
 Consolidate outcome classification, diagnostic correlation, target defaulting, element preparation, and schema projection at their existing boundaries. Remove issue-specific recovery folklore from the skill once the runtime can expose the real state directly.
+
+## Design decisions
+
+- **Feature boundaries**: split by caller-visible capability rather than crate layer so each feature owns one coherent contract and its integration evidence.
+- **Diagnostic dependency**: land durable diagnostics before capture and lifecycle correction so newly reproduced failures retain causal evidence instead of repeating the current blind spot.
+- **Guidance timing**: agent-facing schemas and skill guidance land after runtime behavior so examples and recovery advice describe the shipped contract.
+
+## Decomposition
+
+The decomposition keeps independent input and viewport work parallel while ordering causal diagnostics before capture/lifecycle repairs and ordering agent guidance after every runtime contract it documents. The durable-diagnostics child pre-existed from the initial scope pass; epic design retained it and filled the remaining capability gaps.
+
+### Child features
+
+- `durable-agent-diagnostics` — bounded private logs, sanitized causal events, correlation identifiers, and discoverable log location — depends on: `[]`
+- `epic-agent-browser-reliability-capture-outcomes` — retained-capture health, action/evidence outcome separation, shutdown classification, and compositor-ready post-operation evidence for #1, #2, and #9 — depends on: `[durable-agent-diagnostics]`
+- `epic-agent-browser-reliability-managed-session-lifecycle` — cold Chrome discovery, managed-page focus recovery, and truthful cleanup results for #3, #4, and #5 — depends on: `[durable-agent-diagnostics]`
+- `epic-agent-browser-reliability-interaction-semantics` — platform-correct fill/key behavior, selected-target defaults, reference lifetime, and off-screen element preparation for #7, #8, and #11 — depends on: `[]`
+- `epic-agent-browser-reliability-viewport-emulation` — explicit target-scoped viewport/device override and clear behavior for #10 — depends on: `[]`
+- `epic-agent-browser-reliability-agent-contracts` — dereferenced MCP declarations, precise validation paths, and economical evidence/debugging guidance for #6 and #12 — depends on: `[durable-agent-diagnostics, epic-agent-browser-reliability-capture-outcomes, epic-agent-browser-reliability-managed-session-lifecycle, epic-agent-browser-reliability-interaction-semantics, epic-agent-browser-reliability-viewport-emulation]`
+
+### Simplification arcs
+
+- `durable-agent-diagnostics` centralizes tracing initialization and redaction instead of issue-specific stderr diagnostics.
+- `epic-agent-browser-reliability-capture-outcomes` replaces conflated success/failure classification with one composable outcome model.
+- `epic-agent-browser-reliability-managed-session-lifecycle` removes false cleanup alarms and implicit external-focus folklore.
+- `epic-agent-browser-reliability-interaction-semantics` consolidates element preparation and key dispatch rather than maintaining selector/reference and platform-specific workarounds.
+- `epic-agent-browser-reliability-agent-contracts` removes hand-maintained examples where generated schemas can remain authoritative.
+
+### Decomposition risks
+
+- Capture issue #1 is not reproducible against a clean temporary store; diagnostics must land first and the capture feature must preserve an honest unresolved-cause path until a failing boundary test identifies the rejected stage.
+- Post-action compositor readiness must remain bounded so hidden/background targets cannot deadlock an interaction.
+- Viewport emulation changes source-frame geometry mid-session; retained metadata and artifact normalization must continue to make that transition explicit.
