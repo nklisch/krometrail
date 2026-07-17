@@ -1,0 +1,49 @@
+---
+id: epic-agent-browser-reliability
+kind: epic
+stage: drafting
+tags: [browser, agent-ux, storage, security]
+parent: null
+depends_on: []
+release_binding: null
+gate_origin: null
+created: 2026-07-17
+updated: 2026-07-17
+---
+
+# Agent browser reliability
+
+## Brief
+
+Resolve the complete set of walkthrough findings reported in GitHub issues #1 through #12 and ship the result as one stable 1.x release. The work must make retained capture health, browser-control outcomes, post-operation evidence, target selection, structured references, keyboard/fill/pointer semantics, browser lifecycle, MCP schemas, responsive viewport control, and agent guidance agree as one coherent public contract.
+
+The epic includes durable private diagnostics as the common debugging substrate. Failed and degraded operations must retain safe causal detail and a correlation path that agents can use from any working directory, while public responses remain actionable without log access and logs remain bounded, local, and free of browser content or secrets.
+
+Implementation must preserve the stable-release contract: changes are additive or corrective, retained evidence remains readable, generated schemas and registry-derived surfaces stay single-source, and release assets/plugin activation continue to select the exact Cargo version. Every issue requires regression or contract evidence, the complete Rust quality gate, a fresh-context aggregate review, and release-helper publication only after the in-scope queue is terminal.
+
+## Strategic decisions
+
+- **Delivery boundary**: treat the twelve reports as one release-quality capability arc rather than twelve independent patches because several share public outcome, evidence, and targeting contracts.
+- **Compatibility**: preserve existing valid requests and retained evidence; accept safer defaults and add diagnostic/result fields without removing stable 1.x shapes.
+- **Capture posture**: control outcome, live observation, and retained temporal evidence are distinct facts and must be reported independently.
+- **Viewport posture**: add explicit target-scoped viewport/device override and clear behavior; avoid an opaque preset registry until explicit metrics are proven.
+- **Release posture**: complete and review the entire epic before invoking the repository release helper; do not bind individual items to a version early.
+
+## Issue inventory
+
+- #1 managed screencast failure and missing retained-capture diagnostics
+- #2 control/navigation outcome conflated with observation or capture outcome
+- #3 cold standard macOS Chrome discovery failure
+- #4 hidden managed-page pointer focus recovery
+- #5 false `shutdown_incomplete` after cleanup is complete
+- #6 nested MCP schemas projected as `unknown`
+- #7 replace-mode password fill appends on macOS
+- #8 modifier chords and activation-key dispatch semantics
+- #9 dark or partial post-interaction screenshots
+- #10 first-class viewport resizing and device emulation
+- #11 target defaults, reference lifetime, and off-screen click behavior
+- #12 economical interaction-evidence guidance
+
+## Simplification opportunity
+
+Consolidate outcome classification, diagnostic correlation, target defaulting, element preparation, and schema projection at their existing boundaries. Remove issue-specific recovery folklore from the skill once the runtime can expose the real state directly.

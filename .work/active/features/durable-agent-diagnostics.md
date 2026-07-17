@@ -3,7 +3,7 @@ id: durable-agent-diagnostics
 kind: feature
 stage: drafting
 tags: [browser, storage, agent-ux, security]
-parent: null
+parent: epic-agent-browser-reliability
 depends_on: []
 release_binding: null
 gate_origin: null
