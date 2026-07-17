@@ -126,8 +126,7 @@ promote multiple spellings.
 **Files**:
 - `crates/krometrail-cdp/src/control/keyboard.rs`
 - `crates/krometrail-cdp/src/control/tests.rs`
-- `crates/krometrail-cdp/tests/browser_control_qualification.rs` (or the existing real-browser
-  control qualification file discovered at implementation time)
+- `crates/krometrail-cdp/tests/verified_interactions.rs`
 
 **Story**: `epic-agent-browser-reliability-interaction-semantics-input-contracts`
 
@@ -256,8 +255,7 @@ generation; this feature intentionally corrects that external contract.
 - `crates/krometrail-cdp/src/control/snapshot.rs`
 - `crates/krometrail-cdp/src/control/pointer.rs`
 - `crates/krometrail-cdp/src/control/tests.rs`
-- `crates/krometrail-cdp/tests/browser_control_qualification.rs` (or the existing real-browser
-  control qualification file discovered at implementation time)
+- `crates/krometrail-cdp/tests/verified_interactions.rs`
 
 **Story**: `epic-agent-browser-reliability-interaction-semantics-pointer-preparation`
 
