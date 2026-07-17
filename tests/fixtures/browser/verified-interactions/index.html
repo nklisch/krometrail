@@ -16,16 +16,20 @@
     #drop-target { width: 140px; height: 80px; margin-top: 12px; background: #ddd; }
     #scroll-box { width: 260px; height: 100px; overflow: auto; border: 1px solid #333; }
     #scroll-content { height: 500px; padding-top: 430px; }
+    #responsive-probe { width: 11px; height: 1px; }
+    @media (max-width: 500px) { #responsive-probe { width: 22px; } }
     .hidden { display: none; }
   </style>
 </head>
 <body>
   <main>
+    <div id="responsive-probe" aria-hidden="true"></div>
     <button id="click-target">Click target</button>
     <output id="click-output">not clicked</output>
     <button id="disabled-target" disabled>Disabled target</button>
     <button id="hidden-target" class="hidden">Hidden target</button>
     <label>Text <input id="text-input" value="initial"></label>
+    <form id="password-form"><label>Password <input id="password-input" type="password"></label><button>Submit password</button></form>
     <label>Area <textarea id="textarea">area</textarea></label>
     <label>Check <input id="checkbox" type="checkbox"></label>
     <label>Choice <select id="select"><option value="one">One</option><option value="two">Two</option><option value="three">Three</option></select></label>
@@ -42,7 +46,7 @@
     <button id="scrolled-click-target">Scrolled click target</button>
   </main>
   <script>
-    const state = { clicks: 0, changes: 0, keydowns: [], drops: 0, coordinateClicks: 0, scrolledClicks: 0, dialogsScheduled: 0 };
+    const state = { clicks: 0, changes: 0, keydowns: [], drops: 0, coordinateClicks: 0, scrolledClicks: 0, dialogsScheduled: 0, passwordSubmits: 0 };
     window.fixtureState = state;
     const byId = id => document.getElementById(id);
     byId('click-target').addEventListener('click', () => {
@@ -51,6 +55,8 @@
     });
     byId('text-input').addEventListener('change', () => state.changes++);
     byId('text-input').addEventListener('keydown', event => state.keydowns.push(`${event.ctrlKey ? 'Control+' : ''}${event.key}`));
+    byId('password-input').value = 'x'.repeat(11);
+    byId('password-form').addEventListener('submit', event => { event.preventDefault(); state.passwordSubmits++; });
     byId('drag-source').addEventListener('dragstart', event => event.dataTransfer.setData('text/plain', 'fixture'));
     byId('drop-target').addEventListener('dragover', event => event.preventDefault());
     byId('drop-target').addEventListener('drop', event => { event.preventDefault(); state.drops++; byId('drop-target').textContent = 'Dropped'; });

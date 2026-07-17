@@ -135,12 +135,12 @@ Structured snapshot identifiers are implemented domain types shared by observati
 and action requests:
 
 ```text
-SnapshotGeneration  # non-zero generation for one target snapshot
-SnapshotNodeId      # non-zero local node identity within a snapshot
+SnapshotGeneration  # non-zero generation for one target attachment/document epoch
+SnapshotNodeId      # non-zero backing-node identity within the active document snapshot
 NodeReference       # target, generation, and node identity
 ```
 
-`PageSnapshot` owns one generation and validates preorder nodes, target scope, and
+`PageSnapshot` reports its active document generation and validates preorder nodes, target scope, and
 actionable references. The CDP control adapter owns the active per-target registry,
 backing DOM-node bindings, document fingerprint, and attachment-generation fence;
 its stale-reference boundary is described below.
@@ -229,6 +229,12 @@ For each target it owns:
 
 Target creation and closure do not affect unrelated target streams. A target-level failure is reported without terminating the browser session unless the browser connection itself is lost. Target state is reduced by one serialized state machine; asynchronous transport and process tasks only submit inputs or execute emitted effects. Outbound session events use bounded subscriber channels with revision-gap recovery through `targets()`; cdpkit's private upstream queue is not represented as a measurable product metric.
 
+Each target may retain one acknowledged viewport override. Applying or clearing it is transactional:
+the adapter changes device metrics and touch emulation, observes the effective CSS visual viewport,
+then commits supervisor state. Reconnect restores the exact target-key override before capture resumes;
+a restore failure is target-local. Capture remains continuous across acknowledged geometry changes,
+and each frame retains its own viewport and device scale so artifact generation can split visual epochs.
+
 ## Capture Configuration Flow
 
 Capture cadence is a session-owned part of the browser connection contract, not a process-wide configuration authority. The core browser port owns the typed `every_nth_frame` value and validates the inclusive 1..=60 boundary with a default of 1 on both launch and attach requests. The MCP lifecycle tools generate their schemas from those same request types, so humans and agents use one public contract.
@@ -304,8 +310,9 @@ node bindings. Before an action or reference-based region request it:
 4. checks the requested visibility or actionability requirement;
 5. obtains current geometry and dispatches the operation.
 
-Navigation, document replacement, target closure, reconnect, and a fresh snapshot
-invalidate the old generation. The adapter returns a structured stale-reference
+Navigation, document replacement, target closure, and reconnect invalidate the old generation. A
+fresh snapshot of the same attached document retains the generation and stable node identifiers
+for backing DOM nodes that remain present; disappeared bindings are removed. The adapter returns a structured stale-reference
 error instead of guessing at a replacement node. Coordinate actions bypass
 structured references and declare their coordinate space explicitly.
 
@@ -578,12 +585,15 @@ Failures remain inside the narrowest responsible boundary:
 - a tool validation failure does not reach the domain;
 - a stale reference fails one action;
 - a target closure ends one target stream;
-- a frame-write failure records a gap and can pause that stream;
+- a terminal capture failure preserves its first sanitized failure stage and degrades later tool responses without disabling current-state control;
 - an artifact failure does not interrupt capture;
 - an SQLite failure stops persistence before accepting unsupported writes;
 - an unrecoverable browser connection ends the session after flushing accepted data.
 
-All long-running tasks participate in structured cancellation. Process shutdown waits for bounded flushing and then reports incomplete work.
+All long-running tasks participate in structured cancellation. Process shutdown uses one aggregate
+deadline for bounded flushing and cleanup. Capture, event, detach, or close-command degradation is
+reported separately once process and profile authority are released; `shutdown_incomplete` means a
+concrete managed process or profile authority still remains.
 
 ## Observability
 

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Report Krometrail Issue"
+  short_description: "Draft safe Krometrail GitHub reports"
+  default_prompt: "Use $report-krometrail-issue to prepare a privacy-safe Krometrail issue report."

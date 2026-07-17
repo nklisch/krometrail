@@ -524,6 +524,7 @@ pub struct ScreenshotRequest {
 }
 #[derive(Deserialize, schemars::JsonSchema)]
 struct ScreenshotRequestWire {
+    #[serde(default)]
     page: PageSelection,
     target: ScreenshotTarget,
     format: ImageFormat,
@@ -649,6 +650,7 @@ macro_rules! page_request {
     ($name:ident) => {
         #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
         pub struct $name {
+            #[serde(default)]
             pub target: PageSelection,
         }
 
@@ -673,8 +675,10 @@ pub struct ReadOnlyEvaluationRequest {
 }
 #[derive(Deserialize, schemars::JsonSchema)]
 struct ReadOnlyEvaluationRequestWire {
+    #[serde(default)]
     target: PageSelection,
     expression: NonEmptyText,
+    #[serde(default)]
     await_promise: bool,
 }
 impl ReadOnlyEvaluationRequest {

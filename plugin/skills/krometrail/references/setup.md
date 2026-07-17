@@ -99,6 +99,9 @@ files from a native plugin cache into manual configuration.
   assume a remote endpoint.
 - **Tools present but actions require approval:** this plugin intentionally does not auto-allow every
   browser-control tool. Follow operator and harness permission policy.
+- **Failed/degraded response includes diagnostics:** use its exact `correlation_id` and `log_path`.
+  Search only a narrow correlation-centered excerpt and disclose only sanitized event/error metadata;
+  never attach the complete private log.
 
 ## Update and removal
 

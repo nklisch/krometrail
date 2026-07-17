@@ -16,6 +16,8 @@ SKILL="$PLUGIN/skills/krometrail/SKILL.md"
 EVIDENCE="$PLUGIN/skills/krometrail/references/evidence.md"
 SETUP="$PLUGIN/skills/krometrail/references/setup.md"
 OPENAI="$PLUGIN/skills/krometrail/agents/openai.yaml"
+REPORT_SKILL="$PLUGIN/skills/report-krometrail-issue/SKILL.md"
+REPORT_OPENAI="$PLUGIN/skills/report-krometrail-issue/agents/openai.yaml"
 CLAUDE_MARKETPLACE="$ROOT/.claude-plugin/marketplace.json"
 CODEX_MARKETPLACE="$ROOT/.agents/plugins/marketplace.json"
 
@@ -33,6 +35,7 @@ require_text() {
 for file in \
   "$CLAUDE_MANIFEST" "$CODEX_MANIFEST" "$CLAUDE_MCP" "$CODEX_MCP" "$PLUGIN_VERSION" \
   "$LAUNCHER" "$MANAGED_INSTALLER" "$SKILL" "$EVIDENCE" "$SETUP" "$OPENAI" \
+  "$REPORT_SKILL" "$REPORT_OPENAI" \
   "$CLAUDE_MARKETPLACE" "$CODEX_MARKETPLACE"; do
   [[ -f "$file" ]] || fail "missing ${file#"$ROOT/"}"
 done
@@ -123,6 +126,17 @@ if grep -Eq '^(license|compatibility|metadata|allowed-tools|user-invocable|model
 fi
 require_text "$OPENAI" 'allow_implicit_invocation: true'
 require_text "$OPENAI" 'Use $krometrail'
+report_frontmatter="$(awk 'NR == 1 && $0 == "---" { active=1; next } active && $0 == "---" { exit } active { print }' "$REPORT_SKILL")"
+[[ "$report_frontmatter" == *"name: report-krometrail-issue"* ]] || fail "reporting skill name is missing"
+require_text "$REPORT_OPENAI" 'Use $report-krometrail-issue'
+for term in \
+  'nklisch/krometrail' \
+  'gh auth status' \
+  'gh issue list' \
+  'explicit confirmation' \
+  'never include a whole log'; do
+  grep -Fiq -- "$term" "$REPORT_SKILL" || fail "reporting skill is missing: $term"
+done
 
 for term in \
   'Follow the user' \

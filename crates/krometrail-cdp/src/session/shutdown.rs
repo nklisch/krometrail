@@ -63,16 +63,48 @@ pub(super) struct ShutdownPlan {
     pub(super) flush_capture: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ShutdownQuality {
+    Clean,
+    Degraded,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum RemainingResource {
+    ManagedProcess,
+    ManagedProfile,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct ShutdownReport {
+    pub(super) quality: ShutdownQuality,
+    pub(super) remaining: Vec<RemainingResource>,
+}
+
+pub(super) fn stop_outcome(
+    report: &ShutdownReport,
+    ownership: BrowserOwnership,
+) -> BrowserStopOutcome {
+    match ownership {
+        BrowserOwnership::Attached => BrowserStopOutcome::Detached,
+        BrowserOwnership::Managed if report.quality == ShutdownQuality::Degraded => {
+            BrowserStopOutcome::ManagedBrowserClosedDegraded
+        }
+        BrowserOwnership::Managed => BrowserStopOutcome::ManagedBrowserClosed,
+    }
+}
+
 pub(super) async fn perform_shutdown(
     connection: &mut Option<ConnectionResources>,
     process: &Option<Arc<Mutex<Option<ManagedChromeProcess>>>>,
     profile: &Option<Arc<Mutex<Option<ProfileLease>>>>,
     state: &SupervisorState,
     plan: ShutdownPlan,
-) -> Result<()> {
+) -> Result<ShutdownReport> {
     let started = std::time::Instant::now();
     let deadline = plan.deadline.instant();
     let mut failed = false;
+    let mut failed_phase = None;
 
     // Capture closes acceptance and drains before transport resources are detached. The same
     // absolute deadline is passed to every phase; the source samples only expose the budget at
@@ -89,8 +121,12 @@ pub(super) async fn perform_shutdown(
                     .shutdown(capture.session_id, deadline)
                     .await;
                 failed |= !outcome.complete;
+                if !outcome.complete {
+                    failed_phase.get_or_insert("capture_stop_drain_flush");
+                }
             } else {
                 failed = true;
+                failed_phase.get_or_insert("capture_stop_drain_flush");
             }
         }
     }
@@ -100,9 +136,13 @@ pub(super) async fn perform_shutdown(
         .remaining(ShutdownPhase::BrowserEventDrainFlush)
         .is_zero()
     {
-        failed |= !plan.browser_events.shutdown(deadline).await;
+        if !plan.browser_events.shutdown(deadline).await {
+            failed = true;
+            failed_phase.get_or_insert("browser_event_drain_flush");
+        }
     } else {
         failed = true;
+        failed_phase.get_or_insert("browser_event_drain_flush");
     }
 
     if let Some(connection) = connection.as_mut() {
@@ -120,6 +160,7 @@ pub(super) async fn perform_shutdown(
                 .is_zero()
             {
                 failed = true;
+                failed_phase.get_or_insert("target_detach");
                 break;
             }
             let result = tokio::time::timeout_at(
@@ -133,6 +174,7 @@ pub(super) async fn perform_shutdown(
             .await;
             if !result.is_ok_and(|result| result.is_ok()) {
                 failed = true;
+                failed_phase.get_or_insert("target_detach");
             }
         }
         if plan.ownership == BrowserOwnership::Managed
@@ -159,12 +201,15 @@ pub(super) async fn perform_shutdown(
             .await;
             if !result.is_ok_and(|result| result.is_ok()) {
                 failed = true;
+                failed_phase.get_or_insert("browser_close");
             }
         } else if plan.ownership == BrowserOwnership::Managed {
             failed = true;
+            failed_phase.get_or_insert("browser_close");
         }
     }
 
+    let mut process_remains = false;
     if let Some(process) = process {
         let owned = process.lock().expect("process lock").take();
         if let Some(mut owned) = owned {
@@ -174,22 +219,46 @@ pub(super) async fn perform_shutdown(
                     Ok(Ok(_)) => {}
                     Ok(Err(_)) | Err(_) => {
                         failed = true;
-                        owned.force_kill_now();
+                        failed_phase.get_or_insert("process_terminate");
+                        if !owned.force_kill_now() {
+                            process_remains = true;
+                            *process.lock().expect("process lock") = Some(owned);
+                        }
                     }
                 }
             } else {
                 failed = true;
-                owned.force_kill_now();
+                failed_phase.get_or_insert("process_terminate");
+                if !owned.force_kill_now() {
+                    process_remains = true;
+                    *process.lock().expect("process lock") = Some(owned);
+                }
             }
         }
     }
-    if let Some(profile) = profile {
-        profile.lock().expect("profile lock").take();
+    if !process_remains {
+        if let Some(profile) = profile {
+            profile.lock().expect("profile lock").take();
+        }
     }
     *connection = None;
     let exhausted = plan.deadline.remaining(ShutdownPhase::Complete).is_zero();
-    if failed || exhausted {
+    let profile_remains = profile
+        .as_ref()
+        .is_some_and(|profile| profile.lock().expect("profile lock").is_some());
+    let mut remaining = Vec::new();
+    if process_remains {
+        remaining.push(RemainingResource::ManagedProcess);
+    }
+    if profile_remains {
+        remaining.push(RemainingResource::ManagedProfile);
+    }
+    if !remaining.is_empty() {
+        let failure_stage = failed_phase.unwrap_or("deadline_complete");
         tracing::warn!(
+            event = "browser.shutdown.incomplete",
+            failure_stage,
+            error_code = "shutdown_incomplete",
             elapsed_ms = started.elapsed().as_millis() as u64,
             forced_termination = true,
             unfinished_task_count = 0_u64,
@@ -197,7 +266,11 @@ pub(super) async fn perform_shutdown(
         );
         Err(stable_error(
             ErrorCode::ShutdownIncomplete,
-            "browser shutdown was incomplete",
+            if process_remains {
+                "managed browser process remains after the shutdown deadline"
+            } else {
+                "managed browser profile remains after the shutdown deadline"
+            },
         ))
     } else {
         tracing::info!(
@@ -206,7 +279,14 @@ pub(super) async fn perform_shutdown(
             unfinished_task_count = 0_u64,
             "browser.shutdown.completed"
         );
-        Ok(())
+        Ok(ShutdownReport {
+            quality: if failed || exhausted {
+                ShutdownQuality::Degraded
+            } else {
+                ShutdownQuality::Clean
+            },
+            remaining,
+        })
     }
 }
 

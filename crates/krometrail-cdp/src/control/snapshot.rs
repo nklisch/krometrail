@@ -72,6 +72,8 @@ struct ActiveSnapshot {
     attachment_generation: u64,
     document: DocumentFingerprint,
     bindings: HashMap<SnapshotNodeId, NodeBinding>,
+    node_by_backend: HashMap<i64, SnapshotNodeId>,
+    next_node_id: u32,
 }
 
 #[derive(Default)]
@@ -214,9 +216,18 @@ impl PageControl {
             .map_err(|error| {
                 transport_error(error, ErrorCode::PageObservationFailed, bound.target_id)
             })?;
-        let generation = self.snapshots.next_generation(bound.target_id)?;
-        let (nodes, bindings, omitted_node_count) =
-            decode_ax_tree(&response, bound.target_id, generation)?;
+        let (generation, mut node_by_backend, mut next_node_id) = self.snapshots.begin_snapshot(
+            bound.target_id,
+            bound.attachment_generation,
+            &document,
+        )?;
+        let (nodes, bindings, omitted_node_count) = decode_ax_tree_with_ids(
+            &response,
+            bound.target_id,
+            generation,
+            &mut node_by_backend,
+            &mut next_node_id,
+        )?;
         let completed_at = self.session_time()?;
         let context = ObservationContext::new(
             self.session_id,
@@ -233,6 +244,8 @@ impl PageControl {
                 attachment_generation: bound.attachment_generation,
                 document,
                 bindings,
+                node_by_backend,
+                next_node_id,
             },
         );
         Ok(BrowserOperationResult::SnapshotPage(Box::new(snapshot)))
@@ -240,8 +253,23 @@ impl PageControl {
 }
 
 impl SnapshotRegistry {
-    fn next_generation(&mut self, target_id: TargetId) -> Result<SnapshotGeneration> {
+    fn begin_snapshot(
+        &mut self,
+        target_id: TargetId,
+        attachment_generation: u64,
+        document: &DocumentFingerprint,
+    ) -> Result<(SnapshotGeneration, HashMap<i64, SnapshotNodeId>, u32)> {
         let target = self.targets.entry(target_id).or_default();
+        if let Some(active) = &target.active
+            && active.attachment_generation == attachment_generation
+            && &active.document == document
+        {
+            return Ok((
+                active.generation,
+                active.node_by_backend.clone(),
+                active.next_node_id,
+            ));
+        }
         let next = target.next_generation.checked_add(1).ok_or_else(|| {
             operation_error(
                 ErrorCode::PageObservationFailed,
@@ -249,7 +277,7 @@ impl SnapshotRegistry {
                 "snapshot generation space is exhausted",
             )
         })?;
-        SnapshotGeneration::new(next)
+        Ok((SnapshotGeneration::new(next)?, HashMap::new(), 0))
     }
 
     fn install(&mut self, target_id: TargetId, active: ActiveSnapshot) {
@@ -665,10 +693,29 @@ pub(crate) fn current_reference_error(
     )
 }
 
+#[cfg(test)]
 fn decode_ax_tree(
     response: &Value,
     target_id: TargetId,
     generation: SnapshotGeneration,
+) -> Result<(Vec<SnapshotNode>, HashMap<SnapshotNodeId, NodeBinding>, u32)> {
+    let mut node_by_backend = HashMap::new();
+    let mut next_node_id = 0;
+    decode_ax_tree_with_ids(
+        response,
+        target_id,
+        generation,
+        &mut node_by_backend,
+        &mut next_node_id,
+    )
+}
+
+fn decode_ax_tree_with_ids(
+    response: &Value,
+    target_id: TargetId,
+    generation: SnapshotGeneration,
+    node_by_backend: &mut HashMap<i64, SnapshotNodeId>,
+    next_node_id: &mut u32,
 ) -> Result<(Vec<SnapshotNode>, HashMap<SnapshotNodeId, NodeBinding>, u32)> {
     let raw_nodes = response
         .get("nodes")
@@ -707,6 +754,9 @@ fn decode_ax_tree(
         text_bytes: 0,
         omitted: 0,
         visited: HashSet::new(),
+        node_by_backend,
+        next_node_id,
+        seen_backends: HashSet::new(),
     };
     for root in roots {
         decoder.visit(root, None, 0)?;
@@ -718,6 +768,9 @@ fn decode_ax_tree(
             }
         }
     }
+    decoder
+        .node_by_backend
+        .retain(|backend, _| decoder.seen_backends.contains(backend));
     Ok((decoder.nodes, decoder.bindings, decoder.omitted))
 }
 
@@ -730,6 +783,9 @@ struct Decoder<'a> {
     text_bytes: usize,
     omitted: u32,
     visited: HashSet<&'a str>,
+    node_by_backend: &'a mut HashMap<i64, SnapshotNodeId>,
+    next_node_id: &'a mut u32,
+    seen_backends: HashSet<i64>,
 }
 
 impl<'a> Decoder<'a> {
@@ -764,10 +820,25 @@ impl<'a> Decoder<'a> {
             {
                 self.omitted = self.omitted.saturating_add(1);
             } else {
-                let numeric = u32::try_from(self.nodes.len() + 1)
-                    .map_err(|_| malformed(self.target_id, "snapshot node count overflow"))?;
-                let node_id = SnapshotNodeId::new(numeric)?;
                 let backend = node.get("backendDOMNodeId").and_then(Value::as_i64);
+                let node_id = if let Some(backend_node_id) = backend {
+                    self.seen_backends.insert(backend_node_id);
+                    if let Some(id) = self.node_by_backend.get(&backend_node_id) {
+                        *id
+                    } else {
+                        *self.next_node_id = self.next_node_id.checked_add(1).ok_or_else(|| {
+                            malformed(self.target_id, "snapshot node identity space exhausted")
+                        })?;
+                        let id = SnapshotNodeId::new(*self.next_node_id)?;
+                        self.node_by_backend.insert(backend_node_id, id);
+                        id
+                    }
+                } else {
+                    *self.next_node_id = self.next_node_id.checked_add(1).ok_or_else(|| {
+                        malformed(self.target_id, "snapshot node identity space exhausted")
+                    })?;
+                    SnapshotNodeId::new(*self.next_node_id)?
+                };
                 let actionable = backend.is_some()
                     && !disabled
                     && !hidden
@@ -1009,8 +1080,10 @@ mod tests {
         };
         let bound = BoundTarget {
             target_id: target(),
+            browser_target_key: "target-a".into(),
             attachment_generation: 4,
             transport_session: crate::transport::TransportSessionId::new("session-a").unwrap(),
+            visibility: krometrail_core::TargetVisibility::Visible,
         };
         let active = || ActiveSnapshot {
             generation,
@@ -1025,6 +1098,8 @@ mod tests {
                     backend_node_id: 42,
                 },
             )]),
+            node_by_backend: HashMap::from([(42, node_id)]),
+            next_node_id: 1,
         };
         let assert_stale = |error: krometrail_core::KrometrailError| {
             assert_eq!(error.code, ErrorCode::StaleReference);
@@ -1100,5 +1175,33 @@ mod tests {
                 .active_reference_backend(&bound, refreshed)
                 .unwrap_err(),
         );
+    }
+
+    #[test]
+    fn same_document_snapshot_reuses_generation_and_backend_identity() {
+        let mut registry = SnapshotRegistry::default();
+        let document = DocumentFingerprint {
+            frame_id: "main".into(),
+            loader_id: "loader".into(),
+        };
+        let generation = SnapshotGeneration::new(1).unwrap();
+        let node_id = SnapshotNodeId::new(7).unwrap();
+        registry.install(
+            target(),
+            ActiveSnapshot {
+                generation,
+                attachment_generation: 4,
+                document: document.clone(),
+                bindings: HashMap::new(),
+                node_by_backend: HashMap::from([(42, node_id)]),
+                next_node_id: 7,
+            },
+        );
+
+        let (next_generation, node_by_backend, next_node_id) =
+            registry.begin_snapshot(target(), 4, &document).unwrap();
+        assert_eq!(next_generation, generation);
+        assert_eq!(node_by_backend.get(&42), Some(&node_id));
+        assert_eq!(next_node_id, 7);
     }
 }

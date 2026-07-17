@@ -16,9 +16,12 @@ use super::{
 
 pub const DEFAULT_MANAGED_PROFILE_NAME: &str = "default";
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(tag = "selection", content = "target_id", rename_all = "snake_case")]
 pub enum PageSelection {
+    #[default]
     Selected,
     Target(TargetId),
 }
@@ -158,11 +161,13 @@ pub struct SelectPageRequest {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ClosePageRequest {
+    #[serde(default)]
     pub target: PageSelection,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct NavigatePageRequest {
+    #[serde(default)]
     pub target: PageSelection,
     pub url: NonEmptyText,
 }
@@ -179,17 +184,21 @@ impl NavigatePageRequest {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ReloadPageRequest {
+    #[serde(default)]
     pub target: PageSelection,
+    #[serde(default)]
     pub bypass_cache: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct GoBackRequest {
+    #[serde(default)]
     pub target: PageSelection,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct GoForwardRequest {
+    #[serde(default)]
     pub target: PageSelection,
 }
 
@@ -314,6 +323,9 @@ pub enum PageChange {
     Reloaded,
     WentBack,
     WentForward,
+    ViewportConfigured {
+        override_active: bool,
+    },
 }
 
 impl PageChange {
@@ -322,7 +334,11 @@ impl PageChange {
             Self::Created { target_id } => target_id,
             Self::Selected { selected, .. } => selected,
             Self::Closed { closed, .. } => closed,
-            Self::Navigated | Self::Reloaded | Self::WentBack | Self::WentForward => anchor,
+            Self::Navigated
+            | Self::Reloaded
+            | Self::WentBack
+            | Self::WentForward
+            | Self::ViewportConfigured { .. } => anchor,
         }
     }
 }

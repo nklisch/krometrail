@@ -1,7 +1,7 @@
 ---
 id: durable-agent-diagnostics
 kind: feature
-stage: implementing
+stage: done
 tags: [browser, storage, agent-ux, security]
 parent: epic-agent-browser-reliability
 depends_on: []
@@ -64,9 +64,9 @@ pub(crate) fn initialize(data_directory: &Path)
 Implement a redaction-safe formatter and size-bounded rotating writer under `diagnostics/`. Install the subscriber before storage/browser construction. A sanitized stderr warning is the only initialization fallback. Preserve the guard for process lifetime and never write diagnostics to stdout.
 
 **Acceptance criteria**:
-- [ ] `mcp` creates a log under the Krometrail data directory regardless of current directory.
-- [ ] Rotation enforces a fixed aggregate bound and startup succeeds when diagnostics are unavailable.
-- [ ] JSON-RPC stdout contains no log records.
+- [x] `mcp` creates a log under the Krometrail data directory regardless of current directory.
+- [x] Rotation enforces a fixed aggregate bound and startup succeeds when diagnostics are unavailable.
+- [x] JSON-RPC stdout contains no log records.
 
 ### Unit 2: request correlation and response projection
 
@@ -91,9 +91,9 @@ pub struct ToolResponse {
 Generate a UUID for every tool/resource request, enter a span with the stable route name, and enrich failed/degraded tool envelopes. Summary text stays actionable without log access. Resource failures carry the ID in safe error data where the protocol shape permits it.
 
 **Acceptance criteria**:
-- [ ] Failed/degraded calls expose a correlation ID and active log path; successful calls add no diagnostic noise.
-- [ ] The same ID appears in request-bound events.
-- [ ] Existing response fields retain their serialized names and meaning.
+- [x] Failed/degraded calls expose a correlation ID and active log path; successful calls add no diagnostic noise.
+- [x] The same ID appears in request-bound events.
+- [x] Existing response fields retain their serialized names and meaning.
 
 ### Unit 3: causal event audit
 
@@ -102,8 +102,8 @@ Generate a UUID for every tool/resource request, enter a span with the stable ro
 Add sanitized failure-stage events where errors are discarded or collapsed into counters. Use stable names and `error_code`/`failure_stage`; avoid arbitrary `Debug` formatting when errors may contain endpoints or payloads.
 
 **Acceptance criteria**:
-- [ ] Decode, persistence, event-stream, observation, discovery-probe, and shutdown failures retain a safe stage.
-- [ ] A source audit prevents raw payload or sensitive field logging in capture/interaction hot paths.
+- [x] Decode, persistence, event-stream, observation, discovery-probe, and shutdown failures retain a safe stage.
+- [x] A source audit prevents raw payload or sensitive field logging in capture/interaction hot paths.
 
 ## Implementation order
 
@@ -126,3 +126,29 @@ Add sanitized failure-stage events where errors are discarded or collapsed into 
 
 - A non-blocking writer can drop records during a crash; expose dropped-event warnings and prefer bounded loss over blocking control.
 - Existing arbitrary error formatting may contain endpoints; audit it before enabling the production filter.
+
+## Implementation notes
+
+- Execution capability: GPT-5.6 Sol at high effort; this is a stable public response and privacy boundary spanning the process composition root, MCP adapter, and CDP causal boundaries.
+- Review weight: standard, from the autopilot caller.
+- Files changed: `src/diagnostics.rs`, `src/main.rs`, `src/app.rs`, root Cargo metadata, MCP configuration/server/response exports, and targeted CDP capture, discovery, and shutdown paths.
+- Tests added: bounded rotation and private-file behavior, configured-root path behavior, unavailable-destination fallback, failed-versus-successful MCP diagnostic projection, and a capture-source privacy audit.
+- Simplification: one process-owned nonblocking writer and one injected diagnostic context replace discarded tracing and issue-specific stderr/log paths; successful MCP envelopes omit diagnostic metadata.
+- Discrepancies from design: the rotating writer is Krometrail-owned and fed through `tracing_appender`'s bounded nonblocking channel because `tracing_appender`'s built-in rolling policy is time-based rather than size-bounded. Diagnostic setup returns `None` when another subscriber is already installed, preserving embedding/test isolation.
+- Privacy audit: the production filter enables only info-or-higher Krometrail crate targets; audited events carry stable codes, stages, identities, counts, and durations, never raw errors, payloads, URLs, page content, form values, or media.
+- Adjacent issues parked: none.
+
+## Review record
+
+- Effective weight: standard; pass: 1; verdict: approve after fixes.
+- Findings fixed: diagnostics fallback is rooted in the system temporary directory instead of the caller's working directory; runtime and MCP configuration docs now describe the private log destination and stderr contract.
+- Verification: diagnostic rotation/path/privacy tests, MCP correlation projection tests, full workspace tests, strict clippy, and documentation build passed.
+
+## Verification
+
+- `cargo check --workspace --all-targets --locked` — passed.
+- `cargo test --bin krometrail diagnostics::tests --locked` — 3 passed.
+- `cargo test -p krometrail-mcp diagnostics_are_added_only_to_failed_or_degraded_tool_envelopes --locked` — passed.
+- `cargo test -p krometrail-cdp status_and_gap_serialization_are_privacy_safe --locked` — passed.
+- `cargo test -p krometrail-cdp launcher::discovery::tests --locked` — passed.
+- A built `mcp` process with stdin at EOF exited successfully with zero stdout/stderr bytes while writing the canonical diagnostics log beneath an isolated `KROMETRAIL_DATA_DIR`.

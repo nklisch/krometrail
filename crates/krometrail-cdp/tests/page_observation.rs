@@ -80,11 +80,7 @@ fn script_page_observation(transport: &ScriptedCdp) {
         "Runtime.evaluate",
         json!({"result":{"type":"number","value":42}}),
     );
-    // Stale and current reference screenshot scale probes.
-    transport.push_response(
-        "Runtime.evaluate",
-        json!({"result":{"type":"number","value":1.0}}),
-    );
+    // Current reference screenshot scale probe.
     transport.push_response(
         "Runtime.evaluate",
         json!({"result":{"type":"number","value":1.0}}),
@@ -102,7 +98,7 @@ fn script_page_observation(transport: &ScriptedCdp) {
     for _ in 0..3 {
         transport.push_response("Accessibility.getFullAXTree", ax_tree());
     }
-    for _ in 0..3 {
+    for _ in 0..2 {
         transport.push_response("Page.getFrameTree", frame_tree());
     }
     transport.push_response(
@@ -184,24 +180,8 @@ async fn production_operation_port_routes_snapshot_screenshot_and_partial_live_e
         panic!("snapshot result")
     };
     let current_reference = second.nodes[1].reference.unwrap();
-    assert_ne!(first.generation, second.generation);
-
-    let stale = session
-        .execute(
-            BrowserOperationRequest::TakeScreenshot(
-                ScreenshotRequest::new(
-                    target_id,
-                    ScreenshotTarget::Element(ElementLocator::Reference(old_reference)),
-                    ImageFormat::Png,
-                    None,
-                )
-                .unwrap(),
-            ),
-            krometrail_core::BrowserOperationContext::default(),
-        )
-        .await
-        .unwrap_err();
-    assert_eq!(stale.code, krometrail_core::ErrorCode::StaleReference);
+    assert_eq!(first.generation, second.generation);
+    assert_eq!(old_reference, current_reference);
 
     // The scripted resolver verifies the exact backend node, live state, and geometry.
     transport.push_response("Page.getFrameTree", frame_tree());
@@ -223,7 +203,7 @@ async fn production_operation_port_routes_snapshot_screenshot_and_partial_live_e
             BrowserOperationRequest::TakeScreenshot(
                 ScreenshotRequest::new(
                     target_id,
-                    ScreenshotTarget::Element(ElementLocator::Reference(current_reference)),
+                    ScreenshotTarget::Element(ElementLocator::Reference(old_reference)),
                     ImageFormat::Png,
                     None,
                 )

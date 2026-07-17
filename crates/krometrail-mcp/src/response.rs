@@ -82,6 +82,12 @@ pub struct ResponseImage {
     pub metadata: ResponseImageMetadata,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, JsonSchema)]
+pub struct ResponseDiagnostics {
+    pub correlation_id: String,
+    pub log_path: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize, JsonSchema)]
 pub struct ToolResponse {
     pub tool: String,
@@ -92,6 +98,8 @@ pub struct ToolResponse {
     pub images: Vec<ResponseImage>,
     pub resources: Vec<ResponseResource>,
     pub error: Option<KrometrailError>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnostics: Option<ResponseDiagnostics>,
 }
 
 #[derive(Clone, Debug)]
@@ -159,23 +167,51 @@ impl Projection {
     }
 
     fn degrade_with(&mut self, warnings: Vec<KrometrailError>) {
+        self.degrade_with_stage(warnings, "live_observation");
+    }
+
+    fn degrade_with_stage(&mut self, warnings: Vec<KrometrailError>, failure_stage: &str) {
         if !warnings.is_empty() && self.status == ToolResponseStatus::Succeeded {
             self.status = ToolResponseStatus::Degraded;
+        }
+        for warning in &warnings {
+            tracing::warn!(
+                event = "mcp.response.degraded",
+                failure_stage,
+                error_code = warning.code.as_str(),
+                "mcp.response.degraded"
+            );
         }
         self.warnings.extend(warnings);
     }
 
     fn fail_with(&mut self, error: KrometrailError) {
+        tracing::warn!(
+            event = "mcp.response.failed",
+            failure_stage = "operation",
+            error_code = error.code.as_str(),
+            "mcp.response.failed"
+        );
         self.status = ToolResponseStatus::Failed;
         self.error = Some(error);
     }
 }
 
+#[cfg(test)]
 pub(crate) fn map_operation_result(
     tool: &str,
     result: BrowserOperationResult,
 ) -> Result<MappedResult, ResponseInvariantError> {
-    let projection = project_operation(result)?;
+    map_operation_result_with_capture(tool, result, &[])
+}
+
+pub(crate) fn map_operation_result_with_capture(
+    tool: &str,
+    result: BrowserOperationResult,
+    capture_statuses: &[krometrail_core::TargetCaptureStatus],
+) -> Result<MappedResult, ResponseInvariantError> {
+    let mut projection = project_operation(result)?;
+    add_capture_warnings(&mut projection, capture_statuses);
     let status = projection.status;
     Ok(mapped(
         tool,
@@ -188,6 +224,24 @@ pub(crate) fn map_operation_result(
             ToolResponseStatus::Failed => format!("{tool} failed"),
         },
     ))
+}
+
+fn capture_failed_warning(status: &krometrail_core::TargetCaptureStatus) -> KrometrailError {
+    let stage = status
+        .failure_stage()
+        .expect("failed capture status is validated with a failure stage");
+    KrometrailError::from_browser_failure(
+        krometrail_core::ErrorCode::CaptureFailed,
+        krometrail_core::NonEmptyText::new(format!(
+            "current-state control may have succeeded, but retained temporal frames are unavailable after {}",
+            stage.as_str()
+        ))
+        .expect("capture failure warning is non-empty"),
+    )
+    .with_context(krometrail_core::ErrorContext {
+        target_id: Some(status.target_id()),
+        ..krometrail_core::ErrorContext::default()
+    })
 }
 
 pub(crate) fn map_lifecycle_result<T: Serialize>(
@@ -203,11 +257,35 @@ pub(crate) fn map_lifecycle_result<T: Serialize>(
 }
 
 pub(crate) fn visible_error(tool: &str, error: KrometrailError) -> CallToolResult {
+    visible_error_with_capture(tool, error, &[])
+}
+
+pub(crate) fn visible_error_with_capture(
+    tool: &str,
+    error: KrometrailError,
+    capture_statuses: &[krometrail_core::TargetCaptureStatus],
+) -> CallToolResult {
     let summary = format!("{tool} failed: {}", error.message);
     let mut projection = Projection::success(json!({}));
     projection.fail_with(error);
+    add_capture_warnings(&mut projection, capture_statuses);
     into_call_tool_result(mapped(tool, projection, summary))
         .expect("stable error envelopes always serialize")
+}
+
+fn add_capture_warnings(
+    projection: &mut Projection,
+    capture_statuses: &[krometrail_core::TargetCaptureStatus],
+) {
+    for status in capture_statuses
+        .iter()
+        .filter(|status| status.state() == krometrail_core::CaptureStreamState::Failed)
+    {
+        let stage = status
+            .failure_stage()
+            .expect("failed capture status is validated with a failure stage");
+        projection.degrade_with_stage(vec![capture_failed_warning(status)], stage.as_str());
+    }
 }
 
 pub(crate) fn into_call_tool_result(
@@ -335,6 +413,7 @@ fn mapped(tool: &str, projection: Projection, summary: String) -> MappedResult {
             images: response_images,
             resources: projection.resources,
             error: projection.error,
+            diagnostics: None,
         },
         summary,
         images: projection.images,
@@ -372,6 +451,18 @@ fn project_operation(result: BrowserOperationResult) -> Result<Projection, Respo
         | BrowserOperationResult::ReloadPage(value)
         | BrowserOperationResult::GoBack(value)
         | BrowserOperationResult::GoForward(value) => project_page_operation(*value),
+        BrowserOperationResult::SetViewport(value) => {
+            let mut projection = project_page_operation(value.operation)?;
+            let mut warnings = Vec::new();
+            let effective = project_serializable_part(value.effective, &mut warnings)?;
+            projection
+                .result
+                .as_object_mut()
+                .ok_or(ResponseInvariantError)?
+                .insert("effective".to_owned(), effective);
+            projection.degrade_with(warnings);
+            Ok(projection)
+        }
         BrowserOperationResult::Click(value)
         | BrowserOperationResult::Fill(value)
         | BrowserOperationResult::PressKeys(value)
@@ -935,10 +1026,12 @@ fn image_mime_type(bytes: &[u8]) -> Option<&'static str> {
 mod tests {
     use super::*;
     use krometrail_core::{
-        BatchSkipReason, BatchStepResult, BatchStepStatus, BrowserOperationKind, CssPoint, CssRect,
-        CssSize, DeviceScaleFactor, ImageFormat, InteractionId, InteractionTiming,
-        ObservationContext, PageSelection, PixelDimensions, ScreenshotTarget, SessionId,
-        SessionTime, TargetId, WaitCondition, WaitProbe, WaitRequest, WaitResult,
+        BatchSkipReason, BatchStepResult, BatchStepStatus, BrowserOperationKind,
+        CaptureFailureStage, CaptureStatistics, CaptureStreamState, CaptureTimingSummary, CssPoint,
+        CssRect, CssSize, DeviceScaleFactor, EveryNthFrame, ImageFormat, InteractionId,
+        InteractionTiming, ObservationContext, PageSelection, PixelDimensions, ScreenshotTarget,
+        SessionId, SessionTime, TargetCaptureStatus, TargetId, WaitCondition, WaitProbe,
+        WaitRequest, WaitResult,
     };
     use std::time::Duration;
 
@@ -982,6 +1075,42 @@ mod tests {
             ImageFormat::Jpeg => vec![0xff, 0xd8, 0xff, 0xe0, 1],
         };
         EncodedScreenshot::new(metadata, bytes).unwrap()
+    }
+
+    fn failed_capture() -> TargetCaptureStatus {
+        TargetCaptureStatus::new_with_failure_stage(
+            target_id(),
+            1,
+            CaptureStreamState::Failed,
+            CaptureStatistics::default(),
+            1,
+            0,
+            None,
+            CaptureTimingSummary::empty(),
+            CaptureTimingSummary::empty(),
+            EveryNthFrame::default(),
+            Some(CaptureFailureStage::FramePersistence),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn failed_capture_degrades_success_without_removing_current_image() {
+        let mapped = map_operation_result_with_capture(
+            "take_screenshot",
+            BrowserOperationResult::TakeScreenshot(Box::new(screenshot(ImageFormat::Png))),
+            &[failed_capture()],
+        )
+        .unwrap();
+        assert_eq!(mapped.response.status, ToolResponseStatus::Degraded);
+        assert_eq!(mapped.response.images.len(), 1);
+        assert_eq!(mapped.response.warnings.len(), 1);
+        assert_eq!(mapped.response.warnings[0].code, ErrorCode::CaptureFailed);
+        assert_eq!(
+            mapped.response.warnings[0].context.target_id,
+            Some(target_id())
+        );
+        assert!(mapped.response.error.is_none());
     }
 
     #[test]

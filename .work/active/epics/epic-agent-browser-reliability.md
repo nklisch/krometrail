@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-reliability
 kind: epic
-stage: implementing
+stage: done
 tags: [browser, agent-ux, storage, security]
 parent: null
 depends_on: []
@@ -80,3 +80,11 @@ The decomposition keeps independent input and viewport work parallel while order
 - Capture issue #1 is not reproducible against a clean temporary store; diagnostics must land first and the capture feature must preserve an honest unresolved-cause path until a failing boundary test identifies the rejected stage.
 - Post-action compositor readiness must remain bounded so hidden/background targets cannot deadlock an interaction.
 - Viewport emulation changes source-frame geometry mid-session; retained metadata and artifact normalization must continue to make that transition explicit.
+
+## Aggregate review record
+
+- Effective weight: standard; pass: 1; fresh-context verdict: request changes, resolved and approved by the integration owner.
+- Finding 1 fixed: capture startup now observes native `devicePixelRatio` per target/attachment instead of assuming 1.0, while committed viewport transitions continue to update the same retained-frame authority. The decoder, constant-page-zoom scale transition, and opt-in cross-platform high-DPI capture qualification verify the boundary.
+- Finding 2 fixed: a naturally exited browser leader no longer makes `terminate()` treat remaining process-group authority as complete. Group cleanup is rechecked when the direct child is already reaped; incomplete cleanup is retained for shutdown reporting, and the leader-exited/helper-survives regression passes.
+- Aggregate verification: docs build; plugin static and managed-install smoke; both skill validators; `cargo fmt`, workspace check/test, strict clippy, runtime version/help/doctor, real Chrome interaction/viewport, and high-DPI capture qualification.
+- Final verdict: approve.

@@ -504,6 +504,12 @@ pub trait BrowserConnector: Send + Sync {
 pub trait BrowserSessionPort: Send + Sync {
     fn session_origin(&self) -> SessionOrigin;
 
+    /// Current in-memory retained-capture health. This view performs no storage I/O and must not
+    /// make current-state browser control depend on recording persistence.
+    fn capture_statuses(&self) -> Vec<crate::TargetCaptureStatus> {
+        Vec::new()
+    }
+
     /// Adapter seam used by the narrow [`CurrentReferenceGeometry`] view.
     ///
     /// Session implementations that do not own a live snapshot registry remain explicitly

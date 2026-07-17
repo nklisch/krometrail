@@ -65,6 +65,9 @@ impl<'de> Deserialize<'de> for PixelDimensions {
 #[serde(transparent)]
 pub struct DeviceScaleFactor(f64);
 
+// Construction rejects NaN, so equality is reflexive for every valid domain value.
+impl Eq for DeviceScaleFactor {}
+
 impl DeviceScaleFactor {
     pub fn new(value: f64) -> Result<Self> {
         if value.is_finite() && value > 0.0 {

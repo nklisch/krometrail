@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
 use krometrail_core::{
     BrowserConnector, CAPABILITY_REGISTRY, CapabilityDefault, CapabilityId, ProgressiveEvidence,
@@ -11,6 +11,22 @@ pub struct McpDependencies {
     pub temporal_debug_bundles: Arc<dyn TemporalDebugBundles>,
     pub progressive_evidence: Arc<dyn ProgressiveEvidence>,
     pub temporal_context: Arc<dyn TemporalContextQuery>,
+    pub diagnostics: DiagnosticContext,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct DiagnosticContext {
+    log_path: Option<PathBuf>,
+}
+
+impl DiagnosticContext {
+    pub fn new(log_path: Option<PathBuf>) -> Self {
+        Self { log_path }
+    }
+
+    pub fn log_path(&self) -> Option<&std::path::Path> {
+        self.log_path.as_deref()
+    }
 }
 
 #[derive(Clone, Debug)]

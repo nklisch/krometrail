@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-reliability-capture-outcomes-compositor-readiness
 kind: story
-stage: implementing
+stage: done
 tags: [browser, agent-ux]
 parent: epic-agent-browser-reliability-capture-outcomes
 depends_on: [epic-agent-browser-reliability-capture-outcomes-truthful-operation-evidence]
@@ -24,3 +24,9 @@ Before automatically capturing a post-action viewport, await two renderer animat
 ## Ordering
 
 Depends on `epic-agent-browser-reliability-capture-outcomes-truthful-operation-evidence` because compositor fallback must use its non-fatal post-dispatch evidence semantics.
+
+## Implementation evidence
+
+- Automatic interaction and page-mutation observation performs a two-animation-frame `Runtime.evaluate` under a 250 ms cap before live capture.
+- Signal failure emits only bounded identifiers and proceeds; explicit screenshot and standalone observation paths remain immediate.
+- Scripted interaction regression asserts compositor-probe ordering before `Page.captureScreenshot`; verified-interaction and page-lifecycle suites pass.

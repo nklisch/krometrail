@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-reliability-interaction-semantics
 kind: feature
-stage: implementing
+stage: done
 tags: [browser, agent-ux]
 parent: epic-agent-browser-reliability
 depends_on: []
@@ -25,6 +25,35 @@ Page-scoped requests should default to the selected page and common interaction 
 
 ## Simplification opportunity
 - Centralize editable selection, key event construction, and element preparation so fill, click, hover, and drag do not maintain divergent workarounds.
+
+## Implementation notes
+
+- Execution capability: strongest implementation owner; this changes stable agent-facing input,
+  reference, and browser-native event behavior across core and CDP boundaries.
+- Review weight: standard, inherited from the epic autopilot caller.
+- Files changed: core browser control/interaction/observation/wait/batch contracts; CDP interaction,
+  keyboard, snapshot, and control tests; verified-interactions qualification fixture/test;
+  `docs/SPEC.md`; `docs/ARCHITECTURE.md`.
+- Tests added/updated: canonical/default wire regressions; keyboard event and secret-safe clear
+  transport assertions; same-document reference identity; pre/post-scroll selector resolution;
+  opt-in Chrome password replacement and Enter submission qualification.
+- Simplification: removed Control+A/Delete replacement and the separate character event path;
+  consolidated pointer preparation and document reference identity under existing authorities.
+- Discrepancies from design: the registry implementation extends the existing `ActiveSnapshot`
+  shape rather than introducing the design sketch's renamed registry types; behavior and bounds
+  are unchanged. Clear verification maps its structured failure through the existing interaction
+  error helper rather than adding another adapter-local error constructor.
+- Adjacent issues parked: none.
+
+## Integrated verification
+
+- `cargo test -p krometrail-core --lib --locked` — 113 passed.
+- `cargo test -p krometrail-cdp --lib control:: --locked` — 25 passed.
+- `cargo clippy -p krometrail-core -p krometrail-cdp --all-targets --locked -- -D warnings` — passed.
+- `cargo test -p krometrail-cdp --test verified_interactions --features cdpkit-transport --locked`
+  exercised the installed Chrome lane; 7 tests passed and one scripted pre-scroll fixture initially
+  exposed its missing second resolution responses. The fixture was corrected and its focused
+  regression then passed; the root owner will rerun the integrated suite.
 
 ## Foundation references
 - `docs/SPEC.md` — browser-control action contract
@@ -112,13 +141,13 @@ Keep aliases input-only and serialize the canonical value so generated schemas/e
 promote multiple spellings.
 
 **Acceptance criteria**:
-- [ ] Omitting `target` from every page-scoped standalone request and batch request resolves the
+- [x] Omitting `target` from every page-scoped standalone request and batch request resolves the
       selected page; an explicit target continues to select that exact target.
-- [ ] Omitted click/fill/key options use the documented safe defaults, while invalid counts,
+- [x] Omitted click/fill/key options use the documented safe defaults, while invalid counts,
       empty key sequences, and unsupported key names still fail at deserialization.
-- [ ] `META+A`, `cmd+a`, and `Meta+a` deserialize to the same canonical `Meta+a`; duplicate
+- [x] `META+A`, `cmd+a`, and `Meta+a` deserialize to the same canonical `Meta+a`; duplicate
       modifiers and chords containing two action keys are rejected before CDP dispatch.
-- [ ] Registry-derived operation schemas describe the actual accepted defaults and canonical
+- [x] Registry-derived operation schemas describe the actual accepted defaults and canonical
       constraints without a second hand-maintained operation list.
 
 ### Unit 2: One keyboard event builder and secret-safe replacement
@@ -173,12 +202,12 @@ The previous or requested value is never included in a command expression, trace
 test failure message; `Input.insertText` remains the only command carrying the requested value.
 
 **Acceptance criteria**:
-- [ ] Replacing a non-empty password value leaves exactly the new value, and tests prove this by
+- [x] Replacing a non-empty password value leaves exactly the new value, and tests prove this by
       length/submit outcome without printing either secret.
-- [ ] Append mode remains append-only and does not execute the clear path.
-- [ ] Meta+A and Control+A dispatch modifier-down, a raw non-text `a` key-down/up, and
+- [x] Append mode remains append-only and does not execute the clear path.
+- [x] Meta+A and Control+A dispatch modifier-down, a raw non-text `a` key-down/up, and
       modifier-up; no `char` event inserts `a` into the field.
-- [ ] Enter submits a focused form control and Space retains its existing activation behavior in
+- [x] Enter submits a focused form control and Space retains its existing activation behavior in
       real Chrome; the result still reports dispatched input separately from observed page effect.
 
 ### Unit 3: Document-scoped snapshot bindings
@@ -240,12 +269,12 @@ boundaries. Update the foundation wording that currently says every fresh snapsh
 generation; this feature intentionally corrects that external contract.
 
 **Acceptance criteria**:
-- [ ] A reference from snapshot A succeeds after `observe_live` installs snapshot B when the
+- [x] A reference from snapshot A succeeds after `observe_live` installs snapshot B when the
       attachment, loader/document fingerprint, and backend node remain valid.
-- [ ] Reordering or adding AX nodes does not retarget an old reference to a different backend node.
-- [ ] Navigation/document replacement, reconnect attachment change, node detachment, and target
+- [x] Reordering or adding AX nodes does not retarget an old reference to a different backend node.
+- [x] Navigation/document replacement, reconnect attachment change, node detachment, and target
       closure return the existing structured stale-reference error and recovery.
-- [ ] Registry memory is proportional to the latest bounded full AX tree per live target, not the
+- [x] Registry memory is proportional to the latest bounded full AX tree per live target, not the
       number of observations in the session.
 
 ### Unit 4: Resolve-scroll-re-resolve pointer preparation
@@ -294,13 +323,13 @@ their action-specific preparation. Drag prepares source and destination immediat
 respective geometry is consumed.
 
 **Acceptance criteria**:
-- [ ] Reference and selector clicks on an off-screen actionable control scroll it into view and
+- [x] Reference and selector clicks on an off-screen actionable control scroll it into view and
       dispatch inside the final viewport.
-- [ ] Hover and both drag endpoints use the same preparation contract; pointer actions no longer
+- [x] Hover and both drag endpoints use the same preparation contract; pointer actions no longer
       differ by locator kind.
-- [ ] A node replaced during scrolling fails as stale/not-actionable rather than clicking the old
+- [x] A node replaced during scrolling fails as stale/not-actionable rather than clicking the old
       coordinates or a different element.
-- [ ] Explicit viewport/document coordinates are hit-tested exactly as declared and never trigger
+- [x] Explicit viewport/document coordinates are hit-tested exactly as declared and never trigger
       implicit scrolling.
 
 ### Unit 5: Agent-facing contract and regression documentation
@@ -320,11 +349,11 @@ may refine examples, but implementation of this feature owns removal of any guid
 its runtime behavior.
 
 **Acceptance criteria**:
-- [ ] Foundation assertions match the corrected stable contract and preserve exclusions against
+- [x] Foundation assertions match the corrected stable contract and preserve exclusions against
       permanent identity across document replacement.
-- [ ] Skill guidance shows concise canonical key and default-target requests and tells agents to
+- [x] Skill guidance shows concise canonical key and default-target requests and tells agents to
       inspect the returned observation when they need to prove the UI effect.
-- [ ] Generated `docs/public/llms-full.txt` is regenerated rather than hand-edited.
+- [x] Generated `docs/public/llms-full.txt` is regenerated rather than hand-edited.
 
 ## Implementation Order
 
@@ -380,3 +409,9 @@ its runtime behavior.
 This stable public-contract design warrants independent scrutiny, but the delegated design boundary
 explicitly prohibits nested agents. Advisory review is deferred to the parent epic's required
 fresh-context feature/aggregate review; this does not block the design stage transition.
+
+## Review record
+
+- Effective weight: standard; pass: 1; verdict: approve after fixes.
+- Findings fixed: pointer preparation re-resolves after scroll and compares backend identity before dispatch; same-document references remain valid until backing-node replacement; replacement-during-scroll cannot receive press/release input.
+- Verification: key/fill contracts, reference lifetime, selector replacement, real-browser interaction qualification, full workspace, and strict clippy tests passed.

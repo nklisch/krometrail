@@ -5,6 +5,18 @@ browser evidence; it does not diagnose defects or infer causes.
 
 ## Evidence classes
 
+## Economical evidence order
+
+- A state-changing operation's returned live evidence is the cheapest confirmation of its immediate
+  result. Do not automatically follow it with another screenshot.
+- `observe_live` is a new explicit current-state sample, useful when the prior observation was
+  degraded, time has passed, or the caller needs all current evidence parts together.
+- Retained source frames and derived artifacts answer historical and transient questions. They are
+  not interchangeable with either live observation point.
+
+Check retained capture health before making a temporal claim. A capture warning can coexist with a
+successful browser action; it limits history without undoing the action.
+
 ### Current live evidence
 
 - **Page state** reports URL, title, viewport, selection, navigation, and related status.
@@ -84,6 +96,10 @@ A viewport resize, orientation change, device-scale change, or incompatible crop
 into visual epochs. Krometrail does not silently stretch incompatible frames into one coordinate
 space. A gap also divides continuous measurements: artifacts may show segments on one timeline, but
 missing time is not observed stability.
+
+A dark or partial live screenshot is not evidence that the action failed. Request one bounded fresh
+`observe_live` sample. If degradation persists, preserve its correlation identifier and collect only
+the targeted sanitized diagnostic fields described by the main skill.
 
 ## Provenance checklist
 

@@ -51,6 +51,12 @@ A typical investigation is short:
 
 These are choices, not mandatory stages. A current screenshot may be enough for a current-state question. Temporal evidence earns its keep when sequence and timing matter.
 
+## Test responsive and high-DPI layouts
+
+Ask the agent to use `set_viewport` when a reproduction depends on explicit CSS dimensions, device pixel ratio, mobile layout, or touch emulation. The override belongs to one browser target and survives navigation and managed reconnects. Ask it to clear the override when the test is finished; clearing restores the browser's native metrics.
+
+Changing viewport metrics starts a new observation geometry. Snapshot references from the earlier geometry must be reacquired before pointer actions, and retained frames report the effective device scale that applied when each frame was captured. This keeps source-frame coordinates and derived visual evidence interpretable across responsive-layout transitions.
+
 ## What the evidence means
 
 Krometrail reorganizes recorded frames into still images an agent can inspect:

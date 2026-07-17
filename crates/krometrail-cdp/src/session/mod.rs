@@ -24,7 +24,8 @@ use krometrail_core::{
     InteractionAnchor, InteractionTiming, KrometrailError, MonotonicClock, NonEmptyText,
     ObservationPart, PageChange, PageOperationOutcome, PageOperationResult, PageSelection,
     PageStatus, PortFuture, ProfileRef, ResolvedReferenceGeometry, Result, SessionId,
-    SessionOrigin, TargetCaptureStatus, TargetVisibility,
+    SessionOrigin, TargetCaptureStatus, TargetVisibility, ViewportOperationResult,
+    ViewportOverride,
 };
 use serde_json::Value;
 use tokio::{
@@ -81,7 +82,7 @@ use runtime::{
 use runtime::{TargetEventKind, parse_event, restore_session_domains};
 #[cfg(test)]
 use shutdown::{ShutdownBudgetSource, ShutdownPhase};
-use shutdown::{ShutdownDeadline, ShutdownPlan, finish_state, perform_shutdown};
+use shutdown::{ShutdownDeadline, ShutdownPlan, finish_state, perform_shutdown, stop_outcome};
 
 struct AdapterMonotonicClock {
     origin: Instant,
@@ -530,6 +531,13 @@ struct ProductionSession {
 impl BrowserSessionPort for ProductionSession {
     fn session_origin(&self) -> SessionOrigin {
         self.shared.session_origin
+    }
+
+    fn capture_statuses(&self) -> Vec<TargetCaptureStatus> {
+        self.shared
+            .capture
+            .as_ref()
+            .map_or_else(Vec::new, |runtime| runtime.coordinator.statuses())
     }
 
     fn resolve_current_reference_geometry(
@@ -1651,7 +1659,7 @@ mod tests {
         timeout: Duration,
         step: Duration,
     ) -> (
-        Result<()>,
+        Result<shutdown::ShutdownReport>,
         Arc<ConsumingShutdownClock>,
         ShutdownDeadline,
         Arc<Mutex<Vec<String>>>,
@@ -1687,6 +1695,7 @@ mod tests {
             connection_generation: 1,
             attachment_generation: 1,
             transport_session: TransportSessionId::new("transport-session").unwrap(),
+            device_scale_factor: krometrail_core::DeviceScaleFactor::new(1.0).unwrap(),
         };
         coordinator
             .start_target(
@@ -1831,7 +1840,7 @@ mod tests {
     async fn shutdown_deadline_exhaustion_uses_process_force_cleanup() {
         let (result, source, deadline, log) =
             run_shutdown_fixture(Duration::from_millis(100), Duration::from_millis(30)).await;
-        assert_eq!(result.unwrap_err().code, ErrorCode::ShutdownIncomplete);
+        assert_eq!(result.unwrap().quality, shutdown::ShutdownQuality::Degraded);
         let samples = source.samples();
         assert_eq!(samples[5].0, ShutdownPhase::ProcessTerminate);
         assert_eq!(

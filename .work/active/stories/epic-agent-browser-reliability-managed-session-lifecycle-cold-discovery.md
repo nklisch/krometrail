@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-reliability-managed-session-lifecycle-cold-discovery
 kind: story
-stage: implementing
+stage: done
 tags: [browser, agent-ux]
 parent: epic-agent-browser-reliability-managed-session-lifecycle
 depends_on: []
@@ -31,3 +31,8 @@ Add a private injectable `VersionProbePolicy` and `VersionProbeOutcome` in `crat
 ## Ordering and boundary
 
 This checkpoint is graph-independent from shutdown and activation. It consumes the parent feature's durable-diagnostics dependency for candidate events.
+
+## Implementation evidence
+
+- Added source-class probe policy with 10-second cold and 2-second PATH budgets, pre-probe canonical deduplication, bounded output, and sanitized per-candidate/completion diagnostics.
+- Added deterministic delayed-candidate and failed-candidate deduplication regressions in `launcher/discovery.rs`.

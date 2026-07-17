@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-reliability-managed-session-lifecycle-truthful-shutdown
 kind: story
-stage: implementing
+stage: done
 tags: [browser, agent-ux]
 parent: epic-agent-browser-reliability-managed-session-lifecycle
 depends_on: []
@@ -31,3 +31,8 @@ Implement `ShutdownQuality`, `RemainingResource`, `ShutdownReport`, and the `per
 ## Ordering and boundary
 
 This is the first feature checkpoint because it owns the riskiest process/profile release invariant. Capture health remains owned by the capture-outcomes feature; this checkpoint only decides whether browser lifecycle cleanup is complete.
+
+## Implementation evidence
+
+- Shutdown now returns clean/degraded quality separately from remaining process/profile authority and retains a process/profile guard when force cleanup cannot verify completion.
+- A terminal failed capture stream no longer poisons stop completion; deterministic aggregate-deadline tests now prove forced cleanup with released authority is degraded success.

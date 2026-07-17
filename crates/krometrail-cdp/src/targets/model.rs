@@ -6,7 +6,7 @@
 use krometrail_core::{
     BrowserCompatibility, BrowserSessionEvent, BrowserSessionState, ErrorCode, KrometrailError,
     NonEmptyText, PageSelection, PageTarget, Result, SupervisedTarget, TargetId, TargetLifecycle,
-    TargetVisibility,
+    TargetVisibility, ViewportMetrics,
 };
 
 use crate::transport::{TransportClose, TransportSessionId};
@@ -99,6 +99,15 @@ pub struct CaptureEffectContext {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ViewportEffectContext {
+    pub target_id: TargetId,
+    pub target_key: String,
+    pub connection_generation: u64,
+    pub attachment_generation: u64,
+    pub transport_session: TransportSessionId,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CaptureBinding {
     Inactive,
     Active(CaptureEffectContext),
@@ -112,6 +121,7 @@ pub struct SupervisorTargetState {
     pub transport_session: Option<TransportSessionId>,
     pub prior_to_suspension: Option<TargetLifecycle>,
     pub capture_binding: CaptureBinding,
+    pub viewport_override: Option<ViewportMetrics>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -247,6 +257,10 @@ pub enum SupervisorInput {
     SelectTarget {
         target_key: String,
     },
+    ViewportOverrideApplied {
+        target_key: String,
+        viewport: Option<ViewportMetrics>,
+    },
     ConnectionLost(TransportClose),
     BrowserProcessTerminated {
         exit: crate::launcher::SanitizedProcessExit,
@@ -276,6 +290,10 @@ pub enum SupervisorEffect {
     RestoreSessionDomains {
         target_key: String,
         session: TransportSessionId,
+    },
+    RestoreViewport {
+        context: ViewportEffectContext,
+        viewport: ViewportMetrics,
     },
     ProbeInitialVisibility {
         target_key: String,

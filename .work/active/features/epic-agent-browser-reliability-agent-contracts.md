@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-reliability-agent-contracts
 kind: feature
-stage: implementing
+stage: done
 tags: [agent-ux, browser, storage]
 parent: epic-agent-browser-reliability
 depends_on: [durable-agent-diagnostics, epic-agent-browser-reliability-capture-outcomes, epic-agent-browser-reliability-managed-session-lifecycle, epic-agent-browser-reliability-interaction-semantics, epic-agent-browser-reliability-viewport-emulation]
@@ -58,9 +58,9 @@ fn resolve_ref(root: &Value, reference: &str, stack: &mut Vec<String>) -> Result
 Resolve RFC 6901 local references rooted at `#/$defs/`, merge reference-site annotations without weakening the target, remove unused `$defs`, and fail closed on cycles/missing definitions. Apply after batch filtering to every schema.
 
 **Acceptance criteria**:
-- [ ] Published schemas contain no `$ref`/`$defs` and retain nested object/union constraints.
-- [ ] Batch filtering still derives from the complete canonical union.
-- [ ] Cycles or missing definitions produce a stable startup error.
+- [x] Published schemas contain no `$ref`/`$defs` and retain nested object/union constraints.
+- [x] Batch filtering still derives from the complete canonical union.
+- [x] Cycles or missing definitions produce a stable startup error.
 
 ### Unit 2: precise invalid-argument paths
 
@@ -74,8 +74,8 @@ fn invalid_arguments(path: &str) -> KrometrailError;
 Use `serde_path_to_error` over JSON deserialization, normalize its path notation, and return `invalid_input` naming the first mismatched field. Exclude serde text that could echo caller values.
 
 **Acceptance criteria**:
-- [ ] Nested failures name paths such as `locator.reference` without echoing values.
-- [ ] Existing valid requests remain valid.
+- [x] Nested failures name paths such as `locator.reference` without echoing values.
+- [x] Existing valid requests remain valid.
 
 ### Unit 3: economical browser-evidence guidance
 
@@ -84,9 +84,9 @@ Use `serde_path_to_error` over JSON deserialization, normalize its path notation
 Lead with cheapest sufficient evidence: trust automatic post-operation evidence for immediate confirmation, use `observe_live` for explicit current state, and use retained source/derived evidence only for history or ambiguity. Document defaults, reference validity, compositor/capture warnings, viewport control, and correlation-bounded diagnostic lookup.
 
 **Acceptance criteria**:
-- [ ] Examples use valid selectors/references and do not require a redundant screenshot after every action.
-- [ ] Live post-action, current observation, and retained source frames are distinct.
-- [ ] Diagnostic instructions collect only a targeted excerpt.
+- [x] Examples use valid selectors/references and do not require a redundant screenshot after every action.
+- [x] Live post-action, current observation, and retained source frames are distinct.
+- [x] Diagnostic instructions collect only a targeted excerpt.
 
 ### Unit 4: GitHub issue-reporting skill
 
@@ -95,10 +95,10 @@ Lead with cheapest sufficient evidence: trust automatic post-operation evidence 
 Workflow: verify `gh auth status`; select canonical repo; collect version, OS/architecture, tool/operation, stable error code, correlation ID/path, expected/actual/reproduction; search all issue states and inspect candidates; extract a narrow correlation-centered excerpt and redact defensively; draft; confirm; run `gh issue create`; return URL.
 
 **Acceptance criteria**:
-- [ ] The new skill has a distinct trigger and stays under 300 lines.
-- [ ] It forbids full logs and sensitive browser/user content.
-- [ ] Duplicate search and confirmation precede issue creation.
-- [ ] Skill validation and plugin packaging discover both skills.
+- [x] The new skill has a distinct trigger and stays under 300 lines.
+- [x] It forbids full logs and sensitive browser/user content.
+- [x] Duplicate search and confirmation precede issue creation.
+- [x] Skill validation and plugin packaging discover both skills.
 
 ## Implementation order
 
@@ -121,3 +121,40 @@ Workflow: verify `gh auth status`; select canonical repo; collect version, OS/ar
 
 - Recursive schemas can expand indefinitely; reject cycles instead of inventing an incompatible depth cap.
 - GitHub search can miss semantic duplicates; inspect candidates and state why a new report differs.
+
+## Implementation notes
+
+- Execution capability: strongest implementation owner; this changes stable MCP declarations,
+  invalid-input disclosure, plugin guidance, and a confirmation-gated external-write workflow.
+- Review weight: standard, inherited from the parent epic autopilot caller.
+- Files changed: `crates/krometrail-mcp/src/schema.rs`,
+  `crates/krometrail-mcp/src/registry.rs`, MCP dependency manifests/lockfile,
+  `plugin/skills/krometrail/**`, `plugin/skills/report-krometrail-issue/**`, and plugin static/install
+  discovery tests.
+- Tests added/updated: reference-free schema publication, annotation/constraint preservation,
+  missing/cyclic reference rejection, safe nested argument paths without value leakage, two-skill
+  package discovery, and a draft-before-submit ordering check.
+- Simplification: one mechanical projection inlines canonical generated schemas at publication; one
+  path-aware decoder covers lifecycle, browser, progressive-evidence, and temporal inputs; rare
+  GitHub reporting remains separate from common browser operation guidance.
+- Discrepancies from design: none. Existing runtime diagnostics expose the designed correlation ID
+  and private log path, so the skills use those fields directly.
+- Adjacent issues parked: none.
+
+## Integrated verification
+
+- `cargo test -p krometrail-mcp schema::tests --locked` — 5 passed.
+- `cargo test -p krometrail-mcp registry::tests::invalid_arguments_name_first_nested_path_without_echoing_values --locked` — passed.
+- `cargo test -p krometrail-mcp registry::tests::route_registry_and_schema_validation_fail_closed --locked` — passed.
+- Skill Creator `quick_validate.py` — both skills valid using an isolated PyYAML runtime.
+- `bash tests/plugin-static.sh` — passed and discovers both skills.
+- Draft-only forward check — authenticated `gh`, canonical-repository read/search, and static workflow
+  ordering passed; no issue or comment was created.
+- Full workspace formatting/gates and native plugin install smoke remain with the root integration
+  owner because concurrent runtime features share the working tree and release bundle.
+
+## Review record
+
+- Effective weight: standard; pass: 1; verdict: approve after fixes.
+- Findings fixed: viewport schema exposes runtime constraints; duplicate search and every outbound issue field use a fixed privacy whitelist; diagnostic extraction is match- and context-bounded; public and generated guidance cover viewport evidence.
+- Verification: reference-free schema publication, safe nested paths, both skill validators, plugin static/package contracts, docs build, full workspace, and strict clippy passed.

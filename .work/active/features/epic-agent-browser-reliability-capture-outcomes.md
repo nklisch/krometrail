@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-reliability-capture-outcomes
 kind: feature
-stage: implementing
+stage: done
 tags: [browser, storage, agent-ux]
 parent: epic-agent-browser-reliability
 depends_on: [durable-agent-diagnostics]
@@ -113,11 +113,17 @@ impl TargetCaptureStatus {
 - `CaptureFailed` uses `RetryAdvice::AfterRecovery` with recovery guidance to inspect browser status/diagnostics and start a new session before relying on temporal history again. It is distinct from `CaptureRejected`, which remains an input/admission failure.
 - Adding the status field and enum arm is additive for the 1.x serialized contract; existing retained frame/gap formats do not change.
 
+## Review record
+
+- Effective weight: standard; pass: 1; verdict: approve after fixes.
+- Findings fixed: failed operations now sample capture health; correlated warnings retain the concrete failure stage; lock scope no longer crosses await; every capture boundary is enumerated and first-failure stability is regression-tested.
+- Verification: capture boundary, action/evidence projection, compositor readiness, batch evidence, full workspace, and strict clippy tests passed.
+
 **Acceptance Criteria**:
-- [ ] Every terminal runtime capture failure status identifies exactly one safe `failure_stage`.
-- [ ] Non-failed capture statuses cannot carry a failure stage, including at the serde boundary.
-- [ ] `capture_failed` serializes as a stable public error code with recovery that does not recommend replaying an already-dispatched action.
-- [ ] Existing capture status fields and retained frame/gap formats remain readable and unchanged.
+- [x] Every terminal runtime capture failure status identifies exactly one safe `failure_stage`.
+- [x] Non-failed capture statuses cannot carry a failure stage, including at the serde boundary.
+- [x] `capture_failed` serializes as a stable public error code with recovery that does not recommend replaying an already-dispatched action.
+- [x] Existing capture status fields and retained frame/gap formats remain readable and unchanged.
 
 ---
 
@@ -151,10 +157,10 @@ impl StreamRuntime {
 - Do not add automatic restart. The failed status remains visible until target/session teardown, and the lifecycle feature owns truthful stop classification.
 
 **Acceptance Criteria**:
-- [ ] Fault injection at event-stream, acknowledgement, frame decode, frame persistence, and gap persistence boundaries yields the expected first failure stage.
-- [ ] Concurrent secondary failure cannot replace the initiating stage.
-- [ ] The two-acknowledged/zero-persisted signature from issue #1 can be distinguished as event-stream, decode, frame-persistence, or gap-persistence failure instead of only `state=failed`.
-- [ ] Capture failure does not change browser session readiness or block the control transport.
+- [x] Fault injection at event-stream, acknowledgement, frame decode, frame persistence, and gap persistence boundaries yields the expected first failure stage.
+- [x] Concurrent secondary failure cannot replace the initiating stage.
+- [x] The two-acknowledged/zero-persisted signature from issue #1 can be distinguished as event-stream, decode, frame-persistence, or gap-persistence failure instead of only `state=failed`.
+- [x] Capture failure does not change browser session readiness or block the control transport.
 
 ---
 
@@ -207,10 +213,10 @@ pub(crate) fn map_operation_result(
 - The diagnostics dependency adds `ResponseDiagnostics` whenever the resulting response is degraded/failed; this unit only supplies normal capture warnings and safe stage events.
 
 **Acceptance Criteria**:
-- [ ] Every operation-registry tool returns `degraded` plus a target-scoped `capture_failed` warning when any current target capture stream is failed.
-- [ ] Successful current screenshots/images remain present and correctly role-labeled alongside the retained-capture warning.
-- [ ] An already-failed operation keeps its original `error`; capture failure is an additional warning, not the primary action failure.
-- [ ] Healthy, paused-budget, hidden, suspended, draining, and stopped capture states do not produce `capture_failed` warnings.
+- [x] Every operation-registry tool returns `degraded` plus a target-scoped `capture_failed` warning when any current target capture stream is failed.
+- [x] Successful current screenshots/images remain present and correctly role-labeled alongside the retained-capture warning.
+- [x] An already-failed operation keeps its original `error`; capture failure is an additional warning, not the primary action failure.
+- [x] Healthy, paused-budget, hidden, suspended, draining, and stopped capture states do not produce `capture_failed` warnings.
 
 ---
 
@@ -253,10 +259,10 @@ PageOperationResult::new(
 - Keep interaction-evidence persistence mandatory before dispatch when no sink exists. A post-dispatch sink failure remains the existing explicit `PersistenceFailed` uncertainty boundary and is not mislabeled as interaction failure.
 
 **Acceptance Criteria**:
-- [ ] A committed reload with interrupted or failed live observation maps to a succeeded page outcome and a degraded MCP response, never `navigation_failed`.
-- [ ] A CDP input dispatch followed by completion-probe failure returns a dispatched interaction anchor and degraded observation instead of generic `interaction_failed`.
-- [ ] A dispatch failure before input reaches CDP still returns the specific failed operation with no false dispatched record.
-- [ ] MCP summaries and `is_error` agree: incomplete evidence after a proven action is degraded/non-error; an unproven action remains failed/error.
+- [x] A committed reload with interrupted or failed live observation maps to a succeeded page outcome and a degraded MCP response, never `navigation_failed`.
+- [x] A CDP input dispatch followed by completion-probe failure returns a dispatched interaction anchor and degraded observation instead of generic `interaction_failed`.
+- [x] A dispatch failure before input reaches CDP still returns the specific failed operation with no false dispatched record.
+- [x] MCP summaries and `is_error` agree: incomplete evidence after a proven action is degraded/non-error; an unproven action remains failed/error.
 
 ---
 
@@ -299,10 +305,10 @@ enum CompositorReadiness {
 - Extend the page-observation fixture with an action that applies its final full-viewport style on animation frames, providing deterministic call-order qualification without embedding Krometrail logic in the fixture.
 
 **Acceptance Criteria**:
-- [ ] Automatic post-action capture issues the two-frame readiness probe before `Page.captureScreenshot`.
-- [ ] Explicit screenshots and standalone live observations do not incur the readiness wait.
-- [ ] A renderer that never produces the signal proceeds within 250 ms (subject to cancellation scheduling) and does not convert the action into failure.
-- [ ] Opt-in real-Chrome qualification observes the frame-delayed fixture in its complete final viewport state after the action.
+- [x] Automatic post-action capture issues the two-frame readiness probe before `Page.captureScreenshot`.
+- [x] Explicit screenshots and standalone live observations do not incur the readiness wait.
+- [x] A renderer that never produces the signal proceeds within 250 ms (subject to cancellation scheduling) and does not convert the action into failure.
+- [x] Opt-in real-Chrome qualification observes the frame-delayed fixture in its complete final viewport state after the action.
 
 ---
 
@@ -324,9 +330,9 @@ enum CompositorReadiness {
 - Regenerate `docs/public/llms-full.txt` with `bun run docs:build`; never edit it directly.
 
 **Acceptance Criteria**:
-- [ ] Foundation docs describe the new intended contract without historical/migration prose.
-- [ ] Troubleshooting directs operators from `capture_failed` and its correlation metadata to the targeted bounded log excerpt workflow defined by durable diagnostics.
-- [ ] Generated documentation matches the source pages byte-for-byte after the documented build.
+- [x] Foundation docs describe the new intended contract without historical/migration prose.
+- [x] Troubleshooting directs operators from `capture_failed` and its correlation metadata to the targeted bounded log excerpt workflow defined by durable diagnostics.
+- [x] Generated documentation matches the source pages byte-for-byte after the documented build.
 
 ## Implementation Order
 
@@ -371,3 +377,14 @@ The feature remains the normal implementation and review bundle; these stories a
 - **Warning volume**: every operation will repeat a failed target warning. This is intentional prominence; warnings are bounded by one current generation per target and do not duplicate source chains.
 - **Stable serialization growth**: `capture_failed` and `failure_stage` are additive, but generated MCP schemas and checked-in contract fixtures must be regenerated and reviewed for exact names.
 - **Interaction uncertainty**: after a successful input dispatch, completion failure cannot prove application handling. Reporting `dispatched` rather than `succeeded` preserves that distinction and avoids unsafe automatic replay.
+
+## Implementation notes
+
+- Execution capability: strongest available implementation owner; stable MCP/recording contracts and post-dispatch replay safety required cross-layer care.
+- Review weight: standard, from the autopilot caller.
+- Files changed: core error/capture status and browser port; CDP capture pipeline, page/interaction/session operation projection and regressions; MCP session/response/registry; foundation docs.
+- Tests added/updated: capture status invariant and serde round trip, acknowledgement-stage preservation, MCP capture-warning/image coexistence, truthful lifecycle interruption assertions, compositor-before-screenshot ordering.
+- Simplification: reused the existing page outcome/observation split and MCP warning projection; no restart loop, execution envelope in core, or image-content heuristic was added.
+- Discrepancies from design: kept the existing `TargetCaptureStatus::new` healthy constructor and added `new_with_failure_stage` to avoid mechanical churn at healthy call sites; detailed fault injection beyond acknowledgement remains for review expansion if required.
+- Adjacent issues parked: none.
+- Verification: `cargo check --workspace --all-targets --locked`; focused core/capture/MCP tests; all 124 `krometrail-cdp` library tests; full `page_lifecycle` and `verified_interactions` integration suites; formatting applied.

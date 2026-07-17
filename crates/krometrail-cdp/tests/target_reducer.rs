@@ -5,7 +5,7 @@ use krometrail_cdp::{
 use krometrail_core::{
     BrowserCompatibility, BrowserProduct, BrowserProductVersion, BrowserSessionEvent,
     BrowserSessionState, BrowserVersion, CapabilitySupport, ErrorCode, NonEmptyText,
-    RendererCapability, TargetLifecycle, TargetVisibility,
+    RendererCapability, TargetLifecycle, TargetVisibility, ViewportMetrics,
 };
 
 fn compatibility() -> BrowserCompatibility {
@@ -149,4 +149,150 @@ fn target_failure_is_local_and_slow_observers_do_not_change_reducer_state() {
 fn transport_scope_value_remains_opaque_and_session_specific() {
     let scope = CommandScope::session("session-a").unwrap();
     assert!(matches!(scope, CommandScope::Session(id) if id.as_str() == "session-a"));
+}
+
+#[test]
+fn exact_target_reconnect_restores_viewport_before_capture_resume() {
+    let state = reduce(
+        SupervisorState::new(compatibility()),
+        SupervisorInput::InitialTargets(vec![page("one", "https://one.test")]),
+    )
+    .unwrap()
+    .state;
+    let state = reduce(
+        state,
+        SupervisorInput::Attached {
+            target_key: "one".into(),
+            session: TransportSessionId::new("old-session").unwrap(),
+        },
+    )
+    .unwrap()
+    .state;
+    let state = reduce(
+        state,
+        SupervisorInput::VisibilityChanged {
+            target_key: "one".into(),
+            visibility: TargetVisibility::Visible,
+        },
+    )
+    .unwrap()
+    .state;
+    let state = reduce(state, SupervisorInput::InitialReconciliationCompleted)
+        .unwrap()
+        .state;
+    let metrics = ViewportMetrics::new(390, 844, 3.0, true, true).unwrap();
+    let state = reduce(
+        state,
+        SupervisorInput::ViewportOverrideApplied {
+            target_key: "one".into(),
+            viewport: Some(metrics),
+        },
+    )
+    .unwrap()
+    .state;
+    let state = reduce(
+        state,
+        SupervisorInput::ConnectionLost(TransportClose {
+            reason: NonEmptyText::new("remote").unwrap(),
+        }),
+    )
+    .unwrap()
+    .state;
+    let restored = reduce(
+        state,
+        SupervisorInput::Reconnected(ReconnectedSnapshot {
+            connection_generation: 1,
+            compatibility: compatibility(),
+            targets: vec![ReconnectedTarget {
+                info: page("one", "https://one.test"),
+                session: Some(TransportSessionId::new("new-session").unwrap()),
+                visibility: TargetVisibility::Visible,
+            }],
+        }),
+    )
+    .unwrap();
+    let restore_index = restored
+        .effects
+        .iter()
+        .position(|effect| {
+            matches!(effect,
+                SupervisorEffect::RestoreViewport { viewport, .. } if *viewport == metrics
+            )
+        })
+        .unwrap();
+    let resume_index = restored
+        .effects
+        .iter()
+        .position(|effect| matches!(effect, SupervisorEffect::ResumeCapture { .. }))
+        .unwrap();
+    assert!(restore_index < resume_index);
+    assert_eq!(
+        restored.state.targets_by_key["one"].viewport_override,
+        Some(metrics)
+    );
+}
+
+#[test]
+fn cleared_and_new_targets_do_not_restore_an_old_viewport() {
+    let state = reduce(
+        SupervisorState::new(compatibility()),
+        SupervisorInput::InitialTargets(vec![page("one", "https://one.test")]),
+    )
+    .unwrap()
+    .state;
+    let state = reduce(
+        state,
+        SupervisorInput::Attached {
+            target_key: "one".into(),
+            session: TransportSessionId::new("session-one").unwrap(),
+        },
+    )
+    .unwrap()
+    .state;
+    let state = reduce(
+        state,
+        SupervisorInput::ViewportOverrideApplied {
+            target_key: "one".into(),
+            viewport: Some(ViewportMetrics::new(800, 600, 1.0, false, false).unwrap()),
+        },
+    )
+    .unwrap()
+    .state;
+    let state = reduce(
+        state,
+        SupervisorInput::ViewportOverrideApplied {
+            target_key: "one".into(),
+            viewport: None,
+        },
+    )
+    .unwrap()
+    .state;
+    let state = reduce(
+        state,
+        SupervisorInput::ConnectionLost(TransportClose {
+            reason: NonEmptyText::new("remote").unwrap(),
+        }),
+    )
+    .unwrap()
+    .state;
+    let restored = reduce(
+        state,
+        SupervisorInput::Reconnected(ReconnectedSnapshot {
+            connection_generation: 1,
+            compatibility: compatibility(),
+            targets: vec![ReconnectedTarget {
+                info: page("new", "https://new.test"),
+                session: Some(TransportSessionId::new("new-session").unwrap()),
+                visibility: TargetVisibility::Visible,
+            }],
+        }),
+    )
+    .unwrap();
+    assert!(
+        !restored
+            .effects
+            .iter()
+            .any(|effect| matches!(effect, SupervisorEffect::RestoreViewport { .. }))
+    );
+    assert_eq!(restored.state.targets_by_key["new"].viewport_override, None);
 }

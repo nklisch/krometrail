@@ -236,6 +236,7 @@ pub struct WaitRequest {
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct WaitRequestWire {
+    #[serde(default)]
     target: PageSelection,
     condition: WaitCondition,
     timeout: u64,

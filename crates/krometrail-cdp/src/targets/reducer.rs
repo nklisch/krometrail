@@ -13,8 +13,9 @@ use krometrail_core::{
 use super::model::{
     CaptureBinding, CaptureEffectContext, ReconnectedSnapshot, ReconnectedTarget, Reduction,
     ShutdownCause, SupervisorEffect, SupervisorInput, SupervisorState, SupervisorTargetState,
-    TransportTargetInfo, cancelled_error, close_event, close_reason, make_target, process_error,
-    reconnect_error, target_changed_event, target_discovered_event, target_error,
+    TransportTargetInfo, ViewportEffectContext, cancelled_error, close_event, close_reason,
+    make_target, process_error, reconnect_error, target_changed_event, target_discovered_event,
+    target_error,
 };
 
 /// Apply one serialized input. Callers must execute this function from one task/owner; sharing the
@@ -45,6 +46,7 @@ pub fn reduce(mut state: SupervisorState, input: SupervisorInput) -> Result<Redu
                 | SupervisorInput::VisibilityChanged { .. }
                 | SupervisorInput::CaptureVisibilityChanged { .. }
                 | SupervisorInput::SelectTarget { .. }
+                | SupervisorInput::ViewportOverrideApplied { .. }
         )
     {
         // Events from the disconnected transport can still be queued in another task. They are
@@ -144,6 +146,24 @@ pub fn reduce(mut state: SupervisorState, input: SupervisorInput) -> Result<Redu
         }
         SupervisorInput::SelectTarget { target_key } => {
             select_target(&mut state, &target_key, &mut effects)?;
+        }
+        SupervisorInput::ViewportOverrideApplied {
+            target_key,
+            viewport,
+        } => {
+            let target = state
+                .targets_by_key
+                .get_mut(&target_key)
+                .ok_or_else(target_error)?;
+            if target.transport_session.is_none()
+                || matches!(
+                    target.target.lifecycle,
+                    TargetLifecycle::Closed | TargetLifecycle::Failed | TargetLifecycle::Suspended
+                )
+            {
+                return Err(target_error());
+            }
+            target.viewport_override = viewport;
         }
         SupervisorInput::ConnectionLost(close) => {
             if matches!(
@@ -305,6 +325,7 @@ fn reconcile_one(
         transport_session: None,
         prior_to_suspension: None,
         capture_binding: CaptureBinding::Inactive,
+        viewport_override: None,
     };
     if creation_event {
         effects.push(target_discovered_event(&target_state));
@@ -357,6 +378,18 @@ fn attach(
             .transition(TargetLifecycle::Attached)?;
     }
     effects.push(target_changed_event(target));
+    if let Some(viewport) = target.viewport_override {
+        effects.push(SupervisorEffect::RestoreViewport {
+            context: ViewportEffectContext {
+                target_id: target.target.target.id(),
+                target_key: key.clone(),
+                connection_generation: state.connection_generation,
+                attachment_generation: target.target.attachment_generation,
+                transport_session: session.clone(),
+            },
+            viewport,
+        });
+    }
     if probe_visibility {
         effects.push(SupervisorEffect::RestoreSessionDomains {
             target_key: key,
@@ -632,6 +665,7 @@ fn reconcile_restored(
                 transport_session: None,
                 prior_to_suspension: None,
                 capture_binding: CaptureBinding::Inactive,
+                viewport_override: None,
             },
         );
         if let Some(session) = reconnected.session {

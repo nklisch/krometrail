@@ -111,6 +111,7 @@ HOME="$CLAUDE_HOME" claude plugin list --json >"$STATE/claude-list.json"
 claude_path="$(jq -r '.[] | select(.id == "krometrail@krometrail") | .installPath' "$STATE/claude-list.json")"
 [[ -n "$claude_path" && "$claude_path" != "null" ]] || fail "Claude did not report the installed plugin"
 [[ -f "$claude_path/skills/krometrail/SKILL.md" ]] || fail "Claude install omitted the complete skill"
+[[ -f "$claude_path/skills/report-krometrail-issue/SKILL.md" ]] || fail "Claude install omitted the reporting skill"
 [[ -x "$claude_path/bin/krometrail" && -x "$claude_path/scripts/install-managed.sh" ]] || fail "Claude install omitted executable bootstrap files"
 jq -e '.[] | select(.id == "krometrail@krometrail") |
   .mcpServers.krometrail.command == "${CLAUDE_PLUGIN_ROOT}/bin/krometrail" and
@@ -125,7 +126,7 @@ claude_binary="$claude_data/versions/${release_version#v}/krometrail"
 HOME="$CLAUDE_HOME" KROMETRAIL_MANAGED_ROOT="$claude_data" \
   python3 "$STATE/probe_mcp.py" "$claude_path" "$claude_path/bin/krometrail" mcp
 HOME="$CLAUDE_HOME" claude plugin details krometrail@krometrail >"$STATE/claude-details.txt"
-grep -Eq 'Skills \(1\).*krometrail' "$STATE/claude-details.txt" || fail "Claude did not discover the Krometrail skill"
+grep -Eq 'Skills \(2\).*krometrail' "$STATE/claude-details.txt" || fail "Claude did not discover both Krometrail skills"
 HOME="$CLAUDE_HOME" claude plugin uninstall krometrail@krometrail --scope user >/dev/null
 HOME="$CLAUDE_HOME" claude plugin marketplace remove krometrail --scope user >/dev/null
 [[ ! -e "$claude_data" ]] || fail "Claude uninstall did not remove managed plugin data"
@@ -136,6 +137,7 @@ CODEX_HOME="$CODEX_HOME_DIR" codex plugin add krometrail@krometrail --json >"$ST
 codex_path="$(jq -r '.installedPath' "$STATE/codex-add.json")"
 [[ -n "$codex_path" && "$codex_path" != "null" ]] || fail "Codex did not report the installed plugin"
 [[ -f "$codex_path/skills/krometrail/SKILL.md" ]] || fail "Codex install omitted the complete skill"
+[[ -f "$codex_path/skills/report-krometrail-issue/SKILL.md" ]] || fail "Codex install omitted the reporting skill"
 [[ -x "$codex_path/bin/krometrail" && -x "$codex_path/scripts/install-managed.sh" ]] || fail "Codex install omitted executable bootstrap files"
 CODEX_HOME="$CODEX_HOME_DIR" codex mcp list --json >"$STATE/codex-mcp.json"
 jq -e --arg cwd "$codex_path/." '.[] | select(.name == "krometrail") |
@@ -149,6 +151,7 @@ codex_binary="$CODEX_DATA/krometrail/plugin/versions/${release_version#v}/kromet
 [[ "$($codex_binary --version)" == "krometrail ${release_version#v}" ]] || fail "Codex managed binary has the wrong identity"
 CODEX_HOME="$CODEX_HOME_DIR" codex debug prompt-input 'probe skills' >"$STATE/codex-prompt.json"
 grep -Fq 'krometrail:krometrail' "$STATE/codex-prompt.json" || fail "Codex did not expose the Krometrail skill to the model"
+grep -Fq 'krometrail:report-krometrail-issue' "$STATE/codex-prompt.json" || fail "Codex did not expose the reporting skill to the model"
 CODEX_HOME="$CODEX_HOME_DIR" codex plugin remove krometrail@krometrail >/dev/null
 CODEX_HOME="$CODEX_HOME_DIR" codex plugin marketplace remove krometrail >/dev/null
 [[ -x "$codex_binary" ]] || fail "Codex removal unexpectedly deleted fallback XDG managed data"

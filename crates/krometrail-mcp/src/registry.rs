@@ -26,8 +26,9 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     config::{McpConfig, McpDependencies},
     response::{
-        ToolResponse, into_call_tool_result, map_lifecycle_result, map_operation_result,
-        map_progressive_result, map_temporal_bundle_result, visible_error,
+        ToolResponse, into_call_tool_result, map_lifecycle_result,
+        map_operation_result_with_capture, map_progressive_result, map_temporal_bundle_result,
+        visible_error, visible_error_with_capture,
     },
     schema::{generated_input_schema, operation_input_schema, type_input_schema},
     server::KrometrailMcpServer,
@@ -434,11 +435,10 @@ fn progressive_request(
     operation: &'static str,
     arguments: Option<rmcp::model::JsonObject>,
 ) -> Result<ProgressiveEvidenceRequest> {
-    serde_json::from_value(json!({
+    decode_value(json!({
         "operation": operation,
         "request": Value::Object(arguments.unwrap_or_default()),
     }))
-    .map_err(|_| invalid_arguments())
 }
 
 fn temporal_annotations(mutability: OperationMutability, destructive: bool) -> ToolAnnotations {
@@ -522,12 +522,22 @@ async fn call_operation(
         )
         .await
     {
-        Ok(result) => map_operation_result(name, result)
-            .map_err(|_| {
-                rmcp::ErrorData::internal_error("browser tool response mapping failed", None)
-            })
-            .and_then(into_call_tool_result),
-        Err(error) => Ok(visible_error(name, error)),
+        Ok(executed) => {
+            map_operation_result_with_capture(name, executed.result, &executed.capture_statuses)
+                .map_err(|_| {
+                    rmcp::ErrorData::internal_error("browser tool response mapping failed", None)
+                })
+                .and_then(into_call_tool_result)
+        }
+        Err(error) => {
+            let capture_statuses = context
+                .service
+                .sessions()
+                .capture_statuses()
+                .await
+                .unwrap_or_default();
+            Ok(visible_error_with_capture(name, error, &capture_statuses))
+        }
     }
 }
 
@@ -582,15 +592,23 @@ fn tagged_request(
     operation: &'static str,
     arguments: Option<rmcp::model::JsonObject>,
 ) -> Result<BrowserOperationRequest> {
-    serde_json::from_value(json!({
+    decode_value(json!({
         "operation": operation,
         "request": Value::Object(arguments.unwrap_or_default()),
     }))
-    .map_err(|_| invalid_arguments())
 }
 
 fn parse_arguments<T: DeserializeOwned>(arguments: rmcp::model::JsonObject) -> Result<T> {
-    serde_json::from_value(Value::Object(arguments)).map_err(|_| invalid_arguments())
+    decode_value(Value::Object(arguments))
+}
+
+fn decode_value<T: DeserializeOwned>(value: Value) -> Result<T> {
+    let encoded = serde_json::to_vec(&value).map_err(|_| invalid_arguments("$"))?;
+    let mut deserializer = serde_json::Deserializer::from_slice(&encoded);
+    serde_path_to_error::deserialize(&mut deserializer).map_err(|error| {
+        let path = normalize_argument_path(&error.path().to_string());
+        invalid_arguments(&path)
+    })
 }
 
 fn serializable<T: serde::Serialize>(value: T) -> Result<Value> {
@@ -602,11 +620,34 @@ fn serializable<T: serde::Serialize>(value: T) -> Result<Value> {
     })
 }
 
-fn invalid_arguments() -> KrometrailError {
+fn invalid_arguments(path: &str) -> KrometrailError {
+    let path = path
+        .strip_prefix("request.")
+        .or_else(|| path.strip_prefix("request"))
+        .filter(|path| !path.is_empty())
+        .unwrap_or(path);
     KrometrailError::new(
         ErrorCode::InvalidInput,
-        NonEmptyText::new("tool arguments do not match the advertised input schema").unwrap(),
+        NonEmptyText::new(format!(
+            "tool arguments do not match the advertised input schema at {path}"
+        ))
+        .unwrap(),
     )
+}
+
+fn normalize_argument_path(path: &str) -> String {
+    let normalized: String = path
+        .chars()
+        .filter(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '_' | '.' | '[' | ']' | '$')
+        })
+        .take(256)
+        .collect();
+    if normalized.is_empty() || normalized == "." {
+        "$".into()
+    } else {
+        normalized
+    }
 }
 
 fn operation_annotations(mutability: OperationMutability) -> ToolAnnotations {
@@ -664,5 +705,28 @@ mod tests {
                 .code,
             ErrorCode::Cancelled
         );
+    }
+
+    #[test]
+    fn invalid_arguments_name_first_nested_path_without_echoing_values() {
+        #[allow(dead_code)]
+        #[derive(Debug, serde::Deserialize)]
+        struct Arguments {
+            locator: Locator,
+        }
+        #[allow(dead_code)]
+        #[derive(Debug, serde::Deserialize)]
+        struct Locator {
+            reference: u64,
+        }
+
+        let arguments = serde_json::from_value(serde_json::json!({
+            "locator": {"reference": "sensitive-browser-content"}
+        }))
+        .unwrap();
+        let error = parse_arguments::<Arguments>(arguments).unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidInput);
+        assert!(error.message.as_str().contains("locator.reference"));
+        assert!(!error.message.as_str().contains("sensitive-browser-content"));
     }
 }

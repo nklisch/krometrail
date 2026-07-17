@@ -81,15 +81,21 @@ impl TargetVisibility {
 #[serde(rename_all = "snake_case")]
 pub enum BrowserStopOutcome {
     ManagedBrowserClosed,
+    ManagedBrowserClosedDegraded,
     Detached,
 }
 
 impl BrowserStopOutcome {
-    pub const ALL: &'static [Self] = &[Self::ManagedBrowserClosed, Self::Detached];
+    pub const ALL: &'static [Self] = &[
+        Self::ManagedBrowserClosed,
+        Self::ManagedBrowserClosedDegraded,
+        Self::Detached,
+    ];
 
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::ManagedBrowserClosed => "managed_browser_closed",
+            Self::ManagedBrowserClosedDegraded => "managed_browser_closed_degraded",
             Self::Detached => "detached",
         }
     }

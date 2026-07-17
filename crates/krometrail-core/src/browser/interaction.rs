@@ -126,9 +126,12 @@ impl<'de> Deserialize<'de> for InteractionLocator {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum MouseButton {
+    #[default]
     Left,
     Middle,
     Right,
@@ -265,9 +268,8 @@ pub struct KeyChord(String);
 
 impl KeyChord {
     pub fn new(value: impl Into<String>) -> Result<Self> {
-        let value = value.into();
-        parse_chord(&value)?;
-        Ok(Self(value))
+        let segments = parse_chord(&value.into())?;
+        Ok(Self(canonical_chord(&segments)))
     }
     pub fn as_str(&self) -> &str {
         &self.0
@@ -286,7 +288,7 @@ fn parse_chord(value: &str) -> Result<Vec<KeySegment>> {
     if value.trim().is_empty() {
         return Err(invalid("key chord must not be empty"));
     }
-    value
+    let segments = value
         .split('+')
         .map(|raw| {
             let token = raw.trim();
@@ -312,12 +314,62 @@ fn parse_chord(value: &str) -> Result<Vec<KeySegment>> {
                 _ => Err(invalid("key chord contains an unsupported key name")),
             }
         })
-        .collect()
+        .collect::<Result<Vec<_>>>()?;
+    let mut modifiers = Vec::new();
+    let mut action_keys = 0;
+    for segment in &segments {
+        match segment {
+            KeySegment::Modifier(modifier) => {
+                if modifiers.contains(modifier) {
+                    return Err(invalid("key chord contains a duplicate modifier"));
+                }
+                modifiers.push(*modifier);
+            }
+            KeySegment::NamedKey(_) | KeySegment::Char(_) => action_keys += 1,
+        }
+    }
+    if action_keys != 1 {
+        return Err(invalid("key chord must contain exactly one action key"));
+    }
+    Ok(segments)
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+fn canonical_chord(segments: &[KeySegment]) -> String {
+    let mut values = Vec::with_capacity(segments.len());
+    for modifier in [
+        Modifier::Alt,
+        Modifier::Control,
+        Modifier::Meta,
+        Modifier::Shift,
+    ] {
+        if segments.contains(&KeySegment::Modifier(modifier)) {
+            values.push(match modifier {
+                Modifier::Alt => "Alt".to_owned(),
+                Modifier::Control => "Control".to_owned(),
+                Modifier::Meta => "Meta".to_owned(),
+                Modifier::Shift => "Shift".to_owned(),
+            });
+        }
+    }
+    let action = segments
+        .iter()
+        .find(|segment| !matches!(segment, KeySegment::Modifier(_)))
+        .expect("validated chord has one action key");
+    values.push(match action {
+        KeySegment::NamedKey(key) => key.as_str().to_owned(),
+        KeySegment::Char(ch) if ch.is_ascii_alphabetic() => ch.to_ascii_lowercase().to_string(),
+        KeySegment::Char(ch) => ch.to_string(),
+        KeySegment::Modifier(_) => unreachable!(),
+    });
+    values.join("+")
+}
+
+#[derive(
+    Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum FillMode {
+    #[default]
     Replace,
     Append,
 }
@@ -438,12 +490,20 @@ pub struct ClickRequest {
 }
 #[derive(Deserialize, schemars::JsonSchema)]
 struct ClickRequestWire {
+    #[serde(default)]
     target: PageSelection,
     locator: InteractionLocator,
+    #[serde(default)]
     button: MouseButton,
+    #[serde(default)]
     modifiers: Modifiers,
+    #[serde(default = "default_click_count")]
     click_count: u8,
+    #[serde(default)]
     wait_for_navigation: bool,
+}
+const fn default_click_count() -> u8 {
+    1
 }
 impl ClickRequest {
     pub fn new(
@@ -489,10 +549,13 @@ pub struct FillRequest {
 }
 #[derive(Deserialize, schemars::JsonSchema)]
 struct FillRequestWire {
+    #[serde(default)]
     target: PageSelection,
     locator: InteractionLocator,
     value: NonEmptyText,
+    #[serde(default)]
     mode: FillMode,
+    #[serde(default)]
     wait_for_navigation: bool,
 }
 impl FillRequest {
@@ -536,9 +599,12 @@ pub struct PressKeysRequest {
 }
 #[derive(Deserialize, schemars::JsonSchema)]
 struct PressKeysRequestWire {
+    #[serde(default)]
     target: PageSelection,
+    #[serde(default)]
     locator: Option<InteractionLocator>,
     keys: Vec<KeyChord>,
+    #[serde(default)]
     wait_for_navigation: bool,
 }
 impl PressKeysRequest {
@@ -582,6 +648,7 @@ pub struct SelectOptionRequest {
 }
 #[derive(Deserialize, schemars::JsonSchema)]
 struct SelectOptionRequestWire {
+    #[serde(default)]
     target: PageSelection,
     locator: InteractionLocator,
     value: SelectValue,
@@ -609,17 +676,20 @@ request_wire!(
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct HoverRequest {
+    #[serde(default)]
     pub target: PageSelection,
     pub locator: InteractionLocator,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct DragRequest {
+    #[serde(default)]
     pub target: PageSelection,
     pub source: InteractionLocator,
     pub destination: InteractionLocator,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ScrollRequest {
+    #[serde(default)]
     pub target: PageSelection,
     pub delta: ScrollDelta,
 }
@@ -632,6 +702,7 @@ pub struct UploadFilesRequest {
 }
 #[derive(Deserialize, schemars::JsonSchema)]
 struct UploadFilesRequestWire {
+    #[serde(default)]
     target: PageSelection,
     locator: InteractionLocator,
     files: Vec<ValidatedFilePath>,
@@ -662,6 +733,7 @@ request_wire!(
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct HandleDialogRequest {
+    #[serde(default)]
     pub target: PageSelection,
     pub action: DialogAction,
 }
@@ -1013,6 +1085,32 @@ mod tests {
         }
         assert!(KeyChord::new("Control+MediaPlay").is_err());
         assert!(KeyChord::new("Control+").is_err());
+        assert!(KeyChord::new("Control+Control+s").is_err());
+        assert!(KeyChord::new("Control+s+x").is_err());
+        assert_eq!(KeyChord::new("META+A").unwrap().as_str(), "Meta+a");
+        assert_eq!(KeyChord::new("cmd+a").unwrap().as_str(), "Meta+a");
+        assert_eq!(KeyChord::new("Meta+a").unwrap().as_str(), "Meta+a");
+    }
+
+    #[test]
+    fn interaction_wire_defaults_select_the_current_page() {
+        let click: ClickRequest = serde_json::from_value(json!({
+            "locator": {"kind":"coordinate","value":{"point":{"x":1.0,"y":2.0},"space":"viewport_css"}}
+        })).unwrap();
+        assert_eq!(click.target, PageSelection::Selected);
+        assert_eq!(click.button, MouseButton::Left);
+        assert_eq!(click.modifiers, Modifiers::default());
+        assert_eq!(click.click_count, 1);
+        assert!(!click.wait_for_navigation);
+
+        let fill: FillRequest = serde_json::from_value(json!({
+            "locator":{"kind":"element","value":{"kind":"reference","value":reference()}},
+            "value":"x"
+        }))
+        .unwrap();
+        assert_eq!(fill.target, PageSelection::Selected);
+        assert_eq!(fill.mode, FillMode::Replace);
+        assert!(!fill.wait_for_navigation);
     }
     #[test]
     fn request_validation_and_sanitization_protect_boundaries() {

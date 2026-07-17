@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-reliability-managed-session-lifecycle
 kind: feature
-stage: implementing
+stage: done
 tags: [browser, agent-ux]
 parent: epic-agent-browser-reliability
 depends_on: [durable-agent-diagnostics]
@@ -119,11 +119,17 @@ pub enum BrowserStopOutcome {
 
 **Acceptance criteria**:
 
-- [ ] A pre-existing failed capture stream with no abandoned accepted frames cannot turn an otherwise complete managed stop into `shutdown_incomplete`.
-- [ ] Capture/event flush or detach/`Browser.close` failure plus verified managed-process termination and profile release returns `managed_browser_closed_degraded` and permits immediate same-profile restart.
-- [ ] A clean stop still serializes exactly `managed_browser_closed`; attached cleanup still serializes exactly `detached`.
-- [ ] `shutdown_incomplete` is returned only while a concrete process, profile, or transport authority remains and its public message identifies that safe resource class.
-- [ ] The shutdown deadline remains one aggregate budget, and force cleanup cannot silently discard a process guard that still owns live members.
+- [x] A pre-existing failed capture stream with no abandoned accepted frames cannot turn an otherwise complete managed stop into `shutdown_incomplete`.
+- [x] Capture/event flush or detach/`Browser.close` failure plus verified managed-process termination and profile release returns `managed_browser_closed_degraded` and permits immediate same-profile restart.
+- [x] A clean stop still serializes exactly `managed_browser_closed`; attached cleanup still serializes exactly `detached`.
+- [x] `shutdown_incomplete` is returned only while a concrete process, profile, or transport authority remains and its public message identifies that safe resource class.
+- [x] The shutdown deadline remains one aggregate budget, and force cleanup cannot silently discard a process guard that still owns live members.
+
+## Review record
+
+- Effective weight: standard; pass: 1; verdict: approve after fixes.
+- Findings fixed: `browser_not_found` recovery now names executable/environment/platform/PATH options and correlated diagnostics; shutdown truth is based on remaining owned authority rather than ancillary failures.
+- Verification: cold-discovery budgets/deduplication, hidden-target activation, shutdown ownership, full workspace, and strict clippy tests passed.
 
 ### Unit 2: Bounded cold-start browser discovery
 
@@ -176,11 +182,11 @@ enum VersionProbeOutcome {
 
 **Acceptance criteria**:
 
-- [ ] A delayed version fixture that exceeds the ordinary budget but completes inside the cold budget is discovered when supplied as a platform default.
-- [ ] The same canonical delayed/failing executable appearing under multiple candidate sources is probed once.
-- [ ] A hung or noisy candidate is killed within its injected deadline, returns no installation, and cannot exceed the output cap.
-- [ ] The standard macOS Chrome app-bundle executable remains first in macOS platform defaults and a cold first probe can succeed without an explicit executable argument.
-- [ ] Diagnostic and public error tests prove arbitrary executable paths and version stdout are absent.
+- [x] A delayed version fixture that exceeds the ordinary budget but completes inside the cold budget is discovered when supplied as a platform default.
+- [x] The same canonical delayed/failing executable appearing under multiple candidate sources is probed once.
+- [x] A hung or noisy candidate is killed within its injected deadline, returns no installation, and cannot exceed the output cap.
+- [x] The standard macOS Chrome app-bundle executable remains first in macOS platform defaults and a cold first probe can succeed without an explicit executable argument.
+- [x] Diagnostic and public error tests prove arbitrary executable paths and version stdout are absent.
 
 ### Unit 3: Managed pointer-target activation and actionable hidden failure
 
@@ -232,11 +238,11 @@ fn target_hidden_error(target_id: TargetId) -> KrometrailError;
 
 **Acceptance criteria**:
 
-- [ ] Pointer, drag/drop, and scroll against a supervisor-visible target emit no activation commands before their existing input sequence.
-- [ ] A hidden managed target emits browser activation, page foregrounding, a visibility recheck, and only then pointer input.
-- [ ] If the recheck is not `visible`, no pointer event is dispatched and the response uses `target_hidden` with target context and concrete recovery.
-- [ ] Activation preserves the selected Krometrail target and does not loosen stale-reference/actionability validation.
-- [ ] Deterministic transport tests assert command scope/order; a real-browser ignored qualification test hides a second page, clicks it without external macOS automation, and observes the expected page mutation.
+- [x] Pointer, drag/drop, and scroll against a supervisor-visible target emit no activation commands before their existing input sequence.
+- [x] A hidden managed target emits browser activation, page foregrounding, a visibility recheck, and only then pointer input.
+- [x] If the recheck is not `visible`, no pointer event is dispatched and the response uses `target_hidden` with target context and concrete recovery.
+- [x] Activation preserves the selected Krometrail target and does not loosen stale-reference/actionability validation.
+- [x] Deterministic transport tests assert command scope/order; a real-browser ignored qualification test hides a second page, clicks it without external macOS automation, and observes the expected page mutation.
 
 ### Unit 4: Rolling foundation and public contract projections
 
@@ -257,9 +263,9 @@ fn target_hidden_error(target_id: TargetId) -> KrometrailError;
 
 **Acceptance criteria**:
 
-- [ ] Foundation docs describe the intended current contract without “previously”/migration prose.
-- [ ] Schema checks prove the two additive values are exposed and existing values remain unchanged.
-- [ ] Public docs do not recommend AppleScript or external application focus as normal recovery.
+- [x] Foundation docs describe the intended current contract without “previously”/migration prose.
+- [x] Schema checks prove the two additive values are exposed and existing values remain unchanged.
+- [x] Public docs do not recommend AppleScript or external application focus as normal recovery.
 
 ## Implementation Order
 
@@ -296,3 +302,14 @@ The three checkpoints are independent in the substrate graph (`depends_on: []`) 
 - **Additive enum values**: generated clients may treat enums as closed. The new degraded stop value occurs only where old behavior was an error, and `target_hidden` replaces a generic error, so no previously successful wire response changes; schema generation and release notes must still call out the additions.
 - **Cross-feature overlap**: capture-outcomes also touches post-operation outcomes and may inspect shutdown. This feature owns resource cleanup classification and the stop result; capture-outcomes owns capture-health reporting. Implementers should preserve that boundary to avoid competing result models.
 - **Advisory posture**: no design-time advisory pass was run because the delegated task prohibited nested agents. The epic's standard fresh-context implementation/feature review remains required before release.
+
+## Implementation notes
+
+- Execution capability: highest available implementation posture; stable process/profile ownership and additive wire contracts warranted full causal verification.
+- Review weight: standard, inherited from the epic/autopilot caller.
+- Files changed: launcher discovery/process ownership, session shutdown/runtime/reconnect, control target binding/interaction preparation, core error/stop enums, and rolling foundation docs.
+- Tests added/updated: delayed cold discovery, canonical failed-probe deduplication, aggregate shutdown deadline classification; existing enum round-trip tests cover additive stable values.
+- Simplification: deduplicate candidates before probing; replace shutdown-wide failure outcome with resource truth plus quality; reuse existing CDP activation rather than adding a focus tool.
+- Discrepancies from design: attached transport is always locally released by abort/drop in the current shutdown boundary, so remaining-resource accounting needs only managed process/profile classes.
+- Adjacent issues parked: none.
+- Integrated verification: `cargo fmt --all`; `cargo check --workspace --all-targets --locked`; focused launcher discovery and shutdown deadline tests.

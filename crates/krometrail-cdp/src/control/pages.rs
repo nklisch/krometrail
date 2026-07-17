@@ -4,11 +4,14 @@ use krometrail_core::{
 };
 
 use super::{PageControl, bind_target, navigation::OperationCancellation};
+use crate::transport::CommandScope;
 use crate::{SupervisorState, transport::CdpTransport};
+use serde_json::json;
+
+const COMPOSITOR_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
 
 pub(crate) struct PostOperationObservation {
     pub(crate) observation: ObservationPart<LiveObservation>,
-    pub(crate) interruption: Option<krometrail_core::KrometrailError>,
 }
 
 impl PageControl {
@@ -30,18 +33,13 @@ impl PageControl {
         let bound = match bind_target(state, selection) {
             Ok(bound) => bound,
             Err(error) => {
-                let interruption = matches!(
-                    error.code,
-                    krometrail_core::ErrorCode::Cancelled
-                        | krometrail_core::ErrorCode::BrowserDisconnected
-                )
-                .then(|| error.clone());
                 return Ok(PostOperationObservation {
                     observation: ObservationPart::Unavailable(error),
-                    interruption,
                 });
             }
         };
+        self.await_compositor_ready(transport, &bound, cancel, state.connection_generation)
+            .await;
         let started_at = self.session_time()?;
         match self
             .observe_live(
@@ -53,17 +51,50 @@ impl PageControl {
             )
             .await
         {
-            Ok((BrowserOperationResult::ObserveLive(observation), interruption)) => {
+            Ok((BrowserOperationResult::ObserveLive(observation), _)) => {
                 Ok(PostOperationObservation {
                     observation: ObservationPart::Available(*observation),
-                    interruption,
                 })
             }
             Ok(_) => unreachable!("live observation returns its associated result"),
             Err(error) => Ok(PostOperationObservation {
                 observation: ObservationPart::Unavailable(error),
-                interruption: None,
             }),
+        }
+    }
+
+    pub(crate) async fn await_compositor_ready(
+        &self,
+        transport: &dyn CdpTransport,
+        bound: &super::BoundTarget,
+        cancel: &OperationCancellation,
+        connection_generation: u64,
+    ) {
+        let signal = transport.send_raw(
+            &CommandScope::Session(bound.transport_session.clone()),
+            "Runtime.evaluate",
+            json!({
+                "expression": "new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(true))))",
+                "awaitPromise": true,
+                "returnByValue": true,
+                "silent": true
+            }),
+        );
+        let ready = tokio::time::timeout(
+            COMPOSITOR_READY_TIMEOUT,
+            cancel.race(connection_generation, bound.target_id, signal),
+        )
+        .await;
+        if !matches!(ready, Ok(Ok(Ok(_)))) {
+            tracing::warn!(
+                event = "browser.compositor.signal_unavailable",
+                failure_stage = "compositor_readiness",
+                error_code = krometrail_core::ErrorCode::PageObservationFailed.as_str(),
+                session_id = %self.session_id,
+                target_id = %bound.target_id,
+                attachment_generation = bound.attachment_generation,
+                "browser.compositor.signal_unavailable"
+            );
         }
     }
 }

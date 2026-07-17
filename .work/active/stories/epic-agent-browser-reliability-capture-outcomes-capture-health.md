@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-reliability-capture-outcomes-capture-health
 kind: story
-stage: implementing
+stage: done
 tags: [browser, storage, agent-ux]
 parent: epic-agent-browser-reliability-capture-outcomes
 depends_on: []
@@ -25,3 +25,9 @@ Add the stable `capture_failed` code and bounded capture `failure_stage`, retain
 ## Ordering
 
 This checkpoint has no sibling dependency and must land before the feature's documentation describes capture-failure diagnostics.
+
+## Implementation evidence
+
+- Added validated `CaptureFailureStage` and `capture_failed`, preserving the first terminal stage through in-memory capture status and sanitized tracing.
+- Projected failed current-generation capture health as target-scoped MCP warnings without storage I/O or control failure.
+- Focused core, capture acknowledgement-failure, MCP projection tests and workspace check pass.

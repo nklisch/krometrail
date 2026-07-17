@@ -79,7 +79,15 @@ impl ManagedChromeProcess {
             Ok(Some(status)) => {
                 // A browser can leave helpers behind even on natural exit. Reuse the same
                 // ownership-checked force path before removing the process guard from supervision.
-                self.force_kill_now();
+                let cleanup_complete = self.force_kill_now();
+                if !cleanup_complete {
+                    tracing::error!(
+                        event = "browser.process.group_cleanup_incomplete",
+                        failure_stage = "natural_exit_cleanup",
+                        error_code = krometrail_core::ErrorCode::ShutdownIncomplete.as_str(),
+                        "managed browser helpers remain after leader exit"
+                    );
+                }
                 Some(ProcessTermination {
                     exit: sanitize_exit(status),
                 })
@@ -96,7 +104,9 @@ impl ManagedChromeProcess {
             };
             match child.try_wait() {
                 Ok(Some(status)) => {
-                    self.force_kill_now();
+                    if !self.force_kill_now() {
+                        return Err(ProcessError::TerminationFailed);
+                    }
                     return Ok(ProcessTermination {
                         exit: sanitize_exit(status),
                     });
@@ -111,13 +121,14 @@ impl ManagedChromeProcess {
     /// period. A browser leader can exit before helpers do, so direct-child reaping is deliberately
     /// followed by group cleanup and a positive no-members check.
     pub async fn terminate(&mut self, grace: Duration) -> Result<ProcessTermination, ProcessError> {
+        let deadline = tokio::time::Instant::now() + grace;
         if self.child.is_none() {
+            self.finish_group_termination(deadline, grace).await?;
             return Ok(ProcessTermination {
                 exit: SanitizedProcessExit::Unknown,
             });
         }
 
-        let deadline = tokio::time::Instant::now() + grace;
         let direct_alive = self.child_is_alive()?;
         if !self.signal_group(false, direct_alive) {
             self.kill_direct_if_alive();
@@ -161,9 +172,9 @@ impl ManagedChromeProcess {
     /// Cancellation/drop cannot await, but it must still reap the direct child. The group is
     /// force-killed only while the captured PGID is demonstrably ours; after the leader exits,
     /// `/proc` membership prevents a recycled PID/PGID from becoming an unrelated signal target.
-    pub(crate) fn force_kill_now(&mut self) {
+    pub(crate) fn force_kill_now(&mut self) -> bool {
         let Some(mut child) = self.child.take() else {
-            return;
+            return !self.group_has_members();
         };
         let direct_alive = matches!(child.try_wait(), Ok(None));
         let group_signaled = self.signal_group(true, direct_alive);
@@ -182,7 +193,11 @@ impl ManagedChromeProcess {
                 std::thread::sleep(Duration::from_millis(10));
             }
         }
-        self.process_group = None;
+        let complete = !self.group_has_members();
+        if complete {
+            self.process_group = None;
+        }
+        complete
     }
 
     async fn finish_group_termination(

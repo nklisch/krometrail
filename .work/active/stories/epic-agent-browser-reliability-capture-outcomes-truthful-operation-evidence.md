@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-reliability-capture-outcomes-truthful-operation-evidence
 kind: story
-stage: implementing
+stage: done
 tags: [browser, agent-ux]
 parent: epic-agent-browser-reliability-capture-outcomes
 depends_on: []
@@ -24,3 +24,9 @@ Once input dispatch or a page mutation is proven, retain its dispatched/succeede
 ## Ordering
 
 This checkpoint has no sibling dependency. It must complete before compositor readiness so readiness fallback can rely on the truthful post-dispatch boundary.
+
+## Implementation evidence
+
+- Successful navigation/page mutations now retain `Succeeded` when post-operation evidence is interrupted or unavailable.
+- Post-dispatch interaction completion/observation failures retain the dispatched interaction anchor with unavailable `page_observation_failed` evidence.
+- Page lifecycle cancellation/disconnect regressions pass with the truthful non-replay boundary.

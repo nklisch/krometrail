@@ -8,6 +8,6 @@ mod schema;
 mod server;
 mod session;
 
-pub use config::{McpConfig, McpDependencies};
+pub use config::{DiagnosticContext, McpConfig, McpDependencies};
 pub use server::{McpService, build_service};
 pub use session::BrowserSessionOwner;

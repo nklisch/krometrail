@@ -47,6 +47,7 @@ fn project_result(
         | BrowserOperationResult::ReloadPage(value)
         | BrowserOperationResult::GoBack(value)
         | BrowserOperationResult::GoForward(value) => Some(value.as_ref()),
+        BrowserOperationResult::SetViewport(value) => Some(&value.operation),
         _ => None,
     };
     if let Some(page) = page {
@@ -98,7 +99,8 @@ fn project_result(
         | BrowserOperationResult::NavigatePage(_)
         | BrowserOperationResult::ReloadPage(_)
         | BrowserOperationResult::GoBack(_)
-        | BrowserOperationResult::GoForward(_) => unreachable!("page results handled above"),
+        | BrowserOperationResult::GoForward(_)
+        | BrowserOperationResult::SetViewport(_) => unreachable!("page results handled above"),
     };
     action
         .map(|action| {

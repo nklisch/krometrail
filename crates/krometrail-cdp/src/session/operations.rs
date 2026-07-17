@@ -318,6 +318,134 @@ async fn execute_operation_unfenced(
                 .go_forward(transport.as_ref(), state, request, cancellation)
                 .await
         }
+        BrowserOperationRequest::SetViewport(request) => {
+            let target = state.resolve_selection(request.target)?;
+            let target_key = target.target.target.browser_target_key().to_owned();
+            let target_id = target.target.target.id();
+            let previous = target.viewport_override;
+            let requested = match request.viewport {
+                ViewportOverride::Override(metrics) => Some(metrics),
+                ViewportOverride::Clear => None,
+            };
+            let bound = crate::control::bind_target(state, request.target)?;
+            let started_at = page_control.session_time()?;
+            let interaction_id = page_control.next_interaction_id();
+            let dispatched_at = page_control.session_time()?;
+            let applied = cancellation
+                .race(
+                    state.connection_generation,
+                    target_id,
+                    crate::control::viewport::apply_viewport(transport.as_ref(), &bound, requested),
+                )
+                .await
+                .and_then(|result| result);
+            if let Err(error) = applied {
+                rollback_viewport_or_fail_target(
+                    state,
+                    shared,
+                    Arc::clone(&transport),
+                    &bound,
+                    &target_key,
+                    previous,
+                )
+                .await;
+                return viewport_failure_result(
+                    page_control,
+                    target_id,
+                    interaction_id,
+                    started_at,
+                    dispatched_at,
+                    error,
+                );
+            }
+            let effective = match crate::control::viewport::observe_effective_viewport(
+                transport.as_ref(),
+                &bound,
+                requested,
+            )
+            .await
+            {
+                Ok(effective) => effective,
+                Err(error) => {
+                    rollback_viewport_or_fail_target(
+                        state,
+                        shared,
+                        Arc::clone(&transport),
+                        &bound,
+                        &target_key,
+                        previous,
+                    )
+                    .await;
+                    return viewport_failure_result(
+                        page_control,
+                        target_id,
+                        interaction_id,
+                        started_at,
+                        dispatched_at,
+                        error,
+                    );
+                }
+            };
+            if let Err(error) = commit_supervisor_input(
+                state,
+                SupervisorInput::ViewportOverrideApplied {
+                    target_key: target_key.clone(),
+                    viewport: requested,
+                },
+                Arc::clone(&transport),
+                shared,
+            )
+            .await
+            {
+                rollback_viewport_or_fail_target(
+                    state,
+                    shared,
+                    Arc::clone(&transport),
+                    &bound,
+                    &target_key,
+                    previous,
+                )
+                .await;
+                return viewport_failure_result(
+                    page_control,
+                    target_id,
+                    interaction_id,
+                    started_at,
+                    dispatched_at,
+                    error,
+                );
+            }
+            if let Some(capture) = shared.capture.as_ref() {
+                capture.coordinator.update_device_scale_factor(
+                    target_id,
+                    bound.attachment_generation,
+                    effective.device_scale_factor,
+                );
+            }
+            page_control.invalidate_target_snapshot(target_id);
+            let observation = page_control
+                .observe_after_operation(transport.as_ref(), state, request.target, cancellation)
+                .await?;
+            let outcome = PageOperationOutcome::Succeeded(PageChange::ViewportConfigured {
+                override_active: requested.is_some(),
+            });
+            let operation = build_page_result(
+                page_control,
+                target_id,
+                krometrail_core::BrowserOperationKind::SetViewport,
+                interaction_id,
+                started_at,
+                dispatched_at,
+                outcome,
+                observation.observation,
+            )?;
+            Ok(BrowserOperationResult::SetViewport(Box::new(
+                ViewportOperationResult {
+                    operation,
+                    effective: ObservationPart::Available(effective),
+                },
+            )))
+        }
         BrowserOperationRequest::ClosePage(request) => {
             let target = state.resolve_selection(request.target)?;
             let target_key = target.target.target.browser_target_key().to_owned();
@@ -372,7 +500,7 @@ async fn execute_operation_unfenced(
             let selected = state
                 .selected_target()
                 .map(|target| target.target.target.id());
-            let (observation, interruption) = match selected {
+            let observation = match selected {
                 Some(selected) => {
                     let observed = page_control
                         .observe_after_operation(
@@ -382,26 +510,17 @@ async fn execute_operation_unfenced(
                             cancellation,
                         )
                         .await?;
-                    (observed.observation, observed.interruption)
+                    observed.observation
                 }
-                None => (
-                    ObservationPart::Unavailable(KrometrailError::new(
-                        ErrorCode::NotFound,
-                        NonEmptyText::new("no browser page remains selected after closure")
-                            .unwrap(),
-                    )),
-                    None,
-                ),
+                None => ObservationPart::Unavailable(KrometrailError::new(
+                    ErrorCode::NotFound,
+                    NonEmptyText::new("no browser page remains selected after closure").unwrap(),
+                )),
             };
-            let outcome = interruption.map_or_else(
-                || {
-                    PageOperationOutcome::Succeeded(PageChange::Closed {
-                        closed: target_id,
-                        selected,
-                    })
-                },
-                PageOperationOutcome::Failed,
-            );
+            let outcome = PageOperationOutcome::Succeeded(PageChange::Closed {
+                closed: target_id,
+                selected,
+            });
             let result = build_page_result(
                 page_control,
                 target_id,
@@ -427,6 +546,66 @@ async fn execute_operation_unfenced(
                 .await
         }
     }
+}
+
+async fn rollback_viewport_or_fail_target(
+    state: &mut SupervisorState,
+    shared: &Arc<SessionShared>,
+    transport: Arc<dyn CdpTransport>,
+    bound: &crate::control::BoundTarget,
+    target_key: &str,
+    previous: Option<krometrail_core::ViewportMetrics>,
+) {
+    if crate::control::viewport::apply_viewport(transport.as_ref(), bound, previous)
+        .await
+        .is_ok()
+    {
+        return;
+    }
+    tracing::error!(
+        event = "viewport_rollback_failed",
+        target_id = %bound.target_id,
+        "viewport rollback failed; terminating affected target"
+    );
+    let _ = commit_supervisor_input(
+        state,
+        SupervisorInput::TargetAttachFailed {
+            target_key: target_key.to_owned(),
+        },
+        transport,
+        shared,
+    )
+    .await;
+}
+
+fn viewport_failure_result(
+    page_control: &PageControl,
+    target_id: krometrail_core::TargetId,
+    interaction_id: krometrail_core::InteractionId,
+    started_at: krometrail_core::SessionTime,
+    dispatched_at: krometrail_core::SessionTime,
+    error: KrometrailError,
+) -> Result<BrowserOperationResult> {
+    let operation = build_page_result(
+        page_control,
+        target_id,
+        krometrail_core::BrowserOperationKind::SetViewport,
+        interaction_id,
+        started_at,
+        dispatched_at,
+        PageOperationOutcome::Failed(error.clone()),
+        ObservationPart::Unavailable(error.clone()),
+    )?;
+    let effective_error = match &operation.outcome {
+        PageOperationOutcome::Failed(error) => error.clone(),
+        PageOperationOutcome::Succeeded(_) => unreachable!("viewport failure has failed outcome"),
+    };
+    Ok(BrowserOperationResult::SetViewport(Box::new(
+        ViewportOperationResult {
+            operation,
+            effective: ObservationPart::Unavailable(effective_error),
+        },
+    )))
 }
 
 async fn commit_supervisor_input(
@@ -474,10 +653,6 @@ async fn page_success_result(
     let observation = page_control
         .observe_after_operation(transport, state, observation_target, cancel)
         .await?;
-    let outcome = observation.interruption.map_or_else(
-        || PageOperationOutcome::Succeeded(change),
-        PageOperationOutcome::Failed,
-    );
     build_page_result(
         page_control,
         target_id,
@@ -485,7 +660,7 @@ async fn page_success_result(
         interaction_id,
         started_at,
         dispatched_at,
-        outcome,
+        PageOperationOutcome::Succeeded(change),
         observation.observation,
     )
 }

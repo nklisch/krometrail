@@ -13,9 +13,11 @@ use rmcp::{
     },
     service::{QuitReason, RequestContext, RoleServer, ServerInitializeError, ServiceExt as _},
 };
+use tracing::Instrument as _;
+use uuid::Uuid;
 
 use crate::{
-    config::{McpConfig, McpDependencies},
+    config::{DiagnosticContext, McpConfig, McpDependencies},
     registry::{MCP_REQUEST_DEADLINE, McpCancellation, build_router},
     resources::{read_resource, resource_templates},
     session::BrowserSessionOwner,
@@ -27,6 +29,7 @@ pub struct KrometrailMcpServer {
     router: Arc<ToolRouter<KrometrailMcpServer>>,
     dependencies: Arc<McpDependencies>,
     temporal_resources: bool,
+    diagnostics: DiagnosticContext,
 }
 
 impl KrometrailMcpServer {
@@ -40,11 +43,13 @@ impl KrometrailMcpServer {
             Arc::clone(&dependencies),
             Arc::clone(&sessions),
         )?);
+        let diagnostics = dependencies.diagnostics.clone();
         let server = Self {
             sessions,
             router,
             dependencies,
             temporal_resources: config.is_enabled(krometrail_core::CapabilityId::TemporalVision),
+            diagnostics,
         };
         Ok(server)
     }
@@ -106,12 +111,35 @@ impl ServerHandler for KrometrailMcpServer {
         let deadline = std::time::Instant::now() + MCP_REQUEST_DEADLINE;
         let cancellation: Arc<dyn CancellationSignal> =
             Arc::new(McpCancellation::new(context.ct.clone()));
-        read_resource(
-            &request.uri,
-            self.dependencies.progressive_evidence.as_ref(),
-            deadline,
-            cancellation,
-        )
+        let correlation_id = Uuid::new_v4().to_string();
+        let span = tracing::info_span!(
+            "mcp.request",
+            correlation_id = %correlation_id,
+            route = "resources/read"
+        );
+        async {
+            let mut result = read_resource(
+                &request.uri,
+                self.dependencies.progressive_evidence.as_ref(),
+                deadline,
+                cancellation,
+            )
+            .await;
+            if let Err(error) = &mut result {
+                attach_error_diagnostics(error, &correlation_id, &self.diagnostics);
+            }
+            tracing::info!(
+                event = "mcp.request.completed",
+                outcome = if result.is_ok() {
+                    "succeeded"
+                } else {
+                    "failed"
+                },
+                "mcp.request.completed"
+            );
+            result
+        }
+        .instrument(span)
         .await
     }
 
@@ -120,9 +148,34 @@ impl ServerHandler for KrometrailMcpServer {
         request: CallToolRequestParam,
         context: RequestContext<RoleServer>,
     ) -> std::result::Result<CallToolResult, ErrorData> {
-        self.router
-            .call(ToolCallContext::new(self, request, context))
-            .await
+        let correlation_id = Uuid::new_v4().to_string();
+        let route = request.name.to_string();
+        let span = tracing::info_span!(
+            "mcp.request",
+            correlation_id = %correlation_id,
+            route = %route
+        );
+        async {
+            let mut result = self
+                .router
+                .call(ToolCallContext::new(self, request, context))
+                .await;
+            let outcome = match &mut result {
+                Ok(result) => attach_diagnostics(result, &correlation_id, &self.diagnostics),
+                Err(error) => {
+                    attach_error_diagnostics(error, &correlation_id, &self.diagnostics);
+                    "failed"
+                }
+            };
+            tracing::info!(
+                event = "mcp.request.completed",
+                outcome,
+                "mcp.request.completed"
+            );
+            result
+        }
+        .instrument(span)
+        .await
     }
 
     fn get_info(&self) -> ServerInfo {
@@ -149,6 +202,61 @@ impl ServerHandler for KrometrailMcpServer {
             ),
         }
     }
+}
+
+fn attach_error_diagnostics(
+    error: &mut ErrorData,
+    correlation_id: &str,
+    context: &DiagnosticContext,
+) {
+    let diagnostics = serde_json::json!({
+        "correlation_id": correlation_id,
+        "log_path": context.log_path().map(|path| path.to_string_lossy()),
+    });
+    match error.data.take() {
+        Some(serde_json::Value::Object(mut data)) => {
+            data.insert("diagnostics".into(), diagnostics);
+            error.data = Some(serde_json::Value::Object(data));
+        }
+        Some(data) => error.data = Some(data),
+        None => error.data = Some(serde_json::json!({ "diagnostics": diagnostics })),
+    }
+}
+
+fn attach_diagnostics(
+    result: &mut CallToolResult,
+    correlation_id: &str,
+    context: &DiagnosticContext,
+) -> &'static str {
+    let Some(serde_json::Value::Object(response)) = result.structured_content.as_mut() else {
+        return if result.is_error == Some(true) {
+            "failed"
+        } else {
+            "succeeded"
+        };
+    };
+    let outcome = match response
+        .get("status")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(if result.is_error == Some(true) {
+            "failed"
+        } else {
+            "succeeded"
+        }) {
+        "failed" => "failed",
+        "degraded" => "degraded",
+        _ => "succeeded",
+    };
+    if outcome != "succeeded" {
+        response.insert(
+            "diagnostics".into(),
+            serde_json::json!({
+                "correlation_id": correlation_id,
+                "log_path": context.log_path().map(|path| path.to_string_lossy()),
+            }),
+        );
+    }
+    outcome
 }
 
 pub struct McpService {
@@ -265,6 +373,42 @@ mod tests {
 
     struct UnusedConnector;
 
+    #[test]
+    fn diagnostics_are_added_only_to_failed_or_degraded_tool_envelopes() {
+        let context = DiagnosticContext::new(Some("/private/krometrail.log".into()));
+        let error = KrometrailError::new(
+            ErrorCode::InvalidInput,
+            NonEmptyText::new("invalid fixture request").unwrap(),
+        );
+        let mut failed = crate::response::visible_error("browser_click", error);
+        assert_eq!(
+            attach_diagnostics(&mut failed, "correlation-1", &context),
+            "failed"
+        );
+        let structured = failed.structured_content.unwrap();
+        assert_eq!(
+            structured["diagnostics"],
+            serde_json::json!({
+                "correlation_id": "correlation-1",
+                "log_path": "/private/krometrail.log"
+            })
+        );
+
+        let mapped = crate::response::map_lifecycle_result("browser_status", json!({})).unwrap();
+        let mut succeeded = crate::response::into_call_tool_result(mapped).unwrap();
+        assert_eq!(
+            attach_diagnostics(&mut succeeded, "correlation-2", &context),
+            "succeeded"
+        );
+        assert!(
+            succeeded
+                .structured_content
+                .unwrap()
+                .get("diagnostics")
+                .is_none()
+        );
+    }
+
     impl BrowserConnector for UnusedConnector {
         fn installations(
             &self,
@@ -318,6 +462,7 @@ mod tests {
             temporal_debug_bundles: Arc::clone(&temporal) as Arc<dyn TemporalDebugBundles>,
             progressive_evidence: Arc::clone(&temporal) as Arc<dyn ProgressiveEvidence>,
             temporal_context: temporal as Arc<dyn TemporalContextQuery>,
+            diagnostics: DiagnosticContext::default(),
         }
     }
 
@@ -448,6 +593,7 @@ mod tests {
             temporal_debug_bundles: Arc::clone(&spy) as Arc<dyn TemporalDebugBundles>,
             progressive_evidence: Arc::clone(&spy) as Arc<dyn ProgressiveEvidence>,
             temporal_context: spy as Arc<dyn TemporalContextQuery>,
+            diagnostics: DiagnosticContext::default(),
         }
     }
 
@@ -1630,6 +1776,7 @@ mod tests {
             temporal_debug_bundles: Arc::clone(&spy) as Arc<dyn TemporalDebugBundles>,
             progressive_evidence: Arc::clone(&spy) as Arc<dyn ProgressiveEvidence>,
             temporal_context: spy as Arc<dyn TemporalContextQuery>,
+            diagnostics: DiagnosticContext::default(),
         };
         let (bundle, resource, mismatch) =
             invoke_bundle_and_read_resource(dependencies, arguments, &uri).await;

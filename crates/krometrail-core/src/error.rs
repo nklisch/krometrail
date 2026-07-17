@@ -28,6 +28,7 @@ define_stable_enum! {
         BrowserCompatibilityFailed => "browser_compatibility_failed",
         ProfileInUse => "profile_in_use",
         TargetFailed => "target_failed",
+        TargetHidden => "target_hidden",
         StaleReference => "stale_reference",
         ReferenceNotActionable => "reference_not_actionable",
         PageObservationFailed => "page_observation_failed",
@@ -39,6 +40,7 @@ define_stable_enum! {
         ReconnectExhausted => "reconnect_exhausted",
         Cancelled => "cancelled",
         ShutdownIncomplete => "shutdown_incomplete",
+        CaptureFailed => "capture_failed",
         CaptureRejected => "capture_rejected",
         PersistenceFailed => "persistence_failed",
         BudgetExhausted => "budget_exhausted",
@@ -175,16 +177,20 @@ impl ErrorCode {
             | Self::NavigationFailed
             | Self::InteractionFailed
             | Self::WaitTimedOut => RetryAdvice::Safe,
-            Self::StaleReference | Self::ReferenceNotActionable | Self::BudgetExhausted => {
-                RetryAdvice::AfterRecovery
-            }
+            Self::TargetHidden
+            | Self::StaleReference
+            | Self::ReferenceNotActionable
+            | Self::BudgetExhausted => RetryAdvice::AfterRecovery,
+            Self::CaptureFailed => RetryAdvice::AfterRecovery,
             _ => RetryAdvice::Never,
         }
     }
 
     pub const fn default_recovery(self) -> Option<&'static str> {
         match self {
-            Self::BrowserNotFound => Some("install Chrome or Chromium, then retry"),
+            Self::BrowserNotFound => Some(
+                "set an explicit executable or KROMETRAIL_CHROME_PATH, or install Chrome/Chromium in a platform-default or PATH location; inspect correlated discovery diagnostics, then retry",
+            ),
             Self::BrowserLaunchFailed => {
                 Some("check the browser installation and profile, then retry")
             }
@@ -192,6 +198,9 @@ impl ErrorCode {
             Self::BrowserCompatibilityFailed => Some("use a compatible Chrome renderer and retry"),
             Self::ProfileInUse => Some("close the other session using this profile, then retry"),
             Self::TargetFailed => Some("refresh the target or choose another page"),
+            Self::TargetHidden => {
+                Some("select or foreground the page, then retry the pointer operation")
+            }
             Self::StaleReference => {
                 Some("request a new structured snapshot and retry with its reference")
             }
@@ -219,6 +228,9 @@ impl ErrorCode {
             Self::ShutdownIncomplete => {
                 Some("inspect the browser process before starting another session")
             }
+            Self::CaptureFailed => Some(
+                "inspect browser status and diagnostics, then start a new session before relying on temporal history",
+            ),
             Self::BudgetExhausted => {
                 Some("unpin or delete retained evidence, or increase the disk budget")
             }

@@ -82,9 +82,18 @@ impl PageControl {
     ) -> Result<BrowserOperationResult> {
         let plan = interaction_plan(&request)?;
         let bound = bind_target(state, plan.target)?;
+        let generation = state.connection_generation;
+        if matches!(
+            plan.action.category,
+            krometrail_core::ActionCategory::Pointer
+                | krometrail_core::ActionCategory::DragDrop
+                | krometrail_core::ActionCategory::Scroll
+        ) {
+            self.prepare_pointer_target(transport, &bound, cancel, generation)
+                .await?;
+        }
         let started_at = self.session_time()?;
         let interaction_id = InteractionId::from_uuid(*self.ids.next().as_uuid());
-        let generation = state.connection_generation;
         let event_binding = EventTargetBinding {
             target_id: bound.target_id,
             connection_generation: generation,
@@ -163,6 +172,7 @@ impl PageControl {
                 Err(_) => true,
             }
         };
+        let mut completion_degraded = None;
         if !observation_blocked {
             let completion = self.complete_interaction(
                 transport,
@@ -174,20 +184,42 @@ impl PageControl {
                 generation,
             );
             observation_blocked = if plan.kind == BrowserOperationKind::HandleDialog {
-                completion.await?
+                match completion.await {
+                    Ok(blocked) => blocked,
+                    Err(_) => {
+                        completion_degraded = Some(operation_error(
+                            ErrorCode::PageObservationFailed,
+                            bound.target_id,
+                            "interaction was dispatched but completion evidence is unavailable",
+                        ));
+                        false
+                    }
+                }
             } else {
                 match tokio::time::timeout(INTERACTION_PHASE_WINDOW, completion).await {
-                    Ok(result) => result?,
+                    Ok(Ok(blocked)) => blocked,
+                    Ok(Err(_)) => {
+                        completion_degraded = Some(operation_error(
+                            ErrorCode::PageObservationFailed,
+                            bound.target_id,
+                            "interaction was dispatched but completion evidence is unavailable",
+                        ));
+                        false
+                    }
                     Err(_) => true,
                 }
             };
         }
 
         let observation_started = self.session_time()?;
-        let observation = if observation_blocked {
+        let observation = if let Some(error) = completion_degraded {
+            Box::new(self.unavailable_observation(&bound, started_at, error)?)
+        } else if observation_blocked {
             Box::new(self.blocked_observation(&bound, started_at)?)
         } else {
-            let (observation, _interruption) = self
+            self.await_compositor_ready(transport, &bound, cancel, generation)
+                .await;
+            let observed = self
                 .observe_live(
                     transport,
                     &bound,
@@ -197,11 +229,20 @@ impl PageControl {
                     observation_started,
                     Some((cancel, generation)),
                 )
-                .await?;
-            let BrowserOperationResult::ObserveLive(observation) = observation else {
-                unreachable!("live observation returns its associated result")
-            };
-            observation
+                .await;
+            match observed {
+                Ok((BrowserOperationResult::ObserveLive(observation), _)) => observation,
+                Ok(_) => unreachable!("live observation returns its associated result"),
+                Err(_) => Box::new(self.unavailable_observation(
+                    &bound,
+                    started_at,
+                    operation_error(
+                        ErrorCode::PageObservationFailed,
+                        bound.target_id,
+                        "interaction was dispatched but post-action observation is unavailable",
+                    ),
+                )?),
+            }
         };
         let live_observation_time = observation.context.completed_at;
         let context = ObservationContext::new(
@@ -229,6 +270,69 @@ impl PageControl {
                 observation: *observation,
             },
         ))
+    }
+
+    pub(super) async fn prepare_pointer_target(
+        &self,
+        transport: &dyn CdpTransport,
+        bound: &BoundTarget,
+        cancel: &OperationCancellation,
+        generation: u64,
+    ) -> Result<()> {
+        if bound.visibility == krometrail_core::TargetVisibility::Visible {
+            return Ok(());
+        }
+        let activation = async {
+            cancel
+                .race(
+                    generation,
+                    bound.target_id,
+                    transport.send_raw(
+                        &CommandScope::Browser,
+                        "Target.activateTarget",
+                        json!({"targetId": bound.browser_target_key}),
+                    ),
+                )
+                .await?
+                .map_err(|error| {
+                    transport_error(error, ErrorCode::TargetHidden, bound.target_id)
+                })?;
+            send_cdp(
+                transport,
+                bound,
+                "Page.bringToFront",
+                json!({}),
+                cancel,
+                generation,
+            )
+            .await?;
+            let response = send_cdp(
+                transport,
+                bound,
+                "Runtime.evaluate",
+                json!({"expression":"document.visibilityState","returnByValue":true,"silent":true}),
+                cancel,
+                generation,
+            )
+            .await?;
+            let visible = response
+                .pointer("/result/value")
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    response
+                        .pointer("/result/result/value")
+                        .and_then(Value::as_str)
+                });
+            if visible == Some("visible") {
+                Ok::<(), krometrail_core::KrometrailError>(())
+            } else {
+                Err(target_hidden_error(bound.target_id))
+            }
+        };
+        match tokio::time::timeout(self.config.evaluation_timeout, activation).await {
+            Ok(Ok(())) => Ok(()),
+            _ => Err(target_hidden_error(bound.target_id)),
+        }
     }
 
     async fn dispatch_action(
@@ -315,7 +419,7 @@ impl PageControl {
         };
         match locator {
             InteractionLocator::Element(locator) => {
-                let resolved = match locator {
+                let mut resolved = match locator {
                     krometrail_core::ElementLocator::Reference(reference) => {
                         cancel
                             .race(
@@ -341,6 +445,59 @@ impl PageControl {
                             .await??
                     }
                 };
+                if require_viewport_point {
+                    let original_backend_node_id = resolved.backend_node_id;
+                    send_cdp(
+                        transport,
+                        bound,
+                        "DOM.scrollIntoViewIfNeeded",
+                        json!({"backendNodeId": resolved.backend_node_id}),
+                        cancel,
+                        generation,
+                    )
+                    .await?;
+                    // Scrolling can trigger layout, virtualization, or replacement. Resolve the
+                    // declared identity again and use only its post-scroll actionability/geometry.
+                    resolved = match locator {
+                        krometrail_core::ElementLocator::Reference(reference) => {
+                            cancel
+                                .race(
+                                    generation,
+                                    bound.target_id,
+                                    self.snapshots.resolve(
+                                        transport,
+                                        bound,
+                                        *reference,
+                                        requirement,
+                                    ),
+                                )
+                                .await??
+                        }
+                        krometrail_core::ElementLocator::CssSelector(selector) => {
+                            cancel
+                                .race(
+                                    generation,
+                                    bound.target_id,
+                                    self.snapshots.resolve_selector(
+                                        transport,
+                                        bound,
+                                        selector.as_str(),
+                                        requirement,
+                                    ),
+                                )
+                                .await??
+                        }
+                    };
+                    if matches!(locator, krometrail_core::ElementLocator::CssSelector(_))
+                        && resolved.backend_node_id != original_backend_node_id
+                    {
+                        return Err(operation_error(
+                            ErrorCode::ReferenceNotActionable,
+                            bound.target_id,
+                            "selector resolved to a different element while preparing pointer input",
+                        ));
+                    }
+                }
                 let (min_x, max_x, min_y, max_y) = quad_bounds(&resolved.document_quad);
                 let document_point = CssPoint::new((min_x + max_x) / 2.0, (min_y + max_y) / 2.0)?;
                 // DOM.getBoxModel quads and Input coordinates share main-frame viewport CSS
@@ -495,6 +652,20 @@ impl PageControl {
         bound: &BoundTarget,
         started_at: krometrail_core::SessionTime,
     ) -> Result<krometrail_core::LiveObservation> {
+        let error = operation_error(
+            ErrorCode::PageObservationFailed,
+            bound.target_id,
+            "interaction_completion_blocked: handle any open dialog or retry after the renderer responds",
+        );
+        self.unavailable_observation(bound, started_at, error)
+    }
+
+    fn unavailable_observation(
+        &self,
+        bound: &BoundTarget,
+        started_at: krometrail_core::SessionTime,
+        error: krometrail_core::KrometrailError,
+    ) -> Result<krometrail_core::LiveObservation> {
         let completed_at = self.session_time()?;
         let context = ObservationContext::new(
             self.session_id,
@@ -503,11 +674,6 @@ impl PageControl {
             started_at,
             completed_at,
         )?;
-        let error = operation_error(
-            ErrorCode::PageObservationFailed,
-            bound.target_id,
-            "interaction_completion_blocked: handle any open dialog or retry after the renderer responds",
-        );
         Ok(krometrail_core::LiveObservation {
             context,
             page: krometrail_core::ObservationPart::Unavailable(error.clone()),
@@ -708,6 +874,14 @@ pub(super) fn interaction_error(
     message: &'static str,
 ) -> krometrail_core::KrometrailError {
     operation_error(ErrorCode::InteractionFailed, target_id, message)
+}
+
+fn target_hidden_error(target_id: TargetId) -> krometrail_core::KrometrailError {
+    operation_error(
+        ErrorCode::TargetHidden,
+        target_id,
+        "browser page remained hidden after bounded foreground activation",
+    )
 }
 
 fn wrap_interaction_result(

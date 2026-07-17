@@ -199,6 +199,14 @@ struct TestRig {
 }
 
 fn rig(two_epochs: bool, limits: ArtifactWorkLimits) -> TestRig {
+    rig_with_transition(two_epochs, false, limits)
+}
+
+fn rig_with_transition(
+    viewport_transition: bool,
+    scale_transition: bool,
+    limits: ArtifactWorkLimits,
+) -> TestRig {
     let session = SessionId::from_uuid(Uuid::from_u128(1));
     let target = TargetId::from_uuid(Uuid::from_u128(2));
     let frames: Vec<_> = (0..3)
@@ -215,9 +223,21 @@ fn rig(two_epochs: bool, limits: ArtifactWorkLimits) -> TestRig {
                     SessionTime::from_nanos(ordinal),
                     ImageFormat::Png,
                     PixelDimensions::new(2, 2).unwrap(),
-                    PixelDimensions::new(if two_epochs && position == 2 { 3 } else { 2 }, 2)
-                        .unwrap(),
-                    DeviceScaleFactor::new(1.0).unwrap(),
+                    PixelDimensions::new(
+                        if viewport_transition && position == 2 {
+                            3
+                        } else {
+                            2
+                        },
+                        2,
+                    )
+                    .unwrap(),
+                    DeviceScaleFactor::new(if scale_transition && position == 2 {
+                        2.0
+                    } else {
+                        1.0
+                    })
+                    .unwrap(),
                     vec![],
                 )
                 .unwrap(),
@@ -336,6 +356,37 @@ fn rig(two_epochs: bool, limits: ArtifactWorkLimits) -> TestRig {
         ids,
         request,
     }
+}
+
+#[tokio::test]
+async fn device_scale_transition_starts_a_new_visual_epoch_without_normalizing_sources() {
+    let mut rig = rig_with_transition(false, true, ArtifactWorkLimits::default());
+    rig.request = ArtifactGenerationRequest::new(
+        rig.request.range().clone(),
+        rig.request.markers().to_vec(),
+        rig.request.generators().to_vec(),
+        ArtifactFailurePolicy::AllowPartial,
+    )
+    .unwrap();
+    let result = rig
+        .service
+        .generate(rig.request, ArtifactGenerationContext::default())
+        .await
+        .unwrap();
+
+    assert_eq!(result.epochs.len(), 2);
+    assert_eq!(result.epochs[0].device_scale_factor.get(), 1.0);
+    assert_eq!(result.epochs[0].frame_ids.len(), 2);
+    assert_eq!(result.epochs[1].device_scale_factor.get(), 2.0);
+    assert_eq!(result.epochs[1].frame_ids.len(), 1);
+    assert_eq!(result.epochs[0].image, result.epochs[1].image);
+    assert_eq!(result.epochs[0].viewport, result.epochs[1].viewport);
+    assert!(
+        result
+            .outcomes
+            .iter()
+            .any(|outcome| matches!(outcome, ArtifactOutcome::Available { epoch_index: 1, .. }))
+    );
 }
 
 #[tokio::test]

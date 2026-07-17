@@ -32,7 +32,10 @@ An MCP client starts this command for you:
 krometrail mcp
 ```
 
-It is not an interactive terminal command. Standard output is reserved for MCP protocol messages; diagnostics go to standard error.
+It is not an interactive terminal command. Standard output is reserved for MCP protocol messages.
+Krometrail writes bounded private diagnostics under its platform data directory and returns the log
+path plus a correlation identifier on failed or degraded MCP calls. Standard error is reserved for
+startup failures that occur before file diagnostics are available.
 
 The MCP server gives an agent:
 

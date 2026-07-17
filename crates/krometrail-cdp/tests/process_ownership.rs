@@ -85,6 +85,23 @@ async fn drop_reaps_descendants_after_group_leader_exits() {
     );
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn natural_leader_exit_cleans_descendants_before_reporting_completion() {
+    let mut command = Command::new("sh");
+    command.args(["-c", "(trap '' TERM; sleep 30) & exit 0"]);
+    command.stdout(Stdio::null()).stderr(Stdio::null());
+    let mut process = ManagedChromeProcess::spawn(&mut command).unwrap();
+    let pgid = process.child_id();
+
+    process.wait_for_termination().await.unwrap();
+
+    assert!(
+        !process_group_exists(pgid),
+        "natural leader exit reported completion while a helper remained"
+    );
+}
+
 #[tokio::test]
 async fn natural_child_death_is_distinct_from_transport_data() {
     let mut command = if cfg!(windows) {

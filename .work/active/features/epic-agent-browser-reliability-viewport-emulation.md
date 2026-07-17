@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-reliability-viewport-emulation
 kind: feature
-stage: implementing
+stage: done
 tags: [browser, agent-ux, visual]
 parent: epic-agent-browser-reliability
 depends_on: []
@@ -157,14 +157,14 @@ mutations. Extend every exhaustive result/batch/evidence match from the registry
 and persist the operation anchor without minting a navigation ID.
 
 **Acceptance criteria**:
-- [ ] The generated `set_viewport` schema accepts selected-target omission plus explicit override
+- [x] The generated `set_viewport` schema accepts selected-target omission plus explicit override
       and clear modes, rejects zero/oversized/non-finite metrics, and remains registry-derived.
-- [ ] Existing 24 operation names and request shapes remain unchanged; the additive operation is
+- [x] Existing 24 operation names and request shapes remain unchanged; the additive operation is
       batchable and carries a normal timeline anchor.
-- [ ] A success response distinguishes declared override state from observed CSS size, device
+- [x] A success response distinguishes declared override state from observed CSS size, device
       scale, and touch state, while observation failure remains explicit rather than rewriting the
       already-known mutation outcome.
-- [ ] No preset, user-agent, network, or launch-size authority is introduced.
+- [x] No preset, user-agent, network, or launch-size authority is introduced.
 
 ### Unit 2: Transactional CDP application and effective-state observation
 
@@ -224,13 +224,13 @@ failed post-operation screenshot/snapshot is degraded evidence, not proof the vi
 failed.
 
 **Acceptance criteria**:
-- [ ] Desktop and mobile-sized overrides produce the requested CSS viewport, scale, mobile flag,
+- [x] Desktop and mobile-sized overrides produce the requested CSS viewport, scale, mobile flag,
       and touch state on the selected target while another target remains unchanged.
-- [ ] Clear restores native observed metrics and disables touch without opening a new browser
+- [x] Clear restores native observed metrics and disables touch without opening a new browser
       session.
-- [ ] A partial CDP failure attempts to restore the exact prior override and does not commit a new
+- [x] A partial CDP failure attempts to restore the exact prior override and does not commit a new
       supervisor state or success anchor.
-- [ ] Navigation on the same attachment preserves the override and returns observations at the
+- [x] Navigation on the same attachment preserves the override and returns observations at the
       overridden geometry.
 
 ### Unit 3: Single-writer lifecycle restoration before capture
@@ -286,12 +286,12 @@ the target failed and preventing capture under a geometry that contradicts its s
 target/correlation IDs and dimensions/flags but never page content or URLs.
 
 **Acceptance criteria**:
-- [ ] Reducer tests prove restore effect order precedes capture start/resume for a new attachment
+- [x] Reducer tests prove restore effect order precedes capture start/resume for a new attachment
       generation and that cleared/new targets emit no restore.
-- [ ] Reconnect to the same target key reapplies the exact metrics before domain/capture effects;
+- [x] Reconnect to the same target key reapplies the exact metrics before domain/capture effects;
       restore failure fails only that target with actionable diagnostics.
-- [ ] Target close removes the override with the target, and a new target does not inherit it.
-- [ ] The same-target navigation path performs no redundant emulation command.
+- [x] Target close removes the override with the target, and a new target does not inherit it.
+- [x] The same-target navigation path performs no redundant emulation command.
 
 ### Unit 4: Geometry transition evidence and public guidance
 
@@ -320,13 +320,13 @@ but this implementation owns removal of any false claim that responsive sizing r
 window automation.
 
 **Acceptance criteria**:
-- [ ] Stored frames on both sides of a viewport change preserve their own source geometry and known
+- [x] Stored frames on both sides of a viewport change preserve their own source geometry and known
       metadata warnings; capture ordinals remain continuous and no artificial gap/restart appears.
-- [ ] Artifact input splits incompatible viewport/scale epochs unless normalization is explicit,
+- [x] Artifact input splits incompatible viewport/scale epochs unless normalization is explicit,
       matching `docs/VISUAL-EVIDENCE.md`.
-- [ ] The timeline contains the `set_viewport` interaction anchor so agents can query around the
+- [x] The timeline contains the `set_viewport` interaction anchor so agents can query around the
       transition without calculating timestamps.
-- [ ] Skill/docs examples cover override, clear, target scoping, effective metrics, and epoch
+- [x] Skill/docs examples cover override, clear, target scoping, effective metrics, and epoch
       interpretation; generated docs are regenerated, not hand-edited.
 
 ## Implementation Order
@@ -384,3 +384,34 @@ This additive stable MCP and reconnect/capture design warrants independent scrut
 delegated design boundary explicitly prohibits nested agents. Advisory review is deferred to the
 parent epic's required fresh-context feature/aggregate review; this does not block the design stage
 transition.
+
+## Implementation notes
+
+- Execution capability: strongest available implementation owner; additive stable MCP, CDP
+  transaction, and reconnect/capture ordering are public-contract and evidence-integrity risks.
+- Review weight: standard (parent autopilot default).
+- Files changed: core viewport/control/operation exports; CDP viewport, operation dispatch,
+  supervision/reconnect/runtime, batch/evidence, and targeted tests; minimal MCP response projection.
+- Tests added: constructor/schema/default tests, scripted target-scoped command/effective-state
+  tests, and reducer restore-before-capture plus clear/new-target isolation tests.
+- Simplification: one explicit metrics authority; no device presets, user-agent emulation,
+  launch-size setting, capture restart, or parallel retained native-state authority.
+- Discrepancies from design: MCP response projection was added here by parent authorization because
+  the new exhaustive result had to compile; final skill/docs guidance remains with the dependent
+  agent-contract integration lane to avoid conflicting edits.
+- Adjacent issues parked: none.
+- Verification: `cargo fmt --all`; `cargo check --workspace --all-targets --offline`; core viewport
+  tests (3 passed); scripted viewport command test (passed); target reducer viewport tests (2 passed).
+- Finishing evidence: continuous capture geometry-transition and scale-only artifact epoch tests
+  are green. Live Chrome now passes responsive CSS, navigation persistence, clear, and target
+  isolation. Root cause of the initial mismatch was treating content-expanded `innerWidth` as the
+  emulated viewport; effective size now uses CDP's `cssVisualViewport`, while DPR and touch remain
+  independently observed. Clear omits `maxTouchPoints` because CDP validates that optional field as
+  1..=16 even when disabled. SPEC/architecture and the shipped skill describe scope, clear, and
+  visual-epoch behavior.
+
+## Review record
+
+- Effective weight: standard; pass: 1; verdict: approve after fixes.
+- Findings fixed: retained DPR no longer derives from screencast page zoom; target-generation DPR authority updates at committed viewport transitions; rollback failure terminates only the affected target; reconnect restore failure is target-local and restores screen dimensions; published schema bounds and public guide are complete.
+- Verification: retained 1x-to-3x geometry transition with constant page zoom, schema bounds, reconnect ordering/isolation, real-browser override/navigation/clear/target isolation, docs build, full workspace, and strict clippy passed.

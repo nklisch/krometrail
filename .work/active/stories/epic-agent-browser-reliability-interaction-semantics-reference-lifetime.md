@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-reliability-interaction-semantics-reference-lifetime
 kind: story
-stage: implementing
+stage: done
 tags: [browser, agent-ux]
 parent: epic-agent-browser-reliability-interaction-semantics
 depends_on: []
@@ -35,3 +35,14 @@ to backing backend nodes. This checkpoint owns the reference-lifetime portion of
 Independent of input-contract work. Its corrected registry is prerequisite to pointer preparation
 because scroll-triggered re-resolution must preserve identity without relying on the newest
 observation generation.
+
+## Implementation evidence
+
+- The per-target registry reuses its generation and backend-node identifiers only when attachment
+  generation and document fingerprint remain equal; navigation/reconnect/document changes rotate
+  the epoch.
+- Each installed full tree prunes disappeared backend mappings, keeping storage bounded and making
+  old references fail instead of allowing identifier reuse or AX-tree reordering to retarget them.
+- Unit coverage verifies same-document reuse, attachment/generation invalidation, missing bindings,
+  and actionability checks. `docs/SPEC.md` and `docs/ARCHITECTURE.md` now state the corrected epoch
+  contract.

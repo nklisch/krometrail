@@ -10,11 +10,13 @@ use krometrail_cdp::{
 };
 use krometrail_core::{
     BrowserActionRequest, BrowserConnectRequest, BrowserConnector, BrowserOperationRequest,
-    BrowserOperationResult, ClickRequest, CoordinateSpace, CssPoint, DialogAction, DragRequest,
-    ElementLocator, FillMode, FillRequest, HandleDialogRequest, HoverRequest, InteractionLocator,
-    InteractionOutcome, KeyChord, Modifiers, MouseButton, PageSelection, PressKeysRequest,
-    ReadOnlyEvaluationRequest, ScrollDelta, ScrollRequest, SelectOptionRequest, SelectValue,
-    SnapshotPageRequest, UploadFilesRequest, ValidatedFilePath,
+    BrowserOperationResult, ClickRequest, CoordinateSpace, CreatePageRequest, CssPoint,
+    DialogAction, DragRequest, ElementLocator, FillMode, FillRequest, HandleDialogRequest,
+    HoverRequest, InteractionLocator, InteractionOutcome, KeyChord, Modifiers, MouseButton,
+    NavigatePageRequest, ObservationPart, PageSelection, PressKeysRequest,
+    ReadOnlyEvaluationRequest, ScrollDelta, ScrollRequest, SelectOptionRequest, SelectPageRequest,
+    SelectValue, SetViewportRequest, SnapshotPageRequest, UploadFilesRequest, ValidatedFilePath,
+    ViewportMetrics, ViewportOverride,
 };
 use serde_json::{Value, json};
 use support::scripted_cdp::ScriptedCdp;
@@ -68,6 +70,7 @@ fn startup_script(transport: &ScriptedCdp) {
     transport.push_response("Accessibility.getFullAXTree", json!({}));
 }
 fn observation_script(transport: &ScriptedCdp) {
+    transport.push_response("Runtime.evaluate", json!({"result":{"value":true}}));
     transport.push_response("Runtime.evaluate", json!({"result":{"value":true}}));
     transport.push_response("Runtime.evaluate", identity());
     transport.push_response("Runtime.evaluate", json!({"result":{"value":1.0}}));
@@ -173,6 +176,22 @@ async fn production_port_rejects_empty_coordinate_hits_and_returns_anchored_live
     assert!(result.record.dispatch_time <= result.record.live_observation_time);
     assert!(result.record.parent_batch.is_none());
     let calls = transport.command_calls();
+    let compositor = calls
+        .iter()
+        .position(|call| {
+            call.method == "Runtime.evaluate"
+                && call
+                    .params
+                    .get("expression")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|expression| expression.contains("requestAnimationFrame"))
+        })
+        .expect("automatic interaction observation waits for compositor readiness");
+    let screenshot = calls
+        .iter()
+        .position(|call| call.method == "Page.captureScreenshot")
+        .expect("interaction returns a post-action screenshot");
+    assert!(compositor < screenshot);
     let mouse = calls
         .iter()
         .filter(|call| {
@@ -243,6 +262,24 @@ async fn element_click_uses_box_model_viewport_coordinates_after_nonzero_scroll(
         "DOM.getBoxModel",
         json!({"model":{"border":[120.0,80.0,220.0,80.0,220.0,120.0,120.0,120.0]}}),
     );
+    // Element pointer preparation scrolls and then repeats selector resolution/actionability so
+    // layout-triggered replacement cannot receive input at stale geometry.
+    transport.push_response("DOM.getDocument", json!({"root":{"nodeId":1}}));
+    transport.push_response("DOM.querySelector", json!({"nodeId":2}));
+    transport.push_response("DOM.describeNode", json!({"node":{"backendNodeId":42}}));
+    transport.push_response("DOM.describeNode", json!({"node":{"backendNodeId":42}}));
+    transport.push_response(
+        "DOM.resolveNode",
+        json!({"object":{"objectId":"private-object"}}),
+    );
+    transport.push_response(
+        "Runtime.callFunctionOn",
+        json!({"result":{"value":{"connected":true,"visuallyHidden":false,"interactionBlocked":false,"tagName":"BUTTON","inputType":null,"isEditable":false,"isSelect":false,"isFileInput":false}}}),
+    );
+    transport.push_response(
+        "DOM.getBoxModel",
+        json!({"model":{"border":[120.0,80.0,220.0,80.0,220.0,120.0,120.0,120.0]}}),
+    );
     transport.push_response("Page.getLayoutMetrics", layout_at(400.0, 900.0));
     observation_script(&transport);
     let session = scripted_session(transport.clone()).await;
@@ -279,6 +316,72 @@ async fn element_click_uses_box_model_viewport_coordinates_after_nonzero_scroll(
             .iter()
             .all(|call| call.params["x"] == json!(170.0) && call.params["y"] == json!(100.0))
     );
+    session.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn selector_replacement_during_scroll_never_receives_pointer_input() {
+    let transport = ScriptedCdp::chrome();
+    startup_script(&transport);
+    for backend_node_id in [42, 43] {
+        transport.push_response("DOM.getDocument", json!({"root":{"nodeId":1}}));
+        transport.push_response("DOM.querySelector", json!({"nodeId":2}));
+        transport.push_response(
+            "DOM.describeNode",
+            json!({"node":{"backendNodeId":backend_node_id}}),
+        );
+        transport.push_response(
+            "DOM.describeNode",
+            json!({"node":{"backendNodeId":backend_node_id}}),
+        );
+        transport.push_response(
+            "DOM.resolveNode",
+            json!({"object":{"objectId":"private-object"}}),
+        );
+        transport.push_response(
+            "Runtime.callFunctionOn",
+            json!({"result":{"value":{"connected":true,"visuallyHidden":false,"interactionBlocked":false,"tagName":"BUTTON","inputType":null,"isEditable":false,"isSelect":false,"isFileInput":false}}}),
+        );
+        transport.push_response(
+            "DOM.getBoxModel",
+            json!({"model":{"border":[120.0,80.0,220.0,80.0,220.0,120.0,120.0,120.0]}}),
+        );
+    }
+    let session = scripted_session(transport.clone()).await;
+    let target = session.status().await.unwrap().pages[0].target.target.id();
+    let error = session
+        .execute(
+            BrowserOperationRequest::Click(
+                ClickRequest::new(
+                    PageSelection::Target(target),
+                    selector("#scrolled-click-target"),
+                    MouseButton::Left,
+                    Modifiers::default(),
+                    1,
+                    false,
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.code,
+        krometrail_core::ErrorCode::ReferenceNotActionable
+    );
+    let pointer_dispatches = transport
+        .command_calls()
+        .into_iter()
+        .filter(|call| {
+            call.method == "Input.dispatchMouseEvent"
+                && matches!(
+                    call.params.get("type").and_then(Value::as_str),
+                    Some("mousePressed" | "mouseReleased")
+                )
+        })
+        .collect::<Vec<_>>();
+    assert!(pointer_dispatches.is_empty(), "{pointer_dispatches:?}");
     session.stop().await.unwrap();
 }
 
@@ -554,6 +657,50 @@ async fn opt_in_real_chrome_executes_verified_interaction_families() {
     );
     session
         .execute(
+            BrowserOperationRequest::Fill(
+                FillRequest::new(
+                    page,
+                    selector("#password-input"),
+                    "y".repeat(17),
+                    FillMode::Replace,
+                    false,
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .expect("password fill replace");
+    assert_eq!(
+        evaluate(
+            &session,
+            target,
+            "document.querySelector('#password-input').value.length"
+        )
+        .await,
+        json!(17)
+    );
+    session
+        .execute(
+            BrowserOperationRequest::PressKeys(
+                PressKeysRequest::new(
+                    page,
+                    Some(selector("#password-input")),
+                    vec![KeyChord::new("Enter").unwrap()],
+                    false,
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .expect("password form submit");
+    assert_eq!(
+        evaluate(&session, target, "window.fixtureState.passwordSubmits").await,
+        json!(1)
+    );
+    session
+        .execute(
             BrowserOperationRequest::PressKeys(
                 PressKeysRequest::new(
                     page,
@@ -754,6 +901,24 @@ async fn opt_in_real_chrome_executes_verified_interaction_families() {
         )
         .await
         .unwrap();
+    session
+        .execute(
+            BrowserOperationRequest::Click(
+                ClickRequest::new(
+                    page,
+                    InteractionLocator::Element(ElementLocator::Reference(reference)),
+                    MouseButton::Left,
+                    Modifiers::default(),
+                    1,
+                    false,
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .expect("same-document reference remains valid after another snapshot");
+    evaluate(&session, target, "window.replaceClickTarget()").await;
     let stale = session
         .execute(
             BrowserOperationRequest::Click(
@@ -890,5 +1055,174 @@ async fn opt_in_real_chrome_executes_verified_interaction_families() {
         json!(1)
     );
 
+    session.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn opt_in_real_chrome_qualifies_viewport_navigation_clear_and_target_isolation() {
+    if !support::chrome::real_browser_tests_enabled() {
+        eprintln!(
+            "skipping real Chrome viewport qualification; set KROMETRAIL_REAL_CHROME_TESTS=1"
+        );
+        return;
+    }
+    let _lock = support::chrome::real_browser_lock().await;
+    let root = support::chrome::temporary_profile_root("verified-viewport");
+    let connector = ProductionBrowserConnector::new(
+        Arc::new(krometrail_cdp::SystemChromeLauncher::new(
+            krometrail_cdp::LauncherConfig {
+                profile_root: root.path().to_path_buf(),
+                startup_timeout: std::time::Duration::from_secs(45),
+                shutdown_timeout: std::time::Duration::from_secs(3),
+            },
+        )),
+        Arc::new(
+            krometrail_cdp::transport::CdpkitTransportFactory::new()
+                .with_command_timeout(std::time::Duration::from_secs(15)),
+        ),
+    )
+    .with_interaction_evidence(support::evidence_sink());
+    let fixture_url = support::chrome::verified_interactions_fixture_url();
+    let session = connector
+        .connect(BrowserConnectRequest::Launch(
+            krometrail_core::LaunchBrowser {
+                executable: None,
+                profile: krometrail_core::ManagedProfile::Temporary,
+                initial_url: Some(fixture_url.clone()),
+                every_nth_frame: krometrail_core::EveryNthFrame::default(),
+            },
+        ))
+        .await
+        .expect("real viewport fixture");
+    let first = session.status().await.unwrap().pages[0].target.target.id();
+    await_fixture_ready(&session, first).await;
+    let native_first = evaluate(&session, first, "visualViewport.width").await;
+
+    let created = session
+        .execute(
+            BrowserOperationRequest::CreatePage(
+                CreatePageRequest::new(Some(fixture_url.clone())).unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .expect("create isolation target");
+    let BrowserOperationResult::CreatePage(created) = created else {
+        panic!("create result")
+    };
+    let second = created.interaction.target_id;
+    await_fixture_ready(&session, second).await;
+    let native_second = evaluate(&session, second, "visualViewport.width").await;
+
+    session
+        .execute(
+            BrowserOperationRequest::SelectPage(SelectPageRequest { target_id: first }),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .expect("foreground viewport target");
+
+    let metrics = ViewportMetrics::new(390, 844, 2.0, true, true).unwrap();
+    let configured = session
+        .execute(
+            BrowserOperationRequest::SetViewport(SetViewportRequest {
+                target: PageSelection::Target(first),
+                viewport: ViewportOverride::Override(metrics),
+            }),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .expect("apply mobile viewport");
+    let BrowserOperationResult::SetViewport(configured) = configured else {
+        panic!("viewport result")
+    };
+    let ObservationPart::Available(effective) = configured.effective else {
+        panic!("effective viewport")
+    };
+    assert_eq!(effective.css_size.width, 390.0);
+    assert_eq!(effective.css_size.height, 844.0);
+    assert_eq!(effective.device_scale_factor.get(), 2.0);
+    assert!(effective.mobile && effective.touch && effective.override_active);
+    assert_eq!(
+        evaluate(
+            &session,
+            first,
+            "({width:visualViewport.width,height:visualViewport.height,dpr:devicePixelRatio,touch:navigator.maxTouchPoints,responsiveWidth:document.querySelector('#responsive-probe').offsetWidth})"
+        )
+        .await,
+        json!({"width":390,"height":844,"dpr":2,"touch":1,"responsiveWidth":22})
+    );
+    assert_eq!(
+        evaluate(&session, second, "visualViewport.width").await,
+        native_second
+    );
+
+    session
+        .execute(
+            BrowserOperationRequest::NavigatePage(
+                NavigatePageRequest::new(
+                    PageSelection::Target(first),
+                    format!("{fixture_url}#viewport-persistence"),
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .expect("navigate under viewport override");
+    await_fixture_ready(&session, first).await;
+    assert_eq!(
+        evaluate(
+            &session,
+            first,
+            "[visualViewport.width,visualViewport.height,devicePixelRatio,navigator.maxTouchPoints,document.querySelector('#responsive-probe').offsetWidth]"
+        )
+        .await,
+        json!([390, 844, 2, 1, 22])
+    );
+
+    let cleared = session
+        .execute(
+            BrowserOperationRequest::SetViewport(SetViewportRequest {
+                target: PageSelection::Target(first),
+                viewport: ViewportOverride::Clear,
+            }),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .expect("clear viewport override");
+    let BrowserOperationResult::SetViewport(cleared) = cleared else {
+        panic!("clear viewport result")
+    };
+    let ObservationPart::Available(cleared) = cleared.effective else {
+        panic!("clear effective viewport")
+    };
+    assert!(!cleared.override_active && !cleared.mobile && !cleared.touch);
+    assert_eq!(
+        evaluate(&session, first, "navigator.maxTouchPoints").await,
+        json!(0)
+    );
+    assert_eq!(
+        evaluate(&session, second, "visualViewport.width").await,
+        native_second
+    );
+    session
+        .execute(
+            BrowserOperationRequest::NavigatePage(
+                NavigatePageRequest::new(
+                    PageSelection::Target(first),
+                    format!("{fixture_url}#viewport-cleared"),
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .expect("navigate after clearing viewport");
+    await_fixture_ready(&session, first).await;
+    assert_eq!(
+        evaluate(&session, first, "visualViewport.width").await,
+        native_first
+    );
     session.stop().await.unwrap();
 }

@@ -234,6 +234,64 @@ pub(super) async fn apply_effects(
                     )
                     .await;
             }
+            SupervisorEffect::RestoreViewport { context, viewport } => {
+                let current = state
+                    .targets_by_key
+                    .get(&context.target_key)
+                    .is_some_and(|target| {
+                        state.connection_generation == context.connection_generation
+                            && target.target.target.id() == context.target_id
+                            && target.target.attachment_generation == context.attachment_generation
+                            && target.transport_session.as_ref() == Some(&context.transport_session)
+                    });
+                let bound = crate::control::BoundTarget {
+                    target_id: context.target_id,
+                    browser_target_key: context.target_key.clone(),
+                    attachment_generation: context.attachment_generation,
+                    transport_session: context.transport_session,
+                    visibility: krometrail_core::TargetVisibility::Unknown,
+                };
+                if !current
+                    || crate::control::viewport::apply_viewport(
+                        transport.as_ref(),
+                        &bound,
+                        Some(viewport),
+                    )
+                    .await
+                    .is_err()
+                {
+                    queue.retain(|effect| match effect {
+                        SupervisorEffect::RestoreSessionDomains { target_key, .. }
+                        | SupervisorEffect::ProbeInitialVisibility { target_key, .. }
+                        | SupervisorEffect::Attach { target_key } => {
+                            target_key != &context.target_key
+                        }
+                        SupervisorEffect::RestoreViewport {
+                            context: queued, ..
+                        } => queued.target_key != context.target_key,
+                        SupervisorEffect::StartCapture { context: queued }
+                        | SupervisorEffect::ResumeCapture { context: queued }
+                        | SupervisorEffect::SuspendCapture { context: queued }
+                        | SupervisorEffect::StopCapture { context: queued } => {
+                            queued.target_id != context.target_id
+                        }
+                        SupervisorEffect::Detach { .. }
+                        | SupervisorEffect::Publish(_)
+                        | SupervisorEffect::BeginReconnect
+                        | SupervisorEffect::Shutdown { .. } => true,
+                    });
+                    let compatibility = state.compatibility.clone();
+                    let previous = std::mem::replace(state, SupervisorState::new(compatibility));
+                    let reduction = reduce(
+                        previous,
+                        SupervisorInput::TargetAttachFailed {
+                            target_key: context.target_key,
+                        },
+                    )?;
+                    *state = reduction.state;
+                    queue.extend(reduction.effects);
+                }
+            }
             SupervisorEffect::RestoreSessionDomains {
                 target_key,
                 session,
@@ -303,6 +361,59 @@ pub(super) async fn apply_effects(
             SupervisorEffect::StartCapture { context }
             | SupervisorEffect::ResumeCapture { context } => {
                 if let Some(capture) = capture.as_ref() {
+                    let target_key = state
+                        .targets_by_key
+                        .iter()
+                        .find(|(_, target)| target.target.target.id() == context.target_id)
+                        .map(|(key, _)| key.clone())
+                        .unwrap_or_default();
+                    let bound = crate::control::BoundTarget {
+                        target_id: context.target_id,
+                        browser_target_key: target_key,
+                        attachment_generation: context.attachment_generation,
+                        transport_session: context.transport_session.clone(),
+                        visibility: krometrail_core::TargetVisibility::Unknown,
+                    };
+                    let device_scale_factor =
+                        crate::control::viewport::observe_device_scale_factor(
+                            transport.as_ref(),
+                            &bound,
+                        )
+                        .await
+                        .or_else(|_| {
+                            state
+                                .targets_by_key
+                                .values()
+                                .find(|target| target.target.target.id() == context.target_id)
+                                .and_then(|target| target.viewport_override)
+                                .map(|viewport| viewport.device_scale_factor())
+                                .ok_or_else(|| {
+                                    crate::control::operation_error(
+                                        ErrorCode::PageObservationFailed,
+                                        context.target_id,
+                                        "browser device scale is unavailable",
+                                    )
+                                })
+                        });
+                    let Ok(device_scale_factor) = device_scale_factor else {
+                        let target_key = state
+                            .targets_by_key
+                            .iter()
+                            .find(|(_, target)| target.target.target.id() == context.target_id)
+                            .map(|(key, _)| key.clone());
+                        if let Some(target_key) = target_key {
+                            let compatibility = state.compatibility.clone();
+                            let previous =
+                                std::mem::replace(state, SupervisorState::new(compatibility));
+                            let reduction = reduce(
+                                previous,
+                                SupervisorInput::CaptureStartFailed { target_key },
+                            )?;
+                            *state = reduction.state;
+                            queue.extend(reduction.effects);
+                        }
+                        continue;
+                    };
                     let target = CaptureTarget {
                         session_id: capture.session_id,
                         session_origin: capture.session_origin,
@@ -310,6 +421,7 @@ pub(super) async fn apply_effects(
                         connection_generation: context.connection_generation,
                         attachment_generation: context.attachment_generation,
                         transport_session: context.transport_session,
+                        device_scale_factor,
                     };
                     if capture
                         .coordinator
@@ -345,6 +457,8 @@ pub(super) async fn apply_effects(
                         connection_generation: context.connection_generation,
                         attachment_generation: context.attachment_generation,
                         transport_session: context.transport_session,
+                        device_scale_factor: krometrail_core::DeviceScaleFactor::new(1.0)
+                            .expect("one is a valid scale"),
                     };
                     let at = capture
                         .session_origin
@@ -362,6 +476,8 @@ pub(super) async fn apply_effects(
                         connection_generation: context.connection_generation,
                         attachment_generation: context.attachment_generation,
                         transport_session: context.transport_session,
+                        device_scale_factor: krometrail_core::DeviceScaleFactor::new(1.0)
+                            .expect("one is a valid scale"),
                     };
                     let deadline = shutdown_deadline
                         .as_ref()
@@ -670,13 +786,7 @@ pub(super) async fn run_supervisor(
                             },
                         )
                         .await;
-                        let outcome = result.map(|_| {
-                            if shared.ownership == BrowserOwnership::Managed {
-                                BrowserStopOutcome::ManagedBrowserClosed
-                            } else {
-                                BrowserStopOutcome::Detached
-                            }
-                        });
+                        let outcome = result.map(|report| stop_outcome(&report, shared.ownership));
                         *shared.stop_result.lock().expect("stop result lock") =
                             Some(outcome.clone());
                         finish_state(&shared, &mut state);

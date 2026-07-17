@@ -9,6 +9,7 @@ mod operation;
 mod privacy;
 mod session;
 mod target;
+mod viewport;
 mod wait;
 
 pub use batch::{
@@ -69,6 +70,10 @@ pub use target::{
     BrowserInstallation, BrowserInstallationSource, BrowserProduct, BrowserProductVersion,
     BrowserVersion, ManagedProfilePersistence, ManagedProfileRef, PageTarget, ProfileIdentity,
     ProfileRef,
+};
+pub use viewport::{
+    EffectiveViewport, MAX_VIEWPORT_DEVICE_SCALE, MAX_VIEWPORT_DIMENSION, SetViewportRequest,
+    ViewportMetrics, ViewportOperationResult, ViewportOverride,
 };
 pub(crate) use wait::validate_operation_timeout;
 pub use wait::{

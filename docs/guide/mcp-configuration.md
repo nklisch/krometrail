@@ -42,7 +42,9 @@ krometrail --version
 krometrail doctor
 ```
 
-Startup and runtime failures from the MCP server are written to standard error so they do not corrupt protocol traffic.
+Krometrail keeps protocol output isolated from diagnostics. Bounded private runtime logs live under
+the platform data directory; failed or degraded responses identify the relevant file and correlation
+identifier. Startup failures that occur before file logging is available fall back to standard error.
 
 ## What the connection gives your agent
 

@@ -51,9 +51,11 @@ pub struct BatchRequest {
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct BatchRequestWire {
+    #[serde(default)]
     target: PageSelection,
     steps: Vec<BrowserOperationRequest>,
     timeout: u64,
+    #[serde(default)]
     options: BatchOptions,
 }
 

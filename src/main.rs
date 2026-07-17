@@ -2,6 +2,7 @@ mod app;
 mod artifacts;
 mod cli;
 mod debug_bundle;
+mod diagnostics;
 mod progressive;
 
 use std::process::ExitCode;
@@ -9,7 +10,7 @@ use std::process::ExitCode;
 use clap::{CommandFactory, Parser};
 use krometrail_core::{KrometrailError, RetryAdvice};
 
-use app::build_runtime;
+use app::{build_runtime, data_directory};
 use cli::Cli;
 
 const FAILURE_EXIT_CODE: u8 = 1;
@@ -41,7 +42,18 @@ fn main() -> ExitCode {
         }
     };
 
-    let runtime = match build_runtime() {
+    let diagnostics = match diagnostics::initialize(&data_directory()) {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("warning: diagnostic logging unavailable: {error}");
+            None
+        }
+    };
+    let diagnostic_context = diagnostics
+        .as_ref()
+        .map(diagnostics::DiagnosticRuntime::context)
+        .unwrap_or_default();
+    let runtime = match build_runtime(diagnostic_context) {
         Ok(runtime) => runtime,
         Err(error) => return report_error(&error),
     };

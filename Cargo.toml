@@ -34,11 +34,14 @@ temporal-evaluation = { path = "crates/temporal-evaluation" }
 serde = { version = "1", features = ["derive"] }
 base64 = "0.22"
 serde_json = "1"
+serde_path_to_error = "0.1"
 thiserror = "2"
 uuid = { version = "1", features = ["serde", "v4"] }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net", "io-util", "time"] }
 tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["fmt", "json"] }
 cdpkit = "=0.4.0"
 futures-util = "0.3"
 image = { version = "=0.25.9", default-features = false, features = ["jpeg", "png"] }
@@ -77,4 +80,6 @@ sha2.workspace = true
 libc.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 tracing.workspace = true
+tracing-appender.workspace = true
+tracing-subscriber.workspace = true
 uuid.workspace = true

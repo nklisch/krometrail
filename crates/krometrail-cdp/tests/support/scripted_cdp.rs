@@ -261,6 +261,11 @@ impl ScriptedCdp {
             {
                 json!({"result":{"type":"string","value":"visible"}})
             }
+            "Runtime.evaluate"
+                if params.get("expression").and_then(Value::as_str) == Some("devicePixelRatio") =>
+            {
+                json!({"result":{"type":"number","value":1.0}})
+            }
             "Schema.getDomains" => {
                 json!({"domains":[{"name":"Page","commands":[{"name":"startScreencast"}]}]})
             }

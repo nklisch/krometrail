@@ -1,106 +1,116 @@
 ---
 name: krometrail
 description: >
-  Use Krometrail when operating a local Chromium browser, inspecting current page state, debugging
-  transient visual behavior, or examining what happened over time through screenshots, structured
-  snapshots, temporal storyboards, difference maps, filmstrips, motion history, source frames, and
-  browser events.
+  Operate a local Chromium browser with Krometrail and inspect current or retained visual evidence.
+  Use for browser navigation and interaction, structured page targeting, screenshots, viewport
+  emulation, transient visual debugging, temporal storyboards, source frames, and browser events.
 ---
 
 # Use Krometrail browser evidence
 
-## Follow the user's direction
+Follow the user's debugging direction. Use the MCP tool descriptions as the authority for arguments
+and response schemas; a harness may prefix tool names with `krometrail`.
 
-Krometrail supplies browser control and visual evidence; it does not prescribe a debugging process.
-Start from the user's question and stated approach. Select only the evidence that can answer that
-question, and do not force every investigation through the same sequence.
+If tools are absent, read [setup and activation](references/setup.md). The plugin manages its exact
+release binary. Do not install a separate binary merely because this skill loaded.
 
-Use the MCP tool descriptions as the authority for current arguments and response schemas. Tool names
-may receive a harness-specific `krometrail` prefix.
+## Use the cheapest sufficient evidence
 
-If the Krometrail tools are unavailable, read [setup and activation](references/setup.md). Native
-plugin activation manages its exact release binary automatically; a standalone CLI installation is a
-separate, optional fact. Never run a separate installer merely because this skill loaded.
+1. Trust the live evidence returned by a successful state-changing operation for immediate
+   confirmation. Do not take a redundant screenshot after every click, fill, key press, navigation,
+   scroll, or viewport change.
+2. Use `observe_live` when an explicit fresh current-state observation is needed, or a narrower
+   `inspect_page`, `snapshot_page`, or `take_screenshot` when only one part is needed.
+3. Use `temporal_debug_bundle` or retained source evidence only for history, transient behavior,
+   ambiguity, or a claim that the final state cannot establish.
 
-## Choose evidence by question
+These are distinct facts: post-operation evidence describes the operation's observation point;
+`observe_live` describes a separately requested current point; retained source frames describe what
+continuous capture stored over an interval. A successful action can still report degraded live
+observation or retained-capture health. State those limits instead of treating them as action failure.
 
-| Question | Useful Krometrail evidence |
-|---|---|
-| What is on the page now? | `observe_live` for page state + snapshot + screenshot, or a narrower `inspect_page`, `snapshot_page`, or `take_screenshot` |
-| What can I safely target? | `snapshot_page`; use its current actionable references rather than guessing selectors |
-| What happened around an action or interval? | `temporal_debug_bundle` for a compact, source-linked combination of visual and browser-event evidence |
-| Did a transient, reversal, or intermediate state occur? | storyboard artifacts, then selected or exact source frames when the sequence needs confirmation |
-| Where did pixels change? | difference map; it shows location and accumulation, not cause |
-| How did one small area evolve? | `generate_region_filmstrip` with a declared fixed region |
-| Was there repeated movement or broad oscillation? | motion-history artifact; it shows accumulated recent change, not inherent direction |
-| What exactly was retained? | `list_source_frames`, `fetch_source_frames`, or the source-frame MCP resource links returned in evidence |
-| Did console, exception, network, or navigation evidence coincide? | compact events in a debug bundle or detailed `query_browser_events` |
-| Will evidence need to survive eviction during a longer investigation? | `pin_resolved_range`, `query_pin_state`, then `unpin_resolved_range` when protection is no longer needed |
+## Operate and target
 
-These are choices, not required stages. A current screenshot may be sufficient for a current-state
-question. A source frame may be better than a generated artifact when one exact moment matters.
-
-## MCP capability map
-
-### Browser lifecycle and pages
-
-- `start_browser`, `attach_browser`, `browser_status`, `stop_browser`
-- `list_pages`, `create_page`, `select_page`, `close_page`
-
-`start_browser` launches a controlled local Chromium browser with a managed profile. `attach_browser`
-uses an explicitly configured local endpoint. A session has one immutable `every_nth_frame` capture
-stride; it is relative sampling, not an exact frames-per-second promise.
-
-### Observe and operate
-
-- Current evidence: `inspect_page`, `snapshot_page`, `take_screenshot`, `observe_live`
-- Read-only page code: `evaluate_page`
+- Lifecycle/pages: `start_browser`, `attach_browser`, `browser_status`, `stop_browser`, `list_pages`,
+  `create_page`, `select_page`, `close_page`
+- Current state: `inspect_page`, `snapshot_page`, `take_screenshot`, `observe_live`, `evaluate_page`
 - Navigation: `navigate_page`, `reload_page`, `go_back`, `go_forward`
 - Interaction: `click`, `fill`, `press_keys`, `select_option`, `hover`, `drag`, `scroll`,
-  `upload_files`, `handle_dialog`
-- Coordination: `wait`, `batch`
+  `upload_files`, `handle_dialog`, `wait`, `batch`
+- Responsive state: `set_viewport` applies or clears explicit target-scoped metrics
 
-State-changing operations return live evidence or an explicit observation failure. Snapshot references
-are generation-scoped: after navigation or DOM replacement, take a new snapshot rather than reusing a
-stale reference. CSS selectors and coordinates are fallback targeting forms for cases where structured
-references cannot represent the surface.
+Page-scoped requests default to the selected page unless their schema requires an explicit target.
+Prefer an actionable reference returned by `snapshot_page`. Same-document snapshots preserve stable
+node identities when possible; navigation, document replacement, target reattachment, or node removal
+can make a reference stale. On `stale_reference`, request a fresh snapshot and retry once.
 
-### Inspect time
+Valid locator shapes include:
 
-- Compact investigation: `temporal_debug_bundle`
-- Artifact generation: `generate_artifacts`, `generate_region_filmstrip`
+```json
+{"locator":{"kind":"element","value":{"kind":"css_selector","value":"button[data-testid='save']"}}}
+```
+
+```json
+{"locator":{"kind":"element","value":{"kind":"reference","value":{"target_id":"<returned-target-id>","generation":1,"node_id":7}}}}
+```
+
+Copy all reference fields from one returned snapshot node; never invent or mix them. Krometrail
+scrolls element targets into view before pointer dispatch. If a hidden/background page cannot be
+activated, select or foreground it and follow the returned recovery guidance.
+
+`fill` defaults to replace mode. Use `Meta` for Command shortcuts and `Control` for Control shortcuts;
+Krometrail dispatches modifier chords without inserting their printable character. Use named keys such
+as `Enter` for activation.
+
+Apply an explicit responsive viewport with:
+
+```json
+{"viewport":{"mode":"override","metrics":{"width":390,"height":844,"device_scale_factor":3.0,"mobile":true,"touch":true}}}
+```
+
+Clear it with `{"viewport":{"mode":"clear"}}`. A geometry change creates a new visual epoch; do not
+compare pixels across incompatible epochs without declared normalization.
+
+## Inspect retained time only when needed
+
+- Compact interval: `temporal_debug_bundle`
+- Artifacts: `generate_artifacts`, `generate_region_filmstrip`
 - Source detail: `list_source_frames`, `fetch_source_frames`
-- Full artifact/source reads: `krometrail://evidence/...` MCP resource links returned by tools
-- Retention: `pin_resolved_range`, `unpin_resolved_range`, `query_pin_state`
-- Correlated context: `query_browser_events`
+- Full reads: returned `krometrail://evidence/...` resource links
+- Browser context: `query_browser_events`
+- Retention: `pin_resolved_range`, `query_pin_state`, `unpin_resolved_range`
 
-Responses can include a context-sized image plus MCP resource links for full-resolution artifacts,
-manifests, and source frames. Follow those links when the compact response is insufficient; do not
-assume a thumbnail contains fine detail.
+Before relying on history, check `browser_status` capture state or the operation's capture warning.
+Capture failure means current control may still work while new retained frames are unavailable. Dark,
+partial, or otherwise degraded post-operation screenshots should be retried with `observe_live` after
+the reported compositor boundary; if still degraded, use the returned diagnostic correlation rather
+than guessing from the image.
 
 Read [visual evidence semantics](references/evidence.md) before making a strong claim from a derived
-artifact or from an interval with capture warnings.
+artifact or an interval with capture gaps.
 
-## Interpret evidence conservatively
+## Collect targeted diagnostics
 
-- Source frames are the authoritative visual record, within the reported cadence and known gaps.
-- Storyboards, difference maps, filmstrips, motion history, and composites are deterministic but lossy
-  source-derived views.
-- Measurements describe observed change. They do not prove that motion is wrong, a reversal occurred,
-  one event caused another, or a particular code path is responsible.
-- A capture gap means unseen behavior may have occurred. Do not describe the interval as continuously
-  stable across it.
-- Use provenance to identify the resolved time range, ordered source frames, omitted frames, gaps,
-  normalization, parameters, algorithm version, and output hash behind a visual claim.
-- Browser-event evidence can correlate with visual change but is not causal proof.
+Failed or degraded responses can include `diagnostics.correlation_id` and `diagnostics.log_path`.
+Use that exact private path from any working directory. Search only for the correlation identifier,
+with a few surrounding lines if required; never read, paste, or attach the whole log.
 
-## Example: investigate without turning the example into a rule
+```bash
+rg -n -C 3 --fixed-strings '<correlation-id>' '<diagnostics.log_path>'
+```
 
-If a user says a card briefly moved backward after submission, one reasonable approach is to perform
-or identify that interaction, inspect its `temporal_debug_bundle`, and then request the storyboard or
-source frames around the suspected reversal. A region filmstrip may help if only the card matters;
-`query_browser_events` may help if the user suspects a request or exception. If the user instead asks
-only for the current final state, a live observation can be enough.
+Report only bounded event names, stable error codes, failure stages, route/outcome, timestamps, and
+the correlation identifier. Exclude browser content, form values, screenshots, raw CDP traffic,
+secrets, tokens, cookies, headers, and unredacted URLs. Use `$report-krometrail-issue` when the user
+wants a GitHub report prepared.
 
-When Krometrail launched the browser for the task, stop it when the work is finished unless the user
-wants the controlled session left running.
+## Interpret conservatively
+
+- Source frames are authoritative only within reported cadence, retention, and known capture gaps.
+- Derived artifacts are deterministic but lossy and do not diagnose cause.
+- Difference and motion measurements describe observed pixels, not whether behavior is defective.
+- Browser events correlate with visual change; they do not prove causation.
+- Follow provenance to the resolved range, ordered frames, omissions, gaps, parameters, and epochs.
+
+When Krometrail launched the browser for the task, stop it when finished unless the user wants it left
+running.

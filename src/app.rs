@@ -25,7 +25,7 @@ use krometrail_cdp::{
     BrowserEventConfig, CaptureConfig, LauncherConfig, ProductionBrowserConnector,
     SystemChromeLauncher,
 };
-use krometrail_mcp::{McpConfig, McpDependencies, build_service};
+use krometrail_mcp::{DiagnosticContext, McpConfig, McpDependencies, build_service};
 use krometrail_store::{
     IndexStoreConfig, RecordingStore, RecoveryReport, RotationConfig, SegmentStoreConfig,
     SegmentWriter, SqliteIndex, recover,
@@ -54,6 +54,7 @@ pub(crate) struct RuntimeDependencies {
     pub progressive_evidence: Arc<dyn ProgressiveEvidence>,
     pub temporal_debug_bundles: Arc<dyn TemporalDebugBundles>,
     pub mcp_config: McpConfig,
+    pub diagnostics: DiagnosticContext,
 }
 
 struct StorageDependencies {
@@ -81,6 +82,7 @@ impl RuntimeDependencies {
             temporal_debug_bundles: Arc::clone(&self.temporal_debug_bundles),
             progressive_evidence: Arc::clone(&self.progressive_evidence),
             temporal_context: Arc::clone(&self.temporal_context),
+            diagnostics: self.diagnostics.clone(),
         }
     }
 }
@@ -138,7 +140,7 @@ impl Runtime {
     }
 }
 
-pub(crate) fn build_runtime() -> Result<Runtime> {
+pub(crate) fn build_runtime(diagnostics: DiagnosticContext) -> Result<Runtime> {
     let clock: Arc<dyn MonotonicClock> = Arc::new(ProcessMonotonicClock {
         origin: Instant::now(),
     });
@@ -217,6 +219,7 @@ pub(crate) fn build_runtime() -> Result<Runtime> {
         progressive_evidence,
         temporal_debug_bundles,
         mcp_config,
+        diagnostics,
     }))
 }
 
@@ -298,7 +301,7 @@ fn invalid_disk_budget() -> KrometrailError {
     )
 }
 
-fn data_directory() -> std::path::PathBuf {
+pub(crate) fn data_directory() -> std::path::PathBuf {
     if let Some(configured) =
         std::env::var_os("KROMETRAIL_DATA_DIR").filter(|value| !value.is_empty())
     {
@@ -320,8 +323,9 @@ fn data_directory() -> std::path::PathBuf {
             .join("krometrail");
     }
 
-    tracing::warn!("platform data directory unavailable; using ./krometrail-data");
-    std::path::PathBuf::from("krometrail-data")
+    let fallback = std::env::temp_dir().join("krometrail-data");
+    tracing::warn!("platform data directory unavailable; using the system temporary directory");
+    fallback
 }
 
 struct ProcessMonotonicClock {
@@ -449,6 +453,7 @@ mod tests {
             progressive_evidence,
             temporal_debug_bundles,
             mcp_config: McpConfig::default(),
+            diagnostics: DiagnosticContext::default(),
         };
         let mcp_dependencies = runtime_dependencies.mcp_dependencies();
         assert!(Arc::ptr_eq(

@@ -52,16 +52,17 @@ mod interactions {
     };
 
     use krometrail_core::{
-        DialogAction, ErrorCode, FillMode, FillRequest, HandleDialogRequest, InteractionLocator,
-        KeyChord, Modifiers, MouseButton, PageSelection, PressKeysRequest, SelectOptionRequest,
-        SelectValue, UploadFilesRequest, ValidatedFilePath,
+        DialogAction, ErrorCode, FillMode, FillRequest, HandleDialogRequest, IdSource, IdValue,
+        InteractionLocator, KeyChord, Modifiers, MonotonicClock, MouseButton, ObservedTime,
+        PageSelection, PressKeysRequest, SelectOptionRequest, SelectValue, SessionId,
+        SessionOrigin, UploadFilesRequest, ValidatedFilePath, ViewportMetrics,
     };
 
     use serde_json::json;
 
     use super::super::{
-        BoundTarget, dialog, form, interaction::ResolvedTarget, keyboard,
-        navigation::OperationCancellation, pointer, snapshot::ResolvedNode,
+        BoundTarget, PageControl, dialog, form, interaction::ResolvedTarget, keyboard,
+        navigation::OperationCancellation, pointer, snapshot::ResolvedNode, viewport,
     };
     use super::target;
     use crate::transport::{
@@ -158,9 +159,62 @@ mod interactions {
     fn bound() -> BoundTarget {
         BoundTarget {
             target_id: target(),
+            browser_target_key: "target-a".into(),
             attachment_generation: 1,
             transport_session: TransportSessionId::new("session").unwrap(),
+            visibility: krometrail_core::TargetVisibility::Visible,
         }
+    }
+
+    struct TestClock;
+    impl MonotonicClock for TestClock {
+        fn now(&self) -> ObservedTime {
+            ObservedTime::from_nanos(0)
+        }
+    }
+    struct TestIds;
+    impl IdSource for TestIds {
+        fn next(&self) -> IdValue {
+            IdValue::from_uuid(uuid::Uuid::from_u128(9))
+        }
+    }
+    fn page_control() -> PageControl {
+        PageControl::new(
+            std::sync::Arc::new(TestClock),
+            std::sync::Arc::new(TestIds),
+            SessionId::from_uuid(uuid::Uuid::from_u128(8)),
+            SessionOrigin::new(ObservedTime::from_nanos(0)),
+        )
+    }
+
+    #[tokio::test]
+    async fn visible_pointer_target_has_no_activation_overhead() {
+        let transport = RecordingTransport::default();
+        page_control()
+            .prepare_pointer_target(&transport, &bound(), &OperationCancellation::default(), 0)
+            .await
+            .unwrap();
+        assert!(transport.calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn hidden_pointer_target_activates_and_fails_specifically_if_still_hidden() {
+        let transport = RecordingTransport::default();
+        transport.push(
+            "Runtime.evaluate",
+            Ok(json!({"result":{"result":{"value":"hidden"}}})),
+        );
+        let mut hidden = bound();
+        hidden.visibility = krometrail_core::TargetVisibility::Hidden;
+        let error = page_control()
+            .prepare_pointer_target(&transport, &hidden, &OperationCancellation::default(), 0)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::TargetHidden);
+        assert_eq!(transport.calls("Target.activateTarget").len(), 1);
+        assert_eq!(transport.calls("Page.bringToFront").len(), 1);
+        assert_eq!(transport.calls("Runtime.evaluate").len(), 1);
+        assert!(transport.calls("Input.dispatchMouseEvent").is_empty());
     }
     fn element() -> ResolvedTarget {
         ResolvedTarget::Element {
@@ -272,6 +326,15 @@ mod interactions {
             false,
         )
         .unwrap();
+        transport.push(
+            "DOM.resolveNode",
+            Ok(json!({"object":{"objectId":"editable"}})),
+        );
+        transport.push(
+            "Runtime.callFunctionOn",
+            Ok(json!({"result":{"value":true}})),
+        );
+        transport.push("Runtime.callFunctionOn", Ok(json!({"result":{"value":0}})));
         keyboard::fill(&transport, &bound, &fill, &element(), &cancel, 0)
             .await
             .unwrap();
@@ -280,6 +343,9 @@ mod interactions {
             transport.calls("Input.insertText")[0]["text"],
             json!("replacement")
         );
+        let replace_events = transport.calls("Input.dispatchKeyEvent");
+        assert_eq!(replace_events.len(), 2);
+        assert_eq!(replace_events[0]["key"], json!("Backspace"));
         let press = PressKeysRequest::new(
             PageSelection::Target(target()),
             None,
@@ -306,6 +372,18 @@ mod interactions {
                 .iter()
                 .any(|call| call["key"] == json!("Enter"))
         );
+        let key_events = transport.calls("Input.dispatchKeyEvent");
+        let shortcut_s = key_events
+            .iter()
+            .find(|call| call["key"] == json!("s"))
+            .expect("shortcut action key");
+        assert_eq!(shortcut_s["type"], json!("rawKeyDown"));
+        assert!(shortcut_s.get("text").is_none());
+        let enter = key_events
+            .iter()
+            .find(|call| call["key"] == json!("Enter") && call["type"] == json!("keyDown"))
+            .expect("text-bearing Enter key down");
+        assert_eq!(enter["text"], json!("\r"));
         transport.push(
             "DOM.resolveNode",
             Ok(json!({"object":{"objectId":"private"}})),
@@ -323,7 +401,8 @@ mod interactions {
         form::select_option(&transport, &bound, &select, &element(), &cancel, 0)
             .await
             .unwrap();
-        let call = &transport.calls("Runtime.callFunctionOn")[0];
+        let calls = transport.calls("Runtime.callFunctionOn");
+        let call = calls.last().expect("select option call");
         assert_eq!(call["arguments"][0]["value"], json!("label"));
     }
 
@@ -362,5 +441,63 @@ mod interactions {
             .unwrap_err();
         assert_eq!(error.code, ErrorCode::NotFound);
         assert!(!error.message.as_str().contains("private"));
+    }
+
+    #[tokio::test]
+    async fn viewport_override_and_clear_emit_target_scoped_commands_in_order() {
+        let transport = RecordingTransport::default();
+        let bound = bound();
+        let metrics = ViewportMetrics::new(390, 844, 3.0, true, true).unwrap();
+        viewport::apply_viewport(&transport, &bound, Some(metrics))
+            .await
+            .unwrap();
+        assert_eq!(
+            transport.calls("Emulation.setDeviceMetricsOverride"),
+            vec![
+                json!({"width":390,"height":844,"deviceScaleFactor":3.0,"mobile":true,"screenWidth":390,"screenHeight":844})
+            ]
+        );
+        assert_eq!(
+            transport.calls("Emulation.setTouchEmulationEnabled"),
+            vec![json!({"enabled":true,"maxTouchPoints":1})]
+        );
+
+        viewport::apply_viewport(&transport, &bound, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            transport.calls("Emulation.setTouchEmulationEnabled").last(),
+            Some(&json!({"enabled":false}))
+        );
+        assert_eq!(
+            transport.calls("Emulation.setDeviceMetricsOverride"),
+            vec![
+                json!({"width":390,"height":844,"deviceScaleFactor":3.0,"mobile":true,"screenWidth":390,"screenHeight":844})
+            ]
+        );
+        assert_eq!(
+            transport.calls("Emulation.clearDeviceMetricsOverride"),
+            vec![json!({})]
+        );
+    }
+
+    #[tokio::test]
+    async fn effective_viewport_is_independently_observed() {
+        let transport = RecordingTransport::default();
+        transport.push(
+            "Page.getLayoutMetrics",
+            Ok(json!({"result":{"cssVisualViewport":{"clientWidth":800,"clientHeight":600}}})),
+        );
+        transport.push(
+            "Runtime.evaluate",
+            Ok(json!({"result":{"result":{"value":{"width":800,"height":600,"scale":2.0,"touchPoints":0}}}})),
+        );
+        let metrics = ViewportMetrics::new(800, 600, 2.0, false, false).unwrap();
+        let effective = viewport::observe_effective_viewport(&transport, &bound(), Some(metrics))
+            .await
+            .unwrap();
+        assert_eq!(effective.css_size.width, 800.0);
+        assert_eq!(effective.device_scale_factor.get(), 2.0);
+        assert!(!effective.mobile && !effective.touch && effective.override_active);
     }
 }

@@ -66,50 +66,7 @@ pub(super) async fn fill(
 ) -> Result<()> {
     focus(transport, bound, target, cancel, generation).await?;
     if request.mode == FillMode::Replace {
-        dispatch_modifier(
-            transport,
-            bound,
-            Modifier::Control,
-            true,
-            Modifiers {
-                control: true,
-                ..Modifiers::default()
-            },
-            cancel,
-            generation,
-        )
-        .await?;
-        dispatch_char_key(
-            transport,
-            bound,
-            'a',
-            Modifiers {
-                control: true,
-                ..Modifiers::default()
-            },
-            cancel,
-            generation,
-        )
-        .await?;
-        dispatch_modifier(
-            transport,
-            bound,
-            Modifier::Control,
-            false,
-            Modifiers::default(),
-            cancel,
-            generation,
-        )
-        .await?;
-        dispatch_named(
-            transport,
-            bound,
-            NamedKey::Delete,
-            Modifiers::default(),
-            cancel,
-            generation,
-        )
-        .await?;
+        clear_editable(transport, bound, target, cancel, generation).await?;
     }
     send_cdp(
         transport,
@@ -190,6 +147,83 @@ async fn focus(
     Ok(())
 }
 
+async fn clear_editable(
+    transport: &dyn CdpTransport,
+    bound: &BoundTarget,
+    target: &ResolvedTarget,
+    cancel: &OperationCancellation,
+    generation: u64,
+) -> Result<()> {
+    let backend_node_id = target.node(bound.target_id)?.backend_node_id;
+    let resolved = send_cdp(
+        transport,
+        bound,
+        "DOM.resolveNode",
+        json!({"backendNodeId": backend_node_id}),
+        cancel,
+        generation,
+    )
+    .await?;
+    let object_id = resolved
+        .pointer("/object/objectId")
+        .or_else(|| resolved.pointer("/result/object/objectId"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            super::interaction::interaction_error(
+                bound.target_id,
+                "editable node cannot be resolved",
+            )
+        })?;
+    send_cdp(
+        transport,
+        bound,
+        "Runtime.callFunctionOn",
+        json!({
+            "objectId": object_id,
+            "functionDeclaration": "function(){if(this instanceof HTMLInputElement||this instanceof HTMLTextAreaElement){this.select();return true;}if(this.isContentEditable){const r=document.createRange();r.selectNodeContents(this);const s=getSelection();s.removeAllRanges();s.addRange(r);return true;}return false;}",
+            "returnByValue": true,
+            "silent": true
+        }),
+        cancel,
+        generation,
+    )
+    .await?;
+    dispatch_named(
+        transport,
+        bound,
+        NamedKey::Backspace,
+        Modifiers::default(),
+        cancel,
+        generation,
+    )
+    .await?;
+    let checked = send_cdp(
+        transport,
+        bound,
+        "Runtime.callFunctionOn",
+        json!({
+            "objectId": object_id,
+            "functionDeclaration": "function(){return this instanceof HTMLInputElement||this instanceof HTMLTextAreaElement?this.value.length:(this.textContent||'').length;}",
+            "returnByValue": true,
+            "silent": true
+        }),
+        cancel,
+        generation,
+    )
+    .await?;
+    let remaining = checked
+        .pointer("/result/value")
+        .or_else(|| checked.pointer("/result/result/value"))
+        .and_then(Value::as_u64);
+    if remaining != Some(0) {
+        return Err(super::interaction::interaction_error(
+            bound.target_id,
+            "reference_not_actionable: editable contents could not be cleared",
+        ));
+    }
+    Ok(())
+}
+
 async fn dispatch_named(
     transport: &dyn CdpTransport,
     bound: &BoundTarget,
@@ -202,15 +236,21 @@ async fn dispatch_named(
         .iter()
         .find_map(|(candidate, dispatch)| (*candidate == named).then_some(*dispatch))
         .expect("every named key is mapped");
+    let text = match named {
+        NamedKey::Enter => Some("\r"),
+        NamedKey::Space => Some(" "),
+        _ => None,
+    };
+    let emits_text = text.is_some() && !modifiers.control && !modifiers.meta && !modifiers.alt;
     dispatch_key_event(
         transport,
         bound,
-        "rawKeyDown",
+        if emits_text { "keyDown" } else { "rawKeyDown" },
         dispatch.key,
         dispatch.code,
         dispatch.location,
         dispatch.keycode,
-        None,
+        text.filter(|_| emits_text),
         modifiers,
         cancel,
         generation,
@@ -240,6 +280,11 @@ async fn dispatch_char_key(
     cancel: &OperationCancellation,
     generation: u64,
 ) -> Result<()> {
+    let ch = if modifiers.shift && ch.is_ascii_lowercase() {
+        ch.to_ascii_uppercase()
+    } else {
+        ch
+    };
     let text = ch.to_string();
     let code = if ch.is_ascii_alphabetic() {
         format!("Key{}", ch.to_ascii_uppercase())
@@ -247,29 +292,16 @@ async fn dispatch_char_key(
         String::new()
     };
     let keycode = ch.to_ascii_uppercase() as u32;
+    let emits_text = !modifiers.control && !modifiers.meta && !modifiers.alt;
     dispatch_key_event(
         transport,
         bound,
-        "rawKeyDown",
+        if emits_text { "keyDown" } else { "rawKeyDown" },
         &text,
         &code,
         0,
         keycode as u16,
-        None,
-        modifiers,
-        cancel,
-        generation,
-    )
-    .await?;
-    dispatch_key_event(
-        transport,
-        bound,
-        "char",
-        &text,
-        &code,
-        0,
-        keycode as u16,
-        Some(&text),
+        emits_text.then_some(text.as_str()),
         modifiers,
         cancel,
         generation,

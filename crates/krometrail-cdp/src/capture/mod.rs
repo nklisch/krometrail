@@ -140,6 +140,7 @@ pub(crate) struct CaptureTarget {
     pub(crate) connection_generation: u64,
     pub(crate) attachment_generation: u64,
     pub(crate) transport_session: TransportSessionId,
+    pub(crate) device_scale_factor: krometrail_core::DeviceScaleFactor,
 }
 
 pub(crate) trait CaptureObserver: Send + Sync {
@@ -255,6 +256,20 @@ impl CaptureCoordinator {
 
     pub(crate) fn statuses(&self) -> Vec<krometrail_core::TargetCaptureStatus> {
         pipeline::statuses(self)
+    }
+
+    pub(crate) fn update_device_scale_factor(
+        &self,
+        target_id: TargetId,
+        attachment_generation: u64,
+        device_scale_factor: krometrail_core::DeviceScaleFactor,
+    ) -> bool {
+        pipeline::update_device_scale_factor(
+            self,
+            target_id,
+            attachment_generation,
+            device_scale_factor,
+        )
     }
 
     pub(crate) async fn shutdown(

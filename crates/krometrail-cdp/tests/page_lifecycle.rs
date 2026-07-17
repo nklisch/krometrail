@@ -470,6 +470,10 @@ async fn start_select_with_held_observation(
     let transport = ScriptedCdp::chrome();
     let session = scripted_session(&transport).await;
     let target_id = session.status().await.unwrap().selected_target_id.unwrap();
+    transport.push_response(
+        "Runtime.evaluate",
+        json!({"result":{"type":"boolean","value":true}}),
+    );
     match held {
         HeldObservationPart::Inspection => transport.hold_method("Runtime.evaluate"),
         HeldObservationPart::Snapshot => {
@@ -514,7 +518,7 @@ async fn start_select_with_held_observation(
         HeldObservationPart::Snapshot => "Page.getFrameTree",
         HeldObservationPart::Screenshot => "Page.captureScreenshot",
     };
-    let initial_count = usize::from(matches!(held, HeldObservationPart::Inspection)) * 2;
+    let initial_count = usize::from(matches!(held, HeldObservationPart::Inspection)) * 3;
     transport
         .wait_for_command_count(method, initial_count + 1)
         .await;
@@ -529,14 +533,7 @@ fn assert_interrupted_observation(
     let BrowserOperationResult::SelectPage(result) = result else {
         panic!("interrupted select")
     };
-    let PageOperationOutcome::Failed(error) = &result.outcome else {
-        panic!("interrupted outcome")
-    };
-    assert_eq!(error.code, code);
-    assert_eq!(
-        error.context.interaction_id,
-        Some(result.interaction.interaction_id)
-    );
+    assert!(matches!(result.outcome, PageOperationOutcome::Succeeded(_)));
     let ObservationPart::Available(observation) = &result.observation else {
         panic!("honest partial live observation")
     };
@@ -548,10 +545,10 @@ fn assert_interrupted_observation(
         matches!(observation.snapshot, ObservationPart::Available(_)),
         matches!(held, HeldObservationPart::Screenshot)
     );
-    assert!(matches!(
-        observation.screenshot,
-        ObservationPart::Unavailable(_)
-    ));
+    let ObservationPart::Unavailable(error) = &observation.screenshot else {
+        panic!("interrupted screenshot must be unavailable")
+    };
+    assert_eq!(error.code, code);
 }
 
 #[tokio::test]

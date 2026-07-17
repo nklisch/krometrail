@@ -275,6 +275,12 @@ A typical investigation is short:
 
 These are choices, not mandatory stages. A current screenshot may be enough for a current-state question. Temporal evidence earns its keep when sequence and timing matter.
 
+## Test responsive and high-DPI layouts
+
+Ask the agent to use `set_viewport` when a reproduction depends on explicit CSS dimensions, device pixel ratio, mobile layout, or touch emulation. The override belongs to one browser target and survives navigation and managed reconnects. Ask it to clear the override when the test is finished; clearing restores the browser's native metrics.
+
+Changing viewport metrics starts a new observation geometry. Snapshot references from the earlier geometry must be reacquired before pointer actions, and retained frames report the effective device scale that applied when each frame was captured. This keeps source-frame coordinates and derived visual evidence interpretable across responsive-layout transitions.
+
 ## What the evidence means
 
 Krometrail reorganizes recorded frames into still images an agent can inspect:
@@ -450,7 +456,9 @@ krometrail --version
 krometrail doctor
 ```
 
-Startup and runtime failures from the MCP server are written to standard error so they do not corrupt protocol traffic.
+Krometrail keeps protocol output isolated from diagnostics. Bounded private runtime logs live under
+the platform data directory; failed or degraded responses identify the relevant file and correlation
+identifier. Startup failures that occur before file logging is available fall back to standard error.
 
 ## What the connection gives your agent
 
@@ -493,7 +501,10 @@ An MCP client starts this command for you:
 krometrail mcp
 ```
 
-It is not an interactive terminal command. Standard output is reserved for MCP protocol messages; diagnostics go to standard error.
+It is not an interactive terminal command. Standard output is reserved for MCP protocol messages.
+Krometrail writes bounded private diagnostics under its platform data directory and returns the log
+path plus a correlation identifier on failed or degraded MCP calls. Standard error is reserved for
+startup failures that occur before file diagnostics are available.
 
 The MCP server gives an agent:
 

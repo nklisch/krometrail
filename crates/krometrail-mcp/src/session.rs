@@ -5,7 +5,7 @@ use krometrail_core::{
     BrowserOperationRequest, BrowserOperationResult, BrowserSessionPort, BrowserStatus,
     BrowserStopOutcome, CurrentReferenceGeometry, CurrentReferenceGeometryRequest, ErrorCode,
     KrometrailError, LaunchBrowser, NonEmptyText, PortFuture, ResolvedReferenceGeometry, Result,
-    RetryAdvice,
+    RetryAdvice, TargetCaptureStatus,
 };
 use tokio::sync::Mutex;
 
@@ -13,6 +13,12 @@ use tokio::sync::Mutex;
 pub struct BrowserSessionOwner {
     connector: Arc<dyn BrowserConnector>,
     active: Arc<Mutex<Option<Arc<dyn BrowserSessionPort>>>>,
+}
+
+#[derive(Debug)]
+pub struct ExecutedBrowserOperation {
+    pub(crate) result: BrowserOperationResult,
+    pub(crate) capture_statuses: Vec<TargetCaptureStatus>,
 }
 
 impl BrowserSessionOwner {
@@ -55,9 +61,17 @@ impl BrowserSessionOwner {
         &self,
         request: BrowserOperationRequest,
         context: BrowserOperationContext,
-    ) -> Result<BrowserOperationResult> {
+    ) -> Result<ExecutedBrowserOperation> {
         let session = self.active_session().await?;
-        BrowserSessionPort::execute(session.as_ref(), request, context).await
+        let result = BrowserSessionPort::execute(session.as_ref(), request, context).await?;
+        Ok(ExecutedBrowserOperation {
+            result,
+            capture_statuses: session.capture_statuses(),
+        })
+    }
+
+    pub async fn capture_statuses(&self) -> Result<Vec<krometrail_core::TargetCaptureStatus>> {
+        Ok(self.active_session().await?.capture_statuses())
     }
 
     pub async fn stop(&self) -> Result<BrowserStopOutcome> {

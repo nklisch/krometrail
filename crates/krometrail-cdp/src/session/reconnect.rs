@@ -51,11 +51,7 @@ async fn finish_interrupted_reconnect(
     )
     .await;
     let outcome: Result<BrowserStopOutcome> = match &result {
-        Ok(()) => Ok(if shared.ownership == BrowserOwnership::Managed {
-            BrowserStopOutcome::ManagedBrowserClosed
-        } else {
-            BrowserStopOutcome::Detached
-        }),
+        Ok(report) => Ok(stop_outcome(report, shared.ownership)),
         Err(error) => Err(error.clone()),
     };
     if let Some(sender) = stop_sender {
@@ -63,7 +59,7 @@ async fn finish_interrupted_reconnect(
         let _ = sender.send(outcome);
     }
     finish_state(shared, state);
-    result
+    result.map(|_| ())
 }
 
 #[derive(Clone)]
@@ -326,9 +322,11 @@ pub(super) async fn restore_event_domains_and_visibility(
 async fn stage_reconnection_effects(
     attempt: &AttemptControl,
     transport: &Arc<dyn CdpTransport>,
+    state: &mut SupervisorState,
     effects: &[SupervisorEffect],
 ) -> std::result::Result<Vec<SupervisorEffect>, AttemptFailure> {
     let mut staged = Vec::new();
+    let mut failed_targets = std::collections::HashSet::new();
     for effect in effects {
         match effect {
             SupervisorEffect::Publish(event) => {
@@ -344,18 +342,65 @@ async fn stage_reconnection_effects(
                     )
                     .await?;
             }
+            SupervisorEffect::RestoreViewport { context, viewport } => {
+                let scope = CommandScope::Session(context.transport_session.clone());
+                let metrics = attempt
+                    .command(
+                        transport,
+                        &scope,
+                        "Emulation.setDeviceMetricsOverride",
+                        serde_json::json!({
+                            "width": viewport.width(),
+                            "height": viewport.height(),
+                            "deviceScaleFactor": viewport.device_scale_factor().get(),
+                            "mobile": viewport.mobile(),
+                            "screenWidth": viewport.width(),
+                            "screenHeight": viewport.height(),
+                        }),
+                    )
+                    .await;
+                let touch = if metrics.is_ok() {
+                    attempt
+                        .command(
+                            transport,
+                            &scope,
+                            "Emulation.setTouchEmulationEnabled",
+                            crate::control::viewport::touch_emulation_params(viewport.touch()),
+                        )
+                        .await
+                } else {
+                    Err(AttemptFailure::Failed)
+                };
+                if metrics.is_err() || touch.is_err() {
+                    failed_targets.insert(context.target_id);
+                    staged.retain(|effect| !capture_effect_targets(effect, context.target_id));
+                    let reduction = reduce(
+                        state.clone(),
+                        SupervisorInput::TargetAttachFailed {
+                            target_key: context.target_key.clone(),
+                        },
+                    )
+                    .map_err(|_| AttemptFailure::Failed)?;
+                    *state = reduction.state;
+                    staged.extend(reduction.effects);
+                }
+            }
             // A successful reconstruction has already attached every bounded target, restored
             // domains, and observed visibility. Any follow-up attach/probe would violate the
             // transaction boundary and make publication depend on an unbounded effect chain.
             SupervisorEffect::StartCapture { context } => {
-                staged.push(SupervisorEffect::StartCapture {
-                    context: context.clone(),
-                });
+                if !failed_targets.contains(&context.target_id) {
+                    staged.push(SupervisorEffect::StartCapture {
+                        context: context.clone(),
+                    });
+                }
             }
             SupervisorEffect::ResumeCapture { context } => {
-                staged.push(SupervisorEffect::ResumeCapture {
-                    context: context.clone(),
-                });
+                if !failed_targets.contains(&context.target_id) {
+                    staged.push(SupervisorEffect::ResumeCapture {
+                        context: context.clone(),
+                    });
+                }
             }
             SupervisorEffect::StopCapture { context } => {
                 staged.push(SupervisorEffect::StopCapture {
@@ -375,6 +420,16 @@ async fn stage_reconnection_effects(
         }
     }
     Ok(staged)
+}
+
+fn capture_effect_targets(effect: &SupervisorEffect, target_id: krometrail_core::TargetId) -> bool {
+    match effect {
+        SupervisorEffect::StartCapture { context }
+        | SupervisorEffect::ResumeCapture { context }
+        | SupervisorEffect::SuspendCapture { context }
+        | SupervisorEffect::StopCapture { context } => context.target_id == target_id,
+        _ => false,
+    }
 }
 
 async fn reconstruct_connection(
@@ -472,6 +527,7 @@ async fn reconstruct_connection(
     let effects = match stage_reconnection_effects(
         &attempt,
         &connection.transport,
+        &mut restored_state,
         &restored_effects,
     )
     .await

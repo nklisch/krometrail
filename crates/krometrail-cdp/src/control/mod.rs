@@ -5,7 +5,7 @@ use krometrail_core::{
     CssPoint, CssRect, CssSize, DeviceScaleFactor, DocumentReadiness, ErrorCode, ErrorContext,
     IdSource, InspectPageRequest, KrometrailError, MonotonicClock, NavigationState, NonEmptyText,
     ObservationContext, PageState, PageStatus, Result, RetryAdvice, SessionId, SessionOrigin,
-    SessionTime, TargetId, TargetLifecycle, ViewportState,
+    SessionTime, TargetId, TargetLifecycle, TargetVisibility, ViewportState,
 };
 use serde_json::{Value, json};
 
@@ -27,6 +27,7 @@ mod pointer;
 mod screenshot;
 mod snapshot;
 mod upload;
+pub(crate) mod viewport;
 mod wait;
 
 use navigation::NavigationConfig;
@@ -59,8 +60,10 @@ pub(crate) struct PageControl {
 #[derive(Clone, Debug)]
 pub(crate) struct BoundTarget {
     pub(crate) target_id: TargetId,
+    pub(crate) browser_target_key: String,
     pub(crate) attachment_generation: u64,
     pub(crate) transport_session: TransportSessionId,
+    pub(crate) visibility: TargetVisibility,
 }
 
 impl PageControl {
@@ -196,6 +199,7 @@ impl PageControl {
             | BrowserOperationRequest::ReloadPage(_)
             | BrowserOperationRequest::GoBack(_)
             | BrowserOperationRequest::GoForward(_)
+            | BrowserOperationRequest::SetViewport(_)
             | BrowserOperationRequest::Click(_)
             | BrowserOperationRequest::Fill(_)
             | BrowserOperationRequest::PressKeys(_)
@@ -305,8 +309,15 @@ pub(crate) fn bind_target(
     })?;
     Ok(BoundTarget {
         target_id,
+        browser_target_key: state
+            .targets_by_key
+            .iter()
+            .find(|(_, candidate)| candidate.target.target.id() == target_id)
+            .map(|(key, _)| key.clone())
+            .expect("resolved target remains indexed by its browser key"),
         attachment_generation: target.target.attachment_generation,
         transport_session,
+        visibility: target.target.visibility,
     })
 }
 

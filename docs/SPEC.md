@@ -100,7 +100,9 @@ Every standalone state-changing browser action returns a live observation contai
 
 State-changing actions include navigation, history movement, reload, click, text input, key input, selection, hover, drag, scrolling, dialog handling, and file upload.
 
-Krometrail chooses an action-appropriate observation point after dispatching the action. It does not wait for complete network idleness unless the requested action requires it. The temporal recorder continues capturing intermediate states while the action completes.
+Krometrail chooses an action-appropriate observation point after dispatching the action. Automatic post-action screenshots wait for two renderer animation-frame callbacks under a bounded 250 millisecond cap; a missing signal degrades evidence but does not erase a proven dispatch or mutation. It does not wait for complete network idleness unless the requested action requires it. The temporal recorder continues capturing intermediate states while the action completes.
+
+Action dispatch or mutation, current-state observation, and retained temporal capture are independent outcomes. A failed retained-capture stream reports `capture_failed` with a bounded `failure_stage` on later operations while current-state control remains available. Observation failure after a proven action produces a degraded non-error response and must not imply that replay is safe.
 
 Read-only inspection operations do not generate additional screenshots unless requested.
 
@@ -112,7 +114,10 @@ Krometrail exposes a compact structured representation of the current page for a
 
 The snapshot includes relevant accessible content, roles, names, values, states, and actionable nodes. It may include DOM-derived information where necessary to resolve interaction geometry.
 
-Element references are scoped to the snapshot generation that produced them. They are not stable identities across navigation, rendering, or DOM replacement.
+Element references are scoped to the target attachment and document generation that produced them.
+A later snapshot of the same attached document preserves a reference while its backing DOM node
+remains present. References are not stable across navigation, document replacement, reconnect, or
+backing-node replacement.
 
 Before executing an action against a reference, Krometrail verifies that the backing node remains valid and actionable. It fails with a specific stale-reference error when it cannot safely resolve the target. Errors instruct the agent to refresh the snapshot.
 
@@ -137,6 +142,15 @@ The control capability provides operations for:
 - take a screenshot of the viewport, full page, element, or region;
 - evaluate JavaScript in the page context;
 - inspect current URL, title, viewport, and navigation state.
+
+### Viewport emulation
+
+- apply explicit width, height, device scale, mobile-layout, and touch metrics to one selected page;
+- clear that target-scoped override and report the independently observed effective CSS visual viewport.
+
+Overrides survive ordinary navigation and same-target reattachment, are restored before capture
+resumes, and never affect another target. A clear removes both device metrics and touch emulation.
+Named device presets and user-agent emulation are outside this contract.
 
 ### Interaction
 
@@ -163,6 +177,20 @@ The control capability provides operations for:
 Related actions can be submitted as an ordered batch. Every step receives its own status, timing, and timeline anchor. Execution stops on the first failed step unless the request explicitly permits continuation.
 
 The MCP surface provides composable standalone tools plus batching. Both derive actions and schemas from the same capability registry and shared domain contracts.
+
+Page-scoped requests select the current page when `target` is omitted. Click defaults to the left
+button, no modifiers, one click, and no navigation wait; fill defaults to replace mode and no
+navigation wait; key input defaults to no focus locator and no navigation wait. Explicit stable
+1.x request values retain their existing meaning.
+
+Pointer, drag, and scroll operations foreground a hidden page through the managed CDP target
+authority before resolving or dispatching input. If the page remains hidden after the bounded
+visibility check, the operation fails as `target_hidden` with recovery to select or foreground the
+page; no pointer event is dispatched.
+
+Browser discovery probes explicit, environment, and platform-default installations with a bounded
+cold-start budget while keeping PATH probes short. Candidate diagnostics contain only source class,
+ordinal, outcome, and elapsed time; executable paths and version output are not logged.
 
 ## Action Timeline
 

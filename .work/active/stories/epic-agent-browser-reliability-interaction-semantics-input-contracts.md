@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-reliability-interaction-semantics-input-contracts
 kind: story
-stage: implementing
+stage: done
 tags: [browser, agent-ux]
 parent: epic-agent-browser-reliability-interaction-semantics
 depends_on: []
@@ -34,3 +34,15 @@ exposure. This checkpoint owns GitHub issues #7 and #8 plus the target-default p
 Independent first checkpoint. It does not depend on the reference-registry or pointer-preparation
 changes and must preserve the interaction result's distinction between dispatched input and
 observed page effect.
+
+## Implementation evidence
+
+- Core wire contracts now default page selection and conventional interaction options while
+  preserving explicit requests; key aliases serialize canonically and invalid multi-action or
+  duplicate-modifier chords fail at construction/deserialization.
+- CDP keyboard dispatch now uses one down/up path, suppresses text for Control/Meta/Alt chords,
+  supplies native text for Enter/Space, and clears replace-mode editables through DOM selection,
+  Backspace, and length-only verification before `Input.insertText`.
+- Deterministic transport tests verify the event envelope, and the opt-in Chrome qualification
+  verifies password replacement by length plus native Enter form submission without printing the
+  old or new value.

@@ -8,10 +8,10 @@ use std::{
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use krometrail_core::{
-    CaptureGap, CaptureGapReason, CaptureOrdinal, CaptureStatistics, CaptureStreamState,
-    CaptureTimingSummary, CaptureWarning, CapturedFrame, DeviceScaleFactor, EncodedFrame,
-    ErrorCode, EveryNthFrame, FrameId, GapId, ImageFormat, PixelDimensions, SessionRange,
-    SessionTime, SourceTime, TargetCaptureStatus,
+    CaptureFailureStage, CaptureGap, CaptureGapReason, CaptureOrdinal, CaptureStatistics,
+    CaptureStreamState, CaptureTimingSummary, CaptureWarning, CapturedFrame, DeviceScaleFactor,
+    EncodedFrame, ErrorCode, EveryNthFrame, FrameId, GapId, ImageFormat, PixelDimensions,
+    SessionRange, SessionTime, SourceTime, TargetCaptureStatus,
 };
 use serde_json::{Value, json};
 use tokio::{
@@ -142,6 +142,7 @@ pub(super) struct StreamRuntime {
     stop_notification: Notify,
     state: Mutex<RuntimeState>,
     control: Mutex<ControlHandles>,
+    device_scale_factor: Mutex<DeviceScaleFactor>,
 }
 
 struct ControlHandles {
@@ -163,6 +164,7 @@ struct RuntimeState {
     ack_latency: Histogram,
     frame_cadence: Histogram,
     gaps: GapLedger,
+    failure_stage: Option<CaptureFailureStage>,
 }
 
 #[derive(Clone, Debug)]
@@ -220,6 +222,7 @@ impl StreamRuntime {
         transport: Arc<dyn CdpTransport>,
         ordinals: Arc<OrdinalRegistry>,
     ) -> Self {
+        let device_scale_factor = target.device_scale_factor;
         Self {
             target,
             ordinals,
@@ -242,6 +245,7 @@ impl StreamRuntime {
                 ack_latency: Histogram::default(),
                 frame_cadence: Histogram::default(),
                 gaps: GapLedger::new(config.gap_ledger_capacity.get()),
+                failure_stage: None,
             }),
             control: Mutex::new(ControlHandles {
                 sender: None,
@@ -249,7 +253,22 @@ impl StreamRuntime {
                 visibility_reader: None,
                 worker: None,
             }),
+            device_scale_factor: Mutex::new(device_scale_factor),
         }
+    }
+
+    fn device_scale_factor(&self) -> DeviceScaleFactor {
+        *self
+            .device_scale_factor
+            .lock()
+            .expect("capture device scale lock poisoned")
+    }
+
+    fn update_device_scale_factor(&self, device_scale_factor: DeviceScaleFactor) {
+        *self
+            .device_scale_factor
+            .lock()
+            .expect("capture device scale lock poisoned") = device_scale_factor;
     }
 
     fn key(&self) -> StreamKey {
@@ -525,13 +544,40 @@ impl StreamRuntime {
             .expect("runtime state maintains invariants")
     }
 
-    fn fail(&self) {
+    fn fail(&self, failure_stage: CaptureFailureStage) {
         self.accepting.store(false, Ordering::Release);
+        let first_failure = {
+            let mut state = self.state.lock().expect("capture state lock poisoned");
+            record_first_failure(&mut state.failure_stage, failure_stage)
+        };
+        if first_failure {
+            tracing::error!(
+                event = "capture.pipeline.failed",
+                failure_stage = failure_stage.as_str(),
+                error_code = ErrorCode::CaptureFailed.as_str(),
+                session_id = %self.target.session_id,
+                target_id = %self.target.target_id,
+                attachment_generation = self.target.attachment_generation,
+                "capture.pipeline.failed"
+            );
+        }
         let _ = self.transition(Transition::Failure);
         self.control
             .lock()
             .expect("capture control lock poisoned")
             .sender = None;
+    }
+}
+
+pub(super) fn record_first_failure(
+    current: &mut Option<CaptureFailureStage>,
+    candidate: CaptureFailureStage,
+) -> bool {
+    if current.is_some() {
+        false
+    } else {
+        *current = Some(candidate);
+        true
     }
 }
 
@@ -661,7 +707,7 @@ async fn frame_reader(
         let event = match events.next().await {
             Ok(Some(event)) => event,
             Ok(None) | Err(_) => {
-                runtime.fail();
+                runtime.fail(CaptureFailureStage::FrameEventStream);
                 break;
             }
         };
@@ -677,7 +723,7 @@ async fn frame_reader(
                 Some(1),
                 Some("screencast frame acknowledgement token was invalid"),
             );
-            runtime.fail();
+            runtime.fail(CaptureFailureStage::Acknowledgement);
             break;
         };
         let ack = time::timeout(
@@ -704,7 +750,7 @@ async fn frame_reader(
                 Some(1),
                 Some(detail),
             );
-            runtime.fail();
+            runtime.fail(CaptureFailureStage::Acknowledgement);
             break;
         }
         let latency = ack_completed.as_nanos().saturating_sub(observed.as_nanos());
@@ -713,7 +759,7 @@ async fn frame_reader(
             OrdinalAllocation::Allocated(ordinal) => ordinal,
             OrdinalAllocation::StaleGeneration => continue,
             OrdinalAllocation::Exhausted => {
-                runtime.fail();
+                runtime.fail(CaptureFailureStage::OrdinalAllocation);
                 break;
             }
         };
@@ -725,11 +771,13 @@ async fn frame_reader(
             session_time,
             runtime.config.format,
             runtime.config.max_base64_payload_bytes.get(),
+            runtime.device_scale_factor(),
         ) {
             Ok(raw) => raw,
             Err(_) => {
                 runtime.dropped(CaptureGapReason::FrameRejected, session_time);
-                continue;
+                runtime.fail(CaptureFailureStage::FrameEnvelope);
+                break;
             }
         };
         runtime.handoff(raw);
@@ -741,7 +789,7 @@ async fn visibility_reader(runtime: Arc<StreamRuntime>, events: &mut Box<dyn Tra
         let event = match events.next().await {
             Ok(Some(event)) => event,
             Ok(None) | Err(_) => {
-                runtime.fail();
+                runtime.fail(CaptureFailureStage::VisibilityEventStream);
                 break;
             }
         };
@@ -773,7 +821,9 @@ async fn visibility_reader(runtime: Arc<StreamRuntime>, events: &mut Box<dyn Tra
                 );
                 runtime.transition(Transition::Show);
             }
-            None => runtime.fail(),
+            None => {
+                runtime.fail(CaptureFailureStage::VisibilityEventStream);
+            }
         }
     }
 }
@@ -782,7 +832,7 @@ async fn worker_loop(runtime: Arc<StreamRuntime>, mut receiver: mpsc::Receiver<R
     while let Some(raw) = receiver.recv().await {
         runtime.begin_processing();
         if !persist_pending_gaps(&runtime).await {
-            runtime.fail();
+            runtime.fail(CaptureFailureStage::GapPersistence);
             break;
         }
         match decode_frame(&runtime, raw.clone()) {
@@ -804,7 +854,7 @@ async fn worker_loop(runtime: Arc<StreamRuntime>, mut receiver: mpsc::Receiver<R
                         break;
                     }
                     if !persist_pending_gaps(&runtime).await {
-                        runtime.fail();
+                        runtime.fail(CaptureFailureStage::GapPersistence);
                         break;
                     }
                     runtime.transition(runtime.resume_budget_transition());
@@ -817,7 +867,7 @@ async fn worker_loop(runtime: Arc<StreamRuntime>, mut receiver: mpsc::Receiver<R
                         Some(1),
                         Some("frame persistence rejected"),
                     );
-                    runtime.fail();
+                    runtime.fail(CaptureFailureStage::FramePersistence);
                     break;
                 }
             },
@@ -830,15 +880,17 @@ async fn worker_loop(runtime: Arc<StreamRuntime>, mut receiver: mpsc::Receiver<R
                     Some("encoded frame rejected"),
                 ) {
                     if runtime.dependencies.sink.append_gap(gap).await.is_err() {
-                        runtime.fail();
+                        runtime.fail(CaptureFailureStage::GapPersistence);
                         break;
                     }
                 }
+                runtime.fail(CaptureFailureStage::FrameDecode);
+                break;
             }
         }
     }
     if !persist_pending_gaps(&runtime).await {
-        runtime.fail();
+        runtime.fail(CaptureFailureStage::GapPersistence);
     }
 }
 
@@ -928,7 +980,6 @@ pub(super) async fn stop_target(
         tokio::select! {
             result = &mut worker => {
                 complete &= result.is_ok();
-                complete &= runtime.state() != CaptureStreamState::Failed;
             }
             _ = time::sleep_until(deadline) => {
                 worker.abort();
@@ -1084,7 +1135,7 @@ fn status_from_state(
     state: &RuntimeState,
     every_nth_frame: EveryNthFrame,
 ) -> Result<TargetCaptureStatus, ()> {
-    TargetCaptureStatus::new(
+    TargetCaptureStatus::new_with_failure_stage(
         target.target_id,
         target.attachment_generation,
         state.state,
@@ -1095,6 +1146,7 @@ fn status_from_state(
         state.ack_latency.summary(),
         state.frame_cadence.summary(),
         every_nth_frame,
+        state.failure_stage,
     )
     .map_err(|_| ())
 }
@@ -1330,6 +1382,7 @@ impl RawFrame {
         session_time: SessionTime,
         format: ImageFormat,
         max_payload_bytes: usize,
+        device_scale_factor: DeviceScaleFactor,
     ) -> Result<Self, ()> {
         let object = event.params.as_object().ok_or(())?;
         let data_value = object.get("data").and_then(Value::as_str).ok_or(())?;
@@ -1366,13 +1419,6 @@ impl RawFrame {
         let width = positive_u32(metadata.get("deviceWidth")).ok_or(())?;
         let height = positive_u32(metadata.get("deviceHeight")).ok_or(())?;
         let viewport = PixelDimensions::new(width, height).map_err(|_| ())?;
-        let scale = match metadata.get("pageScaleFactor").and_then(Value::as_f64) {
-            Some(value) => DeviceScaleFactor::new(value).map_err(|_| ())?,
-            None => {
-                warnings.push(CaptureWarning::ViewportMetadataIncomplete);
-                DeviceScaleFactor::new(1.0).expect("one is a valid scale")
-            }
-        };
         Ok(Self {
             capture_ordinal,
             data,
@@ -1381,9 +1427,32 @@ impl RawFrame {
             session_time,
             format,
             viewport,
-            device_scale_factor: scale,
+            device_scale_factor,
             warnings,
         })
+    }
+}
+
+pub(super) fn update_device_scale_factor(
+    coordinator: &CaptureCoordinator,
+    target_id: krometrail_core::TargetId,
+    attachment_generation: u64,
+    device_scale_factor: DeviceScaleFactor,
+) -> bool {
+    let runtime = coordinator
+        .streams
+        .lock()
+        .expect("capture registry lock poisoned")
+        .get(&StreamKey {
+            target_id,
+            attachment_generation,
+        })
+        .cloned();
+    if let Some(runtime) = runtime {
+        runtime.update_device_scale_factor(device_scale_factor);
+        true
+    } else {
+        false
     }
 }
 

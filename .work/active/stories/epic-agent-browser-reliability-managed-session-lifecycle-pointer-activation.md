@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-reliability-managed-session-lifecycle-pointer-activation
 kind: story
-stage: implementing
+stage: done
 tags: [browser, agent-ux]
 parent: epic-agent-browser-reliability-managed-session-lifecycle
 depends_on: []
@@ -31,3 +31,8 @@ Extend `BoundTarget` with the opaque browser target key and supervisor visibilit
 ## Ordering and boundary
 
 This checkpoint is graph-independent. The interaction-semantics sibling owns locator scrolling and key/fill behavior; this checkpoint owns page-target visibility before pointer-like dispatch.
+
+## Implementation evidence
+
+- `BoundTarget` now retains opaque browser target identity and supervisor visibility.
+- Pointer, drag/drop, and scroll preparation uses browser-scoped activation, session-scoped foregrounding, and bounded literal visibility verification; failure returns `target_hidden` before interaction identity or input dispatch.

@@ -404,6 +404,10 @@ fn result_failure(result: &BrowserOperationResult, target_id: TargetId) -> Optio
             PageOperationOutcome::Succeeded(_) => None,
             PageOperationOutcome::Failed(error) => Some(error.clone()),
         },
+        BrowserOperationResult::SetViewport(value) => match &value.operation.outcome {
+            PageOperationOutcome::Succeeded(_) => None,
+            PageOperationOutcome::Failed(error) => Some(error.clone()),
+        },
         BrowserOperationResult::Wait(value)
             if matches!(value.outcome, WaitOutcome::TimedOut { .. }) =>
         {
@@ -422,6 +426,7 @@ fn result_anchor(result: &BrowserOperationResult) -> Result<Option<InteractionAn
         | BrowserOperationResult::ReloadPage(value)
         | BrowserOperationResult::GoBack(value)
         | BrowserOperationResult::GoForward(value) => Some(value.interaction.clone()),
+        BrowserOperationResult::SetViewport(value) => Some(value.operation.interaction.clone()),
         BrowserOperationResult::Click(value)
         | BrowserOperationResult::Fill(value)
         | BrowserOperationResult::PressKeys(value)
@@ -450,6 +455,10 @@ fn existing_screenshot(
         | BrowserOperationResult::ReloadPage(value)
         | BrowserOperationResult::GoBack(value)
         | BrowserOperationResult::GoForward(value) => Some(match &value.observation {
+            ObservationPart::Available(observation) => clone_screenshot(&observation.screenshot),
+            ObservationPart::Unavailable(error) => ObservationPart::Unavailable(error.clone()),
+        }),
+        BrowserOperationResult::SetViewport(value) => Some(match &value.operation.observation {
             ObservationPart::Available(observation) => clone_screenshot(&observation.screenshot),
             ObservationPart::Unavailable(error) => ObservationPart::Unavailable(error.clone()),
         }),

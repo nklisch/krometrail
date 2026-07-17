@@ -1,6 +1,6 @@
 interface:
   display_name: "Krometrail"
-  short_description: "Browser control and temporal visual evidence"
-  default_prompt: "Use $krometrail to inspect the browser evidence relevant to this problem while following my debugging direction."
+  short_description: "Operate Chromium and inspect visual evidence"
+  default_prompt: "Use $krometrail to operate the browser and collect only the evidence needed for this problem."
 policy:
   allow_implicit_invocation: true

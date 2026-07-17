@@ -748,17 +748,13 @@ impl PageControl {
         let observed = self
             .observe_after_operation(transport, state, selection, cancel)
             .await?;
-        let outcome = observed.interruption.map_or_else(
-            || PageOperationOutcome::Succeeded(change),
-            PageOperationOutcome::Failed,
-        );
         let result = self.navigation_result(
             target_id,
             kind,
             interaction_id,
             started,
             dispatched,
-            outcome,
+            PageOperationOutcome::Succeeded(change),
             observed.observation,
         )?;
         Ok(wrap_result(kind, result))

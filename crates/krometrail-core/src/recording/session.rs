@@ -212,6 +212,20 @@ define_stable_enum! {
     }
 }
 
+define_stable_enum! {
+    /// Sanitized terminal boundary at which retained visual capture stopped.
+    pub enum CaptureFailureStage {
+        FrameEventStream => "frame_event_stream",
+        VisibilityEventStream => "visibility_event_stream",
+        FrameEnvelope => "frame_envelope",
+        Acknowledgement => "acknowledgement",
+        OrdinalAllocation => "ordinal_allocation",
+        FrameDecode => "frame_decode",
+        FramePersistence => "frame_persistence",
+        GapPersistence => "gap_persistence",
+    }
+}
+
 /// Fixed-bucket percentiles are upper bounds; unlike them, `max_nanos` is exact and may be
 /// lower than a percentile bucket bound.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -332,6 +346,8 @@ pub struct TargetCaptureStatus {
     ack_latency: CaptureTimingSummary,
     frame_cadence: CaptureTimingSummary,
     every_nth_frame: EveryNthFrame,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    failure_stage: Option<CaptureFailureStage>,
 }
 
 #[derive(Deserialize)]
@@ -346,6 +362,8 @@ struct TargetCaptureStatusWire {
     ack_latency: CaptureTimingSummary,
     frame_cadence: CaptureTimingSummary,
     every_nth_frame: EveryNthFrame,
+    #[serde(default)]
+    failure_stage: Option<CaptureFailureStage>,
 }
 
 impl TargetCaptureStatus {
@@ -362,6 +380,35 @@ impl TargetCaptureStatus {
         frame_cadence: CaptureTimingSummary,
         every_nth_frame: EveryNthFrame,
     ) -> Result<Self> {
+        Self::new_with_failure_stage(
+            target_id,
+            attachment_generation,
+            state,
+            statistics,
+            queue_capacity,
+            queue_depth,
+            last_frame_session_time,
+            ack_latency,
+            frame_cadence,
+            every_nth_frame,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_failure_stage(
+        target_id: crate::ids::TargetId,
+        attachment_generation: u64,
+        state: CaptureStreamState,
+        statistics: CaptureStatistics,
+        queue_capacity: usize,
+        queue_depth: usize,
+        last_frame_session_time: Option<crate::time::SessionTime>,
+        ack_latency: CaptureTimingSummary,
+        frame_cadence: CaptureTimingSummary,
+        every_nth_frame: EveryNthFrame,
+        failure_stage: Option<CaptureFailureStage>,
+    ) -> Result<Self> {
         if attachment_generation == 0 {
             return Err(invalid("capture attachment generation must be non-zero"));
         }
@@ -374,6 +421,11 @@ impl TargetCaptureStatus {
         if matches!(state, CaptureStreamState::Stopped) && queue_depth != 0 {
             return Err(invalid(
                 "stopped capture streams cannot retain queued frames",
+            ));
+        }
+        if matches!(state, CaptureStreamState::Failed) != failure_stage.is_some() {
+            return Err(invalid(
+                "failed capture streams require exactly one failure stage",
             ));
         }
         if last_frame_session_time.is_some() && statistics.received_frames() == 0 {
@@ -392,6 +444,7 @@ impl TargetCaptureStatus {
             ack_latency,
             frame_cadence,
             every_nth_frame,
+            failure_stage,
         })
     }
 
@@ -434,6 +487,10 @@ impl TargetCaptureStatus {
     pub const fn every_nth_frame(&self) -> EveryNthFrame {
         self.every_nth_frame
     }
+
+    pub const fn failure_stage(&self) -> Option<CaptureFailureStage> {
+        self.failure_stage
+    }
 }
 
 impl<'de> Deserialize<'de> for TargetCaptureStatus {
@@ -442,7 +499,7 @@ impl<'de> Deserialize<'de> for TargetCaptureStatus {
         D: serde::Deserializer<'de>,
     {
         deserialize_validated(deserializer, |wire: TargetCaptureStatusWire| {
-            Self::new(
+            Self::new_with_failure_stage(
                 wire.target_id,
                 wire.attachment_generation,
                 wire.state,
@@ -453,6 +510,7 @@ impl<'de> Deserialize<'de> for TargetCaptureStatus {
                 wire.ack_latency,
                 wire.frame_cadence,
                 wire.every_nth_frame,
+                wire.failure_stage,
             )
         })
     }
@@ -786,6 +844,58 @@ mod tests {
                 EveryNthFrame::default(),
             )
             .is_err()
+        );
+        assert!(
+            TargetCaptureStatus::new_with_failure_stage(
+                target,
+                1,
+                CaptureStreamState::Failed,
+                CaptureStatistics::default(),
+                1,
+                0,
+                None,
+                CaptureTimingSummary::empty(),
+                CaptureTimingSummary::empty(),
+                EveryNthFrame::default(),
+                None,
+            )
+            .is_err()
+        );
+        assert!(
+            TargetCaptureStatus::new_with_failure_stage(
+                target,
+                1,
+                CaptureStreamState::Capturing,
+                CaptureStatistics::default(),
+                1,
+                0,
+                None,
+                CaptureTimingSummary::empty(),
+                CaptureTimingSummary::empty(),
+                EveryNthFrame::default(),
+                Some(CaptureFailureStage::FramePersistence),
+            )
+            .is_err()
+        );
+        let failed = TargetCaptureStatus::new_with_failure_stage(
+            target,
+            1,
+            CaptureStreamState::Failed,
+            CaptureStatistics::default(),
+            1,
+            0,
+            None,
+            CaptureTimingSummary::empty(),
+            CaptureTimingSummary::empty(),
+            EveryNthFrame::default(),
+            Some(CaptureFailureStage::FramePersistence),
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::from_str::<TargetCaptureStatus>(&serde_json::to_string(&failed).unwrap())
+                .unwrap()
+                .failure_stage(),
+            Some(CaptureFailureStage::FramePersistence)
         );
         assert!(
             TargetCaptureStatus::new(

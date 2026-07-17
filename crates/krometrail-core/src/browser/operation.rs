@@ -10,8 +10,8 @@ use super::{
     LiveObservation, LiveObservationRequest, NavigatePageRequest, PageOperationResult,
     PageSelection, PageSnapshot, PageState, PageStatus, PressKeysRequest,
     ReadOnlyEvaluationRequest, ReloadPageRequest, ScreenshotRequest, ScrollRequest,
-    SelectOptionRequest, SelectPageRequest, SnapshotPageRequest, UploadFilesRequest, WaitRequest,
-    WaitResult,
+    SelectOptionRequest, SelectPageRequest, SetViewportRequest, SnapshotPageRequest,
+    UploadFilesRequest, ViewportOperationResult, WaitRequest, WaitResult,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -77,6 +77,7 @@ selected_field!(NavigatePageRequest, target);
 selected_field!(ReloadPageRequest, target);
 selected_field!(GoBackRequest, target);
 selected_field!(GoForwardRequest, target);
+selected_field!(SetViewportRequest, target);
 selected_field!(ClickRequest, target);
 selected_field!(FillRequest, target);
 selected_field!(PressKeysRequest, target);
@@ -285,6 +286,9 @@ define_browser_operations! {
     GoForward(GoForwardRequest) => PageOperationResult {
         stable_name: "go_forward", description: "Move forward in page history and return live evidence.", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: None,
     },
+    SetViewport(SetViewportRequest) => ViewportOperationResult {
+        stable_name: "set_viewport", description: "Apply or clear explicit target-scoped viewport and device metrics.", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: None,
+    },
     Click(ClickRequest) => InteractionResult {
         stable_name: "click", description: "Click an element or declared coordinate and return live evidence.", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: Some(&ACTION_CLICK),
     },
@@ -332,7 +336,7 @@ mod tests {
 
     #[test]
     fn declaration_is_the_complete_operation_registry() {
-        assert_eq!(BrowserOperationKind::ALL.len(), 24);
+        assert_eq!(BrowserOperationKind::ALL.len(), 25);
         assert_eq!(
             BROWSER_OPERATION_REGISTRY.len(),
             BrowserOperationKind::ALL.len()

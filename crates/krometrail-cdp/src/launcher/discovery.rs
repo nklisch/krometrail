@@ -31,6 +31,42 @@ pub struct DiscoveryInputs {
     pub path: Option<PathBuf>,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct VersionProbePolicy {
+    cold_candidate_timeout: Duration,
+    ordinary_candidate_timeout: Duration,
+    output_limit: u64,
+}
+
+impl Default for VersionProbePolicy {
+    fn default() -> Self {
+        Self {
+            cold_candidate_timeout: Duration::from_secs(10),
+            ordinary_candidate_timeout: Duration::from_secs(2),
+            output_limit: 4096,
+        }
+    }
+}
+
+#[derive(Debug)]
+enum VersionProbeOutcome {
+    Found(BrowserProduct, BrowserProductVersion),
+    SpawnFailed,
+    TimedOut,
+    Rejected,
+}
+
+impl VersionProbeOutcome {
+    const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Found(..) => "found",
+            Self::SpawnFailed => "spawn_failed",
+            Self::TimedOut => "timed_out",
+            Self::Rejected => "rejected",
+        }
+    }
+}
+
 pub fn discover_installations(explicit: Option<&Path>) -> Vec<BrowserInstallation> {
     discover_installations_with(DiscoveryInputs {
         explicit: explicit.map(Path::to_path_buf),
@@ -42,6 +78,13 @@ pub fn discover_installations(explicit: Option<&Path>) -> Vec<BrowserInstallatio
 }
 
 pub fn discover_installations_with(inputs: DiscoveryInputs) -> Vec<BrowserInstallation> {
+    discover_installations_with_policy(inputs, VersionProbePolicy::default())
+}
+
+fn discover_installations_with_policy(
+    inputs: DiscoveryInputs,
+    policy: VersionProbePolicy,
+) -> Vec<BrowserInstallation> {
     let mut candidates = Vec::new();
     if let Some(path) = inputs.explicit {
         candidates.push(DiscoveryCandidate {
@@ -84,6 +127,7 @@ pub fn discover_installations_with(inputs: DiscoveryInputs) -> Vec<BrowserInstal
 
     let mut seen = Vec::new();
     let mut installations = Vec::new();
+    let mut attempted = 0_u64;
     for candidate in candidates {
         let Ok(canonical) = canonical_executable(&candidate.executable) else {
             continue;
@@ -91,7 +135,26 @@ pub fn discover_installations_with(inputs: DiscoveryInputs) -> Vec<BrowserInstal
         if seen.iter().any(|path: &PathBuf| path == &canonical) {
             continue;
         }
-        let Some((product, version)) = probe_version(&canonical) else {
+        // A failing executable can be reachable through several source classes. Record it before
+        // probing so the highest-precedence occurrence owns the single bounded attempt.
+        seen.push(canonical.clone());
+        attempted = attempted.saturating_add(1);
+        let timeout = if candidate.source == BrowserInstallationSource::PathLookup {
+            policy.ordinary_candidate_timeout
+        } else {
+            policy.cold_candidate_timeout
+        };
+        let started = std::time::Instant::now();
+        let outcome = probe_version(&canonical, timeout, policy.output_limit);
+        tracing::info!(
+            event = "browser.discovery.candidate_probed",
+            candidate_ordinal = attempted,
+            candidate_source = candidate.source.as_str(),
+            probe_outcome = outcome.as_str(),
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "browser.discovery.candidate_probed"
+        );
+        let VersionProbeOutcome::Found(product, version) = outcome else {
             continue;
         };
         // Electron is an explicit renderer endpoint, not a platform-discovered managed browser.
@@ -105,12 +168,12 @@ pub fn discover_installations_with(inputs: DiscoveryInputs) -> Vec<BrowserInstal
         else {
             continue;
         };
-        seen.push(canonical);
         installations.push(installation);
     }
     tracing::info!(
         event = "browser.discovery.completed",
-        candidate_count = installations.len(),
+        attempted_count = attempted,
+        discovered_count = installations.len(),
         selected_installation_kind = installations
             .first()
             .map(|item| item.product.as_str())
@@ -183,7 +246,7 @@ fn is_regular_executable(metadata: &Metadata) -> bool {
     }
 }
 
-fn probe_version(path: &Path) -> Option<(BrowserProduct, BrowserProductVersion)> {
+fn probe_version(path: &Path, timeout: Duration, output_limit: u64) -> VersionProbeOutcome {
     let mut child = match Command::new(path)
         .arg("--version")
         .stdin(Stdio::null())
@@ -192,22 +255,25 @@ fn probe_version(path: &Path) -> Option<(BrowserProduct, BrowserProductVersion)>
         .spawn()
     {
         Ok(child) => child,
-        Err(_) => return None,
+        Err(_) => return VersionProbeOutcome::SpawnFailed,
     };
     // A version probe is an untrusted executable boundary. Read at most 4096 bytes on a helper
     // thread while the caller enforces a hard child deadline. Unlike a temporary capture file,
     // this keeps doctor discovery free of filesystem mutation; a noisy candidate is killed after
     // the bounded wait and cannot grow an in-memory result beyond the cap.
-    let stdout = child.stdout.take()?;
+    let stdout = match child.stdout.take() {
+        Some(stdout) => stdout,
+        None => return VersionProbeOutcome::Rejected,
+    };
     let reader = std::thread::spawn(move || {
         let mut bytes = Vec::new();
         stdout
-            .take(4096)
+            .take(output_limit)
             .read_to_end(&mut bytes)
             .ok()
             .map(|_| bytes)
     });
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    let deadline = std::time::Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
@@ -218,16 +284,22 @@ fn probe_version(path: &Path) -> Option<(BrowserProduct, BrowserProductVersion)>
                 let _ = child.kill();
                 let _ = child.wait();
                 let _ = reader.join();
-                return None;
+                return VersionProbeOutcome::TimedOut;
             }
         }
     };
-    let bytes = reader.join().ok().flatten()?;
+    let bytes = match reader.join().ok().flatten() {
+        Some(bytes) => bytes,
+        None => return VersionProbeOutcome::Rejected,
+    };
     if !status.success() {
-        return None;
+        return VersionProbeOutcome::Rejected;
     }
     let text = String::from_utf8_lossy(&bytes);
-    let text = text.lines().find(|line| !line.trim().is_empty())?.trim();
+    let Some(text) = text.lines().find(|line| !line.trim().is_empty()) else {
+        return VersionProbeOutcome::Rejected;
+    };
+    let text = text.trim();
     let lower = text.to_ascii_lowercase();
     let product = if lower.contains("electron") {
         BrowserProduct::ElectronRenderer
@@ -242,10 +314,13 @@ fn probe_version(path: &Path) -> Option<(BrowserProduct, BrowserProductVersion)>
         .split_whitespace()
         .find(|part| part.chars().next().is_some_and(|ch| ch.is_ascii_digit()))
         .unwrap_or(text);
-    Some((
-        product,
-        BrowserProductVersion::new(version.to_owned()).ok()?,
-    ))
+    let version = match BrowserProductVersion::new(version.to_owned()) {
+        Ok(version) => version,
+        Err(_) => {
+            return VersionProbeOutcome::Rejected;
+        }
+    };
+    VersionProbeOutcome::Found(product, version)
 }
 
 #[cfg(test)]
@@ -254,6 +329,10 @@ mod tests {
     use std::{fs::OpenOptions, io::Write};
 
     fn fixture(root: &Path, name: &str, version: &str) -> PathBuf {
+        script_fixture(root, name, &format!("echo '{version}'"))
+    }
+
+    fn script_fixture(root: &Path, name: &str, script: &str) -> PathBuf {
         let path = root.join(name);
         let mut file = OpenOptions::new()
             .create(true)
@@ -262,7 +341,7 @@ mod tests {
             .open(&path)
             .unwrap();
         writeln!(file, "#!/bin/sh").unwrap();
-        writeln!(file, "echo '{version}'").unwrap();
+        writeln!(file, "{script}").unwrap();
         drop(file);
         #[cfg(unix)]
         {
@@ -292,8 +371,64 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn platform_defaults_use_cold_probe_budget_while_path_stays_short() {
+        let root = tempfile_root();
+        let delayed = script_fixture(&root, "delayed", "sleep 0.08\necho 'Google Chrome 123.4.5'");
+        let policy = VersionProbePolicy {
+            cold_candidate_timeout: Duration::from_secs(1),
+            ordinary_candidate_timeout: Duration::from_millis(20),
+            output_limit: 4096,
+        };
+        let platform = discover_installations_with_policy(
+            DiscoveryInputs {
+                platform_defaults: vec![delayed.clone()],
+                ..DiscoveryInputs::default()
+            },
+            policy,
+        );
+        assert_eq!(platform.len(), 1);
+        let path = discover_installations_with_policy(
+            DiscoveryInputs {
+                path_names: vec!["delayed".into()],
+                path: Some(root.clone()),
+                ..DiscoveryInputs::default()
+            },
+            policy,
+        );
+        assert!(path.is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn failing_canonical_candidate_is_probed_once_at_highest_precedence() {
+        let root = tempfile_root();
+        let counter = root.join("counter");
+        let candidate = script_fixture(
+            &root,
+            "failing",
+            &format!("echo x >> '{}'\nexit 1", counter.display()),
+        );
+        let result = discover_installations_with_policy(
+            DiscoveryInputs {
+                explicit: Some(candidate.clone()),
+                environment_override: Some(candidate),
+                ..DiscoveryInputs::default()
+            },
+            VersionProbePolicy::default(),
+        );
+        assert!(result.is_empty());
+        assert_eq!(fs::read_to_string(counter).unwrap().lines().count(), 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
     fn tempfile_root() -> PathBuf {
-        let root = env::temp_dir().join(format!("krometrail-discovery-{}", std::process::id()));
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let root = env::temp_dir().join(format!(
+            "krometrail-discovery-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         root

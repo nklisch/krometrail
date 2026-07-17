@@ -115,6 +115,38 @@ fn stable_capture_names_and_gap_reasons_are_registry_backed() {
 }
 
 #[test]
+fn every_capture_boundary_stage_is_stable_and_first_failure_wins() {
+    use krometrail_core::CaptureFailureStage;
+
+    for stage in CaptureFailureStage::ALL {
+        let mut current = None;
+        assert!(pipeline::record_first_failure(&mut current, *stage));
+        assert_eq!(current, Some(*stage));
+        assert!(!pipeline::record_first_failure(
+            &mut current,
+            CaptureFailureStage::GapPersistence
+        ));
+        assert_eq!(current, Some(*stage));
+    }
+
+    let source = include_str!("pipeline.rs");
+    for stage in [
+        "FrameEventStream",
+        "VisibilityEventStream",
+        "Acknowledgement",
+        "FrameEnvelope",
+        "FrameDecode",
+        "FramePersistence",
+        "GapPersistence",
+    ] {
+        assert!(
+            source.contains(&format!("CaptureFailureStage::{stage}")),
+            "capture boundary {stage} must retain an explicit failure stage"
+        );
+    }
+}
+
+#[test]
 fn image_header_parser_is_local_and_bounded() {
     let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
     png.extend_from_slice(&13_u32.to_be_bytes());
@@ -497,6 +529,36 @@ impl TestTransport {
         self.frame_for(&self.default_session, ack_token).await;
     }
 
+    async fn frame_with_geometry(
+        &self,
+        ack_token: i64,
+        viewport_width: u32,
+        viewport_height: u32,
+        device_scale_factor: f64,
+        timestamp: Option<f64>,
+    ) {
+        let sender = self
+            .frame_senders
+            .lock()
+            .unwrap()
+            .get(&self.default_session)
+            .cloned()
+            .expect("default frame session is registered");
+        sender
+            .send(NamedEvent {
+                method: "Page.screencastFrame".into(),
+                params: frame_params_with_geometry(
+                    ack_token,
+                    viewport_width,
+                    viewport_height,
+                    device_scale_factor,
+                    timestamp,
+                ),
+            })
+            .await
+            .unwrap();
+    }
+
     async fn frame_for(&self, session: &TransportSessionId, ack_token: i64) {
         let sender = self
             .frame_senders
@@ -606,13 +668,23 @@ impl CdpTransport for TestTransport {
 }
 
 fn frame_params(ack_token: i64) -> serde_json::Value {
+    frame_params_with_geometry(ack_token, 640, 480, 1.0, Some(1.25))
+}
+
+fn frame_params_with_geometry(
+    ack_token: i64,
+    viewport_width: u32,
+    viewport_height: u32,
+    page_scale_factor: f64,
+    timestamp: Option<f64>,
+) -> serde_json::Value {
     serde_json::json!({
         "data": STANDARD.encode(jpeg_bytes()),
         "metadata": {
-            "deviceWidth": 640,
-            "deviceHeight": 480,
-            "pageScaleFactor": 1.0,
-            "timestamp": 1.25
+            "deviceWidth": viewport_width,
+            "deviceHeight": viewport_height,
+            "pageScaleFactor": page_scale_factor,
+            "timestamp": timestamp
         },
         "sessionId": ack_token
     })
@@ -640,6 +712,7 @@ fn target_with(
         connection_generation: 1,
         attachment_generation,
         transport_session: TransportSessionId::new(transport_session).unwrap(),
+        device_scale_factor: krometrail_core::DeviceScaleFactor::new(1.0).unwrap(),
     }
 }
 
@@ -770,6 +843,7 @@ async fn ack_completion_and_histogram_precede_parse_queue_and_sink() {
     let order = order.lock().unwrap().clone();
     assert_eq!(order, vec!["ack", "sink"]);
     let status = coordinator.statuses().pop().unwrap();
+    assert_eq!(status.failure_stage(), None);
     assert_eq!(status.statistics().acknowledged_frames(), 1);
     assert_eq!(status.ack_latency().sample_count(), 1);
     assert_eq!(*transport.ack_tokens.lock().unwrap(), vec![-7]);
@@ -849,6 +923,97 @@ async fn constant_ack_tokens_produce_local_ordinals_without_discontinuity_gaps()
             tokio::time::Instant::now() + std::time::Duration::from_secs(1),
         )
         .await;
+}
+
+#[tokio::test]
+async fn runtime_geometry_change_keeps_one_continuous_stream_and_per_frame_metadata() {
+    let ack_completed = Arc::new(AtomicBool::new(false));
+    let transport =
+        TestTransport::new(Arc::clone(&ack_completed), Arc::new(Mutex::new(Vec::new())));
+    let sink = Arc::new(TestSink::new(
+        ack_completed,
+        Arc::new(Mutex::new(Vec::new())),
+    ));
+    let observer = Arc::new(TestObserver::default());
+    let coordinator = coordinator(
+        CaptureConfig {
+            queue_capacity: NonZeroUsize::new(2).unwrap(),
+            ..CaptureConfig::default()
+        },
+        Arc::new(TestClock::new()),
+        Arc::new(TestIds::new()),
+        Arc::clone(&sink),
+        Arc::clone(&observer),
+    );
+    let capture_target = target();
+    coordinator
+        .start_target(
+            capture_target.clone(),
+            Arc::clone(&transport) as Arc<dyn CdpTransport>,
+        )
+        .await
+        .unwrap();
+
+    transport
+        .frame_with_geometry(11, 1280, 720, 1.0, Some(1.0))
+        .await;
+    transport.wait_for_acks(1).await;
+    assert!(coordinator.update_device_scale_factor(
+        capture_target.target_id,
+        capture_target.attachment_generation,
+        krometrail_core::DeviceScaleFactor::new(3.0).unwrap(),
+    ));
+    // pageScaleFactor remains 1.0: it is page zoom, not the authoritative device pixel ratio.
+    transport.frame_with_geometry(12, 390, 844, 1.0, None).await;
+    transport.wait_for_acks(2).await;
+    sink.release_first_frame.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while sink.frames.lock().unwrap().len() != 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+
+    {
+        let frames = sink.frames.lock().unwrap();
+        assert_eq!(
+            frames
+                .iter()
+                .map(|frame| frame.metadata().capture_ordinal().get())
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert_eq!(
+            frames[0].metadata().viewport(),
+            krometrail_core::PixelDimensions::new(1280, 720).unwrap()
+        );
+        assert_eq!(frames[0].metadata().device_scale_factor().get(), 1.0);
+        assert_eq!(
+            frames[1].metadata().viewport(),
+            krometrail_core::PixelDimensions::new(390, 844).unwrap()
+        );
+        assert_eq!(frames[1].metadata().device_scale_factor().get(), 3.0);
+        assert!(
+            frames[1]
+                .metadata()
+                .warnings()
+                .contains(&krometrail_core::CaptureWarning::MissingSourceTime)
+        );
+    }
+    assert!(observer.gaps.lock().unwrap().is_empty());
+    let status = coordinator.statuses().pop().unwrap();
+    assert_eq!(status.state(), CaptureStreamState::Capturing);
+    assert_eq!(status.statistics().persisted_frames(), 2);
+
+    let outcome = coordinator
+        .stop_target(
+            &capture_target,
+            CaptureStopReason::TargetClosed,
+            tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+        )
+        .await;
+    assert!(outcome.complete);
 }
 
 #[tokio::test]
@@ -1098,6 +1263,10 @@ async fn failed_ack_never_enters_accepted_or_dropped_accounting() {
     .await
     .unwrap();
     let status = coordinator.statuses().pop().unwrap();
+    assert_eq!(
+        status.failure_stage(),
+        Some(krometrail_core::CaptureFailureStage::Acknowledgement)
+    );
     assert_eq!(status.statistics().received_frames(), 1);
     assert_eq!(status.statistics().acknowledged_frames(), 0);
     assert_eq!(status.statistics().accepted_frames(), 0);
@@ -1293,6 +1462,10 @@ fn status_and_gap_serialization_are_privacy_safe() {
     assert!(!source.contains("tracing::debug!"));
     assert!(!source.contains("page title"));
     assert!(!source.contains("browser target key"));
+    assert!(!source.contains("tracing::warn!(?"));
+    assert!(!source.contains("tracing::warn!(error"));
+    assert!(source.contains("failure_stage"));
+    assert!(source.contains("error_code"));
     let status = serde_json::to_string(&CaptureStreamState::Capturing).unwrap();
     assert_eq!(status, "\"capturing\"");
 }
@@ -1497,6 +1670,7 @@ async fn repeated_target_churn_keeps_registry_and_statuses_bounded() {
             connection_generation: 1,
             attachment_generation: generation,
             transport_session,
+            device_scale_factor: krometrail_core::DeviceScaleFactor::new(1.0).unwrap(),
         };
         coordinator
             .start_target(

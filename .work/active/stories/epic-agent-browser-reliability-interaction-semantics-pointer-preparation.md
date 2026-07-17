@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-reliability-interaction-semantics-pointer-preparation
 kind: story
-stage: implementing
+stage: done
 tags: [browser, agent-ux]
 parent: epic-agent-browser-reliability-interaction-semantics
 depends_on: [epic-agent-browser-reliability-interaction-semantics-reference-lifetime]
@@ -32,3 +32,12 @@ portion of GitHub issue #11.
 
 Depends on the document-scoped reference checkpoint. The dependency is a design/identity
 constraint, not a request for separate implementation ownership.
+
+## Implementation evidence
+
+- Element pointer resolution now performs resolve, `DOM.scrollIntoViewIfNeeded`, re-resolve, and
+  post-scroll viewport validation in the common interaction path used by click, hover, drag source,
+  and drag destination.
+- Coordinate locators retain their direct hit-test/no-scroll path.
+- The scripted interaction qualification now supplies both pre- and post-scroll resolution and
+  proves dispatch uses the fresh viewport geometry.

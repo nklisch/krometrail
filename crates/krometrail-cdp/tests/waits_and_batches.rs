@@ -182,6 +182,7 @@ fn script_coordinate_click(transport: &ScriptedCdp) {
         json!({"result":{"value":{"tagName":"BUTTON","x":10,"y":10,"width":20,"height":20}}}),
     );
     transport.push_response("Runtime.evaluate", json!({"result":{"value":true}}));
+    transport.push_response("Runtime.evaluate", json!({"result":{"value":true}}));
     live_observation_script(transport);
 }
 
@@ -214,6 +215,7 @@ async fn sequential_batch_reuses_dispatcher_and_propagates_parent_anchor() {
         "Runtime.evaluate",
         json!({"result":{"value":{"tagName":"BUTTON","x":10,"y":10,"width":20,"height":20}}}),
     );
+    transport.push_response("Runtime.evaluate", json!({"result":{"value":true}}));
     transport.push_response("Runtime.evaluate", json!({"result":{"value":true}}));
     live_observation_script(&transport);
     live_observation_script(&transport);
@@ -249,7 +251,7 @@ async fn sequential_batch_reuses_dispatcher_and_propagates_parent_anchor() {
     let BrowserOperationResult::Batch(result) = result else {
         panic!("batch result")
     };
-    assert_eq!(result.outcome, BatchOutcome::Completed);
+    assert_eq!(result.outcome, BatchOutcome::Completed, "{result:#?}");
     assert_eq!(result.steps.len(), 1);
     assert_eq!(result.steps[0].status, BatchStepStatus::Succeeded);
     let anchor = result.steps[0].interaction.as_ref().expect("child anchor");
@@ -329,7 +331,7 @@ async fn each_batch_step_crosses_the_evidence_fence_before_the_next_dispatch() {
     let BrowserOperationResult::Batch(result) = task.await.unwrap().unwrap() else {
         panic!("batch result")
     };
-    assert_eq!(result.outcome, BatchOutcome::Completed);
+    assert_eq!(result.outcome, BatchOutcome::Completed, "{result:#?}");
     assert!(
         result
             .steps
