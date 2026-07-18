@@ -280,10 +280,16 @@ mod tests {
     fn published_wait_schema_explains_unscoped_exact_text_semantics() {
         let config = McpConfig::default();
         let schema = operation_input_schema(BrowserOperationKind::Wait, &config).unwrap();
-        let encoded = serde_json::to_string(schema.as_ref()).unwrap();
-        assert!(encoded.contains("full document body text"));
-        assert!(encoded.contains("complete text in that scope"));
-        assert!(encoded.contains("use a locator"));
+        let schema = Value::Object(schema.as_ref().clone());
+        let text = find_tagged_variant(&schema, "condition", "text")
+            .expect("wait schema contains the text condition");
+        let fields = &text["properties"]["value"]["properties"];
+        let locator = fields["locator"]["description"].as_str().unwrap();
+        let match_mode = fields["match_mode"]["description"].as_str().unwrap();
+        assert!(locator.contains("full document body text"));
+        assert!(locator.contains("use a locator"));
+        assert!(match_mode.contains("complete text in that scope"));
+        assert!(match_mode.contains("contains"));
     }
 
     #[test]
@@ -338,6 +344,25 @@ mod tests {
                 object.values().for_each(assert_no_references);
             }
             _ => {}
+        }
+    }
+
+    fn find_tagged_variant<'a>(value: &'a Value, tag: &str, expected: &str) -> Option<&'a Value> {
+        if value
+            .pointer(&format!("/properties/{tag}/const"))
+            .and_then(Value::as_str)
+            == Some(expected)
+        {
+            return Some(value);
+        }
+        match value {
+            Value::Array(values) => values
+                .iter()
+                .find_map(|value| find_tagged_variant(value, tag, expected)),
+            Value::Object(object) => object
+                .values()
+                .find_map(|value| find_tagged_variant(value, tag, expected)),
+            _ => None,
         }
     }
 }

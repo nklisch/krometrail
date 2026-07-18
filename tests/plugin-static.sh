@@ -149,6 +149,12 @@ for term in \
   require_text "$SKILL" "$term"
 done
 for term in \
+  'full document-body text' \
+  'use a locator for exact element text' \
+  'match_mode: "contains"'; do
+  require_text "$SKILL" "$term"
+done
+for term in \
   'Before/during/after' \
   'Storyboard' \
   'Difference map' \
