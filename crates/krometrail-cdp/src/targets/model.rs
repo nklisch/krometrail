@@ -132,6 +132,7 @@ pub struct SupervisorTargetState {
     pub viewport_override: Option<ViewportMetrics>,
     pub page_sequence: PageSequence,
     pub opener_target_key: Option<String>,
+    pub opener_target_id: Option<TargetId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -183,10 +184,14 @@ impl SupervisorState {
                         == Some(target.target.target.browser_target_key()),
                 },
                 sequence: target.page_sequence,
-                opener_target_id: target.opener_target_key.as_deref().and_then(|key| {
-                    self.targets_by_key
-                        .get(key)
-                        .map(|opener| opener.target.target.id())
+                opener_target_id: target.opener_target_id.filter(|id| {
+                    self.targets_by_key.values().any(|candidate| {
+                        candidate.target.target.id() == *id
+                            && !matches!(
+                                candidate.target.lifecycle,
+                                TargetLifecycle::Closed | TargetLifecycle::Failed
+                            )
+                    })
                 }),
             })
             .collect::<Vec<_>>();

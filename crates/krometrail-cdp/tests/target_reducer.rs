@@ -81,6 +81,44 @@ fn page_contexts_use_monotonic_sequences_and_resolve_only_known_openers() {
 }
 
 #[test]
+fn popup_relationship_does_not_rebind_when_an_opener_key_is_reused() {
+    let state = reduce(
+        SupervisorState::new(compatibility()),
+        SupervisorInput::InitialTargets(vec![page("opener", "https://old.test")]),
+    )
+    .unwrap()
+    .state;
+    let state = reduce(
+        state,
+        SupervisorInput::TargetCreated(popup("popup", "opener")),
+    )
+    .unwrap()
+    .state;
+    let state = reduce(
+        state,
+        SupervisorInput::TargetDestroyed {
+            target_key: "opener".into(),
+        },
+    )
+    .unwrap()
+    .state;
+    let state = reduce(
+        state,
+        SupervisorInput::TargetCreated(page("opener", "https://new.test")),
+    )
+    .unwrap()
+    .state;
+    let popup = state
+        .page_contexts()
+        .unwrap()
+        .pages
+        .into_iter()
+        .find(|page| page.page.target.target.browser_target_key() == "popup")
+        .unwrap();
+    assert_eq!(popup.opener_target_id, None);
+}
+
+#[test]
 fn subscription_before_enable_contract_is_represented_by_attach_effects() {
     let result = reduce(
         SupervisorState::new(compatibility()),

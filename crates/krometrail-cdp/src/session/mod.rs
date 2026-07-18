@@ -257,10 +257,12 @@ impl BrowserConnector for ProductionBrowserConnector {
         &self,
     ) -> PortFuture<'_, Result<Vec<krometrail_core::ManagedProfileSummary>>> {
         Box::pin(async move {
-            self.launcher
-                .managed_profiles()
-                .await
-                .map_err(|error| launch_error_to_core(&error))
+            self.launcher.managed_profiles().await.map_err(|_| {
+                KrometrailError::from_browser_failure(
+                    ErrorCode::PageObservationFailed,
+                    NonEmptyText::new("managed profile inventory could not be read").unwrap(),
+                )
+            })
         })
     }
 

@@ -286,6 +286,12 @@ fn reconcile_one(
         return Ok(());
     }
     let key = info.target_key.clone();
+    let opener_target_id = info.opener_target_key.as_deref().and_then(|opener_key| {
+        state
+            .targets_by_key
+            .get(opener_key)
+            .map(|opener| opener.target.target.id())
+    });
     if let Some(existing) = state.targets_by_key.get_mut(&key) {
         if matches!(
             existing.target.lifecycle,
@@ -301,6 +307,7 @@ fn reconcile_one(
             let changed = existing.target.target.url() != info.url
                 || existing.target.target.title() != info.title;
             existing.opener_target_key = info.opener_target_key.clone();
+            existing.opener_target_id = opener_target_id;
             if changed {
                 existing.target.target = krometrail_core::PageTarget::new(
                     existing.target.target.id(),
@@ -334,6 +341,7 @@ fn reconcile_one(
         viewport_override: None,
         page_sequence,
         opener_target_key: info.opener_target_key,
+        opener_target_id,
     };
     if creation_event {
         effects.push(target_discovered_event(&target_state));
@@ -646,6 +654,7 @@ fn reconnect(
     for restored in recordable {
         reconcile_restored(state, restored, effects)?;
     }
+    resolve_unresolved_openers(state);
     reconcile_selection(state, effects);
     set_session_state(state, BrowserSessionState::Ready, effects)?;
     Ok(())
@@ -657,6 +666,12 @@ fn reconcile_restored(
     effects: &mut Vec<SupervisorEffect>,
 ) -> Result<()> {
     let key = reconnected.info.target_key.clone();
+    let opener_target_id = reconnected
+        .info
+        .opener_target_key
+        .as_deref()
+        .and_then(|opener_key| state.targets_by_key.get(opener_key))
+        .map(|opener| opener.target.target.id());
     if !state.targets_by_key.contains_key(&key) {
         let id = allocate_target_id(state, &key);
         let page_sequence = krometrail_core::browser::PageSequence::new(state.next_page_sequence)?;
@@ -681,6 +696,7 @@ fn reconcile_restored(
                 viewport_override: None,
                 page_sequence,
                 opener_target_key: reconnected.info.opener_target_key.clone(),
+                opener_target_id,
             },
         );
         if let Some(session) = reconnected.session {
@@ -695,6 +711,7 @@ fn reconcile_restored(
         let changed = target.target.target.url() != reconnected.info.url
             || target.target.target.title() != reconnected.info.title;
         target.opener_target_key = reconnected.info.opener_target_key.clone();
+        target.opener_target_id = opener_target_id;
         if changed {
             target.target.target = krometrail_core::PageTarget::new(
                 target.target.target.id(),
@@ -722,6 +739,23 @@ fn reconcile_restored(
         effects.push(target_changed_event(target));
     }
     Ok(())
+}
+
+fn resolve_unresolved_openers(state: &mut SupervisorState) {
+    let ids = state
+        .targets_by_key
+        .iter()
+        .map(|(key, target)| (key.clone(), target.target.target.id()))
+        .collect::<std::collections::HashMap<_, _>>();
+    for target in state.targets_by_key.values_mut() {
+        if target.opener_target_id.is_none() {
+            target.opener_target_id = target
+                .opener_target_key
+                .as_ref()
+                .and_then(|key| ids.get(key))
+                .copied();
+        }
+    }
 }
 
 fn reconcile_capture_bindings(
