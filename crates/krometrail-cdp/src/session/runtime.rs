@@ -843,19 +843,26 @@ pub(super) async fn refresh_capture_geometry(
         transport_session,
         visibility: target.target.visibility,
     };
-    let geometry = crate::control::viewport::observe_effective_viewport(
-        transport,
-        &bound,
-        target.viewport_override,
-    )
-    .await
-    .and_then(crate::control::viewport::capture_geometry);
-    match geometry {
-        Ok(geometry) => capture
-            .coordinator
-            .commit_geometry_transition(transition, geometry),
-        Err(_) => false,
+    const ATTEMPTS: usize = 5;
+    const RETRY_DELAY: Duration = Duration::from_millis(50);
+    for attempt in 0..ATTEMPTS {
+        let geometry = crate::control::viewport::observe_effective_viewport(
+            transport,
+            &bound,
+            target.viewport_override,
+        )
+        .await
+        .and_then(crate::control::viewport::capture_geometry);
+        if let Ok(geometry) = geometry {
+            return capture
+                .coordinator
+                .commit_geometry_transition(transition, geometry);
+        }
+        if attempt + 1 < ATTEMPTS {
+            tokio::time::sleep(RETRY_DELAY).await;
+        }
     }
+    false
 }
 
 async fn watch_process(

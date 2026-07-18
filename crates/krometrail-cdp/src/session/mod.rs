@@ -1910,6 +1910,26 @@ mod tests {
             )
         );
 
+        transport.set_effective(1024.0, 768.0, 3.0);
+        transport.fail_sequence(["Page.getLayoutMetrics"]);
+        let transient = coordinator
+            .begin_geometry_transition(target_id, attachment_generation)
+            .unwrap();
+        assert!(
+            refresh_capture_geometry(&state, transport.as_ref(), &capture, transient).await,
+            "a transient navigation-time geometry read must be retried"
+        );
+        assert_eq!(
+            coordinator
+                .geometry_for_test(target_id, attachment_generation)
+                .unwrap()
+                .0,
+            crate::capture::CaptureGeometry {
+                viewport: krometrail_core::PixelDimensions::new(1024, 768).unwrap(),
+                device_scale_factor: krometrail_core::DeviceScaleFactor::new(3.0).unwrap(),
+            }
+        );
+
         transport.fail_observation.store(true, Ordering::Release);
         let failed = coordinator
             .begin_geometry_transition(target_id, attachment_generation)
@@ -1928,7 +1948,7 @@ mod tests {
             state.targets_by_key["geometry-target"].target.lifecycle,
             TargetLifecycle::Attached
         );
-        assert_eq!(observer.gaps.lock().unwrap().len(), 2);
+        assert_eq!(observer.gaps.lock().unwrap().len(), 3);
     }
 
     #[tokio::test]
