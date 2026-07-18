@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-video-artifacts-agent-surface-guidance-and-qualification
 kind: story
-stage: implementing
+stage: done
 tags: [agent-ux, infra, testing]
 parent: epic-temporal-video-artifacts-agent-surface
 depends_on: [epic-temporal-video-artifacts-agent-surface-runtime-availability-and-composition, epic-temporal-video-artifacts-agent-surface-mcp-tool-and-resources]
@@ -33,3 +33,19 @@ Update the shipped skill, setup/evidence references, plugin/catalog assertions, 
 
 - Worker capability: highest available, selected by autopilot because shipped agent guidance and evaluation claims must match stable runtime discovery exactly.
 - Review weight: `standard`; this child closes on green evidence and the integrated feature receives one independent review pass.
+
+## Implementation notes
+
+- Added still-first conditional-video guidance, local-resource and presentation-provenance rules,
+  absent-tool recovery, restart semantics, and the explicit separation between encoder qualification
+  and host/provider/model video support.
+- Added optional typed F/G evaluation evidence while preserving A-E as the required canonical set.
+- Added static distribution checks proving the plugin ships no FFmpeg asset or acquisition path, plus
+  deterministic no-FFmpeg MCP coverage.
+- Added an ignored opt-in live test that fails when its explicitly selected FFmpeg cannot qualify and,
+  with the selected user installation, passed both policies through the real retained store, generation
+  service, MCP tool, MP4 resource, and manifest resource.
+- Validation passed: skill-creator `quick_validate.py` via isolated `uv`/PyYAML, plugin static checks,
+  focused F/G and no-FFmpeg tests, live FFmpeg qualification, full workspace fmt/check/tests/Clippy,
+  and the documentation build. The full gate also exposed and fixed a pre-existing environment-sensitive
+  tool-count smoke by pinning its intended no-FFmpeg startup state.

@@ -17,6 +17,7 @@ mod prompts;
 mod result;
 mod scoring;
 mod thresholds;
+mod video;
 mod vocabulary;
 
 pub use canonical::{canonical_json, sha256_prefixed};
@@ -81,6 +82,11 @@ pub use thresholds::{
     ConditionAggregate, DimensionAggregate, ExactRate, FamilyThresholdCheck,
     THRESHOLD_PROFILE_VERSION, ThresholdAssessment, ThresholdCheck, ThresholdProfile, TrialPair,
     aggregate_condition, assess_thresholds,
+};
+pub use video::{
+    OptionalVideoCondition, VideoConditionEvidence, VideoConditionId, VideoEncoderEvidence,
+    VideoHostModelIdentity, VideoPresentationPolicy, VideoResourceEvidence,
+    optional_video_conditions,
 };
 pub use vocabulary::{ScoringDimension, ScoringDimensionId, ScoringVocabulary};
 

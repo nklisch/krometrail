@@ -91,6 +91,22 @@ Choose the least detail that answers the question, then drill down only where un
 Every level should preserve references to its underlying evidence. Missing, evicted, or corrupted
 source data limits reproducibility and must remain visible in the conclusion.
 
+## Optional temporal video
+
+Temporal video is a retained presentation of the same bounded source interval, not a new capture
+authority. Prefer storyboards, difference maps, and targeted source reads first. When
+`generate_temporal_video` is advertised and motion or state duration materially benefits from a clip:
+
+- `real_time` preserves bounded relative source timing and adds only the declared terminal hold;
+- `model_optimized` may hold meaningful selected states and gap slates longer for legibility;
+- one clip is returned per compatible visual epoch; known gaps remain explicit slates/provenance;
+- the compact response carries local MP4 and manifest resource links, while the manifest owns exact
+  source IDs, selection identity, presentation segments, encoder/profile identity, gaps, and hash.
+
+Encoder qualification establishes only that this server can produce its fixed local MP4/H.264
+contract. It does not establish that a particular host, provider, or model accepts or interprets
+video. Any model-effectiveness claim must name and separately qualify that exact host/provider/model.
+
 ## Ranges, gaps, and epochs
 
 Temporal requests can resolve from an interaction, recent interaction, marker/navigation anchor,
@@ -117,6 +133,7 @@ Before making a strong visual claim, check the response or manifest for the rele
 - capture cadence configuration and known gaps;
 - crop, region, mask, dimensions, and normalization;
 - transformation parameters and thresholds;
+- video presentation policy, holds, timing basis, encoder/profile identity, and output hash;
 - evidence class, algorithm name/version, and output hash.
 
 State the limitation when any field that matters to the claim is unavailable.

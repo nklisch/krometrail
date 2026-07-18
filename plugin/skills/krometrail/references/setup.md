@@ -52,6 +52,11 @@ Confirm all relevant layers:
 - `temporal-artifact`, `temporal-artifact-manifest`, and `temporal-source-frame` resource templates
   are available.
 
+Temporal video is conditional. If startup qualifies a compatible user-installed FFmpeg with the
+fixed MP4/H.264 policy, the same discovery surface also advertises `generate_temporal_video`,
+`temporal-video`, and `temporal-video-manifest`. If they are absent, the existing browser and still
+evidence surface remains healthy; do not call or invent the video tool.
+
 The first activation can take longer while the release is downloaded and verified. Installer progress
 and failures appear on stderr so the MCP protocol on stdout remains valid. Do not run the launcher or
 `krometrail mcp` in an ordinary terminal as a health command; it is a stdio protocol server and waits
@@ -96,6 +101,11 @@ files from a native plugin cache into manual configuration.
   downloader.
 - **Browser not found:** install a supported local Chrome/Chromium build or pass an explicit executable
   through `start_browser` as advertised by its tool schema.
+- **Temporal-video tool absent:** FFmpeg was not qualified when this MCP server started. If the user
+  wants video, make a compatible user-installed FFmpeg discoverable on `PATH` or set
+  `KROMETRAIL_FFMPEG_PATH` to its exact executable, then restart the MCP server. Krometrail and its
+  plugin do not bundle, download, update, or manage FFmpeg. A later filesystem or `PATH` change does
+  not alter the immutable surface of an already-running server.
 - **Attach fails:** use an explicitly configured local Chromium debugging endpoint. Do not expose or
   assume a remote endpoint.
 - **Tools present but actions require approval:** this plugin intentionally does not auto-allow every

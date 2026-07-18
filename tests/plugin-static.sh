@@ -150,6 +150,13 @@ for term in \
   require_text "$SKILL" "$term"
 done
 for term in \
+  'use `generate_temporal_video` only when it is advertised' \
+  '`real_time`' \
+  '`model_optimized`' \
+  'do not upload either'; do
+  require_text "$SKILL" "$term"
+done
+for term in \
   'full document-body text' \
   'use a locator for exact element text' \
   'match_mode: "contains"'; do
@@ -170,8 +177,24 @@ require_text "$SETUP" 'Plugin installation, managed-binary activation, MCP conne
 require_text "$SETUP" 'does not depend on `krometrail` being on `PATH`'
 require_text "$SETUP" 'never polls `latest`'
 require_text "$SETUP" 'temporal-artifact-manifest'
+require_text "$SETUP" '`generate_temporal_video`'
+require_text "$SETUP" '`KROMETRAIL_FFMPEG_PATH`'
+require_text "$SETUP" 'then restart the MCP server'
+require_text "$SETUP" 'do not bundle, download, update, or manage FFmpeg'
 require_text "$SETUP" 'claude plugin install krometrail@krometrail'
 require_text "$SETUP" 'codex plugin add krometrail@krometrail'
+for term in \
+  'Prefer storyboards, difference maps, and targeted source reads first' \
+  'presentation segments' \
+  'does not establish that a particular host, provider, or model'; do
+  require_text "$EVIDENCE" "$term"
+done
+if find "$PLUGIN" -type f -iname '*ffmpeg*' | grep -q .; then
+  fail "plugin must not ship an FFmpeg-named asset"
+fi
+if grep -Eiq 'ffmpeg|libx264' "$LAUNCHER" "$MANAGED_INSTALLER"; then
+  fail "plugin bootstrap must not acquire or manage FFmpeg"
+fi
 if grep -Fq -- '`retrieve_artifact`' "$SKILL" || grep -Fq -- '`retrieve_source_frame`' "$SKILL"; then
   fail "resource-only evidence reads must not be presented as tools"
 fi

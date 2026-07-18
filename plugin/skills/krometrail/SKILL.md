@@ -103,10 +103,16 @@ as steps.
 
 - Compact interval: `temporal_debug_bundle`
 - Artifacts: `generate_artifacts`, `generate_region_filmstrip`
+- Optional video: use `generate_temporal_video` only when it is advertised and a still artifact or
+  source-frame read cannot answer the interval question economically. `real_time` preserves bounded
+  relative timing; `model_optimized` may hold meaningful states and gap slates longer. Treat those
+  presentation holds as declared provenance, not additional observed time.
 - Source detail: `list_source_frames`, `fetch_source_frames`
 - Full reads: returned `krometrail://evidence/...` resource links. For a compact bundle artifact,
   read its `manifest_uri` when the claim needs the full ordered source IDs, parameters, gaps, or
-  normalization provenance; read the adjacent artifact URI when the rendered image is needed.
+  normalization provenance; read the adjacent artifact URI when the rendered image is needed. Video
+  results likewise keep MP4 bytes and the complete presentation manifest behind their returned local
+  resource links; do not upload either unless the user explicitly authorizes a separate workflow.
 - Browser context: `query_browser_events`
 - Retention: `pin_resolved_range`, `query_pin_state`, `unpin_resolved_range`
 
