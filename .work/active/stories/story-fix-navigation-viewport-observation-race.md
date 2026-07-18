@@ -1,7 +1,7 @@
 ---
 id: story-fix-navigation-viewport-observation-race
 kind: story
-stage: review
+stage: done
 tags: [bug, browser, visual, agent-ux]
 parent: null
 depends_on: []
@@ -48,3 +48,10 @@ restore failure inside unavailable observation rather than changing the committe
   complete metrics/touch/page-scale apply sequence followed by independent metric reads.
 - The original public-site reproduction will be repeated against the refreshed plugin after release.
 - Full workspace verification is deferred to the integrated patch pass.
+
+## Review
+
+Bounded inline review approved. The synchronous replay is limited to an already acknowledged
+override, verifies all externally mutable facets before evidence, and preserves the action/observation
+outcome distinction on failure. The later lifecycle replay remains safely idempotent. No independent
+reviewer ran.
