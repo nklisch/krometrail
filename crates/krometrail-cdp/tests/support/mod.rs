@@ -44,6 +44,17 @@ impl InteractionEvidenceSink for RecordingEvidenceFake {
     }
 }
 
+impl RecordingEvidenceFake {
+    pub fn records(&self) -> Vec<InteractionRecord> {
+        self.entries
+            .lock()
+            .expect("evidence fake lock")
+            .iter()
+            .filter_map(|(_, record, _, _)| record.clone())
+            .collect()
+    }
+}
+
 pub fn evidence_sink() -> Arc<dyn InteractionEvidenceSink> {
     Arc::new(RecordingEvidenceFake::default())
 }

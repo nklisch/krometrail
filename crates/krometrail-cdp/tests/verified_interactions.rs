@@ -11,14 +11,15 @@ use krometrail_cdp::{
 use krometrail_core::{
     BrowserActionRequest, BrowserConnectRequest, BrowserConnector, BrowserOperationRequest,
     BrowserOperationResult, ClickRequest, CoordinateSpace, CreatePageRequest, CssPoint,
-    DialogAction, DragRequest, ElementLocator, FillMode, FillRequest, HandleDialogRequest,
-    HoverRequest, ImageFormat, InteractionLocator, InteractionOutcome, KeyChord, Modifiers,
-    MouseButton, NavigatePageRequest, ObservationPart, PageSelection, PressKeysRequest,
-    QueryPageRequest, QueryPageResult, ReadOnlyEvaluationRequest, ScreenshotRequest,
-    ScreenshotTarget, ScrollDelta, ScrollRequest, SelectOptionRequest, SelectPageRequest,
-    SelectValue, SemanticQuery, SemanticQueryOutcome, SemanticTextMatch, SemanticTextMatchMode,
-    SetViewportRequest, SnapshotPageRequest, UploadFilesRequest, ValidatedFilePath,
-    ViewportGuidanceCode, ViewportIntent, ViewportOverride, ViewportPreset,
+    DialogAction, DragRequest, ElementLocator, ErrorCode, FillMode, FillRequest,
+    HandleDialogRequest, HoverRequest, ImageFormat, InteractionLocator, InteractionOutcome,
+    KeyChord, Modifiers, MouseButton, NavigatePageRequest, ObservationPart, PageSelection,
+    PressKeysRequest, QueryPageRequest, QueryPageResult, ReadClipboardRequest,
+    ReadOnlyEvaluationRequest, ScreenshotRequest, ScreenshotTarget, ScrollDelta, ScrollRequest,
+    SelectOptionRequest, SelectPageRequest, SelectValue, SemanticQuery, SemanticQueryOutcome,
+    SemanticTextMatch, SemanticTextMatchMode, SetViewportRequest, SnapshotPageRequest,
+    UploadFilesRequest, ValidatedFilePath, ViewportGuidanceCode, ViewportIntent, ViewportOverride,
+    ViewportPreset, WriteClipboardRequest,
 };
 use serde_json::{Value, json};
 use support::scripted_cdp::ScriptedCdp;
@@ -582,6 +583,125 @@ async fn opt_in_real_chrome_synchronizes_dialog_open_and_close() {
         )
         .await,
         json!("accepted")
+    );
+    session.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn opt_in_real_chrome_qualifies_explicit_clipboard_without_sentinel_leaks() {
+    if !support::chrome::real_browser_tests_enabled() {
+        eprintln!(
+            "skipping real Chrome clipboard qualification; set KROMETRAIL_REAL_CHROME_TESTS=1"
+        );
+        return;
+    }
+    let _lock = support::chrome::real_browser_lock().await;
+    let root = support::chrome::temporary_profile_root("verified-clipboard");
+    let evidence = Arc::new(support::RecordingEvidenceFake::default());
+    let connector = ProductionBrowserConnector::new(
+        Arc::new(krometrail_cdp::SystemChromeLauncher::new(
+            krometrail_cdp::LauncherConfig {
+                profile_root: root.path().to_path_buf(),
+                startup_timeout: std::time::Duration::from_secs(45),
+                shutdown_timeout: std::time::Duration::from_secs(3),
+            },
+        )),
+        Arc::new(
+            krometrail_cdp::transport::CdpkitTransportFactory::new()
+                .with_command_timeout(std::time::Duration::from_secs(15)),
+        ),
+    )
+    .with_interaction_evidence(evidence.clone());
+    let session = connector
+        .connect(BrowserConnectRequest::Launch(
+            krometrail_core::LaunchBrowser {
+                executable: None,
+                profile: krometrail_core::ManagedProfile::Temporary,
+                initial_url: Some(support::chrome::verified_interactions_fixture_url()),
+                every_nth_frame: krometrail_core::EveryNthFrame::default(),
+                focus: krometrail_core::BrowserFocusPolicy::Foreground,
+            },
+        ))
+        .await
+        .expect("real clipboard fixture");
+    let status = session.status().await.unwrap();
+    let target = status.pages[0].target.target.id();
+    await_fixture_ready(&session, target).await;
+    let mut events = session.subscribe().await.unwrap();
+    let sentinel = "krometrail-clipboard-sentinel-7d31";
+    let write = session
+        .execute(
+            BrowserOperationRequest::WriteClipboard(WriteClipboardRequest {
+                target: PageSelection::Target(target),
+                text: sentinel.to_owned(),
+            }),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await;
+
+    let mut non_explicit_artifacts = vec![serde_json::to_string(&status).unwrap()];
+    match write {
+        Ok(result) => {
+            let BrowserOperationResult::WriteClipboard(result) = result else {
+                panic!("clipboard write result")
+            };
+            non_explicit_artifacts.push(format!("{result:?}"));
+            let read = session
+                .execute(
+                    BrowserOperationRequest::ReadClipboard(ReadClipboardRequest {
+                        target: PageSelection::Target(target),
+                    }),
+                    krometrail_core::BrowserOperationContext::default(),
+                )
+                .await;
+            match read {
+                Ok(BrowserOperationResult::ReadClipboard(value)) => {
+                    assert_eq!(value.text, sentinel);
+                    assert_eq!(value.utf8_bytes, sentinel.len() as u64);
+                }
+                Err(error)
+                    if matches!(
+                        error.code,
+                        ErrorCode::Unsupported | ErrorCode::InteractionFailed
+                    ) =>
+                {
+                    non_explicit_artifacts.push(serde_json::to_string(&error).unwrap());
+                }
+                Ok(_) => panic!("clipboard read result"),
+                Err(error) => panic!("unexpected clipboard read failure: {error:?}"),
+            }
+        }
+        Err(error)
+            if matches!(
+                error.code,
+                ErrorCode::Unsupported | ErrorCode::InteractionFailed
+            ) =>
+        {
+            assert!(error.recovery.is_some());
+            non_explicit_artifacts.push(serde_json::to_string(&error).unwrap());
+        }
+        Err(error) => panic!("unexpected clipboard write failure: {error:?}"),
+    }
+
+    for record in evidence.records() {
+        non_explicit_artifacts.push(serde_json::to_string(&record).unwrap());
+    }
+    for _ in 0..16 {
+        let Ok(event) =
+            tokio::time::timeout(std::time::Duration::from_millis(5), events.next()).await
+        else {
+            break;
+        };
+        match event.unwrap() {
+            Some(event) => non_explicit_artifacts.push(serde_json::to_string(&event).unwrap()),
+            None => break,
+        }
+    }
+    assert!(
+        non_explicit_artifacts
+            .iter()
+            .all(|artifact| !artifact.contains(sentinel)),
+        "clipboard plaintext escaped its explicit request/read boundary"
     );
     session.stop().await.unwrap();
 }
