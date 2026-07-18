@@ -935,7 +935,17 @@ async fn frame_reader(
             geometry,
         ) {
             Ok(raw) => raw,
-            Err(_) => {
+            Err(rejection_reason) => {
+                tracing::warn!(
+                    event = "capture.frame.rejected",
+                    failure_stage = CaptureFailureStage::FrameEnvelope.as_str(),
+                    error_code = ErrorCode::CaptureFailed.as_str(),
+                    rejection_reason,
+                    session_id = %runtime.target.session_id,
+                    target_id = %runtime.target.target_id,
+                    attachment_generation = runtime.target.attachment_generation,
+                    "capture.frame.rejected"
+                );
                 runtime.dropped(CaptureGapReason::FrameRejected, session_time);
                 runtime.fail(CaptureFailureStage::FrameEnvelope);
                 break;
@@ -1578,17 +1588,20 @@ impl RawFrame {
         format: ImageFormat,
         max_payload_bytes: usize,
         geometry: CaptureGeometry,
-    ) -> Result<Self, ()> {
-        let object = event.params.as_object().ok_or(())?;
-        let data_value = object.get("data").and_then(Value::as_str).ok_or(())?;
+    ) -> Result<Self, &'static str> {
+        let object = event.params.as_object().ok_or("params_not_object")?;
+        let data_value = object
+            .get("data")
+            .and_then(Value::as_str)
+            .ok_or("data_missing_or_not_string")?;
         if data_value.len() > max_payload_bytes {
-            return Err(());
+            return Err("payload_exceeds_limit");
         }
         let data = data_value.to_owned();
         let metadata = object
             .get("metadata")
             .and_then(Value::as_object)
-            .ok_or(())?;
+            .ok_or("metadata_missing_or_not_object")?;
         let mut warnings = Vec::new();
         let source_time = match metadata.get("timestamp").and_then(Value::as_f64) {
             Some(value) if value.is_finite() && value >= 0.0 => {

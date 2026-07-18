@@ -1684,6 +1684,9 @@ mod tests {
         width: Mutex<f64>,
         height: Mutex<f64>,
         scale: Mutex<f64>,
+        touch_points: Mutex<u64>,
+        calls: Mutex<Vec<String>>,
+        apply_updates_effective: AtomicBool,
         fail_observation: AtomicBool,
         fail_methods: Mutex<VecDeque<String>>,
     }
@@ -1694,6 +1697,9 @@ mod tests {
                 width: Mutex::new(width),
                 height: Mutex::new(height),
                 scale: Mutex::new(scale),
+                touch_points: Mutex::new(0),
+                calls: Mutex::new(Vec::new()),
+                apply_updates_effective: AtomicBool::new(false),
                 fail_observation: AtomicBool::new(false),
                 fail_methods: Mutex::new(VecDeque::new()),
             }
@@ -1708,6 +1714,20 @@ mod tests {
         fn fail_sequence(&self, methods: impl IntoIterator<Item = &'static str>) {
             *self.fail_methods.lock().unwrap() = methods.into_iter().map(str::to_owned).collect();
         }
+
+        fn calls(&self, method: &str) -> usize {
+            self.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|candidate| candidate.as_str() == method)
+                .count()
+        }
+
+        fn update_effective_on_apply(&self, enabled: bool) {
+            self.apply_updates_effective
+                .store(enabled, Ordering::Release);
+        }
     }
 
     impl CdpTransport for GeometryTestTransport {
@@ -1715,8 +1735,9 @@ mod tests {
             &self,
             _scope: &CommandScope,
             method: &str,
-            _params: Value,
+            params: Value,
         ) -> TransportFuture<'_, std::result::Result<Value, TransportError>> {
+            self.calls.lock().unwrap().push(method.to_owned());
             let should_fail = self
                 .fail_methods
                 .lock()
@@ -1732,6 +1753,18 @@ mod tests {
             {
                 return Box::pin(std::future::ready(Err(TransportError::CommandFailed)));
             }
+            if self.apply_updates_effective.load(Ordering::Acquire)
+                && method == "Emulation.setDeviceMetricsOverride"
+            {
+                *self.width.lock().unwrap() = params["width"].as_f64().unwrap();
+                *self.height.lock().unwrap() = params["height"].as_f64().unwrap();
+                *self.scale.lock().unwrap() = params["deviceScaleFactor"].as_f64().unwrap();
+            } else if self.apply_updates_effective.load(Ordering::Acquire)
+                && method == "Emulation.setTouchEmulationEnabled"
+            {
+                *self.touch_points.lock().unwrap() =
+                    u64::from(params["enabled"].as_bool().unwrap_or(false));
+            }
             let response = match method {
                 "Page.getLayoutMetrics" => serde_json::json!({
                     "result": {"cssVisualViewport": {
@@ -1744,7 +1777,7 @@ mod tests {
                         "width": *self.width.lock().unwrap(),
                         "height": *self.height.lock().unwrap(),
                         "scale": *self.scale.lock().unwrap(),
-                        "touchPoints": 0
+                        "touchPoints": *self.touch_points.lock().unwrap()
                     }}}
                 }),
                 _ => Value::Object(Default::default()),
@@ -1882,7 +1915,7 @@ mod tests {
     {
         let fixture = geometry_session_fixture().await;
         let GeometrySessionFixture {
-            state,
+            mut state,
             target_id,
             attachment_generation,
             observer,
@@ -1930,6 +1963,42 @@ mod tests {
             }
         );
 
+        let mobile = krometrail_core::ViewportMetrics::new(360, 640, 1.0, true, true).unwrap();
+        state
+            .targets_by_key
+            .get_mut("geometry-target")
+            .unwrap()
+            .viewport_override = Some(mobile);
+        transport.update_effective_on_apply(true);
+        transport.set_effective(980.0, 1742.0, 1.0);
+        let replayed = coordinator
+            .begin_geometry_transition(target_id, attachment_generation)
+            .unwrap();
+        assert!(
+            refresh_capture_geometry(&state, transport.as_ref(), &capture, replayed).await,
+            "navigation must restore a declared mobile override before capture geometry commits"
+        );
+        assert_eq!(transport.calls("Emulation.setDeviceMetricsOverride"), 1);
+        assert_eq!(transport.calls("Emulation.setTouchEmulationEnabled"), 1);
+        assert_eq!(transport.calls("Emulation.setPageScaleFactor"), 1);
+        assert_eq!(
+            coordinator
+                .geometry_for_test(target_id, attachment_generation)
+                .unwrap()
+                .0,
+            crate::capture::CaptureGeometry {
+                viewport: krometrail_core::PixelDimensions::new(360, 640).unwrap(),
+                device_scale_factor: krometrail_core::DeviceScaleFactor::new(1.0).unwrap(),
+            }
+        );
+
+        state
+            .targets_by_key
+            .get_mut("geometry-target")
+            .unwrap()
+            .viewport_override = None;
+        transport.update_effective_on_apply(false);
+
         transport.fail_observation.store(true, Ordering::Release);
         let failed = coordinator
             .begin_geometry_transition(target_id, attachment_generation)
@@ -1948,7 +2017,7 @@ mod tests {
             state.targets_by_key["geometry-target"].target.lifecycle,
             TargetLifecycle::Attached
         );
-        assert_eq!(observer.gaps.lock().unwrap().len(), 3);
+        assert_eq!(observer.gaps.lock().unwrap().len(), 4);
     }
 
     #[tokio::test]

@@ -843,24 +843,54 @@ pub(super) async fn refresh_capture_geometry(
         transport_session,
         visibility: target.target.visibility,
     };
+    let declared_override = target.viewport_override;
     const ATTEMPTS: usize = 5;
     const RETRY_DELAY: Duration = Duration::from_millis(50);
+    let mut last_error = None;
+    let mut override_replayed = false;
     for attempt in 0..ATTEMPTS {
         let geometry = crate::control::viewport::observe_effective_viewport(
             transport,
             &bound,
-            target.viewport_override,
+            declared_override,
         )
         .await
         .and_then(crate::control::viewport::capture_geometry);
-        if let Ok(geometry) = geometry {
-            return capture
-                .coordinator
-                .commit_geometry_transition(transition, geometry);
+        match geometry {
+            Ok(geometry) => {
+                return capture
+                    .coordinator
+                    .commit_geometry_transition(transition, geometry);
+            }
+            Err(error)
+                if declared_override.is_some()
+                    && error.code == krometrail_core::ErrorCode::TargetFailed
+                    && !override_replayed =>
+            {
+                override_replayed = true;
+                last_error =
+                    crate::control::viewport::apply_viewport(transport, &bound, declared_override)
+                        .await
+                        .err()
+                        .or(Some(error));
+            }
+            Err(error) => last_error = Some(error),
         }
         if attempt + 1 < ATTEMPTS {
             tokio::time::sleep(RETRY_DELAY).await;
         }
+    }
+    if let Some(error) = last_error {
+        tracing::warn!(
+            event = "capture.geometry_refresh.failed",
+            failure_stage = "frame_envelope",
+            error_code = error.code.as_str(),
+            error_message = %error.message,
+            attempts = ATTEMPTS,
+            target_id = %transition.target_id(),
+            attachment_generation = transition.attachment_generation(),
+            "capture.geometry_refresh.failed"
+        );
     }
     false
 }
