@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-video-artifacts-retained-generation
 kind: feature
-stage: implementing
+stage: review
 tags: [visual, storage, security]
 parent: epic-temporal-video-artifacts
 depends_on: [epic-temporal-video-artifacts-clip-contracts]
@@ -205,10 +205,10 @@ pub trait ArtifactStore: Send + Sync {
 
 **Acceptance criteria**:
 
-- [ ] Existing image handle/publication/read JSON and round-trip tests remain byte-identical.
-- [ ] Video request, selector identity, handle, publication, stored value, and read bytes reject unknown fields, scope/source/order/hash/media/profile/limit contradictions.
-- [ ] Real-time manifests require no selector and no meaningful IDs; model-optimized manifests bind one privacy-safe selector identity and exact selected IDs.
-- [ ] The same `ArtifactStore` trait is the only retained artifact authority; no video storage/index/path port appears.
+- [x] Existing image handle/publication/read JSON and round-trip tests remain byte-identical.
+- [x] Video request, selector identity, handle, publication, stored value, and read bytes reject unknown fields, scope/source/order/hash/media/profile/limit contradictions.
+- [x] Real-time manifests require no selector and no meaningful IDs; model-optimized manifests bind one privacy-safe selector identity and exact selected IDs.
+- [x] The same `ArtifactStore` trait is the only retained artifact authority; no video storage/index/path port appears.
 
 ### Unit 2: Schema-v6 and one variant-aware artifact engine
 
@@ -264,11 +264,11 @@ impl ArtifactFiles {
 
 **Acceptance criteria**:
 
-- [ ] A v5 database with valid retained PNG rows migrates to v6 with identical image manifest JSON, hashes, cache identity, source links, file name, and readable bytes.
-- [ ] Image and video publications use one cache lock registry, usage class, artifact table, source-link table, directory, recovery pass, eviction order, and deletion journal.
-- [ ] Startup finalizes a durable staged MP4, invalidates corrupt/mismatched MP4 metadata or bytes, and removes orphan `.mp4`/`.tmp` files idempotently.
-- [ ] Source eviction, budget eviction, and session deletion remove linked MP4s, rows, source links, files, and usage exactly as they do PNGs; pins protect source segments rather than derived video.
-- [ ] Concurrent equal video cache keys have one ready winner, and cancellation at every publication phase leaves no ready row or accounted partial file.
+- [x] A v5 database with valid retained PNG rows migrates to v6 with identical image manifest JSON, hashes, cache identity, source links, file name, and readable bytes.
+- [x] Image and video publications use one cache lock registry, usage class, artifact table, source-link table, directory, recovery pass, eviction order, and deletion journal.
+- [x] Startup finalizes a durable staged MP4, invalidates corrupt/mismatched MP4 metadata or bytes, and removes orphan `.mp4`/`.tmp` files idempotently.
+- [x] Source eviction, budget eviction, and session deletion remove linked MP4s, rows, source links, files, and usage exactly as they do PNGs; pins protect source segments rather than derived video.
+- [x] Concurrent equal video cache keys have one ready winner, and cancellation at every publication phase leaves no ready row or accounted partial file.
 
 ### Unit 3: Deterministic video cache identity
 
@@ -297,9 +297,9 @@ pub(crate) fn video_cache_metadata(
 
 **Acceptance criteria**:
 
-- [ ] Existing still cache golden/sensitivity tests are unchanged.
-- [ ] Video keys are stable for identical input and change for source order/bytes/metadata, gaps, policy, timing, selection, geometry, output limit, adapter, FFmpeg build/encoder, or argument-policy identity.
-- [ ] The cache metadata generator fields agree with video publication validation and contain no path-bearing or private process data.
+- [x] Existing still cache golden/sensitivity tests are unchanged.
+- [x] Video keys are stable for identical input and change for source order/bytes/metadata, gaps, policy, timing, selection, geometry, output limit, adapter, FFmpeg build/encoder, or argument-policy identity.
+- [x] The cache metadata generator fields agree with video publication validation and contain no path-bearing or private process data.
 
 ### Unit 4: Bounded frame adaptation, meaningful selection, and gap slates
 
@@ -348,10 +348,10 @@ pub(crate) fn render_gap_slate(
 
 **Acceptance criteria**:
 
-- [ ] Multi-epoch source input produces one plan per exact geometry/device-scale epoch and never stretches frames across epochs.
-- [ ] Real-time adaptation performs no visual decode; model optimization deterministically selects only visible retained source frames and records the selection identity/IDs.
-- [ ] Odd/even, portrait/landscape, exact-boundary, no-upscale, and impossible-fit geometry cases produce the expected canvas or stable limit error.
-- [ ] Gap input is a deterministic valid PNG at the exact canvas size with a visible non-source label, and every encoder frame exactly matches its plan segment index/source/dimensions.
+- [x] Multi-epoch source input produces one plan per exact geometry/device-scale epoch and never stretches frames across epochs.
+- [x] Real-time adaptation performs no visual decode; model optimization deterministically selects only visible retained source frames and records the selection identity/IDs.
+- [x] Odd/even, portrait/landscape, exact-boundary, no-upscale, and impossible-fit geometry cases produce the expected canvas or stable limit error.
+- [x] Gap input is a deterministic valid PNG at the exact canvas size with a visible non-source label, and every encoder frame exactly matches its plan segment index/source/dimensions.
 
 ### Unit 5: Cancellation-safe retained generation service
 
@@ -409,12 +409,12 @@ impl TemporalVideoGeneration for TemporalVideoGenerationService {
 
 **Acceptance criteria**:
 
-- [ ] A deterministic fake encoder receives the exact plan/frame/profile request and produces a retained video result whose handle, manifest, bytes, cache, and scoped read agree.
-- [ ] A repeat request hits cache without a second encode; concurrent equal requests encode once; changing encoder identity, policy, source byte, gap, selector, output limit, or epoch forces the expected miss.
-- [ ] Cancellation before load, while waiting for permits/lock, during selection, during encode, and before publication returns the stable cancellation code and leaves no new ready artifact.
-- [ ] Deadline, fake encoder failure, mismatched returned identity/profile/hash, and store failure return no success and publish no partial bytes.
-- [ ] Session deletion while source work or encode is paused completes, the late task cannot republish, and no video row/file/usage survives; active frame/event ingestion does not wait for encoding.
-- [ ] Multi-epoch generation returns all clips in epoch order only after every epoch succeeds; a later failure never returns a partial success and any earlier valid cached output remains governed by normal retention.
+- [x] A deterministic fake encoder receives the exact plan/frame/profile request and produces a retained video result whose handle, manifest, bytes, cache, and scoped read agree.
+- [x] A repeat request hits cache without a second encode; concurrent equal requests encode once; changing encoder identity, policy, source byte, gap, selector, output limit, or epoch forces the expected miss.
+- [x] Cancellation before load, while waiting for permits/lock, during selection, during encode, and before publication returns the stable cancellation code and leaves no new ready artifact.
+- [x] Deadline, fake encoder failure, mismatched returned identity/profile/hash, and store failure return no success and publish no partial bytes.
+- [x] Session deletion while source work or encode is paused completes, the late task cannot republish, and no video row/file/usage survives; active frame/event ingestion does not wait for encoding.
+- [x] Multi-epoch generation returns all clips in epoch order only after every epoch succeeds; a later failure never returns a partial success and any earlier valid cached output remains governed by normal retention.
 
 ### Unit 6: Stable storage/lifecycle qualification
 
@@ -430,10 +430,10 @@ impl TemporalVideoGeneration for TemporalVideoGenerationService {
 
 **Acceptance criteria**:
 
-- [ ] Locked CI requires no installed FFmpeg and distinguishes fake application/storage proof from the later opt-in live adapter qualification.
-- [ ] A v5 retained-image fixture remains readable after v6, while a video survives restart only when row, manifest, source links, bytes, and usage all validate.
-- [ ] Corruption, source eviction, budget eviction, session deletion, cancellation, and recovery tests prove one shared lifetime authority without weakening existing image tests.
-- [ ] No test is deleted, skipped, loosened, or made implementation-tautological to obtain green results.
+- [x] Locked CI requires no installed FFmpeg and distinguishes fake application/storage proof from the later opt-in live adapter qualification.
+- [x] A v5 retained-image fixture remains readable after v6, while a video survives restart only when row, manifest, source links, bytes, and usage all validate.
+- [x] Corruption, source eviction, budget eviction, session deletion, cancellation, and recovery tests prove one shared lifetime authority without weakening existing image tests.
+- [x] No test is deleted, skipped, loosened, or made implementation-tautological to obtain green results.
 
 ## Implementation order
 
@@ -476,3 +476,25 @@ The stories are durable checkpoints inside one cohesive feature implementation a
 
 - Invoked because: the design changes stable retained-data migration and source/deletion/cache contracts, which ordinarily warrant independent completeness review.
 - Skipped/degraded: the active autopilot delegation explicitly prohibited nested agents and peeragent. This design-time advisory degradation is non-blocking under the principles policy; direct source/test grounding, the pre-mortem above, and the unchanged `standard` one-pass feature/final reviews remain the closure path.
+
+## Implementation summary
+
+- Execution capability: GPT-5.6 Sol at xhigh reasoning, the caller-selected highest-capability worker, coordinated as one sequential cohesive feature owner under autopilot.
+- Review weight: `standard`. This implementation is ready for the independent feature review; the implementing worker did not self-close the feature.
+- Completed child stories and commits:
+  - `epic-temporal-video-artifacts-retained-generation-additive-artifact-persistence` — `a84038f`
+  - `epic-temporal-video-artifacts-retained-generation-bounded-generation-service` — `914c860`
+  - `epic-temporal-video-artifacts-retained-generation-lifecycle-qualification` — `68a87f2`
+- The additive schema-v6 migration preserves retained image rows and bytes while one variant-aware artifact engine now owns image/video staging, files, cache locks, source links, usage, recovery, eviction, deletion, and scoped reads.
+- The bounded service partitions exact resolved input by visual epoch, derives deterministic geometry, meaningful-frame selection, and gap slates, composes canonical plans and cache identity before encoding, rejects contradictory encoder results, and publishes only through the store's source/session lifetime fence.
+- Real-store qualification covers restart, recovery, corruption, source and budget eviction, cancellation/publication races, session deletion during encoding, and concurrent frame/event ingestion. Locked tests use a deterministic fake encoder and launch no FFmpeg, browser, provider, or network service; the sibling FFmpeg feature owns production codec qualification.
+- No adjacent issue was discovered or parked. The earlier interim full-workspace Clippy conflict was in the concurrently implemented sibling FFmpeg tree; after that feature reached review, the authoritative combined serial workspace gate passed without discrepancy.
+
+## Verification evidence
+
+- `cargo fmt --all -- --check` — passed on the clean integrated workspace.
+- `cargo check --workspace --all-targets --locked` — passed.
+- `cargo test --workspace --all-targets --locked` — passed across all workspace crates and targets; the root suite reported 119 passed and 2 existing explicitly ignored tests.
+- `cargo clippy --workspace --all-targets --locked -- -D warnings` — passed.
+- The four authoritative integrated commands ran serially after `epic-temporal-video-artifacts-ffmpeg-runtime` reached review, avoiding concurrent browser-profile ownership and validating the combined tree.
+- No existing test was removed, weakened, loosened, or newly skipped to obtain these results.
