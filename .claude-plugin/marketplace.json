@@ -10,7 +10,7 @@
       "source": "./plugin",
       "description": "Control a local Chromium browser and inspect transient behavior with source-linked temporal visual evidence.",
       "category": "development",
-      "version": "1.0.5"
+      "version": "1.0.6"
     }
   ]
 }
