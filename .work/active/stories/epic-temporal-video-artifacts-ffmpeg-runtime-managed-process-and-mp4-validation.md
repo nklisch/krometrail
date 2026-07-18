@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-video-artifacts-ffmpeg-runtime-managed-process-and-mp4-validation
 kind: story
-stage: implementing
+stage: done
 tags: [infra, security, testing]
 parent: epic-temporal-video-artifacts-ffmpeg-runtime
 depends_on: []
@@ -28,3 +28,14 @@ Create the unpublished adapter crate's fixed `libx264` v1 argument policy, priva
 
 - Root checkpoint for this feature.
 - Discovery qualification and the port adapter must reuse this exact runner, policy, and validator rather than creating probe-only or request-only process paths.
+
+## Implementation notes
+
+- Execution capability: GPT-5.6 Sol xhigh, the caller-selected fallback because Luna was unavailable and this checkpoint owns security-sensitive external-process lifecycle and untrusted container parsing.
+- Review weight: `standard` from the autopilot caller; child checkpoint review is not applicable, and the integrated feature stops at `review` for one later independent pass.
+- Files changed: root `Cargo.toml`/`Cargo.lock`; new `crates/krometrail-ffmpeg` manifest, fixed argument policy, private staging job, managed process guard, bounded MP4 validator, compiled test fixture support, and retained video fixture/provenance.
+- Tests added: exact allowlisted argv; cumulative endpoint/FFconcat staging and private cleanup; retained real MP4 plus malformed codec/audio/dimension/duration/box mutations; compiled-process cancellation, deadline, diagnostic/output overflow, future-drop, descendant cleanup, and platform-owned tree enforcement. These protect command injection, process cleanup, and untrusted output validation rather than implementation line coverage.
+- Simplification: one crate-private policy, staging job, process guard, and validator; no wrapper, shell, downloader, native codec binding, network dependency, generic process framework, or alternate probe path.
+- Discrepancies from design: none. Windows Job Object code is compiled on Windows CI rather than exercised on this macOS checkpoint; the same portable compiled fixture test module owns both platform paths.
+- Adjacent issues parked: none.
+- Verification: `cargo test -p krometrail-ffmpeg --lib` passed 15 tests on macOS; the retained fixture was independently inspected as one silent H.264 stream at 2x2, 350 ms, and 1 MHz timebase.

@@ -802,6 +802,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "krometrail-ffmpeg"
+version = "1.0.7"
+dependencies = [
+ "krometrail-core",
+ "libc",
+ "png 0.17.16",
+ "sha2",
+ "tempfile",
+ "temporal-vision",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "windows-sys",
+]
+
+[[package]]
 name = "krometrail-mcp"
 version = "1.0.7"
 dependencies = [
