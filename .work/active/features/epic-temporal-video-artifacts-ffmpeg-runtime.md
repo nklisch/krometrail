@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-video-artifacts-ffmpeg-runtime
 kind: feature
-stage: review
+stage: done
 tags: [infra, security, testing]
 parent: epic-temporal-video-artifacts
 depends_on: [epic-temporal-video-artifacts-clip-contracts]
@@ -399,6 +399,17 @@ These are sequential security/acceptance checkpoints inside one cohesive adapter
 - Make the argv test compare the entire ordered vector and remap ordinary final-launch disappearance/drift to `video_encoder_unavailable`.
 
 The same-harness reviewer also confirmed the no-shell/no-download boundary, Unix private staging/process groups, bounded diagnostics/output/parser arithmetic, fixed caller-independent argv, dependency direction, and later ownership of MCP/store composition.
+
+## Review (2026-07-18)
+
+**Verdict**: Approve after verified corrections
+
+**Blockers**: none — operation-wide cancellation/deadline control, total PTS representability, exact MP4 sample-timeline validation, explicit Linux/macOS platform support, exact argv proof, and launch-drift recovery mapping were fixed in `d1b15b5`.
+**Important**: none
+**Nits**: none
+**Rejected**: implementing Windows Job/DACL support was rejected as disproportionate to the declared Linux/macOS runtime contract; unsupported platforms now fail qualification closed.
+
+**Notes**: `standard` review used one same-harness fresh-context pass after Claude peer OAuth failure. Per single-pass closure, the receiver inspected the correction evidence and accepted the focused tests, live FFmpeg 8.0.1/libx264 lane, and combined serial workspace fmt/check/tests/Clippy without another independent pass.
 
 ## Review correction evidence (2026-07-18)
 
