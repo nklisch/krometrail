@@ -1,7 +1,7 @@
 ---
 id: gate-tests-storyboard-clamps-every-epoch
 kind: story
-stage: review
+stage: done
 tags: [testing, visual]
 parent: null
 depends_on: []
@@ -34,3 +34,14 @@ Generate storyboard and before/during/after output over two visual epochs with `
 - Simplification: reused the existing two-epoch rig and artifact outcome contract.
 - Discrepancies from design: none.
 - Adjacent issues parked: none.
+
+## Review (2026-07-17)
+
+**Verdict**: Approve
+
+**Blockers**: none
+**Important**: none
+**Nits**: none
+**Rejected**: none
+
+**Notes**: Bounded inline standalone-story review. Verified both output kinds, both visual epochs, strict failure policy, and unchanged semantic-range provenance.
