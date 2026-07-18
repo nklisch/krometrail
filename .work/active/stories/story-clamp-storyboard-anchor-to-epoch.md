@@ -1,7 +1,7 @@
 ---
 id: story-clamp-storyboard-anchor-to-epoch
 kind: story
-stage: review
+stage: done
 tags: [bug, visual, agent-ux]
 parent: null
 depends_on: []
@@ -34,3 +34,14 @@ A storyboard request whose anchor is valid in the resolved interval but precedes
 - Storyboard requests now materialize a per-epoch clamped anchor before canonical cache parameters and generation.
 - Resolved-range provenance remains unchanged.
 - Verified the failing regression, all artifact-service tests, and all debug-bundle tests.
+
+## Review (2026-07-17)
+
+**Verdict**: Approve
+
+**Blockers**: none
+**Important**: none
+**Nits**: none
+**Rejected**: none
+
+**Notes**: Bounded inline standalone-story review at standard depth. Checked semantic-range provenance, epoch partitioning, canonical cache parameters, multi-epoch behavior, and generation failure policy. No material current-cycle findings.
