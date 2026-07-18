@@ -1,7 +1,7 @@
 ---
 id: release-1.0.4
 kind: release
-stage: release-ready
+stage: released
 tags: []
 parent: null
 depends_on: []
@@ -48,3 +48,15 @@ The `v1.0.4` changelog entry covers the complete selected patch scope.
 - `cargo clippy --workspace --all-targets --locked -- -D warnings` — passed.
 - Real Chrome viewport apply/navigation/clear/target-isolation qualification — passed.
 - Real headless capture produced and validated an initial frame with source-safe fidelity metadata. The legacy 30-frame ambient-compositor cadence smoke timed out identically at the released `v1.0.3` tag on this host, so it is recorded as an environment/Chrome limitation rather than a 1.0.4 regression.
+
+## Shipment
+
+- **Date shipped:** 2026-07-17
+- **Release tag:** `v1.0.4` at `620b5a51249c75b73e6331e0c04461e52ab81978`
+- **GitHub release:** https://github.com/nklisch/krometrail/releases/tag/v1.0.4
+- **Release workflow:** https://github.com/nklisch/krometrail/actions/runs/29628634212
+- **Rust CI:** https://github.com/nklisch/krometrail/actions/runs/29628633853
+- **Documentation deployment:** https://github.com/nklisch/krometrail/actions/runs/29628633863
+- **Published files:** five platform executables plus `checksums.txt`; every build, architecture smoke test, attestation, and publication step passed.
+- **Plugin qualification:** isolated native Claude and Codex installation, exact v1.0.4 managed bootstrap, MCP tool discovery, and all three evidence resource templates passed.
+- **Total items shipped:** 8.
