@@ -1176,6 +1176,82 @@ async fn opt_in_real_chrome_runs_complete_managed_page_lifecycle() {
 }
 
 #[tokio::test]
+async fn opt_in_real_chrome_preserve_focus_creates_a_background_tab() {
+    if !support::chrome::real_browser_tests_enabled() {
+        eprintln!("skipping preserve-focus Chrome test; set KROMETRAIL_REAL_CHROME_TESTS=1");
+        return;
+    }
+    let _browser_lock = support::chrome::real_browser_lock().await;
+    let root_guard = support::chrome::temporary_profile_root("preserve-focus");
+    let connector = ProductionBrowserConnector::new(
+        Arc::new(krometrail_cdp::SystemChromeLauncher::new(
+            krometrail_cdp::LauncherConfig {
+                profile_root: root_guard.path().to_path_buf(),
+                startup_timeout: Duration::from_secs(45),
+                shutdown_timeout: Duration::from_secs(5),
+            },
+        )),
+        Arc::new(
+            krometrail_cdp::transport::CdpkitTransportFactory::new()
+                .with_command_timeout(Duration::from_secs(15)),
+        ),
+    )
+    .with_interaction_evidence(support::evidence_sink());
+    let first_url = support::chrome::page_lifecycle_fixture_url("index.html");
+    let second_url = support::chrome::page_lifecycle_fixture_url("second.html");
+    let session = connector
+        .connect(BrowserConnectRequest::Launch(LaunchBrowser {
+            executable: None,
+            profile: ManagedProfile::Temporary,
+            initial_url: Some(first_url),
+            every_nth_frame: krometrail_core::EveryNthFrame::default(),
+            focus: krometrail_core::BrowserFocusPolicy::Preserve,
+        }))
+        .await
+        .expect("preserve-focus session");
+    let initial_id = session.status().await.unwrap().selected_target_id.unwrap();
+
+    let created = session
+        .execute(
+            BrowserOperationRequest::CreatePage(CreatePageRequest::new(Some(second_url)).unwrap()),
+            BrowserOperationContext::default(),
+        )
+        .await
+        .unwrap();
+    let BrowserOperationResult::CreatePage(created) = created else {
+        panic!("preserve-focus create")
+    };
+    assert!(matches!(
+        created.outcome,
+        PageOperationOutcome::Succeeded(_)
+    ));
+    let created_id = created.interaction.target_id;
+
+    for (target_id, expected) in [(initial_id, "visible"), (created_id, "hidden")] {
+        let visibility = session
+            .execute(
+                BrowserOperationRequest::EvaluatePage(
+                    ReadOnlyEvaluationRequest::new(target_id, "document.visibilityState", false)
+                        .unwrap(),
+                ),
+                BrowserOperationContext::default(),
+            )
+            .await
+            .unwrap();
+        let BrowserOperationResult::EvaluatePage(visibility) = visibility else {
+            panic!("visibility evaluation")
+        };
+        assert_eq!(
+            visibility.value,
+            krometrail_core::EvaluationValue::Json(json!(expected))
+        );
+    }
+
+    session.stop().await.unwrap();
+    assert!(support::chrome::process_references(root_guard.path()).is_empty());
+}
+
+#[tokio::test]
 async fn opt_in_real_chrome_reopens_named_profile_state() {
     if !support::chrome::real_browser_tests_enabled() {
         eprintln!("skipping named-profile lifecycle test; set KROMETRAIL_REAL_CHROME_TESTS=1");

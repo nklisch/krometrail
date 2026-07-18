@@ -157,6 +157,8 @@ subsequent activation commands rather than making a cross-platform promise about
 - `cargo test --workspace --all-targets --locked` — passed.
 - `cargo clippy --workspace --all-targets --locked -- -D warnings` — passed.
 - Focused core, MCP, pointer-control, activation-policy, and foreground page-lifecycle tests — passed.
+- Opt-in real Chrome preserve-focus qualification — passed; the original tab remained `visible`
+  while `create_page` produced a `hidden` background tab and completed without activation.
 - The initial operating-system window activation remains explicitly outside the policy; a refreshed
   plugin/runtime can perform the user-visible macOS qualification after this review boundary.
 
