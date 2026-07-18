@@ -313,7 +313,10 @@ mod tests {
         .expect("desktop emulation acknowledges its layout viewport despite a scrollbar");
 
         assert_eq!(effective.css_size, CssSize::new(375.0, 844.0).unwrap());
-        assert_eq!(effective.layout_css_size, CssSize::new(390.0, 844.0).unwrap());
+        assert_eq!(
+            effective.layout_css_size,
+            CssSize::new(390.0, 844.0).unwrap()
+        );
         assert_eq!(
             capture_geometry(effective).unwrap().viewport,
             PixelDimensions::new(390, 844).unwrap()

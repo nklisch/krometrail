@@ -1291,6 +1291,133 @@ async fn acknowledgement_spanning_geometry_transition_is_dropped_with_exact_gap_
 }
 
 #[tokio::test]
+async fn abandoned_geometry_refresh_keeps_last_geometry_active_and_allows_recovery() {
+    let ack_completed = Arc::new(AtomicBool::new(false));
+    let transport =
+        TestTransport::new(Arc::clone(&ack_completed), Arc::new(Mutex::new(Vec::new())));
+    let sink = Arc::new(TestSink::new(
+        ack_completed,
+        Arc::new(Mutex::new(Vec::new())),
+    ));
+    let observer = Arc::new(TestObserver::default());
+    let coordinator = coordinator(
+        CaptureConfig::default(),
+        Arc::new(TestClock::new()),
+        Arc::new(TestIds::new()),
+        Arc::clone(&sink),
+        Arc::clone(&observer),
+    );
+    let capture_target = target();
+    coordinator
+        .start_target(
+            capture_target.clone(),
+            Arc::clone(&transport) as Arc<dyn CdpTransport>,
+        )
+        .await
+        .unwrap();
+
+    transport.hold_ack();
+    transport.frame(51).await;
+    transport.wait_for_ack_start().await;
+    let abandoned = coordinator
+        .begin_geometry_transition(
+            capture_target.target_id,
+            capture_target.attachment_generation,
+        )
+        .unwrap();
+    transport.release_ack();
+    transport.wait_for_acks(1).await;
+
+    assert!(coordinator.abandon_geometry_transition(abandoned));
+    assert_eq!(
+        coordinator
+            .geometry_for_test(
+                capture_target.target_id,
+                capture_target.attachment_generation,
+            )
+            .unwrap(),
+        (
+            CaptureGeometry {
+                viewport: krometrail_core::PixelDimensions::new(600, 500).unwrap(),
+                device_scale_factor: krometrail_core::DeviceScaleFactor::new(1.0).unwrap(),
+            },
+            false
+        )
+    );
+
+    transport.frame(52).await;
+    transport.wait_for_acks(2).await;
+    sink.first_frame_started.notified().await;
+
+    let recovered = coordinator
+        .begin_geometry_transition(
+            capture_target.target_id,
+            capture_target.attachment_generation,
+        )
+        .unwrap();
+    assert!(coordinator.commit_geometry_transition(
+        recovered,
+        CaptureGeometry {
+            viewport: krometrail_core::PixelDimensions::new(390, 844).unwrap(),
+            device_scale_factor: krometrail_core::DeviceScaleFactor::new(3.0).unwrap(),
+        },
+    ));
+    transport.frame_with_metadata(53, 390, 844, Some(3.0)).await;
+    transport.wait_for_acks(3).await;
+    sink.release_first_frame.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while sink.frames.lock().unwrap().len() != 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+
+    let (ordinals, first_viewport, second_viewport) = {
+        let frames = sink.frames.lock().unwrap();
+        (
+            frames
+                .iter()
+                .map(|frame| frame.metadata().capture_ordinal().get())
+                .collect::<Vec<_>>(),
+            frames[0].metadata().viewport(),
+            frames[1].metadata().viewport(),
+        )
+    };
+    assert_eq!(ordinals, vec![2, 3]);
+    assert_eq!(
+        first_viewport,
+        krometrail_core::PixelDimensions::new(600, 500).unwrap()
+    );
+    assert_eq!(
+        second_viewport,
+        krometrail_core::PixelDimensions::new(390, 844).unwrap()
+    );
+
+    let status = coordinator.statuses().pop().unwrap();
+    assert_eq!(status.state(), CaptureStreamState::Capturing);
+    assert_eq!(status.failure_stage(), None);
+    assert_eq!(status.statistics().acknowledged_frames(), 3);
+    assert_eq!(status.statistics().accepted_frames(), 2);
+    assert_eq!(status.statistics().dropped_frames(), 1);
+    assert!(observer.gaps.lock().unwrap().iter().any(|gap| {
+        gap.detail() == Some("capture geometry refresh abandoned")
+            && *gap.reason() == CaptureGapReason::ScreencastPaused
+    }));
+
+    assert!(
+        coordinator
+            .stop_target(
+                &capture_target,
+                CaptureStopReason::TargetClosed,
+                tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+            )
+            .await
+            .complete
+    );
+}
+
+#[tokio::test]
 async fn native_resize_and_navigation_events_fence_generation_scoped_geometry_refreshes() {
     let ack_completed = Arc::new(AtomicBool::new(false));
     let transport =

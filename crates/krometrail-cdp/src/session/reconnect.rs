@@ -614,7 +614,7 @@ pub(super) async fn reconnect_loop_transactional(
                         }
                         Some(SupervisorCommand::RefreshCaptureGeometry { transition }) => {
                             if let Some(capture) = shared.capture.as_ref() {
-                                capture.coordinator.fail_geometry_transition(transition);
+                                capture.coordinator.abandon_geometry_transition(transition);
                             }
                         }
                         Some(SupervisorCommand::Input(input)) => {
@@ -703,7 +703,7 @@ pub(super) async fn reconnect_loop_transactional(
                         }
                         Some(SupervisorCommand::RefreshCaptureGeometry { transition }) => {
                             if let Some(capture) = shared.capture.as_ref() {
-                                capture.coordinator.fail_geometry_transition(transition);
+                                capture.coordinator.abandon_geometry_transition(transition);
                             }
                             None
                         }

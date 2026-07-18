@@ -305,8 +305,11 @@ impl CaptureCoordinator {
         pipeline::commit_geometry_transition(self, transition, geometry)
     }
 
-    pub(crate) fn fail_geometry_transition(&self, transition: CaptureGeometryTransition) -> bool {
-        pipeline::fail_geometry_transition(self, transition)
+    pub(crate) fn abandon_geometry_transition(
+        &self,
+        transition: CaptureGeometryTransition,
+    ) -> bool {
+        pipeline::abandon_geometry_transition(self, transition)
     }
 
     #[cfg(test)]

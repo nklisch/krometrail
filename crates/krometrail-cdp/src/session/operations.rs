@@ -893,7 +893,7 @@ async fn rollback_viewport_or_fail_target(
         return;
     }
     if let (Some(capture), Some(transition)) = (shared.capture.as_ref(), geometry_transition) {
-        capture.coordinator.fail_geometry_transition(transition);
+        capture.coordinator.abandon_geometry_transition(transition);
     }
     tracing::error!(
         event = "viewport_rollback_failed",

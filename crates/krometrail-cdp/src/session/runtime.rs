@@ -733,7 +733,7 @@ pub(super) async fn run_supervisor(
                 };
                 if !refreshed {
                     if let Some(capture) = shared.capture.as_ref() {
-                        capture.coordinator.fail_geometry_transition(transition);
+                        capture.coordinator.abandon_geometry_transition(transition);
                     }
                 }
             }
@@ -902,14 +902,13 @@ pub(super) async fn refresh_capture_geometry(
     }
     if let Some(error) = last_error {
         tracing::warn!(
-            event = "capture.geometry_refresh.failed",
-            failure_stage = "frame_envelope",
+            event = "capture.geometry_refresh.abandoned",
             error_code = error.code.as_str(),
             error_message = %error.message,
             attempts = ATTEMPTS,
             target_id = %transition.target_id(),
             attachment_generation = transition.attachment_generation(),
-            "capture.geometry_refresh.failed"
+            "capture.geometry_refresh.abandoned"
         );
     }
     false

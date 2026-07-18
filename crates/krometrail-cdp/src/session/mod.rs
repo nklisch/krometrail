@@ -2033,8 +2033,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_refresh_commits_observed_geometry_and_fails_only_capture_on_observation_error()
-    {
+    async fn session_refresh_commits_observed_geometry_and_recovers_from_observation_error() {
         let fixture = geometry_session_fixture().await;
         let GeometrySessionFixture {
             mut state,
@@ -2126,20 +2125,56 @@ mod tests {
             .begin_geometry_transition(target_id, attachment_generation)
             .unwrap();
         assert!(!refresh_capture_geometry(&state, transport.as_ref(), &capture, failed).await);
-        assert!(coordinator.fail_geometry_transition(failed));
+        assert!(coordinator.abandon_geometry_transition(failed));
         assert!(
             observer
                 .statuses
                 .lock()
                 .unwrap()
                 .iter()
-                .any(|status| status.state() == CaptureStreamState::Failed)
+                .all(|status| status.state() != CaptureStreamState::Failed)
+        );
+        assert_eq!(
+            coordinator
+                .geometry_for_test(target_id, attachment_generation)
+                .unwrap(),
+            (
+                crate::capture::CaptureGeometry {
+                    viewport: krometrail_core::PixelDimensions::new(360, 640).unwrap(),
+                    device_scale_factor: krometrail_core::DeviceScaleFactor::new(1.0).unwrap(),
+                },
+                false
+            )
+        );
+
+        transport.fail_observation.store(false, Ordering::Release);
+        *transport.touch_points.lock().unwrap() = 0;
+        transport.set_effective(1280.0, 720.0, 2.0);
+        let recovered = coordinator
+            .begin_geometry_transition(target_id, attachment_generation)
+            .unwrap();
+        assert!(refresh_capture_geometry(&state, transport.as_ref(), &capture, recovered).await);
+        assert_eq!(
+            coordinator
+                .geometry_for_test(target_id, attachment_generation)
+                .unwrap(),
+            (
+                crate::capture::CaptureGeometry {
+                    viewport: krometrail_core::PixelDimensions::new(1280, 720).unwrap(),
+                    device_scale_factor: krometrail_core::DeviceScaleFactor::new(2.0).unwrap(),
+                },
+                false
+            )
         );
         assert_eq!(
             state.targets_by_key["geometry-target"].target.lifecycle,
             TargetLifecycle::Attached
         );
-        assert_eq!(observer.gaps.lock().unwrap().len(), 4);
+        assert_eq!(
+            coordinator.statuses().pop().unwrap().state(),
+            CaptureStreamState::Capturing
+        );
+        assert_eq!(observer.gaps.lock().unwrap().len(), 5);
     }
 
     #[tokio::test]
@@ -2332,13 +2367,21 @@ mod tests {
                 .lock()
                 .unwrap()
                 .iter()
-                .any(|status| status.state() == CaptureStreamState::Failed)
+                .all(|status| status.state() != CaptureStreamState::Failed)
+        );
+        assert!(
+            coordinator.statuses().is_empty(),
+            "the independently failed target stops its capture stream without reporting a frame-envelope failure"
         );
         assert_eq!(
             state.targets_by_key["geometry-target"].target.lifecycle,
             TargetLifecycle::Failed
         );
         assert_eq!(observer.gaps.lock().unwrap().len(), 4);
+        assert!(observer.gaps.lock().unwrap().iter().any(|gap| {
+            gap.detail() == Some("capture geometry refresh abandoned")
+                && *gap.reason() == krometrail_core::CaptureGapReason::ScreencastPaused
+        }));
         assert_eq!(sink.log.lock().unwrap().len(), 0);
     }
 

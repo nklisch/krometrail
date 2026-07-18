@@ -972,8 +972,7 @@ async fn geometry_reader(runtime: Arc<StreamRuntime>, events: &mut Box<dyn Trans
                         None,
                         "capture geometry refresh dispatch failed",
                     );
-                    runtime.fail(CaptureFailureStage::FrameEnvelope);
-                    break;
+                    continue;
                 }
             }
             Ok(None) | Err(_) => {
@@ -1685,7 +1684,7 @@ pub(super) fn commit_geometry_transition(
     })
 }
 
-pub(super) fn fail_geometry_transition(
+pub(super) fn abandon_geometry_transition(
     coordinator: &CaptureCoordinator,
     transition: CaptureGeometryTransition,
 ) -> bool {
@@ -1695,12 +1694,7 @@ pub(super) fn fail_geometry_transition(
         transition.attachment_generation,
     )
     .is_some_and(|runtime| {
-        if !runtime.finish_geometry_transition(transition, None, "capture geometry refresh failed")
-        {
-            return false;
-        }
-        runtime.fail(CaptureFailureStage::FrameEnvelope);
-        true
+        runtime.finish_geometry_transition(transition, None, "capture geometry refresh abandoned")
     })
 }
 
