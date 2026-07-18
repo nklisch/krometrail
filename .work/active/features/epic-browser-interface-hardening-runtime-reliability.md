@@ -1,7 +1,7 @@
 ---
 id: epic-browser-interface-hardening-runtime-reliability
 kind: feature
-stage: implementing
+stage: review
 tags: [browser, visual]
 parent: epic-browser-interface-hardening
 depends_on: []
@@ -101,3 +101,17 @@ Complete the transition with no replacement geometry, declare the existing bound
 ## Risks
 
 Using declared desktop geometry for capture could diverge from screencast payload pixels. Existing `RawFrame::after_ack` dimension validation remains the guard. If Chrome reports a truly different envelope, that frame is rejected explicitly rather than silently resized.
+
+## Implementation summary
+
+- Desktop responsive acknowledgement now validates exact declared `cssLayoutViewport` dimensions while continuing to report the observed `cssVisualViewport`; mobile acknowledgement remains visual-viewport exact.
+- Capture geometry for an acknowledged desktop override uses declared layout dimensions, while raw frame-envelope rejection remains terminal.
+- Geometry-refresh exhaustion, refresh-dispatch loss, reconnect interruption, and failed viewport rollback now abandon only the geometry transition as a bounded `ScreencastPaused` gap; they do not invent a `frame_envelope` capture failure.
+- The established geometry remains active through a recoverable refresh gap and later transitions can commit a replacement. A separately failed target still stops its own stream without misreporting a frame-envelope failure.
+
+## Verification
+
+- `cargo test -p krometrail-cdp --all-targets --locked`
+- `cargo fmt --all -- --check`
+- `cargo check --workspace --all-targets --locked`
+- `cargo clippy -p krometrail-cdp --all-targets --locked -- -D warnings`
