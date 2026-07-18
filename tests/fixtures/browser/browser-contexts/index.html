@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Browser context qualification</title>
+    <script>performance.setResourceTimingBufferSize(512);</script>
+    <style>.spacer { height: 1200px; } iframe { width: 520px; height: 180px; }</style>
+    <link rel="stylesheet" href="/browser-contexts/style.css?token=style-secret#style-fragment">
+  </head>
+  <body>
+    <h1>Browser context qualification</h1>
+    <div class="spacer">Root scroll spacer</div>
+    <iframe id="context-frame" title="Context child" srcdoc="<a id='frame-action' href='/browser-contexts/child-next.html?token=child-secret#child-fragment'>Navigate child</a>"></iframe>
+    <script>
+      window.scrollTo(0, 900);
+      setTimeout(() => {
+        for (let index = 0; index < 300; index += 1) {
+          fetch(`/browser-contexts/asset-${index}.json?token=asset-secret-${index}#asset-fragment`)
+            .then((response) => response.text())
+            .catch(() => null);
+        }
+        setTimeout(() => { document.body.dataset.assetsReady = "true"; }, 8000);
+      }, 5000);
+    </script>
+  </body>
+</html>

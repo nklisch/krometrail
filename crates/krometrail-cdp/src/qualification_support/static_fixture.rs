@@ -20,6 +20,12 @@ pub const TEMPORAL_BENCHMARK_JS: &str =
     include_str!("../../../../tests/fixtures/browser/temporal-benchmark/benchmark.js");
 pub const TEMPORAL_BENCHMARK_README: &str =
     include_str!("../../../../tests/fixtures/browser/temporal-benchmark/README.md");
+pub const BROWSER_CONTEXTS_INDEX: &str =
+    include_str!("../../../../tests/fixtures/browser/browser-contexts/index.html");
+pub const BROWSER_CONTEXTS_CHILD_NEXT: &str =
+    include_str!("../../../../tests/fixtures/browser/browser-contexts/child-next.html");
+pub const BROWSER_CONTEXTS_STYLE: &str =
+    include_str!("../../../../tests/fixtures/browser/browser-contexts/style.css");
 
 pub fn contains_stable_fixture_markers() -> bool {
     INDEX_HTML.contains("CDP") && !ANIMATION_JS.trim().is_empty()
@@ -71,6 +77,13 @@ impl FixtureServer {
     pub fn temporal_benchmark_url(&self, case_id: &str, duration_ms: u16) -> String {
         format!(
             "http://127.0.0.1:{}/temporal-benchmark/index.html?case={case_id}&duration_ms={duration_ms}",
+            self.address.port()
+        )
+    }
+
+    pub fn browser_contexts_url(&self) -> String {
+        format!(
+            "http://127.0.0.1:{}/browser-contexts/index.html",
             self.address.port()
         )
     }
@@ -136,6 +149,24 @@ fn serve_fixture(mut stream: TcpStream) {
             "text/markdown; charset=utf-8",
             TEMPORAL_BENCHMARK_README.as_bytes(),
         ),
+        "/browser-contexts" | "/browser-contexts/index.html" => (
+            "200 OK",
+            "text/html; charset=utf-8",
+            BROWSER_CONTEXTS_INDEX.as_bytes(),
+        ),
+        "/browser-contexts/child-next.html" => (
+            "200 OK",
+            "text/html; charset=utf-8",
+            BROWSER_CONTEXTS_CHILD_NEXT.as_bytes(),
+        ),
+        "/browser-contexts/style.css" => (
+            "200 OK",
+            "text/css; charset=utf-8",
+            BROWSER_CONTEXTS_STYLE.as_bytes(),
+        ),
+        path if path.starts_with("/browser-contexts/asset-") && path.ends_with(".json") => {
+            ("200 OK", "application/json", b"{}" as &[u8])
+        }
         _ => (
             "404 Not Found",
             "text/plain; charset=utf-8",

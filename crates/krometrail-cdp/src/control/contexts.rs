@@ -157,13 +157,7 @@ impl PageControl {
             .send_raw(
                 &CommandScope::Session(bound.transport_session.clone()),
                 "Runtime.evaluate",
-                json!({
-                    "expression": RESOURCE_TIMING_EXPRESSION,
-                    "returnByValue": true,
-                    "awaitPromise": false,
-                    "throwOnSideEffect": true,
-                    "silent": true,
-                }),
+                resource_timing_params(),
             )
             .await
             .map_err(|error| {
@@ -225,6 +219,19 @@ impl PageControl {
             omitted_asset_count: omitted,
         })
     }
+}
+
+fn resource_timing_params() -> Value {
+    json!({
+        "expression": RESOURCE_TIMING_EXPRESSION,
+        "returnByValue": true,
+        "awaitPromise": false,
+        // The expression is fixed and adapter-owned. Chrome refuses Resource Timing reads when
+        // asked to infer side effects, so safety comes from the closed expression rather than
+        // `throwOnSideEffect` heuristics.
+        "throwOnSideEffect": false,
+        "silent": true,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -440,6 +447,7 @@ mod tests {
     fn malformed_assets_are_omitted_and_urls_are_sanitized() {
         assert!(RESOURCE_TIMING_EXPRESSION.contains("slice(0, 256)"));
         assert!(RESOURCE_TIMING_EXPRESSION.contains("omitted"));
+        assert_eq!(resource_timing_params()["throwOnSideEffect"], json!(false));
         let (_, asset) = parse_asset(&json!({
             "name":"https://example.test/app.js?token=secret#fragment",
             "initiatorType":"script","startTime":1.0,"duration":2.0,

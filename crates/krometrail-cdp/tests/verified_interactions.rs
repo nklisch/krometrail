@@ -11,15 +11,16 @@ use krometrail_cdp::{
 use krometrail_core::{
     BrowserActionRequest, BrowserConnectRequest, BrowserConnector, BrowserOperationRequest,
     BrowserOperationResult, ClickRequest, CoordinateSpace, CreatePageRequest, CssPoint,
-    DialogAction, DragRequest, ElementLocator, ErrorCode, FillMode, FillRequest,
+    DialogAction, DragRequest, ElementLocator, ErrorCode, FillMode, FillRequest, FrameAccess,
     HandleDialogRequest, HoverRequest, ImageFormat, InteractionLocator, InteractionOutcome,
-    KeyChord, Modifiers, MouseButton, NavigatePageRequest, ObservationPart, PageSelection,
-    PressKeysRequest, QueryPageRequest, QueryPageResult, ReadClipboardRequest,
-    ReadOnlyEvaluationRequest, ScreenshotRequest, ScreenshotTarget, ScrollDelta, ScrollRequest,
-    SelectOptionRequest, SelectPageRequest, SelectValue, SemanticQuery, SemanticQueryOutcome,
-    SemanticTextMatch, SemanticTextMatchMode, SetViewportRequest, SnapshotPageRequest,
-    UploadFilesRequest, ValidatedFilePath, ViewportGuidanceCode, ViewportIntent, ViewportOverride,
-    ViewportPreset, WriteClipboardRequest,
+    KeyChord, ListFramesRequest, ListPageAssetsRequest, Modifiers, MouseButton,
+    NavigatePageRequest, ObservationPart, PageSelection, PressKeysRequest, QueryPageRequest,
+    QueryPageResult, ReadClipboardRequest, ReadOnlyEvaluationRequest, ScreenshotRequest,
+    ScreenshotTarget, ScrollDelta, ScrollRequest, SelectOptionRequest, SelectPageRequest,
+    SelectValue, SemanticDocumentScope, SemanticQuery, SemanticQueryOutcome, SemanticTextMatch,
+    SemanticTextMatchMode, SetViewportRequest, SnapshotPageRequest, UploadFilesRequest,
+    ValidatedFilePath, ViewportGuidanceCode, ViewportIntent, ViewportOverride, ViewportPreset,
+    WaitCondition, WaitOutcome, WaitRequest, WriteClipboardRequest,
 };
 use serde_json::{Value, json};
 use support::scripted_cdp::ScriptedCdp;
@@ -479,6 +480,38 @@ async fn evaluate(
         krometrail_core::EvaluationValue::Json(value) => value,
         _ => Value::Null,
     }
+}
+
+async fn wait_for_page_expression(
+    session: &Arc<dyn krometrail_core::BrowserSessionPort>,
+    target: krometrail_core::TargetId,
+    expression: &str,
+) {
+    let result = session
+        .execute(
+            BrowserOperationRequest::Wait(
+                WaitRequest::new(
+                    PageSelection::Target(target),
+                    WaitCondition::Page {
+                        expression: krometrail_core::NonEmptyText::new(expression).unwrap(),
+                    },
+                    std::time::Duration::from_secs(30),
+                    std::time::Duration::from_millis(25),
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("page wait {expression:?} failed: {error:?}"));
+    let BrowserOperationResult::Wait(result) = result else {
+        panic!("page wait result")
+    };
+    assert!(
+        matches!(result.outcome, WaitOutcome::Satisfied { .. }),
+        "page wait {expression:?} returned {:?}",
+        result.outcome
+    );
 }
 
 async fn query_page(
@@ -1607,4 +1640,208 @@ async fn opt_in_real_chrome_qualifies_viewport_presets_guidance_and_target_isola
         native_first
     );
     session.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn opt_in_real_chrome_qualifies_frame_actions_staleness_and_bounded_assets() {
+    if !support::chrome::real_browser_tests_enabled() {
+        eprintln!(
+            "skipping real Chrome browser-context qualification; set KROMETRAIL_REAL_CHROME_TESTS=1"
+        );
+        return;
+    }
+    let _lock = support::chrome::real_browser_lock().await;
+    let mut fixture = support::static_fixture::FixtureServer::start().expect("context fixture");
+    let fixture_url = format!("{}#context-frame", fixture.browser_contexts_url());
+    let root = support::chrome::temporary_profile_root("verified-browser-contexts");
+    let connector = ProductionBrowserConnector::new(
+        Arc::new(krometrail_cdp::SystemChromeLauncher::new(
+            krometrail_cdp::LauncherConfig {
+                profile_root: root.path().to_path_buf(),
+                startup_timeout: std::time::Duration::from_secs(45),
+                shutdown_timeout: std::time::Duration::from_secs(3),
+            },
+        )),
+        Arc::new(
+            krometrail_cdp::transport::CdpkitTransportFactory::new()
+                .with_command_timeout(std::time::Duration::from_secs(15)),
+        ),
+    )
+    .with_interaction_evidence(support::evidence_sink());
+    let session = connector
+        .connect(BrowserConnectRequest::Launch(
+            krometrail_core::LaunchBrowser {
+                executable: None,
+                profile: krometrail_core::ManagedProfile::Temporary,
+                initial_url: Some(fixture_url.clone()),
+                every_nth_frame: krometrail_core::EveryNthFrame::default(),
+                focus: krometrail_core::BrowserFocusPolicy::Foreground,
+            },
+        ))
+        .await
+        .expect("real browser-context fixture");
+    let status = session.status().await.unwrap();
+    let target = status
+        .pages
+        .iter()
+        .find(|page| page.target.target.url().contains("/browser-contexts/"))
+        .unwrap_or_else(|| panic!("browser-context fixture target: {status:#?}"))
+        .target
+        .target
+        .id();
+    session
+        .execute(
+            BrowserOperationRequest::NavigatePage(
+                NavigatePageRequest::new(PageSelection::Target(target), fixture_url).unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .expect("navigate bound target to browser-context fixture");
+    let last_frames = Arc::new(std::sync::Mutex::new(None));
+    let observed_frames = Arc::clone(&last_frames);
+    let frame_session = Arc::clone(&session);
+    let child = tokio::time::timeout(std::time::Duration::from_secs(10), async move {
+        loop {
+            let frames = frame_session
+                .execute(
+                    BrowserOperationRequest::ListFrames(ListFramesRequest {
+                        target: PageSelection::Target(target),
+                    }),
+                    krometrail_core::BrowserOperationContext::default(),
+                )
+                .await
+                .expect("frame inventory");
+            let BrowserOperationResult::ListFrames(frames) = frames else {
+                panic!("frame inventory result")
+            };
+            *observed_frames.lock().unwrap() = Some(frames.clone());
+            if let Some(child) = frames.frames.iter().find(|frame| {
+                frame.depth == 1 && frame.access == FrameAccess::SameOriginSameProcess
+            }) {
+                break child.reference.clone();
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "same-origin child frame becomes qualified; last sanitized inventory: {:#?}",
+            last_frames.lock().unwrap()
+        )
+    });
+
+    wait_for_page_expression(&session, target, "window.scrollY > 0").await;
+    assert_eq!(
+        evaluate(&session, target, "window.scrollY > 0").await,
+        json!(true)
+    );
+
+    let mut query = QueryPageRequest::new(
+        PageSelection::Target(target),
+        SemanticQuery::role("link", Some(exact_semantic_text("Navigate child"))).unwrap(),
+        None,
+        10,
+    )
+    .unwrap();
+    query.document = SemanticDocumentScope::Frame(child);
+    let result = session
+        .execute(
+            BrowserOperationRequest::QueryPage(query),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .expect("query same-origin child frame");
+    let BrowserOperationResult::QueryPage(result) = result else {
+        panic!("frame query result")
+    };
+    assert_eq!(result.outcome, SemanticQueryOutcome::Unique);
+    let reference = result.matches[0].reference;
+    session
+        .execute(
+            BrowserOperationRequest::Click(
+                ClickRequest::new(
+                    PageSelection::Target(target),
+                    InteractionLocator::Element(ElementLocator::Reference(reference)),
+                    MouseButton::Left,
+                    Modifiers::default(),
+                    1,
+                    false,
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .expect("click child-frame semantic reference after root scroll");
+    wait_for_page_expression(
+        &session,
+        target,
+        "document.querySelector('#context-frame').contentDocument?.querySelector('#child-navigated') !== null",
+    )
+    .await;
+    assert_eq!(
+        evaluate(
+            &session,
+            target,
+            "document.querySelector('#context-frame').contentDocument?.querySelector('#child-navigated') !== null",
+        )
+        .await,
+        json!(true)
+    );
+    let stale = session
+        .execute(
+            BrowserOperationRequest::Click(
+                ClickRequest::new(
+                    PageSelection::Target(target),
+                    InteractionLocator::Element(ElementLocator::Reference(reference)),
+                    MouseButton::Left,
+                    Modifiers::default(),
+                    1,
+                    false,
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(stale.code, ErrorCode::StaleReference);
+
+    let assets = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            let result = session
+                .execute(
+                    BrowserOperationRequest::ListPageAssets(ListPageAssetsRequest {
+                        target: PageSelection::Target(target),
+                    }),
+                    krometrail_core::BrowserOperationContext::default(),
+                )
+                .await
+                .expect("bounded page assets");
+            let BrowserOperationResult::ListPageAssets(assets) = result else {
+                panic!("page asset result")
+            };
+            if assets.assets.len() == krometrail_core::MAX_PAGE_ASSETS
+                && assets.omitted_asset_count > 0
+            {
+                break assets;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("resource timing inventory reaches its browser-side bound");
+    assert_eq!(assets.assets.len(), krometrail_core::MAX_PAGE_ASSETS);
+    assert!(assets.omitted_asset_count > 0);
+    let projected = serde_json::to_string(&*assets).unwrap();
+    assert!(!projected.contains("asset-secret"));
+    assert!(!projected.contains("style-secret"));
+    assert!(!projected.contains("child-secret"));
+    assert!(!projected.contains("browser-contexts/asset-"));
+    assert!(!projected.contains(fixture.url().as_str()));
+
+    session.stop().await.unwrap();
+    fixture.shutdown();
 }
