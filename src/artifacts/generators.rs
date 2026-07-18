@@ -39,6 +39,7 @@ pub(crate) fn prepare_generator(
     limits: ArtifactWorkLimits,
 ) -> Result<PreparedGenerator> {
     let mut request = request.clone();
+    materialize_epoch_anchor(&mut request, epoch)?;
     materialize_effective_scales(&mut request, epoch, limits)?;
     validate_output_limits(&request, limits)?;
     let canonical_parameters = request
@@ -54,6 +55,29 @@ pub(crate) fn prepare_generator(
         request,
         canonical_parameters,
     })
+}
+
+fn materialize_epoch_anchor(
+    request: &mut ArtifactGeneratorRequest,
+    epoch: &super::epoch::EpochPlan,
+) -> Result<()> {
+    let ArtifactGeneratorRequest::Storyboard(request) = request else {
+        return Ok(());
+    };
+    let first = epoch
+        .frames
+        .first()
+        .ok_or_else(|| generation_error("storyboard visual epoch has no source frames"))?
+        .metadata()
+        .session_time();
+    let last = epoch
+        .frames
+        .last()
+        .ok_or_else(|| generation_error("storyboard visual epoch has no source frames"))?
+        .metadata()
+        .session_time();
+    request.anchor = request.anchor.clamp(first, last);
+    Ok(())
 }
 
 fn normalization_request(request: &ArtifactGeneratorRequest) -> Option<NormalizationRequest> {

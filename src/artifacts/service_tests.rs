@@ -455,6 +455,51 @@ async fn all_generator_families_are_ordered_deterministic_and_cached() {
 }
 
 #[tokio::test]
+async fn storyboard_anchor_before_first_retained_frame_is_clamped() {
+    let mut rig = rig(false, ArtifactWorkLimits::default());
+    let range = SessionRange::new(SessionTime::from_nanos(0), SessionTime::from_nanos(3)).unwrap();
+    let resolved = ResolvedRange::new(
+        rig.request.range().session_id,
+        rig.request.range().target_id,
+        TemporalRangeAnchorKind::SessionTime,
+        range,
+        range,
+        rig.request.range().frame_ids.clone(),
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+        RangeResolutionOptions::DEFAULT,
+    )
+    .unwrap();
+    let mut generator = rig.request.generators()[0].clone();
+    let ArtifactGeneratorRequest::Storyboard(storyboard) = &mut generator else {
+        unreachable!()
+    };
+    storyboard.anchor = SessionTime::from_nanos(0);
+    storyboard.include_orientation = false;
+    rig.request = ArtifactGenerationRequest::new(
+        resolved,
+        vec![],
+        vec![generator],
+        ArtifactFailurePolicy::RequireAll,
+    )
+    .unwrap();
+
+    let result = rig
+        .service
+        .generate(rig.request, ArtifactGenerationContext::default())
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        result.outcomes.as_slice(),
+        [ArtifactOutcome::Available { .. }]
+    ));
+}
+
+#[tokio::test]
 async fn concurrent_identical_misses_share_generation_and_waiters() {
     let rig = rig(false, ArtifactWorkLimits::default());
     let (first, second) = tokio::join!(
