@@ -30,13 +30,12 @@ The operator selected the complete manual-test finding set for the next patch. N
 
 ## Gate runs
 
-- **gate-security** — pending.
-- **gate-tests** — pending.
-- **gate-cruft** — pending.
-- **gate-docs** — pending.
-- **gate-patterns** — pending.
+- **gate-security** — skipped by operator for this focused patch.
+- **gate-tests** — skipped by operator; focused feature reviews and regression-driven verification remain required.
+- **gate-cruft** — skipped by operator for this focused patch.
+- **gate-docs** — skipped by operator; changelog and shipped skill guidance were updated in the feature bundle.
+- **gate-patterns** — skipped by operator for this focused patch.
 
 ## Changelog
 
 The `v1.0.4` changelog entry covers the complete selected patch scope.
-
