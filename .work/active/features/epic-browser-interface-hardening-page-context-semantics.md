@@ -1,7 +1,7 @@
 ---
 id: epic-browser-interface-hardening-page-context-semantics
 kind: feature
-stage: review
+stage: implementing
 tags: [browser, agent-ux]
 parent: epic-browser-interface-hardening
 depends_on: []
@@ -172,3 +172,8 @@ AX and DOMSnapshot node identities can differ across out-of-process frames. Same
 - `cargo test -p krometrail-core -p krometrail-cdp --all-targets --locked` — passed.
 - `cargo clippy -p krometrail-core -p krometrail-cdp --all-targets --locked -- -D warnings` — passed.
 - `cargo fmt --all -- --check` — passed.
+
+## Review findings
+
+- Standard single-pass review found one receiver-confirmed blocker: container-text matching walked through generic/page-level ancestors whose propagated rendered text could include an unrelated sibling.
+- Closure requires a conservative local-container boundary, a sibling-text regression, and focused verification only; no second reviewer is required.
