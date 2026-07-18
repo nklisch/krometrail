@@ -400,7 +400,11 @@ mod tests {
         assert!(!profiles[0].in_use);
         assert_eq!(profiles[1].identity.as_str(), "z-active");
         assert!(profiles[1].in_use);
-        assert!(temporary.path().starts_with(root.join("tmp")));
+        assert!(
+            temporary
+                .path()
+                .starts_with(fs::canonicalize(root.join("tmp")).unwrap())
+        );
 
         drop(temporary);
         drop(active);
