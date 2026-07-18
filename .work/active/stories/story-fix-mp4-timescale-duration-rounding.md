@@ -1,7 +1,7 @@
 ---
 id: story-fix-mp4-timescale-duration-rounding
 kind: story
-stage: review
+stage: done
 tags: [bug, visual, infra, testing]
 parent: null
 depends_on: []
@@ -50,3 +50,18 @@ against the exact values observed from the real browser-video reproduction.
   browser frames. `ffprobe` reports the requested 1.434473-second duration.
 - Adjacent issues parked: none. The earlier five-second request correctly exceeded the configured
   decoded-sequence working-set limit and required a narrower retained interval; that is not this bug.
+
+## Review (2026-07-18)
+
+**Verdict**: Approve
+
+**Blockers**: none
+**Important**: none
+**Nits**: none
+**Rejected**: none
+
+**Notes**: Bounded inline standalone-story review; no independent or cross-model reviewer ran. The
+correctness and test lenses confirm the tolerance is one tick in the validator's cross-multiplied
+units and that the next larger tick is rejected. The change is private, minimal, and root-causal.
+Security and breaking-change lenses were inapplicable because no input, execution, authorization,
+persisted-format, or public API boundary changed. Existing foundation assertions remain current.
