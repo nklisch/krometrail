@@ -583,7 +583,9 @@ mod tests {
     fn published_viewport_schema_matches_runtime_bounds() {
         let config = McpConfig::default();
         let schema = operation_input_schema(BrowserOperationKind::SetViewport, &config).unwrap();
-        let metrics = &schema["properties"]["viewport"]["oneOf"][0]["properties"]["metrics"];
+        let schema = Value::Object(schema.as_ref().clone());
+        let override_variant = find_tagged_variant(&schema, "mode", "override").unwrap();
+        let metrics = &override_variant["properties"]["metrics"];
         let properties = &metrics["properties"];
         for dimension in ["width", "height"] {
             assert_eq!(properties[dimension]["minimum"], 1);
@@ -591,6 +593,23 @@ mod tests {
         }
         assert_eq!(properties["device_scale_factor"]["exclusiveMinimum"], 0.0);
         assert_eq!(properties["device_scale_factor"]["maximum"], 8.0);
+        for mode in ["override", "preset", "clear"] {
+            assert!(
+                find_tagged_variant(&schema, "mode", mode).is_some(),
+                "missing viewport mode {mode}"
+            );
+        }
+        let preset = find_tagged_variant(&schema, "mode", "preset").unwrap();
+        assert_eq!(
+            preset["properties"]["preset"]["enum"],
+            serde_json::json!([
+                "responsive_small",
+                "responsive_tablet",
+                "responsive_desktop",
+                "mobile_phone",
+                "mobile_tablet"
+            ])
+        );
     }
 
     #[test]

@@ -110,7 +110,7 @@ pub(crate) async fn observe_effective_viewport(
             &scope,
             "Runtime.evaluate",
             json!({
-                "expression": "({width:innerWidth,height:innerHeight,scale:devicePixelRatio,touchPoints:navigator.maxTouchPoints})",
+                "expression": "({scale:devicePixelRatio,touchPoints:navigator.maxTouchPoints,viewportMetaPresent:document.querySelector('meta[name=\"viewport\"]')!==null})",
                 "returnByValue": true,
                 "throwOnSideEffect": true,
                 "silent": true,
@@ -166,19 +166,30 @@ fn decode_effective_viewport(
     let visual_viewport = layout
         .get("cssVisualViewport")
         .ok_or_else(|| malformed(target_id))?;
+    let layout_viewport = layout
+        .get("cssLayoutViewport")
+        .ok_or_else(|| malformed(target_id))?;
     let width = number(visual_viewport, "clientWidth")?;
     let height = number(visual_viewport, "clientHeight")?;
+    let layout_width = number(layout_viewport, "clientWidth")?;
+    let layout_height = number(layout_viewport, "clientHeight")?;
     let scale = number(value, "scale")?;
     let touch_points = value
         .get("touchPoints")
         .and_then(Value::as_u64)
         .ok_or_else(|| malformed(target_id))?;
+    let viewport_meta_present = value
+        .get("viewportMetaPresent")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| malformed(target_id))?;
     let effective = EffectiveViewport {
         css_size: CssSize::new(width, height)?,
+        layout_css_size: CssSize::new(layout_width, layout_height)?,
         device_scale_factor: DeviceScaleFactor::new(scale)?,
         mobile: declared.is_some_and(ViewportMetrics::mobile),
         touch: touch_points > 0,
         override_active: declared.is_some(),
+        viewport_meta_present,
     };
     if let Some(expected) = declared {
         let matches = (effective.css_size.width - f64::from(expected.width())).abs() <= 0.5
@@ -207,7 +218,7 @@ fn number(value: &Value, field: &str) -> Result<f64> {
     value
         .get(field)
         .and_then(Value::as_f64)
-        .filter(|value| value.is_finite())
+        .filter(|value| value.is_finite() && *value > 0.0)
         .ok_or_else(|| {
             krometrail_core::KrometrailError::new(
                 ErrorCode::PageObservationFailed,
@@ -240,13 +251,18 @@ mod tests {
     fn effective_metrics_decode_nested_cdp_result() {
         let declared = ViewportMetrics::new(390, 844, 3.0, true, true).unwrap();
         let value = decode_effective_viewport(
-            &json!({"result":{"cssVisualViewport":{"clientWidth":390,"clientHeight":844}}}),
-            &json!({"result":{"result":{"value":{"width":390,"height":844,"scale":3.0,"touchPoints":1}}}}),
+            &json!({"result":{
+                "cssVisualViewport":{"clientWidth":390,"clientHeight":844},
+                "cssLayoutViewport":{"clientWidth":980,"clientHeight":2120}
+            }}),
+            &json!({"result":{"result":{"value":{"scale":3.0,"touchPoints":1,"viewportMetaPresent":false}}}}),
             Some(declared),
             target(),
         )
         .unwrap();
         assert_eq!(value.css_size, CssSize::new(390.0, 844.0).unwrap());
+        assert_eq!(value.layout_css_size, CssSize::new(980.0, 2120.0).unwrap());
+        assert!(!value.viewport_meta_present);
         assert!(value.mobile && value.touch && value.override_active);
     }
 
@@ -254,8 +270,11 @@ mod tests {
     fn mismatched_acknowledged_metrics_fail() {
         let declared = ViewportMetrics::new(390, 844, 3.0, true, true).unwrap();
         assert!(decode_effective_viewport(
-            &json!({"result":{"cssVisualViewport":{"clientWidth":391,"clientHeight":844}}}),
-            &json!({"result":{"result":{"value":{"width":390,"height":844,"scale":3.0,"touchPoints":1}}}}),
+            &json!({"result":{
+                "cssVisualViewport":{"clientWidth":391,"clientHeight":844},
+                "cssLayoutViewport":{"clientWidth":391,"clientHeight":844}
+            }}),
+            &json!({"result":{"result":{"value":{"scale":3.0,"touchPoints":1,"viewportMetaPresent":true}}}}),
             Some(declared),
             target(),
         )
@@ -266,10 +285,12 @@ mod tests {
     fn capture_geometry_rounds_fractional_css_dimensions_within_half_a_pixel() {
         let geometry = capture_geometry(EffectiveViewport {
             css_size: CssSize::new(599.6, 500.4).unwrap(),
+            layout_css_size: CssSize::new(599.6, 500.4).unwrap(),
             device_scale_factor: DeviceScaleFactor::new(2.0).unwrap(),
             mobile: false,
             touch: false,
             override_active: false,
+            viewport_meta_present: true,
         })
         .unwrap();
         assert_eq!(geometry.viewport, PixelDimensions::new(600, 500).unwrap());

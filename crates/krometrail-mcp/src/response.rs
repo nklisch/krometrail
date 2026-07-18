@@ -848,11 +848,19 @@ fn project_operation(
             let mut projection = project_page_operation(value.operation, preference)?;
             let mut warnings = Vec::new();
             let effective = project_serializable_part(value.effective, &mut warnings)?;
-            projection
+            let result = projection
                 .result
                 .as_object_mut()
-                .ok_or(ResponseInvariantError)?
-                .insert("effective".to_owned(), effective);
+                .ok_or(ResponseInvariantError)?;
+            result.insert("effective".to_owned(), effective);
+            result.insert(
+                "materialization".to_owned(),
+                serde_json::to_value(value.materialization).map_err(|_| ResponseInvariantError)?,
+            );
+            result.insert(
+                "guidance".to_owned(),
+                serde_json::to_value(value.guidance).map_err(|_| ResponseInvariantError)?,
+            );
             projection.degrade_with(warnings);
             Ok(projection)
         }
@@ -1870,14 +1878,15 @@ mod tests {
         CaptureFailureStage, CaptureStatistics, CaptureStreamState, CaptureTimingSummary, CssPoint,
         CssRect, CssSize, DeviceScaleFactor, ErrorContext, EveryNthFrame, FrameId, ImageFormat,
         InteractionId, InteractionTiming, NodeReference, ObservationContext, PageChange,
-        PageSelection, PageSnapshot, PixelDimensions, PresentationRange, PresentationTime,
-        QueryPageResult, RangeResolutionOptions, ResolvedRange, ScreenshotTarget, SemanticMatch,
-        SemanticQueryOutcome, SessionId, SessionRange, SessionTime, Sha256Digest,
+        PageOperationResult, PageSelection, PageSnapshot, PixelDimensions, PresentationRange,
+        PresentationTime, QueryPageResult, RangeResolutionOptions, ResolvedRange, ScreenshotTarget,
+        SemanticMatch, SemanticQueryOutcome, SessionId, SessionRange, SessionTime, Sha256Digest,
         SnapshotGeneration, SnapshotNode, SnapshotNodeId, TargetCaptureStatus, TargetId,
         TemporalRangeAnchorKind, TemporalVideoGenerationClip, TemporalVideoManifest,
         VideoArtifactEvidenceHandle, VideoEncodedClip, VideoEncoderIdentity, VideoEncodingProfile,
         VideoOutputGeometry, VideoPresentationPlan, VideoPresentationSegment, VideoSegmentSource,
-        VideoTimingBasis, VisualEpoch, WaitCondition, WaitProbe, WaitRequest, WaitResult,
+        VideoTimingBasis, ViewportOperationResult, ViewportOverride, ViewportPreset, VisualEpoch,
+        WaitCondition, WaitProbe, WaitRequest, WaitResult,
     };
     use std::{
         sync::atomic::{AtomicUsize, Ordering},
@@ -2218,6 +2227,87 @@ mod tests {
         .unwrap();
         assert_eq!(mapped.response.status, ToolResponseStatus::Succeeded);
         assert!(mapped.response.warnings.is_empty());
+    }
+
+    #[test]
+    fn viewport_projection_publishes_materialization_geometry_and_bounded_guidance() {
+        let materialization = ViewportOverride::Preset {
+            preset: ViewportPreset::MobilePhone,
+        }
+        .materialize();
+        let effective = krometrail_core::EffectiveViewport {
+            css_size: CssSize::new(390.0, 844.0).unwrap(),
+            layout_css_size: CssSize::new(980.0, 2_120.0).unwrap(),
+            device_scale_factor: DeviceScaleFactor::new(3.0).unwrap(),
+            mobile: true,
+            touch: true,
+            override_active: true,
+            viewport_meta_present: false,
+        };
+        let guidance = krometrail_core::viewport_guidance(materialization, &effective);
+        let timing = InteractionTiming::new(
+            SessionTime::from_nanos(1),
+            SessionTime::from_nanos(2),
+            SessionTime::from_nanos(3),
+            None,
+        )
+        .unwrap();
+        let interaction = InteractionAnchor::new(
+            interaction_id(),
+            session_id(),
+            target_id(),
+            BrowserOperationKind::SetViewport,
+            timing,
+        )
+        .unwrap();
+        let unavailable = error(
+            ErrorCode::PageObservationFailed,
+            "test observation unavailable",
+        );
+        let operation = PageOperationResult::new(
+            interaction,
+            PageOperationOutcome::Succeeded(PageChange::ViewportConfigured {
+                override_active: true,
+            }),
+            ObservationPart::Unavailable(unavailable),
+        )
+        .unwrap();
+        let projection = project_operation(
+            BrowserOperationResult::SetViewport(Box::new(ViewportOperationResult {
+                operation,
+                effective: ObservationPart::Available(effective),
+                materialization,
+                guidance,
+            })),
+            ResponseProjectionRequest::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            projection.result["materialization"]["intent"],
+            "mobile_device"
+        );
+        assert_eq!(
+            projection.result["materialization"]["preset"],
+            "mobile_phone"
+        );
+        assert_eq!(
+            projection.result["materialization"]["metrics"]["width"],
+            390
+        );
+        assert_eq!(
+            projection.result["materialization"]["user_agent_emulated"],
+            false
+        );
+        assert_eq!(
+            projection.result["effective"]["available"]["layout_css_size"]["width"],
+            980.0
+        );
+        assert_eq!(
+            projection.result["guidance"][0]["code"],
+            "likely_missing_viewport_metadata"
+        );
+        assert!(projection.images.is_empty());
     }
 
     #[test]

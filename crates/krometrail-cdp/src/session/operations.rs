@@ -315,10 +315,8 @@ pub(super) async fn execute_operation_unfenced(
             let target_key = target.target.target.browser_target_key().to_owned();
             let target_id = target.target.target.id();
             let previous = target.viewport_override;
-            let requested = match request.viewport {
-                ViewportOverride::Override(metrics) => Some(metrics),
-                ViewportOverride::Clear => None,
-            };
+            let materialization = request.viewport.materialize();
+            let requested = materialization.metrics;
             let bound = crate::control::bind_target(state, request.target)?;
             let started_at = page_control.session_time()?;
             let interaction_id = page_control.next_interaction_id();
@@ -354,6 +352,7 @@ pub(super) async fn execute_operation_unfenced(
                     started_at,
                     dispatched_at,
                     error,
+                    materialization,
                 );
             }
             let effective = match crate::control::viewport::observe_effective_viewport(
@@ -382,6 +381,7 @@ pub(super) async fn execute_operation_unfenced(
                         started_at,
                         dispatched_at,
                         error,
+                        materialization,
                     );
                 }
             };
@@ -406,6 +406,7 @@ pub(super) async fn execute_operation_unfenced(
                             started_at,
                             dispatched_at,
                             error,
+                            materialization,
                         );
                     }
                 };
@@ -437,6 +438,7 @@ pub(super) async fn execute_operation_unfenced(
                     started_at,
                     dispatched_at,
                     error,
+                    materialization,
                 );
             }
             if let Some(capture) = shared.capture.as_ref() {
@@ -463,10 +465,13 @@ pub(super) async fn execute_operation_unfenced(
                 outcome,
                 observation.observation,
             )?;
+            let guidance = krometrail_core::viewport_guidance(materialization, &effective);
             Ok(BrowserOperationResult::SetViewport(Box::new(
                 ViewportOperationResult {
                     operation,
                     effective: ObservationPart::Available(effective),
+                    materialization,
+                    guidance,
                 },
             )))
         }
@@ -661,6 +666,7 @@ fn viewport_failure_result(
     started_at: krometrail_core::SessionTime,
     dispatched_at: krometrail_core::SessionTime,
     error: KrometrailError,
+    materialization: krometrail_core::ViewportMaterialization,
 ) -> Result<BrowserOperationResult> {
     let operation = build_page_result(
         page_control,
@@ -680,6 +686,8 @@ fn viewport_failure_result(
         ViewportOperationResult {
             operation,
             effective: ObservationPart::Unavailable(effective_error),
+            materialization,
+            guidance: Vec::new(),
         },
     )))
 }

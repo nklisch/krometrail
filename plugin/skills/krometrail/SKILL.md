@@ -64,7 +64,7 @@ or use `{"focus":"foreground"}` when the user wants automatic tab switching.
 - Navigation: `navigate_page`, `reload_page`, `go_back`, `go_forward`
 - Interaction: `click`, `fill`, `press_keys`, `select_option`, `hover`, `drag`, `scroll`,
   `upload_files`, `handle_dialog`, `wait`, `batch`
-- Responsive state: `set_viewport` applies or clears explicit target-scoped metrics
+- Responsive state: `set_viewport` applies ergonomic presets or custom target-scoped metrics, or restores browser defaults
 
 `browser_status {}` returns capture health, loss, retention pressure, cadence, selection, and page count
 without compatibility matrices or timing distributions. Use `{"detail":"full"}` only when those deeper
@@ -108,14 +108,29 @@ For text waits, omitting `locator` scopes the match to the full document-body te
 "exact"` compares the complete text in that scope; use a locator for exact element text or
 `match_mode: "contains"` for an unscoped substring.
 
-Apply an explicit responsive viewport with:
+For routine CSS breakpoint/layout testing, start with the smallest responsive preset and expand only
+when the task needs a wider surface:
 
 ```json
-{"viewport":{"mode":"override","metrics":{"width":390,"height":844,"device_scale_factor":3.0,"mobile":true,"touch":true}}}
+{"viewport":{"mode":"preset","preset":"responsive_small"}}
 ```
 
-Clear it with `{"viewport":{"mode":"clear"}}`. A geometry change creates a new visual epoch; do not
-compare pixels across incompatible epochs without declared normalization.
+The responsive presets are `responsive_small`, `responsive_tablet`, and `responsive_desktop`; they
+change CSS geometry without mobile or touch emulation. Use `mobile_phone` or `mobile_tablet` only when
+testing mobile-layout/touch behavior. Mobile presets do not emulate a mobile user agent or claim full
+device fidelity. Use custom metrics only for bespoke geometry:
+
+```json
+{"viewport":{"mode":"override","metrics":{"width":512,"height":768,"device_scale_factor":1.0,"mobile":false,"touch":false}}}
+```
+
+The result reports the materialized metrics, responsive/mobile intent, independently observed visual
+and layout geometry, and at most one guidance item. A layout-mismatch guidance item means Chrome
+acknowledged the requested visual viewport but the page laid itself out differently; the specific
+missing-viewport-metadata guidance suggests adding page viewport metadata or using a responsive preset
+for CSS-breakpoint testing. It is not an application failure. Clear with
+`{"viewport":{"mode":"clear"}}` to restore browser defaults. A geometry change creates a new visual
+epoch; do not compare pixels across incompatible epochs without declared normalization.
 
 For `batch`, each step is `{"operation":"<standalone tool name>","request":{...}}`; the request object
 uses the same arguments advertised by that standalone operation. For example:

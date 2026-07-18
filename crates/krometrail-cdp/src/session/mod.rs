@@ -25,7 +25,6 @@ use krometrail_core::{
     ObservationPart, PageChange, PageOperationOutcome, PageOperationResult, PageSelection,
     PageStatus, PortFuture, ProfileRef, ResolvedReferenceGeometry, Result, SessionId,
     SessionOrigin, TargetCaptureStatus, TargetVisibility, ViewportOperationResult,
-    ViewportOverride,
 };
 use serde_json::Value;
 use tokio::{
@@ -848,6 +847,7 @@ mod tests {
         BrowserProduct, BrowserProductVersion, BrowserVersion, ByteOffset, CapabilitySupport,
         CaptureGap, CaptureStreamState, EncodedFrame, FrameAddress, IdValue, MonotonicClock,
         PortFuture, RecordingSink, RendererCapability, SegmentId, SessionOrigin, TargetLifecycle,
+        ViewportOverride,
     };
     use std::{
         collections::VecDeque,
@@ -1710,8 +1710,11 @@ mod tests {
     struct GeometryTestTransport {
         width: Mutex<f64>,
         height: Mutex<f64>,
+        layout_width: Mutex<f64>,
+        layout_height: Mutex<f64>,
         scale: Mutex<f64>,
         touch_points: Mutex<u64>,
+        viewport_meta_present: AtomicBool,
         calls: Mutex<Vec<String>>,
         apply_updates_effective: AtomicBool,
         fail_observation: AtomicBool,
@@ -1723,8 +1726,11 @@ mod tests {
             Self {
                 width: Mutex::new(width),
                 height: Mutex::new(height),
+                layout_width: Mutex::new(width),
+                layout_height: Mutex::new(height),
                 scale: Mutex::new(scale),
                 touch_points: Mutex::new(0),
+                viewport_meta_present: AtomicBool::new(true),
                 calls: Mutex::new(Vec::new()),
                 apply_updates_effective: AtomicBool::new(false),
                 fail_observation: AtomicBool::new(false),
@@ -1735,6 +1741,8 @@ mod tests {
         fn set_effective(&self, width: f64, height: f64, scale: f64) {
             *self.width.lock().unwrap() = width;
             *self.height.lock().unwrap() = height;
+            *self.layout_width.lock().unwrap() = width;
+            *self.layout_height.lock().unwrap() = height;
             *self.scale.lock().unwrap() = scale;
         }
 
@@ -1783,8 +1791,19 @@ mod tests {
             if self.apply_updates_effective.load(Ordering::Acquire)
                 && method == "Emulation.setDeviceMetricsOverride"
             {
-                *self.width.lock().unwrap() = params["width"].as_f64().unwrap();
-                *self.height.lock().unwrap() = params["height"].as_f64().unwrap();
+                let width = params["width"].as_f64().unwrap();
+                let height = params["height"].as_f64().unwrap();
+                *self.width.lock().unwrap() = width;
+                *self.height.lock().unwrap() = height;
+                if params["mobile"].as_bool() == Some(true)
+                    && !self.viewport_meta_present.load(Ordering::Acquire)
+                {
+                    *self.layout_width.lock().unwrap() = 980.0;
+                    *self.layout_height.lock().unwrap() = height * 980.0 / width;
+                } else {
+                    *self.layout_width.lock().unwrap() = width;
+                    *self.layout_height.lock().unwrap() = height;
+                }
                 *self.scale.lock().unwrap() = params["deviceScaleFactor"].as_f64().unwrap();
             } else if self.apply_updates_effective.load(Ordering::Acquire)
                 && method == "Emulation.setTouchEmulationEnabled"
@@ -1794,17 +1813,22 @@ mod tests {
             }
             let response = match method {
                 "Page.getLayoutMetrics" => serde_json::json!({
-                    "result": {"cssVisualViewport": {
-                        "clientWidth": *self.width.lock().unwrap(),
-                        "clientHeight": *self.height.lock().unwrap()
-                    }}
+                    "result": {
+                        "cssVisualViewport": {
+                            "clientWidth": *self.width.lock().unwrap(),
+                            "clientHeight": *self.height.lock().unwrap()
+                        },
+                        "cssLayoutViewport": {
+                            "clientWidth": *self.layout_width.lock().unwrap(),
+                            "clientHeight": *self.layout_height.lock().unwrap()
+                        }
+                    }
                 }),
                 "Runtime.evaluate" => serde_json::json!({
                     "result": {"result": {"value": {
-                        "width": *self.width.lock().unwrap(),
-                        "height": *self.height.lock().unwrap(),
                         "scale": *self.scale.lock().unwrap(),
-                        "touchPoints": *self.touch_points.lock().unwrap()
+                        "touchPoints": *self.touch_points.lock().unwrap(),
+                        "viewportMetaPresent": self.viewport_meta_present.load(Ordering::Acquire)
                     }}}
                 }),
                 _ => Value::Object(Default::default()),
@@ -2098,7 +2122,7 @@ mod tests {
         );
         let cancellation = OperationCancellation::default();
 
-        transport.set_effective(390.0, 844.0, 3.0);
+        transport.set_effective(390.0, 844.0, 1.0);
         let set = execute_operation_unfenced(
             &mut page_control,
             &mut state,
@@ -2106,15 +2130,31 @@ mod tests {
             &shared,
             BrowserOperationRequest::SetViewport(krometrail_core::SetViewportRequest {
                 target: PageSelection::Target(target_id),
-                viewport: ViewportOverride::Override(
-                    krometrail_core::ViewportMetrics::new(390, 844, 3.0, false, false).unwrap(),
-                ),
+                viewport: ViewportOverride::Preset {
+                    preset: krometrail_core::ViewportPreset::ResponsiveSmall,
+                },
             }),
             &cancellation,
             OperationExecutionContext::default(),
         )
         .await;
-        assert!(set.is_ok(), "set failed: {set:?}");
+        let set = set.unwrap_or_else(|error| panic!("set failed: {error:?}"));
+        let BrowserOperationResult::SetViewport(set) = set else {
+            panic!("viewport result")
+        };
+        assert_eq!(
+            set.materialization.intent,
+            krometrail_core::ViewportIntent::ResponsiveCss
+        );
+        assert_eq!(
+            set.materialization.preset,
+            Some(krometrail_core::ViewportPreset::ResponsiveSmall)
+        );
+        assert!(set.guidance.is_empty());
+        assert_eq!(
+            state.targets_by_key["geometry-target"].viewport_override,
+            set.materialization.metrics
+        );
         assert_eq!(
             coordinator
                 .geometry_for_test(target_id, attachment_generation)
@@ -2122,7 +2162,7 @@ mod tests {
             (
                 crate::capture::CaptureGeometry {
                     viewport: krometrail_core::PixelDimensions::new(390, 844).unwrap(),
-                    device_scale_factor: krometrail_core::DeviceScaleFactor::new(3.0).unwrap(),
+                    device_scale_factor: krometrail_core::DeviceScaleFactor::new(1.0).unwrap(),
                 },
                 false
             )
@@ -2162,9 +2202,10 @@ mod tests {
             &shared,
             BrowserOperationRequest::SetViewport(krometrail_core::SetViewportRequest {
                 target: PageSelection::Target(target_id),
-                viewport: ViewportOverride::Override(
-                    krometrail_core::ViewportMetrics::new(1024, 768, 2.0, false, false).unwrap(),
-                ),
+                viewport: ViewportOverride::Override {
+                    metrics: krometrail_core::ViewportMetrics::new(1024, 768, 2.0, false, false)
+                        .unwrap(),
+                },
             }),
             &cancellation,
             OperationExecutionContext::default(),
@@ -2198,9 +2239,10 @@ mod tests {
             &shared,
             BrowserOperationRequest::SetViewport(krometrail_core::SetViewportRequest {
                 target: PageSelection::Target(target_id),
-                viewport: ViewportOverride::Override(
-                    krometrail_core::ViewportMetrics::new(1280, 720, 2.0, false, false).unwrap(),
-                ),
+                viewport: ViewportOverride::Override {
+                    metrics: krometrail_core::ViewportMetrics::new(1280, 720, 2.0, false, false)
+                        .unwrap(),
+                },
             }),
             &cancellation,
             OperationExecutionContext::default(),

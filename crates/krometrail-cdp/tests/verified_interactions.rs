@@ -12,12 +12,13 @@ use krometrail_core::{
     BrowserActionRequest, BrowserConnectRequest, BrowserConnector, BrowserOperationRequest,
     BrowserOperationResult, ClickRequest, CoordinateSpace, CreatePageRequest, CssPoint,
     DialogAction, DragRequest, ElementLocator, FillMode, FillRequest, HandleDialogRequest,
-    HoverRequest, InteractionLocator, InteractionOutcome, KeyChord, Modifiers, MouseButton,
-    NavigatePageRequest, ObservationPart, PageSelection, PressKeysRequest, QueryPageRequest,
-    QueryPageResult, ReadOnlyEvaluationRequest, ScrollDelta, ScrollRequest, SelectOptionRequest,
-    SelectPageRequest, SelectValue, SemanticQuery, SemanticQueryOutcome, SemanticTextMatch,
-    SemanticTextMatchMode, SetViewportRequest, SnapshotPageRequest, UploadFilesRequest,
-    ValidatedFilePath, ViewportMetrics, ViewportOverride,
+    HoverRequest, ImageFormat, InteractionLocator, InteractionOutcome, KeyChord, Modifiers,
+    MouseButton, NavigatePageRequest, ObservationPart, PageSelection, PressKeysRequest,
+    QueryPageRequest, QueryPageResult, ReadOnlyEvaluationRequest, ScreenshotRequest,
+    ScreenshotTarget, ScrollDelta, ScrollRequest, SelectOptionRequest, SelectPageRequest,
+    SelectValue, SemanticQuery, SemanticQueryOutcome, SemanticTextMatch, SemanticTextMatchMode,
+    SetViewportRequest, SnapshotPageRequest, UploadFilesRequest, ValidatedFilePath,
+    ViewportGuidanceCode, ViewportIntent, ViewportOverride, ViewportPreset,
 };
 use serde_json::{Value, json};
 use support::scripted_cdp::ScriptedCdp;
@@ -1252,7 +1253,7 @@ async fn opt_in_real_chrome_resolves_semantic_queries_to_exact_references() {
 }
 
 #[tokio::test]
-async fn opt_in_real_chrome_qualifies_viewport_navigation_clear_and_target_isolation() {
+async fn opt_in_real_chrome_qualifies_viewport_presets_guidance_and_target_isolation() {
     if !support::chrome::real_browser_tests_enabled() {
         eprintln!(
             "skipping real Chrome viewport qualification; set KROMETRAIL_REAL_CHROME_TESTS=1"
@@ -1317,12 +1318,60 @@ async fn opt_in_real_chrome_qualifies_viewport_navigation_clear_and_target_isola
         .await
         .expect("foreground viewport target");
 
-    let metrics = ViewportMetrics::new(390, 844, 3.0, true, true).unwrap();
+    let responsive = session
+        .execute(
+            BrowserOperationRequest::SetViewport(SetViewportRequest {
+                target: PageSelection::Target(first),
+                viewport: ViewportOverride::Preset {
+                    preset: ViewportPreset::ResponsiveSmall,
+                },
+            }),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .expect("apply responsive viewport");
+    let BrowserOperationResult::SetViewport(responsive) = responsive else {
+        panic!("responsive viewport result")
+    };
+    let ObservationPart::Available(responsive_effective) = responsive.effective else {
+        panic!("responsive effective viewport")
+    };
+    assert_eq!(
+        responsive.materialization.intent,
+        ViewportIntent::ResponsiveCss
+    );
+    assert_eq!(
+        responsive.materialization.preset,
+        Some(ViewportPreset::ResponsiveSmall)
+    );
+    assert_eq!(responsive_effective.css_size.width, 390.0);
+    assert_eq!(responsive_effective.layout_css_size.width, 390.0);
+    assert!(!responsive_effective.mobile && !responsive_effective.touch);
+    assert!(responsive.guidance.is_empty());
+
+    let screenshot = session
+        .execute(
+            BrowserOperationRequest::TakeScreenshot(
+                ScreenshotRequest::new(first, ScreenshotTarget::Viewport, ImageFormat::Png, None)
+                    .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .expect("responsive screenshot");
+    let BrowserOperationResult::TakeScreenshot(screenshot) = screenshot else {
+        panic!("responsive screenshot result")
+    };
+    assert_eq!(screenshot.metadata().image.width(), 390);
+    assert_eq!(screenshot.metadata().image.height(), 844);
+
     let configured = session
         .execute(
             BrowserOperationRequest::SetViewport(SetViewportRequest {
                 target: PageSelection::Target(first),
-                viewport: ViewportOverride::Override(metrics),
+                viewport: ViewportOverride::Preset {
+                    preset: ViewportPreset::MobilePhone,
+                },
             }),
             krometrail_core::BrowserOperationContext::default(),
         )
@@ -1334,10 +1383,26 @@ async fn opt_in_real_chrome_qualifies_viewport_navigation_clear_and_target_isola
     let ObservationPart::Available(effective) = configured.effective else {
         panic!("effective viewport")
     };
+    assert_eq!(
+        configured.materialization.intent,
+        ViewportIntent::MobileDevice
+    );
+    assert_eq!(
+        configured.materialization.preset,
+        Some(ViewportPreset::MobilePhone)
+    );
+    assert!(!configured.materialization.user_agent_emulated);
     assert_eq!(effective.css_size.width, 390.0);
     assert_eq!(effective.css_size.height, 844.0);
+    assert!(effective.layout_css_size.width >= 585.0);
+    assert!(!effective.viewport_meta_present);
     assert_eq!(effective.device_scale_factor.get(), 3.0);
     assert!(effective.mobile && effective.touch && effective.override_active);
+    assert_eq!(configured.guidance.len(), 1);
+    assert_eq!(
+        configured.guidance[0].code,
+        ViewportGuidanceCode::LikelyMissingViewportMetadata
+    );
     assert_eq!(
         evaluate(
             &session,
