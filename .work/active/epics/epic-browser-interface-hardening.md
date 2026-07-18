@@ -1,7 +1,7 @@
 ---
 id: epic-browser-interface-hardening
 kind: epic
-stage: implementing
+stage: review
 tags: [browser, agent-ux]
 parent: null
 depends_on: []
@@ -75,7 +75,7 @@ The three features have no implementation dependencies. Each preserves current p
 - **Compatibility boundary**: preserve canonical/full MCP results, resource URIs, retained artifacts, and viewport request schemas. Only default compact presentation and erroneous runtime behavior change.
 - **Semantic scope**: extend the existing query request with a bounded container relationship only if the current public query model cannot express it; do not infer arbitrary nearby text across the page.
 - **Viewport truth**: verify desktop overrides against layout/emulation geometry and report visual content geometry separately, because scrollbars legitimately reduce `cssVisualViewport`.
-- **Capture failure isolation**: a failed geometry refresh declares a bounded gap and resumes capture from the last established geometry; it does not invalidate prior frames or terminate the target capture pipeline.
+- **Capture failure isolation**: a failed geometry refresh keeps frames fenced and recorded as bounded gaps until an authoritative refresh succeeds; it does not invalidate prior frames or terminate the target capture pipeline.
 - **Qualification**: deterministic protocol regressions are required for every finding; real Chrome/public pages confirm the two browser-dependent runtime repairs and nested-frame semantics.
 
 ## Simplification arcs
@@ -114,6 +114,8 @@ No product UI surface is introduced. These are MCP/CDP contract repairs and agen
 
 Aggregate verification is green across workspace tests, workspace check, workspace clippy with warnings denied, formatting, plugin distribution contracts, and opt-in real-Chrome viewport and same-origin-frame qualification.
 
+The aggregate review's named qualification gaps are closed. The exact scrollbar trigger remains locked by the deterministic decoder case (`cssVisualViewport` 375 wide with an exact 390-wide declared/layout viewport). A post-fix run of the current local binary against the original public reproduction, `https://nklisch.github.io/krometrail/` (redirecting to `https://krometrail.dev/`) on managed Chrome 150, applied `responsive_small` successfully with declared/layout/visual 390×844, produced a 390×844 screenshot, and returned no warnings. The real-Chrome browser-context test now installs an actual recording sink and proves persistence advances while capture remains `capturing` with no failure stage after same-origin child-frame navigation; its frame query, stale-reference, and bounded-asset assertions remain in the same flow.
+
 ## Review findings (2026-07-18)
 
 **Effective weight**: standard — one same-harness fresh-context aggregate pass.
@@ -122,3 +124,5 @@ Aggregate verification is green across workspace tests, workspace check, workspa
 
 - **Trigger-specific real-Chrome qualification**: existing opt-in viewport and frame tests passed but did not force scrollbar-reduced visual geometry or assert capture health/persistence across nested-frame navigation. Extend the real-Chrome cases or record equivalent concrete post-fix outcomes before claiming those runtime acceptance points.
 - **Stale aggregate decision**: replace the pre-correction statement that refresh failure resumes on last-established geometry with the implemented rule that frames remain fenced/gapped until authoritative refresh succeeds.
+
+Both named findings are fixed and verified. Closure requires no second independent epic review under the recorded standard-weight policy.

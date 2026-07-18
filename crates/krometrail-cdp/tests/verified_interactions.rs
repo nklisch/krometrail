@@ -2,28 +2,80 @@
 
 mod support;
 
-use std::sync::Arc;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Instant,
+};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use krometrail_cdp::{
-    CdpTransport, CdpTransportFactory, ProductionBrowserConnector, TransportError, TransportFuture,
+    CaptureConfig, CdpTransport, CdpTransportFactory, ProductionBrowserConnector, TransportError,
+    TransportFuture,
 };
 use krometrail_core::{
     BrowserActionRequest, BrowserConnectRequest, BrowserConnector, BrowserOperationRequest,
-    BrowserOperationResult, ClickRequest, CoordinateSpace, CreatePageRequest, CssPoint,
-    DialogAction, DragRequest, ElementLocator, ErrorCode, FillMode, FillRequest, FrameAccess,
-    HandleDialogRequest, HoverRequest, ImageFormat, InteractionLocator, InteractionOutcome,
-    KeyChord, ListFramesRequest, ListPageAssetsRequest, Modifiers, MouseButton,
-    NavigatePageRequest, ObservationPart, PageSelection, PressKeysRequest, QueryPageRequest,
-    QueryPageResult, ReadClipboardRequest, ReadOnlyEvaluationRequest, ScreenshotRequest,
-    ScreenshotTarget, ScrollDelta, ScrollRequest, SelectOptionRequest, SelectPageRequest,
-    SelectValue, SemanticDocumentScope, SemanticQuery, SemanticQueryOutcome, SemanticTextMatch,
-    SemanticTextMatchMode, SetViewportRequest, SnapshotPageRequest, UploadFilesRequest,
+    BrowserOperationResult, ByteOffset, CaptureGap, CaptureStreamState, ClickRequest,
+    CoordinateSpace, CreatePageRequest, CssPoint, DialogAction, DragRequest, ElementLocator,
+    EncodedFrame, ErrorCode, FillMode, FillRequest, FrameAccess, FrameAddress, HandleDialogRequest,
+    HoverRequest, IdSource, IdValue, ImageFormat, InteractionLocator, InteractionOutcome, KeyChord,
+    ListFramesRequest, ListPageAssetsRequest, Modifiers, MonotonicClock, MouseButton,
+    NavigatePageRequest, ObservationPart, ObservedTime, PageSelection, PortFuture,
+    PressKeysRequest, QueryPageRequest, QueryPageResult, ReadClipboardRequest,
+    ReadOnlyEvaluationRequest, RecordingSink, ScreenshotRequest, ScreenshotTarget, ScrollDelta,
+    ScrollRequest, SegmentId, SelectOptionRequest, SelectPageRequest, SelectValue,
+    SemanticDocumentScope, SemanticQuery, SemanticQueryOutcome, SemanticTextMatch,
+    SemanticTextMatchMode, SessionId, SetViewportRequest, SnapshotPageRequest, UploadFilesRequest,
     ValidatedFilePath, ViewportGuidanceCode, ViewportIntent, ViewportOverride, ViewportPreset,
     WaitCondition, WaitOutcome, WaitRequest, WriteClipboardRequest,
 };
 use serde_json::{Value, json};
 use support::scripted_cdp::ScriptedCdp;
+use uuid::Uuid;
+
+#[derive(Default)]
+struct QualificationRecordingSink {
+    next_offset: AtomicU64,
+}
+
+impl RecordingSink for QualificationRecordingSink {
+    fn append_frame(
+        &self,
+        _frame: EncodedFrame,
+    ) -> PortFuture<'_, krometrail_core::Result<FrameAddress>> {
+        let offset = self.next_offset.fetch_add(1, Ordering::Relaxed) + 1;
+        Box::pin(std::future::ready(Ok(FrameAddress::new(
+            SegmentId::from_uuid(Uuid::from_u128(1)),
+            ByteOffset::new(offset),
+        ))))
+    }
+
+    fn append_gap(&self, _gap: CaptureGap) -> PortFuture<'_, krometrail_core::Result<()>> {
+        Box::pin(std::future::ready(Ok(())))
+    }
+
+    fn flush(&self, _session_id: SessionId) -> PortFuture<'_, krometrail_core::Result<()>> {
+        Box::pin(std::future::ready(Ok(())))
+    }
+}
+
+struct QualificationClock(Instant);
+
+impl MonotonicClock for QualificationClock {
+    fn now(&self) -> ObservedTime {
+        ObservedTime::from_nanos(u64::try_from(self.0.elapsed().as_nanos()).unwrap_or(u64::MAX))
+    }
+}
+
+struct QualificationIds;
+
+impl IdSource for QualificationIds {
+    fn next(&self) -> IdValue {
+        IdValue::from_uuid(Uuid::new_v4())
+    }
+}
 
 #[derive(Clone)]
 struct ScriptedFactory(ScriptedCdp);
@@ -1667,6 +1719,13 @@ async fn opt_in_real_chrome_qualifies_frame_actions_staleness_and_bounded_assets
                 .with_command_timeout(std::time::Duration::from_secs(15)),
         ),
     )
+    .with_capture(
+        Arc::new(QualificationClock(Instant::now())),
+        Arc::new(QualificationIds),
+        Arc::new(QualificationRecordingSink::default()),
+        Arc::new(support::retention::AlwaysAvailableRetention),
+        CaptureConfig::default(),
+    )
     .with_interaction_evidence(support::evidence_sink());
     let session = connector
         .connect(BrowserConnectRequest::Launch(
@@ -1689,19 +1748,10 @@ async fn opt_in_real_chrome_qualifies_frame_actions_staleness_and_bounded_assets
         .target
         .target
         .id();
-    session
-        .execute(
-            BrowserOperationRequest::NavigatePage(
-                NavigatePageRequest::new(PageSelection::Target(target), fixture_url).unwrap(),
-            ),
-            krometrail_core::BrowserOperationContext::default(),
-        )
-        .await
-        .expect("navigate bound target to browser-context fixture");
     let last_frames = Arc::new(std::sync::Mutex::new(None));
     let observed_frames = Arc::clone(&last_frames);
     let frame_session = Arc::clone(&session);
-    let child = tokio::time::timeout(std::time::Duration::from_secs(10), async move {
+    let child = tokio::time::timeout(std::time::Duration::from_secs(30), async move {
         loop {
             let frames = frame_session
                 .execute(
@@ -1731,13 +1781,33 @@ async fn opt_in_real_chrome_qualifies_frame_actions_staleness_and_bounded_assets
             last_frames.lock().unwrap()
         )
     });
+    let capture_before_frame_navigation =
+        tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            loop {
+                let status = session
+                    .status()
+                    .await
+                    .expect("capture status before frame navigation");
+                if let Some(capture) = status
+                    .capture
+                    .iter()
+                    .find(|capture| capture.target_id() == target)
+                    && capture.state() == CaptureStreamState::Capturing
+                    && capture.statistics().persisted_frames() > 0
+                {
+                    break capture.statistics().persisted_frames();
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("capture persists a frame before child-frame navigation");
 
     wait_for_page_expression(&session, target, "window.scrollY > 0").await;
     assert_eq!(
         evaluate(&session, target, "window.scrollY > 0").await,
         json!(true)
     );
-
     let mut query = QueryPageRequest::new(
         PageSelection::Target(target),
         SemanticQuery::role("link", Some(exact_semantic_text("Navigate child"))).unwrap(),
@@ -1789,6 +1859,31 @@ async fn opt_in_real_chrome_qualifies_frame_actions_staleness_and_bounded_assets
         )
         .await,
         json!(true)
+    );
+    let capture_after_frame_navigation =
+        tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            loop {
+                let status = session
+                    .status()
+                    .await
+                    .expect("capture status after frame navigation");
+                if let Some(capture) = status
+                    .capture
+                    .iter()
+                    .find(|capture| capture.target_id() == target)
+                    && capture.state() == CaptureStreamState::Capturing
+                    && capture.failure_stage().is_none()
+                    && capture.statistics().persisted_frames() > capture_before_frame_navigation
+                {
+                    break capture.statistics().persisted_frames();
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("capture remains healthy and persists after child-frame navigation");
+    eprintln!(
+        "nested-frame capture qualification: persisted_before={capture_before_frame_navigation} persisted_after={capture_after_frame_navigation} state=capturing failure_stage=none"
     );
     let stale = session
         .execute(
