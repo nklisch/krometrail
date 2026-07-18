@@ -804,7 +804,7 @@ impl Drop for ManagedDownloadAuthority {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
     use super::*;
     use crate::transport::{TransportClose, TransportError, TransportFuture};
@@ -823,6 +823,16 @@ mod tests {
             &mut self,
         ) -> TransportFuture<'_, std::result::Result<Option<NamedEvent>, TransportError>> {
             Box::pin(std::future::ready(Ok(None)))
+        }
+    }
+
+    struct CancelSignal(AtomicBool);
+    impl CancellationSignal for CancelSignal {
+        fn is_cancelled(&self) -> bool {
+            self.0.load(Ordering::Acquire)
+        }
+        fn cancelled(&self) -> krometrail_core::PortFuture<'_, ()> {
+            Box::pin(std::future::ready(()))
         }
     }
     struct Transport {
@@ -1048,5 +1058,67 @@ mod tests {
         assert!(!encoded.contains("secret-name"));
         assert!(!encoded.contains("private"));
         assert!(!encoded.contains("token"));
+    }
+
+    #[tokio::test]
+    async fn overflow_is_bounded_visible_and_wait_returns_resource_limit() {
+        let temp = tempfile::tempdir().unwrap();
+        let authority = authority(temp.path());
+        let transport = Transport {
+            calls: Mutex::new(Vec::new()),
+        };
+        for index in 0..(MAX_MANAGED_DOWNLOADS + 2) {
+            authority
+                .begin(
+                    1,
+                    &transport,
+                    &json!({"guid":format!("guid-{index}"),"url":"https://example.test/a","suggestedFilename":"a"}),
+                )
+                .await;
+        }
+        let inventory = authority.list();
+        assert_eq!(inventory.downloads.len(), MAX_MANAGED_DOWNLOADS + 1);
+        let rejected = inventory.downloads.last().unwrap();
+        assert_eq!(rejected.state, DownloadState::Rejected);
+        let error = authority
+            .wait(WaitForDownloadRequest {
+                after: None,
+                download_id: Some(rejected.id),
+                terminal: true,
+                timeout: 100,
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::ResourceLimitExceeded);
+        assert_eq!(
+            transport
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(method, _)| method == "Browser.cancelDownload")
+                .count(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_honors_caller_cancellation_without_a_download_change() {
+        let temp = tempfile::tempdir().unwrap();
+        let authority = authority(temp.path());
+        let signal: Arc<dyn CancellationSignal> = Arc::new(CancelSignal(AtomicBool::new(true)));
+        let error = authority
+            .wait_with_cancellation(
+                WaitForDownloadRequest {
+                    after: None,
+                    download_id: None,
+                    terminal: true,
+                    timeout: 1_000,
+                },
+                Some(signal),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Cancelled);
     }
 }
