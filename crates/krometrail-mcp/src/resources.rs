@@ -22,6 +22,8 @@ const ARTIFACT_READ_LIMIT: u64 = 64 * 1024 * 1024;
 const SOURCE_FRAME_READ_LIMIT: u64 = 32 * 1024 * 1024;
 
 const ARTIFACT_URI_TEMPLATE: &str = "krometrail://evidence/{session}/{target}/artifacts/{id}";
+const ARTIFACT_MANIFEST_URI_TEMPLATE: &str =
+    "krometrail://evidence/{session}/{target}/artifact-manifests/{id}";
 const SOURCE_FRAME_URI_TEMPLATE: &str = "krometrail://evidence/{session}/{target}/frames/{id}";
 
 /// The only resource templates exposed by this adapter. Concrete retained
@@ -43,6 +45,19 @@ pub(crate) fn resource_templates() -> Vec<ResourceTemplate> {
         ),
         Annotated::new(
             RawResourceTemplate {
+                uri_template: ARTIFACT_MANIFEST_URI_TEMPLATE.to_owned(),
+                name: "temporal-artifact-manifest".to_owned(),
+                title: Some("Temporal artifact provenance manifest".to_owned()),
+                description: Some(
+                    "Read one retained artifact's complete provenance as canonical JSON."
+                        .to_owned(),
+                ),
+                mime_type: Some("application/json".to_owned()),
+            },
+            None,
+        ),
+        Annotated::new(
+            RawResourceTemplate {
                 uri_template: SOURCE_FRAME_URI_TEMPLATE.to_owned(),
                 name: "temporal-source-frame".to_owned(),
                 title: Some("Temporal source-frame evidence".to_owned()),
@@ -59,6 +74,7 @@ pub(crate) fn resource_templates() -> Vec<ResourceTemplate> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ResourceKind {
     Artifact,
+    ArtifactManifest,
     SourceFrame,
 }
 
@@ -92,9 +108,18 @@ impl EvidenceResourceUri {
         }
     }
 
+    pub(crate) fn artifact_manifest(scope: EvidenceScope, artifact_id: ArtifactId) -> Self {
+        Self {
+            kind: ResourceKind::ArtifactManifest,
+            scope,
+            id: EvidenceResourceId::Artifact(artifact_id),
+        }
+    }
+
     pub(crate) fn canonical_uri(self) -> String {
         let kind = match self.kind {
             ResourceKind::Artifact => "artifacts",
+            ResourceKind::ArtifactManifest => "artifact-manifests",
             ResourceKind::SourceFrame => "frames",
         };
         let id = match self.id {
@@ -110,6 +135,7 @@ impl EvidenceResourceUri {
     pub(crate) fn name(self) -> String {
         let kind = match self.kind {
             ResourceKind::Artifact => "artifact",
+            ResourceKind::ArtifactManifest => "artifact-manifest",
             ResourceKind::SourceFrame => "source-frame",
         };
         format!(
@@ -154,6 +180,13 @@ impl EvidenceResourceUri {
                     return Err(invalid_uri());
                 }
                 Self::artifact(scope, id)
+            }
+            "artifact-manifests" => {
+                let id = ArtifactId::from_str(segments[3]).map_err(|_| invalid_uri())?;
+                if id.as_uuid().is_nil() || segments[3] != id.to_string() {
+                    return Err(invalid_uri());
+                }
+                Self::artifact_manifest(scope, id)
             }
             "frames" => {
                 let id = FrameId::from_str(segments[3]).map_err(|_| invalid_uri())?;
@@ -203,6 +236,18 @@ impl ResourceProjection {
         Self::new(
             EvidenceResourceUri::source_frame(scope, frame_id),
             mime_type,
+            encoded_byte_len,
+        )
+    }
+
+    pub(crate) fn from_artifact_manifest(
+        scope: EvidenceScope,
+        artifact_id: ArtifactId,
+        encoded_byte_len: u64,
+    ) -> Result<Self> {
+        Self::new(
+            EvidenceResourceUri::artifact_manifest(scope, artifact_id),
+            "application/json",
             encoded_byte_len,
         )
     }
@@ -264,22 +309,49 @@ pub(crate) async fn read_resource(
                     None,
                 ));
             };
+            let expected_uri = match parsed.kind {
+                ResourceKind::Artifact => {
+                    EvidenceResourceUri::artifact(read.handle.scope, read.handle.artifact_id)
+                }
+                ResourceKind::ArtifactManifest => EvidenceResourceUri::artifact_manifest(
+                    read.handle.scope,
+                    read.handle.artifact_id,
+                ),
+                ResourceKind::SourceFrame => {
+                    return Err(rmcp::ErrorData::internal_error(
+                        "resource result kind mismatch",
+                        None,
+                    ));
+                }
+            };
             if read.handle.artifact_id != expected_id
                 || read.handle.scope != parsed.scope
-                || EvidenceResourceUri::artifact(read.handle.scope, read.handle.artifact_id)
-                    .canonical_uri()
-                    != uri
+                || expected_uri.canonical_uri() != uri
             {
                 return Err(rmcp::ErrorData::internal_error(
                     "resource handle identity mismatch",
                     None,
                 ));
             }
-            ResourceContents::BlobResourceContents {
-                uri: uri.to_owned(),
-                mime_type: Some(read.handle.media_type.as_str().to_owned()),
-                blob: STANDARD.encode(read.encoded_bytes()),
-                meta: None,
+            match parsed.kind {
+                ResourceKind::Artifact => ResourceContents::BlobResourceContents {
+                    uri: uri.to_owned(),
+                    mime_type: Some(read.handle.media_type.as_str().to_owned()),
+                    blob: STANDARD.encode(read.encoded_bytes()),
+                    meta: None,
+                },
+                ResourceKind::ArtifactManifest => ResourceContents::TextResourceContents {
+                    uri: uri.to_owned(),
+                    mime_type: Some("application/json".to_owned()),
+                    text: serde_json::to_string(&read.handle.provenance).map_err(|_| {
+                        rmcp::ErrorData::internal_error(
+                            "artifact manifest could not be serialized",
+                            None,
+                        )
+                    })?,
+                    meta: None,
+                },
+                ResourceKind::SourceFrame => unreachable!("source-frame result rejected above"),
             }
         }
         ProgressiveEvidenceResult::RetrieveSourceFrame(read) => {
@@ -411,12 +483,15 @@ mod tests {
 
     #[test]
     fn canonical_uris_round_trip_and_reject_alternate_forms() {
-        let uri = EvidenceResourceUri::artifact(
-            scope(),
-            "00000000-0000-0000-0000-000000000003".parse().unwrap(),
-        );
+        let artifact_id = "00000000-0000-0000-0000-000000000003".parse().unwrap();
+        let uri = EvidenceResourceUri::artifact(scope(), artifact_id);
         let text = uri.canonical_uri();
         assert_eq!(EvidenceResourceUri::parse(&text).unwrap(), uri);
+        let manifest = EvidenceResourceUri::artifact_manifest(scope(), artifact_id);
+        assert_eq!(
+            EvidenceResourceUri::parse(&manifest.canonical_uri()).unwrap(),
+            manifest
+        );
         for alternate in [
             text.to_uppercase(),
             text.replace("artifacts", "artifact"),

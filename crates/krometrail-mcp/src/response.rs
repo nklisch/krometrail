@@ -6,18 +6,19 @@ use std::{
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use krometrail_core::{
-    ArtifactGenerationResult, ArtifactHandle, ArtifactId, ArtifactOutcome, BatchOutcome,
-    BatchResult, BrowserOperationResult, EncodedScreenshot, ErrorCode, InteractionAnchor,
-    KrometrailError, LiveObservation, NonEmptyText, ObservationPart, PageOperationOutcome,
-    PageOperationResult, PageSnapshot, ProgressiveEvidence, ProgressiveEvidenceContext,
-    ProgressiveEvidenceRequest, ProgressiveEvidenceResult, RetrieveArtifactRequest,
-    ScreenshotMetadata, SourceFrameBatch, SourceFrameHandle, TemporalDebugBundle, WaitOutcome,
+    ArtifactCacheDisposition, ArtifactGenerationResult, ArtifactHandle, ArtifactId,
+    ArtifactOutcome, BatchOutcome, BatchResult, BrowserOperationResult, EncodedScreenshot,
+    ErrorCode, InteractionAnchor, KrometrailError, LiveObservation, NonEmptyText, ObservationPart,
+    PageOperationOutcome, PageOperationResult, PageSnapshot, ProgressiveEvidence,
+    ProgressiveEvidenceContext, ProgressiveEvidenceRequest, ProgressiveEvidenceResult,
+    RetrieveArtifactRequest, ScreenshotMetadata, SourceFrameBatch, SourceFrameHandle,
+    TemporalDebugBundle, WaitOutcome,
 };
 use rmcp::model::{CallToolResult, Content, RawResource};
 use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::{Value, json};
-use temporal_vision::ArtifactKind;
+use temporal_vision::{ArtifactKind, EvidenceClass, PixelDimensions};
 
 use crate::resources::{ResourceKind, ResourceProjection};
 
@@ -48,7 +49,25 @@ pub enum ImageRole {
 #[serde(rename_all = "snake_case")]
 pub enum ResourceRole {
     Artifact,
+    ArtifactManifest,
     SourceFrame,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, JsonSchema)]
+pub struct BundleArtifactHandle {
+    pub artifact_id: ArtifactId,
+    #[schemars(with = "String")]
+    pub cache: ArtifactCacheDisposition,
+    pub media_type: String,
+    pub encoded_byte_len: u64,
+    pub artifact_kind: ArtifactKind,
+    pub evidence_class: EvidenceClass,
+    pub source_frame_count: u32,
+    pub selected_frame_count: u32,
+    pub omitted_frame_count: u32,
+    pub output_dimensions: PixelDimensions,
+    pub output_hash: String,
+    pub manifest_uri: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, JsonSchema)]
@@ -808,11 +827,11 @@ pub(crate) async fn map_temporal_bundle_result(
     deadline: Instant,
     cancellation: Arc<dyn krometrail_core::CancellationSignal>,
 ) -> Result<MappedResult, ResponseInvariantError> {
-    let mut projection = serializable(bundle.clone())?;
     let scope = artifact_scope(&bundle.range)?;
+    let mut projection = Projection::success(compact_bundle_value(&bundle, scope)?);
     let mut candidate: Option<(u8, u32, u32, ArtifactHandle)> = None;
     if let krometrail_core::BundleArtifactEvidence::Available(generation) = &bundle.artifacts {
-        add_artifact_generation_resources(&mut projection, generation, scope)?;
+        add_artifact_generation_resources(&mut projection, generation, scope, true)?;
         for outcome in &generation.outcomes {
             let ArtifactOutcome::Available {
                 epoch_index,
@@ -930,7 +949,7 @@ pub(crate) fn map_progressive_result(
             let generation = *generation;
             let scope = artifact_scope(&generation.range)?;
             let mut projection = serializable(generation.clone())?;
-            add_artifact_generation_resources(&mut projection, &generation, scope)?;
+            add_artifact_generation_resources(&mut projection, &generation, scope, false)?;
             projection
         }
         ProgressiveEvidenceResult::GenerateRegionFilmstrip(evidence) => {
@@ -943,7 +962,12 @@ pub(crate) fn map_progressive_result(
                 "region": region,
                 "generation": generation,
             }));
-            add_artifact_generation_resources(&mut projection, &generation_for_links, scope)?;
+            add_artifact_generation_resources(
+                &mut projection,
+                &generation_for_links,
+                scope,
+                false,
+            )?;
             projection
         }
         ProgressiveEvidenceResult::PinResolvedRange(change)
@@ -957,13 +981,82 @@ fn add_artifact_generation_resources(
     projection: &mut Projection,
     generation: &ArtifactGenerationResult,
     scope: krometrail_core::EvidenceScope,
+    include_manifest: bool,
 ) -> Result<(), ResponseInvariantError> {
     for outcome in &generation.outcomes {
         if let ArtifactOutcome::Available { artifact, .. } = outcome {
             add_resource(projection, artifact_resource(scope, artifact)?)?;
+            if include_manifest {
+                add_resource(projection, artifact_manifest_resource(scope, artifact)?)?;
+            }
         }
     }
     Ok(())
+}
+
+fn compact_bundle_value(
+    bundle: &TemporalDebugBundle,
+    scope: krometrail_core::EvidenceScope,
+) -> Result<Value, ResponseInvariantError> {
+    let mut value = serde_json::to_value(bundle).map_err(|_| ResponseInvariantError)?;
+    let Some(outcomes) = value
+        .get_mut("artifacts")
+        .and_then(|artifacts| artifacts.get_mut("outcomes"))
+        .and_then(Value::as_array_mut)
+    else {
+        if matches!(
+            bundle.artifacts,
+            krometrail_core::BundleArtifactEvidence::Unavailable { .. }
+        ) {
+            return Ok(value);
+        }
+        return Err(ResponseInvariantError);
+    };
+    let krometrail_core::BundleArtifactEvidence::Available(generation) = &bundle.artifacts else {
+        return Err(ResponseInvariantError);
+    };
+    if outcomes.len() != generation.outcomes.len() {
+        return Err(ResponseInvariantError);
+    }
+    for (projected, outcome) in outcomes.iter_mut().zip(&generation.outcomes) {
+        let ArtifactOutcome::Available { artifact, .. } = outcome else {
+            continue;
+        };
+        let artifact_value = projected
+            .get_mut("artifact")
+            .ok_or(ResponseInvariantError)?;
+        *artifact_value = serde_json::to_value(compact_artifact_handle(scope, artifact)?)
+            .map_err(|_| ResponseInvariantError)?;
+    }
+    Ok(value)
+}
+
+fn compact_artifact_handle(
+    scope: krometrail_core::EvidenceScope,
+    artifact: &ArtifactHandle,
+) -> Result<BundleArtifactHandle, ResponseInvariantError> {
+    let manifest = &artifact.manifest;
+    Ok(BundleArtifactHandle {
+        artifact_id: artifact.artifact_id,
+        cache: artifact.cache,
+        media_type: artifact.media_type.as_str().to_owned(),
+        encoded_byte_len: artifact.encoded_byte_len,
+        artifact_kind: manifest.artifact_kind(),
+        evidence_class: manifest.evidence_class(),
+        source_frame_count: u32::try_from(manifest.source_frame_count())
+            .map_err(|_| ResponseInvariantError)?,
+        selected_frame_count: u32::try_from(manifest.selected_frame_ids().len())
+            .map_err(|_| ResponseInvariantError)?,
+        omitted_frame_count: u32::try_from(manifest.omitted_frame_count())
+            .map_err(|_| ResponseInvariantError)?,
+        output_dimensions: manifest.output_dimensions(),
+        output_hash: manifest.output_hash().to_string(),
+        manifest_uri: crate::resources::EvidenceResourceUri::artifact_manifest(
+            scope,
+            artifact.artifact_id,
+        )
+        .canonical_uri(),
+    })
 }
 
 fn add_source_frame_resource(
@@ -1101,6 +1194,7 @@ fn add_resource(
     let parsed = resource.parsed_uri().map_err(|_| ResponseInvariantError)?;
     let role = match resource.role {
         ResourceKind::Artifact => ResourceRole::Artifact,
+        ResourceKind::ArtifactManifest => ResourceRole::ArtifactManifest,
         ResourceKind::SourceFrame => ResourceRole::SourceFrame,
     };
     projection.resources.push(ResponseResource {
@@ -1137,6 +1231,17 @@ fn artifact_resource(
         handle.encoded_byte_len,
     )
     .map_err(|_| ResponseInvariantError)
+}
+
+fn artifact_manifest_resource(
+    scope: krometrail_core::EvidenceScope,
+    handle: &ArtifactHandle,
+) -> Result<ResourceProjection, ResponseInvariantError> {
+    let encoded_byte_len = serde_json::to_vec(&handle.manifest)
+        .map_err(|_| ResponseInvariantError)?
+        .len() as u64;
+    ResourceProjection::from_artifact_manifest(scope, handle.artifact_id, encoded_byte_len)
+        .map_err(|_| ResponseInvariantError)
 }
 
 fn image_mime_type(bytes: &[u8]) -> Option<&'static str> {

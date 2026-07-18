@@ -561,7 +561,7 @@ mod tests {
                     NonEmptyText::new("fixture only serves artifact reads").unwrap(),
                 ))));
             };
-            let read = if call <= 2 {
+            let read = if call <= 3 {
                 self.artifact_read.clone()
             } else {
                 self.mismatched_artifact_read.clone()
@@ -643,10 +643,6 @@ mod tests {
         "00000000-0000-0000-0000-000000000004".parse().unwrap()
     }
 
-    fn mismatched_artifact_id() -> krometrail_core::ArtifactId {
-        "00000000-0000-0000-0000-000000000005".parse().unwrap()
-    }
-
     fn successful_bundle_fixture() -> (Arc<TemporalSuccessSpy>, String, Arc<[u8]>) {
         let range = resolved_range();
         let scope = EvidenceScope::new(session_id(), target_id()).unwrap();
@@ -691,7 +687,6 @@ mod tests {
             .unwrap()
         };
         let artifact_manifest = manifest_for(artifact_id());
-        let mismatched_manifest = manifest_for(mismatched_artifact_id());
         let media_type = NonEmptyText::new("image/png").unwrap();
         let artifact = ArtifactHandle {
             artifact_id: artifact_id(),
@@ -707,7 +702,7 @@ mod tests {
                 media_type.clone(),
                 digest,
                 bytes.len() as u64,
-                artifact_manifest,
+                artifact_manifest.clone(),
             )
             .unwrap(),
             Arc::clone(&bytes),
@@ -715,12 +710,16 @@ mod tests {
         .unwrap();
         let mismatched_artifact_read = ArtifactRead::new(
             ArtifactEvidenceHandle::new(
-                mismatched_artifact_id(),
-                scope,
+                artifact_id(),
+                EvidenceScope::new(
+                    session_id(),
+                    "00000000-0000-0000-0000-000000000099".parse().unwrap(),
+                )
+                .unwrap(),
                 media_type,
                 digest,
                 bytes.len() as u64,
-                mismatched_manifest,
+                artifact_manifest,
             )
             .unwrap(),
             Arc::clone(&bytes),
@@ -1372,8 +1371,9 @@ mod tests {
     async fn invoke_bundle_and_read_resource(
         dependencies: McpDependencies,
         arguments: Value,
-        uri: &str,
-    ) -> (Value, Value, Value) {
+        artifact_uri: &str,
+        manifest_uri: &str,
+    ) -> (Value, Value, Value, Value) {
         let service = build_service(
             dependencies,
             McpConfig::new(vec![
@@ -1415,20 +1415,26 @@ mod tests {
         let bundle = read_json(&mut read).await;
         send_json(
             &mut write,
-            json!({"jsonrpc":"2.0","id":3,"method":"resources/read","params":{"uri":uri}}),
+            json!({"jsonrpc":"2.0","id":3,"method":"resources/read","params":{"uri":artifact_uri}}),
         )
         .await;
-        let resource = read_json(&mut read).await;
+        let artifact_resource = read_json(&mut read).await;
         send_json(
             &mut write,
-            json!({"jsonrpc":"2.0","id":4,"method":"resources/read","params":{"uri":uri}}),
+            json!({"jsonrpc":"2.0","id":4,"method":"resources/read","params":{"uri":manifest_uri}}),
+        )
+        .await;
+        let manifest_resource = read_json(&mut read).await;
+        send_json(
+            &mut write,
+            json!({"jsonrpc":"2.0","id":5,"method":"resources/read","params":{"uri":artifact_uri}}),
         )
         .await;
         let mismatch = read_json(&mut read).await;
         drop(write);
         drop(read);
         let _ = server_task.await;
-        (bundle, resource, mismatch)
+        (bundle, artifact_resource, manifest_resource, mismatch)
     }
 
     #[tokio::test]
@@ -1770,6 +1776,26 @@ mod tests {
         use base64::{Engine as _, engine::general_purpose::STANDARD};
 
         let (spy, uri, bytes) = successful_bundle_fixture();
+        let scope = EvidenceScope::new(session_id(), target_id()).unwrap();
+        let manifest_uri =
+            crate::resources::EvidenceResourceUri::artifact_manifest(scope, artifact_id())
+                .canonical_uri();
+        let expected_manifest =
+            serde_json::to_string(&spy.artifact_read.handle.provenance).unwrap();
+        let BundleArtifactEvidence::Available(generation) = &spy.bundle.artifacts else {
+            unreachable!()
+        };
+        let generic = crate::response::map_progressive_result(
+            "generate_artifacts",
+            ProgressiveEvidenceResult::GenerateArtifacts(Box::new(generation.clone())),
+        )
+        .unwrap();
+        assert_eq!(
+            generic.response.result["outcomes"][0]["artifact"]["manifest"],
+            serde_json::to_value(&spy.artifact_read.handle.provenance).unwrap(),
+            "generic artifact generation must retain the complete manifest"
+        );
+        assert_eq!(generic.response.resources.len(), 1);
         let arguments = serde_json::to_value(bundle_request()).unwrap();
         let dependencies = McpDependencies {
             browser: Arc::new(UnusedConnector),
@@ -1778,8 +1804,8 @@ mod tests {
             temporal_context: spy as Arc<dyn TemporalContextQuery>,
             diagnostics: DiagnosticContext::default(),
         };
-        let (bundle, resource, mismatch) =
-            invoke_bundle_and_read_resource(dependencies, arguments, &uri).await;
+        let (bundle, resource, manifest_resource, mismatch) =
+            invoke_bundle_and_read_resource(dependencies, arguments, &uri, &manifest_uri).await;
 
         assert_eq!(bundle["result"]["isError"], false);
         let structured = &bundle["result"]["structuredContent"];
@@ -1794,10 +1820,18 @@ mod tests {
         assert_eq!(structured_resource["uri"], uri);
         assert_eq!(structured_resource["mime_type"], "image/png");
         assert_eq!(structured_resource["encoded_byte_len"], bytes.len());
-        let output_hash = structured["result"]["artifacts"]["outcomes"][0]["artifact"]["manifest"]
-            ["output_hash"]
-            .as_str()
-            .unwrap();
+        let manifest_link = &structured["resources"][1];
+        assert_eq!(manifest_link["uri"], manifest_uri);
+        assert_eq!(manifest_link["mime_type"], "application/json");
+        assert_eq!(manifest_link["encoded_byte_len"], expected_manifest.len());
+        let compact = &structured["result"]["artifacts"]["outcomes"][0]["artifact"];
+        assert!(compact.get("manifest").is_none());
+        assert!(compact.get("source_frame_ids").is_none());
+        assert_eq!(compact["manifest_uri"], manifest_uri);
+        assert_eq!(compact["source_frame_count"], 1);
+        assert_eq!(compact["selected_frame_count"], 0);
+        assert_eq!(compact["omitted_frame_count"], 1);
+        let output_hash = compact["output_hash"].as_str().unwrap();
         assert_eq!(output_hash, Sha256Digest::digest(&bytes).to_string());
 
         let content = bundle["result"]["content"].as_array().unwrap();
@@ -1825,6 +1859,18 @@ mod tests {
                 .decode(resource["result"]["contents"][0]["blob"].as_str().unwrap())
                 .unwrap(),
             bytes.as_ref()
+        );
+        assert_eq!(
+            manifest_resource["result"]["contents"][0]["uri"],
+            manifest_uri
+        );
+        assert_eq!(
+            manifest_resource["result"]["contents"][0]["mimeType"],
+            "application/json"
+        );
+        assert_eq!(
+            manifest_resource["result"]["contents"][0]["text"],
+            expected_manifest
         );
         assert_eq!(
             mismatch["error"]["message"],
@@ -1887,7 +1933,7 @@ mod tests {
         .await;
         let templates = read_json(&mut read).await;
         let templates = templates["result"]["resourceTemplates"].as_array().unwrap();
-        assert_eq!(templates.len(), 2);
+        assert_eq!(templates.len(), 3);
         assert_eq!(
             templates[0]["uriTemplate"],
             "krometrail://evidence/{session}/{target}/artifacts/{id}"
@@ -1895,9 +1941,14 @@ mod tests {
         assert_eq!(templates[0]["mimeType"], "image/png");
         assert_eq!(
             templates[1]["uriTemplate"],
+            "krometrail://evidence/{session}/{target}/artifact-manifests/{id}"
+        );
+        assert_eq!(templates[1]["mimeType"], "application/json");
+        assert_eq!(
+            templates[2]["uriTemplate"],
             "krometrail://evidence/{session}/{target}/frames/{id}"
         );
-        assert!(templates[1].get("mimeType").is_none());
+        assert!(templates[2].get("mimeType").is_none());
 
         send_json(
             &mut write,
