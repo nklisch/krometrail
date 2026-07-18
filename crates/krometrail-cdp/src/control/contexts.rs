@@ -14,7 +14,7 @@ use url::Url;
 use super::{BoundTarget, PageControl, operation_error, transport_error};
 use crate::transport::{CdpTransport, CommandScope};
 
-const RESOURCE_TIMING_EXPRESSION: &str = r#"performance.getEntriesByType('resource').map((e) => ({name:e.name,initiatorType:e.initiatorType,startTime:e.startTime,duration:e.duration,transferSize:e.transferSize,encodedBodySize:e.encodedBodySize,decodedBodySize:e.decodedBodySize}))"#;
+const RESOURCE_TIMING_EXPRESSION: &str = r#"(() => { const all = performance.getEntriesByType('resource'); const valid = all.map((e) => ({name:e.name,initiatorType:e.initiatorType,startTime:e.startTime,duration:e.duration,transferSize:e.transferSize,encodedBodySize:e.encodedBodySize,decodedBodySize:e.decodedBodySize})).filter((e) => typeof e.name === 'string' && Number.isFinite(e.startTime) && e.startTime >= 0 && Number.isFinite(e.duration) && e.duration >= 0).sort((a,b) => a.startTime-b.startTime || a.name.localeCompare(b.name)); const entries = valid.slice(0, 256); return {entries, omitted: all.length - entries.length}; })()"#;
 
 impl PageControl {
     pub(super) async fn resolve_frame_id(
@@ -22,7 +22,7 @@ impl PageControl {
         transport: &dyn CdpTransport,
         bound: &BoundTarget,
         reference: &PageFrameReference,
-    ) -> Result<String> {
+    ) -> Result<(String, String)> {
         if reference.target_id != bound.target_id
             || reference.attachment_generation != bound.attachment_generation
             || reference.frame_generation.get() != bound.attachment_generation.saturating_add(1)
@@ -102,17 +102,18 @@ impl PageControl {
                 "cross-origin or indeterminate frames cannot be inspected",
             ));
         }
-        frame
-            .pointer("/frame/id")
+        let loader_id = frame
+            .pointer("/frame/loaderId")
             .and_then(Value::as_str)
-            .map(str::to_owned)
+            .filter(|value| !value.is_empty())
             .ok_or_else(|| {
                 operation_error(
                     ErrorCode::PageObservationFailed,
                     bound.target_id,
-                    "browser returned an invalid frame identity",
+                    "browser returned an invalid frame document identity",
                 )
-            })
+            })?;
+        Ok((frame_id.to_owned(), loader_id.to_owned()))
     }
 
     pub(super) async fn list_frames(
@@ -180,11 +181,10 @@ impl PageControl {
             .map_err(|error| {
                 transport_error(error, ErrorCode::PageObservationFailed, bound.target_id)
             })?;
-        let values = response
+        let projected = response
             .pointer("/result/result/value")
             .or_else(|| response.pointer("/result/value"))
             .or_else(|| response.get("value"))
-            .and_then(Value::as_array)
             .ok_or_else(|| {
                 operation_error(
                     ErrorCode::PageObservationFailed,
@@ -192,8 +192,28 @@ impl PageControl {
                     "browser returned invalid resource timing metadata",
                 )
             })?;
+        let values = projected
+            .get("entries")
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                operation_error(
+                    ErrorCode::PageObservationFailed,
+                    bound.target_id,
+                    "browser returned invalid bounded resource timing metadata",
+                )
+            })?;
         let mut parsed = Vec::new();
-        let mut omitted = 0_u32;
+        let mut omitted = projected
+            .get("omitted")
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .ok_or_else(|| {
+                operation_error(
+                    ErrorCode::PageObservationFailed,
+                    bound.target_id,
+                    "browser returned invalid resource timing omission accounting",
+                )
+            })?;
         for value in values {
             match parse_asset(value) {
                 Some(asset) => parsed.push(asset),

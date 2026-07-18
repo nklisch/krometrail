@@ -143,17 +143,12 @@ pub struct PageFrameInventory {
     pub omitted_frame_count: u32,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "document", content = "frame", rename_all = "snake_case")]
 pub enum SemanticDocumentScope {
+    #[default]
     MainDocument,
     Frame(PageFrameReference),
-}
-
-impl Default for SemanticDocumentScope {
-    fn default() -> Self {
-        Self::MainDocument
-    }
 }
 
 #[cfg(test)]

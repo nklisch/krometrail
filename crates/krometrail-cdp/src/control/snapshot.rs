@@ -237,8 +237,9 @@ impl PageControl {
                 Some(self.resolve_frame_id(transport, bound, frame).await?)
             }
         };
+        let frame_id = frame_id.as_ref().map(|(frame_id, _)| frame_id.as_str());
         let snapshot = self
-            .capture_snapshot_for_frame(transport, bound, started_at, true, frame_id.as_deref())
+            .capture_snapshot_for_frame(transport, bound, started_at, true, frame_id)
             .await?;
         let result = self.snapshots.query(bound, &request, &snapshot)?;
         Ok(BrowserOperationResult::QueryPage(Box::new(result)))

@@ -306,8 +306,8 @@ fn reconcile_one(
         } else {
             let changed = existing.target.target.url() != info.url
                 || existing.target.target.title() != info.title;
-            existing.opener_target_key = info.opener_target_key.clone();
-            existing.opener_target_id = opener_target_id;
+            // The opener belongs to logical-target creation. Later target-info events and
+            // reconnect snapshots may repeat or omit raw opener keys, but cannot rebind identity.
             if changed {
                 existing.target.target = krometrail_core::PageTarget::new(
                     existing.target.target.id(),
@@ -710,8 +710,6 @@ fn reconcile_restored(
         let target = state.targets_by_key.get_mut(&key).expect("key checked");
         let changed = target.target.target.url() != reconnected.info.url
             || target.target.target.title() != reconnected.info.title;
-        target.opener_target_key = reconnected.info.opener_target_key.clone();
-        target.opener_target_id = opener_target_id;
         if changed {
             target.target.target = krometrail_core::PageTarget::new(
                 target.target.target.id(),

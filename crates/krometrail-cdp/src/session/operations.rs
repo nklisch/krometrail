@@ -192,6 +192,23 @@ async fn wait_for_page(
 ) -> Result<BrowserOperationResult> {
     let deadline = tokio::time::Instant::now() + Duration::from_millis(request.timeout_ms);
     loop {
+        if matches!(
+            state.session_state,
+            BrowserSessionState::Reconnecting
+                | BrowserSessionState::Stopping
+                | BrowserSessionState::Ended
+        ) || transport.is_closed()
+        {
+            return Err(stable_error(
+                ErrorCode::BrowserDisconnected,
+                "browser page wait ended because the browser session disconnected",
+            )
+            .with_retry(RetryAdvice::AfterRecovery)
+            .with_recovery(
+                NonEmptyText::new("restore the browser session, refresh page contexts, and retry")
+                    .unwrap(),
+            ));
+        }
         if let Some(matched) = next_page_match(state, &request)? {
             let cursor = state.page_contexts()?.cursor;
             return Ok(BrowserOperationResult::WaitForPage(Box::new(

@@ -444,10 +444,6 @@ mod tests {
                         | BrowserOperationKind::WaitForPage
                         | BrowserOperationKind::ListFrames
                         | BrowserOperationKind::ListPageAssets
-                        | BrowserOperationKind::ListPageContexts
-                        | BrowserOperationKind::WaitForPage
-                        | BrowserOperationKind::ListFrames
-                        | BrowserOperationKind::ListPageAssets
                         | BrowserOperationKind::CreatePage
                         | BrowserOperationKind::SelectPage
                         | BrowserOperationKind::ClosePage
@@ -467,10 +463,6 @@ mod tests {
                     definition.kind,
                     BrowserOperationKind::ObserveLive
                         | BrowserOperationKind::ListPages
-                        | BrowserOperationKind::ListPageContexts
-                        | BrowserOperationKind::WaitForPage
-                        | BrowserOperationKind::ListFrames
-                        | BrowserOperationKind::ListPageAssets
                         | BrowserOperationKind::ListPageContexts
                         | BrowserOperationKind::WaitForPage
                         | BrowserOperationKind::ListFrames

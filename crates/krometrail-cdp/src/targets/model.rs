@@ -157,17 +157,14 @@ impl SupervisorState {
             targets_by_key: std::collections::HashMap::new(),
             target_key_by_session: std::collections::HashMap::new(),
             selected_target_key: None,
-            next_page_sequence: 1,
+            // Sequence 1 is the empty-inventory cursor, so waiting after an initial empty list
+            // cannot miss the first discovered page.
+            next_page_sequence: 2,
         }
     }
 
     pub fn page_contexts(&self) -> Result<PageContextInventory> {
-        let cursor = self
-            .targets_by_key
-            .values()
-            .map(|target| target.page_sequence)
-            .max()
-            .unwrap_or(PageSequence::new(1)?);
+        let cursor = PageSequence::new(self.next_page_sequence.saturating_sub(1))?;
         let mut pages = self
             .targets_by_key
             .iter()
