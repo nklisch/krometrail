@@ -631,6 +631,7 @@ impl BrowserSessionPort for ProductionSession {
                     )
                 })?
                 .read(request)
+                .await
         })
     }
 

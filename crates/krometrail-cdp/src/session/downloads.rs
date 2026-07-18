@@ -255,7 +255,10 @@ impl ManagedDownloadAuthority {
         })
     }
 
-    pub(crate) fn read(&self, request: ReadManagedDownloadRequest) -> Result<ManagedDownloadRead> {
+    pub(crate) async fn read(
+        &self,
+        request: ReadManagedDownloadRequest,
+    ) -> Result<ManagedDownloadRead> {
         if request.session_id != self.session_id {
             return Err(resource_not_found(self.session_id));
         }
@@ -279,8 +282,14 @@ impl ManagedDownloadAuthority {
         if expected > request.max_bytes || expected > MAX_MANAGED_DOWNLOAD_BYTES {
             return Err(resource_not_found(self.session_id));
         }
-        let path = verified_file(&self.root, &guid, expected)?;
-        let bytes = std::fs::read(path).map_err(|_| resource_not_found(self.session_id))?;
+        let root = self.root.clone();
+        let session_id = self.session_id;
+        let bytes = tokio::task::spawn_blocking(move || {
+            let path = verified_file(&root, &guid, expected)?;
+            std::fs::read(path).map_err(|_| resource_not_found(session_id))
+        })
+        .await
+        .map_err(|_| resource_not_found(self.session_id))??;
         if bytes.len() as u64 != expected {
             return Err(resource_not_found(self.session_id));
         }
@@ -580,23 +589,28 @@ fn prepare_session_root(base: &Path, session_id: SessionId) -> Result<PathBuf> {
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).map_err(|_| {
-            download_error(
+            let error = download_error(
                 ErrorCode::PersistenceFailed,
                 session_id,
                 "private download permissions could not be applied",
                 "check Krometrail data-directory permissions and retry",
-            )
+            );
+            let _ = std::fs::remove_dir_all(&root);
+            error
         })?;
     }
-    let root = std::fs::canonicalize(root).map_err(|_| {
-        download_error(
+    let root = std::fs::canonicalize(&root).map_err(|_| {
+        let error = download_error(
             ErrorCode::PersistenceFailed,
             session_id,
             "private download session directory could not be verified",
             "check Krometrail data-directory permissions and retry",
-        )
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        error
     })?;
     if !root.starts_with(base) {
+        let _ = std::fs::remove_dir_all(&root);
         return Err(download_error(
             ErrorCode::PersistenceFailed,
             session_id,
@@ -858,6 +872,7 @@ mod tests {
                 download_id: item.id,
                 max_bytes: 11,
             })
+            .await
             .unwrap();
         assert_eq!(read.bytes, b"exact bytes");
         authority.shutdown(Some(&transport)).await.unwrap();
