@@ -485,6 +485,25 @@ async fn wrong_scope_and_retention_truth_are_explicit_and_contiguous_only() {
         Some(krometrail_core::RetentionWarning::EvictedRanges { .. })
     ));
 
+    let evicted_only = fixture
+        .store
+        .resolve_range(
+            TemporalQueryRequest::new(
+                TemporalRangeAnchor::SessionTime {
+                    scope: fixture.scope(),
+                    range: SessionRange::new(at(0), at(200)).unwrap(),
+                },
+                RetentionPolicy::AllowPartial,
+                CaptureGapPolicy::Include,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(evicted_only.code, krometrail_core::ErrorCode::NotFound);
+    assert_eq!(evicted_only.retry, krometrail_core::RetryAdvice::Never);
+    assert_eq!(evicted_only.recovery, None);
+
     let internal = Fixture::new().await;
     internal.simulate_eviction(SessionRange::new(at(300), at(400)).unwrap());
     assert_eq!(

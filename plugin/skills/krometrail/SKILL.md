@@ -80,7 +80,9 @@ compare pixels across incompatible epochs without declared normalization.
 - Compact interval: `temporal_debug_bundle`
 - Artifacts: `generate_artifacts`, `generate_region_filmstrip`
 - Source detail: `list_source_frames`, `fetch_source_frames`
-- Full reads: returned `krometrail://evidence/...` resource links
+- Full reads: returned `krometrail://evidence/...` resource links. For a compact bundle artifact,
+  read its `manifest_uri` when the claim needs the full ordered source IDs, parameters, gaps, or
+  normalization provenance; read the adjacent artifact URI when the rendered image is needed.
 - Browser context: `query_browser_events`
 - Retention: `pin_resolved_range`, `query_pin_state`, `unpin_resolved_range`
 

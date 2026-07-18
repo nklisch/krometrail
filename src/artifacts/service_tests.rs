@@ -8,16 +8,18 @@ use std::{
     time::Instant,
 };
 
+use image::ImageEncoder as _;
 use krometrail_core::{
     AnalysisScale, ArtifactCacheKey, ArtifactFailurePolicy, ArtifactGeneration,
     ArtifactGenerationContext, ArtifactGenerationRequest, ArtifactGeneratorRequest,
-    ArtifactLabelsRequest, ArtifactLookup, ArtifactOutcome, ArtifactPublication, ArtifactPublish,
-    ArtifactSourceFingerprint, ArtifactStore, CaptureOrdinal, CapturedFrame, DeviceScaleFactor,
-    DifferenceMapRequest, EncodedFrame, FrameAvailability, FrameId, FrameSelector, FrameSource,
-    IdSource, IdValue, ImageFormat, MotionHistoryRequest, NonEmptyText, NormalizationRequest,
-    ObservedTime, OutputLimitsRequest, PixelDimensions, PortFuture, RangeResolutionOptions,
-    RegionFilmstripRequest, ResolvedRange, SessionId, SessionRange, SessionTime, StoredArtifact,
-    StoryboardRequest, TargetId, TemporalRangeAnchorKind,
+    ArtifactLabelsRequest, ArtifactLookup, ArtifactManifest, ArtifactOutcome, ArtifactPublication,
+    ArtifactPublish, ArtifactSourceFingerprint, ArtifactStore, CaptureOrdinal, CapturedFrame,
+    DeviceScaleFactor, DifferenceMapRequest, EncodedFrame, FrameAvailability, FrameId,
+    FrameSelector, FrameSource, IdSource, IdValue, ImageFormat, MotionHistoryRequest, NonEmptyText,
+    NormalizationRequest, ObservedTime, OrientationPolicy, OutputLimitsRequest, PixelDimensions,
+    PortFuture, RangeResolutionOptions, RegionFilmstripRequest, ResolvedRange, SessionId,
+    SessionRange, SessionTime, StoredArtifact, StoryboardRequest, TargetId,
+    TemporalRangeAnchorKind,
 };
 use temporal_vision::{FrequencyMode, RegionDefinition, Rgb8, SignedPixelRect};
 use uuid::Uuid;
@@ -25,7 +27,7 @@ use uuid::Uuid;
 use super::{
     TemporalVisionArtifactService,
     epoch::{WorkCancellation, validate_and_plan},
-    generators::{estimated_normalized_bytes, prepare_generator},
+    generators::{estimated_normalized_bytes, prepare_generator, reserved_output_bytes},
     scheduler::ArtifactWorkLimits,
 };
 
@@ -802,6 +804,191 @@ fn default_limits_fit_reproduced_high_dpi_sequence_with_fixed_combined_budget() 
     assert_eq!(
         error.code,
         krometrail_core::ErrorCode::ResourceLimitExceeded
+    );
+}
+
+#[tokio::test]
+async fn proportional_high_dpi_bundle_executes_below_peak_not_cumulative_reservation() {
+    const WIDTH: u32 = 1_200;
+    const HEIGHT: u32 = 704;
+    const FRAME_COUNT: u64 = 9;
+    const COMBINED_LIMIT: usize = 109_250_000;
+
+    let session = SessionId::from_uuid(Uuid::from_u128(9_000));
+    let target = TargetId::from_uuid(Uuid::from_u128(9_001));
+    let image = PixelDimensions::new(WIDTH, HEIGHT).unwrap();
+    let viewport = PixelDimensions::new(WIDTH / 2, HEIGHT / 2).unwrap();
+    let frames: Vec<_> = (0_u64..FRAME_COUNT)
+        .map(|position| {
+            let mut rgba = vec![0_u8; WIDTH as usize * HEIGHT as usize * 4];
+            for pixel in rgba.chunks_exact_mut(4) {
+                pixel.copy_from_slice(&[
+                    24 + position as u8 * 8,
+                    72,
+                    144_u8.saturating_sub(position as u8 * 6),
+                    255,
+                ]);
+            }
+            let stripe_start = usize::try_from(position * 80).unwrap();
+            for y in 240_usize..304 {
+                for x in stripe_start..(stripe_start + 80) {
+                    let offset = (y * WIDTH as usize + x) * 4;
+                    rgba[offset..offset + 4].copy_from_slice(&[255, 176, 0, 255]);
+                }
+            }
+            let mut encoded = Vec::new();
+            image::codecs::png::PngEncoder::new(&mut encoded)
+                .write_image(&rgba, WIDTH, HEIGHT, image::ExtendedColorType::Rgba8)
+                .unwrap();
+            EncodedFrame::new(
+                CapturedFrame::new(
+                    FrameId::from_uuid(Uuid::from_u128(9_100 + u128::from(position))),
+                    session,
+                    target,
+                    CaptureOrdinal::new(position + 1).unwrap(),
+                    None,
+                    ObservedTime::from_nanos(position + 1),
+                    SessionTime::from_nanos(position + 1),
+                    ImageFormat::Png,
+                    image,
+                    viewport,
+                    DeviceScaleFactor::new(2.0).unwrap(),
+                    vec![],
+                )
+                .unwrap(),
+                encoded,
+            )
+            .unwrap()
+        })
+        .collect();
+    let frame_ids: Vec<_> = frames.iter().map(|frame| frame.metadata().id()).collect();
+    let time = SessionRange::new(
+        SessionTime::from_nanos(1),
+        SessionTime::from_nanos(FRAME_COUNT),
+    )
+    .unwrap();
+    let range = ResolvedRange::new(
+        session,
+        target,
+        TemporalRangeAnchorKind::SessionTime,
+        time,
+        time,
+        frame_ids.clone(),
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+        RangeResolutionOptions::DEFAULT,
+    )
+    .unwrap();
+    let limits = ArtifactWorkLimits {
+        max_decoded_bytes: NonZeroUsize::new(32 * 1024 * 1024).unwrap(),
+        max_normalized_bytes: NonZeroUsize::new(48 * 1024 * 1024).unwrap(),
+        max_combined_request_bytes: NonZeroUsize::new(COMBINED_LIMIT).unwrap(),
+        max_output_bytes_total: NonZeroUsize::new(64 * 1024 * 1024).unwrap(),
+        ..ArtifactWorkLimits::default()
+    };
+    let plans = validate_and_plan(
+        &range,
+        frames.clone(),
+        &[],
+        limits.adaptation(),
+        &WorkCancellation::default(),
+    )
+    .unwrap();
+    assert_eq!(plans[0].decoded_bytes, 30_412_800);
+
+    let generators = crate::debug_bundle::default_generators(&range, OrientationPolicy::Include);
+    let prepared: Vec<_> = generators
+        .iter()
+        .map(|generator| prepare_generator(generator, &plans[0], limits).unwrap())
+        .collect();
+    for generator in &prepared {
+        let normalization = match &generator.request {
+            ArtifactGeneratorRequest::Storyboard(request) => request.normalization,
+            ArtifactGeneratorRequest::DifferenceMap(request) => request.normalization,
+            _ => unreachable!(),
+        };
+        assert_eq!(normalization.scale, AnalysisScale::Down(2));
+    }
+    let normalized_bytes = estimated_normalized_bytes(&prepared[0], &plans[0]).unwrap();
+    assert_eq!(normalized_bytes, 11_404_800);
+    let output_reservations: Vec<_> = prepared
+        .iter()
+        .map(|generator| reserved_output_bytes(generator, limits).unwrap())
+        .collect();
+    assert_eq!(output_reservations, [32 * 1024 * 1024, 64 * 1024 * 1024]);
+    let peak_reservation = plans[0].decoded_bytes
+        + normalized_bytes
+        + output_reservations.iter().copied().max().unwrap();
+    let old_cumulative_reservation =
+        plans[0].decoded_bytes + normalized_bytes + output_reservations.iter().sum::<usize>();
+    assert_eq!(peak_reservation, 108_926_464);
+    assert!(peak_reservation <= COMBINED_LIMIT);
+    assert!(old_cumulative_reservation > COMBINED_LIMIT);
+
+    let frames = Arc::new(FakeFrames {
+        frames,
+        loads: AtomicUsize::new(0),
+    });
+    let artifacts = Arc::new(FakeArtifacts::default());
+    let ids = Arc::new(FakeIds {
+        next: AtomicU64::new(20_000),
+    });
+    let service = TemporalVisionArtifactService::new(
+        Arc::clone(&frames) as Arc<dyn FrameSource>,
+        Arc::clone(&artifacts) as Arc<dyn ArtifactStore>,
+        Arc::clone(&ids) as Arc<dyn IdSource>,
+        limits,
+    )
+    .unwrap();
+    let request = ArtifactGenerationRequest::new(
+        range,
+        vec![],
+        generators,
+        ArtifactFailurePolicy::RequireAll,
+    )
+    .unwrap();
+    let result = service
+        .generate(request, ArtifactGenerationContext::default())
+        .await
+        .unwrap();
+
+    assert_eq!(frames.loads.load(Ordering::SeqCst), 1);
+    assert_eq!(artifacts.publications.load(Ordering::SeqCst), 3);
+    let kinds: Vec<_> = result
+        .outcomes
+        .iter()
+        .map(|outcome| match outcome {
+            ArtifactOutcome::Available { artifact, .. } => {
+                let manifest = &artifact.manifest;
+                assert_eq!(manifest.source_frame_ids(), frame_ids);
+                assert_eq!(manifest.source_frame_count(), FRAME_COUNT);
+                assert!(manifest.output_dimensions().width() > 0);
+                assert!(manifest.output_dimensions().height() > 0);
+                assert!(
+                    manifest
+                        .output_hash()
+                        .as_bytes()
+                        .iter()
+                        .any(|byte| *byte != 0)
+                );
+                let serialized = serde_json::to_vec(manifest).unwrap();
+                let round_trip: ArtifactManifest = serde_json::from_slice(&serialized).unwrap();
+                assert_eq!(round_trip, *manifest);
+                manifest.artifact_kind()
+            }
+            ArtifactOutcome::Unavailable { .. } => panic!("default generator must publish"),
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            temporal_vision::ArtifactKind::Storyboard,
+            temporal_vision::ArtifactKind::BeforeDuringAfter,
+            temporal_vision::ArtifactKind::DifferenceMap,
+        ]
     );
 }
 

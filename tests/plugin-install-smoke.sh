@@ -98,7 +98,11 @@ assert "retrieve_artifact" not in tool_names
 assert "retrieve_source_frame" not in tool_names
 send({"jsonrpc": "2.0", "id": 3, "method": "resources/templates/list", "params": {}})
 templates = {item["name"] for item in receive()["result"]["resourceTemplates"]}
-assert templates == {"temporal-artifact", "temporal-source-frame"}
+assert templates == {
+    "temporal-artifact",
+    "temporal-artifact-manifest",
+    "temporal-source-frame",
+}
 process.stdin.close()
 process.wait(timeout=10)
 assert process.returncode == 0, process.stderr.read()

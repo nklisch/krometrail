@@ -68,15 +68,20 @@ availability and request policy, it can include:
 - visual measurements and capture-quality warnings;
 - nearby interactions, navigation, console/exception, and failed-request context.
 
-The bundle favors context-sized evidence. Full-resolution content remains behind MCP resource links.
-If a claim depends on fine text or an exact intermediate state, retrieve the linked artifact or source
-frame rather than relying on the inline preview.
+The bundle favors context-sized evidence. Its compact artifact handles summarize identity, type,
+geometry, hash, and frame counts. Read a handle's `manifest_uri` resource for the exact full manifest
+when a claim depends on ordered source and selected frame IDs, omissions, gaps, normalization, or
+generator parameters. Full-resolution images and exact source frames remain behind their adjacent MCP
+resource links. If a claim depends on fine text or an exact intermediate state, retrieve that linked
+artifact or source frame rather than relying on the inline preview.
 
 ## Progressive detail
 
 Choose the least detail that answers the question, then drill down only where uncertainty remains:
 
-- Artifact and exact source-frame reads use the `krometrail://evidence/...` MCP resource links returned by tools. They are resource reads, not separate tool calls.
+- Artifact images, artifact manifests named by `manifest_uri`, and exact source-frame reads use the
+  `krometrail://evidence/...` MCP resource links returned by tools. They are resource reads, not
+  separate tool calls.
 - `list_source_frames` shows ordered retained frame metadata and availability for a resolved range.
 - `fetch_source_frames` returns a selected batch.
 - `generate_region_filmstrip` isolates a declared region without requiring a full-frame artifact to

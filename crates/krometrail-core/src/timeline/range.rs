@@ -1215,20 +1215,23 @@ where
         };
         validate_frame_metadata(&seed, &frames, &availability.evicted_ranges)?;
         if frames.is_empty() {
-            let message = if availability
+            let intersects_eviction = availability
                 .evicted_ranges
                 .iter()
-                .any(|range| ranges_intersect(*range, seed.requested_range))
-            {
-                "requested interval source frames were evicted"
+                .any(|range| ranges_intersect(*range, seed.requested_range));
+            let (message, captured_bounds) = if intersects_eviction {
+                ("requested interval source frames were evicted", None)
             } else {
-                "requested interval has no captured source frames"
+                (
+                    "requested interval has no captured source frames",
+                    availability.retained_bounds,
+                )
             };
             return Err(range_not_found(
                 message,
                 &seed,
                 seed.requested_range,
-                availability.retained_bounds,
+                captured_bounds,
             ));
         }
 

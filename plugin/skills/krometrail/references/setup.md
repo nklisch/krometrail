@@ -49,7 +49,8 @@ Confirm all relevant layers:
 - native plugin details show the Krometrail skill and MCP component;
 - MCP status reports the Krometrail server connected;
 - the tool list includes browser lifecycle, observation/control, and temporal evidence tools;
-- `temporal-artifact` and `temporal-source-frame` resource templates are available.
+- `temporal-artifact`, `temporal-artifact-manifest`, and `temporal-source-frame` resource templates
+  are available.
 
 The first activation can take longer while the release is downloaded and verified. Installer progress
 and failures appear on stderr so the MCP protocol on stdout remains valid. Do not run the launcher or
