@@ -135,6 +135,60 @@ pub(super) async fn execute_operation_unfenced(
             },
         )));
     }
+    match request {
+        BrowserOperationRequest::ListDownloads(_) => {
+            let authority = shared
+                .downloads
+                .as_ref()
+                .expect("managed ownership has download authority");
+            return Ok(BrowserOperationResult::ListDownloads(Box::new(
+                authority.list(),
+            )));
+        }
+        BrowserOperationRequest::WaitForDownload(request) => {
+            let authority = shared
+                .downloads
+                .as_ref()
+                .expect("managed ownership has download authority");
+            return authority
+                .wait(request)
+                .await
+                .map(|value| BrowserOperationResult::WaitForDownload(Box::new(value)));
+        }
+        BrowserOperationRequest::CancelDownload(request) => {
+            let authority = shared
+                .downloads
+                .as_ref()
+                .expect("managed ownership has download authority");
+            return authority
+                .cancel(transport.as_ref(), request.download_id)
+                .await
+                .map(|value| BrowserOperationResult::CancelDownload(Box::new(value)));
+        }
+        request => {
+            return execute_non_local_operation(
+                page_control,
+                state,
+                transport,
+                shared,
+                request,
+                cancellation,
+                context,
+            )
+            .await;
+        }
+    }
+}
+
+async fn execute_non_local_operation(
+    page_control: &mut PageControl,
+    state: &mut SupervisorState,
+    transport: Arc<dyn CdpTransport>,
+    shared: &Arc<SessionShared>,
+    request: BrowserOperationRequest,
+    cancellation: &OperationCancellation,
+    context: OperationExecutionContext,
+) -> Result<BrowserOperationResult> {
     if request.kind().is_interaction() {
         return page_control
             .execute_interaction_request(

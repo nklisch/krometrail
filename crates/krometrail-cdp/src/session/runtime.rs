@@ -664,6 +664,11 @@ pub(super) async fn run_supervisor(
                             }
                         }
                         if let Some(cause) = shutdown {
+                            if let Some(downloads) = shared.downloads.as_ref() {
+                                let transport =
+                                    connection.as_ref().map(|value| value.transport.as_ref());
+                                let _ = downloads.shutdown(transport).await;
+                            }
                             let _ = perform_shutdown(
                                 &mut connection,
                                 &runtime.process,
@@ -788,6 +793,16 @@ pub(super) async fn run_supervisor(
                             )
                             .await;
                         }
+                        let download_cleanup = match shared.downloads.as_ref() {
+                            Some(downloads) => {
+                                downloads
+                                    .shutdown(
+                                        connection.as_ref().map(|value| value.transport.as_ref()),
+                                    )
+                                    .await
+                            }
+                            None => Ok(()),
+                        };
                         let result = perform_shutdown(
                             &mut connection,
                             &runtime.process,
@@ -803,7 +818,11 @@ pub(super) async fn run_supervisor(
                             },
                         )
                         .await;
-                        let outcome = result.map(|report| stop_outcome(&report, shared.ownership));
+                        let outcome = match (result, download_cleanup) {
+                            (Ok(report), Ok(())) => Ok(stop_outcome(&report, shared.ownership)),
+                            (_, Err(error)) => Err(error),
+                            (Err(error), Ok(())) => Err(error),
+                        };
                         *shared.stop_result.lock().expect("stop result lock") =
                             Some(outcome.clone());
                         finish_state(&shared, &mut state);

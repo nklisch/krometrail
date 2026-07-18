@@ -6,6 +6,7 @@
 
 use std::{
     collections::{BTreeSet, VecDeque},
+    path::PathBuf,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -56,6 +57,7 @@ use crate::{
     },
 };
 
+mod downloads;
 mod evidence;
 mod operations;
 mod reconnect;
@@ -116,6 +118,7 @@ pub struct ProductionBrowserConnector {
     capture: Option<CaptureAssembly>,
     browser_events: Option<BrowserEventAssembly>,
     interaction_evidence: Option<Arc<dyn krometrail_core::InteractionEvidenceSink>>,
+    managed_download_root: PathBuf,
 }
 
 #[derive(Clone)]
@@ -151,7 +154,13 @@ impl ProductionBrowserConnector {
             capture: None,
             browser_events: None,
             interaction_evidence: None,
+            managed_download_root: std::env::temp_dir().join("krometrail-downloads"),
         }
+    }
+
+    pub fn with_managed_download_root(mut self, root: PathBuf) -> Self {
+        self.managed_download_root = root;
+        self
     }
 
     pub fn with_clock(mut self, clock: Arc<dyn MonotonicClock>) -> Self {
@@ -244,6 +253,17 @@ impl BrowserConnector for ProductionBrowserConnector {
         })
     }
 
+    fn managed_profiles(
+        &self,
+    ) -> PortFuture<'_, Result<Vec<krometrail_core::ManagedProfileSummary>>> {
+        Box::pin(async move {
+            self.launcher
+                .managed_profiles()
+                .await
+                .map_err(|error| launch_error_to_core(&error))
+        })
+    }
+
     fn connect(
         &self,
         request: BrowserConnectRequest,
@@ -256,6 +276,7 @@ impl BrowserConnector for ProductionBrowserConnector {
         let interaction_evidence = self.interaction_evidence.clone();
         let control_clock = Arc::clone(&self.clock);
         let ids = Arc::clone(&self.ids);
+        let managed_download_root = self.managed_download_root.clone();
         let every_nth_frame = requested_every_nth_frame(&request);
         let focus = requested_focus_policy(&request);
         Box::pin(async move {
@@ -394,6 +415,19 @@ impl BrowserConnector for ProductionBrowserConnector {
                 None,
             )
             .await?;
+            let downloads = if ownership == BrowserOwnership::Managed {
+                Some(
+                    downloads::ManagedDownloadAuthority::configure(
+                        Arc::clone(&connection.transport),
+                        &managed_download_root,
+                        session_id,
+                        Arc::clone(&ids),
+                    )
+                    .await?,
+                )
+            } else {
+                None
+            };
             let process_death = Arc::new(ProcessDeathSignal::default());
             let shared = Arc::new(SessionShared {
                 compatibility,
@@ -409,6 +443,7 @@ impl BrowserConnector for ProductionBrowserConnector {
                 capture: capture.clone(),
                 browser_events: Arc::clone(&browser_events),
                 interaction_evidence,
+                downloads,
                 operation_cancellation: OperationCancellation::default(),
                 stop_result: Mutex::new(None),
             });
@@ -540,6 +575,7 @@ pub(crate) struct SessionShared {
     capture: Option<Arc<CaptureRuntime>>,
     browser_events: Arc<SessionDomainAuthority>,
     interaction_evidence: Option<Arc<dyn krometrail_core::InteractionEvidenceSink>>,
+    downloads: Option<Arc<downloads::ManagedDownloadAuthority>>,
     pub(crate) operation_cancellation: OperationCancellation,
     stop_result: Mutex<Option<Result<BrowserStopOutcome>>>,
 }
@@ -577,6 +613,23 @@ impl BrowserSessionPort for ProductionSession {
             .capture
             .as_ref()
             .map_or_else(Vec::new, |runtime| runtime.coordinator.statuses())
+    }
+
+    fn read_managed_download(
+        &self,
+        request: krometrail_core::ReadManagedDownloadRequest,
+    ) -> PortFuture<'_, Result<krometrail_core::ManagedDownloadRead>> {
+        let downloads = self.shared.downloads.clone();
+        Box::pin(async move {
+            downloads
+                .ok_or_else(|| {
+                    stable_error(
+                        ErrorCode::NotFound,
+                        "managed download resource is unavailable",
+                    )
+                })?
+                .read(request)
+        })
     }
 
     fn resolve_current_reference_geometry(
@@ -1104,6 +1157,7 @@ mod tests {
             every_nth_frame: EveryNthFrame::default(),
             capture: None,
             interaction_evidence: None,
+            downloads: None,
             operation_cancellation: OperationCancellation::default(),
             browser_events: Arc::new(
                 SessionDomainAuthority::new(
@@ -2111,6 +2165,7 @@ mod tests {
             capture: Some(Arc::clone(&capture)),
             browser_events,
             interaction_evidence: None,
+            downloads: None,
             operation_cancellation: OperationCancellation::default(),
             stop_result: Mutex::new(None),
         });

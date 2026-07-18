@@ -255,6 +255,7 @@ pub(crate) fn build_runtime(diagnostics: DiagnosticContext) -> Result<Runtime> {
             Arc::clone(&storage.browser_event_sink),
             browser_event_config,
         )
+        .with_managed_download_root(data_directory.join("browser-downloads"))
         .with_interaction_evidence(Arc::clone(&storage.store) as Arc<dyn InteractionEvidenceSink>),
     );
     Ok(Runtime::new(RuntimeDependencies {
