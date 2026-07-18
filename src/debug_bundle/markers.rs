@@ -134,7 +134,14 @@ pub(crate) fn assemble_markers(evidence: MarkerEvidence<'_>) -> Result<Assembled
                     // than invent a label.
                     continue;
                 };
-                candidates.push(interaction_marker(anchor)?);
+                let marker = interaction_marker(anchor)?;
+                if evidence
+                    .range
+                    .resolved_range
+                    .contains(marker.session_time())
+                {
+                    candidates.push(marker);
+                }
             }
             krometrail_core::ObservationPayloadRef::Navigation(navigation_id) => {
                 if !seen_navigations.insert(*navigation_id) {
@@ -143,10 +150,14 @@ pub(crate) fn assemble_markers(evidence: MarkerEvidence<'_>) -> Result<Assembled
                 if mandatory_ids.contains(&ArtifactMarkerId::Navigation(*navigation_id)) {
                     continue;
                 }
-                candidates.push(navigation_marker(
-                    *navigation_id,
-                    observation.session_time(),
-                )?);
+                let marker = navigation_marker(*navigation_id, observation.session_time())?;
+                if evidence
+                    .range
+                    .resolved_range
+                    .contains(marker.session_time())
+                {
+                    candidates.push(marker);
+                }
             }
             krometrail_core::ObservationPayloadRef::Marker(marker_id) => {
                 if !seen_markers.insert(*marker_id) {
@@ -157,10 +168,17 @@ pub(crate) fn assemble_markers(evidence: MarkerEvidence<'_>) -> Result<Assembled
                     // for this generic timeline marker.
                     continue;
                 }
-                warnings.push(BundleWarning::MarkerLabelUnavailable {
-                    marker_id: ArtifactMarkerId::Marker(*marker_id),
-                });
-                candidates.push(generic_marker(*marker_id, observation.session_time())?);
+                let marker = generic_marker(*marker_id, observation.session_time())?;
+                if evidence
+                    .range
+                    .resolved_range
+                    .contains(marker.session_time())
+                {
+                    warnings.push(BundleWarning::MarkerLabelUnavailable {
+                        marker_id: ArtifactMarkerId::Marker(*marker_id),
+                    });
+                    candidates.push(marker);
+                }
             }
             _ => {}
         }
@@ -680,6 +698,31 @@ mod tests {
             BundleWarning::MarkerLabelUnavailable { marker_id }
                 if *marker_id == ArtifactMarkerId::Marker(MarkerId::from_uuid(Uuid::from_u128(12)))
         ));
+    }
+
+    #[test]
+    fn automatic_interaction_marker_outside_resolved_range_is_omitted() {
+        let range = interval_range(300, 1_000);
+        let interaction_id = InteractionId::from_uuid(Uuid::from_u128(13));
+        let timeline = slice(
+            vec![timeline_observation(
+                400,
+                ObservationKind::InteractionBoundary,
+                ObservationPayloadRef::Interaction(interaction_id),
+            )],
+            1,
+        );
+        let interactions = std::iter::once(interaction_anchor(13, 200)).collect();
+
+        let assembled = assemble_markers(MarkerEvidence {
+            range: &range,
+            caller_markers: &[],
+            timeline: &timeline,
+            interactions: &interactions,
+        })
+        .unwrap();
+
+        assert!(assembled.markers.is_empty());
     }
 
     #[test]
