@@ -186,7 +186,6 @@ struct State {
 #[derive(Clone)]
 struct Entry {
     public: ManagedDownload,
-    guid: String,
     verified_size: Option<u64>,
 }
 
@@ -273,9 +272,9 @@ impl ManagedDownloadAuthority {
             let generation = state.transport_generation;
             let stale = state
                 .by_guid
-                .values()
-                .filter(|entry| !is_terminal(entry.public.state))
-                .map(|entry| entry.guid.clone())
+                .iter()
+                .filter(|(_, entry)| !is_terminal(entry.public.state))
+                .map(|(guid, _)| guid.clone())
                 .collect::<Vec<_>>();
             for guid in &stale {
                 let sequence = next_sequence(&mut state);
@@ -366,10 +365,10 @@ impl ManagedDownloadAuthority {
         let _gate = self.gate.lock().await;
         let guid = {
             let state = self.state.lock().expect("download state lock");
-            let entry = state
+            let (guid, entry) = state
                 .by_guid
-                .values()
-                .find(|entry| entry.public.id == id)
+                .iter()
+                .find(|(_, entry)| entry.public.id == id)
                 .ok_or_else(|| {
                     download_error(
                         ErrorCode::NotFound,
@@ -384,7 +383,7 @@ impl ManagedDownloadAuthority {
                     state: entry.public.state,
                 });
             }
-            entry.guid.clone()
+            guid.clone()
         };
         transport
             .send_raw(
@@ -418,16 +417,16 @@ impl ManagedDownloadAuthority {
         }
         let (guid, expected) = {
             let state = self.state.lock().expect("download state lock");
-            let entry = state
+            let (guid, entry) = state
                 .by_guid
-                .values()
-                .find(|entry| {
+                .iter()
+                .find(|(_, entry)| {
                     entry.public.id == request.download_id
                         && entry.public.state == DownloadState::Completed
                 })
                 .ok_or_else(|| resource_not_found(self.session_id))?;
             (
-                entry.guid.clone(),
+                guid.clone(),
                 entry
                     .verified_size
                     .ok_or_else(|| resource_not_found(self.session_id))?,
@@ -462,9 +461,9 @@ impl ManagedDownloadAuthority {
             state.accepting = false;
             state
                 .by_guid
-                .values()
-                .filter(|entry| !is_terminal(entry.public.state))
-                .map(|entry| entry.guid.clone())
+                .iter()
+                .filter(|(_, entry)| !is_terminal(entry.public.state))
+                .map(|(guid, _)| guid.clone())
                 .collect::<Vec<_>>()
         };
         if let Some(transport) = transport {
@@ -556,7 +555,6 @@ impl ManagedDownloadAuthority {
                     guid.clone(),
                     Entry {
                         public: public.clone(),
-                        guid: guid.clone(),
                         verified_size: None,
                     },
                 );
