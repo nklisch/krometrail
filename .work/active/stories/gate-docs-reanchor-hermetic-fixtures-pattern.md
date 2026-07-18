@@ -5,7 +5,7 @@ stage: implementing
 tags: [documentation]
 parent: null
 depends_on: []
-release_binding: null
+release_binding: 1.1.0
 gate_origin: docs
 created: 2026-07-18
 updated: 2026-07-18
