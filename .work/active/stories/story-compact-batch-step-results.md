@@ -1,7 +1,7 @@
 ---
 id: story-compact-batch-step-results
 kind: story
-stage: review
+stage: done
 tags: [bug, agent-ux, performance]
 parent: null
 depends_on: []
@@ -45,3 +45,9 @@ that its projected child result omits `observation` while the final observation 
   degradation_wait_timeout_page_anchor_and_batch_failure_remain_distinct --locked` passes with a
   synthetic 403-node snapshot in both child and final evidence.
 - Full workspace verification is deferred to the integrated patch pass.
+
+## Review
+
+Bounded inline review approved. The final observation remains the batch's single current-state
+authority, while child-specific outcomes and anchors remain intact. Read-only child results are
+unchanged because they do not carry the removed top-level field. No independent reviewer ran.
