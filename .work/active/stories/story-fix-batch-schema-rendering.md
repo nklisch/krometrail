@@ -1,7 +1,7 @@
 ---
 id: story-fix-batch-schema-rendering
 kind: story
-stage: review
+stage: done
 tags: [bug, agent-ux]
 parent: null
 depends_on: []
@@ -47,3 +47,10 @@ standalone tool arguments.
   batch_schema_is_filtered_from_the_generated_complete_union --locked` passes.
 - Installed-host declaration verification will run after the next plugin refresh; the unit test now
   guards the flat renderer-compatible shape rather than assuming nested composition support.
+
+## Review
+
+Bounded inline review approved. The projection deliberately sacrifices schema-level request-field
+correlation at the host declaration boundary but retains a concrete step object, exact registry
+operation names, runtime validation, and skill guidance. This is more truthful and usable than a
+formally richer declaration rendered entirely as `unknown`. No independent reviewer ran.
