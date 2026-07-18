@@ -5,7 +5,7 @@ stage: done
 tags: [bug, browser, agent-ux]
 parent: null
 depends_on: []
-release_binding: null
+release_binding: 1.0.3
 gate_origin: null
 archived_atop: v1.0.2
 git_ref: 58d72c4
