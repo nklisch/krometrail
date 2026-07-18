@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-video-artifacts-ffmpeg-runtime
 kind: feature
-stage: implementing
+stage: review
 tags: [infra, security, testing]
 parent: epic-temporal-video-artifacts
 depends_on: [epic-temporal-video-artifacts-clip-contracts]
@@ -49,7 +49,7 @@ The adapter owns no download, installer, provider upload, MCP routing, retained 
 - **Discovery precedence**: an explicitly supplied executable is authoritative and does not fall back when invalid; otherwise discovery checks a bounded, deduplicated set of `PATH` candidates followed by fixed platform-default install locations. Candidate paths are canonicalized for execution but never copied into public errors or logs.
 - **Produced-contract qualification**: qualification hashes a bounded complete `ffmpeg -version` report, derives a safe version label, and then sends a tiny two-state request through the same job builder, process runner, and MP4 validator used by ordinary encoding. Encoder-list text is neither necessary nor sufficient.
 - **Private file-backed input and output**: generated frame names and an `ffconcat` file live in a mode-restricted temporary directory. FFmpeg writes a fixed relative partial-output name in that directory; only fully exited, bounded, parsed bytes cross back into the core result. This keeps path syntax and partial artifacts out of caller control.
-- **Presentation timebase**: plan boundaries are deterministically rounded from nanoseconds to a one-microsecond FFconcat/MP4 timebase by rounding cumulative endpoints, never each duration independently. The v1 argument-policy identity covers this sub-microsecond presentation loss; source/session provenance remains the exact committed plan.
+- **Presentation timebase**: plan boundaries are deterministically rounded from nanoseconds to a one-microsecond FFconcat/filter/MP4 timebase by rounding cumulative endpoints, never each duration independently. The generated PTS filter assigns those validated boundaries explicitly, and the repeated terminal frame lands at duration minus one tick so FFmpeg's input frame duration closes the track exactly. The v1 argument-policy identity covers this sub-microsecond presentation loss; source/session provenance remains the exact committed plan.
 - **Failure mapping**: cancellation remains `cancelled`, an expired deadline or unsuccessful/invalid encode becomes `video_encoding_failed`, output overflow remains `resource_limit_exceeded`, and disappearance or pre-run identity drift becomes `video_encoder_unavailable`. Private causes are reduced to bounded stage, exit class, byte counts, truncation flags, and hashes before tracing.
 - **Runtime identity pinning**: qualification stores the canonical executable and a platform file stamp plus executable digest. Each encode rechecks the canonical path and file stamp before launch; ordinary replacement or disappearance therefore fails closed until restart. Defending against a malicious same-user replacement preserving metadata during the final launch race is outside the local-user trust boundary.
 - **One active encoder process**: the adapter owns a one-permit semaphore and also fixes FFmpeg/filter thread counts to one. This bounds CPU concurrency without introducing a general scheduler; the application service can impose its independent request concurrency above the port.
@@ -98,13 +98,13 @@ impl H264Encoder {
 
 - Register the unpublished adapter as a workspace member. It depends inward on core and the existing `temporal-vision` output-hash value required by `VideoEncodedClip`, plus the narrow runtime utilities it uses: Tokio process/I/O/sync/time, `tempfile`, SHA-256, tracing, and platform process-control support. It enables no downloader, network, native-codec, or FFmpeg wrapper feature.
 - Keep every argument in `policy.rs`. V1 fixes `-nostdin`, no shell, concat-demuxer safe mode, one video map, no audio/subtitle/data, VFR, one-microsecond encoder/track timebase, aspect-preserving scale to the committed `scaled` dimensions, trailing pad to the committed even `canvas`, `yuv420p`, `libx264`, single encoder/filter threads, all-intra GOP, metadata removal, bounded output size, and MP4 fast-start output.
-- Inputs and output names are constant relative names below the private working directory. No request string, URL, browser text, local absolute path, filter expression, codec, or arbitrary FFmpeg option enters argv.
+- Inputs and output names are constant relative names below the private working directory. No request string, URL, browser text, local absolute path, caller-supplied filter expression, codec, or arbitrary FFmpeg option enters argv.
 
 **Acceptance criteria**:
 
-- [ ] A single exact-argument test fixes ordering and values for v1, including geometry and byte ceilings, without a second production argument list.
-- [ ] The adapter crate has no HTTP, downloader, shell, native FFmpeg, provider, MCP, storage, or browser dependency.
-- [ ] `cargo tree` and the lockfile contain no FFmpeg binary or binding package introduced by this feature.
+- [x] A single exact-argument test fixes ordering and values for v1, including geometry and byte ceilings, without a second production argument list.
+- [x] The adapter crate has no HTTP, downloader, shell, native FFmpeg, provider, MCP, storage, or browser dependency.
+- [x] `cargo tree` and the lockfile contain no FFmpeg binary or binding package introduced by this feature.
 
 ### Unit 2: Private request staging and owned process lifecycle
 
@@ -169,10 +169,10 @@ impl ManagedFfmpegProcess {
 
 **Acceptance criteria**:
 
-- [ ] Success returns only after exit zero, bounded pipe completion, full child reaping, and an exact-size-bounded read of the private output.
-- [ ] Cancellation, elapsed deadline, output overflow, diagnostic overflow, spawn failure, and dropped encode futures leave no direct child, owned descendant, or caller-visible partial bytes.
-- [ ] Frame payloads, FFconcat contents, executable/temp paths, and raw process diagnostics never appear in tracing fields or core errors.
-- [ ] Tests exercise the same process guard on Unix and Windows; unsupported tree ownership fails closed instead of silently degrading.
+- [x] Success returns only after exit zero, bounded pipe completion, full child reaping, and an exact-size-bounded read of the private output.
+- [x] Cancellation, elapsed deadline, output overflow, diagnostic overflow, spawn failure, and dropped encode futures leave no direct child, owned descendant, or caller-visible partial bytes.
+- [x] Frame payloads, FFconcat contents, executable/temp paths, and raw process diagnostics never appear in tracing fields or core errors.
+- [x] Tests exercise the same process guard on Unix and Windows; unsupported tree ownership fails closed instead of silently degrading.
 
 ### Unit 3: Bounded MP4/H.264 validator
 
@@ -205,9 +205,9 @@ fn validate_mp4(bytes: Arc<[u8]>, expected: ExpectedMp4)
 
 **Acceptance criteria**:
 
-- [ ] Valid fixed-policy output proves MP4 + H.264 + one matching-dimension video track + no audio before a core result can be constructed.
-- [ ] Malformed container lengths and nesting cannot panic, loop, allocate by attacker-declared size, or read out of bounds.
-- [ ] Fixture mutations fail at the expected closed validation stage without leaking raw payloads.
+- [x] Valid fixed-policy output proves MP4 + H.264 + one matching-dimension video track + no audio before a core result can be constructed.
+- [x] Malformed container lengths and nesting cannot panic, loop, allocate by attacker-declared size, or read out of bounds.
+- [x] Fixture mutations fail at the expected closed validation stage without leaking raw payloads.
 
 ### Unit 4: Executable discovery, identity, and real qualification
 
@@ -275,14 +275,14 @@ pub async fn qualify_ffmpeg(
 
 **Acceptance criteria**:
 
-- [ ] Missing and unsuitable FFmpeg are ordinary `Unavailable` outcomes, not startup errors or panics.
-- [ ] A version-reporting binary that cannot produce the validated fixed-policy clip never qualifies.
-- [ ] Qualification identity changes with the bounded build report, selected encoder, adapter version, or argument-policy version and exposes no executable path.
-- [ ] Installing or replacing FFmpeg cannot mutate an already returned qualification object; a changed stamp fails the next encode as unavailable until restart.
+- [x] Missing and unsuitable FFmpeg are ordinary `Unavailable` outcomes, not startup errors or panics.
+- [x] A version-reporting binary that cannot produce the validated fixed-policy clip never qualifies.
+- [x] Qualification identity changes with the bounded build report, selected encoder, adapter version, or argument-policy version and exposes no executable path.
+- [x] Installing or replacing FFmpeg cannot mutate an already returned qualification object; a changed stamp fails the next encode as unavailable until restart.
 
 ### Unit 5: Qualified core-port adapter and qualification ladder
 
-**Files**: `crates/krometrail-ffmpeg/src/encoder.rs`, `crates/krometrail-ffmpeg/tests/ffmpeg_adapter.rs`, `crates/krometrail-ffmpeg/tests/process_ownership.rs`, `crates/krometrail-ffmpeg/tests/ffmpeg_live.rs`, `crates/krometrail-ffmpeg/tests/support/fixture_main.rs`
+**Files**: `crates/krometrail-ffmpeg/src/encoder.rs`, `crates/krometrail-ffmpeg/tests/ffmpeg_adapter.rs`, `crates/krometrail-ffmpeg/tests/ffmpeg_live.rs`, `crates/krometrail-ffmpeg/tests/support/fixture_main.rs`
 
 **Story**: `epic-temporal-video-artifacts-ffmpeg-runtime-encoder-port-adapter`
 
@@ -314,10 +314,10 @@ impl TemporalVideoEncoder for QualifiedFfmpegEncoder {
 
 **Acceptance criteria**:
 
-- [ ] The concrete adapter is object-safe through `Arc<dyn TemporalVideoEncoder>` and returns bytes/identity/profile/hash accepted by the committed core constructors.
-- [ ] Queue wait and active encode both honor the exact core deadline and cancellation signal; dropping the returned future also triggers process/tree cleanup.
-- [ ] Deterministic workspace tests require no FFmpeg or network and cannot mutate the operator's installation, home, or PATH.
-- [ ] The explicit live command proves a playable fixed-policy clip and names the safe build/encoder/policy identity; it cannot report success when FFmpeg is absent or unsuitable.
+- [x] The concrete adapter is object-safe through `Arc<dyn TemporalVideoEncoder>` and returns bytes/identity/profile/hash accepted by the committed core constructors.
+- [x] Queue wait and active encode both honor the exact core deadline and cancellation signal; dropping the returned future also triggers process/tree cleanup.
+- [x] Deterministic workspace tests require no FFmpeg or network and cannot mutate the operator's installation, home, or PATH.
+- [x] The explicit live command proves a playable fixed-policy clip and names the safe build/encoder/policy identity; it cannot report success when FFmpeg is absent or unsuitable.
 
 ## Implementation order
 
@@ -358,3 +358,28 @@ These are sequential security/acceptance checkpoints inside one cohesive adapter
 
 - Invoked because: direct executable authority, cancellation, cross-platform tree cleanup, and external binary parsing are security-sensitive stable-runtime work.
 - Skipped/degraded: the active autopilot delegation explicitly prohibits nested agents and peeragent. The non-blocking design-time degradation is recorded here; the caller's standard independent implementation review remains required.
+
+## Implementation summary
+
+- Execution capability: GPT-5.6 Sol at xhigh reasoning, the caller-selected fallback because Luna was unavailable, coordinated as one sequential cohesive feature owner under autopilot.
+- Review weight: `standard`. This implementation is ready for the independent feature review; the implementing worker did not self-close the feature.
+- Completed child stories and commits:
+  - `epic-temporal-video-artifacts-ffmpeg-runtime-managed-process-and-mp4-validation` — `eb052a9`
+  - `epic-temporal-video-artifacts-ffmpeg-runtime-discovery-and-qualification` — `538ef05`
+  - `epic-temporal-video-artifacts-ffmpeg-runtime-encoder-port-adapter` — `58e9764`
+- Added the unpublished `krometrail-ffmpeg` workspace crate with one fixed `libx264` v1 policy, private generated input/output staging, direct Tokio process ownership, bounded diagnostics/output, checked MP4/H.264/no-audio validation, deterministic discovery, produced-contract qualification, immutable safe identity, and an object-safe qualified core-port adapter.
+- The process boundary uses no shell, wrapper, downloader, network client, native FFmpeg binding, or managed binary. Unix process groups plus `RLIMIT_CPU` and Windows kill-on-close Job Objects own cleanup; unsupported ownership fails qualification. Default tests use a compiled Rust fixture, and the real interoperability lane is feature-gated, ignored, and requires an explicit executable.
+- The opt-in live lane exposed FFmpeg image-demuxer 25 fps timestamp quantization that the compiled fixture could not model. The fixed policy now supplies a 1 MHz input cadence and generated cumulative `setpts` values while retaining concat `-safe 1`; the real validator then proved the exact 350 ms track contract. This stayed within the adapter and required no core-contract change.
+- No adjacent issue was discovered or parked. Windows Job Object behavior remains exercised by the shared platform-gated test source on Windows CI; this macOS implementation run exercised the Unix process-group path and live FFmpeg 8.0.1 path.
+
+## Verification evidence
+
+- `cargo fmt --all -- --check` — passed on the clean integrated workspace.
+- `cargo check --workspace --all-targets --locked` — passed.
+- `cargo test --workspace --all-targets --locked` — passed across the workspace; only the existing explicitly manual/performance tests remained ignored.
+- `cargo clippy --workspace --all-targets --locked -- -D warnings` — passed.
+- `cargo test -p krometrail-ffmpeg` — passed 32 deterministic tests and doc tests with no real FFmpeg or network.
+- `KROMETRAIL_FFMPEG_PATH=/opt/homebrew/bin/ffmpeg cargo test -p krometrail-ffmpeg --features qualification-support --test ffmpeg_live -- --ignored --nocapture` — qualified FFmpeg 8.0.1 with `libx264` and produced a validated 1,508-byte H.264 MP4 at exactly 350 ms; output SHA-256 was `8b3905f2acd80fc1f4c2a476e8339ca0c17d79c0efa668ba0f6894f6fad2c762`.
+- `cargo tree -p krometrail-ffmpeg` plus a lockfile audit found no FFmpeg binary, binding, wrapper, downloader, or network dependency; the only FFmpeg-named package is this workspace crate.
+- No existing test was removed, weakened, or skipped to obtain these results.
+- `.work/bin/work-view` is an x86-64 Linux executable in this checkout and cannot execute on the macOS host. Dependency readiness and child stages were therefore verified directly from item frontmatter; this did not block implementation or verification.
