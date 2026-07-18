@@ -1,7 +1,7 @@
 ---
 id: epic-browser-interface-hardening-page-context-semantics
 kind: feature
-stage: implementing
+stage: review
 tags: [browser, agent-ux]
 parent: epic-browser-interface-hardening
 depends_on: []
@@ -158,3 +158,17 @@ Attach safe retry/recovery guidance appropriate to the policy without claiming a
 ## Risks
 
 AX and DOMSnapshot node identities can differ across out-of-process frames. Same-origin qualification is required; unsupported cross-origin behavior remains explicit. Container text could overmatch a very large ancestor, so matching stops at the nearest ancestor whose rendered text matches.
+
+## Implementation notes
+
+- Completed the four cohesive child stories: `epic-browser-interface-hardening-page-context-semantics-container-text`, `epic-browser-interface-hardening-page-context-semantics-frame-query`, `epic-browser-interface-hardening-page-context-semantics-asset-kinds`, and `epic-browser-interface-hardening-page-context-semantics-hidden-recovery`.
+- Role queries now accept bounded `container_text`; snapshot metadata keeps mapped non-actionable ancestors and walks only the candidate's ancestor chain, excluding page-root text.
+- Frame qualification now carries one resolved document fingerprint through AX and DOMSnapshot selection, with a final drift check before the snapshot is installed.
+- Resource timing classification centralizes unambiguous, case-insensitive URL-extension inference and otherwise preserves initiator-type behavior. Hidden pointer-target failures now reflect the requested focus policy and name the supported retry.
+- The implementation stayed within the existing query registry, resource-timing inventory, and interaction-preparation boundaries. No discrepancies or adjacent issues were found.
+
+## Integrated verification
+
+- `cargo test -p krometrail-core -p krometrail-cdp --all-targets --locked` — passed.
+- `cargo clippy -p krometrail-core -p krometrail-cdp --all-targets --locked -- -D warnings` — passed.
+- `cargo fmt --all -- --check` — passed.
