@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeMap,
+    fs::{File, OpenOptions},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
@@ -173,6 +174,7 @@ pub(crate) struct ManagedDownloadAuthority {
     gate: tokio::sync::Mutex<()>,
     changed: Notify,
     subscribers: Option<Arc<SubscriberRegistry>>,
+    lease: Mutex<Option<File>>,
 }
 
 struct State {
@@ -199,7 +201,7 @@ impl ManagedDownloadAuthority {
     ) -> Result<Arc<Self>> {
         // Subscribe before enabling downloads so no begin/progress event can race the tracker.
         let (begins, progress) = subscribe_download_events(transport.as_ref(), session_id).await?;
-        let root = prepare_session_root(base_root, session_id)?;
+        let PreparedSessionRoot { root, lease } = prepare_session_root(base_root, session_id)?;
         if transport
             .send_raw(
                 &CommandScope::Browser,
@@ -211,6 +213,7 @@ impl ManagedDownloadAuthority {
             .await
             .is_err()
         {
+            drop(lease);
             let _ = std::fs::remove_dir_all(&root);
             return Err(download_error(
                 ErrorCode::BrowserCompatibilityFailed,
@@ -234,6 +237,7 @@ impl ManagedDownloadAuthority {
             gate: tokio::sync::Mutex::new(()),
             changed: Notify::new(),
             subscribers: Some(subscribers),
+            lease: Mutex::new(Some(lease)),
         });
         spawn_begin_pump(Arc::clone(&authority), Arc::clone(&transport), 1, begins);
         spawn_progress_pump(Arc::clone(&authority), Arc::clone(&transport), 1, progress);
@@ -471,6 +475,7 @@ impl ManagedDownloadAuthority {
                     .await;
             }
         }
+        self.lease.lock().expect("download lease lock").take();
         match std::fs::remove_dir_all(&self.root) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -731,7 +736,15 @@ fn spawn_progress_pump(
     });
 }
 
-fn prepare_session_root(base: &Path, session_id: SessionId) -> Result<PathBuf> {
+const ACTIVE_MARKER: &str = ".krometrail-active";
+const SCAVENGE_LOCK: &str = ".krometrail-scavenge";
+
+struct PreparedSessionRoot {
+    root: PathBuf,
+    lease: File,
+}
+
+fn prepare_session_root(base: &Path, session_id: SessionId) -> Result<PreparedSessionRoot> {
     std::fs::create_dir_all(base).map_err(|_| {
         download_error(
             ErrorCode::PersistenceFailed,
@@ -748,6 +761,24 @@ fn prepare_session_root(base: &Path, session_id: SessionId) -> Result<PathBuf> {
             "check Krometrail data-directory permissions and retry",
         )
     })?;
+    let scavenge_lock = open_lock_file(&base.join(SCAVENGE_LOCK), true).map_err(|_| {
+        cleanup_error(
+            session_id,
+            "managed download cleanup coordination could not be opened",
+        )
+    })?;
+    if !try_lock_file(&scavenge_lock).map_err(|_| {
+        cleanup_error(
+            session_id,
+            "managed download cleanup is already active or unavailable",
+        )
+    })? {
+        return Err(cleanup_error(
+            session_id,
+            "managed download cleanup is already active or unavailable",
+        ));
+    }
+    scavenge_stale_session_roots(&base, session_id)?;
     let root = base.join(session_id.to_string());
     std::fs::create_dir(&root).map_err(|_| {
         download_error(
@@ -790,7 +821,204 @@ fn prepare_session_root(base: &Path, session_id: SessionId) -> Result<PathBuf> {
             "remove the invalid Krometrail download root and retry",
         ));
     }
-    Ok(root)
+    let lease = open_lock_file(&root.join(ACTIVE_MARKER), true).map_err(|_| {
+        let error = cleanup_error(
+            session_id,
+            "private download session ownership could not be created",
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        error
+    })?;
+    if !try_lock_file(&lease).map_err(|_| {
+        let error = cleanup_error(
+            session_id,
+            "private download session ownership could not be acquired",
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        error
+    })? {
+        let _ = std::fs::remove_dir_all(&root);
+        return Err(cleanup_error(
+            session_id,
+            "private download session ownership is already active",
+        ));
+    }
+    let _ = unlock_file(&scavenge_lock);
+    Ok(PreparedSessionRoot { root, lease })
+}
+
+fn scavenge_stale_session_roots(base: &Path, current: SessionId) -> Result<()> {
+    let entries = std::fs::read_dir(base).map_err(|_| {
+        cleanup_error(
+            current,
+            "managed download cleanup could not enumerate its private root",
+        )
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|_| {
+            cleanup_error(
+                current,
+                "managed download cleanup could not inspect a private-root entry",
+            )
+        })?;
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        let Some(candidate) = canonical_session_id(&name) else {
+            continue;
+        };
+        if candidate == current {
+            continue;
+        }
+        let path = entry.path();
+        let metadata = std::fs::symlink_metadata(&path).map_err(|_| {
+            cleanup_error(
+                current,
+                "managed download cleanup could not verify a session entry",
+            )
+        })?;
+        if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
+            return Err(cleanup_error(
+                current,
+                "managed download cleanup rejected an invalid session entry",
+            ));
+        }
+        let canonical = std::fs::canonicalize(&path).map_err(|_| {
+            cleanup_error(
+                current,
+                "managed download cleanup could not verify a session directory",
+            )
+        })?;
+        if canonical.parent() != Some(base)
+            || canonical.file_name().and_then(|v| v.to_str()) != Some(name.as_str())
+        {
+            return Err(cleanup_error(
+                current,
+                "managed download cleanup rejected an escaped session directory",
+            ));
+        }
+        let marker = canonical.join(ACTIVE_MARKER);
+        let active = match std::fs::symlink_metadata(&marker) {
+            Ok(marker_metadata) => {
+                if marker_metadata.file_type().is_symlink()
+                    || !marker_metadata.file_type().is_file()
+                {
+                    return Err(cleanup_error(
+                        current,
+                        "managed download cleanup rejected an invalid ownership marker",
+                    ));
+                }
+                probe_active_marker(&marker).map_err(|_| {
+                    cleanup_error(
+                        current,
+                        "managed download cleanup could not verify session ownership",
+                    )
+                })?
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(_) => {
+                return Err(cleanup_error(
+                    current,
+                    "managed download cleanup could not inspect session ownership",
+                ));
+            }
+        };
+        if !active {
+            std::fs::remove_dir_all(&canonical).map_err(|_| {
+                cleanup_error(
+                    current,
+                    "managed download cleanup could not remove a stale session directory",
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn canonical_session_id(name: &str) -> Option<SessionId> {
+    let value = uuid::Uuid::parse_str(name).ok()?;
+    (!value.is_nil() && value.to_string() == name).then(|| SessionId::from_uuid(value))
+}
+
+fn open_lock_file(path: &Path, create: bool) -> std::io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(create);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.share_mode(0);
+    }
+    options.open(path)
+}
+
+#[cfg(unix)]
+fn try_lock_file(file: &File) -> std::io::Result<bool> {
+    use std::os::fd::AsRawFd;
+    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if result == 0 {
+        Ok(true)
+    } else {
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::WouldBlock {
+            Ok(false)
+        } else {
+            Err(error)
+        }
+    }
+}
+
+#[cfg(windows)]
+fn try_lock_file(_file: &File) -> std::io::Result<bool> {
+    Ok(true)
+}
+
+#[cfg(unix)]
+fn unlock_file(file: &File) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(windows)]
+fn unlock_file(_file: &File) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn probe_active_marker(path: &Path) -> std::io::Result<bool> {
+    let marker = open_lock_file(path, false)?;
+    let active = !try_lock_file(&marker)?;
+    if !active {
+        unlock_file(&marker)?;
+    }
+    Ok(active)
+}
+
+#[cfg(windows)]
+fn probe_active_marker(path: &Path) -> std::io::Result<bool> {
+    match OpenOptions::new().read(true).write(true).open(path) {
+        Ok(_) => Ok(false),
+        Err(error) if error.raw_os_error() == Some(32) => Ok(true),
+        Err(error) => Err(error),
+    }
+}
+
+fn cleanup_error(session_id: SessionId, message: &'static str) -> KrometrailError {
+    download_error(
+        ErrorCode::PersistenceFailed,
+        session_id,
+        message,
+        "remove invalid stale entries from the private Krometrail download root and retry",
+    )
 }
 
 async fn wait_for_verified_file(
@@ -933,6 +1161,7 @@ fn download_error(
 
 impl Drop for ManagedDownloadAuthority {
     fn drop(&mut self) {
+        self.lease.lock().expect("download lease lock").take();
         let _ = std::fs::remove_dir_all(&self.root);
     }
 }
@@ -1085,7 +1314,7 @@ mod tests {
         subscribers: Option<Arc<SubscriberRegistry>>,
     ) -> Arc<ManagedDownloadAuthority> {
         let session_id = SessionId::from_uuid(uuid::Uuid::from_u128(100));
-        let root = prepare_session_root(base, session_id).unwrap();
+        let PreparedSessionRoot { root, lease } = prepare_session_root(base, session_id).unwrap();
         Arc::new(ManagedDownloadAuthority {
             session_id,
             root,
@@ -1100,6 +1329,7 @@ mod tests {
             gate: tokio::sync::Mutex::new(()),
             changed: Notify::new(),
             subscribers,
+            lease: Mutex::new(Some(lease)),
         })
     }
 
@@ -1214,6 +1444,84 @@ mod tests {
         let retry = authority.list(transport_port).await.unwrap_err();
         assert_eq!(retry.code, ErrorCode::BrowserCompatibilityFailed);
         assert!(!base.join(authority.session_id.to_string()).exists());
+    }
+
+    #[test]
+    fn activation_scavenges_only_unlocked_canonical_session_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path().join("downloads");
+        std::fs::create_dir_all(&base).unwrap();
+        let stale = SessionId::from_uuid(uuid::Uuid::from_u128(301));
+        let current = SessionId::from_uuid(uuid::Uuid::from_u128(302));
+        let stale_root = base.join(stale.to_string());
+        std::fs::create_dir(&stale_root).unwrap();
+        std::fs::write(stale_root.join("private-bytes"), b"secret").unwrap();
+        let unrelated = base.join("user-sibling");
+        std::fs::create_dir(&unrelated).unwrap();
+
+        let prepared = prepare_session_root(&base, current).unwrap();
+        assert!(!stale_root.exists());
+        assert!(unrelated.is_dir());
+        assert!(prepared.root.is_dir());
+        drop(prepared.lease);
+        std::fs::remove_dir_all(prepared.root).unwrap();
+    }
+
+    #[test]
+    fn scavenger_preserves_current_and_locked_active_sessions() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path().join("downloads");
+        let active_id = SessionId::from_uuid(uuid::Uuid::from_u128(311));
+        let next_id = SessionId::from_uuid(uuid::Uuid::from_u128(312));
+        let active = prepare_session_root(&base, active_id).unwrap();
+        let next = prepare_session_root(&base, next_id).unwrap();
+        assert!(active.root.is_dir());
+        assert!(next.root.is_dir());
+
+        scavenge_stale_session_roots(&base.canonicalize().unwrap(), next_id).unwrap();
+        assert!(active.root.is_dir());
+        assert!(next.root.is_dir());
+        drop(active.lease);
+        drop(next.lease);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scavenger_rejects_canonical_symlinks_without_following_or_disclosing_paths() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path().join("downloads");
+        std::fs::create_dir(&base).unwrap();
+        let outside = temp.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("sentinel"), b"secret").unwrap();
+        let candidate = SessionId::from_uuid(uuid::Uuid::from_u128(321));
+        symlink(&outside, base.join(candidate.to_string())).unwrap();
+        let current = SessionId::from_uuid(uuid::Uuid::from_u128(322));
+
+        let error =
+            scavenge_stale_session_roots(&base.canonicalize().unwrap(), current).unwrap_err();
+        assert_eq!(error.code, ErrorCode::PersistenceFailed);
+        assert!(outside.join("sentinel").is_file());
+        let encoded = serde_json::to_string(&error).unwrap();
+        assert!(!encoded.contains(temp.path().to_str().unwrap()));
+    }
+
+    #[test]
+    fn scavenger_rejects_canonical_non_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path().join("downloads");
+        std::fs::create_dir(&base).unwrap();
+        let candidate = SessionId::from_uuid(uuid::Uuid::from_u128(331));
+        let path = base.join(candidate.to_string());
+        std::fs::write(&path, b"unrelated").unwrap();
+        let current = SessionId::from_uuid(uuid::Uuid::from_u128(332));
+
+        let error =
+            scavenge_stale_session_roots(&base.canonicalize().unwrap(), current).unwrap_err();
+        assert_eq!(error.code, ErrorCode::PersistenceFailed);
+        assert!(path.is_file());
     }
 
     #[tokio::test]
