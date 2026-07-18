@@ -106,7 +106,6 @@ pub struct WaitForPageResult {
 pub struct PageFrameReference {
     pub target_id: TargetId,
     pub attachment_generation: u64,
-    pub frame_generation: PageSequence,
     pub frame_key: NonEmptyText,
 }
 

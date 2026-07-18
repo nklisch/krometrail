@@ -6,7 +6,7 @@ use std::{
 use krometrail_core::{
     ErrorCode, FrameAccess, MAX_PAGE_ASSETS, MAX_PAGE_FRAMES, NonEmptyText, PageAssetInventory,
     PageAssetKind, PageAssetMetadata, PageFrameInventory, PageFrameReference, PageFrameStatus,
-    PageSequence, Result, SanitizedUrl,
+    Result, SanitizedUrl,
 };
 use serde_json::{Value, json};
 use url::Url;
@@ -24,7 +24,6 @@ impl PageControl {
     ) -> Result<(String, String)> {
         if reference.target_id != bound.target_id
             || reference.attachment_generation != bound.attachment_generation
-            || reference.frame_generation.get() != bound.attachment_generation.saturating_add(1)
         {
             return Err(operation_error(
                 ErrorCode::StaleReference,
@@ -261,7 +260,6 @@ fn collect_frames(
     let reference = PageFrameReference {
         target_id: bound.target_id,
         attachment_generation: bound.attachment_generation,
-        frame_generation: PageSequence::new(bound.attachment_generation.saturating_add(1))?,
         frame_key: NonEmptyText::new(frame_key).expect("generated frame key"),
     };
     let raw_frame_id = tree.pointer("/frame/id").and_then(Value::as_str);
