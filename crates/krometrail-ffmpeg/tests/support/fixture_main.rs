@@ -26,6 +26,8 @@ fn main() {
     if arguments.iter().any(|value| value == "-version") {
         if mode.trim() == "version-overflow" {
             io::stdout().write_all(&vec![b'v'; 70 * 1024]).unwrap();
+        } else if mode.trim() == "valid-version2" {
+            println!("ffmpeg version fixture-2");
         } else {
             println!("ffmpeg version fixture-1");
         }
@@ -33,7 +35,9 @@ fn main() {
     }
 
     let encode_number = increment_encode_count(directory);
-    let effective_mode = if encode_number == 1 && mode.trim().ends_with("_after_qualification") {
+    let effective_mode = if mode.trim() == "valid-version2"
+        || encode_number == 1 && mode.trim().ends_with("_after_qualification")
+    {
         "valid"
     } else {
         mode.trim().trim_end_matches("_after_qualification")

@@ -45,7 +45,10 @@ fn compile_fixture() -> CompiledFixture {
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/support/fixture_main.rs"))
         .arg("-o")
         .arg(&executable)
-        .env("KROMETRAIL_FFMPEG_FIXTURE_MANIFEST_DIR", env!("CARGO_MANIFEST_DIR"))
+        .env(
+            "KROMETRAIL_FFMPEG_FIXTURE_MANIFEST_DIR",
+            env!("CARGO_MANIFEST_DIR"),
+        )
         .status()
         .expect("run rustc for compiled FFmpeg fixture");
     assert!(status.success(), "compiled FFmpeg fixture must build");

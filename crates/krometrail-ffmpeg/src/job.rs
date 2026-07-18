@@ -1,7 +1,7 @@
 use std::{ffi::OsString, path::Path, time::Duration};
 
 use krometrail_core::{ImageFormat, VideoEncodeRequest};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::{
     error::{AdapterFailure, AdapterFailureKind, AdapterFailureStage},
@@ -91,6 +91,34 @@ impl PreparedEncodeJob {
     pub(crate) fn output_path(&self) -> std::path::PathBuf {
         self.workspace.path().join(OUTPUT_FILE_NAME)
     }
+
+    pub(crate) async fn read_output(&self) -> Result<std::sync::Arc<[u8]>, AdapterFailure> {
+        let path = self.output_path();
+        let metadata = tokio::fs::metadata(&path)
+            .await
+            .map_err(|_| output_failure(AdapterFailureKind::InvalidOutput))?;
+        if metadata.len() == 0 || metadata.len() > self.output_limit {
+            return Err(output_failure(if metadata.len() > self.output_limit {
+                AdapterFailureKind::OutputOverflow
+            } else {
+                AdapterFailureKind::InvalidOutput
+            })
+            .with_observed_bytes(metadata.len()));
+        }
+        let file = tokio::fs::File::open(path)
+            .await
+            .map_err(|_| output_failure(AdapterFailureKind::InvalidOutput))?;
+        let mut bytes = Vec::with_capacity(metadata.len() as usize);
+        file.take(self.output_limit.saturating_add(1))
+            .read_to_end(&mut bytes)
+            .await
+            .map_err(|_| output_failure(AdapterFailureKind::InvalidOutput))?;
+        if bytes.len() as u64 != metadata.len() || bytes.len() as u64 > self.output_limit {
+            return Err(output_failure(AdapterFailureKind::OutputOverflow)
+                .with_observed_bytes(bytes.len() as u64));
+        }
+        Ok(bytes.into())
+    }
 }
 
 fn concat_document(
@@ -139,6 +167,10 @@ fn staging_failure() -> AdapterFailure {
         AdapterFailureStage::InputStaging,
         AdapterFailureKind::Internal,
     )
+}
+
+fn output_failure(kind: AdapterFailureKind) -> AdapterFailure {
+    AdapterFailure::new(AdapterFailureStage::OutputValidation, kind)
 }
 
 #[cfg(unix)]

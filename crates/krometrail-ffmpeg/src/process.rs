@@ -13,6 +13,7 @@ use crate::{
     policy::FFMPEG_TERMINATION_GRACE,
 };
 
+#[derive(Clone, Copy)]
 pub(crate) struct ProcessLimits {
     pub(crate) deadline: Instant,
     pub(crate) cpu_seconds: u64,

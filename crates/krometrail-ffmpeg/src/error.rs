@@ -59,6 +59,13 @@ impl AdapterFailure {
         self
     }
 
+    pub(crate) const fn at_stage(mut self, stage: AdapterFailureStage) -> Self {
+        if !matches!(self.stage, AdapterFailureStage::ProcessCleanup) {
+            self.stage = stage;
+        }
+        self
+    }
+
     pub(crate) fn trace(&self) {
         let digest = self.diagnostic_sha256.map(HexDigest);
         tracing::debug!(
