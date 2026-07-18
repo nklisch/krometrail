@@ -1,0 +1,28 @@
+---
+id: epic-agent-browser-ergonomics-response-projections-projector
+kind: story
+stage: implementing
+tags: [agent-ux, browser]
+parent: epic-agent-browser-ergonomics-response-projections
+depends_on: []
+release_binding: null
+gate_origin: null
+created: 2026-07-18
+updated: 2026-07-18
+---
+
+# Shared response projection contract and projector
+
+## Checkpoint
+
+Introduce the validated additive `response` preference, decorate generated route schemas, and apply full/compact/omit presentation through the one MCP response projector after authoritative operation or temporal acquisition. Preserve outcome, interaction, warnings, errors, resource identities, and screenshot availability metadata while bounding representative compact responses.
+
+## Acceptance evidence
+
+- Schema-wide tests prove omitted preferences preserve legacy required fields and invalid nested preferences fail without echoing values.
+- Response-layer tests prove mutation, batch, and temporal projection combinations preserve authoritative fields and suppress only selected presentation content.
+- A deterministic large snapshot/bundle fixture demonstrates an economical projection with an explicit serialized-size bound.
+
+## Ordering
+
+This checkpoint establishes the vocabulary and transformation used by route, status, diagnostics, and skill integration.
