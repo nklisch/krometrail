@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-ergonomics-local-io
 kind: feature
-stage: review
+stage: done
 tags: [agent-ux, browser, security]
 parent: epic-agent-browser-ergonomics
 depends_on: []
@@ -178,11 +178,11 @@ pub(crate) struct ManagedDownloadAuthority {
 - Shutdown first closes resource admission, cancels active GUIDs, drains bounded tracker work, then recursively removes only its canonical session root. Cleanup failure contributes to the existing degraded/shutdown-incomplete ownership result.
 
 **Acceptance criteria**:
-- [ ] A managed download begun between list and wait is found race-free, progresses deterministically, and becomes `Completed` only when its verified file is readable.
-- [ ] Cancellation, browser failure, over-count, over-size, symlink/non-regular file, and shutdown races terminate once and leave no readable partial resource.
-- [ ] Attached sessions fail before changing browser download behavior or touching a download directory.
-- [ ] Filenames, raw URLs, GUIDs, filesystem paths, and bytes are absent from browser events, status, tracing, and diagnostics.
-- [ ] Stop and failed-start cleanup remove the session directory without deleting sibling sessions or the reusable browser profile.
+- [x] A managed download begun between list and wait is found race-free, progresses deterministically, and becomes `Completed` only when its verified file is readable.
+- [x] Cancellation, browser failure, over-count, over-size, symlink/non-regular file, and shutdown races terminate once and leave no readable partial resource.
+- [x] Attached sessions fail before changing browser download behavior or touching a download directory.
+- [x] Filenames, raw URLs, GUIDs, filesystem paths, and bytes are absent from browser events, status, tracing, and diagnostics.
+- [x] Stop and failed-start cleanup remove the session directory without deleting sibling sessions or the reusable browser profile.
 
 ### Unit 3: Active-session canonical download resources and skill guidance
 
@@ -221,9 +221,9 @@ Canonical URI: `krometrail://local/{session}/downloads/{download}`.
 - Add plugin guidance: clipboard calls are explicit and permission/focus preserving; download cursors should be captured before triggering a download; completed resources are local and expire on `stop_browser`; attached sessions are unsupported.
 
 **Acceptance criteria**:
-- [ ] A completed active-session download has one canonical resource URI whose read returns exact bytes and declared size up to 64 MiB.
-- [ ] In-progress, cancelled, rejected, oversized, mismatched-session, malformed-URI, and post-stop reads fail without path disclosure.
-- [ ] Schema/resource registry tests and plugin static checks prove the tool/resource surface and lifetime guidance are complete.
+- [x] A completed active-session download has one canonical resource URI whose read returns exact bytes and declared size up to 64 MiB.
+- [x] In-progress, cancelled, rejected, oversized, mismatched-session, malformed-URI, and post-stop reads fail without path disclosure.
+- [x] Schema/resource registry tests and plugin static checks prove the tool/resource surface and lifetime guidance are complete.
 
 ## Implementation order
 
@@ -269,3 +269,16 @@ Canonical URI: `krometrail://local/{session}/downloads/{download}`.
 - MCP: full suite 61/61, including strict URI grammar, resource registry, exact blob bytes, and post-stop invalidation.
 - Workspace: `cargo check --workspace --all-targets --locked` green.
 - Real managed Chrome: launched a temporary profile through the built MCP server, captured a pre-action download cursor, clicked a data-URL download, observed terminal completion, read exact `hello krometrail` bytes through the canonical resource, stopped the browser, and confirmed the resource was invalidated.
+
+## Review
+
+Standard review initially requested changes for terminal/effect races, over-count rejection visibility, reconnect restoration, supervisor-blocking waits, missing privacy-safe lifecycle evidence, clipboard error classification, and redacted diagnostics. All findings were accepted and repaired without broadening the feature:
+
+- `0861b18` serializes lifecycle effects, fences stale transport generations, makes terminal states immutable, and bounds visible overflow rejection.
+- `8f65d64` moves download waits outside the supervisor, honors caller/session cancellation, and restores subscriptions plus download behavior on reconnect.
+- `2960b45` preserves transport disconnect classification, distinguishes unsupported clipboard contexts from recoverable interaction failures, and redacts local-I/O `Debug` output.
+- `74e6de8` moves bounded artifact reads off the async runtime and cleans partial private roots on setup failure.
+- `d435925` persists clipboard byte-count-only evidence and emits privacy-safe download lifecycle events without names, URLs, GUIDs, paths, resource URIs, or bytes.
+- `d3427e4` covers bounded overflow, stable resource-limit signaling, cancellation, and privacy-safe lifecycle event projection.
+
+Final verification: download authority tests 7/7, clipboard tests 3/3, local-I/O core tests 3/3, evidence tests 2/2, and `cargo clippy -p krometrail-core -p krometrail-cdp --all-targets --locked -- -D warnings` pass. The earlier MCP 61/61, workspace all-target check, and real managed-Chrome resource-lifetime qualification remain valid. Verdict: pass; feature moved from `review` to `done`.
