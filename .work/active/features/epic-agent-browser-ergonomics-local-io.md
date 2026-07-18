@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-ergonomics-local-io
 kind: feature
-stage: implementing
+stage: review
 tags: [agent-ux, browser, security]
 parent: epic-agent-browser-ergonomics
 depends_on: []
@@ -254,3 +254,18 @@ Canonical URI: `krometrail://local/{session}/downloads/{download}`.
 - Clipboard availability depends on OS/browser policy and focus. The tool guarantees explicitness and clear failure, not silent permission bypass or universal success.
 - Chrome can report completion before filesystem visibility on some filesystems. Publication performs a bounded post-event verification; timeout fails the download and cleans it rather than publishing uncertain bytes.
 - Session-lifetime resources may surprise agents accustomed to retained evidence. Every download result and the skill state that `stop_browser` invalidates the URI.
+
+## Implementation summary
+
+- Delivered all three checkpoints: explicit managed-page clipboard operations (`41438a0`), the bounded managed-download authority (`c7429b0`), and active-session canonical download resources (`0e7e33d`).
+- The operation registry remains the single tool/schema authority. Clipboard content and download bytes stay out of diagnostics, status, browser events, and interaction parameters; expanded local I/O is explicit while ordinary responses retain compact defaults.
+- Managed launch now owns one private session download directory and browser-level event authority. Attached sessions fail before clipboard/download access, and stop/session loss removes download admission and local resources.
+- The installed skill documents the lower-cost cursor-first workflow, explicit expansion points, focus/permission preservation, local-only bytes, and resource lifetime.
+
+## Verification
+
+- Core browser contracts: 153 passing before one unrelated browser-context batchability assertion exposed by concurrent integration; the context lane owns that four-variant test-list correction.
+- CDP: clipboard scripted tests 2/2; download reducer/filesystem tests 4/4; all-target check green.
+- MCP: full suite 61/61, including strict URI grammar, resource registry, exact blob bytes, and post-stop invalidation.
+- Workspace: `cargo check --workspace --all-targets --locked` green.
+- Real managed Chrome: launched a temporary profile through the built MCP server, captured a pre-action download cursor, clicked a data-URL download, observed terminal completion, read exact `hello krometrail` bytes through the canonical resource, stopped the browser, and confirmed the resource was invalidated.
