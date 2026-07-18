@@ -230,6 +230,18 @@ mod interactions {
             .await
             .unwrap_err();
         assert_eq!(error.code, ErrorCode::TargetHidden);
+        assert!(
+            error
+                .message
+                .as_str()
+                .contains("bounded foreground activation")
+        );
+        assert!(
+            error
+                .recovery
+                .as_ref()
+                .is_some_and(|recovery| recovery.as_str().contains("Chrome can foreground"))
+        );
         assert_eq!(transport.calls("Target.activateTarget").len(), 1);
         assert_eq!(transport.calls("Page.bringToFront").len(), 1);
         assert!(!transport.calls("Runtime.evaluate").is_empty());
@@ -282,6 +294,19 @@ mod interactions {
             .await
             .unwrap_err();
         assert_eq!(error.code, ErrorCode::TargetHidden);
+        assert!(error.message.as_str().contains("preserve focus policy"));
+        assert!(
+            error
+                .recovery
+                .as_ref()
+                .is_some_and(|recovery| recovery.as_str().contains("focus: foreground"))
+        );
+        assert!(
+            error
+                .recovery
+                .as_ref()
+                .is_none_or(|recovery| !recovery.as_str().contains("select or foreground"))
+        );
         assert!(transport.calls.lock().unwrap().is_empty());
     }
     fn element() -> ResolvedTarget {

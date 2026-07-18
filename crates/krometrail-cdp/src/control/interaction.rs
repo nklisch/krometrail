@@ -2,7 +2,7 @@ use krometrail_core::{
     ActionDefinition, ActionabilityRequirement, BROWSER_OPERATION_REGISTRY, BrowserActionRequest,
     BrowserOperationKind, BrowserOperationRequest, BrowserOperationResult, CompletionKind,
     CoordinateSpace, CssPoint, ErrorCode, InteractionId, InteractionLocator, InteractionOutcome,
-    InteractionRecord, InteractionResult, LiveObservationRequest, LocatorSummary,
+    InteractionRecord, InteractionResult, LiveObservationRequest, LocatorSummary, NonEmptyText,
     ObservationContext, PageSelection, Result, SanitizedParameters, TargetId,
 };
 use serde_json::{Value, json};
@@ -284,7 +284,7 @@ impl PageControl {
             return Ok(());
         }
         if focus == krometrail_core::BrowserFocusPolicy::Preserve {
-            return Err(target_hidden_error(bound.target_id));
+            return Err(target_hidden_error(bound.target_id, focus));
         }
         let activation = async {
             cancel
@@ -336,7 +336,7 @@ impl PageControl {
         };
         match tokio::time::timeout(self.config.evaluation_timeout, activation).await {
             Ok(Ok(())) => Ok(()),
-            _ => Err(target_hidden_error(bound.target_id)),
+            _ => Err(target_hidden_error(bound.target_id, focus)),
         }
     }
 
@@ -881,12 +881,22 @@ pub(super) fn interaction_error(
     operation_error(ErrorCode::InteractionFailed, target_id, message)
 }
 
-fn target_hidden_error(target_id: TargetId) -> krometrail_core::KrometrailError {
-    operation_error(
-        ErrorCode::TargetHidden,
-        target_id,
-        "browser page remained hidden after bounded foreground activation",
-    )
+fn target_hidden_error(
+    target_id: TargetId,
+    focus: krometrail_core::BrowserFocusPolicy,
+) -> krometrail_core::KrometrailError {
+    let (message, recovery) = match focus {
+        krometrail_core::BrowserFocusPolicy::Preserve => (
+            "browser page is hidden and preserve focus policy did not activate it",
+            "start the managed browser session with focus: foreground, then retry the pointer operation",
+        ),
+        krometrail_core::BrowserFocusPolicy::Foreground => (
+            "browser page remained hidden after bounded foreground activation",
+            "check that Chrome can foreground the managed target, then retry the pointer operation",
+        ),
+    };
+    operation_error(ErrorCode::TargetHidden, target_id, message)
+        .with_recovery(NonEmptyText::new(recovery).expect("target-hidden recovery is non-empty"))
 }
 
 fn wrap_interaction_result(
