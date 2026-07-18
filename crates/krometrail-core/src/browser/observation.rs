@@ -15,6 +15,10 @@ use crate::{
     validation::{delegate_json_schema, deserialize_validated},
 };
 
+pub const DEFAULT_SEMANTIC_MATCH_LIMIT: u16 = 20;
+pub const MAX_SEMANTIC_MATCH_LIMIT: u16 = 100;
+pub const MAX_SEMANTIC_QUERY_TEXT_BYTES: usize = 1_024;
+
 #[derive(
     Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, schemars::JsonSchema,
 )]
@@ -491,6 +495,313 @@ impl<'de> Deserialize<'de> for PageSnapshot {
     }
 }
 
+#[derive(
+    Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticTextMatchMode {
+    #[default]
+    Exact,
+    Contains,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct SemanticTextMatch {
+    pub value: NonEmptyText,
+    pub mode: SemanticTextMatchMode,
+    pub case_sensitive: bool,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct SemanticTextMatchWire {
+    #[schemars(length(min = 1, max = 1_024))]
+    value: String,
+    #[serde(default)]
+    mode: SemanticTextMatchMode,
+    #[serde(default)]
+    case_sensitive: bool,
+}
+
+impl SemanticTextMatch {
+    pub fn new(
+        value: impl Into<String>,
+        mode: SemanticTextMatchMode,
+        case_sensitive: bool,
+    ) -> Result<Self> {
+        let value = value.into();
+        if value.len() > MAX_SEMANTIC_QUERY_TEXT_BYTES {
+            return Err(invalid(
+                "semantic query text must not exceed 1024 UTF-8 bytes",
+            ));
+        }
+        let value = NonEmptyText::new(value)
+            .map_err(|_| invalid("semantic query text must not be empty"))?;
+        Ok(Self {
+            value,
+            mode,
+            case_sensitive,
+        })
+    }
+
+    pub fn matches(&self, candidate: &str) -> bool {
+        let expected = normalize_semantic_text(self.value.as_str(), self.case_sensitive);
+        let candidate = normalize_semantic_text(candidate, self.case_sensitive);
+        match self.mode {
+            SemanticTextMatchMode::Exact => candidate == expected,
+            SemanticTextMatchMode::Contains => candidate.contains(&expected),
+        }
+    }
+}
+
+delegate_json_schema!(SemanticTextMatch => SemanticTextMatchWire);
+
+impl<'de> Deserialize<'de> for SemanticTextMatch {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        deserialize_validated(deserializer, |wire: SemanticTextMatchWire| {
+            Self::new(wire.value, wire.mode, wire.case_sensitive)
+        })
+    }
+}
+
+fn normalize_semantic_text(value: &str, case_sensitive: bool) -> String {
+    let mut normalized = String::new();
+    let mut pending_space = false;
+    for character in value.trim().chars() {
+        if character.is_whitespace() {
+            pending_space = !normalized.is_empty();
+            continue;
+        }
+        if pending_space {
+            normalized.push(' ');
+            pending_space = false;
+        }
+        if case_sensitive {
+            normalized.push(character);
+        } else {
+            normalized.extend(character.to_lowercase());
+        }
+    }
+    normalized
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SemanticQuery {
+    Role {
+        role: NonEmptyText,
+        name: Option<SemanticTextMatch>,
+    },
+    Label {
+        text: SemanticTextMatch,
+    },
+    Text {
+        text: SemanticTextMatch,
+    },
+    TestId {
+        value: NonEmptyText,
+    },
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum SemanticQueryWire {
+    Role {
+        #[schemars(length(min = 1, max = 1_024))]
+        role: String,
+        name: Option<SemanticTextMatch>,
+    },
+    Label {
+        text: SemanticTextMatch,
+    },
+    Text {
+        text: SemanticTextMatch,
+    },
+    TestId {
+        #[schemars(length(min = 1, max = 1_024))]
+        value: String,
+    },
+}
+
+impl SemanticQuery {
+    pub fn role(role: impl Into<String>, name: Option<SemanticTextMatch>) -> Result<Self> {
+        let role = validate_semantic_role(role.into())?;
+        Ok(Self::Role { role, name })
+    }
+
+    pub fn test_id(value: impl Into<String>) -> Result<Self> {
+        let value = validate_semantic_query_value(value.into(), "test identifier")?;
+        Ok(Self::TestId { value })
+    }
+}
+
+delegate_json_schema!(SemanticQuery => SemanticQueryWire);
+
+impl<'de> Deserialize<'de> for SemanticQuery {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        deserialize_validated(deserializer, |wire: SemanticQueryWire| match wire {
+            SemanticQueryWire::Role { role, name } => Self::role(role, name),
+            SemanticQueryWire::Label { text } => Ok(Self::Label { text }),
+            SemanticQueryWire::Text { text } => Ok(Self::Text { text }),
+            SemanticQueryWire::TestId { value } => Self::test_id(value),
+        })
+    }
+}
+
+fn validate_semantic_role(value: String) -> Result<NonEmptyText> {
+    if value.len() > MAX_SEMANTIC_QUERY_TEXT_BYTES {
+        return Err(invalid("semantic role must not exceed 1024 UTF-8 bytes"));
+    }
+    if value.chars().any(|character| {
+        !character.is_ascii()
+            || character.is_ascii_uppercase()
+            || character.is_ascii_whitespace()
+            || character.is_ascii_control()
+    }) {
+        return Err(invalid(
+            "semantic role must be lowercase ASCII without whitespace or control characters",
+        ));
+    }
+    NonEmptyText::new(value).map_err(|_| invalid("semantic role must not be empty"))
+}
+
+fn validate_semantic_query_value(value: String, field: &str) -> Result<NonEmptyText> {
+    if value.len() > MAX_SEMANTIC_QUERY_TEXT_BYTES {
+        return Err(invalid(format!(
+            "semantic {field} must not exceed 1024 UTF-8 bytes"
+        )));
+    }
+    NonEmptyText::new(value).map_err(|_| invalid(format!("semantic {field} must not be empty")))
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct QueryPageRequest {
+    pub target: PageSelection,
+    pub query: SemanticQuery,
+    pub scope: Option<NodeReference>,
+    pub max_matches: u16,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct QueryPageRequestWire {
+    #[serde(default)]
+    target: PageSelection,
+    query: SemanticQuery,
+    scope: Option<NodeReference>,
+    #[serde(default = "default_semantic_match_limit")]
+    #[schemars(range(min = 1_u16, max = 100_u16))]
+    max_matches: u16,
+}
+
+const fn default_semantic_match_limit() -> u16 {
+    DEFAULT_SEMANTIC_MATCH_LIMIT
+}
+
+impl QueryPageRequest {
+    pub fn new(
+        target: PageSelection,
+        query: SemanticQuery,
+        scope: Option<NodeReference>,
+        max_matches: u16,
+    ) -> Result<Self> {
+        if !(1..=MAX_SEMANTIC_MATCH_LIMIT).contains(&max_matches) {
+            return Err(invalid("semantic match limit must be between 1 and 100"));
+        }
+        if let (PageSelection::Target(target_id), Some(scope)) = (target, scope)
+            && scope.target_id != target_id
+        {
+            return Err(invalid("semantic query scope targets another page"));
+        }
+        Ok(Self {
+            target,
+            query,
+            scope,
+            max_matches,
+        })
+    }
+}
+
+delegate_json_schema!(QueryPageRequest => QueryPageRequestWire);
+
+impl<'de> Deserialize<'de> for QueryPageRequest {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        deserialize_validated(deserializer, |wire: QueryPageRequestWire| {
+            Self::new(wire.target, wire.query, wire.scope, wire.max_matches)
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticQueryOutcome {
+    NoMatch,
+    Unique,
+    Ambiguous,
+    Truncated,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct SemanticMatch {
+    pub reference: NodeReference,
+    pub role: String,
+    pub name: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct QueryPageResult {
+    pub context: ObservationContext,
+    pub generation: SnapshotGeneration,
+    pub outcome: SemanticQueryOutcome,
+    pub matches: Vec<SemanticMatch>,
+    pub omitted_match_count: u32,
+}
+
+impl QueryPageResult {
+    pub fn new(
+        context: ObservationContext,
+        generation: SnapshotGeneration,
+        mut matches: Vec<SemanticMatch>,
+        max_matches: u16,
+    ) -> Result<Self> {
+        if !(1..=MAX_SEMANTIC_MATCH_LIMIT).contains(&max_matches) {
+            return Err(invalid("semantic match limit must be between 1 and 100"));
+        }
+        if matches.iter().any(|candidate| {
+            candidate.role.trim().is_empty()
+                || candidate.reference.target_id != context.target_id
+                || candidate.reference.generation != generation
+        }) {
+            return Err(invalid(
+                "semantic matches do not belong to the result snapshot",
+            ));
+        }
+        let total = matches.len();
+        let retained = total.min(usize::from(max_matches));
+        matches.truncate(retained);
+        let omitted_match_count = u32::try_from(total - retained).unwrap_or(u32::MAX);
+        let outcome = match total {
+            0 => SemanticQueryOutcome::NoMatch,
+            1 => SemanticQueryOutcome::Unique,
+            count if count <= usize::from(max_matches) => SemanticQueryOutcome::Ambiguous,
+            _ => SemanticQueryOutcome::Truncated,
+        };
+        Ok(Self {
+            context,
+            generation,
+            outcome,
+            matches,
+            omitted_match_count,
+        })
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum ElementLocator {
@@ -822,6 +1133,95 @@ mod tests {
         let mut malformed = nodes;
         malformed[1].reference = None;
         assert!(PageSnapshot::new(context(), generation, malformed, 0).is_err());
+    }
+
+    #[test]
+    fn semantic_text_matching_normalizes_whitespace_and_unicode_case() {
+        let exact = SemanticTextMatch::new(
+            "  STRAßE\n  SPEICHERN ",
+            SemanticTextMatchMode::Exact,
+            false,
+        )
+        .unwrap();
+        assert!(exact.matches("straße   speichern"));
+        assert!(!exact.matches("straße speichern jetzt"));
+
+        let contains =
+            SemanticTextMatch::new("ΣΩΣ", SemanticTextMatchMode::Contains, false).unwrap();
+        assert!(contains.matches("prefix σωσ suffix"));
+
+        let sensitive = SemanticTextMatch::new("Save", SemanticTextMatchMode::Exact, true).unwrap();
+        assert!(!sensitive.matches("save"));
+    }
+
+    #[test]
+    fn semantic_query_wire_defaults_and_bounds_are_validated() {
+        let request: QueryPageRequest = serde_json::from_str(
+            r#"{"query":{"kind":"role","role":"button","name":{"value":" Save\n now "}}}"#,
+        )
+        .unwrap();
+        assert_eq!(request.target, PageSelection::Selected);
+        assert_eq!(request.max_matches, DEFAULT_SEMANTIC_MATCH_LIMIT);
+        let SemanticQuery::Role {
+            name: Some(name), ..
+        } = request.query
+        else {
+            panic!("expected role query with name");
+        };
+        assert_eq!(name.mode, SemanticTextMatchMode::Exact);
+        assert!(!name.case_sensitive);
+        assert!(name.matches("save now"));
+
+        for invalid in [
+            r#"{"query":{"kind":"role","role":"Button"}}"#,
+            r#"{"query":{"kind":"role","role":"push button"}}"#,
+            r#"{"query":{"kind":"text","text":{"value":"x"}},"max_matches":0}"#,
+            r#"{"query":{"kind":"text","text":{"value":"x"}},"max_matches":101}"#,
+            r#"{"query":{"kind":"test_id","value":"x","unused":true}}"#,
+        ] {
+            assert!(serde_json::from_str::<QueryPageRequest>(invalid).is_err());
+        }
+        assert!(
+            SemanticTextMatch::new(
+                "x".repeat(MAX_SEMANTIC_QUERY_TEXT_BYTES + 1),
+                SemanticTextMatchMode::Exact,
+                false
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn semantic_result_outcomes_are_derived_from_complete_candidate_count() {
+        let generation = SnapshotGeneration::new(7).unwrap();
+        let candidate = |node_id| SemanticMatch {
+            reference: NodeReference {
+                target_id: target(),
+                generation,
+                node_id: SnapshotNodeId::new(node_id).unwrap(),
+            },
+            role: "button".into(),
+            name: Some(format!("button {node_id}")),
+        };
+
+        let no_match = QueryPageResult::new(context(), generation, vec![], 2).unwrap();
+        assert_eq!(no_match.outcome, SemanticQueryOutcome::NoMatch);
+        let unique = QueryPageResult::new(context(), generation, vec![candidate(1)], 2).unwrap();
+        assert_eq!(unique.outcome, SemanticQueryOutcome::Unique);
+        let ambiguous =
+            QueryPageResult::new(context(), generation, vec![candidate(1), candidate(2)], 2)
+                .unwrap();
+        assert_eq!(ambiguous.outcome, SemanticQueryOutcome::Ambiguous);
+        let truncated = QueryPageResult::new(
+            context(),
+            generation,
+            vec![candidate(1), candidate(2), candidate(3)],
+            2,
+        )
+        .unwrap();
+        assert_eq!(truncated.outcome, SemanticQueryOutcome::Truncated);
+        assert_eq!(truncated.matches.len(), 2);
+        assert_eq!(truncated.omitted_match_count, 1);
     }
 
     #[test]

@@ -87,6 +87,7 @@ fn project_result(
         | BrowserOperationResult::HandleDialog(value) => Some(value.as_ref()),
         BrowserOperationResult::InspectPage(_)
         | BrowserOperationResult::SnapshotPage(_)
+        | BrowserOperationResult::QueryPage(_)
         | BrowserOperationResult::TakeScreenshot(_)
         | BrowserOperationResult::EvaluatePage(_)
         | BrowserOperationResult::ObserveLive(_)

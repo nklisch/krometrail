@@ -817,6 +817,7 @@ fn project_operation(
     match result {
         BrowserOperationResult::InspectPage(value) => serializable(*value),
         BrowserOperationResult::SnapshotPage(value) => serializable(*value),
+        BrowserOperationResult::QueryPage(value) => serializable(*value),
         BrowserOperationResult::TakeScreenshot(value) => {
             let mut projection = serializable(value.metadata().clone())?;
             projection.images.push(EncodedMcpImage::Screenshot {

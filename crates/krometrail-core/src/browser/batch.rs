@@ -340,6 +340,11 @@ pub fn wait_timeout_error(target_id: TargetId) -> KrometrailError {
 fn reference_targets(request: &BrowserOperationRequest) -> Vec<TargetId> {
     let mut targets = Vec::new();
     match request {
+        BrowserOperationRequest::QueryPage(request) => {
+            if let Some(scope) = request.scope {
+                targets.push(scope.target_id);
+            }
+        }
         BrowserOperationRequest::TakeScreenshot(request) => {
             if let ScreenshotTarget::Element(locator) = &request.target {
                 push_locator_target(locator, &mut targets);

@@ -46,11 +46,14 @@ pub use interaction::{
 };
 pub use observation::{
     AccessibleProperty, AccessibleValue, CoordinateSpace, CssPoint, CssRect, CssSize,
-    DocumentReadiness, ElementLocator, EncodedScreenshot, EvaluationResult, EvaluationValue,
-    InspectPageRequest, LiveObservation, LiveObservationRequest, NavigationState, NodeReference,
-    ObservationContext, ObservationPart, PageSnapshot, PageState, ReadOnlyEvaluationRequest,
-    ScreenshotMetadata, ScreenshotRequest, ScreenshotTarget, SnapshotGeneration, SnapshotNode,
-    SnapshotNodeId, SnapshotPageRequest, ViewportState,
+    DEFAULT_SEMANTIC_MATCH_LIMIT, DocumentReadiness, ElementLocator, EncodedScreenshot,
+    EvaluationResult, EvaluationValue, InspectPageRequest, LiveObservation, LiveObservationRequest,
+    MAX_SEMANTIC_MATCH_LIMIT, MAX_SEMANTIC_QUERY_TEXT_BYTES, NavigationState, NodeReference,
+    ObservationContext, ObservationPart, PageSnapshot, PageState, QueryPageRequest,
+    QueryPageResult, ReadOnlyEvaluationRequest, ScreenshotMetadata, ScreenshotRequest,
+    ScreenshotTarget, SemanticMatch, SemanticQuery, SemanticQueryOutcome, SemanticTextMatch,
+    SemanticTextMatchMode, SnapshotGeneration, SnapshotNode, SnapshotNodeId, SnapshotPageRequest,
+    ViewportState,
 };
 pub use operation::{
     BROWSER_OPERATION_REGISTRY, BrowserOperationDefinition, BrowserOperationKind,

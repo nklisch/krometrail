@@ -8,9 +8,9 @@ use super::{
     EncodedScreenshot, EvaluationResult, FillRequest, GoBackRequest, GoForwardRequest,
     HandleDialogRequest, HoverRequest, InspectPageRequest, InteractionResult, ListPagesRequest,
     LiveObservation, LiveObservationRequest, NavigatePageRequest, PageOperationResult,
-    PageSelection, PageSnapshot, PageState, PageStatus, PressKeysRequest,
-    ReadOnlyEvaluationRequest, ReloadPageRequest, ScreenshotRequest, ScrollRequest,
-    SelectOptionRequest, SelectPageRequest, SetViewportRequest, SnapshotPageRequest,
+    PageSelection, PageSnapshot, PageState, PageStatus, PressKeysRequest, QueryPageRequest,
+    QueryPageResult, ReadOnlyEvaluationRequest, ReloadPageRequest, ScreenshotRequest,
+    ScrollRequest, SelectOptionRequest, SelectPageRequest, SetViewportRequest, SnapshotPageRequest,
     UploadFilesRequest, ViewportOperationResult, WaitRequest, WaitResult,
 };
 
@@ -74,6 +74,7 @@ macro_rules! selected_field {
 }
 selected_field!(InspectPageRequest, target);
 selected_field!(SnapshotPageRequest, target);
+selected_field!(QueryPageRequest, target);
 selected_field!(LiveObservationRequest, target);
 selected_field!(ReadOnlyEvaluationRequest, target);
 selected_field!(ScreenshotRequest, page);
@@ -278,6 +279,9 @@ define_browser_operations! {
     SnapshotPage(SnapshotPageRequest) => PageSnapshot {
         stable_name: "snapshot_page", description: "Capture a structured accessibility snapshot with actionable references.", mutability: ReadOnly, evidence: RequestedOnly, scope: Page, batchable: true, action: None,
     },
+    QueryPage(QueryPageRequest) => QueryPageResult {
+        stable_name: "query_page", description: "Resolve a bounded semantic query to exact actionable page references.", mutability: ReadOnly, evidence: RequestedOnly, scope: Page, batchable: true, action: None,
+    },
     TakeScreenshot(ScreenshotRequest) => EncodedScreenshot {
         stable_name: "take_screenshot", description: "Capture the requested viewport, page, element, or region image.", mutability: ReadOnly, evidence: RequestedOnly, scope: Page, batchable: true, action: None,
     },
@@ -361,7 +365,7 @@ mod tests {
 
     #[test]
     fn declaration_is_the_complete_operation_registry() {
-        assert_eq!(BrowserOperationKind::ALL.len(), 25);
+        assert_eq!(BrowserOperationKind::ALL.len(), 26);
         assert_eq!(
             BROWSER_OPERATION_REGISTRY.len(),
             BrowserOperationKind::ALL.len()
@@ -423,11 +427,11 @@ mod tests {
                 .all(|definition| definition.batchable)
         );
         assert_eq!(
-            BROWSER_OPERATION_REGISTRY[5].scope,
+            BROWSER_OPERATION_REGISTRY[6].scope,
             BrowserOperationScopeKind::Browser
         );
         assert_eq!(
-            BROWSER_OPERATION_REGISTRY[6].mutability,
+            BROWSER_OPERATION_REGISTRY[7].mutability,
             OperationMutability::StateChanging
         );
     }
@@ -475,6 +479,19 @@ mod tests {
             serde_json::to_value(BrowserOperationKind::Batch.input_schema()).unwrap();
         assert_eq!(batch_schema["type"], "object");
         assert!(batch_schema.to_string().contains("BrowserOperationRequest"));
+
+        let query_schema =
+            serde_json::to_value(BrowserOperationKind::QueryPage.input_schema()).unwrap();
+        let encoded = query_schema.to_string();
+        for query_kind in ["role", "label", "text", "test_id"] {
+            assert!(
+                encoded.contains(query_kind),
+                "missing {query_kind} query variant"
+            );
+        }
+        assert!(encoded.contains("max_matches"));
+        assert!(encoded.contains("scope"));
+        assert!(encoded.contains("contains"));
     }
 
     #[test]
