@@ -7,7 +7,29 @@ use krometrail_core::{
 use rmcp::model::JsonObject;
 use serde_json::Value;
 
-use crate::{config::McpConfig, response::ToolResponse};
+use crate::{
+    config::McpConfig,
+    response::{ResponseProjectionRequest, ToolResponse},
+};
+
+pub(crate) fn projected_input_schema(base: Arc<JsonObject>) -> Result<Arc<JsonObject>> {
+    let mut root = (*base).clone();
+    if root.get("type") != Some(&Value::String("object".into())) {
+        return Err(schema_error("projected MCP tool schema must be an object"));
+    }
+    let properties = root
+        .get_mut("properties")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| schema_error("projected MCP tool schema must declare properties"))?;
+    if properties.contains_key("response") {
+        return Err(schema_error(
+            "projected MCP tool schema already declares response",
+        ));
+    }
+    let response = type_input_schema::<ResponseProjectionRequest>()?;
+    properties.insert("response".into(), Value::Object((*response).clone()));
+    Ok(Arc::new(root))
+}
 
 pub(crate) fn operation_input_schema(
     kind: BrowserOperationKind,
@@ -308,6 +330,28 @@ mod tests {
         assert!(type_input_schema::<RetrieveSourceFrameRequest>().is_ok());
         assert!(type_input_schema::<TemporalDebugBundleRequest>().is_ok());
         assert!(type_input_schema::<TemporalVideoGenerationRequest>().is_ok());
+    }
+
+    #[test]
+    fn projected_schema_is_additive_closed_and_does_not_change_required_fields() {
+        let base =
+            operation_input_schema(BrowserOperationKind::NavigatePage, &McpConfig::default())
+                .unwrap();
+        let required = base.get("required").cloned();
+        let projected = projected_input_schema(Arc::clone(&base)).unwrap();
+        assert_eq!(projected.get("required").cloned(), required);
+        assert_eq!(
+            projected.get("additionalProperties"),
+            base.get("additionalProperties")
+        );
+        let response = &projected["properties"]["response"];
+        assert_eq!(response["additionalProperties"], false);
+        assert_eq!(
+            response["properties"]["snapshot"]["enum"],
+            serde_json::json!(["legacy", "full", "compact", "omit"])
+        );
+        assert!(base["properties"].get("response").is_none());
+        assert_no_references(&Value::Object(projected.as_ref().clone()));
     }
 
     #[test]
