@@ -69,7 +69,7 @@ use reconnect::reconnect_loop_transactional;
 use reconnect::{
     AttemptCancellation, AttemptControl, AttemptFailure, PartialSessionTracker,
     recordable_reconnect_targets, restore_event_domains_and_visibility, restore_one_target,
-    restore_targets,
+    restore_targets, stage_reconnection_effects,
 };
 #[allow(unused_imports)]
 pub(crate) use runtime::VisibilityProbeError;
@@ -1185,6 +1185,17 @@ mod tests {
         .state;
         let state = reduce(
             state,
+            SupervisorInput::ViewportOverrideApplied {
+                target_key: "restored".into(),
+                viewport: Some(
+                    krometrail_core::ViewportMetrics::new(390, 844, 3.0, true, true).unwrap(),
+                ),
+            },
+        )
+        .unwrap()
+        .state;
+        let state = reduce(
+            state,
             SupervisorInput::ConnectionLost(TransportClose {
                 reason: NonEmptyText::new("fixture disconnect").unwrap(),
             }),
@@ -1252,6 +1263,96 @@ mod tests {
                 "Runtime.evaluate",
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn reconnect_replays_mobile_page_scale_before_capture_and_fails_target_locally() {
+        let authority = Arc::new(
+            SessionDomainAuthority::new(
+                SessionId::from_uuid(Uuid::from_u128(42)),
+                SessionOrigin::new(krometrail_core::ObservedTime::from_nanos(0)),
+                Arc::new(AdapterMonotonicClock {
+                    origin: Instant::now(),
+                }),
+                Arc::new(AdapterIdSource),
+                None,
+                BrowserEventConfig::disabled(),
+            )
+            .unwrap(),
+        );
+        let attempt = AttemptControl {
+            cancellation: AttemptCancellation::new(),
+            deadline: tokio::time::Instant::now() + Duration::from_secs(1),
+        };
+
+        let transport = Arc::new(ControlledTransport::paced());
+        let transport_dyn = transport.clone() as Arc<dyn CdpTransport>;
+        let (mut state, mut effects) = reconnect_reduction_fixture();
+        restore_event_domains_and_visibility(
+            &attempt,
+            &authority,
+            &transport_dyn,
+            crate::BrowserEventSupport::default(),
+            &mut state,
+            &mut effects,
+        )
+        .await
+        .unwrap();
+        let staged = stage_reconnection_effects(&attempt, &transport_dyn, &mut state, &effects)
+            .await
+            .unwrap();
+        assert!(matches!(
+            transport.commands().as_slice(),
+            [.., metrics, touch, scale]
+                if metrics == "Emulation.setDeviceMetricsOverride"
+                    && touch == "Emulation.setTouchEmulationEnabled"
+                    && scale == "Emulation.setPageScaleFactor"
+        ));
+        assert!(staged.iter().any(|effect| matches!(
+            effect,
+            SupervisorEffect::StartCapture { .. } | SupervisorEffect::ResumeCapture { .. }
+        )));
+
+        let transport = Arc::new(ControlledTransport::failed("Emulation.setPageScaleFactor"));
+        let transport_dyn = transport as Arc<dyn CdpTransport>;
+        let failed_authority = Arc::new(
+            SessionDomainAuthority::new(
+                SessionId::from_uuid(Uuid::from_u128(43)),
+                SessionOrigin::new(krometrail_core::ObservedTime::from_nanos(0)),
+                Arc::new(AdapterMonotonicClock {
+                    origin: Instant::now(),
+                }),
+                Arc::new(AdapterIdSource),
+                None,
+                BrowserEventConfig::disabled(),
+            )
+            .unwrap(),
+        );
+        let (mut state, mut effects) = reconnect_reduction_fixture();
+        restore_event_domains_and_visibility(
+            &attempt,
+            &failed_authority,
+            &transport_dyn,
+            crate::BrowserEventSupport::default(),
+            &mut state,
+            &mut effects,
+        )
+        .await
+        .unwrap();
+        let staged = stage_reconnection_effects(&attempt, &transport_dyn, &mut state, &effects)
+            .await
+            .unwrap();
+        let failed_target = state.targets_by_key["restored"].target.target.id();
+        assert_eq!(
+            state.targets_by_key["restored"].target.lifecycle,
+            krometrail_core::TargetLifecycle::Failed
+        );
+        assert!(!staged.iter().any(|effect| matches!(
+            effect,
+            SupervisorEffect::StartCapture { context }
+                | SupervisorEffect::ResumeCapture { context }
+                if context.target_id == failed_target
+        )));
     }
 
     #[tokio::test]
@@ -1365,6 +1466,7 @@ mod tests {
 
     struct ControlledTransportState {
         stall_method: Mutex<Option<String>>,
+        fail_method: Mutex<Option<String>>,
         commands: Mutex<Vec<String>>,
         next_session: AtomicUsize,
         active: AtomicUsize,
@@ -1377,6 +1479,7 @@ mod tests {
             Self {
                 state: Arc::new(ControlledTransportState {
                     stall_method: Mutex::new(None),
+                    fail_method: Mutex::new(None),
                     commands: Mutex::new(Vec::new()),
                     next_session: AtomicUsize::new(0),
                     active: AtomicUsize::new(0),
@@ -1393,6 +1496,16 @@ mod tests {
                 .stall_method
                 .lock()
                 .expect("stall method lock") = Some(method.to_owned());
+            transport
+        }
+
+        fn failed(method: &str) -> Self {
+            let transport = Self::paced();
+            *transport
+                .state
+                .fail_method
+                .lock()
+                .expect("fail method lock") = Some(method.to_owned());
             transport
         }
 
@@ -1432,6 +1545,13 @@ mod tests {
                 .expect("stall method lock")
                 .as_deref()
                 == Some(method);
+            let failed = self
+                .state
+                .fail_method
+                .lock()
+                .expect("fail method lock")
+                .as_deref()
+                == Some(method);
             let response = if method == "Target.attachToTarget" {
                 let session = self.state.next_session.fetch_add(1, Ordering::Relaxed);
                 serde_json::json!({"sessionId": format!("session-{session}")})
@@ -1443,7 +1563,9 @@ mod tests {
             let state = Arc::clone(&self.state);
             Box::pin(async move {
                 state.started.notify_waiters();
-                if stalled {
+                if failed {
+                    Err(TransportError::CommandFailed)
+                } else if stalled {
                     std::future::pending::<std::result::Result<Value, TransportError>>().await
                 } else {
                     let active = state.active.fetch_add(1, Ordering::AcqRel) + 1;

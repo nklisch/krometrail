@@ -319,7 +319,7 @@ pub(super) async fn restore_event_domains_and_visibility(
     Ok(())
 }
 
-async fn stage_reconnection_effects(
+pub(super) async fn stage_reconnection_effects(
     attempt: &AttemptControl,
     transport: &Arc<dyn CdpTransport>,
     state: &mut SupervisorState,
