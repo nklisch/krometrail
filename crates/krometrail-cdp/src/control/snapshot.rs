@@ -398,6 +398,13 @@ impl SnapshotRegistry {
                 "semantic snapshot metadata is unavailable",
             ));
         }
+        if snapshot.omitted_node_count != 0 {
+            return Err(operation_error(
+                ErrorCode::PageObservationFailed,
+                bound.target_id,
+                "semantic query requires a complete snapshot; omitted nodes could change the match outcome",
+            ));
+        }
         if let Some(scope) = request.scope {
             self.active_reference_backend(bound, scope)?;
         }
@@ -808,11 +815,13 @@ fn decode_dom_snapshot(
             parent = decoded[parent_index].parent;
         }
         if let Some(labelledby) = &node.aria_labelledby {
+            let mut composed = String::new();
             for id in labelledby.split_ascii_whitespace() {
                 if let Some(label_index) = id_to_index.get(id) {
-                    push_label(&mut metadata, node.backend_node_id, &rendered[*label_index]);
+                    append_semantic_text(&mut composed, &rendered[*label_index]);
                 }
             }
+            push_label(&mut metadata, node.backend_node_id, &composed);
         }
     }
     Ok(metadata)
@@ -1504,6 +1513,9 @@ mod tests {
             "aria-caption",
             "Aria caption",
             "aria-labelledby",
+            "aria-second-caption",
+            "Second caption",
+            "aria-caption aria-second-caption",
         ];
         let index = |value: &str| {
             strings
@@ -1516,28 +1528,29 @@ mod tests {
             "documents": [{
                 "frameId": index("main"),
                 "nodes": {
-                    "parentIndex": [-1,0,1,2,1,4,1,6,1,8,8,10,1,12],
+                    "parentIndex": [-1,0,1,2,1,4,1,6,1,8,8,10,1,12,1,14],
                     "nodeName": [
                         index("DIV"), index("DIV"), index("BUTTON"), index("#text"),
                         index("LABEL"), index("#text"), index("INPUT"), index("#text"),
                         index("LABEL"), index("#text"), index("INPUT"), index("#text"),
-                        index("SPAN"), index("#text")
+                        index("SPAN"), index("#text"), index("SPAN"), index("#text")
                     ],
-                    "backendNodeId": [1,2,10,11,20,21,30,31,40,41,50,51,60,61],
+                    "backendNodeId": [1,2,10,11,20,21,30,31,40,41,50,51,60,61,70,71],
                     "attributes": [
                         [], [index("id"),index("scope")],
                         [index("id"),index("save"),index("data-testid"),index("primary-action")],
                         [], [index("for"),index("named-input")], [],
                         [index("id"),index("named-input")], [],
                         [], [], [index("data-testid"),index("wrapped-action")], [],
-                        [index("id"),index("aria-caption")], []
+                        [index("id"),index("aria-caption")], [],
+                        [index("id"),index("aria-second-caption")], []
                     ]
                 },
                 "layout": {
-                    "nodeIndex": [3,5,7,9,13],
+                    "nodeIndex": [3,5,7,9,13,15],
                     "text": [
                         index("Save action"), index("Explicit label"), index("Save action"),
-                        index("Wrapping label"), index("Aria caption")
+                        index("Wrapping label"), index("Aria caption"), index("Second caption")
                     ]
                 }
             }]
@@ -1586,6 +1599,41 @@ mod tests {
         assert_eq!(
             metadata.get(&50).unwrap().labels,
             vec!["Wrapping label", "Aria caption"]
+        );
+
+        let mut multi_id = semantic_dom_snapshot();
+        let strings = multi_id["strings"].as_array().unwrap();
+        let labelledby_name = strings
+            .iter()
+            .position(|value| value == "aria-labelledby")
+            .unwrap();
+        let composed_ids = strings
+            .iter()
+            .position(|value| value == "aria-caption aria-second-caption")
+            .unwrap();
+        multi_id["documents"][0]["nodes"]["attributes"][10] =
+            json!([labelledby_name, composed_ids]);
+        let metadata = decode_dom_snapshot(
+            &multi_id,
+            &DocumentFingerprint {
+                frame_id: "main".into(),
+                loader_id: "loader".into(),
+            },
+            target(),
+        )
+        .unwrap();
+        assert_eq!(
+            metadata.get(&50).unwrap().labels,
+            vec!["Wrapping label", "Aria caption Second caption"]
+        );
+        assert!(
+            krometrail_core::SemanticTextMatch::new(
+                "Aria caption Second caption",
+                krometrail_core::SemanticTextMatchMode::Exact,
+                false,
+            )
+            .unwrap()
+            .matches(&metadata.get(&50).unwrap().labels[1])
         );
     }
 
@@ -1723,6 +1771,37 @@ mod tests {
                 .map(|candidate| candidate.reference.node_id)
                 .collect::<Vec<_>>(),
             vec![first, second, outside]
+        );
+
+        let incomplete = PageSnapshot::new(
+            snapshot.context.clone(),
+            generation,
+            snapshot
+                .nodes
+                .iter()
+                .filter(|node| node.id != second)
+                .cloned()
+                .collect(),
+            1,
+        )
+        .unwrap();
+        let would_be_unique_with_omitted_matching_actionable_node = QueryPageRequest::new(
+            krometrail_core::PageSelection::Target(target()),
+            SemanticQuery::test_id("duplicate").unwrap(),
+            Some(reference(scope)),
+            20,
+        )
+        .unwrap();
+        assert_eq!(
+            registry
+                .query(
+                    &bound,
+                    &would_be_unique_with_omitted_matching_actionable_node,
+                    &incomplete,
+                )
+                .unwrap_err()
+                .code,
+            ErrorCode::PageObservationFailed
         );
 
         let stale_scope = QueryPageRequest::new(

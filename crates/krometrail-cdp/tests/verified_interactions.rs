@@ -1148,7 +1148,7 @@ async fn opt_in_real_chrome_resolves_semantic_queries_to_exact_references() {
             text: exact_semantic_text("Wrapped semantic input"),
         },
         SemanticQuery::Label {
-            text: exact_semantic_text("ARIA semantic input"),
+            text: exact_semantic_text("ARIA semantic input Required field"),
         },
         SemanticQuery::Text {
             text: exact_semantic_text("Semantic save"),
