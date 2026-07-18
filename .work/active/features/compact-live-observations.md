@@ -1,7 +1,7 @@
 ---
 id: compact-live-observations
 kind: feature
-stage: implementing
+stage: review
 tags: [agent-ux, browser]
 parent: null
 depends_on: []
@@ -127,3 +127,17 @@ impl Projection {
 
 - Dense pages can contain more actionable controls than the automatic budget. Deterministic preorder and explicit omission make that loss visible; callers can request `snapshot_page` for complete detail.
 - Reconstructing a compact snapshot must not alter active registry bindings. Keeping compaction after domain execution and validating the reconstructed value isolates that risk.
+
+## Implementation results
+
+- `a0b814c` (`implement: compact-live-observations-bound-snapshots`) added role-aware response projection for automatic post-action and batch-final observations. It prioritizes actionable nodes and ancestor chains, fills valid preorder context under the remaining budget, revalidates through `PageSnapshot::new`, and adds exact presentation omissions without touching acquisition or reference registries.
+- `9915aef` (`implement: compact-live-observations-deduplicate-warnings`) moved full-equality warning coalescing ahead of both tracing and accumulation. First-seen order is stable, cloned dialog/capture warnings collapse, and structurally distinct same-code warnings remain visible.
+- Explicit `snapshot_page` and `observe_live` responses remain full. Foundation assertions remain current because this changes only the size policy for automatic MCP presentation, not snapshot acquisition or explicit inspection contracts.
+- Implementation used the existing shared response seam directly; no additional registry, acquisition mode, or compatibility layer was introduced.
+
+## Aggregate verification
+
+- `cargo test -p krometrail-mcp --all-targets --locked` — passed, 35 tests.
+- `cargo fmt --all -- --check` — passed.
+- `cargo check --workspace --all-targets --locked` — passed.
+- The focused regressions cover the reproduced 403-node shape, both automatic roles, both explicit drill-down surfaces, exact omission accounting, byte-equivalent small snapshots, cloned three-component dialog degradation, pre-log deduplication, distinct same-code warning identity, and duplicate capture-failure composition.
