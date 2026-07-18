@@ -24,6 +24,7 @@ pub(crate) struct LazyManagedDownloadAuthority {
     ids: Arc<dyn IdSource>,
     subscribers: Arc<SubscriberRegistry>,
     active: tokio::sync::Mutex<Option<Arc<ManagedDownloadAuthority>>>,
+    unavailable: Mutex<Option<KrometrailError>>,
 }
 
 impl LazyManagedDownloadAuthority {
@@ -39,6 +40,7 @@ impl LazyManagedDownloadAuthority {
             ids,
             subscribers,
             active: tokio::sync::Mutex::new(None),
+            unavailable: Mutex::new(None),
         })
     }
 
@@ -46,6 +48,14 @@ impl LazyManagedDownloadAuthority {
         &self,
         transport: Arc<dyn CdpTransport>,
     ) -> Result<Arc<ManagedDownloadAuthority>> {
+        if let Some(error) = self
+            .unavailable
+            .lock()
+            .expect("download failure lock")
+            .clone()
+        {
+            return Err(error);
+        }
         let mut active = self.active.lock().await;
         if let Some(authority) = active.as_ref() {
             return Ok(Arc::clone(authority));
@@ -67,6 +77,14 @@ impl LazyManagedDownloadAuthority {
     }
 
     async fn activated(&self) -> Result<Arc<ManagedDownloadAuthority>> {
+        if let Some(error) = self
+            .unavailable
+            .lock()
+            .expect("download failure lock")
+            .clone()
+        {
+            return Err(error);
+        }
         self.active.lock().await.as_ref().cloned().ok_or_else(|| {
             download_error(
                 ErrorCode::Unsupported,
@@ -101,6 +119,14 @@ impl LazyManagedDownloadAuthority {
         request: ReadManagedDownloadRequest,
     ) -> Result<ManagedDownloadRead> {
         let active = self.active.lock().await.as_ref().cloned();
+        if self
+            .unavailable
+            .lock()
+            .expect("download failure lock")
+            .is_some()
+        {
+            return Err(resource_not_found(self.session_id));
+        }
         match active {
             Some(authority) => authority.read(request).await,
             None => Err(resource_not_found(self.session_id)),
@@ -108,19 +134,21 @@ impl LazyManagedDownloadAuthority {
     }
 
     pub(crate) async fn rebind(&self, transport: Arc<dyn CdpTransport>) -> Result<()> {
+        if let Some(error) = self
+            .unavailable
+            .lock()
+            .expect("download failure lock")
+            .clone()
+        {
+            return Err(error);
+        }
         let active = self.active.lock().await.as_ref().cloned();
         match active {
             Some(authority) => match authority.rebind(Arc::clone(&transport)).await {
                 Ok(()) => Ok(()),
                 Err(error) => {
                     let _ = authority.shutdown(Some(transport.as_ref())).await;
-                    let mut active = self.active.lock().await;
-                    if active
-                        .as_ref()
-                        .is_some_and(|current| Arc::ptr_eq(current, &authority))
-                    {
-                        *active = None;
-                    }
+                    *self.unavailable.lock().expect("download failure lock") = Some(error.clone());
                     Err(error)
                 }
             },
@@ -1178,7 +1206,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reconnect_failure_deactivates_only_download_control() {
+    async fn reconnect_failure_isolates_and_disables_only_download_control() {
         let temp = tempfile::tempdir().unwrap();
         let base = temp.path().join("downloads");
         let authority = lazy(base.clone());
@@ -1191,8 +1219,9 @@ mod tests {
         assert_eq!(error.code, ErrorCode::BrowserCompatibilityFailed);
         assert!(!base.join(authority.session_id.to_string()).exists());
 
-        authority.list(transport_port).await.unwrap();
-        assert!(base.join(authority.session_id.to_string()).is_dir());
+        let retry = authority.list(transport_port).await.unwrap_err();
+        assert_eq!(retry.code, ErrorCode::BrowserCompatibilityFailed);
+        assert!(!base.join(authority.session_id.to_string()).exists());
     }
 
     #[tokio::test]
