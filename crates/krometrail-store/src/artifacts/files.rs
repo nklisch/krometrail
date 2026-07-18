@@ -226,11 +226,31 @@ fn publish_file(
     if fail_after == Some(PublicationPhase::Rename) {
         return Err(injected_error());
     }
+    if is_cancelled(cancellation, external_cancellation) {
+        remove_cancelled_publication(&final_path, directory)?;
+        return Err(cancelled_error());
+    }
     sync_directory(directory).map_err(|error| io_error("sync the artifact directory", error))?;
     if fail_after == Some(PublicationPhase::DirectorySync) {
         return Err(injected_error());
     }
+    if is_cancelled(cancellation, external_cancellation) {
+        remove_cancelled_publication(&final_path, directory)?;
+        return Err(cancelled_error());
+    }
     Ok(())
+}
+
+fn remove_cancelled_publication(
+    final_path: &Path,
+    directory: &Path,
+) -> krometrail_core::Result<()> {
+    match fs::remove_file(final_path) {
+        Ok(()) => sync_directory(directory)
+            .map_err(|error| io_error("sync cancelled artifact cleanup", error)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(io_error("remove cancelled artifact publication", error)),
+    }
 }
 
 fn is_cancelled(session: &AtomicBool, external: Option<&dyn CancellationSignal>) -> bool {

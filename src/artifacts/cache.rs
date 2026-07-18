@@ -7,6 +7,7 @@ use sha2::{Digest, Sha256};
 use temporal_vision::{ArtifactKind, GeneratorDescriptor};
 
 pub(crate) const CACHE_SCHEMA_VERSION: u32 = 1;
+pub(crate) const RETAINED_VIDEO_ADAPTER_VERSION: &str = "krometrail-retained-video-v1";
 
 /// Exact retained source identity and metadata used by both cache identity and store revalidation.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -110,6 +111,13 @@ pub(crate) struct VideoCacheIdentityInput<'a> {
 }
 
 pub(crate) fn video_cache_metadata(input: VideoCacheIdentityInput<'_>) -> ArtifactCacheMetadata {
+    video_cache_metadata_for_adapter(input, RETAINED_VIDEO_ADAPTER_VERSION)
+}
+
+fn video_cache_metadata_for_adapter(
+    input: VideoCacheIdentityInput<'_>,
+    adapter_version: &str,
+) -> ArtifactCacheMetadata {
     let source_fingerprint = hash_sources(input.sources, "krometrail-video-sources-v1");
     let visual_epoch_hash = hash_epoch(input.sources);
     let parameter_hash = framed_hash(
@@ -122,6 +130,7 @@ pub(crate) fn video_cache_metadata(input: VideoCacheIdentityInput<'_>) -> Artifa
     transcript.bytes(input.target_id.as_uuid().as_bytes());
     transcript.bytes(TEMPORAL_VIDEO_GENERATOR_NAME.as_bytes());
     transcript.bytes(TEMPORAL_VIDEO_GENERATOR_VERSION.as_bytes());
+    transcript.bytes(adapter_version.as_bytes());
     transcript.bytes(input.canonical_parameters);
     if let Some(selector) = input.selector {
         transcript.bytes(selector.name().as_bytes());
@@ -140,8 +149,8 @@ pub(crate) fn video_cache_metadata(input: VideoCacheIdentityInput<'_>) -> Artifa
         parameter_hash,
         visual_epoch_hash,
         cache_schema_version: CACHE_SCHEMA_VERSION,
-        adapter_version: NonEmptyText::new("krometrail-retained-video-v1")
-            .expect("static video adapter version is non-empty"),
+        adapter_version: NonEmptyText::new(adapter_version)
+            .expect("video adapter version is non-empty"),
         generator_name: NonEmptyText::new(TEMPORAL_VIDEO_GENERATOR_NAME)
             .expect("static video generator name is non-empty"),
         generator_version: NonEmptyText::new(TEMPORAL_VIDEO_GENERATOR_VERSION)
@@ -314,6 +323,14 @@ mod tests {
     fn cache_key_is_sensitive_to_every_source_field_and_order() {
         let base = vec![source(1), source(2)];
         let expected = key(&base, ArtifactKind::Storyboard, b"params", "adapter-v1");
+        assert_eq!(
+            expected.as_bytes(),
+            &[
+                46, 45, 66, 88, 219, 5, 46, 228, 36, 188, 163, 34, 154, 106, 77, 94, 90, 95, 39,
+                234, 10, 237, 19, 171, 176, 63, 18, 227, 70, 227, 132, 11,
+            ],
+            "the stable image cache transcript changed"
+        );
         let mut variants = Vec::new();
         let mut changed = base.clone();
         changed[0].frame_id = FrameId::from_uuid(uuid::Uuid::from_u128(9));
@@ -480,6 +497,21 @@ mod tests {
         assert_ne!(
             expected.cache_key,
             video_key(&sources, b"canonical-plan-a", None).cache_key
+        );
+        let changed_adapter = video_cache_metadata_for_adapter(
+            VideoCacheIdentityInput {
+                session_id: SessionId::from_uuid(uuid::Uuid::from_u128(100)),
+                target_id: TargetId::from_uuid(uuid::Uuid::from_u128(101)),
+                sources: &sources,
+                canonical_parameters: b"canonical-plan-a",
+                selector: Some(&selector),
+            },
+            "krometrail-retained-video-v2",
+        );
+        assert_ne!(expected.cache_key, changed_adapter.cache_key);
+        assert_eq!(
+            expected.adapter_version.as_str(),
+            RETAINED_VIDEO_ADAPTER_VERSION
         );
     }
 }

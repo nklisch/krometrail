@@ -1,4 +1,10 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
 use krometrail_core::{
     ArtifactCacheKey, ArtifactCacheMetadata, ArtifactSourceFingerprint, ArtifactStore,
@@ -323,6 +329,21 @@ impl CancellationSignal for AlreadyCancelled {
     }
 }
 
+struct CancelOnCheck {
+    checks: AtomicUsize,
+    cancel_on: usize,
+}
+
+impl CancellationSignal for CancelOnCheck {
+    fn is_cancelled(&self) -> bool {
+        self.checks.fetch_add(1, Ordering::SeqCst) + 1 >= self.cancel_on
+    }
+
+    fn cancelled(&self) -> PortFuture<'_, ()> {
+        Box::pin(std::future::pending())
+    }
+}
+
 #[tokio::test]
 async fn cancelled_video_publication_leaves_no_visible_or_accounted_state() {
     let fixture = fixture().await;
@@ -350,32 +371,92 @@ async fn cancelled_video_publication_leaves_no_visible_or_accounted_state() {
 }
 
 #[tokio::test]
-async fn video_is_evicted_before_its_source_segment() {
+async fn cancellation_at_every_durable_file_boundary_cannot_recover_a_video() {
+    // File publication checks before writing, after temp sync, after rename, and after
+    // directory sync; the fifth check is the store's pre-finalization fence.
+    for cancel_on in 1..=5 {
+        let fixture = fixture().await;
+        let publication = publication(&fixture, 4_000 + cancel_on as u128, 80 + cancel_on as u8)
+            .with_cancellation(Arc::new(CancelOnCheck {
+                checks: AtomicUsize::new(0),
+                cancel_on,
+            }));
+        let artifact_id = publication.manifest.artifact_id();
+        let directory = fixture.directory.path().to_path_buf();
+        let error = fixture
+            .store
+            .publish_video_artifact(publication)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Cancelled, "boundary {cancel_on}");
+        assert_eq!(
+            fixture.store.status().await.unwrap().usage.artifact_bytes,
+            0,
+            "boundary {cancel_on} must release usage"
+        );
+        drop(fixture.store);
+
+        let reopened = open_store(&directory);
+        assert!(
+            reopened
+                .video_artifact(artifact_id)
+                .await
+                .unwrap()
+                .is_none(),
+            "boundary {cancel_on} must not become ready during recovery"
+        );
+        assert_eq!(
+            reopened.status().await.unwrap().usage.artifact_bytes,
+            0,
+            "boundary {cancel_on} must remain unaccounted after reopen"
+        );
+        let artifacts = directory.join("artifacts");
+        assert!(
+            !artifacts.exists() || std::fs::read_dir(artifacts).unwrap().next().is_none(),
+            "boundary {cancel_on} must leave no temp or final file"
+        );
+    }
+}
+
+#[tokio::test]
+async fn video_publication_enforces_budget_before_returning_a_live_handle() {
     let fixture = fixture().await;
-    let publication = publication(&fixture, 50, 51);
+    let first = publication(&fixture, 50, 51);
     fixture
         .store
-        .publish_video_artifact(publication.clone())
+        .publish_video_artifact(first.clone())
         .await
         .unwrap();
     let usage = fixture.store.status().await.unwrap().usage;
-    let budget = DiskBudgetBytes::new(
-        usage
-            .total_bytes()
-            .unwrap()
-            .saturating_sub(usage.artifact_bytes),
-    )
-    .unwrap();
+    let budget = DiskBudgetBytes::new(usage.total_bytes().unwrap()).unwrap();
+    let second = publication(&fixture, 52, 53);
     drop(fixture.store);
     let store = open_store_with_budget(fixture.directory.path(), Some(budget));
-    store.enforce_budget().await.unwrap();
+    let VideoArtifactPublish::Published(published) =
+        store.publish_video_artifact(second.clone()).await.unwrap()
+    else {
+        panic!("second publication must become the ready budget winner")
+    };
+    assert_eq!(
+        published.manifest.artifact_id(),
+        second.manifest.artifact_id()
+    );
     assert!(
         store
-            .video_artifact(publication.manifest.artifact_id())
+            .video_artifact(first.manifest.artifact_id())
             .await
             .unwrap()
             .is_none()
     );
+    assert!(
+        store
+            .video_artifact(second.manifest.artifact_id())
+            .await
+            .unwrap()
+            .is_some(),
+        "publication must not return a handle it evicted itself"
+    );
+    assert!(store.status().await.unwrap().usage.total_bytes().unwrap() <= budget.get());
     assert_eq!(
         store
             .frames_by_id(vec![fixture.frame_id])

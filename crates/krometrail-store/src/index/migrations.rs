@@ -186,7 +186,7 @@ mod tests {
     }
 
     #[test]
-    fn artifact_v5_rows_and_source_links_survive_v6_exactly() {
+    fn schema_v6_rebuild_copies_raw_v5_columns_and_links() {
         let mut connection = Connection::open_in_memory().unwrap();
         migrate_with(&mut connection, &MIGRATIONS[..5], 5).unwrap();
         let session = vec![1_u8; 16];

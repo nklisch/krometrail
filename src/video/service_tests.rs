@@ -31,8 +31,9 @@ use temporal_vision::OutputHash;
 use uuid::Uuid;
 
 use super::{
-    TemporalVideoGenerationService, VideoGenerationLimits, adapt::output_geometry,
-    slate::render_gap_slate,
+    TemporalVideoGenerationService, VideoGenerationLimits,
+    adapt::output_geometry,
+    slate::{GAP_SLATE_MIN_HEIGHT, GAP_SLATE_MIN_WIDTH, render_gap_slate},
 };
 
 struct FakeFrames {
@@ -119,7 +120,12 @@ struct FakeArtifacts {
         >,
     >,
     by_id: Mutex<HashMap<ArtifactId, StoredVideoArtifact>>,
+    forced_existing: Mutex<Option<StoredVideoArtifact>>,
     publications: AtomicUsize,
+    fail_publication: AtomicBool,
+    pause_publication: AtomicBool,
+    publication_started: tokio::sync::Notify,
+    publication_cleanup_complete: AtomicBool,
 }
 
 impl ArtifactStore for FakeArtifacts {
@@ -167,15 +173,38 @@ impl ArtifactStore for FakeArtifacts {
         &self,
         publication: VideoArtifactPublication,
     ) -> PortFuture<'_, krometrail_core::Result<VideoArtifactPublish>> {
-        let result = if publication
-            .cancellation()
-            .is_some_and(|signal| signal.is_cancelled())
-        {
-            Err(test_error(
-                krometrail_core::ErrorCode::Cancelled,
-                "publication cancelled",
-            ))
-        } else {
+        Box::pin(async move {
+            if self.fail_publication.load(Ordering::SeqCst) {
+                return Err(test_error(
+                    krometrail_core::ErrorCode::PersistenceFailed,
+                    "fake store publication failed",
+                ));
+            }
+            if self.pause_publication.load(Ordering::SeqCst) {
+                let cancellation = publication
+                    .cancellation()
+                    .expect("service publication carries its work cancellation");
+                self.publication_started.notify_one();
+                cancellation.cancelled().await;
+                self.publication_cleanup_complete
+                    .store(true, Ordering::SeqCst);
+                return Err(test_error(
+                    krometrail_core::ErrorCode::Cancelled,
+                    "publication cancelled",
+                ));
+            }
+            if publication
+                .cancellation()
+                .is_some_and(|signal| signal.is_cancelled())
+            {
+                return Err(test_error(
+                    krometrail_core::ErrorCode::Cancelled,
+                    "publication cancelled",
+                ));
+            }
+            if let Some(stored) = self.forced_existing.lock().unwrap().take() {
+                return Ok(VideoArtifactPublish::Existing(stored));
+            }
             let mut by_key = self.by_key.lock().unwrap();
             if let Some((_, stored)) = by_key.get(&publication.cache.cache_key) {
                 Ok(VideoArtifactPublish::Existing(stored.clone()))
@@ -196,8 +225,19 @@ impl ArtifactStore for FakeArtifacts {
                 self.publications.fetch_add(1, Ordering::SeqCst);
                 Ok(VideoArtifactPublish::Published(stored))
             }
-        };
-        Box::pin(std::future::ready(result))
+        })
+    }
+
+    fn invalidate_video_artifact(
+        &self,
+        artifact_id: ArtifactId,
+    ) -> PortFuture<'_, krometrail_core::Result<()>> {
+        self.by_id.lock().unwrap().remove(&artifact_id);
+        self.by_key
+            .lock()
+            .unwrap()
+            .retain(|_, (_, stored)| stored.manifest.artifact_id() != artifact_id);
+        Box::pin(std::future::ready(Ok(())))
     }
 
     fn video_artifact(
@@ -227,6 +267,7 @@ struct FakeEncoder {
     identity: VideoEncoderIdentity,
     encodes: AtomicUsize,
     mismatch_identity: AtomicBool,
+    mismatch_profile: AtomicBool,
     pause: AtomicBool,
     fail_on_encode: AtomicUsize,
     started: tokio::sync::Notify,
@@ -240,6 +281,7 @@ impl FakeEncoder {
             identity: encoder_identity(4),
             encodes: AtomicUsize::new(0),
             mismatch_identity: AtomicBool::new(false),
+            mismatch_profile: AtomicBool::new(false),
             pause: AtomicBool::new(false),
             fail_on_encode: AtomicUsize::new(0),
             started: tokio::sync::Notify::new(),
@@ -289,12 +331,16 @@ impl TemporalVideoEncoder for FakeEncoder {
             } else {
                 self.identity.clone()
             };
-            VideoEncodedClip::new(
-                identity,
-                request.profile(),
-                OutputHash::from_bytes(hash),
-                bytes,
-            )
+            let profile = if self.mismatch_profile.load(Ordering::SeqCst) {
+                krometrail_core::VideoEncodingProfile::new(
+                    request.profile().geometry(),
+                    request.profile().max_encoded_bytes() + 1,
+                )
+                .unwrap()
+            } else {
+                request.profile()
+            };
+            VideoEncodedClip::new(identity, profile, OutputHash::from_bytes(hash), bytes)
         })
     }
 }
@@ -588,6 +634,14 @@ async fn model_selection_is_deterministic_and_provenance_bound() {
     let second_manifest = &second.clips[0].artifact.provenance;
     assert!(!first_manifest.plan().meaningful_frame_ids().is_empty());
     assert_eq!(first_manifest.selection(), second_manifest.selection());
+    assert_eq!(
+        first_manifest.selection().unwrap().parameters_sha256(),
+        &[
+            57, 221, 220, 46, 236, 237, 178, 222, 72, 193, 22, 194, 146, 224, 105, 75, 159, 117,
+            91, 235, 27, 12, 131, 230, 144, 14, 219, 3, 118, 106, 102, 219,
+        ],
+        "selection provenance must bind the selector, filter, max edge, and normalization profile"
+    );
     assert_eq!(fixture.encoder.encodes.load(Ordering::SeqCst), 1);
 }
 
@@ -608,6 +662,110 @@ async fn contradictory_encoder_identity_never_publishes() {
         krometrail_core::ErrorCode::ArtifactGenerationFailed
     );
     assert_eq!(fixture.artifacts.publications.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn contradictory_encoder_profile_never_publishes() {
+    let fixture = fixture(VideoPresentationPolicy::RealTime);
+    fixture
+        .encoder
+        .mismatch_profile
+        .store(true, Ordering::SeqCst);
+    let error = fixture
+        .service
+        .generate_video(fixture.request, ArtifactGenerationContext::default())
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.code,
+        krometrail_core::ErrorCode::ArtifactGenerationFailed
+    );
+    assert_eq!(fixture.artifacts.publications.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn store_failure_returns_no_success_or_cached_artifact() {
+    let fixture = fixture(VideoPresentationPolicy::RealTime);
+    fixture
+        .artifacts
+        .fail_publication
+        .store(true, Ordering::SeqCst);
+    let error = fixture
+        .service
+        .generate_video(fixture.request, ArtifactGenerationContext::default())
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, krometrail_core::ErrorCode::PersistenceFailed);
+    assert_eq!(fixture.artifacts.publications.load(Ordering::SeqCst), 0);
+    assert!(fixture.artifacts.by_id.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn contradictory_cache_hit_is_invalidated_and_regenerated() {
+    let fixture = fixture(VideoPresentationPolicy::RealTime);
+    fixture
+        .service
+        .generate_video(
+            fixture.request.clone(),
+            ArtifactGenerationContext::default(),
+        )
+        .await
+        .unwrap();
+    {
+        let mut cached = fixture.artifacts.by_key.lock().unwrap();
+        let (_, stored) = cached.values_mut().next().unwrap();
+        stored.cache.adapter_version =
+            krometrail_core::NonEmptyText::new("contradictory-adapter").unwrap();
+    }
+    let regenerated = fixture
+        .service
+        .generate_video(fixture.request, ArtifactGenerationContext::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        regenerated.clips[0].cache,
+        krometrail_core::ArtifactCacheDisposition::RegeneratedAfterInvalidation
+    );
+    assert_eq!(fixture.encoder.encodes.load(Ordering::SeqCst), 2);
+    assert_eq!(fixture.artifacts.by_id.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn contradictory_concurrent_existing_result_is_invalidated_and_rejected() {
+    let fixture = fixture(VideoPresentationPolicy::RealTime);
+    fixture
+        .service
+        .generate_video(
+            fixture.request.clone(),
+            ArtifactGenerationContext::default(),
+        )
+        .await
+        .unwrap();
+    let mut contradictory = fixture
+        .artifacts
+        .by_key
+        .lock()
+        .unwrap()
+        .values()
+        .next()
+        .unwrap()
+        .1
+        .clone();
+    contradictory.cache.adapter_version =
+        krometrail_core::NonEmptyText::new("contradictory-existing").unwrap();
+    fixture.artifacts.by_key.lock().unwrap().clear();
+    *fixture.artifacts.forced_existing.lock().unwrap() = Some(contradictory);
+
+    let error = fixture
+        .service
+        .generate_video(fixture.request, ArtifactGenerationContext::default())
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.code,
+        krometrail_core::ErrorCode::ArtifactGenerationFailed
+    );
+    assert!(fixture.artifacts.by_id.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -636,6 +794,74 @@ async fn cancellation_during_encode_stops_work_before_publication() {
     let error = task.await.unwrap().unwrap_err();
     assert_eq!(error.code, krometrail_core::ErrorCode::Cancelled);
     assert_eq!(fixture.artifacts.publications.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn caller_cancellation_signals_publication_and_awaits_store_cleanup() {
+    let fixture = fixture(VideoPresentationPolicy::RealTime);
+    fixture
+        .artifacts
+        .pause_publication
+        .store(true, Ordering::SeqCst);
+    let cancellation = Arc::new(ManualCancellation::default());
+    let task = tokio::spawn({
+        let service = fixture.service.clone();
+        let request = fixture.request;
+        let cancellation = Arc::clone(&cancellation);
+        async move {
+            service
+                .generate_video(
+                    request,
+                    ArtifactGenerationContext {
+                        deadline: None,
+                        cancellation: Some(cancellation),
+                    },
+                )
+                .await
+        }
+    });
+    fixture.artifacts.publication_started.notified().await;
+    cancellation.cancel();
+    let error = task.await.unwrap().unwrap_err();
+    assert_eq!(error.code, krometrail_core::ErrorCode::Cancelled);
+    assert!(
+        fixture
+            .artifacts
+            .publication_cleanup_complete
+            .load(Ordering::SeqCst)
+    );
+    assert!(fixture.artifacts.by_id.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn caller_deadline_signals_publication_and_awaits_store_cleanup() {
+    let fixture = fixture(VideoPresentationPolicy::RealTime);
+    fixture
+        .artifacts
+        .pause_publication
+        .store(true, Ordering::SeqCst);
+    let error = fixture
+        .service
+        .generate_video(
+            fixture.request,
+            ArtifactGenerationContext {
+                deadline: Some(std::time::Instant::now() + Duration::from_millis(25)),
+                cancellation: None,
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.code,
+        krometrail_core::ErrorCode::ArtifactGenerationFailed
+    );
+    assert!(
+        fixture
+            .artifacts
+            .publication_cleanup_complete
+            .load(Ordering::SeqCst)
+    );
+    assert!(fixture.artifacts.by_id.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -896,12 +1122,43 @@ fn geometry_and_gap_slate_are_exact_bounded_and_deterministic() {
         .is_err()
     );
 
-    let range = SessionRange::new(SessionTime::from_nanos(4), SessionTime::from_nanos(8)).unwrap();
-    let first = render_gap_slate(PixelDimensions::new(120, 40).unwrap(), range).unwrap();
-    let second = render_gap_slate(PixelDimensions::new(120, 40).unwrap(), range).unwrap();
+    let range = SessionRange::new(
+        SessionTime::from_nanos(u64::MAX - 1),
+        SessionTime::from_nanos(u64::MAX),
+    )
+    .unwrap();
+    let boundary = PixelDimensions::new(GAP_SLATE_MIN_WIDTH, GAP_SLATE_MIN_HEIGHT).unwrap();
+    let first = render_gap_slate(boundary, range).unwrap();
+    let second = render_gap_slate(boundary, range).unwrap();
     assert_eq!(first, second);
-    let decoded = image::load_from_memory_with_format(&first, image::ImageFormat::Png).unwrap();
-    assert_eq!((decoded.width(), decoded.height()), (120, 40));
+    let decoded = image::load_from_memory_with_format(&first, image::ImageFormat::Png)
+        .unwrap()
+        .into_rgba8();
+    assert_eq!(
+        (decoded.width(), decoded.height()),
+        (GAP_SLATE_MIN_WIDTH, GAP_SLATE_MIN_HEIGHT)
+    );
+    let label_pixels = decoded
+        .enumerate_pixels()
+        .filter(|(_, y, pixel)| *y < GAP_SLATE_MIN_HEIGHT / 2 && pixel.0 == [255, 245, 138, 255])
+        .count();
+    let interval_pixels = decoded
+        .enumerate_pixels()
+        .filter(|(_, y, pixel)| *y >= GAP_SLATE_MIN_HEIGHT / 2 && pixel.0 == [255, 245, 138, 255])
+        .count();
+    assert!(
+        label_pixels > 0,
+        "capture-gap label must be visibly rendered"
+    );
+    assert!(
+        interval_pixels > 0,
+        "source-time interval must be visibly rendered"
+    );
+    let too_narrow = PixelDimensions::new(GAP_SLATE_MIN_WIDTH - 1, GAP_SLATE_MIN_HEIGHT).unwrap();
+    assert_eq!(
+        render_gap_slate(too_narrow, range).unwrap_err().code,
+        krometrail_core::ErrorCode::ResourceLimitExceeded
+    );
 }
 
 fn frame(

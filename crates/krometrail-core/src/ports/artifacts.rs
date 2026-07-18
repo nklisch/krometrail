@@ -292,6 +292,12 @@ pub trait ArtifactStore: Send + Sync {
         Box::pin(std::future::ready(Err(video_unsupported())))
     }
 
+    /// Invalidates one contradictory retained-video cache entry through the same
+    /// lifetime authority that owns its row, file, source links, and usage.
+    fn invalidate_video_artifact(&self, _artifact_id: ArtifactId) -> PortFuture<'_, Result<()>> {
+        Box::pin(std::future::ready(Err(video_unsupported())))
+    }
+
     fn video_artifact(
         &self,
         _artifact_id: ArtifactId,
@@ -347,6 +353,10 @@ impl<T: ArtifactStore + ?Sized> ArtifactStore for Arc<T> {
         publication: VideoArtifactPublication,
     ) -> PortFuture<'_, Result<VideoArtifactPublish>> {
         (**self).publish_video_artifact(publication)
+    }
+
+    fn invalidate_video_artifact(&self, artifact_id: ArtifactId) -> PortFuture<'_, Result<()>> {
+        (**self).invalidate_video_artifact(artifact_id)
     }
 
     fn video_artifact(

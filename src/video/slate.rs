@@ -6,11 +6,22 @@ use krometrail_core::{
 };
 
 const LABEL: &str = "CAPTURE GAP";
+pub(crate) const GAP_SLATE_MIN_WIDTH: u32 = 264;
+pub(crate) const GAP_SLATE_MIN_HEIGHT: u32 = 18;
 
 pub(crate) fn render_gap_slate(
     canvas: PixelDimensions,
     source_range: SessionRange,
 ) -> Result<Arc<[u8]>> {
+    if canvas.width() < GAP_SLATE_MIN_WIDTH || canvas.height() < GAP_SLATE_MIN_HEIGHT {
+        return Err(KrometrailError::new(
+            ErrorCode::ResourceLimitExceeded,
+            NonEmptyText::new(
+                "capture-gap video canvas is too small for its label and source-time interval",
+            )
+            .expect("static gap-slate limit error is non-empty"),
+        ));
+    }
     let mut image = RgbaImage::new(canvas.width(), canvas.height());
     for (x, y, pixel) in image.enumerate_pixels_mut() {
         let stripe = ((x / 12) + (y / 12)) % 2 == 0;

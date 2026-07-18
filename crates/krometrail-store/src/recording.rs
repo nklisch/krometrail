@@ -505,7 +505,7 @@ impl RecordingStore {
             return Ok(());
         }
         self.flush_all().await?;
-        self.cleanup_to(self.budget.get().saturating_sub(required))
+        self.cleanup_to(self.budget.get().saturating_sub(required), None)
             .await?;
         let snapshot = self.refresh_usage()?;
         if snapshot
@@ -532,7 +532,7 @@ impl RecordingStore {
             return self.status_from_snapshot(snapshot, RecordingBudgetState::Available);
         }
         self.flush_all().await?;
-        self.cleanup_to(self.budget.get()).await?;
+        self.cleanup_to(self.budget.get(), None).await?;
         snapshot = self.refresh_usage()?;
         let state = if self.usage_is_within_budget(&snapshot)? {
             RecordingBudgetState::Available
@@ -564,12 +564,16 @@ impl RecordingStore {
             && self.index.oldest_browser_event()?.is_none())
     }
 
-    async fn cleanup_to(&self, target_bytes: u64) -> krometrail_core::Result<()> {
+    async fn cleanup_to(
+        &self,
+        target_bytes: u64,
+        protected_artifact: Option<krometrail_core::ArtifactId>,
+    ) -> krometrail_core::Result<()> {
         loop {
             if self.refresh_usage()?.usage.total_bytes()? <= target_bytes {
                 return Ok(());
             }
-            if let Some(artifact) = self.index.oldest_artifact()? {
+            if let Some(artifact) = self.index.oldest_artifact_excluding(protected_artifact)? {
                 self.remove_objects(
                     DeletionKind::Eviction,
                     None,
@@ -607,6 +611,20 @@ impl RecordingStore {
             self.remove_objects(DeletionKind::Eviction, None, objects)
                 .await?;
         }
+    }
+
+    async fn ensure_staged_artifact_capacity(
+        &self,
+        row: &ArtifactRow,
+    ) -> krometrail_core::Result<()> {
+        self.cleanup_to(self.budget.get(), Some(row.artifact_id))
+            .await?;
+        if self.refresh_usage()?.usage.total_bytes()? <= self.budget.get() {
+            self.set_budget_state(RecordingBudgetState::Available);
+            return Ok(());
+        }
+        self.set_budget_state(RecordingBudgetState::PausedBudget);
+        Err(budget_error(row.session_id, row.target_id))
     }
 
     async fn remove_objects(
@@ -1443,6 +1461,26 @@ impl ArtifactStore for RecordingStore {
                 }
             };
 
+            {
+                let _mutation = self.mutations.lock().await;
+                if let Err(error) = self.ensure_staged_artifact_capacity(&row).await {
+                    self.invalidate_artifact_row(row.clone()).await?;
+                    return Err(error);
+                }
+            }
+            if let Err(error) = self
+                .validate_source_payloads(
+                    publication.session_id,
+                    publication.target_id,
+                    &publication.sources,
+                )
+                .await
+            {
+                let _mutation = self.mutations.lock().await;
+                self.invalidate_artifact_row(row.clone()).await?;
+                return Err(error);
+            }
+
             if let Err(error) = self
                 .artifact_files
                 .publish(
@@ -1461,6 +1499,10 @@ impl ArtifactStore for RecordingStore {
 
             let finalized = {
                 let _mutation = self.mutations.lock().await;
+                if let Err(error) = self.ensure_staged_artifact_capacity(&row).await {
+                    self.invalidate_artifact_row(row.clone()).await?;
+                    return Err(error);
+                }
                 if publication_guard.is_cancelled()
                     || publication
                         .cancellation()
@@ -1470,13 +1512,19 @@ impl ArtifactStore for RecordingStore {
                     self.invalidate_artifact_row(row.clone()).await?;
                     return Err(cancelled_publication_error());
                 }
-                self.index.finalize_artifact(
+                match self.index.finalize_artifact(
                     row.artifact_id,
                     publication.cache.cache_key,
                     publication.session_id,
                     publication.target_id,
                     &publication.sources,
-                )?
+                ) {
+                    Ok(finalized) => finalized,
+                    Err(error) => {
+                        self.invalidate_artifact_row(row.clone()).await?;
+                        return Err(error);
+                    }
+                }
             };
             if !finalized {
                 let _mutation = self.mutations.lock().await;
@@ -1532,6 +1580,24 @@ impl ArtifactStore for RecordingStore {
                 }
                 Err(error) => Err(error),
             }
+        })
+    }
+
+    fn invalidate_video_artifact(
+        &self,
+        artifact_id: krometrail_core::ArtifactId,
+    ) -> PortFuture<'_, krometrail_core::Result<()>> {
+        Box::pin(async move {
+            let _mutation = self.mutations.lock().await;
+            let Some(row) = self.index.artifact_row(artifact_id)? else {
+                return Ok(());
+            };
+            if row.kind != RetainedArtifactKind::TemporalVideo {
+                return Err(persistence_error(
+                    "video invalidation resolved to a non-video artifact",
+                ));
+            }
+            self.invalidate_artifact_row(row).await
         })
     }
 }

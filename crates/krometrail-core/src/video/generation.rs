@@ -180,16 +180,14 @@ impl VideoArtifactRead {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct TemporalVideoGenerationClip {
     pub epoch_index: u32,
     pub cache: ArtifactCacheDisposition,
     pub artifact: VideoArtifactEvidenceHandle,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct TemporalVideoGenerationResult {
     pub range: ResolvedRange,
     pub clips: Vec<TemporalVideoGenerationClip>,

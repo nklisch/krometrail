@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-video-artifacts-retained-generation
 kind: feature
-stage: implementing
+stage: review
 tags: [visual, storage, security]
 parent: epic-temporal-video-artifacts
 depends_on: [epic-temporal-video-artifacts-clip-contracts]
@@ -514,3 +514,23 @@ The stories are durable checkpoints inside one cohesive feature implementation a
 - Add the promised fake profile-mismatch and store-failure service cases while correcting the above boundaries.
 
 The reviewer confirmed transactional contiguous migration, one shared artifact authority, source-link/recovery/deletion/epoch/geometry behavior, no path/privacy leakage, and later ownership of concrete FFmpeg/MCP/plugin wiring. The duplicate image/video publication-flow nit is not promoted into this correction because behavioral consolidation is not required to close the verified contract gaps.
+
+## Review-fix implementation (2026-07-18)
+
+- Execution capability remained GPT-5.6 Sol at xhigh reasoning because cancellation/recovery, cache identity, and retained-data budget correctness are stable-contract risks. Review weight remained the caller/default `standard`; this is the requested fix-and-verify closure after the one independent pass, with no second review and no self-approval.
+- Caller cancellation and deadline now signal a publication-scoped `WorkCancellation` and await the store future's bounded cleanup. If publication nevertheless wins the race, the newly published artifact is invalidated before the cancellation/deadline result escapes. The file worker checks cancellation before write, after temp sync, after rename, and after directory sync, cleaning and syncing any renamed output; the store's finalization fence supplies the fifth durable boundary.
+- One `RETAINED_VIDEO_ADAPTER_VERSION` authority now supplies both cache metadata and the framed cache transcript. Cache `Hit` and concurrent `Existing` values must match the complete expected cache metadata, canonical plan, selection, encoder identity, and profile; contradictions are removed through the same store authority before regeneration or failure.
+- Video staging reserves usage, cleans to the global budget while excluding the candidate winner, revalidates source payloads after possible eviction, checks capacity again under the finalization mutation gate, and only then makes the row ready. A publication cannot evict itself and return a stale handle.
+- Gap-bearing output now has a declared 264×18 readable minimum that fits `CAPTURE GAP` plus the worst-case exact nanosecond interval. The boundary renders deterministic label and interval pixels; one-pixel-below width fails with the stable resource-limit code.
+- The selection parameter digest now binds the public selector name/version, temporal-vision selector revision, Triangle analysis filter, 256-pixel maximum edge, normalization profile, tile limit, measurement parameters, anchor, frames, and gaps. Generation result/clip envelopes remain serializable and schema-generating but are output-only rather than accepting unvalidated deserialization.
+- A real image publication is converted to the exact v5 image-only artifact table shape with valid source rows, usage, canonical manifest/hash/cache fields, and a managed PNG file; opening v6 proves full-row equality and typed byte-identical reads. Fixed image-manifest and still-cache digests protect the stable image contract.
+- Added focused fake encoder/store cases for profile contradiction, store failure, contradictory `Hit`, contradictory concurrent `Existing`, publication cancellation, and publication deadline. No production FFmpeg, MCP, plugin, foundation-document, or publication-flow-refactor surface changed.
+- Files changed: `crates/krometrail-core/src/ports/artifacts.rs`, `crates/krometrail-core/src/video/generation.rs`, `crates/krometrail-store/src/artifacts/files.rs`, `crates/krometrail-store/src/index/{migrations,retention}.rs`, `crates/krometrail-store/src/recording.rs`, `crates/krometrail-store/tests/{artifact_store,video_artifact_store}.rs`, `src/artifacts/cache.rs`, and `src/video/{adapt,service,service_tests,slate}.rs`.
+- Simplification/discrepancies/parked work: no new cache, storage root, retention path, or session-work registry was introduced; the existing store port gained only exact contradictory-video invalidation. No design discrepancy or adjacent issue remains, and the review's publication-flow deduplication nit remains intentionally unpromoted.
+
+## Review-fix verification
+
+- Focused retained suites passed: root video 24 tests, retained video store 8 tests, image artifact store 10 tests, migration 6 tests, and core video 22 tests.
+- Retained-scope all-target `cargo check` and Clippy with `-D warnings` passed before integration.
+- After the disjoint FFmpeg correction was formatted and focused-green, the authoritative combined sequence ran serially and passed: `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --locked`; `cargo test --workspace --all-targets --locked`; `cargo clippy --workspace --all-targets --locked -- -D warnings`.
+- The integrated root suite reported 125 passed and 2 existing explicitly ignored manual/performance tests; all store video, migration, image compatibility, FFmpeg, MCP, CDP, temporal-evaluation, and temporal-vision suites passed. No test was removed, loosened, or newly skipped.

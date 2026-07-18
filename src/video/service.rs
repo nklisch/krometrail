@@ -265,13 +265,9 @@ impl TemporalVideoGenerationService {
             selector: prepared.selection.as_ref(),
         });
         let mut invalidated = false;
-        match controlled(
-            self.artifacts
-                .lookup_video_artifact(cache.cache_key, prepared.sources.clone()),
-            deadline,
-            context.cancellation.as_ref(),
-        )
-        .await??
+        match self
+            .lookup_expected_video(&cache, &prepared, &identity, deadline, context)
+            .await?
         {
             VideoArtifactLookup::Hit(stored) => {
                 return clip_from_stored(*stored, ArtifactCacheDisposition::Hit);
@@ -282,13 +278,9 @@ impl TemporalVideoGenerationService {
 
         let lock = self.cache_locks.for_key(cache.cache_key);
         let _cache_guard = controlled(lock.lock(), deadline, context.cancellation.as_ref()).await?;
-        match controlled(
-            self.artifacts
-                .lookup_video_artifact(cache.cache_key, prepared.sources.clone()),
-            deadline,
-            context.cancellation.as_ref(),
-        )
-        .await??
+        match self
+            .lookup_expected_video(&cache, &prepared, &identity, deadline, context)
+            .await?
         {
             VideoArtifactLookup::Hit(stored) => {
                 return clip_from_stored(*stored, ArtifactCacheDisposition::Hit);
@@ -315,39 +307,128 @@ impl TemporalVideoGenerationService {
         let manifest = TemporalVideoManifest::new(
             artifact_id,
             request.range(),
-            prepared.plan,
-            prepared.selection,
+            prepared.plan.clone(),
+            prepared.selection.clone(),
             &encoded,
         )?;
+        let publication_work = WorkCancellation::default();
         let publication = VideoArtifactPublication::new(
             request.range().session_id,
             request.range().target_id,
-            prepared.sources,
-            cache,
+            prepared.sources.clone(),
+            cache.clone(),
             manifest,
             encoded.owned_encoded_bytes(),
         )?
-        .with_cancellation(Arc::new(work));
+        .with_cancellation(Arc::new(publication_work.clone()));
         self.check_boundary(deadline, context)?;
-        let published = controlled(
-            self.artifacts.publish_video_artifact(publication),
+        let published = self
+            .publish_controlled(publication, deadline, context, publication_work)
+            .await?;
+        match published {
+            VideoArtifactPublish::Published(stored) => {
+                self.validate_published_video(&stored, &cache, &identity)?;
+                clip_from_stored(
+                    stored,
+                    if invalidated {
+                        ArtifactCacheDisposition::RegeneratedAfterInvalidation
+                    } else {
+                        ArtifactCacheDisposition::Generated
+                    },
+                )
+            }
+            VideoArtifactPublish::Existing(stored) => {
+                if !stored_matches_expected(&stored, &cache, &prepared, &identity) {
+                    self.artifacts
+                        .invalidate_video_artifact(stored.manifest.artifact_id())
+                        .await?;
+                    return Err(generation_error(
+                        "concurrent video publication contradicted the prepared cache identity",
+                    ));
+                }
+                clip_from_stored(stored, ArtifactCacheDisposition::Hit)
+            }
+        }
+    }
+
+    async fn lookup_expected_video(
+        &self,
+        cache: &krometrail_core::ArtifactCacheMetadata,
+        prepared: &PreparedVideoEpoch,
+        identity: &krometrail_core::VideoEncoderIdentity,
+        deadline: Instant,
+        context: &ArtifactGenerationContext,
+    ) -> Result<VideoArtifactLookup> {
+        let lookup = controlled(
+            self.artifacts
+                .lookup_video_artifact(cache.cache_key, prepared.sources.clone()),
             deadline,
             context.cancellation.as_ref(),
         )
         .await??;
-        match published {
-            VideoArtifactPublish::Published(stored) => clip_from_stored(
-                stored,
-                if invalidated {
-                    ArtifactCacheDisposition::RegeneratedAfterInvalidation
-                } else {
-                    ArtifactCacheDisposition::Generated
-                },
-            ),
-            VideoArtifactPublish::Existing(stored) => {
-                clip_from_stored(stored, ArtifactCacheDisposition::Hit)
+        match lookup {
+            VideoArtifactLookup::Hit(stored)
+                if stored_matches_expected(&stored, cache, prepared, identity) =>
+            {
+                Ok(VideoArtifactLookup::Hit(stored))
+            }
+            VideoArtifactLookup::Hit(stored) => {
+                self.artifacts
+                    .invalidate_video_artifact(stored.manifest.artifact_id())
+                    .await?;
+                Ok(VideoArtifactLookup::Invalidated)
+            }
+            other => Ok(other),
+        }
+    }
+
+    async fn publish_controlled(
+        &self,
+        publication: VideoArtifactPublication,
+        deadline: Instant,
+        context: &ArtifactGenerationContext,
+        cancellation: WorkCancellation,
+    ) -> Result<VideoArtifactPublish> {
+        let mut publish = self.artifacts.publish_video_artifact(publication);
+        tokio::select! {
+            value = &mut publish => value,
+            () = external_cancelled(context.cancellation.as_ref()) => {
+                cancellation.cancel();
+                self.finish_cancelled_publication(&mut publish).await?;
+                Err(cancelled_error())
+            }
+            () = sleep_until(deadline) => {
+                cancellation.cancel();
+                self.finish_cancelled_publication(&mut publish).await?;
+                Err(deadline_error())
             }
         }
+    }
+
+    async fn finish_cancelled_publication(
+        &self,
+        publish: &mut PortFuture<'_, Result<VideoArtifactPublish>>,
+    ) -> Result<()> {
+        if let Ok(VideoArtifactPublish::Published(stored)) = publish.await {
+            self.artifacts
+                .invalidate_video_artifact(stored.manifest.artifact_id())
+                .await?;
+        }
+        Ok(())
+    }
+
+    fn validate_published_video(
+        &self,
+        stored: &StoredVideoArtifact,
+        cache: &krometrail_core::ArtifactCacheMetadata,
+        identity: &krometrail_core::VideoEncoderIdentity,
+    ) -> Result<()> {
+        if &stored.cache != cache || stored.manifest.encoder() != identity {
+            return Err(generation_error(
+                "published video contradicted its cache or encoder identity",
+            ));
+        }
+        Ok(())
     }
 
     async fn run_blocking<T, F>(
@@ -498,6 +579,19 @@ fn clip_from_stored(
         cache,
         artifact,
     })
+}
+
+fn stored_matches_expected(
+    stored: &StoredVideoArtifact,
+    cache: &krometrail_core::ArtifactCacheMetadata,
+    prepared: &PreparedVideoEpoch,
+    identity: &krometrail_core::VideoEncoderIdentity,
+) -> bool {
+    &stored.cache == cache
+        && stored.manifest.plan() == &prepared.plan
+        && stored.manifest.selection() == prepared.selection.as_ref()
+        && stored.manifest.encoder() == identity
+        && stored.manifest.profile() == prepared.profile
 }
 
 async fn external_cancelled(cancellation: Option<&Arc<dyn CancellationSignal>>) {

@@ -283,12 +283,20 @@ impl SqliteIndex {
     }
 
     pub(crate) fn oldest_artifact(&self) -> krometrail_core::Result<Option<ArtifactCandidate>> {
+        self.oldest_artifact_excluding(None)
+    }
+
+    pub(crate) fn oldest_artifact_excluding(
+        &self,
+        excluded: Option<ArtifactId>,
+    ) -> krometrail_core::Result<Option<ArtifactCandidate>> {
         let connection = self.connection()?;
         let raw = connection
             .query_row(
                 "SELECT artifact_id, session_id, relative_path, byte_len_be FROM artifacts \
+                 WHERE (?1 IS NULL OR artifact_id!=?1) \
                  ORDER BY start_time_be ASC, artifact_id ASC LIMIT 1",
-                [],
+                [excluded.map(|id| codec::id(id.as_uuid()).to_vec())],
                 |row| {
                     Ok((
                         row.get::<_, Vec<u8>>(0)?,

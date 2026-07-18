@@ -3,9 +3,9 @@ use std::{num::NonZeroUsize, sync::Arc};
 use image::{ImageBuffer, Rgba, imageops::FilterType};
 use krometrail_core::{
     ArtifactSourceFingerprint, ErrorCode, FrameId, ImageFormat, KrometrailError, NonEmptyText,
-    OutputLimitsRequest, PixelDimensions, Result, SessionTime, VideoEncodeFrame,
-    VideoEncodingProfile, VideoOutputGeometry, VideoPresentationPlan, VideoSegmentSource,
-    VideoSelectionIdentity,
+    OutputLimitsRequest, PixelDimensions, Result, SessionTime, VIDEO_MEANINGFUL_SELECTOR_NAME,
+    VIDEO_MEANINGFUL_SELECTOR_VERSION, VideoEncodeFrame, VideoEncodingProfile, VideoOutputGeometry,
+    VideoPresentationPlan, VideoSegmentSource, VideoSelectionIdentity,
 };
 use sha2::{Digest, Sha256};
 use temporal_vision::{
@@ -24,6 +24,9 @@ use super::slate::render_gap_slate;
 
 const ANALYSIS_MAX_EDGE: u32 = 256;
 const MEANINGFUL_TILE_LIMIT: u8 = 12;
+const ANALYSIS_FILTER: &str = "image-filter-triangle";
+const NORMALIZATION_PROFILE: &str = "rgba8-srgb-straight;black-background;identity-scale";
+const TEMPORAL_VISION_SELECTOR_VERSION: &str = "storyboard-selector-v1";
 
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedVideoEpoch {
@@ -220,6 +223,12 @@ fn selection_parameter_hash(
 ) -> [u8; 32] {
     let mut hash = Sha256::new();
     hash.update(b"krometrail-video-meaningful-selection-v1");
+    hash.update(VIDEO_MEANINGFUL_SELECTOR_NAME.as_bytes());
+    hash.update(VIDEO_MEANINGFUL_SELECTOR_VERSION.as_bytes());
+    hash.update(TEMPORAL_VISION_SELECTOR_VERSION.as_bytes());
+    hash.update(ANALYSIS_FILTER.as_bytes());
+    hash.update(ANALYSIS_MAX_EDGE.to_be_bytes());
+    hash.update(NORMALIZATION_PROFILE.as_bytes());
     hash.update(anchor.as_nanos().to_be_bytes());
     hash.update(thumbnail.width().to_be_bytes());
     hash.update(thumbnail.height().to_be_bytes());
