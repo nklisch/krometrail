@@ -137,39 +137,39 @@ pub(super) async fn execute_operation_unfenced(
     }
     match request {
         BrowserOperationRequest::WaitForPage(request) => {
-            return wait_for_page(state, transport, shared, request, cancellation).await;
+            wait_for_page(state, transport, shared, request, cancellation).await
         }
         BrowserOperationRequest::ListDownloads(_) => {
             let authority = shared
                 .downloads
                 .as_ref()
                 .expect("managed ownership has download authority");
-            return Ok(BrowserOperationResult::ListDownloads(Box::new(
+            Ok(BrowserOperationResult::ListDownloads(Box::new(
                 authority.list(),
-            )));
+            )))
         }
         BrowserOperationRequest::WaitForDownload(request) => {
             let authority = shared
                 .downloads
                 .as_ref()
                 .expect("managed ownership has download authority");
-            return authority
+            authority
                 .wait(request)
                 .await
-                .map(|value| BrowserOperationResult::WaitForDownload(Box::new(value)));
+                .map(|value| BrowserOperationResult::WaitForDownload(Box::new(value)))
         }
         BrowserOperationRequest::CancelDownload(request) => {
             let authority = shared
                 .downloads
                 .as_ref()
                 .expect("managed ownership has download authority");
-            return authority
+            authority
                 .cancel(transport.as_ref(), request.download_id)
                 .await
-                .map(|value| BrowserOperationResult::CancelDownload(Box::new(value)));
+                .map(|value| BrowserOperationResult::CancelDownload(Box::new(value)))
         }
         request => {
-            return execute_non_local_operation(
+            execute_non_local_operation(
                 page_control,
                 state,
                 transport,
@@ -178,7 +178,7 @@ pub(super) async fn execute_operation_unfenced(
                 cancellation,
                 context,
             )
-            .await;
+            .await
         }
     }
 }

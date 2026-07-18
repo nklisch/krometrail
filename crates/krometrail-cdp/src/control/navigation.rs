@@ -141,6 +141,33 @@ impl OperationCancellation {
     }
 }
 
+impl CancellationSignal for OperationCancellation {
+    fn is_cancelled(&self) -> bool {
+        self.request_is_cancelled() || self.stopped.load(Ordering::Acquire)
+    }
+
+    fn cancelled(&self) -> krometrail_core::PortFuture<'_, ()> {
+        Box::pin(async move {
+            loop {
+                if self.is_cancelled() {
+                    return;
+                }
+                let notified = self.notify.notified();
+                if self.is_cancelled() {
+                    return;
+                }
+                match &self.request {
+                    Some(request) => tokio::select! {
+                        () = request.cancelled() => {},
+                        () = notified => {},
+                    },
+                    None => notified.await,
+                }
+            }
+        })
+    }
+}
+
 #[derive(Clone, Debug)]
 struct DocumentState {
     loader_id: String,

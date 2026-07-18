@@ -20,7 +20,7 @@ use krometrail_core::{
     AttachBrowser, BrowserCompatibility, BrowserConnectRequest, BrowserConnector, BrowserEventSink,
     BrowserInstallation, BrowserOperationContext, BrowserOperationRequest, BrowserOperationResult,
     BrowserOperationScope, BrowserOwnership, BrowserSessionEvent, BrowserSessionEvents,
-    BrowserSessionPort, BrowserSessionState, BrowserStatus, BrowserStopOutcome,
+    BrowserSessionPort, BrowserSessionState, BrowserStatus, BrowserStopOutcome, CancellationSignal,
     CurrentReferenceGeometryRequest, ErrorCode, EveryNthFrame, IdSource, IdValue,
     InteractionAnchor, InteractionTiming, KrometrailError, MonotonicClock, NonEmptyText,
     ObservationPart, PageChange, PageOperationOutcome, PageOperationResult, PageSelection,
@@ -731,6 +731,23 @@ impl BrowserSessionPort for ProductionSession {
     ) -> PortFuture<'_, Result<BrowserOperationResult>> {
         let shared = Arc::clone(&self.shared);
         Box::pin(async move {
+            let request = match request {
+                BrowserOperationRequest::WaitForDownload(request) => {
+                    let authority = shared.downloads.as_ref().ok_or_else(|| {
+                        stable_error(
+                            ErrorCode::Unsupported,
+                            "managed downloads require a managed browser session",
+                        )
+                    })?;
+                    let cancellation: Arc<dyn CancellationSignal> =
+                        Arc::new(shared.operation_cancellation.for_request(&context));
+                    return authority
+                        .wait_with_cancellation(request, Some(cancellation))
+                        .await
+                        .map(|value| BrowserOperationResult::WaitForDownload(Box::new(value)));
+                }
+                request => request,
+            };
             let target_id = direct_request_target(&request);
             if context.is_cancelled() {
                 return Err(request_operation_error(

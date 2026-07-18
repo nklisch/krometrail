@@ -757,6 +757,14 @@ pub(super) async fn reconnect_loop_transactional(
             }
             Ok(Err(_)) => continue,
             Ok(Ok(mut prepared)) => {
+                if let Some(downloads) = shared.downloads.as_ref()
+                    && downloads
+                        .rebind(Arc::clone(&prepared.connection.transport))
+                        .await
+                        .is_err()
+                {
+                    continue;
+                }
                 prepared.connection.restart_pumps(
                     shared.command_tx.clone(),
                     prepared.state.connection_generation,
