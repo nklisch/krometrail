@@ -1,9 +1,11 @@
 use super::*;
 use crate::{
-    CaptureOrdinal, CapturedFrame, DeviceScaleFactor, ErrorCode, FrameId, ImageFormat,
+    ArtifactId, CaptureOrdinal, CapturedFrame, DeviceScaleFactor, ErrorCode, FrameId, ImageFormat,
     ObservedTime, PixelDimensions, RangeResolutionOptions, ResolvedRange, SessionId, SessionRange,
-    SessionTime, TargetId, TemporalRangeAnchorKind, VisualEpoch,
+    SessionTime, TargetId, TemporalRangeAnchorKind, VideoEncodedClip, VideoEncoderIdentity,
+    VideoEncodingProfile, VisualEpoch,
 };
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 fn session() -> SessionId {
@@ -304,4 +306,192 @@ fn plan_rejects_noncontiguous_segments_and_wrong_epoch_source() {
         serde_json::from_str(&serde_json::to_string(&one_frame_plan()).unwrap()).unwrap();
     value["segments"][0]["presentation"]["start"] = serde_json::json!(1_u64);
     assert!(serde_json::from_value::<VideoPresentationPlan>(value).is_err());
+}
+
+fn identity(build: u8) -> VideoEncoderIdentity {
+    VideoEncoderIdentity::new(
+        "ffmpeg 7.1",
+        [build; 32],
+        "libx264",
+        "adapter-v1",
+        "args-v1",
+    )
+    .unwrap()
+}
+
+fn encoded(identity: VideoEncoderIdentity, profile: VideoEncodingProfile) -> VideoEncodedClip {
+    let bytes = vec![1_u8, 2, 3, 4];
+    let hash = temporal_vision::OutputHash::from_bytes(Sha256::digest(&bytes).into());
+    VideoEncodedClip::new(identity, profile, hash, bytes).unwrap()
+}
+
+#[test]
+fn temporal_video_manifest_round_trip_preserves_exact_plan_and_closed_media_profile() {
+    let plan = one_frame_plan();
+    let scope = resolved(plan.input_frame_ids().to_vec(), 10);
+    let profile = VideoEncodingProfile::new(plan.output(), 1024).unwrap();
+    let encoded = encoded(identity(7), profile);
+    let manifest = TemporalVideoManifest::new(
+        ArtifactId::from_uuid(Uuid::from_u128(50)),
+        &scope,
+        plan,
+        &encoded,
+    )
+    .unwrap();
+    assert_eq!(
+        manifest.schema_version(),
+        TEMPORAL_VIDEO_MANIFEST_SCHEMA_VERSION
+    );
+    assert_eq!(manifest.media_type(), "video/mp4");
+    assert_eq!(manifest.codec(), "h264");
+    assert_eq!(manifest.pixel_format(), "yuv420p");
+    assert!(!manifest.has_audio());
+    assert_eq!(manifest.output_hash(), encoded.output_hash());
+
+    let json = serde_json::to_string(&manifest).unwrap();
+    assert_eq!(
+        serde_json::from_str::<TemporalVideoManifest>(&json).unwrap(),
+        manifest
+    );
+    assert!(!json.contains("executable"));
+    assert!(!json.contains("stderr"));
+    assert!(!json.contains("provider"));
+    assert!(!json.contains("source_pixels"));
+}
+
+#[test]
+fn manifest_deserialization_rejects_scope_media_and_length_contradictions() {
+    let plan = one_frame_plan();
+    let scope = resolved(plan.input_frame_ids().to_vec(), 10);
+    let profile = VideoEncodingProfile::new(plan.output(), 1024).unwrap();
+    let encoded = encoded(identity(7), profile);
+    let manifest = TemporalVideoManifest::new(
+        ArtifactId::from_uuid(Uuid::from_u128(50)),
+        &scope,
+        plan,
+        &encoded,
+    )
+    .unwrap();
+    let mut value = serde_json::to_value(manifest).unwrap();
+    value["media_type"] = serde_json::json!("video/webm");
+    assert!(serde_json::from_value::<TemporalVideoManifest>(value.clone()).is_err());
+    value["media_type"] = serde_json::json!("video/mp4");
+    value["has_audio"] = serde_json::json!(true);
+    assert!(serde_json::from_value::<TemporalVideoManifest>(value.clone()).is_err());
+    value["has_audio"] = serde_json::json!(false);
+    value["encoded_byte_len"] = serde_json::json!(0);
+    assert!(serde_json::from_value::<TemporalVideoManifest>(value.clone()).is_err());
+    value["encoded_byte_len"] = serde_json::json!(4);
+    value["requested_range"]["end"] = serde_json::json!(9_u64);
+    assert!(serde_json::from_value::<TemporalVideoManifest>(value).is_err());
+}
+
+#[test]
+fn canonical_cache_transcript_is_stable_sensitive_and_contains_no_opaque_process_data() {
+    let plan = one_frame_plan();
+    let profile = VideoEncodingProfile::new(plan.output(), 1024).unwrap();
+    let first = canonical_video_cache_parameters(&plan, &identity(7), &profile).unwrap();
+    let repeated = canonical_video_cache_parameters(&plan, &identity(7), &profile).unwrap();
+    assert_eq!(first, repeated);
+    assert_ne!(
+        first,
+        canonical_video_cache_parameters(&plan, &identity(8), &profile).unwrap()
+    );
+    let smaller_profile = VideoEncodingProfile::new(plan.output(), 512).unwrap();
+    assert_ne!(
+        first,
+        canonical_video_cache_parameters(&plan, &identity(7), &smaller_profile).unwrap()
+    );
+
+    let mut timing_value = serde_json::to_value(&plan).unwrap();
+    timing_value["segments"][0]["presentation"]["end"] = serde_json::json!(1_000_000_001_u64);
+    timing_value["duration"] = serde_json::json!(1_000_000_001_u64);
+    let timing_plan: VideoPresentationPlan = serde_json::from_value(timing_value).unwrap();
+    assert_ne!(
+        first,
+        canonical_video_cache_parameters(&timing_plan, &identity(7), &profile).unwrap()
+    );
+
+    let replacement = frame_id(99);
+    let mut source_value = serde_json::to_value(&plan).unwrap();
+    source_value["epoch"]["frame_ids"][0] = serde_json::json!(replacement);
+    source_value["input_frame_ids"][0] = serde_json::json!(replacement);
+    source_value["meaningful_frame_ids"][0] = serde_json::json!(replacement);
+    source_value["segments"][0]["source"]["frame_id"] = serde_json::json!(replacement);
+    let source_plan: VideoPresentationPlan = serde_json::from_value(source_value).unwrap();
+    assert_ne!(
+        first,
+        canonical_video_cache_parameters(&source_plan, &identity(7), &profile).unwrap()
+    );
+
+    let second_id = frame_id(4);
+    let gap_plan = VideoPresentationPlan::new(
+        VideoPresentationPolicy::RealTime,
+        SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(10)).unwrap(),
+        SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(10)).unwrap(),
+        SessionRange::new(SessionTime::from_nanos(2), SessionTime::from_nanos(4)).unwrap(),
+        epoch(vec![frame_id(3), second_id]),
+        vec![frame_id(3), second_id],
+        vec![],
+        vec![
+            VideoPresentationSegment::new(
+                0,
+                VideoSegmentSource::gap_slate(
+                    vec![crate::GapId::from_uuid(Uuid::from_u128(80))],
+                    SessionRange::new(SessionTime::from_nanos(2), SessionTime::from_nanos(3))
+                        .unwrap(),
+                )
+                .unwrap(),
+                PresentationRange::new(
+                    PresentationTime::ZERO,
+                    PresentationTime::from_nanos(500_000_000).unwrap(),
+                )
+                .unwrap(),
+                VideoTimingBasis::RecordedGap,
+            )
+            .unwrap(),
+            VideoPresentationSegment::new(
+                1,
+                VideoSegmentSource::source_frame(second_id, SessionTime::from_nanos(4)).unwrap(),
+                PresentationRange::new(
+                    PresentationTime::from_nanos(500_000_000).unwrap(),
+                    PresentationTime::from_nanos(750_000_000).unwrap(),
+                )
+                .unwrap(),
+                VideoTimingBasis::TerminalHold,
+            )
+            .unwrap(),
+        ],
+        geometry(),
+    )
+    .unwrap();
+    assert_ne!(
+        first,
+        canonical_video_cache_parameters(&gap_plan, &identity(7), &profile).unwrap()
+    );
+
+    let small = PixelDimensions::new(2, 2).unwrap();
+    let small_geometry = VideoOutputGeometry::new(small, small, small).unwrap();
+    let mut geometry_value = serde_json::to_value(&plan).unwrap();
+    geometry_value["epoch"]["image"] = serde_json::json!({"width": 2, "height": 2});
+    geometry_value["output"]["source"] = serde_json::json!({"width": 2, "height": 2});
+    geometry_value["output"]["scaled"] = serde_json::json!({"width": 2, "height": 2});
+    geometry_value["output"]["canvas"] = serde_json::json!({"width": 2, "height": 2});
+    let geometry_plan: VideoPresentationPlan = serde_json::from_value(geometry_value).unwrap();
+    let geometry_profile = VideoEncodingProfile::new(small_geometry, 1024).unwrap();
+    assert_ne!(
+        first,
+        canonical_video_cache_parameters(&geometry_plan, &identity(7), &geometry_profile).unwrap()
+    );
+
+    let json = std::str::from_utf8(&first).unwrap();
+    assert!(json.contains(TEMPORAL_VIDEO_PLAN_VERSION));
+    assert!(json.contains("model_optimized"));
+    assert!(json.contains("model_meaningful_hold"));
+    assert!(json.contains("max_encoded_input_bytes"));
+    assert!(json.contains("libx264"));
+    assert!(!json.contains("stderr"));
+    assert!(!json.contains("/tmp"));
+    assert!(!json.contains("source_pixels"));
+    assert!(!json.contains("provider"));
 }

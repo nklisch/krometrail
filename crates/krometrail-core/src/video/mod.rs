@@ -1,7 +1,11 @@
 //! Deterministic, infrastructure-free temporal-video contracts.
 
+mod manifest;
 mod plan;
 
+pub use manifest::{
+    TEMPORAL_VIDEO_MANIFEST_SCHEMA_VERSION, TemporalVideoManifest, canonical_video_cache_parameters,
+};
 pub use plan::{
     MAX_VIDEO_ENCODED_INPUT_BYTES, MAX_VIDEO_ENCODED_OUTPUT_BYTES, MAX_VIDEO_HEIGHT,
     MAX_VIDEO_MEANINGFUL_FRAMES, MAX_VIDEO_PRESENTATION_DURATION, MAX_VIDEO_PRESENTATION_SEGMENTS,
