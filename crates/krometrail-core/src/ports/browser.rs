@@ -78,12 +78,23 @@ impl<'de> Deserialize<'de> for EveryNthFrame {
     }
 }
 
+#[derive(
+    Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserFocusPolicy {
+    #[default]
+    Foreground,
+    Preserve,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
 pub struct LaunchBrowser {
     pub executable: Option<PathBuf>,
     pub profile: ManagedProfile,
     pub initial_url: Option<String>,
     pub every_nth_frame: EveryNthFrame,
+    pub focus: BrowserFocusPolicy,
 }
 
 #[derive(Default, Deserialize, schemars::JsonSchema)]
@@ -95,6 +106,9 @@ struct LaunchBrowserWire {
     #[serde(default)]
     #[schemars(default)]
     every_nth_frame: EveryNthFrame,
+    #[serde(default)]
+    #[schemars(default)]
+    focus: BrowserFocusPolicy,
 }
 
 delegate_json_schema!(LaunchBrowser => LaunchBrowserWire);
@@ -109,6 +123,7 @@ impl<'de> Deserialize<'de> for LaunchBrowser {
                 profile: wire.profile,
                 initial_url: wire.initial_url,
                 every_nth_frame: wire.every_nth_frame,
+                focus: wire.focus,
             };
             request.validate()?;
             Ok(request)
@@ -123,6 +138,7 @@ impl LaunchBrowser {
             profile,
             initial_url: None,
             every_nth_frame: EveryNthFrame::default(),
+            focus: BrowserFocusPolicy::default(),
         }
     }
 
@@ -211,6 +227,36 @@ mod initial_url_tests {
             .as_array()
             .expect("optional URL schema should contain nullable types");
         assert!(types.iter().any(|value| value == "string"));
+    }
+
+    #[test]
+    fn launch_focus_defaults_to_foreground_and_schema_lists_both_policies() {
+        let omitted = serde_json::from_value::<LaunchBrowser>(serde_json::json!({})).unwrap();
+        assert_eq!(omitted.focus, BrowserFocusPolicy::Foreground);
+
+        let preserve = serde_json::from_value::<LaunchBrowser>(serde_json::json!({
+            "focus": "preserve"
+        }))
+        .unwrap();
+        assert_eq!(preserve.focus, BrowserFocusPolicy::Preserve);
+
+        let schema = serde_json::to_value(schemars::schema_for!(LaunchBrowser)).unwrap();
+        let focus = &schema["properties"]["focus"];
+        let focus_contract = focus.get("$ref").map_or(focus, |reference| {
+            let name = reference
+                .as_str()
+                .and_then(|value| value.strip_prefix("#/$defs/"))
+                .expect("focus schema reference");
+            &schema["$defs"][name]
+        });
+        assert_eq!(
+            focus_contract["enum"],
+            serde_json::json!(["foreground", "preserve"])
+        );
+        assert_eq!(
+            schema["properties"]["focus"]["default"],
+            serde_json::json!("foreground")
+        );
     }
 }
 

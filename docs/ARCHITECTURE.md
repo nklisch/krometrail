@@ -239,6 +239,13 @@ and each frame retains its own viewport and device scale so artifact generation 
 
 Capture cadence is a session-owned part of the browser connection contract, not a process-wide configuration authority. The core browser port owns the typed `every_nth_frame` value and validates the inclusive 1..=60 boundary with a default of 1 on both launch and attach requests. The MCP lifecycle tools generate their schemas from those same request types, so humans and agents use one public contract.
 
+Managed launch focus is likewise a typed, immutable session contract. `BrowserFocusPolicy` defaults
+to `foreground`; `preserve` suppresses Krometrail-owned `Target.activateTarget` and
+`Page.bringToFront` commands after the OS process launch. The session supervisor retains the launch
+value as the sole policy authority. Page creation and selection still reduce logical selected-target
+state, while the control adapter consults the same policy before preparing hidden pointer targets.
+Attached sessions retain foreground behavior and do not acquire a second focus configuration source.
+
 At connection composition time, the CDP adapter copies the validated value into the immutable capture assembly used by every target stream and every reconnect generation in that session. Each `Page.startScreencast` command receives the value as `everyNthFrame`; no target, reconnect path, or status observer can select a replacement. A different value requires a new browser connection/session rather than an unrecorded mid-stream restart.
 
 The requested stride is recorded alongside session and target capture status and in evaluation capture identities and claim traceability. It is interpreted as a deliberate sampling choice, while observed cadence, queue/persistence loss, visibility gaps, and other capture gaps remain independent evidence. The capture pipeline does not derive continuity or missing-frame claims from the stride or from ordinal arithmetic.
@@ -549,7 +556,7 @@ Tool handlers do not contain CDP commands, SQL, image processing, or retention l
 
 Large binary outputs are persisted and returned as MCP resources or file references. A response can additionally include one context-sized image for immediate inspection.
 
-Tool schemas derive from the same Rust contracts used by application services. Generated schemas are build artifacts, not hand-maintained duplicates. In particular, `start_browser` and `attach_browser` expose the same generated `every_nth_frame` field from the core launch and attach requests. The flat MCP adapter modules are `config.rs`, `registry.rs`, `resources.rs`, `response.rs`, `schema.rs`, `server.rs`, and `session.rs`; there are no parallel directory-based tool, schema, or response registries.
+Tool schemas derive from the same Rust contracts used by application services. Generated schemas are build artifacts, not hand-maintained duplicates. In particular, `start_browser` and `attach_browser` expose the same generated `every_nth_frame` field from the core launch and attach requests, while `start_browser` alone exposes the generated managed-launch `focus` policy. The flat MCP adapter modules are `config.rs`, `registry.rs`, `resources.rs`, `response.rs`, `schema.rs`, `server.rs`, and `session.rs`; there are no parallel directory-based tool, schema, or response registries.
 
 ## Configuration
 

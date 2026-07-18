@@ -863,6 +863,15 @@ mod tests {
         assert_eq!(start_stride["minimum"], 1);
         assert_eq!(start_stride["maximum"], 60);
         assert_eq!(start_stride["default"], 1);
+        assert_eq!(
+            start_properties.get("focus").unwrap()["enum"],
+            json!(["foreground", "preserve"])
+        );
+        assert_eq!(
+            start_properties.get("focus").unwrap()["default"],
+            "foreground"
+        );
+        assert!(attach_properties.get("focus").is_none());
         for schema in [start.as_ref(), attach.as_ref()] {
             assert!(
                 !schema
@@ -873,6 +882,22 @@ mod tests {
                     })
             );
         }
+    }
+
+    #[tokio::test]
+    async fn start_browser_forwards_explicit_preserve_focus_policy() {
+        let connector = LifecycleConnector::new();
+        let responses = invoke_control_tools(
+            Arc::clone(&connector),
+            vec![("start_browser", json!({"focus":"preserve"}))],
+        )
+        .await;
+        assert_eq!(responses[0]["result"]["isError"], false);
+        let requests = connector.requests();
+        let [BrowserConnectRequest::Launch(request)] = requests.as_slice() else {
+            panic!("start_browser did not forward a launch request")
+        };
+        assert_eq!(request.focus, krometrail_core::BrowserFocusPolicy::Preserve);
     }
 
     #[tokio::test]

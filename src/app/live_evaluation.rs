@@ -625,6 +625,7 @@ pub async fn run_live_qualification_with_decision(
             profile: ManagedProfile::Temporary,
             initial_url: Some(initial_url),
             every_nth_frame: krometrail_core::EveryNthFrame::default(),
+            focus: krometrail_core::BrowserFocusPolicy::default(),
         }))
         .await
     {

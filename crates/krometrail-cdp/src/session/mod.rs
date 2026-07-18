@@ -258,6 +258,7 @@ impl BrowserConnector for ProductionBrowserConnector {
         let control_clock = Arc::clone(&self.clock);
         let ids = Arc::clone(&self.ids);
         let every_nth_frame = requested_every_nth_frame(&request);
+        let focus = requested_focus_policy(&request);
         Box::pin(async move {
             // Keep a launched browser in its paired Drop guard until transport setup succeeds.
             // Splitting process/profile ownership before this point could release a temporary
@@ -414,7 +415,8 @@ impl BrowserConnector for ProductionBrowserConnector {
             });
             let task_shared = Arc::clone(&shared);
             let endpoint = Arc::new(endpoint);
-            let page_control = PageControl::new(control_clock, ids, session_id, session_origin);
+            let page_control =
+                PageControl::new(control_clock, ids, session_id, session_origin).with_focus(focus);
             let task = tokio::spawn(run_supervisor(
                 task_shared,
                 state,
@@ -446,6 +448,13 @@ fn requested_every_nth_frame(request: &BrowserConnectRequest) -> EveryNthFrame {
     match request {
         BrowserConnectRequest::Launch(request) => request.every_nth_frame,
         BrowserConnectRequest::Attach(request) => request.every_nth_frame,
+    }
+}
+
+fn requested_focus_policy(request: &BrowserConnectRequest) -> krometrail_core::BrowserFocusPolicy {
+    match request {
+        BrowserConnectRequest::Launch(request) => request.focus,
+        BrowserConnectRequest::Attach(_) => krometrail_core::BrowserFocusPolicy::Foreground,
     }
 }
 
@@ -865,6 +874,7 @@ mod tests {
             profile: krometrail_core::ManagedProfile::Temporary,
             initial_url: None,
             every_nth_frame: stride,
+            focus: krometrail_core::BrowserFocusPolicy::default(),
         });
         let attach = BrowserConnectRequest::Attach(
             krometrail_core::AttachBrowser::new("ws://127.0.0.1:9222/devtools/browser/fake")

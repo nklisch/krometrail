@@ -1,7 +1,7 @@
 ---
 id: feature-preserve-browser-focus
 kind: feature
-stage: implementing
+stage: review
 tags: [browser, agent-ux]
 parent: null
 depends_on: []
@@ -60,9 +60,9 @@ pub struct LaunchBrowser {
 The wire schema defaults to `foreground`; typed serialization preserves explicit `preserve`.
 
 **Acceptance criteria**:
-- [ ] Omitted `focus` decodes to `foreground` and preserves existing launch behavior.
-- [ ] Generated `start_browser` schema advertises exactly `foreground | preserve`.
-- [ ] Session supervision retains the immutable launch policy without a second configuration source.
+- [x] Omitted `focus` decodes to `foreground` and preserves existing launch behavior.
+- [x] Generated `start_browser` schema advertises exactly `foreground | preserve`.
+- [x] Session supervision retains the immutable launch policy without a second configuration source.
 
 ### Unit 2: Policy-complete target activation
 
@@ -85,11 +85,11 @@ activation commands. Create/select still update Krometrail's logical selected ta
 selection distinct from Chrome foreground state.
 
 **Acceptance criteria**:
-- [ ] Visible-target actions add no activation overhead in either policy.
-- [ ] Hidden-target pointer actions retain current activation behavior under `foreground`.
-- [ ] Hidden-target pointer actions under `preserve` return `target_hidden` and dispatch neither
+- [x] Visible-target actions add no activation overhead in either policy.
+- [x] Hidden-target pointer actions retain current activation behavior under `foreground`.
+- [x] Hidden-target pointer actions under `preserve` return `target_hidden` and dispatch neither
   activation nor pointer events.
-- [ ] Create/select under `preserve` update logical selection without `Target.activateTarget`.
+- [x] Create/select under `preserve` update logical selection without `Target.activateTarget`.
 
 ### Unit 3: Contract and agent guidance
 
@@ -100,8 +100,8 @@ hidden tabs. Teach agents to request preserve mode for uninterrupted user work, 
 tab when possible, and use foreground mode when the user wants automatic tab switching.
 
 **Acceptance criteria**:
-- [ ] Foundation docs state the exact default, preserve-mode limit, and logical-selection behavior.
-- [ ] The skill includes an exact focus-preserving `start_browser` request.
+- [x] Foundation docs state the exact default, preserve-mode limit, and logical-selection behavior.
+- [x] The skill includes an exact focus-preserving `start_browser` request.
 
 ## Implementation order
 
@@ -130,3 +130,32 @@ otherwise: hidden pointer work fails specifically, capture visibility remains re
 can ask the user to foreground Chrome or start a foreground-policy session when required. The initial
 Chrome process launch may still be surfaced by the operating system; the policy governs Krometrail's
 subsequent activation commands rather than making a cross-platform promise about OS launch policy.
+
+## Implementation notes
+
+- Execution capability: frontier implementation worker; the change spans a stable generated wire
+  contract and exact CDP command behavior, so it received focused boundary and transport tests.
+- Review weight: standard, inherited from the project default and caller's stop-at-review boundary.
+- Files changed: core browser port/export surfaces; CDP page-control/session/interaction paths and
+  launch fixtures; MCP lifecycle schema/forwarding tests; `docs/SPEC.md`, `docs/ARCHITECTURE.md`, and
+  `plugin/skills/krometrail/SKILL.md`.
+- Tests added: omitted/explicit focus decoding plus generated enum/default schema; MCP preserve-policy
+  forwarding; exact foreground-versus-preserve activation command recording; preserve-mode hidden
+  pointer rejection before any activation, visibility probe, or input command. Existing foreground
+  pointer and page-lifecycle tests remain green.
+- Simplification: create/select share one focus-aware target-activation helper; one immutable policy
+  lives on the session-owned `PageControl` rather than being duplicated across supervisor state.
+- Discrepancies from design: the immutable policy is retained by the supervisor-owned `PageControl`
+  instead of `SessionShared`, avoiding a second copied policy source while preserving the designed
+  lifetime and operation plumbing.
+- Adjacent issues parked: none.
+
+## Verification evidence
+
+- `cargo fmt --all -- --check` — passed.
+- `cargo check --workspace --all-targets --locked` — passed.
+- `cargo test --workspace --all-targets --locked` — passed.
+- `cargo clippy --workspace --all-targets --locked -- -D warnings` — passed.
+- Focused core, MCP, pointer-control, activation-policy, and foreground page-lifecycle tests — passed.
+- The initial operating-system window activation remains explicitly outside the policy; a refreshed
+  plugin/runtime can perform the user-visible macOS qualification after this review boundary.

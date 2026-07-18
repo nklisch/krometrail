@@ -189,12 +189,23 @@ mod interactions {
 
     #[tokio::test]
     async fn visible_pointer_target_has_no_activation_overhead() {
-        let transport = RecordingTransport::default();
-        page_control()
-            .prepare_pointer_target(&transport, &bound(), &OperationCancellation::default(), 0)
-            .await
-            .unwrap();
-        assert!(transport.calls.lock().unwrap().is_empty());
+        for focus in [
+            krometrail_core::BrowserFocusPolicy::Foreground,
+            krometrail_core::BrowserFocusPolicy::Preserve,
+        ] {
+            let transport = RecordingTransport::default();
+            page_control()
+                .prepare_pointer_target(
+                    &transport,
+                    &bound(),
+                    focus,
+                    &OperationCancellation::default(),
+                    0,
+                )
+                .await
+                .unwrap();
+            assert!(transport.calls.lock().unwrap().is_empty());
+        }
     }
 
     #[tokio::test]
@@ -209,7 +220,13 @@ mod interactions {
         let mut control = page_control();
         control.config.evaluation_timeout = std::time::Duration::from_millis(20);
         let error = control
-            .prepare_pointer_target(&transport, &hidden, &OperationCancellation::default(), 0)
+            .prepare_pointer_target(
+                &transport,
+                &hidden,
+                krometrail_core::BrowserFocusPolicy::Foreground,
+                &OperationCancellation::default(),
+                0,
+            )
             .await
             .unwrap_err();
         assert_eq!(error.code, ErrorCode::TargetHidden);
@@ -235,12 +252,37 @@ mod interactions {
         let mut control = page_control();
         control.config.evaluation_timeout = std::time::Duration::from_millis(100);
         control
-            .prepare_pointer_target(&transport, &hidden, &OperationCancellation::default(), 0)
+            .prepare_pointer_target(
+                &transport,
+                &hidden,
+                krometrail_core::BrowserFocusPolicy::Foreground,
+                &OperationCancellation::default(),
+                0,
+            )
             .await
             .unwrap();
         assert_eq!(transport.calls("Target.activateTarget").len(), 1);
         assert_eq!(transport.calls("Page.bringToFront").len(), 1);
         assert_eq!(transport.calls("Runtime.evaluate").len(), 2);
+    }
+
+    #[tokio::test]
+    async fn hidden_pointer_target_in_preserve_mode_fails_without_foreground_or_input() {
+        let transport = RecordingTransport::default();
+        let mut hidden = bound();
+        hidden.visibility = krometrail_core::TargetVisibility::Hidden;
+        let error = page_control()
+            .prepare_pointer_target(
+                &transport,
+                &hidden,
+                krometrail_core::BrowserFocusPolicy::Preserve,
+                &OperationCancellation::default(),
+                0,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::TargetHidden);
+        assert!(transport.calls.lock().unwrap().is_empty());
     }
     fn element() -> ResolvedTarget {
         ResolvedTarget::Element {

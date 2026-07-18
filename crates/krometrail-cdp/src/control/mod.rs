@@ -55,6 +55,7 @@ pub(crate) struct PageControl {
     pub(crate) config: PageControlConfig,
     pub(crate) navigation: NavigationConfig,
     pub(crate) snapshots: SnapshotRegistry,
+    focus: krometrail_core::BrowserFocusPolicy,
 }
 
 #[derive(Clone, Debug)]
@@ -81,7 +82,17 @@ impl PageControl {
             config: PageControlConfig::default(),
             navigation: NavigationConfig::default(),
             snapshots: SnapshotRegistry::default(),
+            focus: krometrail_core::BrowserFocusPolicy::default(),
         }
+    }
+
+    pub(crate) fn with_focus(mut self, focus: krometrail_core::BrowserFocusPolicy) -> Self {
+        self.focus = focus;
+        self
+    }
+
+    pub(crate) const fn focus(&self) -> krometrail_core::BrowserFocusPolicy {
+        self.focus
     }
 
     pub(crate) fn retain_live_snapshot_targets(&mut self, state: &SupervisorState) {

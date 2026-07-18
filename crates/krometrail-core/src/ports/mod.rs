@@ -27,7 +27,7 @@ pub use artifacts::{
     ArtifactReadLookup, ArtifactSourceFingerprint, ArtifactStore, StoredArtifact,
 };
 pub use browser::{
-    AttachBrowser, BrowserConnectRequest, BrowserConnector, BrowserFailureKind,
+    AttachBrowser, BrowserConnectRequest, BrowserConnector, BrowserFailureKind, BrowserFocusPolicy,
     BrowserOperationContext, BrowserPageTargets, BrowserSessionEvents, BrowserSessionPort,
     CancellationSignal, CurrentReferenceGeometry, CurrentReferenceGeometryRequest, EveryNthFrame,
     LaunchBrowser, MAX_EVERY_NTH_FRAME, MIN_EVERY_NTH_FRAME, ManagedProfile,
@@ -667,6 +667,7 @@ mod tests {
                 profile: ManagedProfile::Temporary,
                 initial_url: None,
                 every_nth_frame: EveryNthFrame::default(),
+                focus: BrowserFocusPolicy::default(),
             })),
         );
         assert_eq!(result.err().unwrap().code, ErrorCode::BrowserNotFound);

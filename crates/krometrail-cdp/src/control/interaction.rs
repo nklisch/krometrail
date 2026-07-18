@@ -89,7 +89,7 @@ impl PageControl {
                 | krometrail_core::ActionCategory::DragDrop
                 | krometrail_core::ActionCategory::Scroll
         ) {
-            self.prepare_pointer_target(transport, &bound, cancel, generation)
+            self.prepare_pointer_target(transport, &bound, self.focus(), cancel, generation)
                 .await?;
         }
         let started_at = self.session_time()?;
@@ -276,11 +276,15 @@ impl PageControl {
         &self,
         transport: &dyn CdpTransport,
         bound: &BoundTarget,
+        focus: krometrail_core::BrowserFocusPolicy,
         cancel: &OperationCancellation,
         generation: u64,
     ) -> Result<()> {
         if bound.visibility == krometrail_core::TargetVisibility::Visible {
             return Ok(());
+        }
+        if focus == krometrail_core::BrowserFocusPolicy::Preserve {
+            return Err(target_hidden_error(bound.target_id));
         }
         let activation = async {
             cancel

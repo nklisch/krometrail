@@ -48,6 +48,7 @@ Each session has:
 - a monotonic session clock;
 - capture statistics;
 - immutable capture configuration, including the requested relative frame stride;
+- an immutable managed-launch focus policy;
 - capability configuration.
 
 Krometrail discovers page targets created within the controlled browser. Each target has an independent visual stream and timeline identity.
@@ -183,10 +184,18 @@ button, no modifiers, one click, and no navigation wait; fill defaults to replac
 navigation wait; key input defaults to no focus locator and no navigation wait. Explicit stable
 1.x request values retain their existing meaning.
 
-Pointer, drag, and scroll operations foreground a hidden page through the managed CDP target
-authority before resolving or dispatching input. If the page remains hidden after the bounded
-visibility check, the operation fails as `target_hidden` with recovery to select or foreground the
-page; no pointer event is dispatched.
+Managed launches accept a `focus` policy of `foreground` or `preserve`; omission defaults to
+`foreground` for 1.x compatibility. The policy governs Krometrail-owned CDP foreground commands
+after launch. It does not promise that the operating system will keep the initial Chrome process
+launch in the background. Under `foreground`, pointer, drag, and scroll operations foreground a
+hidden page through the managed CDP target authority before resolving or dispatching input. Under
+`preserve`, Krometrail sends neither `Target.activateTarget` nor `Page.bringToFront`: current visible
+page actions continue normally, while hidden-page pointer work fails as `target_hidden` before any
+pointer event is dispatched.
+
+Creating or selecting a page always updates Krometrail's logical selected target. In `foreground`
+mode it also activates the Chrome target; in `preserve` mode it does not switch Chrome's visible tab.
+Attachment retains foreground behavior because the attached browser remains externally owned.
 
 Browser discovery probes explicit, environment, and platform-default installations with a bounded
 cold-start budget while keeping PATH probes short. Candidate diagnostics contain only source class,

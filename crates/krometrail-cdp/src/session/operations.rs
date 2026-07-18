@@ -187,14 +187,10 @@ pub(super) async fn execute_operation_unfenced(
                     ),
                 );
             }
-            let activation = transport
-                .send_raw(
-                    &CommandScope::Browser,
-                    "Target.activateTarget",
-                    serde_json::json!({"targetId": target_key}),
-                )
-                .await;
-            if let Err(error) = activation {
+            if let Err(error) =
+                activate_target_if_foreground(transport.as_ref(), &target_key, page_control.focus())
+                    .await
+            {
                 return page_failure_result(
                     page_control,
                     target_id,
@@ -254,13 +250,9 @@ pub(super) async fn execute_operation_unfenced(
             let started_at = page_control.session_time()?;
             let interaction_id = page_control.next_interaction_id();
             let dispatched_at = page_control.session_time()?;
-            if let Err(error) = transport
-                .send_raw(
-                    &CommandScope::Browser,
-                    "Target.activateTarget",
-                    serde_json::json!({"targetId": target_key}),
-                )
-                .await
+            if let Err(error) =
+                activate_target_if_foreground(transport.as_ref(), &target_key, page_control.focus())
+                    .await
             {
                 return page_failure_result(
                     page_control,
@@ -580,6 +572,23 @@ pub(super) async fn execute_operation_unfenced(
     }
 }
 
+async fn activate_target_if_foreground(
+    transport: &dyn CdpTransport,
+    target_key: &str,
+    focus: krometrail_core::BrowserFocusPolicy,
+) -> std::result::Result<(), TransportError> {
+    if focus == krometrail_core::BrowserFocusPolicy::Foreground {
+        transport
+            .send_raw(
+                &CommandScope::Browser,
+                "Target.activateTarget",
+                serde_json::json!({"targetId": target_key}),
+            )
+            .await?;
+    }
+    Ok(())
+}
+
 async fn rollback_viewport_or_fail_target(
     state: &mut SupervisorState,
     shared: &Arc<SessionShared>,
@@ -819,4 +828,67 @@ fn missing_evidence_sink(
         NonEmptyText::new("restore the recording store before dispatching browser changes")
             .expect("static evidence recovery is non-empty"),
     )
+}
+
+#[cfg(test)]
+mod focus_policy_tests {
+    use std::sync::Mutex;
+
+    use super::*;
+    use crate::transport::{TransportClose, TransportEvents, TransportFuture};
+
+    #[derive(Default)]
+    struct RecordingTransport(Mutex<Vec<String>>);
+
+    impl CdpTransport for RecordingTransport {
+        fn send_raw(
+            &self,
+            _scope: &CommandScope,
+            method: &str,
+            _params: Value,
+        ) -> TransportFuture<'_, std::result::Result<Value, TransportError>> {
+            self.0.lock().unwrap().push(method.to_owned());
+            Box::pin(std::future::ready(Ok(serde_json::json!({}))))
+        }
+
+        fn subscribe_named(
+            &self,
+            _scope: &CommandScope,
+            _method: &str,
+        ) -> TransportFuture<'_, std::result::Result<Box<dyn TransportEvents>, TransportError>>
+        {
+            unreachable!("activation tests do not subscribe")
+        }
+
+        fn close_reason(&self) -> Option<TransportClose> {
+            None
+        }
+
+        fn is_closed(&self) -> bool {
+            false
+        }
+    }
+
+    #[tokio::test]
+    async fn managed_page_selection_activation_obeys_the_immutable_focus_policy() {
+        let foreground = RecordingTransport::default();
+        activate_target_if_foreground(
+            &foreground,
+            "target-a",
+            krometrail_core::BrowserFocusPolicy::Foreground,
+        )
+        .await
+        .unwrap();
+        assert_eq!(*foreground.0.lock().unwrap(), vec!["Target.activateTarget"]);
+
+        let preserve = RecordingTransport::default();
+        activate_target_if_foreground(
+            &preserve,
+            "target-a",
+            krometrail_core::BrowserFocusPolicy::Preserve,
+        )
+        .await
+        .unwrap();
+        assert!(preserve.0.lock().unwrap().is_empty());
+    }
 }

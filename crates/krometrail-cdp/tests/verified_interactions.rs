@@ -507,6 +507,7 @@ async fn opt_in_real_chrome_synchronizes_dialog_open_and_close() {
                 profile: krometrail_core::ManagedProfile::Temporary,
                 initial_url: Some(support::chrome::verified_interactions_fixture_url()),
                 every_nth_frame: krometrail_core::EveryNthFrame::default(),
+                focus: krometrail_core::BrowserFocusPolicy::default(),
             },
         ))
         .await
@@ -585,6 +586,7 @@ async fn opt_in_real_chrome_executes_verified_interaction_families() {
                 profile: krometrail_core::ManagedProfile::Temporary,
                 initial_url: Some(support::chrome::verified_interactions_fixture_url()),
                 every_nth_frame: krometrail_core::EveryNthFrame::default(),
+                focus: krometrail_core::BrowserFocusPolicy::default(),
             },
         ))
         .await
@@ -1091,6 +1093,7 @@ async fn opt_in_real_chrome_qualifies_viewport_navigation_clear_and_target_isola
                 profile: krometrail_core::ManagedProfile::Temporary,
                 initial_url: Some(fixture_url.clone()),
                 every_nth_frame: krometrail_core::EveryNthFrame::default(),
+                focus: krometrail_core::BrowserFocusPolicy::default(),
             },
         ))
         .await

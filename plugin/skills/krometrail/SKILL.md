@@ -31,6 +31,19 @@ observation or retained-capture health. State those limits instead of treating t
 
 ## Operate and target
 
+To keep a visible managed Chrome window available for the user to watch without Krometrail
+switching foreground tabs, start it with:
+
+```json
+{"focus":"preserve"}
+```
+
+The initial OS process launch may still surface Chrome. After launch, stay on one Chrome-visible tab
+when possible: visible-page interactions do not activate the browser, while pointer work on a hidden
+tab fails as `target_hidden` without stealing focus. `create_page` and `select_page` change
+Krometrail's logical selection but do not switch Chrome's visible tab in preserve mode. Omit `focus`
+or use `{"focus":"foreground"}` when the user wants automatic tab switching.
+
 - Lifecycle/pages: `start_browser`, `attach_browser`, `browser_status`, `stop_browser`, `list_pages`,
   `create_page`, `select_page`, `close_page`
 - Current state: `inspect_page`, `snapshot_page`, `take_screenshot`, `observe_live`, `evaluate_page`
