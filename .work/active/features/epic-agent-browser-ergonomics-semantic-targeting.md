@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-ergonomics-semantic-targeting
 kind: feature
-stage: review
+stage: done
 tags: [agent-ux, browser]
 parent: epic-agent-browser-ergonomics
 depends_on: []
@@ -257,3 +257,11 @@ impl SnapshotRegistry {
 - Integrated checks passed: formatting, focused core operation/observation tests, scripted CDP snapshot and verified-interaction tests, all MCP tests, and workspace all-targets check.
 - The designed real-Chrome scenario passed for every query kind, ambiguity and scope, query-to-click use, and stale-reference rejection after navigation.
 - No feature-scope blocker or adjacent finding remains; the feature is ready for the independent review stage.
+
+## Review record
+
+- Effective weight: standard; pass: 1; verdict: approve after fixes.
+- Findings fixed: semantic queries now fail closed with stable `page_observation_failed` evidence whenever the AX snapshot omitted nodes, preventing an apparently unique result from authorizing a mutation when an omitted actionable node could also match; multi-ID `aria-labelledby` labels now compose referenced text in declared ID order so exact combined-label queries resolve correctly.
+- Regression evidence: the scripted registry test models one retained matching actionable node plus one omitted matching actionable node and proves no `unique` result is returned; DOMSnapshot decoder coverage proves ordered exact `Aria caption Second caption` composition; the deterministic real-Chrome fixture resolves the corresponding two-ID accessible label as unique.
+- Verification: formatting, all snapshot adapter tests, the verified-interactions suite, workspace all-targets check, and the bounded opt-in real-Chrome semantic query-to-reference scenario passed.
+- Closure: accepted blockers were corrected in `8f115d8`; per the standard one-pass policy, verified fixes close the feature without a second independent review.
