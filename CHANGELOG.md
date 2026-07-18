@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.0.3 — 2026-07-17
+
+### Fixes
+
+- Made mobile viewport overrides reliable on pages without a viewport meta tag by applying and replaying an explicit mobile page scale, while preserving target isolation, navigation persistence, independent effective-metric verification, and native clear behavior.
+- Clarified in the generated MCP schema and shipped Krometrail skill that unscoped exact-text waits compare the complete document-body text.
+- Prevented automatically selected temporal-bundle markers outside an exact resolved range from invalidating artifact generation.
+- Clamped storyboard render anchors to each visual epoch's retained source-frame interval while preserving the original semantic range anchor as provenance.
+
 ## v1.0.1 — 2026-07-16
 
 ### Plugin distribution
