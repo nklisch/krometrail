@@ -40,8 +40,9 @@ switching foreground tabs, start it with:
 
 The initial OS process launch may still surface Chrome. After launch, stay on one Chrome-visible tab
 when possible: visible-page interactions do not activate the browser, while pointer work on a hidden
-tab fails as `target_hidden` without stealing focus. `create_page` and `select_page` change
-Krometrail's logical selection but do not switch Chrome's visible tab in preserve mode. Omit `focus`
+tab fails as `target_hidden` without stealing focus. `create_page` creates a background tab. Both it
+and `select_page` change Krometrail's logical selection without switching Chrome's visible tab in
+preserve mode. Omit `focus`
 or use `{"focus":"foreground"}` when the user wants automatic tab switching.
 
 - Lifecycle/pages: `start_browser`, `attach_browser`, `browser_status`, `stop_browser`, `list_pages`,

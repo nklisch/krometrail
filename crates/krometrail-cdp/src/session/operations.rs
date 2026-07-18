@@ -104,7 +104,7 @@ pub(super) async fn execute_operation_unfenced(
                 .send_raw(
                     &CommandScope::Browser,
                     "Target.createTarget",
-                    serde_json::json!({"url": request.initial_url.as_ref().map_or("about:blank", |url| url.as_str())}),
+                    create_target_params(&request, page_control.focus()),
                 )
                 .await
                 .map_err(|error| transport_error_to_core(error, true))?;
@@ -589,6 +589,24 @@ async fn activate_target_if_foreground(
     Ok(())
 }
 
+fn create_target_params(
+    request: &krometrail_core::CreatePageRequest,
+    focus: krometrail_core::BrowserFocusPolicy,
+) -> Value {
+    let mut params = serde_json::json!({
+        "url": request
+            .initial_url
+            .as_ref()
+            .map_or("about:blank", |url| url.as_str())
+    });
+    if focus == krometrail_core::BrowserFocusPolicy::Preserve {
+        // CDP otherwise defaults `background` to false and may focus both the new tab and Chrome's
+        // window. Preserve mode keeps the tab in the visible browser UI without foregrounding it.
+        params["background"] = Value::Bool(true);
+    }
+    params
+}
+
 async fn rollback_viewport_or_fail_target(
     state: &mut SupervisorState,
     shared: &Arc<SessionShared>,
@@ -890,5 +908,20 @@ mod focus_policy_tests {
         .await
         .unwrap();
         assert!(preserve.0.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn managed_page_creation_obeys_the_immutable_focus_policy() {
+        let request =
+            krometrail_core::CreatePageRequest::new(Some("https://example.test/")).unwrap();
+
+        assert_eq!(
+            create_target_params(&request, krometrail_core::BrowserFocusPolicy::Foreground),
+            serde_json::json!({"url":"https://example.test/"})
+        );
+        assert_eq!(
+            create_target_params(&request, krometrail_core::BrowserFocusPolicy::Preserve),
+            serde_json::json!({"url":"https://example.test/","background":true})
+        );
     }
 }

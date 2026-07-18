@@ -194,7 +194,8 @@ page actions continue normally, while hidden-page pointer work fails as `target_
 pointer event is dispatched.
 
 Creating or selecting a page always updates Krometrail's logical selected target. In `foreground`
-mode it also activates the Chrome target; in `preserve` mode it does not switch Chrome's visible tab.
+mode it also activates the Chrome target. In `preserve` mode newly created targets are explicitly
+created in the background and neither creation nor selection switches Chrome's visible tab.
 Attachment retains foreground behavior because the attached browser remains externally owned.
 
 Browser discovery probes explicit, environment, and platform-default installations with a bounded

@@ -1,7 +1,7 @@
 ---
 id: feature-preserve-browser-focus
 kind: feature
-stage: review
+stage: done
 tags: [browser, agent-ux]
 parent: null
 depends_on: []
@@ -159,3 +159,12 @@ subsequent activation commands rather than making a cross-platform promise about
 - Focused core, MCP, pointer-control, activation-policy, and foreground page-lifecycle tests — passed.
 - The initial operating-system window activation remains explicitly outside the policy; a refreshed
   plugin/runtime can perform the user-visible macOS qualification after this review boundary.
+
+## Review
+
+The required fresh-context review found that omitting CDP's `background` parameter on
+`Target.createTarget` could still foreground a newly created tab and the Chrome window under the
+preserve policy. The blocker was accepted and fixed: preserve mode now sends `background: true`,
+while foreground mode retains the exact legacy `{url}` request. An exact regression protects both
+parameter shapes alongside the existing no-activation and no-input preserve-policy tests. No other
+blockers or advisories remained.
