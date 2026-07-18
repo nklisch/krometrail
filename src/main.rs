@@ -4,6 +4,7 @@ mod cli;
 mod debug_bundle;
 mod diagnostics;
 mod progressive;
+mod range_handles;
 mod video;
 
 use std::process::ExitCode;

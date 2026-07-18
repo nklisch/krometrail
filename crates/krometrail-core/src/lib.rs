@@ -38,6 +38,7 @@ pub mod ids;
 pub mod lifecycle;
 pub mod ports;
 pub mod progressive;
+pub mod range_handle;
 pub mod recording;
 pub mod time;
 pub mod timeline;
@@ -115,7 +116,7 @@ pub use error::{
 };
 pub use ids::{
     ArtifactId, BrowserEventId, FrameId, GapId, IdValue, InteractionId, MarkerId, NavigationId,
-    NetworkRequestId, SegmentId, SessionId, TargetId,
+    NetworkRequestId, ResolvedRangeHandleId, SegmentId, SessionId, TargetId,
 };
 pub use lifecycle::{SessionLifecycle, TargetLifecycle};
 pub use ports::{
@@ -151,6 +152,7 @@ pub use progressive::{
     SourceFrameBatch, SourceFrameHandle, SourceFrameList, SourceFrameRead, SourceFrameSelection,
     SourceFramesRequest, SourceReadLimitsRequest,
 };
+pub use range_handle::{MAX_RESOLVED_RANGE_HANDLES, ResolvedRangeHandles};
 pub use recording::{
     ByteOffset, CaptureFailureStage, CaptureGap, CaptureGapReason, CaptureOrdinal,
     CaptureStatistics, CaptureStreamState, CaptureTimingSummary, CaptureWarning, CapturedFrame,

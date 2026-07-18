@@ -7,9 +7,9 @@ use krometrail_core::{
     ArtifactGeneration, ArtifactStore, BrowserConnector, BrowserEventSink, CapabilityId,
     CapabilitySnapshot, CaptureGapStore, DiskBudgetBytes, ErrorCode, FrameSource, IdSource,
     IdValue, InteractionEvidenceSink, KrometrailError, MonotonicClock, NonEmptyText,
-    ProgressiveEvidence, ProgressiveEvidenceStore, RecordingCatalog, RecordingSink, Result,
-    RetentionStore, TemporalContextQuery, TemporalDebugBundles, TemporalQuery,
-    TemporalVideoEncoder, TemporalVideoGeneration, TimelineStore, WallClock,
+    ProgressiveEvidence, ProgressiveEvidenceStore, RecordingCatalog, RecordingSink,
+    ResolvedRangeHandles, Result, RetentionStore, TemporalContextQuery, TemporalDebugBundles,
+    TemporalQuery, TemporalVideoEncoder, TemporalVideoGeneration, TimelineStore, WallClock,
 };
 use uuid::Uuid;
 
@@ -21,6 +21,7 @@ use crate::{
     cli::Command,
     debug_bundle::{BundleWorkLimits, TemporalDebugBundleService, TemporalDebugEvidenceStore},
     progressive::ProgressiveEvidenceService,
+    range_handles::ProcessResolvedRangeHandles,
     video::{TemporalVideoGenerationService, VideoGenerationLimits},
 };
 use krometrail_cdp::{
@@ -58,6 +59,7 @@ pub(crate) struct RuntimeDependencies {
     pub artifact_generation: Arc<dyn ArtifactGeneration>,
     pub progressive_evidence: Arc<dyn ProgressiveEvidence>,
     pub temporal_debug_bundles: Arc<dyn TemporalDebugBundles>,
+    pub range_handles: Arc<dyn ResolvedRangeHandles>,
     pub artifacts: Arc<dyn ArtifactStore>,
     pub diagnostics: DiagnosticContext,
 }
@@ -105,6 +107,7 @@ impl RuntimeDependencies {
             temporal_debug_bundles: Arc::clone(&self.temporal_debug_bundles),
             progressive_evidence: Arc::clone(&self.progressive_evidence),
             temporal_context: Arc::clone(&self.temporal_context),
+            range_handles: Arc::clone(&self.range_handles),
             temporal_video,
             diagnostics: self.diagnostics.clone(),
         }
@@ -142,6 +145,7 @@ impl Runtime {
                     &self.dependencies.artifact_generation,
                     &self.dependencies.progressive_evidence,
                     &self.dependencies.temporal_debug_bundles,
+                    &self.dependencies.range_handles,
                 );
                 let installations = self.dependencies.browser.installations().await?;
                 if installations.is_empty() {
@@ -194,6 +198,10 @@ pub(crate) fn build_runtime(diagnostics: DiagnosticContext) -> Result<Runtime> {
     let ids: Arc<dyn IdSource> = Arc::new(ProcessIdSource);
     let data_directory = data_directory();
     let storage = open_storage_with_budget(&data_directory, configured_disk_budget()?)?;
+    let range_handles: Arc<dyn ResolvedRangeHandles> = Arc::new(ProcessResolvedRangeHandles::new(
+        Arc::clone(&ids),
+        Arc::clone(&storage.frames),
+    ));
     // One capability selection governs both collection and the MCP surface. Browser events are
     // default-enabled by the core registry, while an explicit selection can still disable their
     // semantic subscriptions without changing capture or control composition.
@@ -265,6 +273,7 @@ pub(crate) fn build_runtime(diagnostics: DiagnosticContext) -> Result<Runtime> {
         artifact_generation,
         progressive_evidence,
         temporal_debug_bundles,
+        range_handles,
         artifacts: storage.artifacts,
         diagnostics,
     }))
@@ -547,6 +556,9 @@ mod tests {
             )
             .unwrap(),
         );
+        let range_handles: Arc<dyn ResolvedRangeHandles> = Arc::new(
+            ProcessResolvedRangeHandles::new(Arc::clone(&ids), Arc::clone(&storage.frames)),
+        );
         let runtime_dependencies = RuntimeDependencies {
             clock: Arc::new(ProcessMonotonicClock {
                 origin: Instant::now(),
@@ -565,6 +577,7 @@ mod tests {
             artifact_generation,
             progressive_evidence,
             temporal_debug_bundles,
+            range_handles,
             artifacts: storage.artifacts,
             diagnostics: DiagnosticContext::default(),
         };
@@ -584,6 +597,10 @@ mod tests {
         assert!(Arc::ptr_eq(
             &mcp_dependencies.temporal_debug_bundles,
             &runtime_dependencies.temporal_debug_bundles,
+        ));
+        assert!(Arc::ptr_eq(
+            &mcp_dependencies.range_handles,
+            &runtime_dependencies.range_handles,
         ));
         let runtime = Runtime::new(runtime_dependencies);
         let error = runtime.run(Command::Doctor).await.unwrap_err();
@@ -735,6 +752,9 @@ mod tests {
             )
             .unwrap(),
         );
+        let range_handles: Arc<dyn ResolvedRangeHandles> = Arc::new(
+            ProcessResolvedRangeHandles::new(Arc::clone(&ids), Arc::clone(&storage.frames)),
+        );
         let dependencies = RuntimeDependencies {
             clock: Arc::new(ProcessMonotonicClock {
                 origin: Instant::now(),
@@ -766,6 +786,7 @@ mod tests {
                 )
                 .unwrap(),
             ),
+            range_handles,
             artifact_generation,
             artifacts: storage.artifacts,
             diagnostics: DiagnosticContext::default(),

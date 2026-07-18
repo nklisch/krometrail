@@ -375,13 +375,13 @@ mod tests {
         PageStatus, PortFuture, ProfileRef, ProgressiveEvidence, ProgressiveEvidenceContext,
         ProgressiveEvidenceRequest, ProgressiveEvidenceResult, ProgressiveRegion,
         RangeResolutionOptions, RegionFilmstripEvidenceRequest, RendererCapability, ResolvedRange,
-        ResolvedRangeEvidenceRequest, RetentionStatus, SessionId, SessionOrigin, SessionRange,
-        SessionTime, Sha256Digest, SourceFrameSelection, SourceFramesRequest,
-        SourceReadLimitsRequest, StoryboardRequest, TEMPORAL_DEBUG_BUNDLE_POLICY_VERSION,
-        TargetCaptureStatus, TargetId, TemporalContext, TemporalContextQuery,
-        TemporalContextRequest, TemporalDebugBundle, TemporalDebugBundleContext,
-        TemporalDebugBundleRequest, TemporalDebugBundles, TemporalDebugHeader,
-        TemporalQueryRequest, TemporalRangeAnchor, TemporalRangeAnchorKind,
+        ResolvedRangeEvidenceRequest, ResolvedRangeHandleId, ResolvedRangeHandles, RetentionStatus,
+        SessionId, SessionOrigin, SessionRange, SessionTime, Sha256Digest, SourceFrameSelection,
+        SourceFramesRequest, SourceReadLimitsRequest, StoryboardRequest,
+        TEMPORAL_DEBUG_BUNDLE_POLICY_VERSION, TargetCaptureStatus, TargetId, TemporalContext,
+        TemporalContextQuery, TemporalContextRequest, TemporalDebugBundle,
+        TemporalDebugBundleContext, TemporalDebugBundleRequest, TemporalDebugBundles,
+        TemporalDebugHeader, TemporalQueryRequest, TemporalRangeAnchor, TemporalRangeAnchorKind,
         TemporalVideoGeneration, TemporalVideoGenerationRequest, TemporalVideoGenerationResult,
         VideoArtifactRead,
     };
@@ -397,6 +397,28 @@ mod tests {
     use tokio::sync::Notify;
 
     struct UnusedConnector;
+
+    struct UnusedRangeHandles;
+
+    impl ResolvedRangeHandles for UnusedRangeHandles {
+        fn register(
+            &self,
+            _range: ResolvedRange,
+        ) -> krometrail_core::Result<ResolvedRangeHandleId> {
+            panic!("unused range handle authority must not register")
+        }
+
+        fn resolve_available(
+            &self,
+            _handle: ResolvedRangeHandleId,
+        ) -> PortFuture<'_, krometrail_core::Result<ResolvedRange>> {
+            panic!("unused range handle authority must not resolve")
+        }
+
+        fn invalidate_session(&self, _session_id: SessionId) -> krometrail_core::Result<usize> {
+            Ok(0)
+        }
+    }
 
     #[test]
     fn diagnostics_are_added_only_to_failed_or_degraded_tool_envelopes() {
@@ -584,6 +606,7 @@ mod tests {
             temporal_debug_bundles: Arc::clone(&temporal) as Arc<dyn TemporalDebugBundles>,
             progressive_evidence: Arc::clone(&temporal) as Arc<dyn ProgressiveEvidence>,
             temporal_context: temporal as Arc<dyn TemporalContextQuery>,
+            range_handles: Arc::new(UnusedRangeHandles),
             temporal_video: None,
             diagnostics: DiagnosticContext::default(),
         }
@@ -811,6 +834,7 @@ mod tests {
             temporal_debug_bundles: Arc::clone(&spy) as Arc<dyn TemporalDebugBundles>,
             progressive_evidence: Arc::clone(&spy) as Arc<dyn ProgressiveEvidence>,
             temporal_context: spy as Arc<dyn TemporalContextQuery>,
+            range_handles: Arc::new(UnusedRangeHandles),
             temporal_video: None,
             diagnostics: DiagnosticContext::default(),
         }
@@ -2305,6 +2329,7 @@ mod tests {
             temporal_debug_bundles: Arc::clone(&spy) as Arc<dyn TemporalDebugBundles>,
             progressive_evidence: Arc::clone(&spy) as Arc<dyn ProgressiveEvidence>,
             temporal_context: spy as Arc<dyn TemporalContextQuery>,
+            range_handles: Arc::new(UnusedRangeHandles),
             temporal_video: None,
             diagnostics: DiagnosticContext::default(),
         };

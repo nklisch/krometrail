@@ -1,8 +1,8 @@
 use std::{path::PathBuf, sync::Arc};
 
 use krometrail_core::{
-    BrowserConnector, CapabilityId, CapabilitySnapshot, ProgressiveEvidence, Result,
-    TemporalContextQuery, TemporalDebugBundles, TemporalVideoGeneration,
+    BrowserConnector, CapabilityId, CapabilitySnapshot, ProgressiveEvidence, ResolvedRangeHandles,
+    Result, TemporalContextQuery, TemporalDebugBundles, TemporalVideoGeneration,
 };
 
 #[derive(Clone)]
@@ -11,6 +11,7 @@ pub struct McpDependencies {
     pub temporal_debug_bundles: Arc<dyn TemporalDebugBundles>,
     pub progressive_evidence: Arc<dyn ProgressiveEvidence>,
     pub temporal_context: Arc<dyn TemporalContextQuery>,
+    pub range_handles: Arc<dyn ResolvedRangeHandles>,
     pub temporal_video: Option<Arc<dyn TemporalVideoGeneration>>,
     pub diagnostics: DiagnosticContext,
 }
