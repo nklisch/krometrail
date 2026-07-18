@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-ergonomics-response-projections
 kind: feature
-stage: implementing
+stage: review
 tags: [agent-ux, browser]
 parent: epic-agent-browser-ergonomics
 depends_on: []
@@ -15,7 +15,7 @@ updated: 2026-07-18
 
 ## Brief
 
-Add one validated MCP presentation preference for browser operations and temporal entry points, plus a concise `browser_status` detail mode. Callers can independently omit inline images or select compact structured observations where the existing projector has a truthful compact representation. Omitted preferences retain full stable 1.x output, and underlying action observation, retention, warnings, diagnostics, and canonical resources remain unchanged.
+Add one validated MCP presentation preference for browser operations and temporal entry points, plus a concise `browser_status` detail mode. Callers can independently request inline images or select legacy/full/compact/omitted structured observations where the existing projector has a truthful representation. Omitted preferences choose the economical compact server projection; underlying action observation, retention, warnings, diagnostics, and canonical resources remain unchanged, while explicit `legacy`, `full`, and `inline` expand presentation when needed.
 
 This feature does not introduce persistence for live screenshots or skip required post-action observation. It teaches the Krometrail skill to request the cheapest sufficient projection and to drill into explicit snapshot, screenshot, status, or resource tools only when needed.
 
@@ -36,11 +36,11 @@ Extend the shared response projector and lifecycle argument schema rather than a
 ## Design decisions
 
 - **Projection ownership**: keep response preferences in `krometrail-mcp`; remove the additive presentation field before decoding the unchanged core request and apply it after the authoritative result is acquired — presentation cannot influence browser dispatch, temporal acquisition, retention, warnings, or interaction identity.
-- **Omitted preference behavior**: an absent `response` object selects `legacy`, byte-for-byte preserving the stable 1.x structured and content-block shape except for unrelated bug fixes — explicit `full`, `compact`, and `omit` choices are additive.
+- **Omitted preference behavior**: an absent `response` object selects compact snapshot/page-state detail and omits inline image bytes. Explicit `legacy` retains the earlier automatic snapshot presentation; explicit `full` and `inline` expand the requested structures and image content. This intentional minor-release default change follows the user-directed agent-ergonomics contract while preserving authoritative result, warning, interaction, retention, and resource identities.
 - **Live images**: support `inline` and `omit`, not `resource`, because live post-action screenshots have no canonical retained resource authority. Omission removes the MCP image content block but retains screenshot availability metadata.
 - **Structured parts**: snapshot and page-state preferences are independent. `compact` uses deterministic truthful summaries; `omit` emits an explicit `{ "omitted": { "reason": "response_projection" } }` observation part rather than making acquired evidence look unavailable.
 - **Diagnostics**: diagnostics remain automatic for failed or degraded results unless explicitly omitted. Successful results remain diagnostic-free; projection cannot request sensitive diagnostic content.
-- **Status detail**: `browser_status` accepts `detail: "concise" | "full"`, defaulting to `full`. Start/attach retain their full status result in 1.x; agents use the cheap status route for later health checks.
+- **Status detail**: `browser_status` accepts `detail: "concise" | "full"`, defaulting to `concise`. Start/attach retain their full status result; agents request full status only for compatibility and timing diagnostics.
 - **Compatibility**: decorate generated input schemas from the same Rust projection contract and continue decoding every underlying request through its existing validated wire type. Do not add compact tool aliases or change any core operation request.
 - **UI surface**: none; this is an MCP and skill-instruction surface, so no mockup is required.
 
@@ -61,9 +61,9 @@ The highest-risk unit is deterministic compact projection of nested live observa
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum StructuredResponseDetail {
-    #[default]
     Legacy,
     Full,
+    #[default]
     Compact,
     Omit,
 }
@@ -71,8 +71,8 @@ pub enum StructuredResponseDetail {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum InlineImageDetail {
-    #[default]
     Inline,
+    #[default]
     Omit,
 }
 
@@ -114,7 +114,7 @@ pub(crate) fn split_response_projection(
 
 **Acceptance criteria**:
 
-- [ ] Omitted `response` produces the same advertised required fields and the same request/result content as the pre-feature route.
+- [ ] Omitted `response` preserves the same advertised underlying request fields while selecting the economical compact/no-inline presentation; explicit `legacy`, `full`, and `inline` remain available.
 - [ ] Every projected browser and temporal entry schema advertises the same dereferenced, closed `response` object; invalid nested values fail at their normalized field path without content disclosure.
 - [ ] Batch applies one outer response projection to its final observation and step images; batch step request schemas remain the underlying standalone operation schemas and do not gain nested projection controls.
 
@@ -175,8 +175,8 @@ fn compact_temporal_value(value: &Value) -> Result<Value, ResponseInvariantError
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum BrowserStatusDetail {
-    Concise,
     #[default]
+    Concise,
     Full,
 }
 
@@ -211,12 +211,12 @@ pub(crate) fn map_browser_status(
 
 - Concise per-target capture retains target ID, stream state, received/persisted/dropped counts, known gap count, last frame time, and failure stage. Concise retention retains used, configured, and pinned bytes plus budget/recording-blocked state.
 - Do not create a second domain status model or recalculate evidence health from ordinal gaps. The response types serialize selected fields from validated `BrowserStatus` and `TargetCaptureStatus`.
-- `browser_status {}` remains full. `browser_status {"detail":"concise"}` is the only new request shape; stop remains an empty object.
+- `browser_status {}` is concise. `browser_status {"detail":"full"}` expands to the complete existing status value; stop remains an empty object.
 
 **Acceptance criteria**:
 
 - [ ] Concise status answers active session, selected target, page count, per-target capture health/loss, retention pressure, and cadence without compatibility matrices or timing distributions.
-- [ ] Full status remains serialization-equivalent to the current `BrowserStatus` response.
+- [ ] Explicit full status remains serialization-equivalent to the complete `BrowserStatus` response.
 - [ ] Failed capture and paused-budget states remain visible in concise output.
 
 ### Unit 4: Route wiring, diagnostics policy, schemas, and agent guidance
@@ -278,3 +278,20 @@ fn attach_diagnostics(
 - Removing image content blocks can surprise callers that inspect `images` rather than `result`; explicit omission therefore removes both while preserving availability metadata and resources.
 - Diagnostics are attached outside route mapping. Reading the narrow preference at the server boundary must fail toward automatic diagnostics, never toward accidental suppression.
 - Additive schema rewriting can drift from deserialization. The same `ResponseProjectionRequest` schema and `split_response_projection` decoder, exercised across the registry, are release-critical.
+
+## Implementation notes
+
+- Execution capability: one sequential inline feature owner; the projector and route integration shared response invariants and were completed as two ordered child checkpoints.
+- Review weight: standard (project default); the feature is intentionally left at `review` for the caller's independent feature review.
+- Files changed: `crates/krometrail-mcp/src/response.rs`, `crates/krometrail-mcp/src/schema.rs`, `crates/krometrail-mcp/src/registry.rs`, `crates/krometrail-mcp/src/server.rs`, `plugin/skills/krometrail/SKILL.md`, `plugin/skills/krometrail/references/evidence.md`.
+- Tests added/removed: added validated projection/schema tests, payload-bound tests, concise status tests, diagnostic-policy tests, and stdio/default-expansion coverage; removed none.
+- Simplification: one response vocabulary, one schema decorator, one request splitter, one post-acquisition projector, and one `BrowserStatus` projection serve the complete route surface.
+- Discrepancies from design: the user explicitly changed omitted preferences to economical compact/no-inline output and omitted status detail to concise output. Explicit `legacy`, `full`, and `inline` retain expansion paths; generated operation roots remain open exactly as before while the nested response object is closed.
+- Adjacent issues parked: none.
+
+## Integrated verification
+
+- All child stories are `stage: done`.
+- `cargo test -p krometrail-mcp --locked` (52 passed).
+- `cargo check -p krometrail-mcp --all-targets --locked`.
+- `cargo clippy -p krometrail-mcp --all-targets --locked -- -D warnings`.
