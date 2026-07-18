@@ -1,7 +1,7 @@
 ---
 id: story-fix-capture-stream-reconnect
 kind: story
-stage: review
+stage: done
 tags: [bug, browser, visual]
 parent: null
 depends_on: []
@@ -41,3 +41,7 @@ The capture reader transitioned its private runtime to `Failed` when the frame e
 - Adapter suite: `cargo test -p krometrail-cdp --locked` passed.
 - Real Chrome reconnect qualification: `KROMETRAIL_REAL_CHROME_TESTS=1 cargo test -p krometrail-cdp opt_in_real_chrome_capture_fences_one_disconnect_and_resets_generation_identity --locked -- --nocapture` passed with 20 generation-one frames and 8 generation-two frames.
 - Full suite: `cargo test --workspace --all-targets --locked` passed.
+
+## Review
+
+Bounded review found no correctness, compatibility, privacy, or documentation drift. The regression was tightened to wait for the public generation-two capture status rather than the slightly earlier scripted command notification, removing a scheduler-dependent assertion race.

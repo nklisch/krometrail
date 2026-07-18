@@ -156,13 +156,20 @@ async fn closed_capture_frame_stream_reconnects_and_restores_capture_generation(
 
     initial.close_event_stream("Page.screencastFrame", Some("session-a"));
 
-    tokio::time::timeout(
-        Duration::from_secs(1),
-        reconnected.wait_for_command_count("Page.startScreencast", 1),
-    )
+    let status = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let status = session.status().await.unwrap();
+            if status.capture.len() == 1
+                && status.capture[0].attachment_generation() == 2
+                && status.capture[0].state() == krometrail_core::CaptureStreamState::Capturing
+            {
+                break status;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
     .await
-    .expect("capture stream closure must drive reconnect");
-    let status = session.status().await.unwrap();
+    .expect("capture stream closure must restore capture on a new generation");
     assert_eq!(status.capture.len(), 1);
     assert_eq!(status.capture[0].attachment_generation(), 2);
     assert_eq!(
