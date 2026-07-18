@@ -1,7 +1,7 @@
 ---
 id: truthful-screencast-geometry
 kind: feature
-stage: implementing
+stage: review
 tags: [bug, visual, browser]
 parent: null
 depends_on: []
@@ -83,8 +83,8 @@ impl RawFrame {
 
 **Acceptance criteria**:
 
-- [ ] Adaptive changes to screencast metadata/encoded dimensions do not change retained viewport provenance.
-- [ ] An acknowledged geometry update applies viewport and DPR together to subsequent frames without restarting capture.
+- [x] Adaptive changes to screencast metadata/encoded dimensions do not change retained viewport provenance.
+- [x] An acknowledged geometry update applies viewport and DPR together to subsequent frames without restarting capture.
 
 ### Unit 2: Lifecycle-complete geometry observation and updates
 
@@ -113,9 +113,9 @@ capture.coordinator.update_geometry(
 
 **Acceptance criteria**:
 
-- [ ] Initial native capture and restored override capture begin with independently observed CSS viewport and DPR.
-- [ ] Apply and clear update both fields atomically after success; rollback leaves prior capture geometry intact.
-- [ ] Reconnect replay restores geometry before capture resumes and remains target-local on failure.
+- [x] Initial native capture and restored override capture begin with independently observed CSS viewport and DPR.
+- [x] Apply and clear update both fields atomically after success; rollback leaves prior capture geometry intact.
+- [x] Reconnect replay restores geometry before capture resumes and remains target-local on failure.
 
 ### Unit 3: Regression coverage for adaptive encoding
 
@@ -123,9 +123,9 @@ capture.coordinator.update_geometry(
 
 **Acceptance criteria**:
 
-- [ ] A stream holding 600×500/DPR1 records that provenance for a 1200×1000 encoded frame followed by a 600×500 encoded frame whose screencast metadata claims 300×250.
-- [ ] A real acknowledged change to 390×844/DPR3 appears on subsequent frames without a capture gap or stream restart.
-- [ ] Session tests prove failed apply/rollback cannot mutate capture geometry and successful set/clear uses observed values.
+- [x] A stream holding 600×500/DPR1 records that provenance for a 1200×1000 encoded frame followed by a 600×500 encoded frame whose screencast metadata claims 300×250.
+- [x] A real acknowledged change to 390×844/DPR3 appears on subsequent frames without a capture gap or stream restart.
+- [x] Session tests prove failed apply/rollback cannot mutate capture geometry and successful set/clear uses observed values.
 
 ## Implementation Order
 
@@ -149,3 +149,41 @@ capture.coordinator.update_geometry(
 
 - Browser-native window resizes must still reach capture geometry. The initial design relies on acknowledged viewport operations and start/reconnect observation; implementation must verify whether native target resize events already update the supervisor. If they do not, add a bounded target event update rather than falling back to adaptive screencast metadata.
 - CSS visual viewport can be fractional under page zoom. Conversion must reject or consistently round only values within the existing browser observation tolerance, preserving encoded dimensions separately.
+
+## Implementation notes
+
+- Replaced the per-stream device-scale mutex with one atomic `CaptureGeometry` containing CSS viewport dimensions and DPR. `RawFrame::after_ack` now snapshots that value after acknowledgement and no longer interprets `deviceWidth` or `deviceHeight` as layout geometry.
+- Capture start and reconnect resume now use the existing `observe_effective_viewport` boundary for native and restored-override targets. Positive fractional CSS sizes round to the nearest integral pixel within the existing half-pixel browser tolerance.
+- Viewport apply/clear converts the independently observed effective geometry before supervisor commit, rolls back on conversion failure, and updates capture only after the supervisor transaction commits. Existing navigation/reconnect replay ordering remains unchanged.
+- The supported geometry mutation surface is target-scoped viewport apply/clear plus initial/reconnect observation. No separate native-resize supervisor authority exists; adaptive screencast delivery changes remain intentionally non-authoritative rather than being mistaken for native resize evidence.
+- Persisted frame fields, MCP shapes, acknowledgement ordering, bounded handoff, capture ordinals, and gap accounting are unchanged.
+
+## Regression evidence
+
+- Before the production correction, `capture::tests::adaptive_screencast_encoding_does_not_invent_viewport_changes` failed with retained viewport `1200×1000` instead of the authoritative `600×500`.
+- The regression now proves a 1200×1000 encoded frame and a 600×500 encoded frame with 300×250 screencast metadata both retain 600×500/DPR1, with one stream start and no capture gap.
+- `runtime_geometry_change_keeps_one_continuous_stream_and_per_frame_metadata` proves an atomic 390×844/DPR3 update reaches the subsequent frame without restarting the stream or declaring a gap.
+- Existing viewport transaction and reconnect tests continue to prove complete apply/clear/rollback command ordering, mobile page-scale replay before capture, and target-local replay failure.
+
+## Files changed
+
+- `crates/krometrail-cdp/src/capture/mod.rs`
+- `crates/krometrail-cdp/src/capture/pipeline.rs`
+- `crates/krometrail-cdp/src/capture/tests.rs`
+- `crates/krometrail-cdp/src/control/viewport.rs`
+- `crates/krometrail-cdp/src/session/mod.rs`
+- `crates/krometrail-cdp/src/session/operations.rs`
+- `crates/krometrail-cdp/src/session/runtime.rs`
+
+## Verification
+
+- `cargo test -p krometrail-cdp --lib --locked` — passed, 128 tests.
+- `cargo test -p krometrail-cdp --all-targets --locked` — passed.
+- `cargo fmt --all -- --check` — passed.
+- `cargo check --workspace --all-targets --locked` — passed.
+- `cargo clippy --workspace --all-targets --locked -- -D warnings` — passed.
+- `cargo test --workspace --all-targets --locked` — bounded by the host filesystem while linking the root test binary (`ld: write() failed, errno=28`); the feature-owning CDP all-target suite had already passed in full.
+
+## Deviations
+
+- The repository keeps session unit tests in `crates/krometrail-cdp/src/session/mod.rs` rather than a separate `session/tests.rs`; the existing lifecycle tests there and the capture regressions jointly cover the transaction behavior.

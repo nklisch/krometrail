@@ -1,9 +1,11 @@
 use krometrail_core::{
-    CssSize, DeviceScaleFactor, EffectiveViewport, ErrorCode, Result, ViewportMetrics,
+    CssSize, DeviceScaleFactor, EffectiveViewport, ErrorCode, PixelDimensions, Result,
+    ViewportMetrics,
 };
 use serde_json::{Value, json};
 
 use super::{BoundTarget, operation_error, transport_error};
+use crate::capture::CaptureGeometry;
 use crate::transport::{CdpTransport, CommandScope};
 
 pub(crate) async fn apply_viewport(
@@ -121,39 +123,32 @@ pub(crate) async fn observe_effective_viewport(
     decode_effective_viewport(&layout, &runtime, declared, bound.target_id)
 }
 
-pub(crate) async fn observe_device_scale_factor(
-    transport: &dyn CdpTransport,
-    bound: &BoundTarget,
-) -> Result<DeviceScaleFactor> {
-    let response = transport
-        .send_raw(
-            &CommandScope::Session(bound.transport_session.clone()),
-            "Runtime.evaluate",
-            json!({
-                "expression": "devicePixelRatio",
-                "returnByValue": true,
-                "throwOnSideEffect": true,
-                "silent": true,
-            }),
-        )
-        .await
-        .map_err(|error| {
-            transport_error(error, ErrorCode::PageObservationFailed, bound.target_id)
-        })?;
-    decode_device_scale_factor(&response, bound.target_id)
+pub(crate) fn capture_geometry(effective: EffectiveViewport) -> Result<CaptureGeometry> {
+    Ok(CaptureGeometry {
+        viewport: PixelDimensions::new(
+            integral_css_dimension(effective.css_size.width)?,
+            integral_css_dimension(effective.css_size.height)?,
+        )?,
+        device_scale_factor: effective.device_scale_factor,
+    })
 }
 
-fn decode_device_scale_factor(
-    response: &Value,
-    target_id: krometrail_core::TargetId,
-) -> Result<DeviceScaleFactor> {
-    let value = response
-        .pointer("/result/result/value")
-        .or_else(|| response.pointer("/result/value"))
-        .or_else(|| response.get("value"))
-        .and_then(Value::as_f64)
-        .ok_or_else(|| malformed(target_id))?;
-    DeviceScaleFactor::new(value)
+fn integral_css_dimension(value: f64) -> Result<u32> {
+    let rounded = value.round();
+    if !rounded.is_finite()
+        || rounded < 1.0
+        || rounded > f64::from(u32::MAX)
+        || (value - rounded).abs() > 0.5
+    {
+        return Err(krometrail_core::KrometrailError::new(
+            ErrorCode::PageObservationFailed,
+            krometrail_core::NonEmptyText::new(
+                "browser returned unusable effective viewport geometry",
+            )
+            .expect("static viewport error is non-empty"),
+        ));
+    }
+    Ok(rounded as u32)
 }
 
 fn decode_effective_viewport(
@@ -268,11 +263,16 @@ mod tests {
     }
 
     #[test]
-    fn native_device_scale_is_decoded_instead_of_assumed() {
-        let scale =
-            decode_device_scale_factor(&json!({"result":{"result":{"value":2.0}}}), target())
-                .unwrap();
-        assert_eq!(scale.get(), 2.0);
-        assert!(decode_device_scale_factor(&json!({}), target()).is_err());
+    fn capture_geometry_rounds_fractional_css_dimensions_within_half_a_pixel() {
+        let geometry = capture_geometry(EffectiveViewport {
+            css_size: CssSize::new(599.6, 500.4).unwrap(),
+            device_scale_factor: DeviceScaleFactor::new(2.0).unwrap(),
+            mobile: false,
+            touch: false,
+            override_active: false,
+        })
+        .unwrap();
+        assert_eq!(geometry.viewport, PixelDimensions::new(600, 500).unwrap());
+        assert_eq!(geometry.device_scale_factor.get(), 2.0);
     }
 }

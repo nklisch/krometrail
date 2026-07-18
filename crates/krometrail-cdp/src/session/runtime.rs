@@ -170,6 +170,15 @@ pub(super) async fn setup_connection_with_target_limit(
     })
 }
 
+fn fallback_capture_geometry() -> crate::capture::CaptureGeometry {
+    crate::capture::CaptureGeometry {
+        viewport: krometrail_core::PixelDimensions::new(1, 1)
+            .expect("one-by-one fallback capture geometry is valid"),
+        device_scale_factor: krometrail_core::DeviceScaleFactor::new(1.0)
+            .expect("one is a valid scale"),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn apply_effects(
     state: &mut SupervisorState,
@@ -374,28 +383,19 @@ pub(super) async fn apply_effects(
                         transport_session: context.transport_session.clone(),
                         visibility: krometrail_core::TargetVisibility::Unknown,
                     };
-                    let device_scale_factor =
-                        crate::control::viewport::observe_device_scale_factor(
-                            transport.as_ref(),
-                            &bound,
-                        )
-                        .await
-                        .or_else(|_| {
-                            state
-                                .targets_by_key
-                                .values()
-                                .find(|target| target.target.target.id() == context.target_id)
-                                .and_then(|target| target.viewport_override)
-                                .map(|viewport| viewport.device_scale_factor())
-                                .ok_or_else(|| {
-                                    crate::control::operation_error(
-                                        ErrorCode::PageObservationFailed,
-                                        context.target_id,
-                                        "browser device scale is unavailable",
-                                    )
-                                })
-                        });
-                    let Ok(device_scale_factor) = device_scale_factor else {
+                    let declared_override = state
+                        .targets_by_key
+                        .values()
+                        .find(|target| target.target.target.id() == context.target_id)
+                        .and_then(|target| target.viewport_override);
+                    let geometry = crate::control::viewport::observe_effective_viewport(
+                        transport.as_ref(),
+                        &bound,
+                        declared_override,
+                    )
+                    .await
+                    .and_then(crate::control::viewport::capture_geometry);
+                    let Ok(geometry) = geometry else {
                         let target_key = state
                             .targets_by_key
                             .iter()
@@ -421,7 +421,7 @@ pub(super) async fn apply_effects(
                         connection_generation: context.connection_generation,
                         attachment_generation: context.attachment_generation,
                         transport_session: context.transport_session,
-                        device_scale_factor,
+                        geometry,
                     };
                     if capture
                         .coordinator
@@ -457,8 +457,7 @@ pub(super) async fn apply_effects(
                         connection_generation: context.connection_generation,
                         attachment_generation: context.attachment_generation,
                         transport_session: context.transport_session,
-                        device_scale_factor: krometrail_core::DeviceScaleFactor::new(1.0)
-                            .expect("one is a valid scale"),
+                        geometry: fallback_capture_geometry(),
                     };
                     let at = capture
                         .session_origin
@@ -476,8 +475,7 @@ pub(super) async fn apply_effects(
                         connection_generation: context.connection_generation,
                         attachment_generation: context.attachment_generation,
                         transport_session: context.transport_session,
-                        device_scale_factor: krometrail_core::DeviceScaleFactor::new(1.0)
-                            .expect("one is a valid scale"),
+                        geometry: fallback_capture_geometry(),
                     };
                     let deadline = shutdown_deadline
                         .as_ref()

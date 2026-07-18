@@ -386,6 +386,29 @@ async fn execute_operation_unfenced(
                     );
                 }
             };
+            let capture_geometry =
+                match crate::control::viewport::capture_geometry(effective.clone()) {
+                    Ok(geometry) => geometry,
+                    Err(error) => {
+                        rollback_viewport_or_fail_target(
+                            state,
+                            shared,
+                            Arc::clone(&transport),
+                            &bound,
+                            &target_key,
+                            previous,
+                        )
+                        .await;
+                        return viewport_failure_result(
+                            page_control,
+                            target_id,
+                            interaction_id,
+                            started_at,
+                            dispatched_at,
+                            error,
+                        );
+                    }
+                };
             if let Err(error) = commit_supervisor_input(
                 state,
                 SupervisorInput::ViewportOverrideApplied {
@@ -416,10 +439,10 @@ async fn execute_operation_unfenced(
                 );
             }
             if let Some(capture) = shared.capture.as_ref() {
-                capture.coordinator.update_device_scale_factor(
+                capture.coordinator.update_geometry(
                     target_id,
                     bound.attachment_generation,
-                    effective.device_scale_factor,
+                    capture_geometry,
                 );
             }
             page_control.invalidate_target_snapshot(target_id);

@@ -12,7 +12,8 @@ use std::{
 };
 
 use krometrail_core::{
-    EveryNthFrame, ImageFormat, PixelDimensions, SessionId, SessionOrigin, TargetId,
+    DeviceScaleFactor, EveryNthFrame, ImageFormat, PixelDimensions, SessionId, SessionOrigin,
+    TargetId,
 };
 
 use crate::transport::{CdpTransport, TransportError, TransportSessionId};
@@ -140,7 +141,13 @@ pub(crate) struct CaptureTarget {
     pub(crate) connection_generation: u64,
     pub(crate) attachment_generation: u64,
     pub(crate) transport_session: TransportSessionId,
-    pub(crate) device_scale_factor: krometrail_core::DeviceScaleFactor,
+    pub(crate) geometry: CaptureGeometry,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CaptureGeometry {
+    pub(crate) viewport: PixelDimensions,
+    pub(crate) device_scale_factor: DeviceScaleFactor,
 }
 
 pub(crate) trait CaptureObserver: Send + Sync {
@@ -258,18 +265,13 @@ impl CaptureCoordinator {
         pipeline::statuses(self)
     }
 
-    pub(crate) fn update_device_scale_factor(
+    pub(crate) fn update_geometry(
         &self,
         target_id: TargetId,
         attachment_generation: u64,
-        device_scale_factor: krometrail_core::DeviceScaleFactor,
+        geometry: CaptureGeometry,
     ) -> bool {
-        pipeline::update_device_scale_factor(
-            self,
-            target_id,
-            attachment_generation,
-            device_scale_factor,
-        )
+        pipeline::update_geometry(self, target_id, attachment_generation, geometry)
     }
 
     pub(crate) async fn shutdown(

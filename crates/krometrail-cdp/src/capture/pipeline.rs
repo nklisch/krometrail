@@ -21,8 +21,8 @@ use tokio::{
 };
 
 use super::{
-    CaptureCoordinator, CaptureDependencies, CaptureError, CaptureObserver, CaptureStopOutcome,
-    CaptureStopReason, CaptureTarget, StreamKey,
+    CaptureCoordinator, CaptureDependencies, CaptureError, CaptureGeometry, CaptureObserver,
+    CaptureStopOutcome, CaptureStopReason, CaptureTarget, StreamKey,
 };
 use crate::transport::{CdpTransport, CommandScope, NamedEvent, TransportEvents};
 
@@ -142,7 +142,7 @@ pub(super) struct StreamRuntime {
     stop_notification: Notify,
     state: Mutex<RuntimeState>,
     control: Mutex<ControlHandles>,
-    device_scale_factor: Mutex<DeviceScaleFactor>,
+    geometry: Mutex<CaptureGeometry>,
 }
 
 struct ControlHandles {
@@ -222,7 +222,7 @@ impl StreamRuntime {
         transport: Arc<dyn CdpTransport>,
         ordinals: Arc<OrdinalRegistry>,
     ) -> Self {
-        let device_scale_factor = target.device_scale_factor;
+        let geometry = target.geometry;
         Self {
             target,
             ordinals,
@@ -253,22 +253,22 @@ impl StreamRuntime {
                 visibility_reader: None,
                 worker: None,
             }),
-            device_scale_factor: Mutex::new(device_scale_factor),
+            geometry: Mutex::new(geometry),
         }
     }
 
-    fn device_scale_factor(&self) -> DeviceScaleFactor {
+    fn geometry(&self) -> CaptureGeometry {
         *self
-            .device_scale_factor
+            .geometry
             .lock()
-            .expect("capture device scale lock poisoned")
+            .expect("capture geometry lock poisoned")
     }
 
-    fn update_device_scale_factor(&self, device_scale_factor: DeviceScaleFactor) {
+    fn update_geometry(&self, geometry: CaptureGeometry) {
         *self
-            .device_scale_factor
+            .geometry
             .lock()
-            .expect("capture device scale lock poisoned") = device_scale_factor;
+            .expect("capture geometry lock poisoned") = geometry;
     }
 
     fn key(&self) -> StreamKey {
@@ -771,7 +771,7 @@ async fn frame_reader(
             session_time,
             runtime.config.format,
             runtime.config.max_base64_payload_bytes.get(),
-            runtime.device_scale_factor(),
+            runtime.geometry(),
         ) {
             Ok(raw) => raw,
             Err(_) => {
@@ -1382,7 +1382,7 @@ impl RawFrame {
         session_time: SessionTime,
         format: ImageFormat,
         max_payload_bytes: usize,
-        device_scale_factor: DeviceScaleFactor,
+        geometry: CaptureGeometry,
     ) -> Result<Self, ()> {
         let object = event.params.as_object().ok_or(())?;
         let data_value = object.get("data").and_then(Value::as_str).ok_or(())?;
@@ -1416,9 +1416,6 @@ impl RawFrame {
                 None
             }
         };
-        let width = positive_u32(metadata.get("deviceWidth")).ok_or(())?;
-        let height = positive_u32(metadata.get("deviceHeight")).ok_or(())?;
-        let viewport = PixelDimensions::new(width, height).map_err(|_| ())?;
         Ok(Self {
             capture_ordinal,
             data,
@@ -1426,18 +1423,18 @@ impl RawFrame {
             observed_time,
             session_time,
             format,
-            viewport,
-            device_scale_factor,
+            viewport: geometry.viewport,
+            device_scale_factor: geometry.device_scale_factor,
             warnings,
         })
     }
 }
 
-pub(super) fn update_device_scale_factor(
+pub(super) fn update_geometry(
     coordinator: &CaptureCoordinator,
     target_id: krometrail_core::TargetId,
     attachment_generation: u64,
-    device_scale_factor: DeviceScaleFactor,
+    geometry: CaptureGeometry,
 ) -> bool {
     let runtime = coordinator
         .streams
@@ -1449,16 +1446,11 @@ pub(super) fn update_device_scale_factor(
         })
         .cloned();
     if let Some(runtime) = runtime {
-        runtime.update_device_scale_factor(device_scale_factor);
+        runtime.update_geometry(geometry);
         true
     } else {
         false
     }
-}
-
-fn positive_u32(value: Option<&Value>) -> Option<u32> {
-    let value = value?.as_u64()?;
-    u32::try_from(value).ok().filter(|value| *value > 0)
 }
 
 // Keep the transport future and sink future on the same bounded worker path. This helper exists

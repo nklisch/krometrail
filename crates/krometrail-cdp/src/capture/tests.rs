@@ -529,12 +529,11 @@ impl TestTransport {
         self.frame_for(&self.default_session, ack_token).await;
     }
 
-    async fn frame_with_geometry(
+    async fn frame_with_metadata(
         &self,
         ack_token: i64,
         viewport_width: u32,
         viewport_height: u32,
-        device_scale_factor: f64,
         timestamp: Option<f64>,
     ) {
         let sender = self
@@ -547,11 +546,42 @@ impl TestTransport {
         sender
             .send(NamedEvent {
                 method: "Page.screencastFrame".into(),
-                params: frame_params_with_geometry(
+                params: frame_params_with_metadata(
                     ack_token,
                     viewport_width,
                     viewport_height,
-                    device_scale_factor,
+                    timestamp,
+                ),
+            })
+            .await
+            .unwrap();
+    }
+
+    async fn frame_with_encoding(
+        &self,
+        ack_token: i64,
+        encoded_width: u16,
+        encoded_height: u16,
+        metadata_width: u32,
+        metadata_height: u32,
+        timestamp: Option<f64>,
+    ) {
+        let sender = self
+            .frame_senders
+            .lock()
+            .unwrap()
+            .get(&self.default_session)
+            .cloned()
+            .expect("default frame session is registered");
+        sender
+            .send(NamedEvent {
+                method: "Page.screencastFrame".into(),
+                params: frame_params_with_encoding(
+                    ack_token,
+                    encoded_width,
+                    encoded_height,
+                    metadata_width,
+                    metadata_height,
                     timestamp,
                 ),
             })
@@ -668,31 +698,56 @@ impl CdpTransport for TestTransport {
 }
 
 fn frame_params(ack_token: i64) -> serde_json::Value {
-    frame_params_with_geometry(ack_token, 640, 480, 1.0, Some(1.25))
+    frame_params_with_metadata(ack_token, 640, 480, Some(1.25))
 }
 
-fn frame_params_with_geometry(
+fn frame_params_with_metadata(
     ack_token: i64,
     viewport_width: u32,
     viewport_height: u32,
-    page_scale_factor: f64,
+    timestamp: Option<f64>,
+) -> serde_json::Value {
+    frame_params_with_encoding(ack_token, 2, 2, viewport_width, viewport_height, timestamp)
+}
+
+fn frame_params_with_encoding(
+    ack_token: i64,
+    encoded_width: u16,
+    encoded_height: u16,
+    metadata_width: u32,
+    metadata_height: u32,
     timestamp: Option<f64>,
 ) -> serde_json::Value {
     serde_json::json!({
-        "data": STANDARD.encode(jpeg_bytes()),
+        "data": STANDARD.encode(jpeg_bytes(encoded_width, encoded_height)),
         "metadata": {
-            "deviceWidth": viewport_width,
-            "deviceHeight": viewport_height,
-            "pageScaleFactor": page_scale_factor,
+            "deviceWidth": metadata_width,
+            "deviceHeight": metadata_height,
+            "pageScaleFactor": 1.0,
             "timestamp": timestamp
         },
         "sessionId": ack_token
     })
 }
 
-fn jpeg_bytes() -> Vec<u8> {
+fn jpeg_bytes(width: u16, height: u16) -> Vec<u8> {
+    let [height_high, height_low] = height.to_be_bytes();
+    let [width_high, width_low] = width.to_be_bytes();
     vec![
-        0xff, 0xd8, 0xff, 0xc0, 0, 8, 8, 1, 0, 2, 0, 2, 1, 0xff, 0xd9,
+        0xff,
+        0xd8,
+        0xff,
+        0xc0,
+        0,
+        8,
+        8,
+        height_high,
+        height_low,
+        width_high,
+        width_low,
+        1,
+        0xff,
+        0xd9,
     ]
 }
 
@@ -712,7 +767,10 @@ fn target_with(
         connection_generation: 1,
         attachment_generation,
         transport_session: TransportSessionId::new(transport_session).unwrap(),
-        device_scale_factor: krometrail_core::DeviceScaleFactor::new(1.0).unwrap(),
+        geometry: CaptureGeometry {
+            viewport: krometrail_core::PixelDimensions::new(600, 500).unwrap(),
+            device_scale_factor: krometrail_core::DeviceScaleFactor::new(1.0).unwrap(),
+        },
     }
 }
 
@@ -955,16 +1013,19 @@ async fn runtime_geometry_change_keeps_one_continuous_stream_and_per_frame_metad
         .unwrap();
 
     transport
-        .frame_with_geometry(11, 1280, 720, 1.0, Some(1.0))
+        .frame_with_metadata(11, 1280, 720, Some(1.0))
         .await;
     transport.wait_for_acks(1).await;
-    assert!(coordinator.update_device_scale_factor(
+    assert!(coordinator.update_geometry(
         capture_target.target_id,
         capture_target.attachment_generation,
-        krometrail_core::DeviceScaleFactor::new(3.0).unwrap(),
+        CaptureGeometry {
+            viewport: krometrail_core::PixelDimensions::new(390, 844).unwrap(),
+            device_scale_factor: krometrail_core::DeviceScaleFactor::new(3.0).unwrap(),
+        },
     ));
     // pageScaleFactor remains 1.0: it is page zoom, not the authoritative device pixel ratio.
-    transport.frame_with_geometry(12, 390, 844, 1.0, None).await;
+    transport.frame_with_metadata(12, 390, 844, None).await;
     transport.wait_for_acks(2).await;
     sink.release_first_frame.notify_one();
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
@@ -986,7 +1047,7 @@ async fn runtime_geometry_change_keeps_one_continuous_stream_and_per_frame_metad
         );
         assert_eq!(
             frames[0].metadata().viewport(),
-            krometrail_core::PixelDimensions::new(1280, 720).unwrap()
+            krometrail_core::PixelDimensions::new(600, 500).unwrap()
         );
         assert_eq!(frames[0].metadata().device_scale_factor().get(), 1.0);
         assert_eq!(
@@ -1005,6 +1066,77 @@ async fn runtime_geometry_change_keeps_one_continuous_stream_and_per_frame_metad
     let status = coordinator.statuses().pop().unwrap();
     assert_eq!(status.state(), CaptureStreamState::Capturing);
     assert_eq!(status.statistics().persisted_frames(), 2);
+
+    let outcome = coordinator
+        .stop_target(
+            &capture_target,
+            CaptureStopReason::TargetClosed,
+            tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+        )
+        .await;
+    assert!(outcome.complete);
+}
+
+#[tokio::test]
+async fn adaptive_screencast_encoding_does_not_invent_viewport_changes() {
+    let ack_completed = Arc::new(AtomicBool::new(false));
+    let transport =
+        TestTransport::new(Arc::clone(&ack_completed), Arc::new(Mutex::new(Vec::new())));
+    let sink = Arc::new(TestSink::new(
+        ack_completed,
+        Arc::new(Mutex::new(Vec::new())),
+    ));
+    let observer = Arc::new(TestObserver::default());
+    let coordinator = coordinator(
+        CaptureConfig {
+            queue_capacity: NonZeroUsize::new(2).unwrap(),
+            ..CaptureConfig::default()
+        },
+        Arc::new(TestClock::new()),
+        Arc::new(TestIds::new()),
+        Arc::clone(&sink),
+        Arc::clone(&observer),
+    );
+    let capture_target = target();
+    coordinator
+        .start_target(
+            capture_target.clone(),
+            Arc::clone(&transport) as Arc<dyn CdpTransport>,
+        )
+        .await
+        .unwrap();
+
+    transport
+        .frame_with_encoding(21, 1200, 1000, 600, 500, Some(1.0))
+        .await;
+    transport
+        .frame_with_encoding(22, 600, 500, 300, 250, Some(2.0))
+        .await;
+    transport.wait_for_acks(2).await;
+    sink.release_first_frame.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while sink.frames.lock().unwrap().len() != 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+
+    let expected = krometrail_core::PixelDimensions::new(600, 500).unwrap();
+    {
+        let frames = sink.frames.lock().unwrap();
+        assert_eq!(frames[0].metadata().viewport(), expected);
+        assert_eq!(frames[1].metadata().viewport(), expected);
+        assert_eq!(
+            frames[0].metadata().image(),
+            krometrail_core::PixelDimensions::new(1200, 1000).unwrap()
+        );
+        assert_eq!(frames[1].metadata().image(), expected);
+        assert_eq!(frames[0].metadata().device_scale_factor().get(), 1.0);
+        assert_eq!(frames[1].metadata().device_scale_factor().get(), 1.0);
+    }
+    assert!(observer.gaps.lock().unwrap().is_empty());
+    assert_eq!(transport.start_params().len(), 1);
 
     let outcome = coordinator
         .stop_target(
@@ -1670,7 +1802,10 @@ async fn repeated_target_churn_keeps_registry_and_statuses_bounded() {
             connection_generation: 1,
             attachment_generation: generation,
             transport_session,
-            device_scale_factor: krometrail_core::DeviceScaleFactor::new(1.0).unwrap(),
+            geometry: CaptureGeometry {
+                viewport: krometrail_core::PixelDimensions::new(600, 500).unwrap(),
+                device_scale_factor: krometrail_core::DeviceScaleFactor::new(1.0).unwrap(),
+            },
         };
         coordinator
             .start_target(

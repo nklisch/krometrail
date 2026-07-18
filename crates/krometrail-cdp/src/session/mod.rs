@@ -1817,7 +1817,10 @@ mod tests {
             connection_generation: 1,
             attachment_generation: 1,
             transport_session: TransportSessionId::new("transport-session").unwrap(),
-            device_scale_factor: krometrail_core::DeviceScaleFactor::new(1.0).unwrap(),
+            geometry: crate::capture::CaptureGeometry {
+                viewport: krometrail_core::PixelDimensions::new(600, 500).unwrap(),
+                device_scale_factor: krometrail_core::DeviceScaleFactor::new(1.0).unwrap(),
+            },
         };
         coordinator
             .start_target(
