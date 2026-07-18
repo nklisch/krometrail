@@ -1,7 +1,7 @@
 ---
 id: story-fix-lazy-managed-download-activation
 kind: story
-stage: review
+stage: done
 tags: [bug]
 parent: null
 depends_on: []
@@ -36,3 +36,7 @@ Introduce a lazy session-owned download boundary. Managed startup allocates only
 - Regression coverage: ten scripted download tests pass, including inert managed/named-profile defaults, first-list subscribe-before-enable ordering, retryable activation failure, single shared activation, inert reconnect, and reconnect failure isolation.
 - Confirmation: targeted downloads 10/10; CDP all-target clippy with `-D warnings`; workspace all-target check; MCP focused suite reached 60/61 with one unrelated warning-log test that passes alone. The full CDP run reached 158/159 with the unrelated reusable-profile inventory assertion failing reproducibly alone.
 - Adjacent issue for release coordination: `launcher::profile::tests::inventory_is_sorted_private_and_excludes_temporary_and_symlink_entries` currently fails because its temporary path is outside the asserted `root/tmp`; the aggregate owner is tracking this separately.
+
+## Review
+
+Bounded inline review found one lifecycle hazard: clearing a failed reconnect authority allowed its old event pumps to outlive the authority slot and later delete a newly reused session directory. `e78c1f1` keeps that authority unavailable for the rest of the session, cleans its root, and makes only local-I/O calls fail while browser reconnect proceeds. The reconnect-isolation regression test and all ten focused download tests pass after the correction. Verdict: pass.
