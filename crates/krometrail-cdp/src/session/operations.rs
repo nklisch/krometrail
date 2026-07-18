@@ -78,11 +78,62 @@ pub(super) async fn execute_operation_unfenced(
             "browser operation was cancelled before dispatch",
         ));
     }
+    if matches!(
+        &request,
+        BrowserOperationRequest::ReadClipboard(_)
+            | BrowserOperationRequest::WriteClipboard(_)
+            | BrowserOperationRequest::ListDownloads(_)
+            | BrowserOperationRequest::WaitForDownload(_)
+            | BrowserOperationRequest::CancelDownload(_)
+    ) && shared.ownership != BrowserOwnership::Managed
+    {
+        return Err(stable_error(
+            ErrorCode::Unsupported,
+            "local clipboard and download operations require a Krometrail-managed browser session",
+        )
+        .with_recovery(
+            NonEmptyText::new(
+                "start a managed browser profile and retry the explicit local operation",
+            )
+            .unwrap(),
+        ));
+    }
     if let BrowserOperationRequest::Batch(request) = request {
         return page_control
             .execute_batch(transport, state, shared, request, cancellation, context)
             .await
             .map(|result| BrowserOperationResult::Batch(Box::new(result)));
+    }
+    if let BrowserOperationRequest::WriteClipboard(request) = request {
+        let bound = crate::control::bind_target(state, request.target)?;
+        cancellation.check(state.connection_generation, bound.target_id)?;
+        let started_at = page_control.session_time()?;
+        let dispatched_at = page_control.session_time()?;
+        page_control
+            .write_clipboard(transport.as_ref(), &bound, &request)
+            .await?;
+        let interaction_id = page_control.next_interaction_id();
+        let bytes = request.text.len() as u64;
+        let operation = page_success_result(
+            page_control,
+            transport.as_ref(),
+            state,
+            bound.target_id,
+            krometrail_core::BrowserOperationKind::WriteClipboard,
+            interaction_id,
+            started_at,
+            dispatched_at,
+            PageChange::ClipboardWritten,
+            request.target,
+            cancellation,
+        )
+        .await?;
+        return Ok(BrowserOperationResult::WriteClipboard(Box::new(
+            krometrail_core::ClipboardWriteResult {
+                utf8_bytes: bytes,
+                operation,
+            },
+        )));
     }
     if request.kind().is_interaction() {
         return page_control

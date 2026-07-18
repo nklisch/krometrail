@@ -837,6 +837,10 @@ fn project_operation(
             Ok(projection)
         }
         BrowserOperationResult::ListPages(value) => serializable(*value),
+        BrowserOperationResult::ReadClipboard(value) => serializable(*value),
+        BrowserOperationResult::ListDownloads(value)
+        | BrowserOperationResult::WaitForDownload(value) => serializable(*value),
+        BrowserOperationResult::CancelDownload(value) => serializable(*value),
         BrowserOperationResult::CreatePage(value)
         | BrowserOperationResult::SelectPage(value)
         | BrowserOperationResult::ClosePage(value)
@@ -862,6 +866,12 @@ fn project_operation(
                 serde_json::to_value(value.guidance).map_err(|_| ResponseInvariantError)?,
             );
             projection.degrade_with(warnings);
+            Ok(projection)
+        }
+        BrowserOperationResult::WriteClipboard(value) => {
+            let bytes = value.utf8_bytes;
+            let mut projection = project_page_operation(value.operation, preference)?;
+            projection.result["utf8_bytes"] = serde_json::json!(bytes);
             Ok(projection)
         }
         BrowserOperationResult::Click(value)

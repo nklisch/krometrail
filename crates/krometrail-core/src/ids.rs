@@ -116,6 +116,7 @@ typed_ids!(
     BrowserEventId,
     NetworkRequestId,
     ResolvedRangeHandleId,
+    DownloadId,
 );
 
 #[cfg(test)]

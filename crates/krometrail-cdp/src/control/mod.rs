@@ -16,6 +16,7 @@ use crate::{
 };
 
 mod batch;
+mod clipboard;
 mod dialog;
 mod evaluation;
 mod form;
@@ -192,6 +193,14 @@ impl PageControl {
                     )
                     .await?
             }
+            BrowserOperationRequest::ReadClipboard(request) => cancel
+                .race(
+                    state.connection_generation,
+                    bound.target_id,
+                    self.read_clipboard(transport, &bound, request),
+                )
+                .await?
+                .map(|result| BrowserOperationResult::ReadClipboard(Box::new(result))),
             BrowserOperationRequest::ObserveLive(request) => cancel
                 .race(
                     state.connection_generation,
@@ -212,6 +221,9 @@ impl PageControl {
                 .await
                 .map(|result| BrowserOperationResult::Wait(Box::new(result))),
             BrowserOperationRequest::ListPages(_)
+            | BrowserOperationRequest::ListDownloads(_)
+            | BrowserOperationRequest::WaitForDownload(_)
+            | BrowserOperationRequest::CancelDownload(_)
             | BrowserOperationRequest::CreatePage(_)
             | BrowserOperationRequest::SelectPage(_)
             | BrowserOperationRequest::ClosePage(_)
@@ -220,6 +232,7 @@ impl PageControl {
             | BrowserOperationRequest::GoBack(_)
             | BrowserOperationRequest::GoForward(_)
             | BrowserOperationRequest::SetViewport(_)
+            | BrowserOperationRequest::WriteClipboard(_)
             | BrowserOperationRequest::Click(_)
             | BrowserOperationRequest::Fill(_)
             | BrowserOperationRequest::PressKeys(_)

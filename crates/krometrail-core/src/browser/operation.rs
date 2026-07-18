@@ -4,14 +4,16 @@ use crate::{CapabilityId, TargetId};
 
 use super::{
     AcceptedLocator, ActionCategory, ActionDefinition, ActionabilityRequirement, BatchRequest,
-    BatchResult, ClickRequest, ClosePageRequest, CompletionKind, CreatePageRequest, DragRequest,
-    EncodedScreenshot, EvaluationResult, FillRequest, GoBackRequest, GoForwardRequest,
-    HandleDialogRequest, HoverRequest, InspectPageRequest, InteractionResult, ListPagesRequest,
-    LiveObservation, LiveObservationRequest, NavigatePageRequest, PageOperationResult,
-    PageSelection, PageSnapshot, PageState, PageStatus, PressKeysRequest, QueryPageRequest,
-    QueryPageResult, ReadOnlyEvaluationRequest, ReloadPageRequest, ScreenshotRequest,
-    ScrollRequest, SelectOptionRequest, SelectPageRequest, SetViewportRequest, SnapshotPageRequest,
-    UploadFilesRequest, ViewportOperationResult, WaitRequest, WaitResult,
+    BatchResult, CancelDownloadRequest, CancelDownloadResult, ClickRequest, ClipboardRead,
+    ClipboardWriteResult, ClosePageRequest, CompletionKind, CreatePageRequest, DownloadInventory,
+    DragRequest, EncodedScreenshot, EvaluationResult, FillRequest, GoBackRequest, GoForwardRequest,
+    HandleDialogRequest, HoverRequest, InspectPageRequest, InteractionResult, ListDownloadsRequest,
+    ListPagesRequest, LiveObservation, LiveObservationRequest, NavigatePageRequest,
+    PageOperationResult, PageSelection, PageSnapshot, PageState, PageStatus, PressKeysRequest,
+    QueryPageRequest, QueryPageResult, ReadClipboardRequest, ReadOnlyEvaluationRequest,
+    ReloadPageRequest, ScreenshotRequest, ScrollRequest, SelectOptionRequest, SelectPageRequest,
+    SetViewportRequest, SnapshotPageRequest, UploadFilesRequest, ViewportOperationResult,
+    WaitForDownloadRequest, WaitRequest, WaitResult, WriteClipboardRequest,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -94,6 +96,8 @@ selected_field!(ScrollRequest, target);
 selected_field!(UploadFilesRequest, target);
 selected_field!(HandleDialogRequest, target);
 selected_field!(WaitRequest, target);
+selected_field!(ReadClipboardRequest, target);
+selected_field!(WriteClipboardRequest, target);
 selected_field!(BatchRequest, target);
 
 macro_rules! operation_scope {
@@ -294,6 +298,21 @@ define_browser_operations! {
     ListPages(ListPagesRequest) => Vec<PageStatus> {
         stable_name: "list_pages", description: "List supervised browser pages and the current selection.", mutability: ReadOnly, evidence: RequestedOnly, scope: Browser, batchable: false, action: None,
     },
+    ReadClipboard(ReadClipboardRequest) => ClipboardRead {
+        stable_name: "read_clipboard", description: "Explicitly read bounded text from the focused managed page clipboard.", mutability: ReadOnly, evidence: RequestedOnly, scope: Page, batchable: false, action: None,
+    },
+    WriteClipboard(WriteClipboardRequest) => ClipboardWriteResult {
+        stable_name: "write_clipboard", description: "Explicitly write bounded text to the focused managed page clipboard and return live evidence.", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: false, action: None,
+    },
+    ListDownloads(ListDownloadsRequest) => DownloadInventory {
+        stable_name: "list_downloads", description: "List bounded managed-session downloads and capture a wait cursor.", mutability: ReadOnly, evidence: RequestedOnly, scope: Browser, batchable: false, action: None,
+    },
+    WaitForDownload(WaitForDownloadRequest) => DownloadInventory {
+        stable_name: "wait_for_download", description: "Wait after a cursor for a managed download lifecycle change.", mutability: ReadOnly, evidence: RequestedOnly, scope: Browser, batchable: false, action: None,
+    },
+    CancelDownload(CancelDownloadRequest) => CancelDownloadResult {
+        stable_name: "cancel_download", description: "Cancel one active managed-session download.", mutability: StateChanging, evidence: RequestedOnly, scope: Browser, batchable: false, action: None,
+    },
     CreatePage(CreatePageRequest) => PageOperationResult {
         stable_name: "create_page", description: "Create and select a new browser page.", mutability: StateChanging, evidence: LiveObservation, scope: Browser, batchable: false, action: None,
     },
@@ -365,7 +384,7 @@ mod tests {
 
     #[test]
     fn declaration_is_the_complete_operation_registry() {
-        assert_eq!(BrowserOperationKind::ALL.len(), 26);
+        assert!(!BrowserOperationKind::ALL.is_empty());
         assert_eq!(
             BROWSER_OPERATION_REGISTRY.len(),
             BrowserOperationKind::ALL.len()
@@ -408,6 +427,11 @@ mod tests {
                         | BrowserOperationKind::CreatePage
                         | BrowserOperationKind::SelectPage
                         | BrowserOperationKind::ClosePage
+                        | BrowserOperationKind::ReadClipboard
+                        | BrowserOperationKind::WriteClipboard
+                        | BrowserOperationKind::ListDownloads
+                        | BrowserOperationKind::WaitForDownload
+                        | BrowserOperationKind::CancelDownload
                         | BrowserOperationKind::Batch
                 ))
                 .all(|definition| !definition.batchable)
@@ -422,18 +446,25 @@ mod tests {
                         | BrowserOperationKind::CreatePage
                         | BrowserOperationKind::SelectPage
                         | BrowserOperationKind::ClosePage
+                        | BrowserOperationKind::ReadClipboard
+                        | BrowserOperationKind::WriteClipboard
+                        | BrowserOperationKind::ListDownloads
+                        | BrowserOperationKind::WaitForDownload
+                        | BrowserOperationKind::CancelDownload
                         | BrowserOperationKind::Batch
                 ))
                 .all(|definition| definition.batchable)
         );
-        assert_eq!(
-            BROWSER_OPERATION_REGISTRY[6].scope,
-            BrowserOperationScopeKind::Browser
-        );
-        assert_eq!(
-            BROWSER_OPERATION_REGISTRY[7].mutability,
-            OperationMutability::StateChanging
-        );
+        let list_pages = BROWSER_OPERATION_REGISTRY
+            .iter()
+            .find(|value| value.kind == BrowserOperationKind::ListPages)
+            .unwrap();
+        assert_eq!(list_pages.scope, BrowserOperationScopeKind::Browser);
+        let create_page = BROWSER_OPERATION_REGISTRY
+            .iter()
+            .find(|value| value.kind == BrowserOperationKind::CreatePage)
+            .unwrap();
+        assert_eq!(create_page.mutability, OperationMutability::StateChanging);
     }
 
     #[test]

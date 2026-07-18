@@ -326,6 +326,7 @@ pub enum PageChange {
     ViewportConfigured {
         override_active: bool,
     },
+    ClipboardWritten,
 }
 
 impl PageChange {
@@ -338,7 +339,8 @@ impl PageChange {
             | Self::Reloaded
             | Self::WentBack
             | Self::WentForward
-            | Self::ViewportConfigured { .. } => anchor,
+            | Self::ViewportConfigured { .. }
+            | Self::ClipboardWritten => anchor,
         }
     }
 }

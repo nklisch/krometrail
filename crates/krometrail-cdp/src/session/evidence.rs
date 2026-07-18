@@ -48,6 +48,7 @@ fn project_result(
         | BrowserOperationResult::GoBack(value)
         | BrowserOperationResult::GoForward(value) => Some(value.as_ref()),
         BrowserOperationResult::SetViewport(value) => Some(&value.operation),
+        BrowserOperationResult::WriteClipboard(value) => Some(&value.operation),
         _ => None,
     };
     if let Some(page) = page {
@@ -92,6 +93,10 @@ fn project_result(
         | BrowserOperationResult::EvaluatePage(_)
         | BrowserOperationResult::ObserveLive(_)
         | BrowserOperationResult::ListPages(_)
+        | BrowserOperationResult::ReadClipboard(_)
+        | BrowserOperationResult::ListDownloads(_)
+        | BrowserOperationResult::WaitForDownload(_)
+        | BrowserOperationResult::CancelDownload(_)
         | BrowserOperationResult::Wait(_)
         | BrowserOperationResult::Batch(_) => None,
         BrowserOperationResult::CreatePage(_)
@@ -101,7 +106,8 @@ fn project_result(
         | BrowserOperationResult::ReloadPage(_)
         | BrowserOperationResult::GoBack(_)
         | BrowserOperationResult::GoForward(_)
-        | BrowserOperationResult::SetViewport(_) => unreachable!("page results handled above"),
+        | BrowserOperationResult::SetViewport(_)
+        | BrowserOperationResult::WriteClipboard(_) => unreachable!("page results handled above"),
     };
     action
         .map(|action| {
