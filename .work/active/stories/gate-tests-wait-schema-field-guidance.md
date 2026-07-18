@@ -1,7 +1,7 @@
 ---
 id: gate-tests-wait-schema-field-guidance
 kind: story
-stage: review
+stage: done
 tags: [testing, agent-ux]
 parent: null
 depends_on: []
@@ -34,3 +34,14 @@ Locate the tagged text condition branch in the published wait schema and assert 
 - Simplification: replaced whole-schema substring checks with owning-field assertions.
 - Discrepancies from design: none.
 - Adjacent issues parked: none.
+
+## Review (2026-07-17)
+
+**Verdict**: Approve
+
+**Blockers**: none
+**Important**: none
+**Nits**: none
+**Rejected**: none
+
+**Notes**: Bounded inline standalone-story review. Verified tagged-variant lookup, field ownership, complete-scope wording, `contains` recovery, and shipped-skill static protection.
