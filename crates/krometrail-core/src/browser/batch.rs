@@ -62,13 +62,18 @@ struct BatchRequestWire {
 impl BatchRequest {
     pub fn new(
         target: PageSelection,
-        steps: Vec<BrowserOperationRequest>,
+        mut steps: Vec<BrowserOperationRequest>,
         timeout: Duration,
         options: BatchOptions,
     ) -> Result<Self> {
         validate_operation_timeout(timeout)?;
         if steps.is_empty() || steps.len() > MAX_BATCH_STEPS {
             return Err(invalid("batch must contain between one and 64 steps"));
+        }
+        if let PageSelection::Target(target_id) = target {
+            for step in &mut steps {
+                step.inherit_selected_target(target_id);
+            }
         }
         for step in &steps {
             let definition = BROWSER_OPERATION_REGISTRY
@@ -467,6 +472,25 @@ mod tests {
                 && definition.scope == BrowserOperationScopeKind::Page
                 && !definition.batchable
         }));
+    }
+
+    #[test]
+    fn explicit_batch_target_is_inherited_by_targetless_steps() {
+        let target_id = target(1);
+        let accepted = BatchRequest::new(
+            PageSelection::Target(target_id),
+            vec![BrowserOperationRequest::InspectPage(InspectPageRequest {
+                target: PageSelection::Selected,
+            })],
+            Duration::from_secs(1),
+            BatchOptions::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            accepted.steps[0].scope(),
+            BrowserOperationScope::Page(PageSelection::Target(target_id))
+        );
     }
 
     #[test]

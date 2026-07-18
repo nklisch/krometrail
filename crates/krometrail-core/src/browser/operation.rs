@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::CapabilityId;
+use crate::{CapabilityId, TargetId};
 
 use super::{
     AcceptedLocator, ActionCategory, ActionDefinition, ActionabilityRequirement, BatchRequest,
@@ -56,6 +56,7 @@ pub struct BrowserOperationDefinition {
 
 trait PageScopedRequest {
     fn page_selection(&self) -> PageSelection;
+    fn set_page_selection(&mut self, selection: PageSelection);
 }
 
 macro_rules! selected_field {
@@ -63,6 +64,10 @@ macro_rules! selected_field {
         impl PageScopedRequest for $type {
             fn page_selection(&self) -> PageSelection {
                 self.$field
+            }
+
+            fn set_page_selection(&mut self, selection: PageSelection) {
+                self.$field = selection;
             }
         }
     };
@@ -98,6 +103,21 @@ macro_rules! operation_scope {
     (Page, $request:ident) => {
         BrowserOperationScope::Page($request.page_selection())
     };
+}
+
+macro_rules! inherit_selected_target {
+    (Browser, $request:ident, $target_id:ident) => {{
+        let _ = ($request, $target_id);
+        false
+    }};
+    (Page, $request:ident, $target_id:ident) => {{
+        if $request.page_selection() == PageSelection::Selected {
+            $request.set_page_selection(PageSelection::Target($target_id));
+            true
+        } else {
+            false
+        }
+    }};
 }
 
 macro_rules! define_browser_operations {
@@ -152,6 +172,11 @@ macro_rules! define_browser_operations {
             pub const fn stable_name(&self) -> &'static str { self.kind().stable_name() }
             pub fn scope(&self) -> BrowserOperationScope {
                 match self { $(Self::$variant(request) => operation_scope!($scope, request)),+ }
+            }
+            pub fn inherit_selected_target(&mut self, target_id: TargetId) -> bool {
+                match self {
+                    $(Self::$variant(request) => inherit_selected_target!($scope, request, target_id)),+
+                }
             }
         }
 
