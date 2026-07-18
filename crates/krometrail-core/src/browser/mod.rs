@@ -1,9 +1,12 @@
 //! Browser and page-target domain contracts.
 
+mod assets;
 mod batch;
+mod contexts;
 mod control;
 mod events;
 mod interaction;
+mod local_io;
 mod observation;
 mod operation;
 mod privacy;
@@ -12,9 +15,18 @@ mod target;
 mod viewport;
 mod wait;
 
+pub use assets::{
+    ListPageAssetsRequest, MAX_PAGE_ASSETS, PageAssetInventory, PageAssetKind, PageAssetMetadata,
+};
 pub use batch::{
     BatchFailurePolicy, BatchOptions, BatchOutcome, BatchRequest, BatchResult, BatchSkipReason,
     BatchStepResult, BatchStepStatus, wait_timeout_error,
+};
+pub use contexts::{
+    FrameAccess, ListFramesRequest, ListPageContextsRequest, MAX_KNOWN_PAGE_TARGETS,
+    MAX_PAGE_FRAMES, PageContextInventory, PageContextStatus, PageFrameInventory,
+    PageFrameReference, PageFrameStatus, PageSequence, SemanticDocumentScope, WaitForPageRequest,
+    WaitForPageResult,
 };
 pub use control::{
     BrowserStatus, ClosePageRequest, CreatePageRequest, DEFAULT_MANAGED_PROFILE_NAME,
@@ -44,6 +56,13 @@ pub use interaction::{
     Modifier, Modifiers, MouseButton, NamedKey, PressKeysRequest, SanitizedParameters, ScrollDelta,
     ScrollRequest, SelectOptionRequest, SelectValue, UploadFilesRequest, ValidatedFilePath,
 };
+pub use local_io::{
+    CancelDownloadRequest, CancelDownloadResult, ClipboardRead, ClipboardWriteResult,
+    DownloadDisplayName, DownloadInventory, DownloadSequence, DownloadState, ListDownloadsRequest,
+    MAX_CLIPBOARD_TEXT_BYTES, MAX_DOWNLOAD_WAIT_MILLIS, MAX_MANAGED_DOWNLOAD_BYTES,
+    MAX_MANAGED_DOWNLOADS, ManagedDownload, ManagedDownloadRead, ReadClipboardRequest,
+    ReadManagedDownloadRequest, WaitForDownloadRequest, WriteClipboardRequest,
+};
 pub use observation::{
     AccessibleProperty, AccessibleValue, CoordinateSpace, CssPoint, CssRect, CssSize,
     DEFAULT_SEMANTIC_MATCH_LIMIT, DocumentReadiness, ElementLocator, EncodedScreenshot,
@@ -71,8 +90,8 @@ pub use session::{
 };
 pub use target::{
     BrowserInstallation, BrowserInstallationSource, BrowserProduct, BrowserProductVersion,
-    BrowserVersion, ManagedProfilePersistence, ManagedProfileRef, PageTarget, ProfileIdentity,
-    ProfileRef,
+    BrowserVersion, ManagedProfilePersistence, ManagedProfileRef, ManagedProfileSummary,
+    PageTarget, ProfileIdentity, ProfileRef,
 };
 pub use viewport::{
     EffectiveViewport, MAX_VIEWPORT_DEVICE_SCALE, MAX_VIEWPORT_DIMENSION, SetViewportRequest,

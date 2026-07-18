@@ -152,6 +152,12 @@ impl ProfileIdentity {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ManagedProfileSummary {
+    pub identity: ProfileIdentity,
+    pub in_use: bool,
+}
+
 impl<'de> Deserialize<'de> for ProfileIdentity {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where

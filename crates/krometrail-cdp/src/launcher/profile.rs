@@ -1,6 +1,6 @@
 //! Exclusive ownership of Krometrail-managed profile directories.
 
-use krometrail_core::{ManagedProfile, ProfileIdentity, ProfileRef};
+use krometrail_core::{ManagedProfile, ManagedProfileSummary, ProfileIdentity, ProfileRef};
 use std::{
     fs::{self, File, OpenOptions},
     io,
@@ -149,6 +149,39 @@ impl Drop for ProfileLease {
     fn drop(&mut self) {
         self.cleanup();
     }
+}
+
+/// List reusable managed profiles without exposing their filesystem locations or contents.
+pub fn list_reusable_profiles(root: &Path) -> Result<Vec<ManagedProfileSummary>, ProfileError> {
+    let profiles_root = root.join("profiles");
+    let entries = match fs::read_dir(&profiles_root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_) => return Err(ProfileError::Root),
+    };
+    let mut profiles = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|_| ProfileError::Root)?;
+        let metadata = entry.file_type().map_err(|_| ProfileError::Root)?;
+        if !metadata.is_dir() || metadata.is_symlink() {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if validate_name(&name).is_err() {
+            continue;
+        }
+        let Ok(identity) = ProfileIdentity::new(name) else {
+            continue;
+        };
+        profiles.push(ManagedProfileSummary {
+            identity,
+            in_use: entry.path().join(".krometrail.lock").is_file(),
+        });
+    }
+    profiles.sort_by(|left, right| left.identity.as_str().cmp(right.identity.as_str()));
+    Ok(profiles)
 }
 
 fn validate_name(name: &str) -> Result<(), ProfileError> {
@@ -333,6 +366,42 @@ mod tests {
                 Err(ProfileError::InvalidName)
             ));
         }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn inventory_is_sorted_private_and_excludes_temporary_and_symlink_entries() {
+        let root = root();
+        let active = ProfileLease::acquire(
+            &root,
+            &ManagedProfile::Reusable {
+                name: ProfileIdentity::new("z-active").unwrap(),
+            },
+        )
+        .unwrap();
+        drop(
+            ProfileLease::acquire(
+                &root,
+                &ManagedProfile::Reusable {
+                    name: ProfileIdentity::new("a-idle").unwrap(),
+                },
+            )
+            .unwrap(),
+        );
+        let temporary = ProfileLease::acquire(&root, &ManagedProfile::Temporary).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(active.path(), root.join("profiles/link")).unwrap();
+
+        let profiles = list_reusable_profiles(&root).unwrap();
+        assert_eq!(profiles.len(), 2);
+        assert_eq!(profiles[0].identity.as_str(), "a-idle");
+        assert!(!profiles[0].in_use);
+        assert_eq!(profiles[1].identity.as_str(), "z-active");
+        assert!(profiles[1].in_use);
+        assert!(temporary.path().starts_with(root.join("tmp")));
+
+        drop(temporary);
+        drop(active);
         let _ = fs::remove_dir_all(root);
     }
 }
