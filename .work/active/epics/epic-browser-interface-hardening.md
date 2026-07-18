@@ -1,7 +1,7 @@
 ---
 id: epic-browser-interface-hardening
 kind: epic
-stage: review
+stage: done
 tags: [browser, agent-ux]
 parent: null
 depends_on: []
@@ -126,3 +126,9 @@ The aggregate review's named qualification gaps are closed. The exact scrollbar 
 - **Stale aggregate decision**: replace the pre-correction statement that refresh failure resumes on last-established geometry with the implemented rule that frames remain fenced/gapped until authoritative refresh succeeds.
 
 Both named findings are fixed and verified. Closure requires no second independent epic review under the recorded standard-weight policy.
+
+## Review (2026-07-18)
+
+**Verdict**: approve.
+
+The one standard fresh-context aggregate pass requested two changes. The stale capture decision now matches the implemented geometry fence, and qualification now combines the exact scrollbar decoder regression, a successful rerun against the original public site, and a real-Chrome nested-frame flow with active persistence. The named fix set passed formatting, full workspace tests, full workspace check, clippy with warnings denied, both focused real-Chrome tests, and plugin distribution verification. Per the recorded closure policy, no second independent epic review was run.
