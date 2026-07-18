@@ -97,9 +97,10 @@ pub use browser::{
     SemanticQuery, SemanticQueryOutcome, SemanticTextMatch, SemanticTextMatchMode,
     SetViewportRequest, SnapshotGeneration, SnapshotNode, SnapshotNodeId, SnapshotPageRequest,
     SupervisedTarget, TargetLifecycleEvent, TargetVisibility, TargetVisibilityEvent,
-    UploadFilesRequest, UrlMatch, ValidatedFilePath, ViewportMetrics, ViewportOperationResult,
-    ViewportOverride, ViewportState, WaitCondition, WaitOutcome, WaitPresence, WaitProbe,
-    WaitRequest, WaitResult, WaitTextMatch, wait_timeout_error,
+    UploadFilesRequest, UrlMatch, ValidatedFilePath, ViewportGuidance, ViewportGuidanceCode,
+    ViewportIntent, ViewportMaterialization, ViewportMetrics, ViewportOperationResult,
+    ViewportOverride, ViewportPreset, ViewportState, WaitCondition, WaitOutcome, WaitPresence,
+    WaitProbe, WaitRequest, WaitResult, WaitTextMatch, viewport_guidance, wait_timeout_error,
 };
 pub use capabilities::{
     CAPABILITY_REGISTRY, CapabilityDefault, CapabilityDefinition, CapabilityId, CapabilitySnapshot,

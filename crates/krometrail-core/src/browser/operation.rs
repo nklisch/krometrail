@@ -316,7 +316,7 @@ define_browser_operations! {
         stable_name: "go_forward", description: "Move forward in page history and return live evidence.", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: None,
     },
     SetViewport(SetViewportRequest) => ViewportOperationResult {
-        stable_name: "set_viewport", description: "Apply or clear explicit target-scoped viewport and device metrics.", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: None,
+        stable_name: "set_viewport", description: "Apply a responsive/mobile preset or custom target-scoped viewport, or restore browser defaults.", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: None,
     },
     Click(ClickRequest) => InteractionResult {
         stable_name: "click", description: "Click an element or declared coordinate and return live evidence.", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: Some(&ACTION_CLICK),

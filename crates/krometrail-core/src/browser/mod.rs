@@ -76,7 +76,8 @@ pub use target::{
 };
 pub use viewport::{
     EffectiveViewport, MAX_VIEWPORT_DEVICE_SCALE, MAX_VIEWPORT_DIMENSION, SetViewportRequest,
-    ViewportMetrics, ViewportOperationResult, ViewportOverride,
+    ViewportGuidance, ViewportGuidanceCode, ViewportIntent, ViewportMaterialization,
+    ViewportMetrics, ViewportOperationResult, ViewportOverride, ViewportPreset, viewport_guidance,
 };
 pub(crate) use wait::validate_operation_timeout;
 pub use wait::{
