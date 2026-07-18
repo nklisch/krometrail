@@ -4,7 +4,7 @@ mod support;
 
 use std::sync::{
     Arc,
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -14,12 +14,13 @@ use krometrail_cdp::{
 use krometrail_core::{
     AttachBrowser, BatchFailurePolicy, BatchOptions, BatchOutcome, BatchRequest, BatchSkipReason,
     BatchStepStatus, BrowserConnectRequest, BrowserConnector, BrowserOperationRequest,
-    BrowserOperationResult, ClickRequest, CoordinateSpace, CssPoint, DocumentReadiness,
-    ElementLocator, ElementState, ErrorCode, EvaluationValue, InteractionAnchor,
-    InteractionEvidenceSink, InteractionLocator, InteractionRecord, LaunchBrowser, ManagedProfile,
-    Modifiers, MouseButton, NavigationId, ObservationPart, ObservedTime, PageSelection, PortFuture,
-    ReadOnlyEvaluationRequest, SnapshotPageRequest, UrlMatch, WaitCondition, WaitOutcome,
-    WaitPresence, WaitProbe, WaitRequest, WaitTextMatch,
+    BrowserOperationResult, CancellationSignal, ClickRequest, CoordinateSpace, CssPoint,
+    DocumentReadiness, ElementLocator, ElementState, ErrorCode, EvaluationValue, InteractionAnchor,
+    InteractionEvidenceSink, InteractionLocator, InteractionRecord, LaunchBrowser,
+    ListPageContextsRequest, ManagedProfile, Modifiers, MouseButton, NavigationId, ObservationPart,
+    ObservedTime, PageSelection, PortFuture, ReadOnlyEvaluationRequest, SnapshotPageRequest,
+    UrlMatch, WaitCondition, WaitForPageRequest, WaitOutcome, WaitPresence, WaitProbe, WaitRequest,
+    WaitTextMatch,
 };
 use serde_json::{Value, json};
 use support::scripted_cdp::ScriptedCdp;
@@ -108,6 +109,225 @@ async fn scripted_session_with_sink(
 
 async fn scripted_session(transport: ScriptedCdp) -> Arc<dyn krometrail_core::BrowserSessionPort> {
     scripted_session_with_sink(transport, support::evidence_sink()).await
+}
+
+#[derive(Clone, Default)]
+struct RequestCancellation {
+    cancelled: Arc<AtomicBool>,
+    notify: Arc<tokio::sync::Notify>,
+}
+
+impl RequestCancellation {
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+        self.notify.notify_waiters();
+    }
+}
+
+impl CancellationSignal for RequestCancellation {
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    fn cancelled(&self) -> PortFuture<'_, ()> {
+        Box::pin(async move {
+            loop {
+                if self.is_cancelled() {
+                    return;
+                }
+                let notified = self.notify.notified();
+                if self.is_cancelled() {
+                    return;
+                }
+                notified.await;
+            }
+        })
+    }
+}
+
+async fn page_contexts(
+    session: &Arc<dyn krometrail_core::BrowserSessionPort>,
+) -> krometrail_core::PageContextInventory {
+    let result = session
+        .execute(
+            BrowserOperationRequest::ListPageContexts(ListPageContextsRequest::default()),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .unwrap();
+    let BrowserOperationResult::ListPageContexts(result) = result else {
+        panic!("page context inventory")
+    };
+    *result
+}
+
+fn wait_for_page_request(
+    after: krometrail_core::PageSequence,
+    opener_target_id: Option<krometrail_core::TargetId>,
+    timeout_ms: u64,
+) -> BrowserOperationRequest {
+    BrowserOperationRequest::WaitForPage(WaitForPageRequest {
+        after,
+        opener_target_id,
+        timeout_ms,
+    })
+}
+
+#[tokio::test]
+async fn wait_for_page_polls_reconciles_opener_and_never_activates_a_target() {
+    let transport = ScriptedCdp::chrome();
+    let session = scripted_session(transport.clone()).await;
+    let initial = page_contexts(&session).await;
+    let opener = initial.pages[0].page.target.target.id();
+    transport.push_response(
+        "Target.getTargets",
+        json!({"targetInfos":[
+            {"targetId":"target-a","type":"page","url":"http://fixture/","title":"fixture"},
+            {"targetId":"target-b","type":"page","url":"http://popup/","title":"popup","openerId":"target-a"}
+        ]}),
+    );
+    transport.push_response("Target.attachToTarget", json!({"sessionId":"session-b"}));
+
+    let result = session
+        .execute(
+            wait_for_page_request(initial.cursor, Some(opener), 1_000),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .unwrap();
+    let BrowserOperationResult::WaitForPage(result) = result else {
+        panic!("wait for page result")
+    };
+    assert!(result.matched.sequence > initial.cursor);
+    assert_eq!(result.matched.opener_target_id, Some(opener));
+    assert_eq!(
+        result.matched.page.target.target.browser_target_key(),
+        "target-b"
+    );
+    assert!(
+        transport
+            .command_calls()
+            .iter()
+            .all(|call| call.method != "Target.activateTarget")
+    );
+    session.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn wait_for_page_reports_timeout_and_caller_cancellation() {
+    let transport = ScriptedCdp::chrome();
+    let session = scripted_session(transport.clone()).await;
+    let cursor = page_contexts(&session).await.cursor;
+    let error = session
+        .execute(
+            wait_for_page_request(cursor, None, 1),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::WaitTimedOut);
+
+    let command_count = transport
+        .command_calls()
+        .iter()
+        .filter(|call| call.method == "Target.getTargets")
+        .count();
+    let cancellation = RequestCancellation::default();
+    let operation = {
+        let session = Arc::clone(&session);
+        let signal = cancellation.clone();
+        tokio::spawn(async move {
+            session
+                .execute(
+                    wait_for_page_request(cursor, None, 1_000),
+                    krometrail_core::BrowserOperationContext::with_cancellation(Arc::new(signal)),
+                )
+                .await
+        })
+    };
+    transport
+        .wait_for_command_count("Target.getTargets", command_count + 1)
+        .await;
+    cancellation.cancel();
+    let error = tokio::time::timeout(std::time::Duration::from_secs(1), operation)
+        .await
+        .expect("caller cancellation interrupts page wait")
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::Cancelled);
+    session.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn wait_for_page_reports_session_cancellation_and_disconnect() {
+    let transport = ScriptedCdp::chrome();
+    let session = scripted_session(transport.clone()).await;
+    let cursor = page_contexts(&session).await.cursor;
+    let command_count = transport
+        .command_calls()
+        .iter()
+        .filter(|call| call.method == "Target.getTargets")
+        .count();
+    let operation = {
+        let session = Arc::clone(&session);
+        tokio::spawn(async move {
+            session
+                .execute(
+                    wait_for_page_request(cursor, None, 1_000),
+                    krometrail_core::BrowserOperationContext::default(),
+                )
+                .await
+        })
+    };
+    transport
+        .wait_for_command_count("Target.getTargets", command_count + 1)
+        .await;
+    let stop = {
+        let session = Arc::clone(&session);
+        tokio::spawn(async move { session.stop().await })
+    };
+    let error = tokio::time::timeout(std::time::Duration::from_secs(1), operation)
+        .await
+        .expect("session shutdown interrupts page wait")
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::Cancelled);
+    tokio::time::timeout(std::time::Duration::from_secs(1), stop)
+        .await
+        .expect("session stop completes after wait cancellation")
+        .unwrap()
+        .unwrap();
+
+    let transport = ScriptedCdp::chrome();
+    let session = scripted_session(transport.clone()).await;
+    let cursor = page_contexts(&session).await.cursor;
+    let command_count = transport
+        .command_calls()
+        .iter()
+        .filter(|call| call.method == "Target.getTargets")
+        .count();
+    let operation = {
+        let session = Arc::clone(&session);
+        tokio::spawn(async move {
+            session
+                .execute(
+                    wait_for_page_request(cursor, None, 1_000),
+                    krometrail_core::BrowserOperationContext::default(),
+                )
+                .await
+        })
+    };
+    transport
+        .wait_for_command_count("Target.getTargets", command_count + 1)
+        .await;
+    transport.disconnect();
+    let error = tokio::time::timeout(std::time::Duration::from_secs(1), operation)
+        .await
+        .expect("disconnect interrupts page wait")
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::BrowserDisconnected);
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(1), session.stop()).await;
 }
 
 fn page_wait(target: krometrail_core::TargetId, expression: &str) -> BrowserOperationRequest {

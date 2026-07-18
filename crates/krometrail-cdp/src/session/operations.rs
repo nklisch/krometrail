@@ -241,7 +241,7 @@ async fn wait_for_page(
                 krometrail_core::WaitForPageResult { matched, cursor },
             )));
         }
-        if cancellation.request_is_cancelled() {
+        if cancellation.is_cancelled() {
             return Err(stable_error(
                 ErrorCode::Cancelled,
                 "browser page wait was cancelled",
