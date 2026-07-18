@@ -280,6 +280,13 @@ pub enum BrowserSessionEvent {
     CaptureGapDeclared {
         gap: CaptureGap,
     },
+    DownloadStateChanged {
+        download_id: crate::DownloadId,
+        target_id: Option<crate::ids::TargetId>,
+        state: super::DownloadState,
+        received_bytes: u64,
+        total_bytes: Option<u64>,
+    },
 }
 
 pub const REQUIRED_RENDERER_CAPABILITIES: &[RendererCapability] = RendererCapability::REQUIRED;

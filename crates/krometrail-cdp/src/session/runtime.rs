@@ -549,7 +549,8 @@ fn observe_supervisor_event(browser_events: &SessionDomainAuthority, event: &Bro
         | BrowserSessionEvent::SessionFailed { .. }
         | BrowserSessionEvent::SelectedTargetChanged { .. }
         | BrowserSessionEvent::CaptureStateChanged { .. }
-        | BrowserSessionEvent::CaptureGapDeclared { .. } => {}
+        | BrowserSessionEvent::CaptureGapDeclared { .. }
+        | BrowserSessionEvent::DownloadStateChanged { .. } => {}
     }
 }
 

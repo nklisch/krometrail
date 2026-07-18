@@ -877,7 +877,7 @@ impl InteractionRecord {
                 "interaction record times must be monotonically ordered",
             ));
         }
-        if !action.is_interaction() {
+        if !action.is_interaction() && action != BrowserOperationKind::WriteClipboard {
             return Err(invalid(
                 "interaction record action must be an interaction operation",
             ));

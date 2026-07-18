@@ -424,6 +424,7 @@ impl BrowserConnector for ProductionBrowserConnector {
                         &managed_download_root,
                         session_id,
                         Arc::clone(&ids),
+                        Arc::clone(&subscribers),
                     )
                     .await?,
                 )

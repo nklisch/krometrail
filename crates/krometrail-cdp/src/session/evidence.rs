@@ -1,7 +1,8 @@
 use krometrail_core::{
     BrowserOperationKind, BrowserOperationResult, ErrorCode, ErrorContext, IdSource,
-    InteractionAnchor, InteractionEvidenceSink, InteractionRecord, KrometrailError, MonotonicClock,
-    NavigationId, NonEmptyText, PageChange, PageOperationOutcome, Result, RetryAdvice,
+    InteractionAnchor, InteractionEvidenceSink, InteractionOutcome, InteractionRecord,
+    KrometrailError, LocatorSummary, MonotonicClock, NavigationId, NonEmptyText,
+    ObservationContext, PageChange, PageOperationOutcome, Result, RetryAdvice, SanitizedParameters,
 };
 
 struct EvidenceProjection {
@@ -48,7 +49,6 @@ fn project_result(
         | BrowserOperationResult::GoBack(value)
         | BrowserOperationResult::GoForward(value) => Some(value.as_ref()),
         BrowserOperationResult::SetViewport(value) => Some(&value.operation),
-        BrowserOperationResult::WriteClipboard(value) => Some(&value.operation),
         _ => None,
     };
     if let Some(page) = page {
@@ -73,6 +73,32 @@ fn project_result(
             anchor: page.interaction.clone(),
             record: None,
             navigation_id,
+        }));
+    }
+
+    if let BrowserOperationResult::WriteClipboard(value) = result {
+        let anchor = value.operation.interaction.clone();
+        let record = InteractionRecord::new(
+            anchor.interaction_id,
+            ObservationContext::new(
+                anchor.session_id,
+                anchor.target_id,
+                0,
+                anchor.timing.started_at,
+                anchor.timing.completed_at,
+            )?,
+            anchor.timing.dispatched_at,
+            anchor.timing.completed_at,
+            BrowserOperationKind::WriteClipboard,
+            SanitizedParameters::new(serde_json::json!({"utf8_bytes": value.utf8_bytes}))?,
+            LocatorSummary::from_locator(None),
+            InteractionOutcome::Dispatched,
+            None,
+        )?;
+        return Ok(Some(EvidenceProjection {
+            anchor,
+            record: Some(record),
+            navigation_id: None,
         }));
     }
 
@@ -110,8 +136,10 @@ fn project_result(
         | BrowserOperationResult::ReloadPage(_)
         | BrowserOperationResult::GoBack(_)
         | BrowserOperationResult::GoForward(_)
-        | BrowserOperationResult::SetViewport(_)
-        | BrowserOperationResult::WriteClipboard(_) => unreachable!("page results handled above"),
+        | BrowserOperationResult::SetViewport(_) => unreachable!("page results handled above"),
+        BrowserOperationResult::WriteClipboard(_) => {
+            unreachable!("clipboard result handled above")
+        }
     };
     action
         .map(|action| {
@@ -249,6 +277,36 @@ mod tests {
             .unwrap()
             .navigation_id
             .is_none()
+        );
+    }
+
+    #[test]
+    fn clipboard_write_evidence_persists_only_the_utf8_byte_count() {
+        let operation = page_result(
+            BrowserOperationKind::WriteClipboard,
+            PageChange::ClipboardWritten,
+        );
+        let projection = project_result(
+            &BrowserOperationResult::WriteClipboard(Box::new(
+                krometrail_core::ClipboardWriteResult {
+                    utf8_bytes: 17,
+                    operation,
+                },
+            )),
+            &FixedIds,
+        )
+        .unwrap()
+        .unwrap();
+        let record = projection.record.unwrap();
+        assert_eq!(record.action, BrowserOperationKind::WriteClipboard);
+        assert_eq!(
+            record.sanitized_parameters.as_json(),
+            &serde_json::json!({"utf8_bytes":17})
+        );
+        assert!(
+            !serde_json::to_string(&record)
+                .unwrap()
+                .contains("clipboard text")
         );
     }
 }

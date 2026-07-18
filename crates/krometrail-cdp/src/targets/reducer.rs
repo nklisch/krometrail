@@ -1016,7 +1016,8 @@ fn publish(
         | BrowserSessionEvent::TargetClosed { .. }
         | BrowserSessionEvent::SelectedTargetChanged { .. }
         | BrowserSessionEvent::CaptureStateChanged { .. }
-        | BrowserSessionEvent::CaptureGapDeclared { .. } => {}
+        | BrowserSessionEvent::CaptureGapDeclared { .. }
+        | BrowserSessionEvent::DownloadStateChanged { .. } => {}
     }
     effects.push(SupervisorEffect::Publish(event));
 }
