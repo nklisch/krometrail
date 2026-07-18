@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-video-artifacts-clip-contracts
 kind: feature
-stage: implementing
+stage: review
 tags: [visual, agent-ux, security]
 parent: epic-temporal-video-artifacts
 depends_on: []
@@ -389,3 +389,27 @@ The stories are durable checkpoints inside one cohesive feature implementation b
 
 - Invoked because: stable timing/provenance and encoder-port contracts are high-risk and feed two parallel downstream features.
 - Skipped/degraded: the active autopilot delegation explicitly prohibits nested agents and peeragent. This non-blocking design-time degradation is offset by constructor invariants, a source-grounded pre-mortem, and the unchanged standard feature/final completion review requirements.
+
+## Implementation summary
+
+- Execution capability: GPT-5.6 Sol at xhigh reasoning, coordinated as one cohesive feature worker under autopilot.
+- Review weight: standard. This implementation is ready for the independent feature review; the implementing worker did not self-close the feature.
+- Completed child stories and commits:
+  - `epic-temporal-video-artifacts-clip-contracts-domain-and-encoder-port` — `220661f`
+  - `epic-temporal-video-artifacts-clip-contracts-presentation-planner` — `f7e74a6`
+  - `epic-temporal-video-artifacts-clip-contracts-provenance-manifest` — `b4d66a5`
+- Core now owns the validated temporal-video plan vocabulary, fixed H.264 encoding profile, privacy-safe encoder identity, object-safe injected encoder port, stable encoder errors, typed manifest, and canonical cache transcript. The root application owns the deterministic pure presentation planner; no process, filesystem, FFmpeg, browser, MCP, or provider concerns entered these contracts.
+- The planner deterministically preserves source provenance, maps declared gaps without interpolation, applies disclosed real-time/model timing rules, and fails rather than silently fitting beyond hard ceilings. The manifest embeds that exact plan and binds it to the exact resolved scope, output identity, encoder identity, fixed media contract, and output profile.
+- Existing `ImageFormat` is a closed enum, so unsupported image variants remain unconstructable rather than requiring another format registry. Existing public-field `VisualEpoch` values are revalidated at video boundaries; it gained only an additive `JsonSchema` derive because the externally reusable video-plan schema embeds it.
+- A selected meaningful frame that is fully obscured by an explicit gap replacement is rejected with `invalid_input`; the planner does not claim a meaningful hold that has no visible source segment. All input frame IDs still remain in ordered provenance.
+- The root planner has a narrowly scoped `dead_code` allowance until the dependent retained-generation service consumes it. No broader warning suppression or compatibility shim was added.
+- Simplification completed as designed: existing range, frame, gap, epoch, geometry, cancellation, identity, and hash types remain the authorities; the media contract is deliberately closed; no adjacent issue was discovered or parked.
+
+## Verification evidence
+
+- `cargo fmt --all -- --check` — passed.
+- `cargo check --workspace --all-targets --locked` — passed.
+- `cargo test --workspace --all-targets --locked` — passed across the workspace; existing manual/performance tests remained intentionally ignored.
+- `cargo clippy --workspace --all-targets --locked -- -D warnings` — passed.
+- No existing test was removed, weakened, or skipped to obtain these results.
+- `.work/bin/work-view` is an x86-64 Linux executable in this checkout and cannot execute on the macOS host. Dependency readiness and child stages were therefore verified directly from item frontmatter; this did not block implementation or verification.
