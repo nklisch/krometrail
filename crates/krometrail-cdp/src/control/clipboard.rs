@@ -5,11 +5,12 @@ use krometrail_core::{
 };
 use serde_json::json;
 
-use super::{BoundTarget, PageControl, transport_error};
+use super::{BoundTarget, PageControl, operation_error, transport_error};
 use crate::transport::{CdpTransport, CommandScope};
 
 const READ_CLIPBOARD: &str = "async function(){if(!globalThis.isSecureContext)throw new Error('secure_context_required');if(document.visibilityState!=='visible'||!document.hasFocus())throw new Error('focus_required');if(!navigator.clipboard)throw new Error('clipboard_unavailable');return await navigator.clipboard.readText();}";
 const WRITE_CLIPBOARD: &str = "async function(value){if(!globalThis.isSecureContext)throw new Error('secure_context_required');if(document.visibilityState!=='visible'||!document.hasFocus())throw new Error('focus_required');if(!navigator.clipboard)throw new Error('clipboard_unavailable');await navigator.clipboard.writeText(value);return true;}";
+const CLIPBOARD_WORLD: &str = "__krometrail_clipboard_v1";
 
 impl PageControl {
     pub(crate) async fn read_clipboard(
@@ -19,11 +20,12 @@ impl PageControl {
         _request: ReadClipboardRequest,
     ) -> Result<ClipboardRead> {
         require_visible(bound)?;
+        let execution_context_id = clipboard_execution_context(transport, bound).await?;
         let response = transport.send_raw(
             &CommandScope::Session(bound.transport_session.clone()),
             "Runtime.callFunctionOn",
-            json!({"functionDeclaration": READ_CLIPBOARD, "awaitPromise": true, "returnByValue": true}),
-        ).await.map_err(|error| transport_error(error, ErrorCode::InteractionFailed, bound.target_id))?;
+            json!({"functionDeclaration": READ_CLIPBOARD, "executionContextId": execution_context_id, "awaitPromise": true, "returnByValue": true}),
+        ).await.map_err(|error| transport_error(error, ErrorCode::StaleReference, bound.target_id))?;
         let text = result_value(&response)
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| clipboard_response_error(bound, &response))?;
@@ -57,16 +59,65 @@ impl PageControl {
                 "write a smaller text value and retry",
             ));
         }
+        let execution_context_id = clipboard_execution_context(transport, bound).await?;
         let response = transport.send_raw(
             &CommandScope::Session(bound.transport_session.clone()),
             "Runtime.callFunctionOn",
-            json!({"functionDeclaration": WRITE_CLIPBOARD, "arguments": [{"value": request.text}], "awaitPromise": true, "returnByValue": true}),
-        ).await.map_err(|error| transport_error(error, ErrorCode::InteractionFailed, bound.target_id))?;
+            json!({"functionDeclaration": WRITE_CLIPBOARD, "executionContextId": execution_context_id, "arguments": [{"value": request.text}], "awaitPromise": true, "returnByValue": true}),
+        ).await.map_err(|error| transport_error(error, ErrorCode::StaleReference, bound.target_id))?;
         if result_value(&response).and_then(serde_json::Value::as_bool) != Some(true) {
             return Err(clipboard_response_error(bound, &response));
         }
         Ok(())
     }
+}
+
+async fn clipboard_execution_context(
+    transport: &dyn CdpTransport,
+    bound: &BoundTarget,
+) -> Result<i64> {
+    let frame_tree = transport
+        .send_raw(
+            &CommandScope::Session(bound.transport_session.clone()),
+            "Page.getFrameTree",
+            json!({}),
+        )
+        .await
+        .map_err(|error| transport_error(error, ErrorCode::StaleReference, bound.target_id))?;
+    let root = frame_tree.get("frameTree").unwrap_or(&frame_tree);
+    let frame_id = root
+        .pointer("/frame/id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            operation_error(
+                ErrorCode::StaleReference,
+                bound.target_id,
+                "clipboard document changed before its isolated world could be resolved",
+            )
+        })?;
+    let world = transport
+        .send_raw(
+            &CommandScope::Session(bound.transport_session.clone()),
+            "Page.createIsolatedWorld",
+            json!({
+                "frameId": frame_id,
+                "worldName": CLIPBOARD_WORLD,
+                "grantUniveralAccess": false,
+            }),
+        )
+        .await
+        .map_err(|error| transport_error(error, ErrorCode::StaleReference, bound.target_id))?;
+    world
+        .get("executionContextId")
+        .or_else(|| world.pointer("/result/executionContextId"))
+        .and_then(serde_json::Value::as_i64)
+        .ok_or_else(|| {
+            operation_error(
+                ErrorCode::StaleReference,
+                bound.target_id,
+                "clipboard document changed before its isolated world became available",
+            )
+        })
 }
 
 fn result_value(value: &serde_json::Value) -> Option<&serde_json::Value> {
@@ -225,7 +276,11 @@ mod tests {
     async fn write_uses_a_value_argument_and_never_mutates_permissions_or_focus() {
         let transport = ScriptedTransport {
             calls: Mutex::new(Vec::new()),
-            responses: Mutex::new(vec![json!({"result":{"result":{"value":true}}})]),
+            responses: Mutex::new(vec![
+                json!({"frameTree":{"frame":{"id":"main-frame"}}}),
+                json!({"executionContextId": 41}),
+                json!({"result":{"result":{"value":true}}}),
+            ]),
         };
         let request = WriteClipboardRequest {
             target: krometrail_core::PageSelection::Selected,
@@ -236,11 +291,17 @@ mod tests {
             .await
             .unwrap();
         let calls = transport.calls.lock().unwrap();
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].0, "Runtime.callFunctionOn");
-        assert_eq!(calls[0].1["arguments"][0]["value"], "sentinel-value");
+        assert_eq!(calls.len(), 3);
+        assert_eq!(calls[0].0, "Page.getFrameTree");
+        assert_eq!(calls[1].0, "Page.createIsolatedWorld");
+        assert_eq!(calls[1].1["frameId"], "main-frame");
+        assert_eq!(calls[1].1["worldName"], CLIPBOARD_WORLD);
+        assert_eq!(calls[1].1["grantUniveralAccess"], false);
+        assert_eq!(calls[2].0, "Runtime.callFunctionOn");
+        assert_eq!(calls[2].1["executionContextId"], 41);
+        assert_eq!(calls[2].1["arguments"][0]["value"], "sentinel-value");
         assert!(
-            !calls[0].1["functionDeclaration"]
+            !calls[2].1["functionDeclaration"]
                 .as_str()
                 .unwrap()
                 .contains("sentinel-value")
@@ -286,6 +347,39 @@ mod tests {
                 &json!({"result":{"exceptionDetails":{"exception":{"description":description}}}}),
             );
             assert_eq!(error.code, ErrorCode::InteractionFailed);
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_document_or_world_is_stale_and_never_dispatches_the_bridge() {
+        for response in [
+            vec![json!({"frameTree":{}})],
+            vec![
+                json!({"frameTree":{"frame":{"id":"main-frame"}}}),
+                json!({}),
+            ],
+        ] {
+            let transport = ScriptedTransport {
+                calls: Mutex::new(Vec::new()),
+                responses: Mutex::new(response),
+            };
+            let error = control()
+                .read_clipboard(
+                    &transport,
+                    &bound(TargetVisibility::Visible),
+                    ReadClipboardRequest::default(),
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, ErrorCode::StaleReference);
+            assert!(
+                transport
+                    .calls
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .all(|(method, _)| method != "Runtime.callFunctionOn")
+            );
         }
     }
 }
