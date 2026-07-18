@@ -5,7 +5,7 @@ stage: done
 tags: [agent-ux, diagnostics]
 parent: compact-live-observations
 depends_on: []
-release_binding: null
+release_binding: 1.0.4
 gate_origin: null
 created: 2026-07-17
 updated: 2026-07-17

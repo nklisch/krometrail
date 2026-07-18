@@ -1,11 +1,11 @@
 ---
 id: compact-live-observations
 kind: feature
-stage: review
+stage: done
 tags: [agent-ux, browser]
 parent: null
 depends_on: []
-release_binding: null
+release_binding: 1.0.4
 gate_origin: null
 created: 2026-07-17
 updated: 2026-07-17
@@ -141,3 +141,14 @@ impl Projection {
 - `cargo fmt --all -- --check` — passed.
 - `cargo check --workspace --all-targets --locked` — passed.
 - The focused regressions cover the reproduced 403-node shape, both automatic roles, both explicit drill-down surfaces, exact omission accounting, byte-equivalent small snapshots, cloned three-component dialog degradation, pre-log deduplication, distinct same-code warning identity, and duplicate capture-failure composition.
+
+## Review (2026-07-17)
+
+**Verdict**: Approve
+
+**Blockers**: none
+**Important**: none
+**Nits**: none
+**Rejected**: none
+
+**Notes**: Standard single same-harness fresh-context pass reviewed commits `a0b814c`, `9915aef`, and `0f3e322`. Correctness, regression coverage, response compatibility, snapshot preorder/reference invariants, warning identity/order/logging, and foundation alignment passed. Focused MCP tests (35), workspace check, formatting, and MCP clippy were green. Security, persistence/migration, and concurrency lenses were not applicable.
