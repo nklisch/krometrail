@@ -1,7 +1,7 @@
 ---
 id: epic-browser-interface-hardening
 kind: epic
-stage: review
+stage: implementing
 tags: [browser, agent-ux]
 parent: null
 depends_on: []
@@ -113,3 +113,12 @@ No product UI surface is introduced. These are MCP/CDP contract repairs and agen
 - `epic-browser-interface-hardening-runtime-reliability` — done after the standard pass's geometry-fence and viewport-guidance blockers were fixed and the named fix set verified without a second review.
 
 Aggregate verification is green across workspace tests, workspace check, workspace clippy with warnings denied, formatting, plugin distribution contracts, and opt-in real-Chrome viewport and same-origin-frame qualification.
+
+## Review findings (2026-07-18)
+
+**Effective weight**: standard — one same-harness fresh-context aggregate pass.
+
+**Closure policy**: request changes; later closure verifies only this named fix set and does not run another independent epic review.
+
+- **Trigger-specific real-Chrome qualification**: existing opt-in viewport and frame tests passed but did not force scrollbar-reduced visual geometry or assert capture health/persistence across nested-frame navigation. Extend the real-Chrome cases or record equivalent concrete post-fix outcomes before claiming those runtime acceptance points.
+- **Stale aggregate decision**: replace the pre-correction statement that refresh failure resumes on last-established geometry with the implemented rule that frames remain fenced/gapped until authoritative refresh succeeds.
