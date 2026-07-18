@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-video-artifacts-clip-contracts
 kind: feature
-stage: review
+stage: done
 tags: [visual, agent-ux, security]
 parent: epic-temporal-video-artifacts
 depends_on: []
@@ -402,6 +402,17 @@ The stories are durable checkpoints inside one cohesive feature implementation b
 - Align generated JSON Schema with the strict wire decoders and bounded numeric/hash values; this is included in the blocker fix because the feature acceptance explicitly promises source-aligned constructor-backed schemas.
 
 No separate active findings were created: these corrections remain cohesive with the feature's core contract and test surface. The reviewer accepted later-feature ownership of FFmpeg, storage publication, MCP registration, and selector-version binding.
+
+## Review (2026-07-18)
+
+**Verdict**: Approve after verified corrections
+
+**Blockers**: none — exact frame/source binding, durable canonical timing validation, exact persisted gap evidence, and strict source-aligned schemas were fixed in `725fe60`.
+**Important**: none
+**Nits**: none
+**Rejected**: none
+
+**Notes**: `standard` review used one same-harness fresh-context pass after the preferred Claude peer was unavailable because its OAuth token had expired. Per the single-pass closure policy, the receiver inspected the correction and reran the focused core/root video suites without a second independent review. The worker also reported full workspace format, check, tests, and Clippy with warnings denied as green.
 
 ## Implementation summary
 
