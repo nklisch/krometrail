@@ -1,7 +1,7 @@
 ---
 id: epic-browser-interface-hardening-economical-projections
 kind: feature
-stage: review
+stage: done
 tags: [agent-ux, browser]
 parent: epic-browser-interface-hardening
 depends_on: []
@@ -116,3 +116,14 @@ Dense control surfaces can exceed 48 actionable nodes. Omission accounting remai
 
 - Passed: `cargo test -p krometrail-mcp --all-targets --locked` (63 tests), `cargo check -p krometrail-mcp --all-targets --locked`, and `cargo clippy -p krometrail-mcp --all-targets --locked -- -D warnings`.
 - MCP files pass direct `rustfmt --check`. The workspace-wide `cargo fmt --all -- --check` currently reports only concurrent, out-of-scope formatting in `crates/krometrail-cdp/src/control/snapshot.rs`.
+
+## Review (2026-07-18)
+
+**Verdict**: Approve
+
+**Blockers**: none
+**Important**: none
+**Nits**: none
+**Rejected**: none
+
+**Notes**: Standard-weight substrate review used one same-harness fresh-context pass. It verified that compact defaults remain presentation-only, explicit full projection and canonical resources remain intact, and ancestry/omission accounting is truthful. Full workspace tests, check, clippy with warnings denied, formatting, and plugin distribution contracts passed after integration. Persistence, security, and migration lenses were not applicable.
