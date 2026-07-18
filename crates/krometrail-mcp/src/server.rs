@@ -3148,7 +3148,7 @@ mod tests {
         );
         assert_eq!(generic.response.resources.len(), 1);
         let mut arguments = serde_json::to_value(bundle_request()).unwrap();
-        arguments["response"] = json!({"inline_images":"inline"});
+        arguments["response"] = json!({"inline_images":"inline", "temporal":"full"});
         let dependencies = McpDependencies {
             browser: Arc::new(UnusedConnector),
             temporal_debug_bundles: Arc::clone(&spy) as Arc<dyn TemporalDebugBundles>,
@@ -3164,6 +3164,11 @@ mod tests {
         assert_eq!(bundle["result"]["isError"], false);
         let structured = &bundle["result"]["structuredContent"];
         assert_eq!(structured["status"], "succeeded");
+        assert!(
+            structured["result"].get("requested_query").is_some(),
+            "temporal: full retains the pre-existing bundle projection"
+        );
+        assert!(structured["result"]["effective"]["artifact_generators"].is_array());
         let image_metadata = &structured["images"][0]["metadata"];
         assert_eq!(image_metadata["kind"], "artifact");
         assert_eq!(image_metadata["media_type"], "image/png");

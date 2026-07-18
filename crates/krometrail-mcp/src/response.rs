@@ -56,6 +56,14 @@ pub(crate) enum DiagnosticDetail {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum TemporalResponseDetail {
+    #[default]
+    Compact,
+    Full,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ResponseProjectionRequest {
     #[serde(default)]
@@ -66,6 +74,8 @@ pub(crate) struct ResponseProjectionRequest {
     pub page_state: StructuredResponseDetail,
     #[serde(default)]
     pub diagnostics: DiagnosticDetail,
+    #[serde(default)]
+    pub temporal: TemporalResponseDetail,
 }
 
 impl ResponseProjectionRequest {
@@ -76,6 +86,7 @@ impl ResponseProjectionRequest {
             snapshot: StructuredResponseDetail::Legacy,
             page_state: StructuredResponseDetail::Legacy,
             diagnostics: DiagnosticDetail::Automatic,
+            temporal: TemporalResponseDetail::Full,
         }
     }
 }
@@ -492,11 +503,7 @@ pub(crate) fn map_temporal_context_result<T: Serialize>(
     preference: ResponseProjectionRequest,
 ) -> Result<MappedResult, ResponseInvariantError> {
     let mut mapped = map_lifecycle_result(tool, value)?;
-    if matches!(preference.snapshot, StructuredResponseDetail::Compact)
-        || matches!(preference.page_state, StructuredResponseDetail::Compact)
-    {
-        mapped.response.result = compact_temporal_context_result(&mapped.response.result)?;
-    }
+    apply_temporal_projection(&mut mapped.response.result, preference.temporal)?;
     Ok(mapped)
 }
 
@@ -1274,10 +1281,23 @@ fn compact_snapshot_value(value: &Value) -> Result<Value, ResponseInvariantError
     serde_json::to_value(compact_snapshot(snapshot)?).map_err(|_| ResponseInvariantError)
 }
 
+fn apply_temporal_projection(
+    value: &mut Value,
+    detail: TemporalResponseDetail,
+) -> Result<(), ResponseInvariantError> {
+    if detail == TemporalResponseDetail::Compact {
+        *value = compact_temporal_value(value)?;
+    }
+    Ok(())
+}
+
 fn compact_temporal_value(value: &Value) -> Result<Value, ResponseInvariantError> {
     let Some(bundle) = value.as_object() else {
         return Ok(value.clone());
     };
+    if bundle.contains_key("capture_quality") || bundle.contains_key("browser_events") {
+        return compact_temporal_context_value(value);
+    }
     let mut compact = serde_json::Map::new();
     for key in ["range", "header", "warnings", "degradations"] {
         if let Some(value) = bundle.get(key) {
@@ -1344,7 +1364,7 @@ fn compact_temporal_context(context: Option<&Value>) -> Option<Value> {
     }))
 }
 
-fn compact_temporal_context_result(value: &Value) -> Result<Value, ResponseInvariantError> {
+fn compact_temporal_context_value(value: &Value) -> Result<Value, ResponseInvariantError> {
     let Some(object) = value.as_object() else {
         return Ok(value.clone());
     };
@@ -1492,11 +1512,7 @@ pub(crate) async fn map_temporal_bundle_result_projected(
             Err(error) => projection.degrade_with(vec![error]),
         }
     }
-    if matches!(preference.snapshot, StructuredResponseDetail::Compact)
-        || matches!(preference.page_state, StructuredResponseDetail::Compact)
-    {
-        projection.result = compact_temporal_value(&projection.result)?;
-    }
+    apply_temporal_projection(&mut projection.result, preference.temporal)?;
     apply_response_projection(tool, &mut projection, preference)?;
     Ok(mapped(tool, projection, format!("{tool} succeeded")))
 }
@@ -2358,8 +2374,7 @@ mod tests {
                 "automatic live snapshots must retain at most 48 nodes"
             );
             assert!(
-                serde_json::to_vec(&compact.nodes).unwrap().len()
-                    <= 12 * 1024,
+                serde_json::to_vec(&compact.nodes).unwrap().len() <= 12 * 1024,
                 "automatic live snapshots must fit the 12 KiB serialized-node budget"
             );
             assert_eq!(
@@ -2479,6 +2494,7 @@ mod tests {
                     "inline_images": "omit",
                     "snapshot": "compact",
                     "page_state": "full",
+                    "temporal": "full",
                     "diagnostics": "omit"
                 }
             })
@@ -2491,6 +2507,7 @@ mod tests {
         assert_eq!(preference.inline_images, InlineImageDetail::Omit);
         assert_eq!(preference.snapshot, StructuredResponseDetail::Compact);
         assert_eq!(preference.page_state, StructuredResponseDetail::Full);
+        assert_eq!(preference.temporal, TemporalResponseDetail::Full);
         assert_eq!(preference.diagnostics, DiagnosticDetail::Omit);
 
         let secret = "must-not-be-echoed";
@@ -2562,9 +2579,12 @@ mod tests {
 
     #[test]
     fn compact_temporal_projection_removes_repeated_rows_but_keeps_drill_down_facts() {
+        let frame_ids = (8..40)
+            .map(|value| FrameId::from_uuid(uuid::Uuid::from_u128(value)))
+            .collect::<Vec<_>>();
         let value = json!({
             "requested_query": {"verbose": "x".repeat(32_000)},
-            "range": {"session_id": session_id(), "target_id": target_id(), "frame_ids": [FrameId::from_uuid(uuid::Uuid::from_u128(8))]},
+            "range": {"session_id": session_id(), "target_id": target_id(), "frame_ids": frame_ids},
             "effective": {"version": "v1", "artifact_anchor": 4, "artifact_generators": [{}, {}], "focus_times": [4]},
             "header": {"summary": "observed"},
             "markers": [{"id": 1}, {"id": 2}],
@@ -2573,7 +2593,17 @@ mod tests {
             "warnings": [],
             "degradations": []
         });
-        let compact = compact_temporal_value(&value).unwrap();
+        let (_, preference) = split_response_projection(
+            json!({"response": {"snapshot": "omit", "page_state": "omit"}})
+                .as_object()
+                .unwrap()
+                .clone(),
+        )
+        .unwrap();
+        assert_eq!(preference.temporal, TemporalResponseDetail::Compact);
+
+        let mut compact = value.clone();
+        apply_temporal_projection(&mut compact, preference.temporal).unwrap();
         assert_eq!(compact["marker_count"], 2);
         assert_eq!(compact["context"]["browser_events"]["matched_count"], 50);
         assert_eq!(
@@ -2582,6 +2612,66 @@ mod tests {
         );
         assert!(compact["artifacts"].get("range").is_none());
         assert!(serde_json::to_vec(&compact).unwrap().len() < 4_096);
+
+        let mut full = value.clone();
+        apply_temporal_projection(&mut full, TemporalResponseDetail::Full).unwrap();
+        assert_eq!(full, value);
+    }
+
+    #[test]
+    fn temporal_context_projection_uses_temporal_detail_independently() {
+        let value = json!({
+            "range": {"start": 0, "end": 5},
+            "capture_quality": {
+                "requested_range": {"start": 0, "end": 5},
+                "retained_range": {"start": 0, "end": 5},
+                "frame_count": 24,
+                "cadence": null,
+                "gap_summary": {"gap_count": 0},
+                "retention_warnings": [],
+                "warnings": [],
+                "verbose_per_frame": ["x".repeat(32_000)]
+            },
+            "browser_events": {
+                "effective_range": {"start": 0, "end": 5},
+                "matched_count": 24,
+                "returned_count": 24,
+                "events": ["x".repeat(32_000)],
+                "next_cursor": null,
+                "collection_gaps": [],
+                "unavailable_ranges": [],
+                "warnings": []
+            }
+        });
+        let compact = map_temporal_context_result(
+            "query_browser_events",
+            value.clone(),
+            ResponseProjectionRequest {
+                snapshot: StructuredResponseDetail::Omit,
+                page_state: StructuredResponseDetail::Omit,
+                ..ResponseProjectionRequest::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            compact.response.result["browser_events"]
+                .get("events")
+                .is_none()
+        );
+        assert!(serde_json::to_vec(&compact.response.result).unwrap().len() < 4_096);
+
+        let full = map_temporal_context_result(
+            "query_browser_events",
+            value.clone(),
+            ResponseProjectionRequest {
+                snapshot: StructuredResponseDetail::Compact,
+                page_state: StructuredResponseDetail::Compact,
+                temporal: TemporalResponseDetail::Full,
+                ..ResponseProjectionRequest::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(full.response.result, value);
     }
 
     #[test]

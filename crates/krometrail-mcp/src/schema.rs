@@ -420,6 +420,10 @@ mod tests {
             response["properties"]["snapshot"]["enum"],
             serde_json::json!(["legacy", "full", "compact", "omit"])
         );
+        assert_eq!(
+            response["properties"]["temporal"]["enum"],
+            serde_json::json!(["compact", "full"])
+        );
         assert!(base["properties"].get("response").is_none());
         assert_no_references(&Value::Object(projected.as_ref().clone()));
     }
