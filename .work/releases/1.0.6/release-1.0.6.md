@@ -1,7 +1,7 @@
 ---
 id: release-1.0.6
 kind: release
-stage: release-ready
+stage: released
 tags: []
 parent: null
 depends_on: []
@@ -49,4 +49,18 @@ The `v1.0.6` changelog entry covers the complete selected patch scope.
 - Focus-policy core, MCP, CDP, pointer, and lifecycle regressions — passed.
 - Opt-in real Chrome preserve-focus qualification — passed; the original page remained visible while
   `create_page` produced a hidden background tab without activation.
-- Locked workspace formatting, check, all-target tests, and Clippy — pending release helper.
+- Locked workspace formatting, check, all-target tests, and Clippy — passed.
+
+## Shipment
+
+- **Date shipped:** 2026-07-17
+- **Release tag:** `v1.0.6` at `e40e9d233303f01fd371d6396d4b1a3394fd8630`
+- **GitHub release:** https://github.com/nklisch/krometrail/releases/tag/v1.0.6
+- **Release workflow:** https://github.com/nklisch/krometrail/actions/runs/29632160695
+- **Rust CI:** https://github.com/nklisch/krometrail/actions/runs/29632160630
+- **Documentation deployment:** https://github.com/nklisch/krometrail/actions/runs/29632160625
+- **Published files:** five platform executables plus `checksums.txt`; every build, architecture
+  smoke test, attestation, and publication step passed.
+- **Plugin projection:** native Claude and Codex manifests, catalogs, and the exact binary version
+  marker were atomically advanced to 1.0.6 by the release helper.
+- **Total items shipped:** 5.
