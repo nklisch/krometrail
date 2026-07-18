@@ -124,10 +124,18 @@ pub(crate) async fn observe_effective_viewport(
 }
 
 pub(crate) fn capture_geometry(effective: EffectiveViewport) -> Result<CaptureGeometry> {
+    let css_size = if effective.override_active && !effective.mobile {
+        // Desktop emulation controls the layout viewport. The visual viewport can be narrower
+        // when Chrome reserves scrollbar space, so preserving it here would make the recorded
+        // geometry contradict the acknowledged override.
+        effective.layout_css_size
+    } else {
+        effective.css_size
+    };
     Ok(CaptureGeometry {
         viewport: PixelDimensions::new(
-            integral_css_dimension(effective.css_size.width)?,
-            integral_css_dimension(effective.css_size.height)?,
+            integral_css_dimension(css_size.width)?,
+            integral_css_dimension(css_size.height)?,
         )?,
         device_scale_factor: effective.device_scale_factor,
     })
@@ -192,8 +200,7 @@ fn decode_effective_viewport(
         viewport_meta_present,
     };
     if let Some(expected) = declared {
-        let matches = (effective.css_size.width - f64::from(expected.width())).abs() <= 0.5
-            && (effective.css_size.height - f64::from(expected.height())).abs() <= 0.5
+        let matches = declared_geometry_matches(expected, &effective)
             && (effective.device_scale_factor.get() - expected.device_scale_factor().get()).abs()
                 <= 0.01
             && effective.touch == expected.touch();
@@ -212,6 +219,16 @@ fn decode_effective_viewport(
         ));
     }
     Ok(effective)
+}
+
+fn declared_geometry_matches(expected: ViewportMetrics, effective: &EffectiveViewport) -> bool {
+    let observed = if expected.mobile() {
+        effective.css_size
+    } else {
+        effective.layout_css_size
+    };
+    (observed.width - f64::from(expected.width())).abs() <= 0.5
+        && (observed.height - f64::from(expected.height())).abs() <= 0.5
 }
 
 fn number(value: &Value, field: &str) -> Result<f64> {
@@ -276,6 +293,57 @@ mod tests {
             }}),
             &json!({"result":{"result":{"value":{"scale":3.0,"touchPoints":1,"viewportMetaPresent":true}}}}),
             Some(declared),
+            target(),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn desktop_override_accepts_scrollbar_reduced_visual_viewport_and_captures_layout() {
+        let declared = ViewportMetrics::new(390, 844, 1.0, false, false).unwrap();
+        let effective = decode_effective_viewport(
+            &json!({"result":{
+                "cssVisualViewport":{"clientWidth":375,"clientHeight":844},
+                "cssLayoutViewport":{"clientWidth":390,"clientHeight":844}
+            }}),
+            &json!({"result":{"result":{"value":{"scale":1.0,"touchPoints":0,"viewportMetaPresent":true}}}}),
+            Some(declared),
+            target(),
+        )
+        .expect("desktop emulation acknowledges its layout viewport despite a scrollbar");
+
+        assert_eq!(effective.css_size, CssSize::new(375.0, 844.0).unwrap());
+        assert_eq!(effective.layout_css_size, CssSize::new(390.0, 844.0).unwrap());
+        assert_eq!(
+            capture_geometry(effective).unwrap().viewport,
+            PixelDimensions::new(390, 844).unwrap()
+        );
+    }
+
+    #[test]
+    fn desktop_override_rejects_wrong_layout_viewport_despite_scrollbar_reduction() {
+        let declared = ViewportMetrics::new(390, 844, 1.0, false, false).unwrap();
+        assert!(decode_effective_viewport(
+            &json!({"result":{
+                "cssVisualViewport":{"clientWidth":375,"clientHeight":844},
+                "cssLayoutViewport":{"clientWidth":391,"clientHeight":844}
+            }}),
+            &json!({"result":{"result":{"value":{"scale":1.0,"touchPoints":0,"viewportMetaPresent":true}}}}),
+            Some(declared),
+            target(),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn clear_rejects_remaining_touch_emulation() {
+        assert!(decode_effective_viewport(
+            &json!({"result":{
+                "cssVisualViewport":{"clientWidth":1440,"clientHeight":900},
+                "cssLayoutViewport":{"clientWidth":1440,"clientHeight":900}
+            }}),
+            &json!({"result":{"result":{"value":{"scale":1.0,"touchPoints":1,"viewportMetaPresent":true}}}}),
+            None,
             target(),
         )
         .is_err());
