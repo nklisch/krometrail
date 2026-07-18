@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-ergonomics-semantic-targeting
 kind: feature
-stage: implementing
+stage: review
 tags: [agent-ux, browser]
 parent: epic-agent-browser-ergonomics
 depends_on: []
@@ -247,3 +247,13 @@ impl SnapshotRegistry {
 - `DOMSnapshot.captureSnapshot` array/string-table shapes and rendered-text coverage vary across Chrome revisions. The strict decoder plus one real-browser qualification is the gate; if layout text proves incomplete, fall back to an equally bounded read-only DOM runtime projection while retaining the same private metadata and public query contract.
 - Large documents could make semantic capture expensive. Existing 5,000-node/1 MiB limits remain the first bound; operation timing should be measured in the real-browser test before considering a separate performance item.
 - Label/text aggregation can overmatch nested controls. Matching remains restricted to actionable AX nodes, returns ambiguity explicitly, and preserves exact references so the caller must narrow rather than Krometrail guessing.
+
+## Integrated implementation evidence
+
+- Both implementation stories are done: the validated query/registry contract and the atomic semantic-resolution slice.
+- The feature adds one registry-derived, read-only `query_page` operation; existing mutation requests remain exact-reference based and byte-compatible when the new operation is unused.
+- The CDP adapter atomically joins bounded main-document DOMSnapshot metadata with the AX snapshot, fails closed on malformed input, preserves document order, and fences scoped queries through the existing stale-reference authority.
+- MCP schema and projection expose explicit no-match/unique/ambiguous/truncated outcomes with bounded, image-free results. The plugin skill directs agents to narrow ambiguity and use only unique current-generation references.
+- Integrated checks passed: formatting, focused core operation/observation tests, scripted CDP snapshot and verified-interaction tests, all MCP tests, and workspace all-targets check.
+- The designed real-Chrome scenario passed for every query kind, ambiguity and scope, query-to-click use, and stale-reference rejection after navigation.
+- No feature-scope blocker or adjacent finding remains; the feature is ready for the independent review stage.
