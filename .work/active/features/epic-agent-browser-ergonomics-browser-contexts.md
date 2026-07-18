@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-ergonomics-browser-contexts
 kind: feature
-stage: review
+stage: done
 tags: [agent-ux, browser, security]
 parent: epic-agent-browser-ergonomics
 depends_on: [epic-agent-browser-ergonomics-semantic-targeting]
@@ -82,9 +82,9 @@ pub fn list_reusable_profiles(root: &Path) -> Result<Vec<ManagedProfileSummary>,
 - A missing profile directory is an empty inventory. Root access failure is a stable `page_observation_failed`-class connector error with correlation-only diagnostics.
 
 **Acceptance criteria**:
-- [ ] The default and user-named reusable profiles are discoverable by identity after creation, while temporary profiles and invalid/symlink entries are absent.
-- [ ] The result contains no filesystem path, origin, cookie, timestamp, byte count, or browser content.
-- [ ] The tool remains callable with no active browser and canonical generated schemas include it once.
+- [x] The default and user-named reusable profiles are discoverable by identity after creation, while temporary profiles and invalid/symlink entries are absent.
+- [x] The result contains no filesystem path, origin, cookie, timestamp, byte count, or browser content.
+- [x] The tool remains callable with no active browser and canonical generated schemas include it once.
 
 ### Unit 2: Popup relationships and race-safe page waits
 
@@ -135,10 +135,10 @@ pub struct WaitForPageResult {
 - Both operations are browser-scoped, read-only, non-batchable registry entries. `list_pages` retains its exact 1.x response.
 
 **Acceptance criteria**:
-- [ ] A popup created between inventory and wait is returned immediately and carries its opener's Krometrail target ID.
-- [ ] Multiple popups are returned deterministically by sequence; unrelated or pre-cursor pages do not satisfy the wait.
-- [ ] Reconnect does not invent a new logical popup relationship, and stale/unresolvable raw opener IDs project as `None`.
-- [ ] Timeout, subscriber lag, target closure, and session shutdown return stable errors without activating or focusing a page.
+- [x] A popup created between inventory and wait is returned immediately and carries its opener's Krometrail target ID.
+- [x] Multiple popups are returned deterministically by sequence; unrelated or pre-cursor pages do not satisfy the wait.
+- [x] Reconnect does not invent a new logical popup relationship, and stale/unresolvable raw opener IDs project as `None`.
+- [x] Timeout, subscriber lag, target closure, and session shutdown return stable errors without activating or focusing a page.
 
 ### Unit 3: Qualified frame inventory and frame-scoped semantic references
 
@@ -198,10 +198,10 @@ pub enum SemanticDocumentScope {
 - Bound the inventory to 256 preorder entries and report omissions. URLs use `SanitizedUrl`; names, DOM, accessible text, and origins beyond that sanitizer are not included in inventory.
 
 **Acceptance criteria**:
-- [ ] Main-document and nested same-origin/same-process queries return exact actionable references whose actions land on the intended element.
-- [ ] A frame navigation, removal, target reattach, or OOPIF migration makes old frame/reference input fail before dispatch with `stale_reference` or `unsupported` and concrete recovery.
-- [ ] Cross-origin and OOPIF frames can be inventoried but neither inspected nor interacted with, and no main-document coordinate fallback occurs.
-- [ ] Nested-frame pointer coordinates are translated once and remain correct after root-page scrolling.
+- [x] Main-document and nested same-origin/same-process queries return exact actionable references whose actions land on the intended element.
+- [x] A frame navigation, removal, target reattach, or OOPIF migration makes old frame/reference input fail before dispatch with `stale_reference` or `unsupported` and concrete recovery.
+- [x] Cross-origin and OOPIF frames can be inventoried but neither inspected nor interacted with, and no main-document coordinate fallback occurs.
+- [x] Nested-frame pointer coordinates are translated once and remain correct after root-page scrolling.
 
 ### Unit 4: Bounded page asset metadata and agent guidance
 
@@ -243,9 +243,9 @@ pub struct PageAssetInventory {
 - Update the installed skill to teach `list_managed_profiles`, cursor-based popup waits, frame support/failures, and asset metadata limits.
 
 **Acceptance criteria**:
-- [ ] A fixture with script, stylesheet, image, font/fetch, and cross-origin assets returns bounded sanitized metadata with no resource bytes.
-- [ ] Oversized inventories truncate deterministically and malformed entries are omitted with a count rather than leaking raw data.
-- [ ] Generated schema/registry tests cover every new operation and the skill accurately describes the shipped surface.
+- [x] A fixture with script, stylesheet, image, font/fetch, and cross-origin assets returns bounded sanitized metadata with no resource bytes.
+- [x] Oversized inventories truncate deterministically and malformed entries are omitted with a count rather than leaking raw data.
+- [x] Generated schema/registry tests cover every new operation and the skill accurately describes the shipped surface.
 
 ## Implementation order
 
@@ -300,3 +300,13 @@ pub struct PageAssetInventory {
 
 - Review weight: standard feature review.
 - Pay particular attention to frame process/generation qualification, popup-key reuse, wait polling lifecycle behavior, profile filesystem privacy, and Resource Timing omission accounting.
+
+## Standard review — 2026-07-18
+
+- Outcome: approved after requested corrections.
+- Page cursors now use a non-rewinding high-water mark with a reserved empty-inventory cursor, and page waits stop promptly when the session or transport shuts down.
+- Popup opener identity is immutable after first resolution, including reconnect and raw target-key reuse.
+- Frame-scoped semantic snapshots retain the qualified frame authority, select the exact child document, inherit `about:blank`/`about:srcdoc` origins, and revalidate frame, loader, document, attachment, and process qualification before resolving a node for interaction or waits.
+- Resource Timing is sorted and capped in the browser-owned expression before crossing the transport boundary, with explicit omission accounting.
+- Registry declarations were deduplicated and default enum behavior derives from the canonical variant.
+- Review evidence: focused child-document/frame-origin tests, the 10-case target reducer suite, `cargo check -p krometrail-cdp --all-targets --locked`, and `cargo clippy -p krometrail-cdp --all-targets --locked -- -D warnings` all pass.
