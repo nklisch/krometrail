@@ -459,7 +459,7 @@ pub enum ArtifactCacheDisposition {
     RegeneratedAfterInvalidation,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct VisualEpoch {
     pub index: u32,
     pub frame_ids: Vec<FrameId>,

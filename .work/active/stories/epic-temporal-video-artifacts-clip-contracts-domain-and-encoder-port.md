@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-video-artifacts-clip-contracts-domain-and-encoder-port
 kind: story
-stage: implementing
+stage: done
 tags: [visual, agent-ux, security]
 parent: epic-temporal-video-artifacts-clip-contracts
 depends_on: []
@@ -27,3 +27,14 @@ Establish the constructor-validated one-epoch video-plan values, conservative se
 
 - Root checkpoint for this feature.
 - The presentation planner and manifest checkpoints consume these exact values and must not introduce alternate plan or encoder shapes.
+
+## Implementation notes
+
+- Execution capability: GPT-5.6 Sol at xhigh, selected by the active autopilot caller because this checkpoint defines stable, security-sensitive contracts consumed by two downstream features.
+- Review weight: `standard` (autopilot default); child stories close on green verification and the feature receives the independent review.
+- Files changed: `crates/krometrail-core/src/video/{mod.rs,plan.rs,tests.rs}`, `crates/krometrail-core/src/ports/video.rs`, core port/lib exports, `error.rs`, and the additive `JsonSchema` derive on the reused `VisualEpoch`.
+- Tests added: constructor-backed policy/timing/geometry/plan round trips; cross-scope, epoch, order, and exact count boundaries; privacy-safe encoder identity; exact input/output byte boundaries; request segment matching; output hashing; object-safe fake encoder use; and stable error retry/recovery behavior.
+- Simplification: reused `CapturedFrame`, `ResolvedRange`, `VisualEpoch`, `PixelDimensions`, `ImageFormat`, `CancellationSignal`, `PortFuture`, and `temporal_vision::OutputHash`; the port remains runtime/process/filesystem neutral and defines one closed media profile.
+- Discrepancies from design: the repository's `ImageFormat` is already a closed JPEG/PNG enum, so unsupported image formats are rejected by construction/Serde rather than a redundant request branch; the existing public-field `VisualEpoch` remains unchanged and is revalidated at `VideoPlanInput` and plan construction boundaries.
+- Verification: `cargo fmt --all -- --check`, `cargo clippy -p krometrail-core --all-targets -- -D warnings`, and `cargo test -p krometrail-core --all-targets` passed (127 tests).
+- Adjacent issues parked: none.

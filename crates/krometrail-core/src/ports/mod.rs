@@ -17,6 +17,7 @@ pub mod range;
 pub mod recording;
 pub mod retention;
 pub mod timeline;
+pub mod video;
 
 /// The allocation is paid at an infrastructure boundary, keeping core traits
 /// object-safe without selecting an async runtime or procedural macro.
@@ -52,6 +53,10 @@ pub use recording::RecordingSink;
 pub use retention::RetentionStore;
 pub use timeline::{
     MAX_TIMELINE_RANGE_ROWS, TimelineRangeQuery, TimelineRangeSlice, TimelineStore,
+};
+pub use video::{
+    MAX_VIDEO_ENCODER_LABEL_BYTES, TemporalVideoEncoder, VideoEncodeFrame, VideoEncodeRequest,
+    VideoEncodedClip, VideoEncoderIdentity, VideoEncodingContext, VideoEncodingProfile,
 };
 
 #[cfg(test)]
@@ -757,6 +762,7 @@ mod tests {
             include_str!("retention.rs"),
             include_str!("timeline.rs"),
             include_str!("range.rs"),
+            include_str!("video.rs"),
         ];
         for source in sources {
             for forbidden in [

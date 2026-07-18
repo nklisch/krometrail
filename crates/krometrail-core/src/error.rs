@@ -45,6 +45,8 @@ define_stable_enum! {
         PersistenceFailed => "persistence_failed",
         BudgetExhausted => "budget_exhausted",
         ArtifactGenerationFailed => "artifact_generation_failed",
+        VideoEncoderUnavailable => "video_encoder_unavailable",
+        VideoEncodingFailed => "video_encoding_failed",
         EvidenceInvalidated => "evidence_invalidated",
         ResourceLimitExceeded => "resource_limit_exceeded",
         Internal => "internal",
@@ -177,10 +179,12 @@ impl ErrorCode {
             | Self::NavigationFailed
             | Self::InteractionFailed
             | Self::WaitTimedOut => RetryAdvice::Safe,
+            Self::VideoEncodingFailed => RetryAdvice::Safe,
             Self::TargetHidden
             | Self::StaleReference
             | Self::ReferenceNotActionable
             | Self::BudgetExhausted => RetryAdvice::AfterRecovery,
+            Self::VideoEncoderUnavailable => RetryAdvice::AfterRecovery,
             Self::CaptureFailed => RetryAdvice::AfterRecovery,
             _ => RetryAdvice::Never,
         }
@@ -237,6 +241,12 @@ impl ErrorCode {
             Self::EvidenceInvalidated => {
                 Some("regenerate the artifact from its original request if sources remain")
             }
+            Self::VideoEncoderUnavailable => Some(
+                "restore a supported user-installed FFmpeg executable and restart the Krometrail MCP server",
+            ),
+            Self::VideoEncodingFailed => Some(
+                "retry once; if encoding fails again, restart Krometrail to requalify the installed FFmpeg executable",
+            ),
             _ => None,
         }
     }

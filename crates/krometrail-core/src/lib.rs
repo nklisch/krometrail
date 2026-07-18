@@ -41,6 +41,7 @@ pub mod progressive;
 pub mod recording;
 pub mod time;
 pub mod timeline;
+pub mod video;
 
 mod validation;
 
@@ -129,10 +130,12 @@ pub use ports::{
     EveryNthFrame, FrameSource, IdSource, InteractionAnchorSource, InteractionEvidenceSink,
     InteractionRecordSource, LaunchBrowser, MAX_CAPTURE_STATUS_SAMPLES, MAX_EVENT_CANDIDATE_ROWS,
     MAX_EVENT_PAGE_ROWS, MAX_EVENT_UNAVAILABLE_RANGES, MAX_EVERY_NTH_FRAME,
-    MAX_TIMELINE_RANGE_ROWS, MIN_EVERY_NTH_FRAME, ManagedProfile, MonotonicClock, PortFuture,
-    ProgressiveEvidenceStore, RecordingCatalog, RecordingSink, ResolvedReferenceGeometry,
-    RetentionStore, StoredArtifact, TimelineAnchorSource, TimelineRangeQuery, TimelineRangeSlice,
-    TimelineStore, WallClock,
+    MAX_TIMELINE_RANGE_ROWS, MAX_VIDEO_ENCODER_LABEL_BYTES, MIN_EVERY_NTH_FRAME, ManagedProfile,
+    MonotonicClock, PortFuture, ProgressiveEvidenceStore, RecordingCatalog, RecordingSink,
+    ResolvedReferenceGeometry, RetentionStore, StoredArtifact, TemporalVideoEncoder,
+    TimelineAnchorSource, TimelineRangeQuery, TimelineRangeSlice, TimelineStore, VideoEncodeFrame,
+    VideoEncodeRequest, VideoEncodedClip, VideoEncoderIdentity, VideoEncodingContext,
+    VideoEncodingProfile, WallClock,
 };
 pub use progressive::{
     ArtifactEvidenceHandle, ArtifactRead, CallerRegionShape, EvidenceScope,
@@ -168,4 +171,12 @@ pub use timeline::{
     TemporalContextQuery, TemporalContextRequest, TemporalContextService, TemporalQuery,
     TemporalQueryRequest, TemporalQueryService, TemporalRangeAnchor, TemporalRangeAnchorKind,
     TemporalRangeResolver, TimelineObservation,
+};
+pub use video::{
+    MAX_VIDEO_ENCODED_INPUT_BYTES, MAX_VIDEO_ENCODED_OUTPUT_BYTES, MAX_VIDEO_HEIGHT,
+    MAX_VIDEO_MEANINGFUL_FRAMES, MAX_VIDEO_PRESENTATION_DURATION, MAX_VIDEO_PRESENTATION_SEGMENTS,
+    MAX_VIDEO_SOURCE_DURATION, MAX_VIDEO_SOURCE_FRAMES, MAX_VIDEO_WIDTH, PresentationRange,
+    PresentationTime, TEMPORAL_VIDEO_PLAN_VERSION, VideoOutputGeometry, VideoPlanInput,
+    VideoPresentationPlan, VideoPresentationPolicy, VideoPresentationSegment, VideoSegmentSource,
+    VideoTimingBasis,
 };
