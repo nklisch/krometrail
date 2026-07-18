@@ -1,7 +1,7 @@
 ---
 id: epic-browser-interface-hardening-runtime-reliability
 kind: feature
-stage: review
+stage: implementing
 tags: [browser, visual]
 parent: epic-browser-interface-hardening
 depends_on: []
@@ -115,3 +115,12 @@ Using declared desktop geometry for capture could diverge from screencast payloa
 - `cargo fmt --all -- --check`
 - `cargo check --workspace --all-targets --locked`
 - `cargo clippy -p krometrail-cdp --all-targets --locked -- -D warnings`
+
+## Review findings
+
+Standard review requested changes before approval:
+
+- A geometry-refresh retry exhaustion must leave the geometry fence active. Keeping the last established dimensions as evidence provenance after a resize, navigation, or zoom event is unsafe; acknowledged frames remain dropped as paused gaps until a later authoritative refresh commits replacement geometry.
+- Desktop viewport guidance and the stable specification must name declared layout geometry as the acknowledgement authority and visual content as a separate observation. Mobile retains visual-viewport acknowledgement semantics.
+
+This is the only corrective pass for these findings. Fix verification must prove both conditions before the feature returns to `done`; no additional independent review is required.
