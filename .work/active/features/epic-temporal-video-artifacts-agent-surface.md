@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-video-artifacts-agent-surface
 kind: feature
-stage: review
+stage: done
 tags: [agent-ux, infra, testing]
 parent: epic-temporal-video-artifacts
 depends_on: [epic-temporal-video-artifacts-ffmpeg-runtime, epic-temporal-video-artifacts-retained-generation]
@@ -166,3 +166,22 @@ The graph is deliberately linear at the public integration seam. It prevents plu
 - `bash tests/plugin-static.sh`
 - skill-creator `quick_validate.py plugin/skills/krometrail` via isolated `uv --with pyyaml`
 - explicit selected-FFmpeg live integration for `real_time` and `model_optimized`
+
+## Review findings (2026-07-18)
+
+- Standard fresh-context review requested one stable-contract correction: the runtime response role
+  enum contained video variants unconditionally, so using its generated schema for every route changed
+  existing tools' advertised output schemas even when video was unavailable.
+- No other material correctness, security, privacy, distribution, skill, evaluation, or live-lane
+  blockers were found. Review source was the same-harness OpenAI-lineage fallback because the preferred
+  cross-model Claude endpoint had already failed authentication.
+
+## Review correction verification (2026-07-18)
+
+- Existing routes now receive the exact legacy response schema with only artifact, manifest, and source
+  frame roles; only `generate_temporal_video` receives the extended video-role schema.
+- An exact regression compares the complete `browser_status` schema between unavailable and qualified
+  startup, proves the unavailable schema contains no video roles, and proves the video route alone uses
+  the extended schema.
+- Focused MCP registry tests, degraded no-FFmpeg runtime smoke, formatting, and MCP all-target Clippy pass.
+  Per the standard review policy, the accepted finding was fixed and verified without a second review pass.

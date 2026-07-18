@@ -904,6 +904,23 @@ mod tests {
 
     #[test]
     fn temporal_video_construction_and_registry_share_the_startup_snapshot_exactly() {
+        let unavailable = build_service(
+            dependencies(Arc::new(UnusedConnector)),
+            McpConfig::default(),
+        )
+        .unwrap();
+        let unavailable_tools = unavailable.server().tools();
+        let stable_schema = unavailable_tools
+            .iter()
+            .find(|tool| tool.name == "browser_status")
+            .unwrap()
+            .output_schema
+            .clone()
+            .unwrap();
+        let stable_schema_json = serde_json::to_string(&stable_schema).unwrap();
+        assert!(!stable_schema_json.contains("video_manifest"));
+        assert!(!stable_schema_json.contains("\"video\""));
+
         let missing_service = match build_service(
             dependencies(Arc::new(UnusedConnector)),
             qualified_video_config(),
@@ -928,9 +945,27 @@ mod tests {
         let mut available = dependencies(Arc::new(UnusedConnector));
         available.temporal_video = Some(Arc::new(UnusedVideo));
         let service = build_service(available, qualified_video_config()).unwrap();
-        let names = service
-            .server()
-            .tools()
+        let tools = service.server().tools();
+        let qualified_stable_schema = tools
+            .iter()
+            .find(|tool| tool.name == "browser_status")
+            .unwrap()
+            .output_schema
+            .as_ref()
+            .unwrap();
+        assert_eq!(qualified_stable_schema, &stable_schema);
+        let video_schema = tools
+            .iter()
+            .find(|tool| tool.name == "generate_temporal_video")
+            .unwrap()
+            .output_schema
+            .as_ref()
+            .unwrap();
+        let video_schema_json = serde_json::to_string(video_schema).unwrap();
+        assert_ne!(video_schema, &stable_schema);
+        assert!(video_schema_json.contains("video_manifest"));
+        assert!(video_schema_json.contains("\"video\""));
+        let names = tools
             .into_iter()
             .map(|tool| tool.name.to_string())
             .collect::<Vec<_>>();

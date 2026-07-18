@@ -7,7 +7,7 @@ use krometrail_core::{
 use rmcp::model::JsonObject;
 use serde_json::Value;
 
-use crate::config::McpConfig;
+use crate::{config::McpConfig, response::ToolResponse};
 
 pub(crate) fn operation_input_schema(
     kind: BrowserOperationKind,
@@ -26,6 +26,15 @@ pub(crate) fn type_input_schema<T: schemars::JsonSchema>() -> Result<Arc<JsonObj
         serde_json::to_value(schemars::schema_for!(T))
             .map_err(|_| schema_error("generated lifecycle schema could not be serialized"))?,
     )
+}
+
+pub(crate) fn tool_response_schema(include_video_roles: bool) -> Result<Arc<JsonObject>> {
+    let mut value = serde_json::to_value(schemars::schema_for!(ToolResponse))
+        .map_err(|_| schema_error("generated tool response schema could not be serialized"))?;
+    if !include_video_roles {
+        filter_video_resource_roles(&mut value)?;
+    }
+    object_schema(value)
 }
 
 pub(crate) fn generated_input_schema(schema: schemars::Schema) -> Result<Arc<JsonObject>> {
@@ -210,6 +219,44 @@ fn filter_batch_operations(schema: &mut Value, config: &McpConfig) -> Result<()>
     if matches != 1 {
         return Err(schema_error(
             "generated batch schema did not contain exactly one complete operation union",
+        ));
+    }
+    Ok(())
+}
+
+fn filter_video_resource_roles(schema: &mut Value) -> Result<()> {
+    const ALL_ROLES: [&str; 5] = [
+        "artifact",
+        "artifact_manifest",
+        "source_frame",
+        "video",
+        "video_manifest",
+    ];
+    let mut matches = 0usize;
+    visit_values_mut(schema, &mut |value| {
+        let Value::Object(object) = value else {
+            return;
+        };
+        let Some(Value::Array(variants)) = object.get_mut("enum") else {
+            return;
+        };
+        let names = variants
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+        if names != ALL_ROLES {
+            return;
+        }
+        matches += 1;
+        variants.retain(|variant| {
+            variant
+                .as_str()
+                .is_some_and(|role| role != "video" && role != "video_manifest")
+        });
+    });
+    if matches != 1 {
+        return Err(schema_error(
+            "generated tool response schema did not contain exactly one resource-role registry",
         ));
     }
     Ok(())

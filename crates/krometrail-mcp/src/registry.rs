@@ -27,11 +27,13 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     config::{McpConfig, McpDependencies},
     response::{
-        ToolResponse, into_call_tool_result, map_lifecycle_result,
-        map_operation_result_with_capture, map_progressive_result, map_temporal_bundle_result,
-        map_temporal_video_result, visible_error, visible_error_with_capture,
+        into_call_tool_result, map_lifecycle_result, map_operation_result_with_capture,
+        map_progressive_result, map_temporal_bundle_result, map_temporal_video_result,
+        visible_error, visible_error_with_capture,
     },
-    schema::{generated_input_schema, operation_input_schema, type_input_schema},
+    schema::{
+        generated_input_schema, operation_input_schema, tool_response_schema, type_input_schema,
+    },
     server::KrometrailMcpServer,
     session::BrowserSessionOwner,
 };
@@ -151,7 +153,7 @@ pub(crate) fn build_router(
             let annotations = operation_annotations(definition.mutability);
             let mut tool =
                 Tool::new(name, definition.description, input_schema).annotate(annotations);
-            tool.output_schema = Some(type_input_schema::<ToolResponse>()?);
+            tool.output_schema = Some(tool_response_schema(false)?);
             router.add_route(ToolRoute::new_dyn(tool, move |context| {
                 async move { call_operation(context, kind, name).await }.boxed()
             }));
@@ -167,7 +169,7 @@ pub(crate) fn build_router(
             type_input_schema::<TemporalDebugBundleRequest>()?,
         )
         .annotate(temporal_annotations(definition.mutability, false));
-        tool.output_schema = Some(type_input_schema::<ToolResponse>()?);
+        tool.output_schema = Some(tool_response_schema(false)?);
         let dependencies = Arc::clone(&dependencies);
         router.add_route(ToolRoute::new_dyn(tool, move |context| {
             let dependencies = Arc::clone(&dependencies);
@@ -184,7 +186,7 @@ pub(crate) fn build_router(
             type_input_schema::<TemporalVideoGenerationRequest>()?,
         )
         .annotate(temporal_annotations(definition.mutability, false));
-        tool.output_schema = Some(type_input_schema::<ToolResponse>()?);
+        tool.output_schema = Some(tool_response_schema(true)?);
         let dependencies = Arc::clone(&dependencies);
         router.add_route(ToolRoute::new_dyn(tool, move |context| {
             let dependencies = Arc::clone(&dependencies);
@@ -208,7 +210,7 @@ pub(crate) fn build_router(
             kind == ProgressiveEvidenceOperationKind::UnpinResolvedRange,
         );
         let mut tool = Tool::new(name, definition.description, input_schema).annotate(annotations);
-        tool.output_schema = Some(type_input_schema::<ToolResponse>()?);
+        tool.output_schema = Some(tool_response_schema(false)?);
         let dependencies = Arc::clone(&dependencies);
         let current_geometry = Arc::clone(&current_geometry);
         router.add_route(ToolRoute::new_dyn(tool, move |context| {
@@ -228,7 +230,7 @@ pub(crate) fn build_router(
             let input_schema = generated_input_schema(kind.input_schema())?;
             let mut tool = Tool::new(name, definition.description, input_schema)
                 .annotate(temporal_annotations(definition.mutability, false));
-            tool.output_schema = Some(type_input_schema::<ToolResponse>()?);
+            tool.output_schema = Some(tool_response_schema(false)?);
             let dependencies = Arc::clone(&dependencies);
             router.add_route(ToolRoute::new_dyn(tool, move |context| {
                 let dependencies = Arc::clone(&dependencies);
@@ -556,7 +558,7 @@ fn lifecycle_route(tool: LifecycleTool) -> Result<ToolRoute<KrometrailMcpServer>
             .open_world(true),
     };
     let mut route = Tool::new(tool.name, tool.description, schema).annotate(annotations);
-    route.output_schema = Some(type_input_schema::<ToolResponse>()?);
+    route.output_schema = Some(tool_response_schema(false)?);
     Ok(ToolRoute::new_dyn(route, move |context| {
         async move { call_lifecycle(context, tool).await }.boxed()
     }))
