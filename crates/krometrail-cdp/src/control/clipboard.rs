@@ -5,7 +5,7 @@ use krometrail_core::{
 };
 use serde_json::json;
 
-use super::{BoundTarget, PageControl};
+use super::{BoundTarget, PageControl, transport_error};
 use crate::transport::{CdpTransport, CommandScope};
 
 const READ_CLIPBOARD: &str = "async function(){if(!globalThis.isSecureContext)throw new Error('secure_context_required');if(document.visibilityState!=='visible'||!document.hasFocus())throw new Error('focus_required');if(!navigator.clipboard)throw new Error('clipboard_unavailable');return await navigator.clipboard.readText();}";
@@ -23,12 +23,13 @@ impl PageControl {
             &CommandScope::Session(bound.transport_session.clone()),
             "Runtime.callFunctionOn",
             json!({"functionDeclaration": READ_CLIPBOARD, "awaitPromise": true, "returnByValue": true}),
-        ).await.map_err(|_| clipboard_failure(bound, "clipboard read failed", "focus the managed page and allow clipboard access, then retry"))?;
+        ).await.map_err(|error| transport_error(error, ErrorCode::InteractionFailed, bound.target_id))?;
         let text = result_value(&response)
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| clipboard_response_error(bound, &response))?;
         if text.len() > MAX_CLIPBOARD_TEXT_BYTES {
             return Err(clipboard_failure(
+                ErrorCode::InteractionFailed,
                 bound,
                 "clipboard text exceeds the 65536-byte limit",
                 "copy a smaller text value and retry",
@@ -50,6 +51,7 @@ impl PageControl {
         require_visible(bound)?;
         if request.text.len() > MAX_CLIPBOARD_TEXT_BYTES {
             return Err(clipboard_failure(
+                ErrorCode::InteractionFailed,
                 bound,
                 "clipboard text exceeds the 65536-byte limit",
                 "write a smaller text value and retry",
@@ -59,7 +61,7 @@ impl PageControl {
             &CommandScope::Session(bound.transport_session.clone()),
             "Runtime.callFunctionOn",
             json!({"functionDeclaration": WRITE_CLIPBOARD, "arguments": [{"value": request.text}], "awaitPromise": true, "returnByValue": true}),
-        ).await.map_err(|_| clipboard_failure(bound, "clipboard write failed", "focus the managed page and allow clipboard access, then retry"))?;
+        ).await.map_err(|error| transport_error(error, ErrorCode::InteractionFailed, bound.target_id))?;
         if result_value(&response).and_then(serde_json::Value::as_bool) != Some(true) {
             return Err(clipboard_response_error(bound, &response));
         }
@@ -76,6 +78,7 @@ fn result_value(value: &serde_json::Value) -> Option<&serde_json::Value> {
 fn require_visible(bound: &BoundTarget) -> Result<()> {
     if bound.visibility != TargetVisibility::Visible {
         return Err(clipboard_failure(
+            ErrorCode::InteractionFailed,
             bound,
             "clipboard access requires a visible focused page",
             "focus the managed browser page without asking Krometrail to activate it, then retry",
@@ -89,45 +92,47 @@ fn clipboard_response_error(bound: &BoundTarget, response: &serde_json::Value) -
         .pointer("/result/exceptionDetails/exception/description")
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default();
-    let (message, recovery) = if description.contains("secure_context_required") {
+    let (code, message, recovery) = if description.contains("secure_context_required") {
         (
+            ErrorCode::Unsupported,
             "clipboard access requires a secure page context",
             "navigate the managed page to HTTPS or another secure context and retry",
         )
     } else if description.contains("clipboard_unavailable") {
         (
+            ErrorCode::Unsupported,
             "the page clipboard API is unavailable",
             "use a supported secure Chromium page and retry",
         )
     } else if description.contains("focus_required") {
         (
+            ErrorCode::InteractionFailed,
             "clipboard access requires a visible focused page",
             "focus the managed browser page and retry; Krometrail will not steal focus",
         )
     } else {
         (
+            ErrorCode::InteractionFailed,
             "browser clipboard permission denied the explicit request",
             "focus the managed page, allow clipboard access in Chrome, and retry",
         )
     };
-    clipboard_failure(bound, message, recovery)
+    clipboard_failure(code, bound, message, recovery)
 }
 
 fn clipboard_failure(
+    code: ErrorCode,
     bound: &BoundTarget,
     message: &'static str,
     recovery: &'static str,
 ) -> KrometrailError {
-    KrometrailError::new(
-        ErrorCode::InteractionFailed,
-        NonEmptyText::new(message).unwrap(),
-    )
-    .with_context(ErrorContext {
-        target_id: Some(bound.target_id),
-        ..ErrorContext::default()
-    })
-    .with_retry(RetryAdvice::AfterRecovery)
-    .with_recovery(NonEmptyText::new(recovery).unwrap())
+    KrometrailError::new(code, NonEmptyText::new(message).unwrap())
+        .with_context(ErrorContext {
+            target_id: Some(bound.target_id),
+            ..ErrorContext::default()
+        })
+        .with_retry(RetryAdvice::AfterRecovery)
+        .with_recovery(NonEmptyText::new(recovery).unwrap())
 }
 
 #[cfg(test)]
@@ -263,5 +268,24 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.code, ErrorCode::InteractionFailed);
         assert!(transport.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn response_failures_have_stable_supported_and_interaction_codes() {
+        let bound = bound(TargetVisibility::Visible);
+        for description in ["secure_context_required", "clipboard_unavailable"] {
+            let error = clipboard_response_error(
+                &bound,
+                &json!({"result":{"exceptionDetails":{"exception":{"description":description}}}}),
+            );
+            assert_eq!(error.code, ErrorCode::Unsupported);
+        }
+        for description in ["focus_required", "NotAllowedError"] {
+            let error = clipboard_response_error(
+                &bound,
+                &json!({"result":{"exceptionDetails":{"exception":{"description":description}}}}),
+            );
+            assert_eq!(error.code, ErrorCode::InteractionFailed);
+        }
     }
 }

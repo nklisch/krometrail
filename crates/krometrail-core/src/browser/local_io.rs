@@ -107,7 +107,7 @@ impl DownloadDisplayName {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Eq, PartialEq, Serialize)]
 pub struct ManagedDownload {
     pub id: DownloadId,
     pub sequence: DownloadSequence,
@@ -120,11 +120,35 @@ pub struct ManagedDownload {
     pub resource_uri: Option<String>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+impl fmt::Debug for ManagedDownload {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ManagedDownload")
+            .field("id", &self.id)
+            .field("sequence", &self.sequence)
+            .field("target_id", &self.target_id)
+            .field("state", &self.state)
+            .field("received_bytes", &self.received_bytes)
+            .field("total_bytes", &self.total_bytes)
+            .field("has_resource", &self.resource_uri.is_some())
+            .finish()
+    }
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize)]
 pub struct DownloadInventory {
     pub session_id: SessionId,
     pub cursor: Option<DownloadSequence>,
     pub downloads: Vec<ManagedDownload>,
+}
+
+impl fmt::Debug for DownloadInventory {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DownloadInventory")
+            .field("session_id", &self.session_id)
+            .field("cursor", &self.cursor)
+            .field("download_count", &self.downloads.len())
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -202,5 +226,32 @@ mod tests {
             "..ab"
         );
         assert!(DownloadSequence::new(0).is_err());
+    }
+
+    #[test]
+    fn download_debug_omits_names_urls_and_resource_uris() {
+        let download = ManagedDownload {
+            id: DownloadId::from_uuid(uuid::Uuid::from_u128(1)),
+            sequence: DownloadSequence::new(1).unwrap(),
+            target_id: None,
+            state: DownloadState::Completed,
+            suggested_filename: DownloadDisplayName::sanitize("secret-name.txt"),
+            source_url: SanitizedUrl::sanitize("https://example.test/secret-path").unwrap(),
+            received_bytes: 4,
+            total_bytes: Some(4),
+            resource_uri: Some("krometrail://local/secret-resource".into()),
+        };
+        let item_debug = format!("{download:?}");
+        assert!(!item_debug.contains("secret-name"));
+        assert!(!item_debug.contains("secret-path"));
+        assert!(!item_debug.contains("secret-resource"));
+        let inventory = DownloadInventory {
+            session_id: SessionId::from_uuid(uuid::Uuid::from_u128(2)),
+            cursor: Some(download.sequence),
+            downloads: vec![download],
+        };
+        let inventory_debug = format!("{inventory:?}");
+        assert!(inventory_debug.contains("download_count: 1"));
+        assert!(!inventory_debug.contains("secret"));
     }
 }
