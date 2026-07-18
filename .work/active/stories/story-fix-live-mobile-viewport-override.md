@@ -1,7 +1,7 @@
 ---
 id: story-fix-live-mobile-viewport-override
 kind: story
-stage: review
+stage: done
 tags: [bug, browser, agent-ux]
 parent: null
 depends_on: []
@@ -36,3 +36,14 @@ The opt-in real-Chrome viewport qualification now uses a fixture with no viewpor
 - Added mobile page-scale application to normal control and managed reconnect replay, with explicit reset on clear.
 - Preserved independent post-apply verification and target-scoped behavior.
 - Verified the command contract with the full `krometrail-cdp` unit suite and the no-meta-tag regression against real Chrome.
+
+## Review (2026-07-17)
+
+**Verdict**: Approve
+
+**Blockers**: none
+**Important**: none
+**Nits**: none
+**Rejected**: none
+
+**Notes**: Bounded inline standalone-story review at standard depth. Checked apply, clear, reconnect replay, target isolation, navigation persistence, failure propagation, and the real-Chrome regression. No material current-cycle findings.
