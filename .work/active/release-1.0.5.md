@@ -1,7 +1,7 @@
 ---
 id: release-1.0.5
 kind: release
-stage: quality-gate
+stage: release-ready
 tags: []
 parent: null
 depends_on: []
@@ -35,3 +35,13 @@ The operator selected the complete finding set from the latest public-site manua
 ## Changelog
 
 The `v1.0.5` changelog entry covers the complete selected patch scope.
+
+## Validation
+
+- `cargo fmt --all -- --check` — passed.
+- `cargo check --workspace --all-targets --locked` — passed.
+- `cargo test --workspace --all-targets --locked` — passed.
+- `cargo clippy --workspace --all-targets --locked -- -D warnings` — passed.
+- Real Chrome viewport apply/navigation/clear/target-isolation qualification — passed.
+- Local-candidate MCP schema discovery exposed 19 concrete batch branches with `operation` and `request` objects.
+- Local-candidate MCP public-site qualification applied a 360x640 mobile viewport, navigated from MDN to Wikipedia, returned no warnings, and retained healthy capture with 23 persisted frames.
