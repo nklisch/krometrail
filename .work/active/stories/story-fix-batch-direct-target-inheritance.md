@@ -1,7 +1,7 @@
 ---
 id: story-fix-batch-direct-target-inheritance
 kind: story
-stage: review
+stage: done
 tags: [bug, browser, agent-ux]
 parent: null
 depends_on: []
@@ -45,3 +45,9 @@ step and proves admission binds that step to the outer target before execution.
 - Regression confirmation: `cargo test -p krometrail-core
   explicit_batch_target_is_inherited_by_targetless_steps --locked` passes.
 - Full workspace verification is deferred to the integrated patch pass.
+
+## Review
+
+Bounded inline review approved. The mutation occurs once at the validated batch boundary, preserves
+explicit targets and reference checks, and the regression protects the reported selected-page drift.
+No independent or cross-model reviewer ran for this standalone story.
