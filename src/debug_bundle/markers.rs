@@ -962,8 +962,8 @@ mod tests {
     }
 
     #[test]
-    fn anchor_marker_assembly_preserves_caps_order_and_privacy_with_synthetic_label() {
-        // Caps, ordering, and privacy are preserved even when the anchor label
+    fn anchor_marker_assembly_preserves_order_and_privacy_with_synthetic_label() {
+        // Ordering and privacy are preserved even when the anchor label
         // is synthetic: the marker carries only the typed ID, no secret fields.
         let interaction_id = InteractionId::from_uuid(Uuid::from_u128(55));
         let range = interaction_range(interaction_id, 1_000);
@@ -976,7 +976,6 @@ mod tests {
         })
         .unwrap();
         assert_eq!(assembled.markers.len(), 1);
-        assert!(assembled.markers.len() <= MAX_BUNDLE_ARTIFACT_MARKERS);
         // Privacy: only the typed ID appears in the serialized payload.
         let encoded = serde_json::to_string(&assembled.markers).unwrap();
         for forbidden in [
