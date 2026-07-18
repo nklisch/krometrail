@@ -1,7 +1,7 @@
 ---
 id: gate-cruft-require-browser-port-capabilities
 kind: story
-stage: implementing
+stage: review
 tags: [cleanup]
 parent: null
 depends_on: []
@@ -42,3 +42,15 @@ Make the new trait methods required and add explicit empty/not-found behavior on
 - Remove the three compatibility defaults from the core/CDP traits.
 - Add explicit implementations to every workspace adapter and fake, preserving each test's intended behavior.
 - Let compiler errors identify any missed implementation.
+
+## Implementation notes
+
+- Made managed-profile inventory and managed-download reads required on the core browser ports, and managed-profile inventory required on the CDP launcher port.
+- Kept production/delegating implementations explicit and added intentional empty/not-found behavior to every affected test adapter.
+- Used the workspace compiler and Clippy gates to prove no implementation can inherit the former fallback silently.
+
+## Validation
+
+- `cargo test --workspace --all-targets --locked`
+- `cargo check --workspace --all-targets --locked`
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`

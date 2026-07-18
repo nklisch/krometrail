@@ -1,7 +1,7 @@
 ---
 id: gate-cruft-remove-unreachable-range-invalidation
 kind: story
-stage: implementing
+stage: review
 tags: [cleanup]
 parent: null
 depends_on: []
@@ -42,3 +42,16 @@ Remove the trait method, implementations, invalidation-only tests, and `StoredRa
 - Remove the unused trait method and fake implementations.
 - Replace `StoredRange` with direct range storage while retaining aggregate admission accounting.
 - Rewrite budget coverage around admission behavior and remove invalidation-only assertions.
+
+## Implementation notes
+
+- Removed the unreachable lifecycle method from the core port and all MCP test authorities.
+- Replaced `StoredRange` with direct `ResolvedRange` storage while keeping aggregate serialized-byte admission accounting.
+- Kept resolution-time retained-frame revalidation intact and refocused the tests on capacity, budget, scope, exact order, availability, and persistence failures.
+
+## Validation
+
+- `cargo test -p krometrail range_handles::tests --locked -- --nocapture`
+- `cargo test --workspace --all-targets --locked`
+- `cargo check --workspace --all-targets --locked`
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`

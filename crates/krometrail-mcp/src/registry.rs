@@ -31,7 +31,7 @@ use crate::{
         BrowserStatusRequest, into_call_tool_result, map_browser_status, map_lifecycle_result,
         map_operation_result_with_capture_projected, map_progressive_result_projected,
         map_temporal_bundle_result_projected, map_temporal_context_result,
-        map_temporal_video_result_projected, split_response_projection, visible_error,
+        map_temporal_video_result, split_response_projection, visible_error,
         visible_error_with_capture,
     },
     schema::{
@@ -368,11 +368,10 @@ async fn call_temporal_video(
     if let Err(error) = budget.check() {
         return Ok(call_error_result(name, error));
     }
-    let (arguments, preference) =
-        match split_response_projection(context.arguments.unwrap_or_default()) {
-            Ok(value) => value,
-            Err(error) => return Ok(call_error_result(name, error)),
-        };
+    let (arguments, _) = match split_response_projection(context.arguments.unwrap_or_default()) {
+        Ok(value) => value,
+        Err(error) => return Ok(call_error_result(name, error)),
+    };
     let (arguments, supplied_handle) = match budget
         .run(resolve_range_argument(
             arguments,
@@ -419,7 +418,7 @@ async fn call_temporal_video(
         )
         .await;
     match result {
-        Ok(result) => map_temporal_video_result_projected(name, result, preference)
+        Ok(result) => map_temporal_video_result(name, result)
             .map(|mapped| mapped.with_range_handle(handle))
             .map_err(|_| {
                 rmcp::ErrorData::internal_error("temporal video response mapping failed", None)

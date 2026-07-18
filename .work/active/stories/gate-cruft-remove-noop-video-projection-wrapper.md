@@ -1,7 +1,7 @@
 ---
 id: gate-cruft-remove-noop-video-projection-wrapper
 kind: story
-stage: implementing
+stage: review
 tags: [cleanup]
 parent: null
 depends_on: []
@@ -42,3 +42,16 @@ Route the registry directly through `map_temporal_video_result` and remove the p
 - Keep projection argument splitting at the MCP boundary for schema/validation compatibility.
 - Discard the validated preference for the video route and invoke the canonical mapper directly.
 - Remove the wrapper and any now-unused imports.
+
+## Implementation notes
+
+- The temporal-video route still splits and validates response projection input at the MCP boundary.
+- The validated but irrelevant preference is discarded, and the route now calls the canonical mapper directly.
+- Removed the no-op wrapper that could only clear already-empty inline-image collections.
+
+## Validation
+
+- `cargo test -p krometrail-mcp --locked`
+- `cargo test --workspace --all-targets --locked`
+- `cargo check --workspace --all-targets --locked`
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`

@@ -1,4 +1,4 @@
-use crate::{PortFuture, ResolvedRange, ResolvedRangeHandleId, Result, SessionId};
+use crate::{PortFuture, ResolvedRange, ResolvedRangeHandleId, Result};
 
 pub const MAX_RESOLVED_RANGE_HANDLES: usize = 4_096;
 /// Aggregate admission budget measured from each range's complete serialized contract.
@@ -17,6 +17,4 @@ pub trait ResolvedRangeHandles: Send + Sync {
         &self,
         handle: ResolvedRangeHandleId,
     ) -> PortFuture<'_, Result<ResolvedRange>>;
-
-    fn invalidate_session(&self, session_id: SessionId) -> Result<usize>;
 }

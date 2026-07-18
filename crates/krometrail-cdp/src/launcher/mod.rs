@@ -28,9 +28,7 @@ pub trait ChromeLauncher: Send + Sync {
     fn installations(&self) -> LauncherFuture<'_, Result<Vec<BrowserInstallation>, LaunchError>>;
     fn managed_profiles(
         &self,
-    ) -> LauncherFuture<'_, Result<Vec<ManagedProfileSummary>, LaunchError>> {
-        Box::pin(async { Ok(Vec::new()) })
-    }
+    ) -> LauncherFuture<'_, Result<Vec<ManagedProfileSummary>, LaunchError>>;
     fn launch(
         &self,
         request: &LaunchBrowser,

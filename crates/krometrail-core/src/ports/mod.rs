@@ -197,6 +197,16 @@ mod tests {
             )))
         }
 
+        fn read_managed_download(
+            &self,
+            _request: crate::ReadManagedDownloadRequest,
+        ) -> PortFuture<'_, crate::Result<crate::ManagedDownloadRead>> {
+            Box::pin(std::future::ready(Err(crate::KrometrailError::new(
+                ErrorCode::NotFound,
+                crate::NonEmptyText::new("fake managed download is unavailable").unwrap(),
+            ))))
+        }
+
         fn execute(
             &self,
             _request: crate::BrowserOperationRequest,
@@ -231,6 +241,12 @@ mod tests {
 
     impl BrowserConnector for FakeBrowserConnector {
         fn installations(&self) -> PortFuture<'_, crate::Result<Vec<crate::BrowserInstallation>>> {
+            Box::pin(std::future::ready(Ok(Vec::new())))
+        }
+
+        fn managed_profiles(
+            &self,
+        ) -> PortFuture<'_, crate::Result<Vec<crate::ManagedProfileSummary>>> {
             Box::pin(std::future::ready(Ok(Vec::new())))
         }
 

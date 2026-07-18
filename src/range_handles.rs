@@ -6,7 +6,7 @@ use std::{
 use krometrail_core::{
     CapturedFrame, ErrorCode, ErrorContext, FrameSource, IdSource, KrometrailError,
     MAX_RESOLVED_RANGE_HANDLE_BUDGET_BYTES, MAX_RESOLVED_RANGE_HANDLES, NonEmptyText,
-    ResolvedRange, ResolvedRangeHandleId, ResolvedRangeHandles, Result, RetryAdvice, SessionId,
+    ResolvedRange, ResolvedRangeHandleId, ResolvedRangeHandles, Result, RetryAdvice,
 };
 
 pub(crate) struct ProcessResolvedRangeHandles {
@@ -19,13 +19,8 @@ pub(crate) struct ProcessResolvedRangeHandles {
 
 #[derive(Default)]
 struct RangeHandleEntries {
-    ranges: HashMap<ResolvedRangeHandleId, StoredRange>,
+    ranges: HashMap<ResolvedRangeHandleId, ResolvedRange>,
     used_budget_bytes: usize,
-}
-
-struct StoredRange {
-    range: ResolvedRange,
-    budget_bytes: usize,
 }
 
 impl ProcessResolvedRangeHandles {
@@ -74,7 +69,7 @@ impl ResolvedRangeHandles for ProcessResolvedRangeHandles {
             if let Some((handle, _)) = entries
                 .ranges
                 .iter()
-                .find(|(_, existing)| existing.range == range)
+                .find(|(_, existing)| **existing == range)
             {
                 return Ok(*handle);
             }
@@ -89,13 +84,7 @@ impl ResolvedRangeHandles for ProcessResolvedRangeHandles {
             if handle.as_uuid().is_nil() || entries.ranges.contains_key(&handle) {
                 return Err(internal_authority_error());
             }
-            entries.ranges.insert(
-                handle,
-                StoredRange {
-                    range,
-                    budget_bytes,
-                },
-            );
+            entries.ranges.insert(handle, range);
             entries.used_budget_bytes = next_budget;
             Ok(handle)
         })
@@ -112,31 +101,12 @@ impl ResolvedRangeHandles for ProcessResolvedRangeHandles {
                 .map_err(|_| internal_authority_error())?
                 .ranges
                 .get(&handle)
-                .map(|stored| stored.range.clone())
+                .cloned()
                 .ok_or_else(|| invalidated_handle(None))?;
             let metadata = read_available_metadata(self.frames.as_ref(), &range).await?;
             validate_available_metadata(&range, &metadata)?;
             Ok(range)
         })
-    }
-
-    fn invalidate_session(&self, session_id: SessionId) -> Result<usize> {
-        let mut entries = self
-            .entries
-            .lock()
-            .map_err(|_| internal_authority_error())?;
-        let before = entries.ranges.len();
-        let mut released_budget = 0usize;
-        entries.ranges.retain(|_, stored| {
-            if stored.range.session_id == session_id {
-                released_budget = released_budget.saturating_add(stored.budget_bytes);
-                false
-            } else {
-                true
-            }
-        });
-        entries.used_budget_bytes = entries.used_budget_bytes.saturating_sub(released_budget);
-        Ok(before - entries.ranges.len())
     }
 }
 
@@ -261,8 +231,9 @@ mod tests {
     use krometrail_core::{
         CaptureOrdinal, CapturedFrame, DeviceScaleFactor, EncodedFrame, FrameAvailability, FrameId,
         IdValue, ImageFormat, ObservedTime, PixelDimensions, PortFuture, RangeResolutionOptions,
-        RetrieveSourceFrameRequest, SessionRange, SessionTime, SourceFrameBatch, SourceFrameList,
-        SourceFrameRead, SourceFramesRequest, SourceTime, TargetId, TemporalRangeAnchorKind,
+        RetrieveSourceFrameRequest, SessionId, SessionRange, SessionTime, SourceFrameBatch,
+        SourceFrameList, SourceFrameRead, SourceFramesRequest, SourceTime, TargetId,
+        TemporalRangeAnchorKind,
     };
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -537,7 +508,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unknown_partial_cross_scope_and_invalidated_session_fail() {
+    async fn unknown_partial_and_cross_scope_handles_fail() {
         let range = range(20);
         let (authority, frames) = authority(&range);
         let unknown = ResolvedRangeHandleId::from_uuid(uuid::Uuid::from_u128(999));
@@ -556,11 +527,6 @@ mod tests {
             .lock()
             .unwrap()
             .push(frame(range.frame_ids[0], session(999), range.target_id, 5));
-        assert_eq!(
-            authority.resolve_available(handle).await.unwrap_err().code,
-            ErrorCode::EvidenceInvalidated
-        );
-        assert_eq!(authority.invalidate_session(range.session_id).unwrap(), 1);
         assert_eq!(
             authority.resolve_available(handle).await.unwrap_err().code,
             ErrorCode::EvidenceInvalidated
@@ -624,7 +590,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn aggregate_budget_rejects_only_the_new_range_and_releases_on_invalidation() {
+    async fn aggregate_budget_rejects_only_the_new_range() {
         let first_range = range(70_000);
         let second_range = range(70_001);
         let first_cost =
@@ -676,14 +642,9 @@ mod tests {
             assert_eq!(entries.used_budget_bytes, first_cost);
             assert!(entries.ranges.contains_key(&first));
         }
-        assert_eq!(
-            authority
-                .invalidate_session(first_range.session_id)
-                .unwrap(),
-            1
-        );
         let entries = authority.entries.lock().unwrap();
-        assert!(entries.ranges.is_empty());
-        assert_eq!(entries.used_budget_bytes, 0);
+        assert_eq!(entries.ranges.len(), 1);
+        assert_eq!(entries.used_budget_bytes, first_cost);
+        assert!(entries.ranges.contains_key(&first));
     }
 }

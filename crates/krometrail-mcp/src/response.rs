@@ -616,19 +616,6 @@ pub(crate) fn map_temporal_video_result(
     ))
 }
 
-pub(crate) fn map_temporal_video_result_projected(
-    tool: &str,
-    result: TemporalVideoGenerationResult,
-    preference: ResponseProjectionRequest,
-) -> Result<MappedResult, ResponseInvariantError> {
-    let mut mapped = map_temporal_video_result(tool, result)?;
-    if preference.inline_images == InlineImageDetail::Omit {
-        mapped.images.clear();
-        mapped.response.images.clear();
-    }
-    Ok(mapped)
-}
-
 pub(crate) fn visible_error(tool: &str, error: KrometrailError) -> CallToolResult {
     visible_error_with_capture(tool, error, &[])
 }

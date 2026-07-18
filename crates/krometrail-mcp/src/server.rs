@@ -386,28 +386,34 @@ mod tests {
         AnalysisScale, AnchorScope, ArtifactCacheDisposition, ArtifactEvidenceHandle,
         ArtifactFailurePolicy, ArtifactGenerationRequest, ArtifactGenerationResult,
         ArtifactGeneratorRequest, ArtifactHandle, ArtifactLabelsRequest, ArtifactOutcome,
-        ArtifactRead, BROWSER_OPERATION_REGISTRY, BrowserCompatibility, BrowserConnectRequest,
-        BrowserConnector, BrowserEventDetailRequest, BrowserEventFilter, BrowserInstallation,
-        BrowserOperationContext, BrowserOperationRequest, BrowserOperationResult, BrowserOwnership,
-        BrowserProduct, BrowserProductVersion, BrowserSessionEvent, BrowserSessionEvents,
-        BrowserSessionPort, BrowserSessionState, BrowserStatus, BrowserStopOutcome, BrowserVersion,
+        ArtifactRead, BROWSER_OPERATION_REGISTRY, BrowserActionRequest, BrowserCompatibility,
+        BrowserConnectRequest, BrowserConnector, BrowserEventDetailRequest, BrowserEventFilter,
+        BrowserInstallation, BrowserOperationContext, BrowserOperationKind,
+        BrowserOperationRequest, BrowserOperationResult, BrowserOwnership, BrowserProduct,
+        BrowserProductVersion, BrowserSessionEvent, BrowserSessionEvents, BrowserSessionPort,
+        BrowserSessionState, BrowserStatus, BrowserStopOutcome, BrowserVersion,
         BundleArtifactEvidence, BundleContextEvidence, BundleDegradation, CapabilityId,
         CapabilitySnapshot, CapabilitySupport, CaptureStatistics, CaptureStreamState,
-        CaptureTimingSummary, EffectiveBundlePolicy, EveryNthFrame, EvidenceScope, FrameId,
-        GenerateArtifactsRequest, NonEmptyText, NormalizationRequest, OutputLimitsRequest,
-        PageStatus, PortFuture, ProfileRef, ProgressiveEvidence, ProgressiveEvidenceContext,
-        ProgressiveEvidenceRequest, ProgressiveEvidenceResult, ProgressiveRegion,
-        RangeEvidenceAvailability, RangeResolutionOptions, RegionFilmstripEvidenceRequest,
-        RendererCapability, ResolvedRange, ResolvedRangeEvidenceRequest, ResolvedRangeHandleId,
-        ResolvedRangeHandles, RetentionStatus, SessionId, SessionOrigin, SessionRange, SessionTime,
-        Sha256Digest, SourceFrameList, SourceFrameSelection, SourceFramesRequest,
-        SourceReadLimitsRequest, StoryboardRequest, TEMPORAL_DEBUG_BUNDLE_POLICY_VERSION,
-        TargetCaptureStatus, TargetId, TemporalContext, TemporalContextQuery,
-        TemporalContextRequest, TemporalDebugBundle, TemporalDebugBundleContext,
-        TemporalDebugBundleRequest, TemporalDebugBundles, TemporalDebugHeader,
-        TemporalQueryRequest, TemporalRangeAnchor, TemporalRangeAnchorKind,
+        CaptureTimingSummary, ClickRequest, CoordinateSpace, CssPoint, CssRect, CssSize,
+        DeviceScaleFactor, DocumentReadiness, EffectiveBundlePolicy, EncodedScreenshot,
+        EveryNthFrame, EvidenceScope, FrameId, GenerateArtifactsRequest, InteractionId,
+        InteractionLocator, InteractionOutcome, InteractionRecord, InteractionResult,
+        LiveObservation, LocatorSummary, Modifiers, MouseButton, NavigationState, NonEmptyText,
+        NormalizationRequest, ObservationContext, ObservationPart, OutputLimitsRequest,
+        PageSelection, PageSnapshot, PageState, PageStatus, PixelDimensions, PortFuture,
+        ProfileRef, ProgressiveEvidence, ProgressiveEvidenceContext, ProgressiveEvidenceRequest,
+        ProgressiveEvidenceResult, ProgressiveRegion, RangeEvidenceAvailability,
+        RangeResolutionOptions, RegionFilmstripEvidenceRequest, RendererCapability, ResolvedRange,
+        ResolvedRangeEvidenceRequest, ResolvedRangeHandleId, ResolvedRangeHandles, RetentionStatus,
+        ScreenshotMetadata, ScreenshotTarget, SessionId, SessionOrigin, SessionRange, SessionTime,
+        Sha256Digest, SnapshotGeneration, SnapshotNode, SnapshotNodeId, SourceFrameList,
+        SourceFrameSelection, SourceFramesRequest, SourceReadLimitsRequest, StoryboardRequest,
+        TEMPORAL_DEBUG_BUNDLE_POLICY_VERSION, TargetCaptureStatus, TargetId, TemporalContext,
+        TemporalContextQuery, TemporalContextRequest, TemporalDebugBundle,
+        TemporalDebugBundleContext, TemporalDebugBundleRequest, TemporalDebugBundles,
+        TemporalDebugHeader, TemporalQueryRequest, TemporalRangeAnchor, TemporalRangeAnchorKind,
         TemporalVideoGeneration, TemporalVideoGenerationRequest, TemporalVideoGenerationResult,
-        VideoArtifactRead,
+        VideoArtifactRead, ViewportState,
     };
     use serde_json::{Value, json};
     use std::{
@@ -437,10 +443,6 @@ mod tests {
             _handle: ResolvedRangeHandleId,
         ) -> PortFuture<'_, krometrail_core::Result<ResolvedRange>> {
             Box::pin(std::future::ready(Err(unknown_range_handle_error())))
-        }
-
-        fn invalidate_session(&self, _session_id: SessionId) -> krometrail_core::Result<usize> {
-            Ok(0)
         }
     }
 
@@ -581,6 +583,13 @@ mod tests {
         fn installations(
             &self,
         ) -> PortFuture<'_, krometrail_core::Result<Vec<BrowserInstallation>>> {
+            Box::pin(std::future::ready(Ok(Vec::new())))
+        }
+
+        fn managed_profiles(
+            &self,
+        ) -> PortFuture<'_, krometrail_core::Result<Vec<krometrail_core::ManagedProfileSummary>>>
+        {
             Box::pin(std::future::ready(Ok(Vec::new())))
         }
 
@@ -791,19 +800,6 @@ mod tests {
                 .map(|(_, range)| range.clone())
                 .ok_or_else(unknown_range_handle_error);
             Box::pin(std::future::ready(result))
-        }
-
-        fn invalidate_session(&self, session_id: SessionId) -> krometrail_core::Result<usize> {
-            let mut entry = self.entry.lock().unwrap();
-            if entry
-                .as_ref()
-                .is_some_and(|(_, range)| range.session_id == session_id)
-            {
-                *entry = None;
-                Ok(1)
-            } else {
-                Ok(0)
-            }
         }
     }
 
@@ -1815,6 +1811,123 @@ mod tests {
         stop_calls: Arc<AtomicUsize>,
     }
 
+    fn protocol_click_request() -> ClickRequest {
+        ClickRequest::new(
+            PageSelection::Selected,
+            InteractionLocator::Coordinate {
+                point: CssPoint::new(12.0, 18.0).unwrap(),
+                space: CoordinateSpace::ViewportCss,
+            },
+            MouseButton::Left,
+            Modifiers::default(),
+            1,
+            false,
+        )
+        .unwrap()
+    }
+
+    fn protocol_click_result(request: &ClickRequest) -> InteractionResult {
+        let context = ObservationContext::new(
+            session_id(),
+            target_id(),
+            1,
+            SessionTime::from_nanos(10),
+            SessionTime::from_nanos(40),
+        )
+        .unwrap();
+        let dispatch_time = SessionTime::from_nanos(20);
+        let live_observation_time = SessionTime::from_nanos(30);
+        let record = InteractionRecord::new(
+            "00000000-0000-0000-0000-000000000004"
+                .parse::<InteractionId>()
+                .unwrap(),
+            context.clone(),
+            dispatch_time,
+            live_observation_time,
+            BrowserOperationKind::Click,
+            request.sanitize(),
+            LocatorSummary::from_locator(request.locator()),
+            InteractionOutcome::Dispatched,
+            None,
+        )
+        .unwrap();
+
+        let rect = CssRect::new(
+            CssPoint::new(0.0, 0.0).unwrap(),
+            CssSize::new(1280.0, 720.0).unwrap(),
+        )
+        .unwrap();
+        let viewport = ViewportState::new(
+            rect,
+            rect,
+            CssSize::new(1280.0, 2400.0).unwrap(),
+            DeviceScaleFactor::new(1.0).unwrap(),
+            1.0,
+        )
+        .unwrap();
+        let page = PageState::new(
+            context.clone(),
+            "https://example.test/after-click",
+            "After click",
+            viewport,
+            NavigationState::new(0, 1, DocumentReadiness::Complete).unwrap(),
+        )
+        .unwrap();
+
+        let generation = SnapshotGeneration::new(1).unwrap();
+        let root_id = SnapshotNodeId::new(1).unwrap();
+        let mut nodes = vec![SnapshotNode {
+            id: root_id,
+            parent: None,
+            depth: 0,
+            role: "document".into(),
+            name: Some("Projection fixture".into()),
+            value: None,
+            description: None,
+            properties: vec![],
+            actionable: false,
+            reference: None,
+        }];
+        for value in 2..=121 {
+            nodes.push(SnapshotNode {
+                id: SnapshotNodeId::new(value).unwrap(),
+                parent: Some(root_id),
+                depth: 1,
+                role: "static_text".into(),
+                name: Some(format!("projection-node-{value}")),
+                value: None,
+                description: None,
+                properties: vec![],
+                actionable: false,
+                reference: None,
+            });
+        }
+        let snapshot = PageSnapshot::new(context.clone(), generation, nodes, 0).unwrap();
+
+        let screenshot = EncodedScreenshot::new(
+            ScreenshotMetadata::new(
+                context.clone(),
+                ScreenshotTarget::Viewport,
+                rect,
+                PixelDimensions::new(1280, 720).unwrap(),
+                DeviceScaleFactor::new(1.0).unwrap(),
+            )
+            .unwrap(),
+            b"\x89PNG\r\n\x1a\nprotocol-projection".to_vec(),
+        )
+        .unwrap();
+
+        InteractionResult {
+            record,
+            observation: LiveObservation {
+                context,
+                page: ObservationPart::Available(page),
+                snapshot: ObservationPart::Available(snapshot),
+                screenshot: ObservationPart::Available(screenshot),
+            },
+        }
+    }
+
     impl BrowserSessionPort for ProtocolSession {
         fn session_origin(&self) -> SessionOrigin {
             SessionOrigin::new(krometrail_core::ObservedTime::from_nanos(0))
@@ -1852,6 +1965,9 @@ mod tests {
                 BrowserOperationRequest::ListPages(_) => {
                     Ok(BrowserOperationResult::ListPages(Box::default()))
                 }
+                BrowserOperationRequest::Click(request) => Ok(BrowserOperationResult::Click(
+                    Box::new(protocol_click_result(&request)),
+                )),
                 _ => panic!("protocol test dispatched an unexpected operation"),
             };
             Box::pin(std::future::ready(result))
@@ -1869,6 +1985,12 @@ mod tests {
         fn installations(
             &self,
         ) -> PortFuture<'_, krometrail_core::Result<Vec<BrowserInstallation>>> {
+            Box::pin(std::future::ready(Ok(Vec::new())))
+        }
+        fn managed_profiles(
+            &self,
+        ) -> PortFuture<'_, krometrail_core::Result<Vec<krometrail_core::ManagedProfileSummary>>>
+        {
             Box::pin(std::future::ready(Ok(Vec::new())))
         }
         fn connect(
@@ -1911,6 +2033,16 @@ mod tests {
                 next: Some(self.capture_event.clone()),
             })
                 as Box<dyn BrowserSessionEvents>)))
+        }
+
+        fn read_managed_download(
+            &self,
+            _request: krometrail_core::ReadManagedDownloadRequest,
+        ) -> PortFuture<'_, krometrail_core::Result<krometrail_core::ManagedDownloadRead>> {
+            Box::pin(std::future::ready(Err(KrometrailError::new(
+                ErrorCode::NotFound,
+                NonEmptyText::new("lifecycle fixture has no managed downloads").unwrap(),
+            ))))
         }
 
         fn execute(
@@ -1958,6 +2090,13 @@ mod tests {
         fn installations(
             &self,
         ) -> PortFuture<'_, krometrail_core::Result<Vec<BrowserInstallation>>> {
+            Box::pin(std::future::ready(Ok(Vec::new())))
+        }
+
+        fn managed_profiles(
+            &self,
+        ) -> PortFuture<'_, krometrail_core::Result<Vec<krometrail_core::ManagedProfileSummary>>>
+        {
             Box::pin(std::future::ready(Ok(Vec::new())))
         }
 
@@ -2821,6 +2960,160 @@ mod tests {
         )
         .await;
         assert!(read_json(&mut read).await["error"].is_object());
+
+        drop(write);
+        drop(read);
+        assert!(matches!(server_task.await.unwrap(), QuitReason::Closed));
+        owner.shutdown().await.unwrap();
+        assert_eq!(stop_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn successful_mutation_roundtrip_preserves_semantics_across_response_projections() {
+        let execute_calls = Arc::new(AtomicUsize::new(0));
+        let stop_calls = Arc::new(AtomicUsize::new(0));
+        let session = Arc::new(ProtocolSession {
+            status: protocol_status(),
+            execute_calls: Arc::clone(&execute_calls),
+            stop_calls: Arc::clone(&stop_calls),
+        });
+        let service = build_service(
+            dependencies(Arc::new(ProtocolConnector { session })),
+            McpConfig::new(vec![CapabilityId::Control]).unwrap(),
+        )
+        .unwrap();
+        let owner = Arc::clone(&service.sessions);
+        let (client_io, server_io) = tokio::io::duplex(256 * 1024);
+        let server_task = tokio::spawn(async move {
+            let running = service.server.serve(server_io).await.unwrap();
+            running.waiting().await.unwrap()
+        });
+        let (read, mut write) = tokio::io::split(client_io);
+        let mut read = BufReader::new(read);
+
+        send_json(
+            &mut write,
+            json!({
+                "jsonrpc":"2.0","id":1,"method":"initialize","params":{
+                    "protocolVersion":"2025-06-18","capabilities":{},
+                    "clientInfo":{"name":"krometrail-test","version":"1"}
+                }
+            }),
+        )
+        .await;
+        assert_eq!(
+            read_json(&mut read).await["result"]["protocolVersion"],
+            "2025-06-18"
+        );
+        send_json(
+            &mut write,
+            json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+        )
+        .await;
+        send_json(
+            &mut write,
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"start_browser","arguments":{}}}),
+        )
+        .await;
+        assert_eq!(read_json(&mut read).await["result"]["isError"], false);
+
+        let projections = [
+            None,
+            Some(json!({
+                "inline_images": "inline",
+                "snapshot": "legacy",
+                "page_state": "legacy"
+            })),
+            Some(json!({"snapshot": "full", "page_state": "full"})),
+            Some(json!({
+                "inline_images": "inline",
+                "snapshot": "full",
+                "page_state": "full"
+            })),
+        ];
+        let mut responses = Vec::new();
+        for (index, projection) in projections.into_iter().enumerate() {
+            let mut arguments = serde_json::to_value(protocol_click_request())
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .clone();
+            if let Some(projection) = projection {
+                arguments.insert("response".into(), projection);
+            }
+            send_json(
+                &mut write,
+                json!({
+                    "jsonrpc":"2.0",
+                    "id": 3 + index,
+                    "method":"tools/call",
+                    "params":{"name":"click","arguments":arguments}
+                }),
+            )
+            .await;
+            responses.push(read_json(&mut read).await);
+        }
+
+        assert_eq!(execute_calls.load(Ordering::SeqCst), 4);
+        for response in &responses {
+            assert_eq!(response["result"]["isError"], false);
+            assert_eq!(
+                response["result"]["structuredContent"]["status"],
+                "succeeded"
+            );
+            assert_eq!(
+                response["result"]["structuredContent"]["result"]["record"]["outcome"],
+                "dispatched"
+            );
+            assert!(response["result"]["content"].as_array().is_some());
+            assert!(response["result"]["structuredContent"].is_object());
+        }
+
+        let structured = responses
+            .iter()
+            .map(|response| &response["result"]["structuredContent"])
+            .collect::<Vec<_>>();
+        for projected in structured.iter().skip(1) {
+            assert_eq!(
+                projected["result"]["record"],
+                structured[0]["result"]["record"]
+            );
+            assert_eq!(projected["interaction"], structured[0]["interaction"]);
+            assert_eq!(projected["warnings"], structured[0]["warnings"]);
+            assert_eq!(projected["resources"], structured[0]["resources"]);
+        }
+
+        let snapshot_node_count = |index: usize| {
+            structured[index]["result"]["observation"]["snapshot"]["available"]["nodes"]
+                .as_array()
+                .unwrap()
+                .len()
+        };
+        assert!(snapshot_node_count(0) < 121);
+        assert_eq!(snapshot_node_count(1), snapshot_node_count(0));
+        assert_eq!(snapshot_node_count(2), 121);
+        assert_eq!(snapshot_node_count(3), 121);
+        for projected in &structured {
+            assert_eq!(
+                projected["result"]["observation"]["page"]["available"]["url"],
+                "https://example.test/after-click"
+            );
+        }
+
+        let inline_image_count = |index: usize| {
+            responses[index]["result"]["content"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|content| content["type"] == "image")
+                .count()
+        };
+        assert_eq!(inline_image_count(0), 0);
+        assert_eq!(inline_image_count(1), 1);
+        assert_eq!(inline_image_count(2), 0);
+        assert_eq!(inline_image_count(3), 1);
+        assert!(structured[0]["images"].as_array().unwrap().is_empty());
+        assert_eq!(structured[1]["images"].as_array().unwrap().len(), 1);
 
         drop(write);
         drop(read);

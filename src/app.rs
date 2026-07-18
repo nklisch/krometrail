@@ -515,6 +515,12 @@ mod tests {
             Box::pin(std::future::ready(Ok(Vec::new())))
         }
 
+        fn managed_profiles(
+            &self,
+        ) -> PortFuture<'_, Result<Vec<krometrail_core::ManagedProfileSummary>>> {
+            Box::pin(std::future::ready(Ok(Vec::new())))
+        }
+
         fn connect(
             &self,
             _request: krometrail_core::BrowserConnectRequest,

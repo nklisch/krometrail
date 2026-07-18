@@ -1,7 +1,7 @@
 ---
 id: gate-tests-mcp-successful-mutation-projections
 kind: story
-stage: implementing
+stage: review
 tags: [testing]
 parent: null
 depends_on: []
@@ -45,3 +45,17 @@ Drive one successful live mutation through in-memory JSON-RPC using omitted, leg
 - Extend the protocol fake with one deterministic successful mutation result containing full observation data and an encoded screenshot.
 - Call the mutation through in-memory JSON-RPC for default, legacy, full, and inline projections.
 - Compare authoritative envelope fields across variants and assert only the intended presentation differences.
+
+## Implementation notes
+
+- Extended the in-memory protocol session with a deterministic successful click containing page state, a 121-node snapshot, and a PNG screenshot.
+- Exercised default, explicit legacy, full, and full-plus-inline projection requests through JSON-RPC and the live MCP service.
+- Asserted four total dispatches, successful MCP envelopes, invariant records/anchors/warnings/resources, compact versus full node counts, and inline images only for the requested variants in both MCP content and structured metadata.
+
+## Validation
+
+- `cargo test -p krometrail-mcp successful_mutation_roundtrip_preserves_semantics_across_response_projections --locked -- --nocapture`
+- `cargo test -p krometrail-mcp --locked`
+- `cargo test --workspace --all-targets --locked`
+- `cargo check --workspace --all-targets --locked`
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`
