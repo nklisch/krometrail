@@ -1,6 +1,6 @@
 # Krometrail
 
-Krometrail is a Rust 2024 workspace for local browser control and temporal visual evidence. The binary exposes `--version`, `--help`, browser-discovery `doctor`, and the `mcp` stdio server. Browser transport, controlled capture, durable recording storage, 24 registry-derived control operations, temporal investigation and retention tools, browser-event queries, artifact/source-frame resources, and per-session `every_nth_frame` are implemented; page-state and framework-state capabilities remain future extension points.
+Krometrail is a Rust 2024 workspace for local browser control and temporal visual evidence. The binary exposes `--version`, `--help`, browser-discovery `doctor`, and the `mcp` stdio server. Browser transport, controlled capture, durable recording storage, registry-derived control operations, temporal investigation and retention tools, browser-event queries, retained evidence resources, and per-session `every_nth_frame` are implemented; page-state and framework-state capabilities remain future extension points.
 
 ## Stable Release Contract
 
@@ -94,7 +94,7 @@ The helper validates and updates Cargo metadata, runs the Rust quality gate, and
 - Keep one registry for growing variant sets such as capabilities.
 - Validate external input and domain invariants at boundaries; fail explicitly on unsupported operations.
 - Keep source, observed, and normalized session time distinct.
-- Treat the viewport/output contract as a future public boundary; do not invent it in placeholder commands.
+- Preserve the public viewport contract: ergonomic responsive and mobile presets materialize to explicit target-scoped metrics, custom metrics remain available, and clear restores browser defaults.
 - Do not include AI attribution lines in commit messages.
 
 <!-- agile-workflow:start -->

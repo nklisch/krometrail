@@ -148,7 +148,7 @@ fn mcp_binary_initializes_lists_json_rpc_and_keeps_stderr_separate() {
     stdout.read_line(&mut second).unwrap();
     let listed: serde_json::Value = serde_json::from_str(second.trim()).unwrap();
     assert_eq!(listed["id"], 2);
-    let expected_tools = 4
+    let expected_tools = 5
         + krometrail_core::BROWSER_OPERATION_REGISTRY.len()
         + 1
         + krometrail_core::PROGRESSIVE_EVIDENCE_REGISTRY
@@ -156,6 +156,10 @@ fn mcp_binary_initializes_lists_json_rpc_and_keeps_stderr_separate() {
             .filter(|definition| definition.exposure == krometrail_core::OperationExposure::Tool)
             .count()
         + krometrail_core::TEMPORAL_CONTEXT_OPERATION_REGISTRY.len();
+    assert_eq!(
+        expected_tools, 49,
+        "the forced no-FFmpeg surface excludes the optional video tool"
+    );
     assert_eq!(
         listed["result"]["tools"].as_array().unwrap().len(),
         expected_tools
@@ -250,7 +254,8 @@ fn mcp_without_qualified_ffmpeg_keeps_the_still_surface_and_omits_video() {
         vec![
             "temporal-artifact",
             "temporal-artifact-manifest",
-            "temporal-source-frame"
+            "temporal-source-frame",
+            "managed-download"
         ]
     );
 

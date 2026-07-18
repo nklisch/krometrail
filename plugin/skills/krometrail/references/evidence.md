@@ -122,7 +122,7 @@ video. Any model-effectiveness claim must name and separately qualify that exact
 
 ## Active-session download resources
 
-Completed managed downloads use `krometrail://local/{session}/downloads/{download}` resource links.
+Completed managed downloads expose `krometrail://local/{session}/downloads/{download}` resource URIs.
 Unlike retained temporal evidence, these are active-session conveniences: their bytes are served only
 through the current managed browser owner and are removed on stop, session loss, or process shutdown.
 There is no historical lookup or filesystem-path fallback. Capture a `list_downloads` cursor before

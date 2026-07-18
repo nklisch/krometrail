@@ -26,7 +26,7 @@ Omit `response` for routine work. Expand only the part needed:
 Use `"legacy"` only when reproducing the earlier automatic-presentation shape. `"omit"` replaces an
 available structured part with an explicit projection marker; it does not mean acquisition failed.
 Projection never changes action outcome, interaction identity, warnings, retained capture, or canonical
-resource links.
+resource identities.
 
 1. Trust the live evidence returned by a successful state-changing operation for immediate
    confirmation. Its default compact response retains screenshot availability metadata without embedding
@@ -78,7 +78,7 @@ into issue reports or diagnostics.
 For a download-triggering action, call `list_downloads {}` first and keep its `cursor`, then trigger
 the action and call `wait_for_download` with `after` set to that cursor. This avoids racing a fast
 download. Expand to `list_downloads` again when reconciling timeout or cancellation. Read a completed
-download through its returned `krometrail://local/...` resource link. These bounded bytes remain local
+download through its returned `krometrail://local/...` resource URI. These bounded bytes remain local
 and exist only while the managed browser session is active; `stop_browser`, session loss, or MCP
 restart invalidates the link. Attached browser sessions do not expose clipboard or download authority.
 
@@ -160,7 +160,8 @@ uses the same arguments advertised by that standalone operation. For example:
 {"steps":[{"operation":"fill","request":{"locator":{"kind":"element","value":{"kind":"css_selector","value":"#query"}},"value":"krometrail"}},{"operation":"press_keys","request":{"locator":{"kind":"element","value":{"kind":"css_selector","value":"#query"}},"keys":["Enter"],"wait_for_navigation":true}}],"timeout":5000}
 ```
 
-The outer page target applies by default; do not nest `batch` or include browser-lifecycle operations
+The outer page target applies by default. Response projection is also outer-batch only: nested step
+`request` objects cannot contain `response`. Do not nest `batch` or include browser-lifecycle operations
 as steps.
 
 ## Inspect retained time only when needed

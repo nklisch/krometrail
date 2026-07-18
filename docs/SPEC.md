@@ -136,8 +136,10 @@ Snapshot references are the primary target form. Explicit CSS selectors remain a
 
 Callers can also describe a semantic locator by accessible role and name, label text, visible text, or test
 identifier, optionally scoped to a descendant and a same-origin frame. Krometrail resolves the locator through
-the active document snapshot registry and returns or acts through an exact generation-scoped reference. Zero
-matches and ambiguous matches fail explicitly; semantic matching never silently selects one of several nodes.
+the active document snapshot registry and returns or acts through an exact generation-scoped reference. A no-match,
+ambiguous, or truncated result is an explicit successful query outcome, but it contains no actionable
+reference and never authorizes mutation. Semantic matching never silently selects one of several or potentially
+unreported nodes; callers narrow the query until it returns one unique reference before acting.
 
 ## Browser-Control Surface
 
