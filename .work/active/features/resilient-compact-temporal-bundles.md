@@ -1,7 +1,7 @@
 ---
 id: resilient-compact-temporal-bundles
 kind: feature
-stage: implementing
+stage: review
 tags: [agent-ux, visual]
 parent: null
 depends_on: [truthful-screencast-geometry]
@@ -73,8 +73,8 @@ fn range_not_found(
 
 **Acceptance criteria**:
 
-- [ ] A future-edge request fails `not_found` with exact captured bounds, concrete adjusted-request recovery, and retry-after-recovery advice.
-- [ ] Retention eviction and require-complete cases retain their existing semantics.
+- [x] A future-edge request fails `not_found` with exact captured bounds, concrete adjusted-request recovery, and retry-after-recovery advice.
+- [x] Retention eviction and require-complete cases retain their existing semantics.
 
 ### Unit 2: Budget-aware high-DPI artifact fitting
 
@@ -102,9 +102,9 @@ fn recoverable_artifact_limit(error: KrometrailError, range: &ResolvedRange) -> 
 
 **Acceptance criteria**:
 
-- [ ] The reproduced 53-frame 2400×1410 sequence selects a bounded exact scale and generates default storyboard/difference-map evidence below the unchanged combined cap.
-- [ ] Work above the fixed envelope fails before allocation with actionable recovery.
-- [ ] Cache keys, manifests, and output dimensions reflect the effective scale deterministically.
+- [x] The reproduced 53-frame 2400×1410 sequence selects a bounded exact scale and generates default storyboard/difference-map evidence below the unchanged combined cap.
+- [x] Work above the fixed envelope fails before allocation with actionable recovery.
+- [x] Cache keys, manifests, and output dimensions reflect the effective scale deterministically.
 
 ### Unit 3: Compact bundle handles and canonical manifest resources
 
@@ -145,9 +145,9 @@ enum ResourceKind {
 
 **Acceptance criteria**:
 
-- [ ] A nine-artifact bundle no longer repeats source-frame ID arrays and parameters inline.
-- [ ] Every compact handle exposes enough identity and summary provenance for immediate reasoning and links to byte-equivalent retained full provenance.
-- [ ] Cross-session/target artifact access remains rejected by the existing scope boundary.
+- [x] A nine-artifact bundle no longer repeats source-frame ID arrays and parameters inline.
+- [x] Every compact handle exposes enough identity and summary provenance for immediate reasoning and links to byte-equivalent retained full provenance.
+- [x] Cross-session/target artifact access remains rejected by the existing scope boundary.
 
 ## Implementation Order
 
@@ -172,3 +172,13 @@ enum ResourceKind {
 - A larger decoded ceiling increases potential resident memory, so the unchanged combined semaphore and scale-selection proof are release blockers, not optional optimization.
 - Resource URI expansion is public and must use the canonical parser/builder rather than string concatenation.
 - Compact projection must not affect generic artifact-generation consumers; tests should compare both surfaces explicitly.
+
+## Implementation notes
+
+- Child commits: `174cf1c` (captured-bound recovery), `a517b53` (budget-aware high-DPI fitting), and `e94d4da` (compact bundle handles and canonical manifest resources).
+- Never-captured range failures now preserve the original request context while returning exact retained bounds, a concrete contained-range retry, and retry-after-recovery advice. Eviction paths are unchanged.
+- Default artifact limits admit the reproduced 53-frame DPR-2 sequence under the unchanged 1 GiB combined cap. Scale fitting reserves decoded bytes plus the largest sequential generator-output peak, and published single-flight results no longer retain encoded payload bytes.
+- Only temporal debug bundles use compact inline artifact handles. Generic artifact-generation results keep their existing full manifests, while canonical manifest resources return the exact retained full provenance through the existing scope authority.
+- Focused core/store, artifact, debug-bundle, and MCP regressions pass. Workspace formatting and checking pass, and scoped clippy for every package changed by this feature passes.
+- The full workspace clippy/test gates are currently blocked by concurrent, unrelated `truthful-screencast-geometry` CDP edits: four `await_holding_lock` findings in capture tests and one index-out-of-bounds failure in `session_set_clear_and_rollback_fence_capture_geometry_transactions`. Those files are intentionally excluded from this feature's commits.
+- The foundation documents remain current: the changes preserve the documented explicit range failure, bounded generation, progressive bundle, retained provenance, and generic artifact contracts.
