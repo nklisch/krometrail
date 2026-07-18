@@ -1,6 +1,7 @@
 ---
 id: gate-security-clean-stale-managed-downloads
 kind: story
+stage: implementing
 tags: [security]
 parent: null
 depends_on: []
@@ -33,3 +34,7 @@ Normal shutdown removes only the active session directory; a crash can leave sen
 ## Remediation direction
 
 During managed-download activation, safely enumerate and remove verified stale session directories under the canonical managed root with symlink rejection and explicit cleanup-failure diagnostics.
+
+## Promotion
+
+Promoted from the low-severity backlog because the operator requested every release-gate finding be resolved before shipment.

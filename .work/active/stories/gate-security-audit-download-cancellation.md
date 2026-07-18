@@ -1,6 +1,7 @@
 ---
 id: gate-security-audit-download-cancellation
 kind: story
+stage: implementing
 tags: [security]
 parent: null
 depends_on: []
@@ -32,3 +33,7 @@ Error Handling & Logging
 ## Remediation direction
 
 Persist a privacy-safe browser-scoped cancellation record containing stable operation metadata and opaque download identifier/state only, and surface persistence uncertainty consistently.
+
+## Promotion
+
+Promoted from the low-severity backlog because the operator requested every release-gate finding be resolved before shipment.

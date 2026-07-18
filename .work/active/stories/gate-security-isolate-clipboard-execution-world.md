@@ -1,7 +1,7 @@
 ---
 id: gate-security-isolate-clipboard-execution-world
 kind: story
-stage: drafting
+stage: implementing
 tags: [security]
 parent: null
 depends_on: []
