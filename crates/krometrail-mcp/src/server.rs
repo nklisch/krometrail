@@ -20,6 +20,7 @@ use crate::{
     config::{DiagnosticContext, McpConfig, McpDependencies},
     registry::{MCP_REQUEST_DEADLINE, McpCancellation, build_router},
     resources::{read_resource, resource_templates},
+    response::{DiagnosticDetail, split_response_projection},
     session::BrowserSessionOwner,
 };
 
@@ -152,6 +153,7 @@ impl ServerHandler for KrometrailMcpServer {
         request: CallToolRequestParam,
         context: RequestContext<RoleServer>,
     ) -> std::result::Result<CallToolResult, ErrorData> {
+        let diagnostic_detail = requested_diagnostic_detail(&request);
         let correlation_id = Uuid::new_v4().to_string();
         let route = request.name.to_string();
         let span = tracing::info_span!(
@@ -165,7 +167,12 @@ impl ServerHandler for KrometrailMcpServer {
                 .call(ToolCallContext::new(self, request, context))
                 .await;
             let outcome = match &mut result {
-                Ok(result) => attach_diagnostics(result, &correlation_id, &self.diagnostics),
+                Ok(result) => attach_diagnostics(
+                    result,
+                    &correlation_id,
+                    &self.diagnostics,
+                    diagnostic_detail,
+                ),
                 Err(error) => {
                     attach_error_diagnostics(error, &correlation_id, &self.diagnostics);
                     "failed"
@@ -231,6 +238,7 @@ fn attach_diagnostics(
     result: &mut CallToolResult,
     correlation_id: &str,
     context: &DiagnosticContext,
+    detail: DiagnosticDetail,
 ) -> &'static str {
     let Some(serde_json::Value::Object(response)) = result.structured_content.as_mut() else {
         return if result.is_error == Some(true) {
@@ -251,7 +259,7 @@ fn attach_diagnostics(
         "degraded" => "degraded",
         _ => "succeeded",
     };
-    if outcome != "succeeded" {
+    if outcome != "succeeded" && detail == DiagnosticDetail::Automatic {
         response.insert(
             "diagnostics".into(),
             serde_json::json!({
@@ -261,6 +269,16 @@ fn attach_diagnostics(
         );
     }
     outcome
+}
+
+fn requested_diagnostic_detail(request: &CallToolRequestParam) -> DiagnosticDetail {
+    request
+        .arguments
+        .clone()
+        .and_then(|arguments| split_response_projection(arguments).ok())
+        .map_or(DiagnosticDetail::Automatic, |(_, preference)| {
+            preference.diagnostics
+        })
 }
 
 pub struct McpService {
@@ -389,7 +407,12 @@ mod tests {
         );
         let mut failed = crate::response::visible_error("browser_click", error);
         assert_eq!(
-            attach_diagnostics(&mut failed, "correlation-1", &context),
+            attach_diagnostics(
+                &mut failed,
+                "correlation-1",
+                &context,
+                DiagnosticDetail::Automatic,
+            ),
             "failed"
         );
         let structured = failed.structured_content.unwrap();
@@ -404,7 +427,12 @@ mod tests {
         let mapped = crate::response::map_lifecycle_result("browser_status", json!({})).unwrap();
         let mut succeeded = crate::response::into_call_tool_result(mapped).unwrap();
         assert_eq!(
-            attach_diagnostics(&mut succeeded, "correlation-2", &context),
+            attach_diagnostics(
+                &mut succeeded,
+                "correlation-2",
+                &context,
+                DiagnosticDetail::Automatic,
+            ),
             "succeeded"
         );
         assert!(
@@ -414,6 +442,93 @@ mod tests {
                 .get("diagnostics")
                 .is_none()
         );
+
+        let error = KrometrailError::new(
+            ErrorCode::InvalidInput,
+            NonEmptyText::new("invalid fixture request").unwrap(),
+        );
+        let mut omitted = crate::response::visible_error("browser_click", error);
+        assert_eq!(
+            attach_diagnostics(
+                &mut omitted,
+                "correlation-3",
+                &context,
+                DiagnosticDetail::Omit,
+            ),
+            "failed"
+        );
+        assert!(
+            omitted
+                .structured_content
+                .unwrap()
+                .get("diagnostics")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn concise_status_retains_capture_failure_and_retention_pressure() {
+        let mut status = protocol_status();
+        status.capture = vec![
+            TargetCaptureStatus::new_with_failure_stage(
+                target_id(),
+                1,
+                CaptureStreamState::Failed,
+                CaptureStatistics::default(),
+                1,
+                0,
+                None,
+                CaptureTimingSummary::empty(),
+                CaptureTimingSummary::empty(),
+                EveryNthFrame::default(),
+                Some(krometrail_core::CaptureFailureStage::FramePersistence),
+            )
+            .unwrap(),
+        ];
+        let budget = krometrail_core::DiskBudgetBytes::new(10).unwrap();
+        status.retention = RetentionStatus::new(
+            budget,
+            krometrail_core::StorageUsage::new(10, 0, 0, 0, 0, 0, 0).unwrap(),
+            10,
+            None,
+            None,
+            krometrail_core::RecordingBudgetState::PausedBudget,
+            true,
+            true,
+            0,
+            0,
+            0,
+        )
+        .unwrap();
+
+        let concise = crate::response::map_browser_status(
+            "browser_status",
+            status.clone(),
+            crate::response::BrowserStatusDetail::Concise,
+        )
+        .unwrap();
+        assert_eq!(concise.response.result["capture"][0]["state"], "failed");
+        assert_eq!(
+            concise.response.result["capture"][0]["failure_stage"],
+            "frame_persistence"
+        );
+        assert_eq!(
+            concise.response.result["retention"]["budget_state"],
+            "paused_budget"
+        );
+        assert_eq!(
+            concise.response.result["retention"]["recording_blocked"],
+            true
+        );
+        assert!(concise.response.result.get("compatibility").is_none());
+
+        let full = crate::response::map_browser_status(
+            "browser_status",
+            status,
+            crate::response::BrowserStatusDetail::Full,
+        )
+        .unwrap();
+        assert!(full.response.result.get("compatibility").is_some());
     }
 
     impl BrowserConnector for UnusedConnector {
@@ -1307,6 +1422,40 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn response_projection_defaults_are_economical_and_diagnostics_omit_is_validated() {
+        let connector = LifecycleConnector::new();
+        let responses = invoke_control_tools(
+            Arc::clone(&connector),
+            vec![
+                ("start_browser", json!({})),
+                ("browser_status", json!({})),
+                (
+                    "navigate_page",
+                    json!({"url":"", "response":{"diagnostics":"omit"}}),
+                ),
+                (
+                    "navigate_page",
+                    json!({"url":"", "response":{"diagnostics":"omit", "snapshot":"not-valid"}}),
+                ),
+            ],
+        )
+        .await;
+        let status = &responses[1]["result"]["structuredContent"]["result"];
+        assert_eq!(status["page_count"], 0);
+        assert!(status.get("compatibility").is_none());
+        assert!(
+            responses[2]["result"]["structuredContent"]
+                .get("diagnostics")
+                .is_none()
+        );
+        assert!(
+            responses[3]["result"]["structuredContent"]
+                .get("diagnostics")
+                .is_some()
+        );
+    }
+
     #[test]
     fn capability_filters_keep_temporal_tools_when_control_is_disabled() {
         let service = build_service(
@@ -2149,7 +2298,8 @@ mod tests {
             "generic artifact generation must retain the complete manifest"
         );
         assert_eq!(generic.response.resources.len(), 1);
-        let arguments = serde_json::to_value(bundle_request()).unwrap();
+        let mut arguments = serde_json::to_value(bundle_request()).unwrap();
+        arguments["response"] = json!({"inline_images":"inline"});
         let dependencies = McpDependencies {
             browser: Arc::new(UnusedConnector),
             temporal_debug_bundles: Arc::clone(&spy) as Arc<dyn TemporalDebugBundles>,

@@ -17,6 +17,11 @@ browser evidence; it does not diagnose defects or infer causes.
 Check retained capture health before making a temporal claim. A capture warning can coexist with a
 successful browser action; it limits history without undoing the action.
 
+Responses default to compact structured evidence without inline image bytes. Screenshot availability,
+warnings, interaction identity, retained evidence, and canonical resource links remain visible. Request
+`inline_images: "inline"` only when pixels are needed in the immediate response, and request `full`
+snapshot/page-state detail only when the compact projection cannot answer the question.
+
 ### Current live evidence
 
 - **Page state** reports URL, title, viewport, selection, navigation, and related status.
@@ -68,7 +73,7 @@ availability and request policy, it can include:
 - visual measurements and capture-quality warnings;
 - nearby interactions, navigation, console/exception, and failed-request context.
 
-The bundle favors context-sized evidence. Its compact artifact handles summarize identity, type,
+The bundle favors context-sized evidence and omits inline image bytes by default. Its compact artifact handles summarize identity, type,
 geometry, hash, and frame counts. Read a handle's `manifest_uri` resource for the exact full manifest
 when a claim depends on ordered source and selected frame IDs, omissions, gaps, normalization, or
 generator parameters. Full-resolution images and exact source frames remain behind their adjacent MCP

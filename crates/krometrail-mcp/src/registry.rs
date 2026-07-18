@@ -27,12 +27,15 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     config::{McpConfig, McpDependencies},
     response::{
-        into_call_tool_result, map_lifecycle_result, map_operation_result_with_capture,
-        map_progressive_result, map_temporal_bundle_result, map_temporal_video_result,
-        visible_error, visible_error_with_capture,
+        BrowserStatusRequest, into_call_tool_result, map_browser_status, map_lifecycle_result,
+        map_operation_result_with_capture_projected, map_progressive_result_projected,
+        map_temporal_bundle_result_projected, map_temporal_context_result,
+        map_temporal_video_result_projected, split_response_projection, visible_error,
+        visible_error_with_capture,
     },
     schema::{
-        generated_input_schema, operation_input_schema, tool_response_schema, type_input_schema,
+        generated_input_schema, operation_input_schema, projected_input_schema,
+        tool_response_schema, type_input_schema,
     },
     server::KrometrailMcpServer,
     session::BrowserSessionOwner,
@@ -149,7 +152,7 @@ pub(crate) fn build_router(
             }
             let kind = definition.kind;
             let name = definition.stable_name;
-            let input_schema = operation_input_schema(kind, config)?;
+            let input_schema = projected_input_schema(operation_input_schema(kind, config)?)?;
             let annotations = operation_annotations(definition.mutability);
             let mut tool =
                 Tool::new(name, definition.description, input_schema).annotate(annotations);
@@ -166,7 +169,7 @@ pub(crate) fn build_router(
         let mut tool = Tool::new(
             name,
             definition.description,
-            type_input_schema::<TemporalDebugBundleRequest>()?,
+            projected_input_schema(type_input_schema::<TemporalDebugBundleRequest>()?)?,
         )
         .annotate(temporal_annotations(definition.mutability, false));
         tool.output_schema = Some(tool_response_schema(false)?);
@@ -183,7 +186,7 @@ pub(crate) fn build_router(
         let mut tool = Tool::new(
             name,
             definition.description,
-            type_input_schema::<TemporalVideoGenerationRequest>()?,
+            projected_input_schema(type_input_schema::<TemporalVideoGenerationRequest>()?)?,
         )
         .annotate(temporal_annotations(definition.mutability, false));
         tool.output_schema = Some(tool_response_schema(true)?);
@@ -204,7 +207,7 @@ pub(crate) fn build_router(
     {
         let kind = definition.kind;
         let name = definition.stable_name;
-        let input_schema = generated_input_schema(kind.input_schema())?;
+        let input_schema = projected_input_schema(generated_input_schema(kind.input_schema())?)?;
         let annotations = temporal_annotations(
             definition.mutability,
             kind == ProgressiveEvidenceOperationKind::UnpinResolvedRange,
@@ -227,7 +230,8 @@ pub(crate) fn build_router(
         for definition in TEMPORAL_CONTEXT_OPERATION_REGISTRY {
             let kind = definition.kind;
             let name = definition.stable_name;
-            let input_schema = generated_input_schema(kind.input_schema())?;
+            let input_schema =
+                projected_input_schema(generated_input_schema(kind.input_schema())?)?;
             let mut tool = Tool::new(name, definition.description, input_schema)
                 .annotate(temporal_annotations(definition.mutability, false));
             tool.output_schema = Some(tool_response_schema(false)?);
@@ -260,7 +264,7 @@ fn validate_route_registry(config: &McpConfig) -> Result<()> {
             ));
         }
         register_route_name(&mut names, definition.stable_name, definition.description)?;
-        let _ = operation_input_schema(definition.kind, config)?;
+        let _ = projected_input_schema(operation_input_schema(definition.kind, config)?)?;
     }
     let progressive_registry = krometrail_core::PROGRESSIVE_EVIDENCE_REGISTRY;
     if progressive_registry.len() != ProgressiveEvidenceOperationKind::ALL.len()
@@ -280,20 +284,20 @@ fn validate_route_registry(config: &McpConfig) -> Result<()> {
             ));
         }
         register_route_name(&mut names, definition.stable_name, definition.description)?;
-        let _ = generated_input_schema(definition.kind.input_schema())?;
+        let _ = projected_input_schema(generated_input_schema(definition.kind.input_schema())?)?;
     }
     register_route_name(
         &mut names,
         TEMPORAL_DEBUG_BUNDLE_OPERATION.stable_name,
         TEMPORAL_DEBUG_BUNDLE_OPERATION.description,
     )?;
-    let _ = type_input_schema::<TemporalDebugBundleRequest>()?;
+    let _ = projected_input_schema(type_input_schema::<TemporalDebugBundleRequest>()?)?;
     register_route_name(
         &mut names,
         TEMPORAL_VIDEO_OPERATION.stable_name,
         TEMPORAL_VIDEO_OPERATION.description,
     )?;
-    let _ = type_input_schema::<TemporalVideoGenerationRequest>()?;
+    let _ = projected_input_schema(type_input_schema::<TemporalVideoGenerationRequest>()?)?;
     if TEMPORAL_CONTEXT_OPERATION_REGISTRY.len() != TemporalContextOperationKind::ALL.len()
         || TEMPORAL_CONTEXT_OPERATION_REGISTRY
             .iter()
@@ -311,7 +315,7 @@ fn validate_route_registry(config: &McpConfig) -> Result<()> {
             ));
         }
         register_route_name(&mut names, definition.stable_name, definition.description)?;
-        let _ = generated_input_schema(definition.kind.input_schema())?;
+        let _ = projected_input_schema(generated_input_schema(definition.kind.input_schema())?)?;
     }
     Ok(())
 }
@@ -325,9 +329,12 @@ async fn call_temporal_video(
     if let Err(error) = budget.check() {
         return Ok(call_error_result(name, error));
     }
-    let request = match parse_arguments::<TemporalVideoGenerationRequest>(
-        context.arguments.unwrap_or_default(),
-    ) {
+    let (arguments, preference) =
+        match split_response_projection(context.arguments.unwrap_or_default()) {
+            Ok(value) => value,
+            Err(error) => return Ok(call_error_result(name, error)),
+        };
+    let request = match parse_arguments::<TemporalVideoGenerationRequest>(arguments) {
         Ok(request) => request,
         Err(error) => return Ok(call_error_result(name, error)),
     };
@@ -352,7 +359,7 @@ async fn call_temporal_video(
         )
         .await;
     match result {
-        Ok(result) => map_temporal_video_result(name, result)
+        Ok(result) => map_temporal_video_result_projected(name, result, preference)
             .map_err(|_| {
                 rmcp::ErrorData::internal_error("temporal video response mapping failed", None)
             })
@@ -394,9 +401,12 @@ async fn call_bundle(
     if let Err(error) = budget.check() {
         return Ok(call_error_result(name, error));
     }
-    let request = match parse_arguments::<TemporalDebugBundleRequest>(
-        context.arguments.unwrap_or_default(),
-    ) {
+    let (arguments, preference) =
+        match split_response_projection(context.arguments.unwrap_or_default()) {
+            Ok(value) => value,
+            Err(error) => return Ok(call_error_result(name, error)),
+        };
+    let request = match parse_arguments::<TemporalDebugBundleRequest>(arguments) {
         Ok(request) => request,
         Err(error) => return Ok(call_error_result(name, error)),
     };
@@ -411,12 +421,13 @@ async fn call_bundle(
         ))
         .await;
     match result {
-        Ok(bundle) => map_temporal_bundle_result(
+        Ok(bundle) => map_temporal_bundle_result_projected(
             name,
             bundle,
             dependencies.progressive_evidence.as_ref(),
             budget.deadline,
             budget.cancellation.clone(),
+            preference,
         )
         .await
         .map_err(|_| {
@@ -438,7 +449,12 @@ async fn call_progressive(
     if let Err(error) = budget.check() {
         return Ok(call_error_result(name, error));
     }
-    let request = match progressive_request(name, context.arguments) {
+    let (arguments, preference) =
+        match split_response_projection(context.arguments.unwrap_or_default()) {
+            Ok(value) => value,
+            Err(error) => return Ok(call_error_result(name, error)),
+        };
+    let request = match progressive_request(name, Some(arguments)) {
         Ok(request) if request.kind() == kind => request,
         Ok(_) => {
             return Err(rmcp::ErrorData::internal_error(
@@ -460,7 +476,7 @@ async fn call_progressive(
         ))
         .await;
     match result {
-        Ok(result) => map_progressive_result(name, result)
+        Ok(result) => map_progressive_result_projected(name, result, preference)
             .map_err(|_| {
                 rmcp::ErrorData::internal_error("progressive response mapping failed", None)
             })
@@ -479,11 +495,14 @@ async fn call_context(
     if let Err(error) = budget.check() {
         return Ok(call_error_result(name, error));
     }
+    let (arguments, preference) =
+        match split_response_projection(context.arguments.unwrap_or_default()) {
+            Ok(value) => value,
+            Err(error) => return Ok(call_error_result(name, error)),
+        };
     let request = match kind {
         TemporalContextOperationKind::QueryBrowserEvents => {
-            match parse_arguments::<BrowserEventDetailRequest>(
-                context.arguments.unwrap_or_default(),
-            ) {
+            match parse_arguments::<BrowserEventDetailRequest>(arguments) {
                 Ok(request) => request.into_context_request(),
                 Err(error) => return Ok(call_error_result(name, error)),
             }
@@ -493,7 +512,7 @@ async fn call_context(
         .run(dependencies.temporal_context.context(request))
         .await;
     match result {
-        Ok(value) => map_lifecycle_result(name, value)
+        Ok(value) => map_temporal_context_result(name, value, preference)
             .map_err(|_| {
                 rmcp::ErrorData::internal_error("browser event response mapping failed", None)
             })
@@ -542,7 +561,8 @@ fn lifecycle_route(tool: LifecycleTool) -> Result<ToolRoute<KrometrailMcpServer>
     let schema = match tool.kind {
         LifecycleKind::Start => type_input_schema::<LaunchBrowser>()?,
         LifecycleKind::Attach => type_input_schema::<AttachBrowser>()?,
-        LifecycleKind::Status | LifecycleKind::Stop => type_input_schema::<EmptyObject>()?,
+        LifecycleKind::Status => type_input_schema::<BrowserStatusRequest>()?,
+        LifecycleKind::Stop => type_input_schema::<EmptyObject>()?,
     };
     let annotations = match tool.kind {
         LifecycleKind::Status => ToolAnnotations::new()
@@ -573,7 +593,12 @@ async fn call_operation(
     kind: BrowserOperationKind,
     name: &'static str,
 ) -> std::result::Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
-    let request = match tagged_request(name, context.arguments) {
+    let (arguments, preference) =
+        match split_response_projection(context.arguments.unwrap_or_default()) {
+            Ok(value) => value,
+            Err(error) => return Ok(visible_error(name, error)),
+        };
+    let request = match tagged_request(name, Some(arguments)) {
         Ok(request) if request.kind() == kind => request,
         Ok(_) => {
             return Err(rmcp::ErrorData::internal_error(
@@ -593,13 +618,14 @@ async fn call_operation(
         )
         .await
     {
-        Ok(executed) => {
-            map_operation_result_with_capture(name, executed.result, &executed.capture_statuses)
-                .map_err(|_| {
-                    rmcp::ErrorData::internal_error("browser tool response mapping failed", None)
-                })
-                .and_then(into_call_tool_result)
-        }
+        Ok(executed) => map_operation_result_with_capture_projected(
+            name,
+            executed.result,
+            &executed.capture_statuses,
+            preference,
+        )
+        .map_err(|_| rmcp::ErrorData::internal_error("browser tool response mapping failed", None))
+        .and_then(into_call_tool_result),
         Err(error) => {
             let capture_statuses = context
                 .service
@@ -636,12 +662,23 @@ async fn call_lifecycle(
                 .and_then(serializable),
             Err(error) => Err(error),
         },
-        LifecycleKind::Status => context
-            .service
-            .sessions()
-            .status()
-            .await
-            .and_then(serializable),
+        LifecycleKind::Status => {
+            let detail = match parse_arguments::<BrowserStatusRequest>(arguments) {
+                Ok(request) => request.detail,
+                Err(error) => return Ok(visible_error(tool.name, error)),
+            };
+            return match context.service.sessions().status().await {
+                Ok(status) => map_browser_status(tool.name, status, detail)
+                    .map_err(|_| {
+                        rmcp::ErrorData::internal_error(
+                            "browser status response mapping failed",
+                            None,
+                        )
+                    })
+                    .and_then(into_call_tool_result),
+                Err(error) => Ok(visible_error(tool.name, error)),
+            };
+        }
         LifecycleKind::Stop => context
             .service
             .sessions()

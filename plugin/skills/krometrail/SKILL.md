@@ -16,9 +16,22 @@ release binary. Do not install a separate binary merely because this skill loade
 
 ## Use the cheapest sufficient evidence
 
+Krometrail defaults tool responses to compact structured observations without inline image bytes.
+Omit `response` for routine work. Expand only the part needed:
+
+```json
+{"response":{"inline_images":"inline","snapshot":"full","page_state":"full"}}
+```
+
+Use `"legacy"` only when reproducing the earlier automatic-presentation shape. `"omit"` replaces an
+available structured part with an explicit projection marker; it does not mean acquisition failed.
+Projection never changes action outcome, interaction identity, warnings, retained capture, or canonical
+resource links.
+
 1. Trust the live evidence returned by a successful state-changing operation for immediate
-   confirmation. Do not take a redundant screenshot after every click, fill, key press, navigation,
-   scroll, or viewport change.
+   confirmation. Its default compact response retains screenshot availability metadata without embedding
+   image bytes. Request an inline image on the original action only when pixels are needed; do not take a
+   redundant screenshot after every click, fill, key press, navigation, scroll, or viewport change.
 2. Use `observe_live` when an explicit fresh current-state observation is needed, or a narrower
    `inspect_page`, `snapshot_page`, or `take_screenshot` when only one part is needed.
 3. Use `temporal_debug_bundle` or retained source evidence only for history, transient behavior,
@@ -52,6 +65,10 @@ or use `{"focus":"foreground"}` when the user wants automatic tab switching.
 - Interaction: `click`, `fill`, `press_keys`, `select_option`, `hover`, `drag`, `scroll`,
   `upload_files`, `handle_dialog`, `wait`, `batch`
 - Responsive state: `set_viewport` applies or clears explicit target-scoped metrics
+
+`browser_status {}` returns capture health, loss, retention pressure, cadence, selection, and page count
+without compatibility matrices or timing distributions. Use `{"detail":"full"}` only when those deeper
+diagnostics are needed.
 
 Page-scoped requests default to the selected page unless their schema requires an explicit target.
 Prefer an actionable reference returned by `snapshot_page`. Same-document snapshots preserve stable
@@ -117,6 +134,10 @@ as steps.
   read the manifest when exact presentation provenance matters.
 - Browser context: `query_browser_events`
 - Retention: `pin_resolved_range`, `query_pin_state`, `unpin_resolved_range`
+
+The default temporal bundle is a compact resource-and-provenance index without inline image bytes. Add
+`"response":{"inline_images":"inline"}` when the primary orientation/storyboard image should be embedded
+immediately; otherwise follow the returned canonical resource links for the exact artifact needed.
 
 Video and manifest resources stay local by default. Reading them through Krometrail or handing a
 returned local resource to the active model host is normal tool use; do not upload or forward them

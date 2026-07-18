@@ -18,9 +18,10 @@ pub(crate) fn projected_input_schema(base: Arc<JsonObject>) -> Result<Arc<JsonOb
         return Err(schema_error("projected MCP tool schema must be an object"));
     }
     let properties = root
-        .get_mut("properties")
-        .and_then(Value::as_object_mut)
-        .ok_or_else(|| schema_error("projected MCP tool schema must declare properties"))?;
+        .entry("properties")
+        .or_insert_with(|| Value::Object(JsonObject::new()))
+        .as_object_mut()
+        .ok_or_else(|| schema_error("projected MCP tool schema properties must be an object"))?;
     if properties.contains_key("response") {
         return Err(schema_error(
             "projected MCP tool schema already declares response",

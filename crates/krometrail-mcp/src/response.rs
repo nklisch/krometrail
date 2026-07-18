@@ -7,12 +7,14 @@ use std::{
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use krometrail_core::{
     ArtifactCacheDisposition, ArtifactGenerationResult, ArtifactHandle, ArtifactId,
-    ArtifactOutcome, BatchOutcome, BatchResult, BrowserOperationResult, EncodedScreenshot,
-    ErrorCode, InteractionAnchor, KrometrailError, LiveObservation, NonEmptyText, ObservationPart,
-    PageOperationOutcome, PageOperationResult, PageSnapshot, ProgressiveEvidence,
-    ProgressiveEvidenceContext, ProgressiveEvidenceRequest, ProgressiveEvidenceResult,
-    RetrieveArtifactRequest, ScreenshotMetadata, SourceFrameBatch, SourceFrameHandle, TargetId,
-    TemporalDebugBundle, TemporalVideoGenerationResult, VideoPresentationPolicy, WaitOutcome,
+    ArtifactOutcome, BatchOutcome, BatchResult, BrowserOperationResult, BrowserOwnership,
+    BrowserSessionState, BrowserStatus, CaptureFailureStage, CaptureStreamState, EncodedScreenshot,
+    ErrorCode, EveryNthFrame, InteractionAnchor, KrometrailError, LiveObservation, NonEmptyText,
+    ObservationPart, PageOperationOutcome, PageOperationResult, PageSnapshot, ProfileRef,
+    ProgressiveEvidence, ProgressiveEvidenceContext, ProgressiveEvidenceRequest,
+    ProgressiveEvidenceResult, RecordingBudgetState, RetrieveArtifactRequest, ScreenshotMetadata,
+    SessionId, SessionTime, SourceFrameBatch, SourceFrameHandle, TargetId, TemporalDebugBundle,
+    TemporalVideoGenerationResult, VideoPresentationPolicy, WaitOutcome,
 };
 use rmcp::model::JsonObject;
 use rmcp::model::{CallToolResult, Content, RawResource};
@@ -29,9 +31,9 @@ const MAX_AUTOMATIC_SNAPSHOT_JSON_BYTES: usize = 32 * 1024;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum StructuredResponseDetail {
-    #[default]
     Legacy,
     Full,
+    #[default]
     Compact,
     Omit,
 }
@@ -39,8 +41,8 @@ pub(crate) enum StructuredResponseDetail {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum InlineImageDetail {
-    #[default]
     Inline,
+    #[default]
     Omit,
 }
 
@@ -63,6 +65,67 @@ pub(crate) struct ResponseProjectionRequest {
     pub page_state: StructuredResponseDetail,
     #[serde(default)]
     pub diagnostics: DiagnosticDetail,
+}
+
+impl ResponseProjectionRequest {
+    #[cfg(test)]
+    const fn legacy() -> Self {
+        Self {
+            inline_images: InlineImageDetail::Inline,
+            snapshot: StructuredResponseDetail::Legacy,
+            page_state: StructuredResponseDetail::Legacy,
+            diagnostics: DiagnosticDetail::Automatic,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum BrowserStatusDetail {
+    #[default]
+    Concise,
+    Full,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct BrowserStatusRequest {
+    #[serde(default)]
+    pub detail: BrowserStatusDetail,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct ConciseCaptureStatus {
+    pub target_id: TargetId,
+    pub state: CaptureStreamState,
+    pub received_frames: u64,
+    pub persisted_frames: u64,
+    pub dropped_frames: u64,
+    pub known_gap_count: u64,
+    pub last_frame_session_time: Option<SessionTime>,
+    pub failure_stage: Option<CaptureFailureStage>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct ConciseRetentionStatus {
+    pub used_bytes: u64,
+    pub configured_bytes: u64,
+    pub pinned_bytes: u64,
+    pub budget_state: RecordingBudgetState,
+    pub recording_blocked: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct ConciseBrowserStatus {
+    pub session_id: SessionId,
+    pub state: BrowserSessionState,
+    pub ownership: BrowserOwnership,
+    pub profile: ProfileRef,
+    pub selected_target_id: Option<TargetId>,
+    pub page_count: u32,
+    pub capture: Vec<ConciseCaptureStatus>,
+    pub retention: ConciseRetentionStatus,
+    pub every_nth_frame: EveryNthFrame,
 }
 
 pub(crate) fn split_response_projection(
@@ -345,6 +408,7 @@ pub(crate) fn map_operation_result(
     map_operation_result_with_capture(tool, result, &[])
 }
 
+#[cfg(test)]
 pub(crate) fn map_operation_result_with_capture(
     tool: &str,
     result: BrowserOperationResult,
@@ -354,7 +418,7 @@ pub(crate) fn map_operation_result_with_capture(
         tool,
         result,
         capture_statuses,
-        ResponseProjectionRequest::default(),
+        ResponseProjectionRequest::legacy(),
     )
 }
 
@@ -410,6 +474,73 @@ pub(crate) fn map_lifecycle_result<T: Serialize>(
         Projection::success(value),
         format!("{tool} succeeded"),
     ))
+}
+
+pub(crate) fn map_temporal_context_result<T: Serialize>(
+    tool: &str,
+    value: T,
+    preference: ResponseProjectionRequest,
+) -> Result<MappedResult, ResponseInvariantError> {
+    let mut mapped = map_lifecycle_result(tool, value)?;
+    if matches!(preference.snapshot, StructuredResponseDetail::Compact)
+        || matches!(preference.page_state, StructuredResponseDetail::Compact)
+    {
+        mapped.response.result = compact_temporal_context_result(&mapped.response.result)?;
+    }
+    Ok(mapped)
+}
+
+pub(crate) fn map_browser_status(
+    tool: &str,
+    status: BrowserStatus,
+    detail: BrowserStatusDetail,
+) -> Result<MappedResult, ResponseInvariantError> {
+    match detail {
+        BrowserStatusDetail::Full => map_lifecycle_result(tool, status),
+        BrowserStatusDetail::Concise => {
+            let capture = status
+                .capture
+                .iter()
+                .map(|capture| ConciseCaptureStatus {
+                    target_id: capture.target_id(),
+                    state: capture.state(),
+                    received_frames: capture.statistics().received_frames(),
+                    persisted_frames: capture.statistics().persisted_frames(),
+                    dropped_frames: capture.statistics().dropped_frames(),
+                    known_gap_count: capture.statistics().gap_count(),
+                    last_frame_session_time: capture.last_frame_session_time(),
+                    failure_stage: capture.failure_stage(),
+                })
+                .collect();
+            let retention = ConciseRetentionStatus {
+                used_bytes: status
+                    .retention
+                    .usage
+                    .total_bytes()
+                    .map_err(|_| ResponseInvariantError)?,
+                configured_bytes: status.retention.configured_budget.get(),
+                pinned_bytes: status.retention.pinned_usage_bytes,
+                budget_state: status.retention.budget_state,
+                recording_blocked: status.retention.recording_blocked,
+            };
+            let page_count =
+                u32::try_from(status.pages.len()).map_err(|_| ResponseInvariantError)?;
+            map_lifecycle_result(
+                tool,
+                ConciseBrowserStatus {
+                    session_id: status.session_id,
+                    state: status.state,
+                    ownership: status.ownership,
+                    profile: status.profile,
+                    selected_target_id: status.selected_target_id,
+                    page_count,
+                    capture,
+                    retention,
+                    every_nth_frame: status.every_nth_frame,
+                },
+            )
+        }
+    }
 }
 
 pub(crate) fn map_temporal_video_result(
@@ -473,6 +604,19 @@ pub(crate) fn map_temporal_video_result(
         projection,
         format!("{tool} generated {clip_count} retained clip(s)"),
     ))
+}
+
+pub(crate) fn map_temporal_video_result_projected(
+    tool: &str,
+    result: TemporalVideoGenerationResult,
+    preference: ResponseProjectionRequest,
+) -> Result<MappedResult, ResponseInvariantError> {
+    let mut mapped = map_temporal_video_result(tool, result)?;
+    if preference.inline_images == InlineImageDetail::Omit {
+        mapped.images.clear();
+        mapped.response.images.clear();
+    }
+    Ok(mapped)
 }
 
 pub(crate) fn visible_error(tool: &str, error: KrometrailError) -> CallToolResult {
@@ -1179,6 +1323,21 @@ fn compact_temporal_context(context: Option<&Value>) -> Option<Value> {
     }))
 }
 
+fn compact_temporal_context_result(value: &Value) -> Result<Value, ResponseInvariantError> {
+    let Some(object) = value.as_object() else {
+        return Ok(value.clone());
+    };
+    let mut wrapped = object.clone();
+    wrapped.insert("status".into(), Value::String("available".into()));
+    let summary =
+        compact_temporal_context(Some(&Value::Object(wrapped))).ok_or(ResponseInvariantError)?;
+    Ok(json!({
+        "range": object.get("range"),
+        "capture_quality": summary.get("capture_quality"),
+        "browser_events": summary.get("browser_events"),
+    }))
+}
+
 fn automatic_snapshot_bytes_after(
     node: &krometrail_core::SnapshotNode,
     selected_count: usize,
@@ -1233,24 +1392,6 @@ fn batch_outcome_error(outcome: BatchOutcome) -> KrometrailError {
         BatchOutcome::Completed => (ErrorCode::Internal, "completed batch was mapped as failed"),
     };
     KrometrailError::new(code, NonEmptyText::new(message).unwrap()).with_retry(code.default_retry())
-}
-
-pub(crate) async fn map_temporal_bundle_result(
-    tool: &str,
-    bundle: TemporalDebugBundle,
-    progressive: &dyn ProgressiveEvidence,
-    deadline: Instant,
-    cancellation: Arc<dyn krometrail_core::CancellationSignal>,
-) -> Result<MappedResult, ResponseInvariantError> {
-    map_temporal_bundle_result_projected(
-        tool,
-        bundle,
-        progressive,
-        deadline,
-        cancellation,
-        ResponseProjectionRequest::default(),
-    )
-    .await
 }
 
 pub(crate) async fn map_temporal_bundle_result_projected(
@@ -1415,6 +1556,19 @@ pub(crate) fn map_progressive_result(
         ProgressiveEvidenceResult::QueryPinState(state) => serializable(*state)?,
     };
     Ok(mapped(tool, projection, format!("{tool} succeeded")))
+}
+
+pub(crate) fn map_progressive_result_projected(
+    tool: &str,
+    result: ProgressiveEvidenceResult,
+    preference: ResponseProjectionRequest,
+) -> Result<MappedResult, ResponseInvariantError> {
+    let mut mapped = map_progressive_result(tool, result)?;
+    if preference.inline_images == InlineImageDetail::Omit {
+        mapped.images.clear();
+        mapped.response.images.clear();
+    }
+    Ok(mapped)
 }
 
 fn add_artifact_generation_resources(
@@ -2091,7 +2245,7 @@ mod tests {
                 live_with_snapshot(full.clone()),
                 role,
                 None,
-                ResponseProjectionRequest::default(),
+                ResponseProjectionRequest::legacy(),
             )
             .unwrap();
             let compact: PageSnapshot =
