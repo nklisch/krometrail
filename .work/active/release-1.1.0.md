@@ -22,15 +22,15 @@ Stable minor release making Krometrail's ordinary agent surface compact and ergo
 - `story-fix-bound-page-target-state`
 - `story-fix-profile-inventory-canonical-path-test`
 
-Exactly 25 items are bound. No older unbound active or backlog work is included.
+The original 25-item bundle plus 23 quality-gate findings/tracking items are bound, for 48 non-release items total. The operator explicitly included the gates' ambient documentation drift and low-severity security hardening rather than deferring them. No older unrelated active or backlog work is included.
 
 ## Gate runs
 
-- **gate-security** — pending
-- **gate-tests** — pending
-- **gate-cruft** — pending
-- **gate-docs** — pending
-- **gate-patterns** — pending
+- **gate-security** — 3 findings (Medium 1, Low 2); all repaired and `done`, including isolated clipboard execution, cancellation evidence, and stale-download scavenging.
+- **gate-tests** — 4 gaps (High 3, Medium 1); all repaired and `done`, including real-Chrome clipboard/context qualification and successful MCP mutation projection round-trips.
+- **gate-cruft** — 5 Medium findings; all simplified and `done` with no behavior or guarantee reduction.
+- **gate-docs** — 10 high-confidence drift findings; all repaired and `done`, with generated docs and catalog-wide pattern anchors verified.
+- **gate-patterns** — 4 structural patterns extracted, indexed, and published in the hook-loaded digest; no inconsistencies.
 
 ## Changelog
 
@@ -41,4 +41,7 @@ The `v1.1.0` changelog entry covers the complete selected minor-release scope an
 - Feature-level real Chrome semantic, viewport, and managed-download qualifications — passed.
 - Fresh standard review for all six child features and one aggregate epic review — passed after accepted findings were repaired.
 - Generated public docs and root runtime smoke — passed.
+- Full locked workspace all-target tests, check, warning-denied Clippy, and formatting — passed after gate repairs.
+- Real-Chrome browser-context qualification — passed frame query/click, root scroll, stale-reference fencing, 256-asset bound, omission count, and privacy assertions.
+- Real-Chrome clipboard qualification — passed the declared host permission/timeout denial path with recovery and no sentinel leakage.
 - Locked workspace formatting, check, all-target tests, and Clippy — pending release helper.
