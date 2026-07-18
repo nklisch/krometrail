@@ -1035,4 +1035,12 @@ pub(super) fn parse_target_info(value: &Value) -> Option<TransportTargetInfo> {
             .map(str::to_owned),
     )
     .ok()
+    .map(|info| {
+        info.with_opener_target_key(
+            value
+                .get("openerId")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        )
+    })
 }

@@ -5,8 +5,9 @@
 
 use krometrail_core::{
     BrowserCompatibility, BrowserSessionEvent, BrowserSessionState, ErrorCode, KrometrailError,
-    NonEmptyText, PageSelection, PageTarget, Result, SupervisedTarget, TargetId, TargetLifecycle,
-    TargetVisibility, ViewportMetrics,
+    NonEmptyText, PageSelection, PageStatus, PageTarget, Result, SupervisedTarget, TargetId,
+    TargetLifecycle, TargetVisibility, ViewportMetrics,
+    browser::{PageContextInventory, PageContextStatus, PageSequence},
 };
 
 use crate::transport::{TransportClose, TransportSessionId};
@@ -19,6 +20,7 @@ pub struct TransportTargetInfo {
     pub title: String,
     pub attached: bool,
     pub browser_context_key: Option<String>,
+    pub opener_target_key: Option<String>,
 }
 
 impl TransportTargetInfo {
@@ -37,6 +39,7 @@ impl TransportTargetInfo {
             title: title.into(),
             attached,
             browser_context_key,
+            opener_target_key: None,
         };
         if info.target_key.trim().is_empty() {
             return Err(krometrail_core::KrometrailError::new(
@@ -52,6 +55,11 @@ impl TransportTargetInfo {
             ));
         }
         Ok(info)
+    }
+
+    pub fn with_opener_target_key(mut self, opener_target_key: Option<String>) -> Self {
+        self.opener_target_key = opener_target_key;
+        self
     }
 
     pub fn is_recordable(&self) -> bool {
@@ -122,6 +130,8 @@ pub struct SupervisorTargetState {
     pub prior_to_suspension: Option<TargetLifecycle>,
     pub capture_binding: CaptureBinding,
     pub viewport_override: Option<ViewportMetrics>,
+    pub page_sequence: PageSequence,
+    pub opener_target_key: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -133,6 +143,7 @@ pub struct SupervisorState {
     pub targets_by_key: std::collections::HashMap<String, SupervisorTargetState>,
     pub target_key_by_session: std::collections::HashMap<TransportSessionId, String>,
     pub selected_target_key: Option<String>,
+    pub next_page_sequence: u64,
 }
 
 impl SupervisorState {
@@ -145,7 +156,42 @@ impl SupervisorState {
             targets_by_key: std::collections::HashMap::new(),
             target_key_by_session: std::collections::HashMap::new(),
             selected_target_key: None,
+            next_page_sequence: 1,
         }
+    }
+
+    pub fn page_contexts(&self) -> Result<PageContextInventory> {
+        let cursor = self
+            .targets_by_key
+            .values()
+            .map(|target| target.page_sequence)
+            .max()
+            .unwrap_or(PageSequence::new(1)?);
+        let mut pages = self
+            .targets_by_key
+            .iter()
+            .filter(|(_, target)| {
+                !matches!(
+                    target.target.lifecycle,
+                    TargetLifecycle::Closed | TargetLifecycle::Failed
+                )
+            })
+            .map(|(_, target)| PageContextStatus {
+                page: PageStatus {
+                    target: target.target.clone(),
+                    selected: self.selected_target_key.as_deref()
+                        == Some(target.target.target.browser_target_key()),
+                },
+                sequence: target.page_sequence,
+                opener_target_id: target.opener_target_key.as_deref().and_then(|key| {
+                    self.targets_by_key
+                        .get(key)
+                        .map(|opener| opener.target.target.id())
+                }),
+            })
+            .collect::<Vec<_>>();
+        pages.sort_by_key(|page| page.sequence);
+        Ok(PageContextInventory { cursor, pages })
     }
 
     pub fn targets(&self) -> Vec<SupervisedTarget> {

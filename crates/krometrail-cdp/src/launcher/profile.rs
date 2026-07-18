@@ -1,6 +1,8 @@
 //! Exclusive ownership of Krometrail-managed profile directories.
 
-use krometrail_core::{ManagedProfile, ManagedProfileSummary, ProfileIdentity, ProfileRef};
+use krometrail_core::{
+    ManagedProfile, ProfileIdentity, ProfileRef, browser::ManagedProfileSummary,
+};
 use std::{
     fs::{self, File, OpenOptions},
     io,
