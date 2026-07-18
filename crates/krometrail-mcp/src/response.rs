@@ -569,11 +569,7 @@ fn project_batch(value: BatchResult) -> Result<Projection, ResponseInvariantErro
     let mut first_step_error = None;
     let mut step_failure_seen = false;
     for step in value.steps {
-        let result = step
-            .result
-            .map(project_operation)
-            .transpose()?
-            .map(|projection| projection.result);
+        let result = step.result.map(project_batch_step).transpose()?.flatten();
         if step.status != krometrail_core::BatchStepStatus::Succeeded {
             step_failure_seen = true;
         }
@@ -631,6 +627,17 @@ fn project_batch(value: BatchResult) -> Result<Projection, ResponseInvariantErro
         _ => projection.fail_with(first_step_error.unwrap_or_else(|| batch_outcome_error(outcome))),
     }
     Ok(projection)
+}
+
+fn project_batch_step(
+    result: BrowserOperationResult,
+) -> Result<Option<Value>, ResponseInvariantError> {
+    let mut value = project_operation(result)?.result;
+    let Some(object) = value.as_object_mut() else {
+        return Ok(Some(value));
+    };
+    object.remove("observation");
+    Ok(Some(value))
 }
 
 fn project_live_observation_part(
@@ -1277,8 +1284,8 @@ mod tests {
         BatchSkipReason, BatchStepResult, BatchStepStatus, BrowserOperationKind,
         CaptureFailureStage, CaptureStatistics, CaptureStreamState, CaptureTimingSummary, CssPoint,
         CssRect, CssSize, DeviceScaleFactor, ErrorContext, EveryNthFrame, ImageFormat,
-        InteractionId, InteractionTiming, NodeReference, ObservationContext, PageSelection,
-        PageSnapshot, PixelDimensions, ScreenshotTarget, SessionId, SessionTime,
+        InteractionId, InteractionTiming, NodeReference, ObservationContext, PageChange,
+        PageSelection, PageSnapshot, PixelDimensions, ScreenshotTarget, SessionId, SessionTime,
         SnapshotGeneration, SnapshotNode, SnapshotNodeId, TargetCaptureStatus, TargetId,
         WaitCondition, WaitProbe, WaitRequest, WaitResult,
     };
@@ -1768,6 +1775,58 @@ mod tests {
             map_operation_result("batch", BrowserOperationResult::Batch(Box::new(batch))).unwrap();
         assert_eq!(batch.response.status, ToolResponseStatus::Failed);
         assert_eq!(batch.response.result["steps"].as_array().unwrap().len(), 2);
+
+        let timing = InteractionTiming::new(
+            SessionTime::from_nanos(10),
+            SessionTime::from_nanos(11),
+            SessionTime::from_nanos(12),
+            Some(SessionTime::from_nanos(13)),
+        )
+        .unwrap();
+        let anchor = InteractionAnchor::new(
+            interaction_id(),
+            session_id(),
+            target_id(),
+            BrowserOperationKind::NavigatePage,
+            timing,
+        )
+        .unwrap();
+        let page = PageOperationResult::new(
+            anchor.clone(),
+            PageOperationOutcome::Succeeded(PageChange::Navigated),
+            ObservationPart::Available(live_with_snapshot(complex_snapshot())),
+        )
+        .unwrap();
+        let succeeded_page = BatchStepResult::new(
+            0,
+            BrowserOperationKind::NavigatePage,
+            target_id(),
+            BatchStepStatus::Succeeded,
+            Some(SessionTime::from_nanos(10)),
+            Some(SessionTime::from_nanos(15)),
+            Some(anchor),
+            Some(BrowserOperationResult::NavigatePage(Box::new(page))),
+            None,
+            None,
+            ObservationPart::Unavailable(error(ErrorCode::ScreenshotFailed, "not requested")),
+        )
+        .unwrap();
+        let compact = BatchResult::new(
+            interaction_id(),
+            target_id(),
+            SessionTime::from_nanos(10),
+            SessionTime::from_nanos(20),
+            BatchOutcome::Completed,
+            vec![succeeded_page],
+            ObservationPart::Available(live_with_snapshot(complex_snapshot())),
+        )
+        .unwrap();
+        let compact =
+            map_operation_result("batch", BrowserOperationResult::Batch(Box::new(compact)))
+                .unwrap();
+        let step_result = &compact.response.result["steps"][0]["result"];
+        assert!(step_result.get("observation").is_none());
+        assert!(compact.response.result["final_observation"]["available"].is_object());
 
         let satisfied_wait = WaitResult::new(
             context(),
