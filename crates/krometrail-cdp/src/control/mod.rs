@@ -17,6 +17,7 @@ use crate::{
 
 mod batch;
 mod clipboard;
+mod contexts;
 mod dialog;
 mod evaluation;
 mod form;
@@ -135,6 +136,11 @@ impl PageControl {
                 .collect();
             return Ok(BrowserOperationResult::ListPages(Box::new(pages)));
         }
+        if matches!(&request, BrowserOperationRequest::ListPageContexts(_)) {
+            return Ok(BrowserOperationResult::ListPageContexts(Box::new(
+                state.page_contexts()?,
+            )));
+        }
         let selection = match request.scope() {
             BrowserOperationScope::Page(selection) => selection,
             BrowserOperationScope::Browser => {
@@ -201,6 +207,22 @@ impl PageControl {
                 )
                 .await?
                 .map(|result| BrowserOperationResult::ReadClipboard(Box::new(result))),
+            BrowserOperationRequest::ListFrames(_) => cancel
+                .race(
+                    state.connection_generation,
+                    bound.target_id,
+                    self.list_frames(transport, &bound),
+                )
+                .await?
+                .map(|result| BrowserOperationResult::ListFrames(Box::new(result))),
+            BrowserOperationRequest::ListPageAssets(_) => cancel
+                .race(
+                    state.connection_generation,
+                    bound.target_id,
+                    self.list_page_assets(transport, &bound),
+                )
+                .await?
+                .map(|result| BrowserOperationResult::ListPageAssets(Box::new(result))),
             BrowserOperationRequest::ObserveLive(request) => cancel
                 .race(
                     state.connection_generation,
@@ -221,6 +243,8 @@ impl PageControl {
                 .await
                 .map(|result| BrowserOperationResult::Wait(Box::new(result))),
             BrowserOperationRequest::ListPages(_)
+            | BrowserOperationRequest::ListPageContexts(_)
+            | BrowserOperationRequest::WaitForPage(_)
             | BrowserOperationRequest::ListDownloads(_)
             | BrowserOperationRequest::WaitForDownload(_)
             | BrowserOperationRequest::CancelDownload(_)

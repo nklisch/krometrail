@@ -37,6 +37,10 @@ impl BrowserSessionOwner {
         self.connect(BrowserConnectRequest::Attach(request)).await
     }
 
+    pub async fn managed_profiles(&self) -> Result<Vec<krometrail_core::ManagedProfileSummary>> {
+        self.connector.managed_profiles().await
+    }
+
     async fn connect(&self, request: BrowserConnectRequest) -> Result<BrowserStatus> {
         // Keep the slot locked until the candidate proves it can report status. This prevents two
         // concurrent lifecycle calls from creating competing browser owners.

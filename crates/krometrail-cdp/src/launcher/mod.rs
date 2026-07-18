@@ -18,7 +18,7 @@ pub use startup::{
     LaunchError, LaunchedChrome, LauncherConfig, SystemChromeLauncher, attach_endpoint,
 };
 
-use krometrail_core::{BrowserInstallation, LaunchBrowser};
+use krometrail_core::{BrowserInstallation, LaunchBrowser, ManagedProfileSummary};
 use std::{future::Future, pin::Pin, sync::Arc};
 
 pub type LauncherFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -26,6 +26,11 @@ pub type LauncherFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// Adapter seam for discovery and managed Chrome launch.
 pub trait ChromeLauncher: Send + Sync {
     fn installations(&self) -> LauncherFuture<'_, Result<Vec<BrowserInstallation>, LaunchError>>;
+    fn managed_profiles(
+        &self,
+    ) -> LauncherFuture<'_, Result<Vec<ManagedProfileSummary>, LaunchError>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
     fn launch(
         &self,
         request: &LaunchBrowser,
@@ -35,6 +40,12 @@ pub trait ChromeLauncher: Send + Sync {
 impl<T: ChromeLauncher + ?Sized> ChromeLauncher for Arc<T> {
     fn installations(&self) -> LauncherFuture<'_, Result<Vec<BrowserInstallation>, LaunchError>> {
         (**self).installations()
+    }
+
+    fn managed_profiles(
+        &self,
+    ) -> LauncherFuture<'_, Result<Vec<ManagedProfileSummary>, LaunchError>> {
+        (**self).managed_profiles()
     }
 
     fn launch(

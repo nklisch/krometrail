@@ -681,6 +681,7 @@ fn validate_semantic_query_value(value: String, field: &str) -> Result<NonEmptyT
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct QueryPageRequest {
     pub target: PageSelection,
+    pub document: crate::browser::SemanticDocumentScope,
     pub query: SemanticQuery,
     pub scope: Option<NodeReference>,
     pub max_matches: u16,
@@ -691,6 +692,8 @@ pub struct QueryPageRequest {
 struct QueryPageRequestWire {
     #[serde(default)]
     target: PageSelection,
+    #[serde(default)]
+    document: crate::browser::SemanticDocumentScope,
     query: SemanticQuery,
     scope: Option<NodeReference>,
     #[serde(default = "default_semantic_match_limit")]
@@ -719,6 +722,7 @@ impl QueryPageRequest {
         }
         Ok(Self {
             target,
+            document: crate::browser::SemanticDocumentScope::MainDocument,
             query,
             scope,
             max_matches,
@@ -733,7 +737,10 @@ impl<'de> Deserialize<'de> for QueryPageRequest {
         deserializer: D,
     ) -> std::result::Result<Self, D::Error> {
         deserialize_validated(deserializer, |wire: QueryPageRequestWire| {
-            Self::new(wire.target, wire.query, wire.scope, wire.max_matches)
+            Self::new(wire.target, wire.query, wire.scope, wire.max_matches).map(|mut request| {
+                request.document = wire.document;
+                request
+            })
         })
     }
 }

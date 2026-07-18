@@ -63,6 +63,11 @@ const LIFECYCLE_TOOLS: &[LifecycleTool] = &[
         description: "Close a managed browser or detach from an attached browser.",
         kind: LifecycleKind::Stop,
     },
+    LifecycleTool {
+        name: "list_managed_profiles",
+        description: "List reusable Krometrail-managed profile identities without filesystem paths or browser data.",
+        kind: LifecycleKind::Profiles,
+    },
 ];
 
 #[derive(Clone, Copy)]
@@ -78,6 +83,7 @@ enum LifecycleKind {
     Attach,
     Status,
     Stop,
+    Profiles,
 }
 
 pub(crate) const MCP_REQUEST_DEADLINE: Duration = Duration::from_secs(30);
@@ -734,10 +740,10 @@ fn lifecycle_route(tool: LifecycleTool) -> Result<ToolRoute<KrometrailMcpServer>
         LifecycleKind::Start => type_input_schema::<LaunchBrowser>()?,
         LifecycleKind::Attach => type_input_schema::<AttachBrowser>()?,
         LifecycleKind::Status => type_input_schema::<BrowserStatusRequest>()?,
-        LifecycleKind::Stop => type_input_schema::<EmptyObject>()?,
+        LifecycleKind::Stop | LifecycleKind::Profiles => type_input_schema::<EmptyObject>()?,
     };
     let annotations = match tool.kind {
-        LifecycleKind::Status => ToolAnnotations::new()
+        LifecycleKind::Status | LifecycleKind::Profiles => ToolAnnotations::new()
             .read_only(true)
             .destructive(false)
             .idempotent(true)
@@ -855,6 +861,12 @@ async fn call_lifecycle(
             .service
             .sessions()
             .stop()
+            .await
+            .and_then(serializable),
+        LifecycleKind::Profiles => context
+            .service
+            .sessions()
+            .managed_profiles()
             .await
             .and_then(serializable),
     };

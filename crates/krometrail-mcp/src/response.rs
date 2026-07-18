@@ -837,6 +837,10 @@ fn project_operation(
             Ok(projection)
         }
         BrowserOperationResult::ListPages(value) => serializable(*value),
+        BrowserOperationResult::ListPageContexts(value) => serializable(*value),
+        BrowserOperationResult::WaitForPage(value) => serializable(*value),
+        BrowserOperationResult::ListFrames(value) => serializable(*value),
+        BrowserOperationResult::ListPageAssets(value) => serializable(*value),
         BrowserOperationResult::ReadClipboard(value) => serializable(*value),
         BrowserOperationResult::ListDownloads(value)
         | BrowserOperationResult::WaitForDownload(value) => serializable(*value),

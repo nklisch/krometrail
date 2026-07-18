@@ -289,6 +289,16 @@ impl ChromeLauncher for SystemChromeLauncher {
         Box::pin(async { Ok(discover_installations(None)) })
     }
 
+    fn managed_profiles(
+        &self,
+    ) -> super::LauncherFuture<'_, Result<Vec<krometrail_core::ManagedProfileSummary>, LaunchError>>
+    {
+        Box::pin(async move {
+            super::profile::list_reusable_profiles(&self.config.profile_root)
+                .map_err(|_| LaunchError::InvalidProfile)
+        })
+    }
+
     fn launch(
         &self,
         request: &LaunchBrowser,

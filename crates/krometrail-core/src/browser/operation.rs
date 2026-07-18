@@ -8,12 +8,14 @@ use super::{
     ClipboardWriteResult, ClosePageRequest, CompletionKind, CreatePageRequest, DownloadInventory,
     DragRequest, EncodedScreenshot, EvaluationResult, FillRequest, GoBackRequest, GoForwardRequest,
     HandleDialogRequest, HoverRequest, InspectPageRequest, InteractionResult, ListDownloadsRequest,
-    ListPagesRequest, LiveObservation, LiveObservationRequest, NavigatePageRequest,
-    PageOperationResult, PageSelection, PageSnapshot, PageState, PageStatus, PressKeysRequest,
-    QueryPageRequest, QueryPageResult, ReadClipboardRequest, ReadOnlyEvaluationRequest,
-    ReloadPageRequest, ScreenshotRequest, ScrollRequest, SelectOptionRequest, SelectPageRequest,
-    SetViewportRequest, SnapshotPageRequest, UploadFilesRequest, ViewportOperationResult,
-    WaitForDownloadRequest, WaitRequest, WaitResult, WriteClipboardRequest,
+    ListFramesRequest, ListPageAssetsRequest, ListPageContextsRequest, ListPagesRequest,
+    LiveObservation, LiveObservationRequest, NavigatePageRequest, PageAssetInventory,
+    PageContextInventory, PageFrameInventory, PageOperationResult, PageSelection, PageSnapshot,
+    PageState, PageStatus, PressKeysRequest, QueryPageRequest, QueryPageResult,
+    ReadClipboardRequest, ReadOnlyEvaluationRequest, ReloadPageRequest, ScreenshotRequest,
+    ScrollRequest, SelectOptionRequest, SelectPageRequest, SetViewportRequest, SnapshotPageRequest,
+    UploadFilesRequest, ViewportOperationResult, WaitForDownloadRequest, WaitForPageRequest,
+    WaitForPageResult, WaitRequest, WaitResult, WriteClipboardRequest,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -96,6 +98,8 @@ selected_field!(ScrollRequest, target);
 selected_field!(UploadFilesRequest, target);
 selected_field!(HandleDialogRequest, target);
 selected_field!(WaitRequest, target);
+selected_field!(ListFramesRequest, target);
+selected_field!(ListPageAssetsRequest, target);
 selected_field!(ReadClipboardRequest, target);
 selected_field!(WriteClipboardRequest, target);
 selected_field!(BatchRequest, target);
@@ -297,6 +301,18 @@ define_browser_operations! {
     },
     ListPages(ListPagesRequest) => Vec<PageStatus> {
         stable_name: "list_pages", description: "List supervised browser pages and the current selection.", mutability: ReadOnly, evidence: RequestedOnly, scope: Browser, batchable: false, action: None,
+    },
+    ListPageContexts(ListPageContextsRequest) => PageContextInventory {
+        stable_name: "list_page_contexts", description: "List supervised pages with a monotonic popup cursor and opener relationships.", mutability: ReadOnly, evidence: RequestedOnly, scope: Browser, batchable: false, action: None,
+    },
+    WaitForPage(WaitForPageRequest) => WaitForPageResult {
+        stable_name: "wait_for_page", description: "Wait for the next supervised page after a cursor, optionally from one opener.", mutability: ReadOnly, evidence: RequestedOnly, scope: Browser, batchable: false, action: None,
+    },
+    ListFrames(ListFramesRequest) => PageFrameInventory {
+        stable_name: "list_frames", description: "List bounded generation-scoped frame contexts and their supported access level.", mutability: ReadOnly, evidence: RequestedOnly, scope: Page, batchable: false, action: None,
+    },
+    ListPageAssets(ListPageAssetsRequest) => PageAssetInventory {
+        stable_name: "list_page_assets", description: "List bounded privacy-sanitized Resource Timing metadata for the current page.", mutability: ReadOnly, evidence: RequestedOnly, scope: Page, batchable: false, action: None,
     },
     ReadClipboard(ReadClipboardRequest) => ClipboardRead {
         stable_name: "read_clipboard", description: "Explicitly read bounded text from the focused managed page clipboard.", mutability: ReadOnly, evidence: RequestedOnly, scope: Page, batchable: false, action: None,

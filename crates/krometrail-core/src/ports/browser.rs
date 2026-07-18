@@ -541,6 +541,9 @@ pub trait BrowserSessionEvents: Send {
 
 pub trait BrowserConnector: Send + Sync {
     fn installations(&self) -> PortFuture<'_, Result<Vec<BrowserInstallation>>>;
+    fn managed_profiles(&self) -> PortFuture<'_, Result<Vec<crate::ManagedProfileSummary>>> {
+        Box::pin(std::future::ready(Ok(Vec::new())))
+    }
     fn connect(
         &self,
         request: BrowserConnectRequest,
@@ -554,6 +557,16 @@ pub trait BrowserSessionPort: Send + Sync {
     /// make current-state browser control depend on recording persistence.
     fn capture_statuses(&self) -> Vec<crate::TargetCaptureStatus> {
         Vec::new()
+    }
+
+    fn read_managed_download(
+        &self,
+        _request: crate::ReadManagedDownloadRequest,
+    ) -> PortFuture<'_, Result<crate::ManagedDownloadRead>> {
+        Box::pin(std::future::ready(Err(crate::KrometrailError::new(
+            crate::ErrorCode::NotFound,
+            crate::NonEmptyText::new("managed download resource is unavailable").unwrap(),
+        ))))
     }
 
     /// Adapter seam used by the narrow [`CurrentReferenceGeometry`] view.

@@ -231,8 +231,14 @@ impl PageControl {
         request: QueryPageRequest,
         started_at: krometrail_core::SessionTime,
     ) -> Result<BrowserOperationResult> {
+        let frame_id = match &request.document {
+            krometrail_core::SemanticDocumentScope::MainDocument => None,
+            krometrail_core::SemanticDocumentScope::Frame(frame) => {
+                Some(self.resolve_frame_id(transport, bound, frame).await?)
+            }
+        };
         let snapshot = self
-            .capture_snapshot(transport, bound, started_at, true)
+            .capture_snapshot_for_frame(transport, bound, started_at, true, frame_id.as_deref())
             .await?;
         let result = self.snapshots.query(bound, &request, &snapshot)?;
         Ok(BrowserOperationResult::QueryPage(Box::new(result)))
@@ -245,10 +251,23 @@ impl PageControl {
         started_at: krometrail_core::SessionTime,
         include_semantic: bool,
     ) -> Result<PageSnapshot> {
+        self.capture_snapshot_for_frame(transport, bound, started_at, include_semantic, None)
+            .await
+    }
+
+    async fn capture_snapshot_for_frame(
+        &mut self,
+        transport: &dyn CdpTransport,
+        bound: &BoundTarget,
+        started_at: krometrail_core::SessionTime,
+        include_semantic: bool,
+        frame_id: Option<&str>,
+    ) -> Result<PageSnapshot> {
         let scope = CommandScope::Session(bound.transport_session.clone());
         let document = document_fingerprint(transport, &scope, bound.target_id).await?;
+        let ax_params = frame_id.map_or_else(|| json!({}), |frame_id| json!({"frameId": frame_id}));
         let ax_response = transport
-            .send_raw(&scope, "Accessibility.getFullAXTree", json!({}))
+            .send_raw(&scope, "Accessibility.getFullAXTree", ax_params)
             .await
             .map_err(|error| {
                 transport_error(error, ErrorCode::PageObservationFailed, bound.target_id)
