@@ -6,10 +6,10 @@ use std::{
 };
 
 use krometrail_core::{
-    CancelDownloadResult, DownloadDisplayName, DownloadId, DownloadInventory, DownloadSequence,
-    DownloadState, ErrorCode, ErrorContext, IdSource, KrometrailError, MAX_MANAGED_DOWNLOAD_BYTES,
-    MAX_MANAGED_DOWNLOADS, ManagedDownload, ManagedDownloadRead, NonEmptyText,
-    ReadManagedDownloadRequest, Result, RetryAdvice, SanitizedUrl, SessionId,
+    CancelDownloadResult, CancellationSignal, DownloadDisplayName, DownloadId, DownloadInventory,
+    DownloadSequence, DownloadState, ErrorCode, ErrorContext, IdSource, KrometrailError,
+    MAX_MANAGED_DOWNLOAD_BYTES, MAX_MANAGED_DOWNLOADS, ManagedDownload, ManagedDownloadRead,
+    NonEmptyText, ReadManagedDownloadRequest, Result, RetryAdvice, SanitizedUrl, SessionId,
     WaitForDownloadRequest,
 };
 use serde_json::{Value, json};
@@ -22,6 +22,7 @@ pub(crate) struct ManagedDownloadAuthority {
     root: PathBuf,
     ids: Arc<dyn IdSource>,
     state: Mutex<State>,
+    gate: tokio::sync::Mutex<()>,
     changed: Notify,
 }
 
@@ -29,6 +30,8 @@ struct State {
     accepting: bool,
     next_sequence: u64,
     by_guid: BTreeMap<String, Entry>,
+    overflow_rejection: Option<ManagedDownload>,
+    transport_generation: u64,
 }
 
 #[derive(Clone)]
@@ -46,28 +49,7 @@ impl ManagedDownloadAuthority {
         ids: Arc<dyn IdSource>,
     ) -> Result<Arc<Self>> {
         // Subscribe before enabling downloads so no begin/progress event can race the tracker.
-        let begins = transport
-            .subscribe_named(&CommandScope::Browser, "Browser.downloadWillBegin")
-            .await
-            .map_err(|_| {
-                download_error(
-                    ErrorCode::BrowserCompatibilityFailed,
-                    session_id,
-                    "browser download events are unavailable",
-                    "update Chrome or use a supported managed Chromium installation",
-                )
-            })?;
-        let progress = transport
-            .subscribe_named(&CommandScope::Browser, "Browser.downloadProgress")
-            .await
-            .map_err(|_| {
-                download_error(
-                    ErrorCode::BrowserCompatibilityFailed,
-                    session_id,
-                    "browser download progress events are unavailable",
-                    "update Chrome or use a supported managed Chromium installation",
-                )
-            })?;
+        let (begins, progress) = subscribe_download_events(transport.as_ref(), session_id).await?;
         let root = prepare_session_root(base_root, session_id)?;
         if transport
             .send_raw(
@@ -97,11 +79,14 @@ impl ManagedDownloadAuthority {
                 accepting: true,
                 next_sequence: 1,
                 by_guid: BTreeMap::new(),
+                overflow_rejection: None,
+                transport_generation: 1,
             }),
+            gate: tokio::sync::Mutex::new(()),
             changed: Notify::new(),
         });
-        spawn_begin_pump(Arc::clone(&authority), Arc::clone(&transport), begins);
-        spawn_progress_pump(Arc::clone(&authority), Arc::clone(&transport), progress);
+        spawn_begin_pump(Arc::clone(&authority), Arc::clone(&transport), 1, begins);
+        spawn_progress_pump(Arc::clone(&authority), Arc::clone(&transport), 1, progress);
         Ok(authority)
     }
 
@@ -110,7 +95,71 @@ impl ManagedDownloadAuthority {
         inventory(self.session_id, &state)
     }
 
+    pub(crate) async fn rebind(self: &Arc<Self>, transport: Arc<dyn CdpTransport>) -> Result<()> {
+        let _gate = self.gate.lock().await;
+        let (begins, progress) =
+            subscribe_download_events(transport.as_ref(), self.session_id).await?;
+        transport
+            .send_raw(
+                &CommandScope::Browser,
+                "Browser.setDownloadBehavior",
+                json!({
+                    "behavior": "allowAndName", "downloadPath": self.root, "eventsEnabled": true
+                }),
+            )
+            .await
+            .map_err(|_| {
+                download_error(
+                    ErrorCode::BrowserCompatibilityFailed,
+                    self.session_id,
+                    "managed download behavior could not be restored after reconnect",
+                    "restart the managed browser session",
+                )
+            })?;
+        let (generation, stale) = {
+            let mut state = self.state.lock().expect("download state lock");
+            state.transport_generation = state.transport_generation.saturating_add(1);
+            let generation = state.transport_generation;
+            let stale = state
+                .by_guid
+                .values()
+                .filter(|entry| !is_terminal(entry.public.state))
+                .map(|entry| entry.guid.clone())
+                .collect::<Vec<_>>();
+            for guid in &stale {
+                let sequence = next_sequence(&mut state);
+                if let Some(entry) = state.by_guid.get_mut(guid) {
+                    entry.public.sequence = sequence;
+                    entry.public.state = DownloadState::Failed;
+                }
+            }
+            (generation, stale)
+        };
+        for guid in stale {
+            let _ = transport
+                .send_raw(
+                    &CommandScope::Browser,
+                    "Browser.cancelDownload",
+                    json!({"guid": guid}),
+                )
+                .await;
+            remove_file(&self.root.join(guid));
+        }
+        spawn_begin_pump(Arc::clone(self), Arc::clone(&transport), generation, begins);
+        spawn_progress_pump(Arc::clone(self), transport, generation, progress);
+        self.changed.notify_waiters();
+        Ok(())
+    }
+
     pub(crate) async fn wait(&self, request: WaitForDownloadRequest) -> Result<DownloadInventory> {
+        self.wait_with_cancellation(request, None).await
+    }
+
+    pub(crate) async fn wait_with_cancellation(
+        &self,
+        request: WaitForDownloadRequest,
+        cancellation: Option<Arc<dyn CancellationSignal>>,
+    ) -> Result<DownloadInventory> {
         request.validate()?;
         let timeout = Duration::from_millis(request.timeout);
         let deadline = tokio::time::Instant::now() + timeout;
@@ -124,9 +173,27 @@ impl ManagedDownloadAuthority {
                     && (!request.terminal || is_terminal(download.state))
             });
             if matched {
+                if snapshot.downloads.iter().any(|download| {
+                    download.sequence.get() > after
+                        && download.state == DownloadState::Rejected
+                        && request.download_id.is_none_or(|id| id == download.id)
+                }) {
+                    return Err(download_error(
+                        ErrorCode::ResourceLimitExceeded,
+                        self.session_id,
+                        "managed download was rejected by a configured bound",
+                        "finish or cancel active downloads and retry with a smaller file",
+                    ));
+                }
                 return Ok(snapshot);
             }
-            if tokio::time::timeout_at(deadline, notified).await.is_err() {
+            if let Some(signal) = cancellation.as_ref() {
+                tokio::select! {
+                    () = notified => {},
+                    () = signal.cancelled() => return Err(download_error(ErrorCode::Cancelled, self.session_id, "managed download wait was cancelled", "list downloads to reconcile current state before retrying")),
+                    () = tokio::time::sleep_until(deadline) => return Err(download_error(ErrorCode::WaitTimedOut, self.session_id, "managed download wait timed out", "list downloads, capture the returned cursor, and retry with a longer timeout")),
+                }
+            } else if tokio::time::timeout_at(deadline, notified).await.is_err() {
                 return Err(download_error(
                     ErrorCode::WaitTimedOut,
                     self.session_id,
@@ -142,6 +209,7 @@ impl ManagedDownloadAuthority {
         transport: &dyn CdpTransport,
         id: DownloadId,
     ) -> Result<CancelDownloadResult> {
+        let _gate = self.gate.lock().await;
         let guid = {
             let state = self.state.lock().expect("download state lock");
             let entry = state
@@ -225,6 +293,7 @@ impl ManagedDownloadAuthority {
     }
 
     pub(crate) async fn shutdown(&self, transport: Option<&dyn CdpTransport>) -> Result<()> {
+        let _gate = self.gate.lock().await;
         let active = {
             let mut state = self.state.lock().expect("download state lock");
             state.accepting = false;
@@ -261,57 +330,101 @@ impl ManagedDownloadAuthority {
         Ok(())
     }
 
-    fn begin(&self, params: &Value) -> Option<String> {
-        let guid = params.get("guid")?.as_str()?.to_owned();
-        if guid.is_empty() || guid.contains(['/', '\\']) {
-            return None;
-        }
-        let mut state = self.state.lock().expect("download state lock");
-        if !state.accepting || state.by_guid.contains_key(&guid) {
-            return None;
-        }
-        if state.by_guid.len() >= MAX_MANAGED_DOWNLOADS {
-            return Some(guid);
-        }
-        let sequence = next_sequence(&mut state);
-        let id = DownloadId::from_uuid(*self.ids.next().as_uuid());
-        let source_url = SanitizedUrl::sanitize(
-            params
-                .get("url")
-                .and_then(Value::as_str)
-                .unwrap_or("about:blank"),
-        )
-        .unwrap_or_else(|_| SanitizedUrl::sanitize("about:blank").expect("fallback URL sanitizes"));
-        let public = ManagedDownload {
-            id,
-            sequence,
-            target_id: None,
-            state: DownloadState::InProgress,
-            suggested_filename: DownloadDisplayName::sanitize(
-                params
-                    .get("suggestedFilename")
-                    .and_then(Value::as_str)
-                    .unwrap_or("download"),
-            ),
-            source_url,
-            received_bytes: 0,
-            total_bytes: None,
-            resource_uri: None,
+    async fn begin(&self, generation: u64, transport: &dyn CdpTransport, params: &Value) {
+        let _gate = self.gate.lock().await;
+        let Some(guid) = params
+            .get("guid")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+        else {
+            return;
         };
-        state.by_guid.insert(
-            guid.clone(),
-            Entry {
-                public,
-                guid: guid.clone(),
-                verified_size: None,
-            },
-        );
-        drop(state);
+        if guid.is_empty() || guid.contains(['/', '\\']) {
+            return;
+        }
+        let overflow = {
+            let mut state = self.state.lock().expect("download state lock");
+            if !state.accepting
+                || state.transport_generation != generation
+                || state.by_guid.contains_key(&guid)
+            {
+                return;
+            }
+            if state.by_guid.len() >= MAX_MANAGED_DOWNLOADS {
+                let sequence = next_sequence(&mut state);
+                state.overflow_rejection = Some(ManagedDownload {
+                    id: DownloadId::from_uuid(*self.ids.next().as_uuid()),
+                    sequence,
+                    target_id: None,
+                    state: DownloadState::Rejected,
+                    suggested_filename: DownloadDisplayName::sanitize(
+                        params
+                            .get("suggestedFilename")
+                            .and_then(Value::as_str)
+                            .unwrap_or("download"),
+                    ),
+                    source_url: sanitize_download_url(params),
+                    received_bytes: 0,
+                    total_bytes: None,
+                    resource_uri: None,
+                });
+                true
+            } else {
+                let sequence = next_sequence(&mut state);
+                let id = DownloadId::from_uuid(*self.ids.next().as_uuid());
+                let public = ManagedDownload {
+                    id,
+                    sequence,
+                    target_id: None,
+                    state: DownloadState::InProgress,
+                    suggested_filename: DownloadDisplayName::sanitize(
+                        params
+                            .get("suggestedFilename")
+                            .and_then(Value::as_str)
+                            .unwrap_or("download"),
+                    ),
+                    source_url: sanitize_download_url(params),
+                    received_bytes: 0,
+                    total_bytes: None,
+                    resource_uri: None,
+                };
+                state.by_guid.insert(
+                    guid.clone(),
+                    Entry {
+                        public,
+                        guid: guid.clone(),
+                        verified_size: None,
+                    },
+                );
+                false
+            }
+        };
+        if overflow {
+            let _ = transport
+                .send_raw(
+                    &CommandScope::Browser,
+                    "Browser.cancelDownload",
+                    json!({"guid": guid}),
+                )
+                .await;
+            remove_file(&self.root.join(&guid));
+            self.changed.notify_waiters();
+            return;
+        }
         self.changed.notify_waiters();
-        None
     }
 
-    async fn progress(&self, transport: &dyn CdpTransport, params: &Value) {
+    async fn progress(&self, generation: u64, transport: &dyn CdpTransport, params: &Value) {
+        let _gate = self.gate.lock().await;
+        if self
+            .state
+            .lock()
+            .expect("download state lock")
+            .transport_generation
+            != generation
+        {
+            return;
+        }
         let Some(guid) = params.get("guid").and_then(Value::as_str) else {
             return;
         };
@@ -359,6 +472,13 @@ impl ManagedDownloadAuthority {
 
     fn complete(&self, guid: &str, size: u64, total: Option<u64>) {
         let mut state = self.state.lock().expect("download state lock");
+        if state
+            .by_guid
+            .get(guid)
+            .is_none_or(|entry| is_terminal(entry.public.state))
+        {
+            return;
+        }
         let sequence = next_sequence(&mut state);
         if let Some(entry) = state.by_guid.get_mut(guid) {
             entry.public.sequence = sequence;
@@ -403,19 +523,14 @@ impl ManagedDownloadAuthority {
 fn spawn_begin_pump(
     authority: Arc<ManagedDownloadAuthority>,
     transport: Arc<dyn CdpTransport>,
+    generation: u64,
     mut events: Box<dyn TransportEvents>,
 ) {
     tokio::spawn(async move {
         while let Ok(Some(NamedEvent { params, .. })) = events.next().await {
-            if let Some(rejected_guid) = authority.begin(&params) {
-                let _ = transport
-                    .send_raw(
-                        &CommandScope::Browser,
-                        "Browser.cancelDownload",
-                        json!({"guid": rejected_guid}),
-                    )
-                    .await;
-            }
+            authority
+                .begin(generation, transport.as_ref(), &params)
+                .await;
         }
     });
 }
@@ -423,11 +538,14 @@ fn spawn_begin_pump(
 fn spawn_progress_pump(
     authority: Arc<ManagedDownloadAuthority>,
     transport: Arc<dyn CdpTransport>,
+    generation: u64,
     mut events: Box<dyn TransportEvents>,
 ) {
     tokio::spawn(async move {
         while let Ok(Some(NamedEvent { params, .. })) = events.next().await {
-            authority.progress(transport.as_ref(), &params).await;
+            authority
+                .progress(generation, transport.as_ref(), &params)
+                .await;
         }
     });
 }
@@ -532,12 +650,54 @@ fn inventory(session_id: SessionId, state: &State) -> DownloadInventory {
         .values()
         .map(|entry| entry.public.clone())
         .collect::<Vec<_>>();
+    if let Some(rejected) = state.overflow_rejection.clone() {
+        downloads.push(rejected);
+    }
     downloads.sort_by_key(|entry| entry.sequence);
     DownloadInventory {
         session_id,
         cursor,
         downloads,
     }
+}
+
+async fn subscribe_download_events(
+    transport: &dyn CdpTransport,
+    session_id: SessionId,
+) -> Result<(Box<dyn TransportEvents>, Box<dyn TransportEvents>)> {
+    let begins = transport
+        .subscribe_named(&CommandScope::Browser, "Browser.downloadWillBegin")
+        .await
+        .map_err(|_| {
+            download_error(
+                ErrorCode::BrowserCompatibilityFailed,
+                session_id,
+                "browser download events are unavailable",
+                "update Chrome or use a supported managed Chromium installation",
+            )
+        })?;
+    let progress = transport
+        .subscribe_named(&CommandScope::Browser, "Browser.downloadProgress")
+        .await
+        .map_err(|_| {
+            download_error(
+                ErrorCode::BrowserCompatibilityFailed,
+                session_id,
+                "browser download progress events are unavailable",
+                "update Chrome or use a supported managed Chromium installation",
+            )
+        })?;
+    Ok((begins, progress))
+}
+
+fn sanitize_download_url(params: &Value) -> SanitizedUrl {
+    SanitizedUrl::sanitize(
+        params
+            .get("url")
+            .and_then(Value::as_str)
+            .unwrap_or("about:blank"),
+    )
+    .unwrap_or_else(|_| SanitizedUrl::sanitize("about:blank").expect("fallback URL sanitizes"))
 }
 fn next_sequence(state: &mut State) -> DownloadSequence {
     let value = DownloadSequence::new(state.next_sequence).expect("positive sequence");
@@ -656,7 +816,10 @@ mod tests {
                 accepting: true,
                 next_sequence: 1,
                 by_guid: BTreeMap::new(),
+                overflow_rejection: None,
+                transport_generation: 1,
             }),
+            gate: tokio::sync::Mutex::new(()),
             changed: Notify::new(),
         })
     }
@@ -667,12 +830,20 @@ mod tests {
         let sibling = temp.path().join("sibling");
         std::fs::create_dir(&sibling).unwrap();
         let authority = authority(temp.path());
-        assert_eq!(authority.begin(&json!({"guid":"opaque-guid","url":"https://example.test/private?token=secret","suggestedFilename":"../report.txt"})), None);
+        authority
+            .begin(
+                1,
+                &Transport {
+                    calls: Mutex::new(Vec::new()),
+                },
+                &json!({"guid":"opaque-guid","url":"https://example.test/private?token=secret","suggestedFilename":"../report.txt"}),
+            )
+            .await;
         std::fs::write(authority.root.join("opaque-guid"), b"exact bytes").unwrap();
         let transport = Transport {
             calls: Mutex::new(Vec::new()),
         };
-        authority.progress(&transport, &json!({"guid":"opaque-guid","state":"completed","receivedBytes":11,"totalBytes":11})).await;
+        authority.progress(1, &transport, &json!({"guid":"opaque-guid","state":"completed","receivedBytes":11,"totalBytes":11})).await;
         let item = authority.list().downloads.into_iter().next().unwrap();
         assert_eq!(item.state, DownloadState::Completed);
         assert!(
@@ -699,11 +870,11 @@ mod tests {
     async fn oversize_progress_cancels_once_and_never_publishes_a_resource() {
         let temp = tempfile::tempdir().unwrap();
         let authority = authority(temp.path());
-        authority.begin(&json!({"guid":"large-guid","url":"https://example.test/a","suggestedFilename":"large.bin"}));
+        authority.begin(1, &Transport { calls: Mutex::new(Vec::new()) }, &json!({"guid":"large-guid","url":"https://example.test/a","suggestedFilename":"large.bin"})).await;
         let transport = Transport {
             calls: Mutex::new(Vec::new()),
         };
-        authority.progress(&transport, &json!({"guid":"large-guid","state":"inProgress","receivedBytes":MAX_MANAGED_DOWNLOAD_BYTES + 1})).await;
+        authority.progress(1, &transport, &json!({"guid":"large-guid","state":"inProgress","receivedBytes":MAX_MANAGED_DOWNLOAD_BYTES + 1})).await;
         let item = authority.list().downloads.into_iter().next().unwrap();
         assert_eq!(item.state, DownloadState::Rejected);
         assert!(item.resource_uri.is_none());
@@ -727,15 +898,22 @@ mod tests {
         let outside = temp.path().join("outside");
         std::fs::write(&outside, b"outside").unwrap();
         let authority = authority(&temp.path().join("managed"));
-        authority.begin(
-            &json!({"guid":"link-guid","url":"https://example.test/a","suggestedFilename":"a"}),
-        );
+        authority
+            .begin(
+                1,
+                &Transport {
+                    calls: Mutex::new(Vec::new()),
+                },
+                &json!({"guid":"link-guid","url":"https://example.test/a","suggestedFilename":"a"}),
+            )
+            .await;
         symlink(&outside, authority.root.join("link-guid")).unwrap();
         let transport = Transport {
             calls: Mutex::new(Vec::new()),
         };
         authority
             .progress(
+                1,
                 &transport,
                 &json!({"guid":"link-guid","state":"completed","receivedBytes":7}),
             )
@@ -748,21 +926,30 @@ mod tests {
     async fn wait_observes_a_change_after_the_captured_cursor_without_a_race() {
         let temp = tempfile::tempdir().unwrap();
         let authority = authority(temp.path());
-        authority.begin(
-            &json!({"guid":"wait-guid","url":"https://example.test/a","suggestedFilename":"a"}),
-        );
+        authority
+            .begin(
+                1,
+                &Transport {
+                    calls: Mutex::new(Vec::new()),
+                },
+                &json!({"guid":"wait-guid","url":"https://example.test/a","suggestedFilename":"a"}),
+            )
+            .await;
         let before = authority.list();
         let id = before.downloads[0].id;
         let waiting = {
             let authority = Arc::clone(&authority);
             tokio::spawn(async move {
                 authority
-                    .wait(WaitForDownloadRequest {
-                        after: before.cursor,
-                        download_id: Some(id),
-                        terminal: true,
-                        timeout: 1000,
-                    })
+                    .wait_with_cancellation(
+                        WaitForDownloadRequest {
+                            after: before.cursor,
+                            download_id: Some(id),
+                            terminal: true,
+                            timeout: 1000,
+                        },
+                        None,
+                    )
                     .await
             })
         };
