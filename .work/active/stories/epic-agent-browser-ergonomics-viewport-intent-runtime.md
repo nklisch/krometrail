@@ -5,7 +5,7 @@ stage: done
 tags: [agent-ux, browser]
 parent: epic-agent-browser-ergonomics-viewport-intent
 depends_on: [epic-agent-browser-ergonomics-viewport-intent-contract]
-release_binding: null
+release_binding: 1.1.0
 gate_origin: null
 created: 2026-07-18
 updated: 2026-07-18

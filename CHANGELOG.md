@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.1.0 — 2026-07-18
+
+### Agent ergonomics
+
+- Made compact structured responses without inline image bytes the default, while retaining explicit full, inline, and legacy expansion.
+- Added bounded semantic page queries that return exact generation-scoped references, including explicit descendant and qualified same-origin frame scope.
+- Added opaque reusable temporal range handles for compact follow-up artifact, event, source-frame, pin, and video requests.
+- Added five intention-revealing viewport presets with effective layout/meta observations and deterministic mismatch guidance; exact custom metrics and clear remain available.
+- Added managed-profile inventory, monotonic page cursors, popup relationships, race-safe page waits, bounded frame inventories, and privacy-sanitized page-asset metadata.
+- Added explicit managed-session clipboard operations and opt-in managed downloads with bounded lifecycle events, cancellation-aware waits, and active-session canonical resource URIs.
+
+### Reliability and privacy
+
+- Made frame-scoped references fail closed across navigation, loader, origin, and OOPIF changes; bounded page-target state to 128 live pages with deterministic terminal reclamation.
+- Kept optional download interception inert until the first `list_downloads` request, preserving ordinary managed and named-profile startup/download behavior.
+- Serialized download terminal transitions, restored activated download supervision after reconnect, bounded rejected overflow attempts, and kept filenames, URLs, GUIDs, paths, clipboard text, and bytes out of ordinary diagnostics and evidence.
+- Updated the shipped Krometrail skill with compact-first expansion guidance, semantic/context workflows, temporal handles, viewport intent, clipboard/download lifetime, and outer-only batch response projection.
+
 ## v1.0.7 — 2026-07-17
 
 ### Fixes
