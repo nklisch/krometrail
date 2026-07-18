@@ -41,6 +41,18 @@ pub(crate) async fn apply_viewport(
                 .map_err(|error| {
                     transport_error(error, ErrorCode::TargetFailed, bound.target_id)
                 })?;
+            if metrics.mobile() {
+                transport
+                    .send_raw(
+                        &scope,
+                        "Emulation.setPageScaleFactor",
+                        json!({"pageScaleFactor": 1}),
+                    )
+                    .await
+                    .map_err(|error| {
+                        transport_error(error, ErrorCode::TargetFailed, bound.target_id)
+                    })?;
+            }
         }
         None => {
             transport
@@ -55,6 +67,12 @@ pub(crate) async fn apply_viewport(
                 })?;
             transport
                 .send_raw(&scope, "Emulation.clearDeviceMetricsOverride", json!({}))
+                .await
+                .map_err(|error| {
+                    transport_error(error, ErrorCode::TargetFailed, bound.target_id)
+                })?;
+            transport
+                .send_raw(&scope, "Emulation.resetPageScaleFactor", json!({}))
                 .await
                 .map_err(|error| {
                     transport_error(error, ErrorCode::TargetFailed, bound.target_id)

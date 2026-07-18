@@ -461,6 +461,10 @@ mod interactions {
             transport.calls("Emulation.setTouchEmulationEnabled"),
             vec![json!({"enabled":true,"maxTouchPoints":1})]
         );
+        assert_eq!(
+            transport.calls("Emulation.setPageScaleFactor"),
+            vec![json!({"pageScaleFactor":1})]
+        );
 
         viewport::apply_viewport(&transport, &bound, None)
             .await
@@ -477,6 +481,10 @@ mod interactions {
         );
         assert_eq!(
             transport.calls("Emulation.clearDeviceMetricsOverride"),
+            vec![json!({})]
+        );
+        assert_eq!(
+            transport.calls("Emulation.resetPageScaleFactor"),
             vec![json!({})]
         );
     }

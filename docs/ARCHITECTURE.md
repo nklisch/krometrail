@@ -230,7 +230,7 @@ For each target it owns:
 Target creation and closure do not affect unrelated target streams. A target-level failure is reported without terminating the browser session unless the browser connection itself is lost. Target state is reduced by one serialized state machine; asynchronous transport and process tasks only submit inputs or execute emitted effects. Outbound session events use bounded subscriber channels with revision-gap recovery through `targets()`; cdpkit's private upstream queue is not represented as a measurable product metric.
 
 Each target may retain one acknowledged viewport override. Applying or clearing it is transactional:
-the adapter changes device metrics and touch emulation, observes the effective CSS visual viewport,
+the adapter changes device metrics, touch emulation, and mobile page scale, observes the effective CSS visual viewport,
 then commits supervisor state. Reconnect restores the exact target-key override before capture resumes;
 a restore failure is target-local. Capture remains continuous across acknowledged geometry changes,
 and each frame retains its own viewport and device scale so artifact generation can split visual epochs.

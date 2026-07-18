@@ -1082,7 +1082,8 @@ async fn opt_in_real_chrome_qualifies_viewport_navigation_clear_and_target_isola
         ),
     )
     .with_interaction_evidence(support::evidence_sink());
-    let fixture_url = support::chrome::verified_interactions_fixture_url();
+    let fixture_url = support::chrome::verified_interactions_fixture_url()
+        .replace("index.html", "no-viewport-meta.html");
     let session = connector
         .connect(BrowserConnectRequest::Launch(
             krometrail_core::LaunchBrowser {
@@ -1122,7 +1123,7 @@ async fn opt_in_real_chrome_qualifies_viewport_navigation_clear_and_target_isola
         .await
         .expect("foreground viewport target");
 
-    let metrics = ViewportMetrics::new(390, 844, 2.0, true, true).unwrap();
+    let metrics = ViewportMetrics::new(390, 844, 3.0, true, true).unwrap();
     let configured = session
         .execute(
             BrowserOperationRequest::SetViewport(SetViewportRequest {
@@ -1141,7 +1142,7 @@ async fn opt_in_real_chrome_qualifies_viewport_navigation_clear_and_target_isola
     };
     assert_eq!(effective.css_size.width, 390.0);
     assert_eq!(effective.css_size.height, 844.0);
-    assert_eq!(effective.device_scale_factor.get(), 2.0);
+    assert_eq!(effective.device_scale_factor.get(), 3.0);
     assert!(effective.mobile && effective.touch && effective.override_active);
     assert_eq!(
         evaluate(
@@ -1150,7 +1151,9 @@ async fn opt_in_real_chrome_qualifies_viewport_navigation_clear_and_target_isola
             "({width:visualViewport.width,height:visualViewport.height,dpr:devicePixelRatio,touch:navigator.maxTouchPoints,responsiveWidth:document.querySelector('#responsive-probe').offsetWidth})"
         )
         .await,
-        json!({"width":390,"height":844,"dpr":2,"touch":1,"responsiveWidth":22})
+        // A page without a viewport meta tag retains Chrome's standards-defined
+        // 980px layout viewport even while its visual viewport is emulated at 390px.
+        json!({"width":390,"height":844,"dpr":3,"touch":1,"responsiveWidth":11})
     );
     assert_eq!(
         evaluate(&session, second, "visualViewport.width").await,
@@ -1178,7 +1181,7 @@ async fn opt_in_real_chrome_qualifies_viewport_navigation_clear_and_target_isola
             "[visualViewport.width,visualViewport.height,devicePixelRatio,navigator.maxTouchPoints,document.querySelector('#responsive-probe').offsetWidth]"
         )
         .await,
-        json!([390, 844, 2, 1, 22])
+        json!([390, 844, 3, 1, 11])
     );
 
     let cleared = session

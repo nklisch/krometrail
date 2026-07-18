@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Viewport fallback fixture</title>
+  <style>
+    body { margin: 0; }
+    #responsive-probe { width: 11px; height: 1px; }
+    @media (max-width: 500px) { #responsive-probe { width: 22px; } }
+  </style>
+</head>
+<body>
+  <div id="responsive-probe" aria-hidden="true"></div>
+  <script>window.fixtureState = {};</script>
+</body>
+</html>

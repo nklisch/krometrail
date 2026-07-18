@@ -371,7 +371,21 @@ async fn stage_reconnection_effects(
                 } else {
                     Err(AttemptFailure::Failed)
                 };
-                if metrics.is_err() || touch.is_err() {
+                let page_scale = if touch.is_ok() && viewport.mobile() {
+                    attempt
+                        .command(
+                            transport,
+                            &scope,
+                            "Emulation.setPageScaleFactor",
+                            serde_json::json!({"pageScaleFactor": 1}),
+                        )
+                        .await
+                } else if touch.is_ok() {
+                    Ok(serde_json::Value::Null)
+                } else {
+                    Err(AttemptFailure::Failed)
+                };
+                if metrics.is_err() || touch.is_err() || page_scale.is_err() {
                     failed_targets.insert(context.target_id);
                     staged.retain(|effect| !capture_effect_targets(effect, context.target_id));
                     let reduction = reduce(
