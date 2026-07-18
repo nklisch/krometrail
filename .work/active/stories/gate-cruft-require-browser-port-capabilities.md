@@ -1,7 +1,7 @@
 ---
 id: gate-cruft-require-browser-port-capabilities
 kind: story
-stage: review
+stage: done
 tags: [cleanup]
 parent: null
 depends_on: []
@@ -54,3 +54,9 @@ Make the new trait methods required and add explicit empty/not-found behavior on
 - `cargo test --workspace --all-targets --locked`
 - `cargo check --workspace --all-targets --locked`
 - `cargo clippy --workspace --all-targets --locked -- -D warnings`
+
+## Review
+
+- Verdict: pass; compiler-enforced required methods and the implementation inventory cover production adapters, delegates, and fakes.
+- Effective implementation size: small. Effective review weight: standard bounded inline standalone-story review.
+- No review findings remained after verification.

@@ -1,7 +1,7 @@
 ---
 id: gate-cruft-remove-noop-video-projection-wrapper
 kind: story
-stage: review
+stage: done
 tags: [cleanup]
 parent: null
 depends_on: []
@@ -55,3 +55,9 @@ Route the registry directly through `map_temporal_video_result` and remove the p
 - `cargo test --workspace --all-targets --locked`
 - `cargo check --workspace --all-targets --locked`
 - `cargo clippy --workspace --all-targets --locked -- -D warnings`
+
+## Review
+
+- Verdict: pass; validation remains at the protocol boundary and the canonical mapper preserves the video/resource contract.
+- Effective implementation size: small. Effective review weight: standard bounded inline standalone-story review.
+- No review findings remained after verification.

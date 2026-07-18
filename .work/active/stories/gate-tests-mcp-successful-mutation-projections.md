@@ -1,7 +1,7 @@
 ---
 id: gate-tests-mcp-successful-mutation-projections
 kind: story
-stage: review
+stage: done
 tags: [testing]
 parent: null
 depends_on: []
@@ -59,3 +59,9 @@ Drive one successful live mutation through in-memory JSON-RPC using omitted, leg
 - `cargo test --workspace --all-targets --locked`
 - `cargo check --workspace --all-targets --locked`
 - `cargo clippy --workspace --all-targets --locked -- -D warnings`
+
+## Review
+
+- Verdict: pass; the JSON-RPC seam covers dispatch, projection, MCP serialization, semantic invariants, and presentation-only expansion.
+- Effective implementation size: small. Effective review weight: standard bounded inline standalone-story review.
+- Review tightened the compact default assertion to the concrete 96-node response bound; the focused test passed afterward.

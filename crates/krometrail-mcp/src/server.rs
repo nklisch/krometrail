@@ -3089,7 +3089,7 @@ mod tests {
                 .unwrap()
                 .len()
         };
-        assert!(snapshot_node_count(0) < 121);
+        assert!(snapshot_node_count(0) <= 96);
         assert_eq!(snapshot_node_count(1), snapshot_node_count(0));
         assert_eq!(snapshot_node_count(2), 121);
         assert_eq!(snapshot_node_count(3), 121);

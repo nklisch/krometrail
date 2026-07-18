@@ -1,7 +1,7 @@
 ---
 id: gate-cruft-remove-unreachable-range-invalidation
 kind: story
-stage: review
+stage: done
 tags: [cleanup]
 parent: null
 depends_on: []
@@ -55,3 +55,9 @@ Remove the trait method, implementations, invalidation-only tests, and `StoredRa
 - `cargo test --workspace --all-targets --locked`
 - `cargo check --workspace --all-targets --locked`
 - `cargo clippy --workspace --all-targets --locked -- -D warnings`
+
+## Review
+
+- Verdict: pass; every acceptance criterion is covered by the direct-storage diff and focused range tests.
+- Effective implementation size: small. Effective review weight: standard bounded inline standalone-story review.
+- No review findings remained after verification.
