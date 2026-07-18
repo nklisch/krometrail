@@ -8,10 +8,10 @@ Dependency direction stays inward, infrastructure remains replaceable, and tests
 
 ## Examples
 
-- `crates/krometrail-core/src/ports/recording.rs:9` — `RecordingSink` defines persistence behavior without a database/filesystem dependency.
-- `src/app.rs:40` — `RuntimeDependencies` collects inward-facing trait objects.
+- `crates/krometrail-core/src/ports/recording.rs:11` — `RecordingSink` defines persistence behavior without a database/filesystem dependency.
+- `src/app.rs:46` — `RuntimeDependencies` collects inward-facing trait objects.
 - `src/artifacts/service.rs:60` — temporal artifact generation receives frame/store/ID ports.
-- `src/app.rs:183` — the root wires `ProductionBrowserConnector`, launcher, transport, capture, and storage.
+- `src/app.rs:238` — the root wires `ProductionBrowserConnector`, launcher, transport, capture, and storage.
 
 ## When to Use
 

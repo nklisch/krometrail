@@ -145,9 +145,11 @@ actionable references. The CDP control adapter owns the active per-target regist
 backing DOM-node bindings, document fingerprint, and attachment-generation fence;
 its stale-reference boundary is described below.
 
-Semantic locators are validated domain inputs resolved by that same registry. Role/name, label, text, test-id,
-descendant, and same-origin-frame scope narrow to exactly one backing node before an operation dispatches. The
-resolved action still uses a generation-scoped `NodeReference`; there is no parallel locator identity system.
+Semantic queries are bounded discovery operations over that same registry. Role/name, label, text, test-id,
+descendant, and same-origin-frame scope produce an explicit `no_match`, `unique`, `ambiguous`, or `truncated`
+outcome. Only `unique` contains one generation-scoped `NodeReference`; the caller supplies that exact reference
+to a later mutation, where the registry revalidates its authority before dispatch. Semantic text never directly
+authorizes mutation, and there is no parallel locator identity system.
 
 The core timeline contains ordered observations:
 

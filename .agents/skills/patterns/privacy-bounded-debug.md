@@ -10,7 +10,7 @@ Rust diagnostics, assertion failures, and tracing frequently format values with 
 
 ### Clipboard writes expose byte count, not text
 
-**File**: `crates/krometrail-core/src/browser/local_io.rs:45`
+**File**: `crates/krometrail-core/src/browser/local_io.rs:47`
 
 ```rust
 f.debug_struct("WriteClipboardRequest")
@@ -21,7 +21,7 @@ f.debug_struct("WriteClipboardRequest")
 
 ### Downloads omit filename, URL, and resource URI
 
-**File**: `crates/krometrail-core/src/browser/local_io.rs:123`
+**File**: `crates/krometrail-core/src/browser/local_io.rs:125`
 
 ```rust
 f.debug_struct("ManagedDownload")
@@ -34,7 +34,7 @@ f.debug_struct("ManagedDownload")
 
 ### Process diagnostics expose lengths and a digest
 
-**File**: `crates/krometrail-ffmpeg/src/process.rs:40`
+**File**: `crates/krometrail-ffmpeg/src/process.rs:43`
 
 ```rust
 formatter.debug_struct("SanitizedProcessOutcome")

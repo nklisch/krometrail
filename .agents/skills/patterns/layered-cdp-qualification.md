@@ -11,7 +11,7 @@ Protocol behavior remains fast and deterministic by default while ownership, rec
 - `crates/krometrail-cdp/tests/support/chrome.rs:3` — qualification support is feature-gated with a test support boundary.
 - `crates/krometrail-cdp/tests/support/scripted_cdp.rs:62` — `ScriptedCdp` supplies deterministic protocol behavior.
 - `crates/krometrail-cdp/tests/support/cdp_proxy.rs:26` — a loopback proxy faults the transport without turning it into browser process failure.
-- `crates/krometrail-cdp/tests/session_supervision.rs:375` — real Chrome reconnect qualification is explicit opt-in, locked, and profile-scoped.
+- `crates/krometrail-cdp/tests/session_supervision.rs:492` — real Chrome reconnect qualification is explicit opt-in, locked, and profile-scoped.
 
 ## When to Use
 

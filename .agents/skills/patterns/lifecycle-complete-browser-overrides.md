@@ -8,11 +8,11 @@ Browser emulation is external mutable state. A partial command sequence can leav
 
 ## Examples
 
-- `crates/krometrail-cdp/src/session/operations.rs:321` — initial viewport application completes its CDP command sequence before persisting acknowledged state.
-- `crates/krometrail-cdp/src/session/operations.rs:551` — failed application restores the prior complete override rather than only the first command.
-- `crates/krometrail-cdp/src/session/runtime.rs:237` — navigation replay restores persisted target-scoped state before normal operation resumes.
+- `crates/krometrail-cdp/src/session/operations.rs:565` — initial viewport application completes its CDP command sequence before persisting acknowledged state.
+- `crates/krometrail-cdp/src/session/operations.rs:867` — failed application restores the prior complete override rather than only the first command.
+- `crates/krometrail-cdp/src/session/runtime.rs:246` — navigation replay restores persisted target-scoped state before normal operation resumes.
 - `crates/krometrail-cdp/src/session/reconnect.rs:345` — reconnect replay is bounded per target and failure remains target-local.
-- `crates/krometrail-cdp/src/control/viewport.rs:48` — apply and clear cover mobile page scale together with metrics and touch state.
+- `crates/krometrail-cdp/src/control/viewport.rs:11` — apply and clear cover mobile page scale together with metrics and touch state.
 
 ## When to Use
 

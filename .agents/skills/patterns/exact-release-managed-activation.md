@@ -10,7 +10,7 @@ A native plugin may bootstrap its runtime, but its code, configuration, skill gu
 
 ### Package launcher selects one versioned binary
 
-**File**: `plugin/bin/krometrail:10`
+**File**: `plugin/bin/krometrail:13`
 
 ```sh
 EXPECTED_VERSION=$(cat "$VERSION_FILE")
@@ -35,7 +35,7 @@ Install and warm verification share the same exact version and destination autho
 
 ### Release transaction derives every projection
 
-**File**: `scripts/bump-version.ts:128`
+**File**: `scripts/bump-version.ts:134`
 
 ```ts
 const derivedVersionPaths = rootPackageName === "krometrail"
@@ -52,7 +52,7 @@ Cargo remains authoritative while plugin manifests, catalogs, and the launcher m
 
 ### Static contracts reject release drift
 
-**File**: `tests/plugin-static.sh:42`
+**File**: `tests/plugin-static.sh:46`
 
 ```sh
 cargo_version="$(awk ... "$ROOT/Cargo.toml")"

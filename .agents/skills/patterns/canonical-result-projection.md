@@ -32,7 +32,7 @@ match detail {
 
 ### Progressive evidence maps before inline omission
 
-**File**: `crates/krometrail-mcp/src/response.rs:1595`
+**File**: `crates/krometrail-mcp/src/response.rs:1587`
 
 ```rust
 let mut mapped = map_progressive_result(tool, result)?;

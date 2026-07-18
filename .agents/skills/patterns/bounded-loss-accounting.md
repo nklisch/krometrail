@@ -8,9 +8,9 @@ Capture and browser-event streams must not block transport indefinitely, silentl
 
 ## Examples
 
-- `crates/krometrail-cdp/src/capture/pipeline.rs:458` — full/closed ingestion queues create typed capture-gap reasons.
+- `crates/krometrail-cdp/src/capture/pipeline.rs:573` — full/closed ingestion queues create typed capture-gap reasons.
 - `crates/krometrail-cdp/src/events/pipeline.rs:440` — event saturation releases budget and records the allocated drop.
-- `crates/krometrail-cdp/src/targets/supervisor.rs:251` — subscriber lag is surfaced with missed revision bounds.
+- `crates/krometrail-cdp/src/targets/supervisor.rs:205` — subscriber lag is surfaced with missed revision bounds.
 
 ## When to Use
 

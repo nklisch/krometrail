@@ -9,9 +9,9 @@ Target identity, lifecycle transitions, reconnect generations, and capture owner
 ## Examples
 
 - `crates/krometrail-cdp/src/targets/reducer.rs:1` — the reducer explicitly excludes async work, clocks, randomness, and transport handles.
-- `crates/krometrail-cdp/src/targets/model.rs:224` — `SupervisorInput` enumerates lifecycle inputs.
-- `crates/krometrail-cdp/src/session/operations.rs:611` — an input is reduced, committed, then effects are handled.
-- `crates/krometrail-cdp/src/session/runtime.rs:222` — runtime reduction replaces state and extends an explicit effect queue.
+- `crates/krometrail-cdp/src/targets/model.rs:272` — `SupervisorInput` enumerates lifecycle inputs.
+- `crates/krometrail-cdp/src/session/operations.rs:947` — an input is reduced, committed, then effects are handled.
+- `crates/krometrail-cdp/src/session/runtime.rs:233` — runtime reduction replaces state and extends an explicit effect queue.
 
 ## When to Use
 

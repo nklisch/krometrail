@@ -8,7 +8,7 @@ Temporal values can be valid for a session yet invalid for a requested interval,
 
 ## Examples
 
-- `crates/krometrail-core/src/artifacts.rs:293` — explicit artifact markers outside the requested range are rejected at the public boundary.
+- `crates/krometrail-core/src/artifacts.rs:410` — explicit artifact markers outside the requested range are rejected at the public boundary.
 - `src/debug_bundle/markers.rs:137` — automatically derived markers are filtered to the resolved range while navigation and generic markers retain their intended semantics.
 - `src/artifacts/epoch.rs:286` — markers are clipped again when evidence is partitioned into visual epochs.
 - `src/artifacts/generators.rs:79` — a storyboard render anchor is clamped to the retained source-frame interval for its epoch without replacing semantic range provenance.

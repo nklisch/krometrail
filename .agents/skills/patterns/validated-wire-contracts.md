@@ -9,7 +9,7 @@ External input must not create invalid domain state, while generated schemas mus
 ## Examples
 
 - `crates/krometrail-core/src/validation.rs:28` — `deserialize_validated` decodes a wire value and maps domain errors into serde errors.
-- `crates/krometrail-core/src/ports/browser.rs:244` — `AttachBrowserWire` carries the external shape and `delegate_json_schema!` keeps the public schema aligned.
+- `crates/krometrail-core/src/ports/browser.rs:290` — `AttachBrowserWire` carries the external shape and `delegate_json_schema!` keeps the public schema aligned.
 - `crates/krometrail-core/src/timeline/context.rs:391` — browser-event detail requests deserialize through `into_request` validation.
 - `crates/krometrail-core/src/artifacts.rs:439` — artifact-generation requests construct through their invariant-enforcing constructor.
 

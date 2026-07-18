@@ -1,7 +1,7 @@
 ---
 id: gate-docs-semantic-query-two-step-contract
 kind: story
-stage: implementing
+stage: review
 tags: [documentation]
 parent: null
 depends_on: []
@@ -28,3 +28,11 @@ foundation-doc-assertion
 
 ## Required edit
 Replace the assertion with the active bounded-query then exact-reference mutation contract.
+
+## Implementation notes
+
+- Execution capability: direct-read inline prose; the change is a small foundation-assertion correction grounded in the final core/CDP contract.
+- Review weight: standard (project default), using bounded inline standalone-story review.
+- Replaced the stale `docs/ARCHITECTURE.md` assertion with the two-step bounded query outcome → unique generation-scoped `NodeReference` → later revalidated mutation contract.
+- Verification: checked `SemanticQueryOutcome`, `QueryPageResult`, and the CDP query/authority boundary; `bun run docs:build` and diff checks passed.
+- Discrepancies and adjacent issues: none.

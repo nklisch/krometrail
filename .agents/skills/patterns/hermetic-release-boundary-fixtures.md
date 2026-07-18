@@ -10,7 +10,7 @@ Distribution boundaries combine process execution, host detection, remote assets
 
 ### Managed release assets exist entirely in temporary state
 
-**File**: `tests/plugin-bootstrap-fixtures.sh:13`
+**File**: `tests/plugin-bootstrap-fixtures.sh:17`
 
 ```bash
 make_release() {
@@ -30,7 +30,7 @@ The production installer sees realistic asset names and bytes without contacting
 
 ### Platform and network commands are shadowed, not production logic
 
-**File**: `tests/plugin-bootstrap-fixtures.sh:39`
+**File**: `tests/plugin-bootstrap-fixtures.sh:45`
 
 ```bash
 cat >"$STATE/fake-bin/uname" <<'EOF'
@@ -42,7 +42,7 @@ esac
 EOF
 ```
 
-**File**: `tests/plugin-bootstrap-fixtures.sh:49`
+**File**: `tests/plugin-bootstrap-fixtures.sh:55`
 
 ```bash
 cat >"$STATE/fake-bin/curl" <<'EOF'
@@ -57,7 +57,7 @@ Tests control host and transport partitions while invoking the real package laun
 
 ### Standalone installer uses the same boundary shape
 
-**File**: `tests/installer-fixtures.sh:18`
+**File**: `tests/installer-fixtures.sh:21`
 
 ```bash
 make_fixture() {
@@ -73,7 +73,7 @@ The independent installer proves candidate identity, checksums, replacement, and
 
 ### Release-helper failure is injected through a fake Cargo process
 
-**File**: `tests/distribution-static.sh:330`
+**File**: `tests/distribution-static.sh:338`
 
 ```bash
 cat >"$plugin_version_tmp/bin/cargo" <<'EOF'

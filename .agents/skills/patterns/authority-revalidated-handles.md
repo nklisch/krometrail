@@ -10,7 +10,7 @@ Krometrail handles cross mutable browser, process, retention, and resource bound
 
 ### Node references revalidate document authority
 
-**File**: `crates/krometrail-cdp/src/control/snapshot.rs:558`
+**File**: `crates/krometrail-cdp/src/control/snapshot.rs:564`
 
 ```rust
 let (document, backend) = self.active_reference_backend(bound, reference)?;
@@ -22,7 +22,7 @@ if current != *document {
 
 ### Range handles revalidate retained frames
 
-**File**: `src/range_handles.rs:104`
+**File**: `src/range_handles.rs:106`
 
 ```rust
 let metadata = read_available_metadata(self.frames.as_ref(), &range).await?;

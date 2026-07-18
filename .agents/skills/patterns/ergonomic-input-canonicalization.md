@@ -25,7 +25,7 @@ let matches = snapshot.nodes.iter().filter_map(|node| {
 
 ### Viewport presets materialize into metrics
 
-**File**: `crates/krometrail-core/src/browser/viewport.rs:247`
+**File**: `crates/krometrail-core/src/browser/viewport.rs:256`
 
 ```rust
 Self::Preset { preset } => ViewportMaterialization {
@@ -38,7 +38,7 @@ Self::Preset { preset } => ViewportMaterialization {
 
 ### Range handles restore the canonical range request
 
-**File**: `crates/krometrail-mcp/src/registry.rs:659`
+**File**: `crates/krometrail-mcp/src/registry.rs:675`
 
 ```rust
 let range = handles.resolve_available(handle_argument.range_handle).await?;
