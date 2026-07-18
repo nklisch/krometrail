@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.0.7 — 2026-07-17
+
+### Fixes
+
+- Made an isolated `Page.screencastFrame` event-stream closure drive the existing generation-fenced
+  browser reconnect, restoring continuous retained capture instead of leaving temporal evidence
+  terminal while current-state browser control continues.
+
 ## v1.0.6 — 2026-07-17
 
 ### Features
