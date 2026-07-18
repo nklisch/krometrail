@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-video-artifacts-clip-contracts
 kind: feature
-stage: review
+stage: implementing
 tags: [visual, agent-ux, security]
 parent: epic-temporal-video-artifacts
 depends_on: []
@@ -389,6 +389,19 @@ The stories are durable checkpoints inside one cohesive feature implementation b
 
 - Invoked because: stable timing/provenance and encoder-port contracts are high-risk and feed two parallel downstream features.
 - Skipped/degraded: the active autopilot delegation explicitly prohibits nested agents and peeragent. This non-blocking design-time degradation is offset by constructor invariants, a source-grounded pre-mortem, and the unchanged standard feature/final completion review requirements.
+
+## Review findings (2026-07-18)
+
+**Review weight**: `standard` (default) — one same-harness fresh-context pass after the preferred Claude cross-model path failed on expired OAuth. Closure after correction is fix verification only; do not run a second independent pass.
+
+**Receiver-confirmed blockers**:
+
+- Bind every encoded source input to the exact source-frame identity claimed by its plan segment so same-geometry frame bytes cannot be swapped or duplicated under false provenance.
+- Make constructor-backed and persisted plan validation reject policy/timing-basis/source-kind, duration, and canonical v1 timing contradictions rather than validating structure alone.
+- Prove every gap slate's contributor IDs are exactly the canonical intersecting gaps and preserve enough typed gap evidence for deserialization to revalidate that claim.
+- Align generated JSON Schema with the strict wire decoders and bounded numeric/hash values; this is included in the blocker fix because the feature acceptance explicitly promises source-aligned constructor-backed schemas.
+
+No separate active findings were created: these corrections remain cohesive with the feature's core contract and test surface. The reviewer accepted later-feature ownership of FFmpeg, storage publication, MCP registration, and selector-version binding.
 
 ## Implementation summary
 
