@@ -221,6 +221,7 @@ struct TestObserver {
     gaps: Mutex<Vec<krometrail_core::CaptureGap>>,
     visibility: Mutex<Vec<krometrail_core::TargetVisibility>>,
     geometry_refreshes: Mutex<Vec<CaptureGeometryTransition>>,
+    defer_geometry_refresh: AtomicBool,
 }
 
 impl CaptureObserver for TestObserver {
@@ -242,7 +243,7 @@ impl CaptureObserver for TestObserver {
 
     fn geometry_refresh_requested(&self, transition: CaptureGeometryTransition) -> bool {
         self.geometry_refreshes.lock().unwrap().push(transition);
-        true
+        !self.defer_geometry_refresh.load(Ordering::Acquire)
     }
 }
 
@@ -1291,7 +1292,7 @@ async fn acknowledgement_spanning_geometry_transition_is_dropped_with_exact_gap_
 }
 
 #[tokio::test]
-async fn abandoned_geometry_refresh_keeps_last_geometry_active_and_allows_recovery() {
+async fn unresolved_geometry_refresh_keeps_frames_fenced_until_authoritative_recovery() {
     let ack_completed = Arc::new(AtomicBool::new(false));
     let transport =
         TestTransport::new(Arc::clone(&ack_completed), Arc::new(Mutex::new(Vec::new())));
@@ -1316,19 +1317,17 @@ async fn abandoned_geometry_refresh_keeps_last_geometry_active_and_allows_recove
         .await
         .unwrap();
 
-    transport.hold_ack();
+    observer
+        .defer_geometry_refresh
+        .store(true, Ordering::Release);
+    transport.geometry_event("Page.frameResized").await;
+    observer.wait_for_geometry_refreshes(1).await;
+    let transition = observer.geometry_refreshes.lock().unwrap()[0];
     transport.frame(51).await;
-    transport.wait_for_ack_start().await;
-    let abandoned = coordinator
-        .begin_geometry_transition(
-            capture_target.target_id,
-            capture_target.attachment_generation,
-        )
-        .unwrap();
-    transport.release_ack();
     transport.wait_for_acks(1).await;
 
-    assert!(coordinator.abandon_geometry_transition(abandoned));
+    // Retry exhaustion leaves the transition unresolved: last established geometry is not
+    // authority for any new frame after the browser announced a geometry change.
     assert_eq!(
         coordinator
             .geometry_for_test(
@@ -1341,22 +1340,23 @@ async fn abandoned_geometry_refresh_keeps_last_geometry_active_and_allows_recove
                 viewport: krometrail_core::PixelDimensions::new(600, 500).unwrap(),
                 device_scale_factor: krometrail_core::DeviceScaleFactor::new(1.0).unwrap(),
             },
-            false
+            true
         )
     );
 
+    // A later browser geometry event must redispatch the still-open transition rather than
+    // treating its last established geometry as a successful refresh.
+    observer
+        .defer_geometry_refresh
+        .store(false, Ordering::Release);
+    transport.geometry_event("Page.frameNavigated").await;
+    observer.wait_for_geometry_refreshes(2).await;
+    let retried = observer.geometry_refreshes.lock().unwrap()[1];
+    assert_eq!(retried, transition);
     transport.frame(52).await;
     transport.wait_for_acks(2).await;
-    sink.first_frame_started.notified().await;
-
-    let recovered = coordinator
-        .begin_geometry_transition(
-            capture_target.target_id,
-            capture_target.attachment_generation,
-        )
-        .unwrap();
     assert!(coordinator.commit_geometry_transition(
-        recovered,
+        retried,
         CaptureGeometry {
             viewport: krometrail_core::PixelDimensions::new(390, 844).unwrap(),
             device_scale_factor: krometrail_core::DeviceScaleFactor::new(3.0).unwrap(),
@@ -1364,16 +1364,17 @@ async fn abandoned_geometry_refresh_keeps_last_geometry_active_and_allows_recove
     ));
     transport.frame_with_metadata(53, 390, 844, Some(3.0)).await;
     transport.wait_for_acks(3).await;
+    sink.first_frame_started.notified().await;
     sink.release_first_frame.notify_one();
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
-        while sink.frames.lock().unwrap().len() != 2 {
+        while sink.frames.lock().unwrap().len() != 1 {
             tokio::task::yield_now().await;
         }
     })
     .await
     .unwrap();
 
-    let (ordinals, first_viewport, second_viewport) = {
+    let (ordinals, first_viewport) = {
         let frames = sink.frames.lock().unwrap();
         (
             frames
@@ -1381,16 +1382,11 @@ async fn abandoned_geometry_refresh_keeps_last_geometry_active_and_allows_recove
                 .map(|frame| frame.metadata().capture_ordinal().get())
                 .collect::<Vec<_>>(),
             frames[0].metadata().viewport(),
-            frames[1].metadata().viewport(),
         )
     };
-    assert_eq!(ordinals, vec![2, 3]);
+    assert_eq!(ordinals, vec![3]);
     assert_eq!(
         first_viewport,
-        krometrail_core::PixelDimensions::new(600, 500).unwrap()
-    );
-    assert_eq!(
-        second_viewport,
         krometrail_core::PixelDimensions::new(390, 844).unwrap()
     );
 
@@ -1398,12 +1394,21 @@ async fn abandoned_geometry_refresh_keeps_last_geometry_active_and_allows_recove
     assert_eq!(status.state(), CaptureStreamState::Capturing);
     assert_eq!(status.failure_stage(), None);
     assert_eq!(status.statistics().acknowledged_frames(), 3);
-    assert_eq!(status.statistics().accepted_frames(), 2);
-    assert_eq!(status.statistics().dropped_frames(), 1);
-    assert!(observer.gaps.lock().unwrap().iter().any(|gap| {
-        gap.detail() == Some("capture geometry refresh abandoned")
-            && *gap.reason() == CaptureGapReason::ScreencastPaused
-    }));
+    assert_eq!(status.statistics().accepted_frames(), 1);
+    assert_eq!(status.statistics().dropped_frames(), 2);
+    assert_eq!(
+        observer
+            .gaps
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|gap| {
+                gap.detail() == Some("frame crossed an unproven capture geometry transition")
+                    && *gap.reason() == CaptureGapReason::ScreencastPaused
+            })
+            .count(),
+        2
+    );
 
     assert!(
         coordinator

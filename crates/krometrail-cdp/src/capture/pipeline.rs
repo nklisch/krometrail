@@ -962,17 +962,17 @@ async fn geometry_reader(runtime: Arc<StreamRuntime>, events: &mut Box<dyn Trans
     while runtime.accepting.load(Ordering::Acquire) {
         match events.next().await {
             Ok(Some(_)) => {
-                let Some((transition, started)) = runtime.begin_geometry_transition() else {
+                let Some((transition, _started)) = runtime.begin_geometry_transition() else {
                     runtime.fail(CaptureFailureStage::FrameEnvelope);
                     break;
                 };
-                if started && !runtime.observer.geometry_refresh_requested(transition) {
-                    runtime.finish_geometry_transition(
-                        transition,
-                        None,
-                        "capture geometry refresh dispatch failed",
+                if !runtime.observer.geometry_refresh_requested(transition) {
+                    tracing::warn!(
+                        event = "capture.geometry_refresh.dispatch_deferred",
+                        target_id = %runtime.target.target_id,
+                        attachment_generation = runtime.target.attachment_generation,
+                        "capture.geometry_refresh.dispatch_deferred"
                     );
-                    continue;
                 }
             }
             Ok(None) | Err(_) => {
@@ -1681,20 +1681,6 @@ pub(super) fn commit_geometry_transition(
             Some(geometry),
             "capture geometry transition completed",
         )
-    })
-}
-
-pub(super) fn abandon_geometry_transition(
-    coordinator: &CaptureCoordinator,
-    transition: CaptureGeometryTransition,
-) -> bool {
-    runtime_for_transition(
-        coordinator,
-        transition.target_id,
-        transition.attachment_generation,
-    )
-    .is_some_and(|runtime| {
-        runtime.finish_geometry_transition(transition, None, "capture geometry refresh abandoned")
     })
 }
 

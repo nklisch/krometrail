@@ -313,9 +313,9 @@ pub fn viewport_guidance(
     materialization: ViewportMaterialization,
     effective: &EffectiveViewport,
 ) -> Vec<ViewportGuidance> {
-    if materialization.metrics.is_none() {
+    let Some(metrics) = materialization.metrics else {
         return Vec::new();
-    }
+    };
     let visual = effective.css_size;
     let layout = effective.layout_css_size;
     let mismatched = dimension_mismatched(layout.width, visual.width)
@@ -338,10 +338,20 @@ pub fn viewport_guidance(
             "The page layout viewport differs from the acknowledged visual viewport; inspect page responsive-layout behavior.",
         )
     };
-    let message = format!(
-        "Viewport override was acknowledged at {}×{} CSS px, while the observed layout viewport is {}×{} CSS px. {explanation}",
-        visual.width, visual.height, layout.width, layout.height
-    );
+    let message = if metrics.mobile() {
+        format!(
+            "Mobile viewport override was acknowledged at {}×{} CSS px, while the observed layout viewport is {}×{} CSS px. {explanation}",
+            visual.width, visual.height, layout.width, layout.height
+        )
+    } else {
+        format!(
+            "Desktop viewport override acknowledged declared layout geometry at {}×{} CSS px; observed visual content is {}×{} CSS px. The visual content area can be smaller because of scrollbars; inspect page responsive-layout behavior.",
+            metrics.width(),
+            metrics.height(),
+            visual.width,
+            visual.height
+        )
+    };
     vec![ViewportGuidance {
         code,
         message: NonEmptyText::new(message).expect("viewport guidance is non-empty"),
@@ -555,6 +565,33 @@ mod tests {
         assert_eq!(
             viewport_guidance(mobile, &effective(149.9, false))[0].code,
             ViewportGuidanceCode::LayoutViewportMismatch
+        );
+    }
+
+    #[test]
+    fn scrollbar_reduced_desktop_guidance_names_layout_acknowledgement_and_visual_content() {
+        let responsive = ViewportOverride::Preset {
+            preset: ViewportPreset::ResponsiveSmall,
+        }
+        .materialize();
+        let scrollbar_reduced = EffectiveViewport {
+            css_size: CssSize::new(370.0, 844.0).unwrap(),
+            layout_css_size: CssSize::new(390.0, 844.0).unwrap(),
+            device_scale_factor: DeviceScaleFactor::new(1.0).unwrap(),
+            mobile: false,
+            touch: false,
+            override_active: true,
+            viewport_meta_present: true,
+        };
+
+        let guidance = viewport_guidance(responsive, &scrollbar_reduced);
+        assert_eq!(
+            guidance[0].code,
+            ViewportGuidanceCode::LayoutViewportMismatch
+        );
+        assert_eq!(
+            guidance[0].message.as_str(),
+            "Desktop viewport override acknowledged declared layout geometry at 390×844 CSS px; observed visual content is 370×844 CSS px. The visual content area can be smaller because of scrollbars; inspect page responsive-layout behavior."
         );
     }
 

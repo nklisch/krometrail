@@ -719,22 +719,16 @@ pub(super) async fn run_supervisor(
                 let _ = sender.send(result);
             }
             SupervisorCommand::RefreshCaptureGeometry { transition } => {
-                let refreshed = match (connection.as_ref(), shared.capture.as_ref()) {
-                    (Some(connection), Some(capture)) => {
-                        refresh_capture_geometry(
-                            &state,
-                            connection.transport.as_ref(),
-                            capture,
-                            transition,
-                        )
-                        .await
-                    }
-                    _ => false,
-                };
-                if !refreshed {
-                    if let Some(capture) = shared.capture.as_ref() {
-                        capture.coordinator.abandon_geometry_transition(transition);
-                    }
+                if let (Some(connection), Some(capture)) =
+                    (connection.as_ref(), shared.capture.as_ref())
+                {
+                    let _ = refresh_capture_geometry(
+                        &state,
+                        connection.transport.as_ref(),
+                        capture,
+                        transition,
+                    )
+                    .await;
                 }
             }
             SupervisorCommand::Execute(request, context, sender) => {
@@ -902,13 +896,13 @@ pub(super) async fn refresh_capture_geometry(
     }
     if let Some(error) = last_error {
         tracing::warn!(
-            event = "capture.geometry_refresh.abandoned",
+            event = "capture.geometry_refresh.pending",
             error_code = error.code.as_str(),
             error_message = %error.message,
             attempts = ATTEMPTS,
             target_id = %transition.target_id(),
             attachment_generation = transition.attachment_generation(),
-            "capture.geometry_refresh.abandoned"
+            "capture.geometry_refresh.pending"
         );
     }
     false

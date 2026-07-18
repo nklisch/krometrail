@@ -2125,7 +2125,6 @@ mod tests {
             .begin_geometry_transition(target_id, attachment_generation)
             .unwrap();
         assert!(!refresh_capture_geometry(&state, transport.as_ref(), &capture, failed).await);
-        assert!(coordinator.abandon_geometry_transition(failed));
         assert!(
             observer
                 .statuses
@@ -2143,7 +2142,7 @@ mod tests {
                     viewport: krometrail_core::PixelDimensions::new(360, 640).unwrap(),
                     device_scale_factor: krometrail_core::DeviceScaleFactor::new(1.0).unwrap(),
                 },
-                false
+                true
             )
         );
 
@@ -2153,6 +2152,7 @@ mod tests {
         let recovered = coordinator
             .begin_geometry_transition(target_id, attachment_generation)
             .unwrap();
+        assert_eq!(recovered, failed);
         assert!(refresh_capture_geometry(&state, transport.as_ref(), &capture, recovered).await);
         assert_eq!(
             coordinator
@@ -2174,7 +2174,7 @@ mod tests {
             coordinator.statuses().pop().unwrap().state(),
             CaptureStreamState::Capturing
         );
-        assert_eq!(observer.gaps.lock().unwrap().len(), 5);
+        assert_eq!(observer.gaps.lock().unwrap().len(), 4);
     }
 
     #[tokio::test]
@@ -2377,11 +2377,7 @@ mod tests {
             state.targets_by_key["geometry-target"].target.lifecycle,
             TargetLifecycle::Failed
         );
-        assert_eq!(observer.gaps.lock().unwrap().len(), 4);
-        assert!(observer.gaps.lock().unwrap().iter().any(|gap| {
-            gap.detail() == Some("capture geometry refresh abandoned")
-                && *gap.reason() == krometrail_core::CaptureGapReason::ScreencastPaused
-        }));
+        assert_eq!(observer.gaps.lock().unwrap().len(), 3);
         assert_eq!(sink.log.lock().unwrap().len(), 0);
     }
 

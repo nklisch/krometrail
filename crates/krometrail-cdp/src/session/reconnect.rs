@@ -612,11 +612,7 @@ pub(super) async fn reconnect_loop_transactional(
                         Some(SupervisorCommand::Execute(request, _context, sender)) => {
                             reject_operation_during_reconnect(request, sender);
                         }
-                        Some(SupervisorCommand::RefreshCaptureGeometry { transition }) => {
-                            if let Some(capture) = shared.capture.as_ref() {
-                                capture.coordinator.abandon_geometry_transition(transition);
-                            }
-                        }
+                        Some(SupervisorCommand::RefreshCaptureGeometry { .. }) => {}
                         Some(SupervisorCommand::Input(input)) => {
                             let input = match input {
                                 SupervisorInput::ForConnectionGeneration { input, .. } => *input,
@@ -701,12 +697,7 @@ pub(super) async fn reconnect_loop_transactional(
                             reject_operation_during_reconnect(request, sender);
                             None
                         }
-                        Some(SupervisorCommand::RefreshCaptureGeometry { transition }) => {
-                            if let Some(capture) = shared.capture.as_ref() {
-                                capture.coordinator.abandon_geometry_transition(transition);
-                            }
-                            None
-                        }
+                        Some(SupervisorCommand::RefreshCaptureGeometry { .. }) => None,
                         Some(SupervisorCommand::Input(input)) => {
                             let input = match input {
                                 SupervisorInput::ForConnectionGeneration { input, .. } => *input,

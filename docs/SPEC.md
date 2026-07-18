@@ -174,10 +174,13 @@ The control capability provides operations for:
 - clear that target-scoped override and report the independently observed effective CSS visual viewport.
 
 Overrides survive ordinary navigation and same-target reattachment, are restored before capture
-resumes, and never affect another target. A clear removes both device metrics and touch emulation.
-The result identifies the selected intent and warns when the observed layout viewport differs materially from
-the requested visual viewport, including the common missing-viewport-metadata case. Presets do not imply user-
-agent emulation; custom metrics and clear retain their stable meanings.
+resumes, and never affect another target. A clear removes both device metrics and touch emulation. For
+responsive desktop and custom desktop overrides, Krometrail acknowledges exact declared layout geometry and
+reports visual content separately; the visual content area can be narrower when Chrome reserves scrollbar space.
+For mobile overrides, Krometrail acknowledges the exact visual viewport because mobile emulation, page scale,
+and viewport metadata intentionally control that surface. The result identifies the selected intent and provides
+guidance when observed layout and visual content materially differ, including the common missing-viewport-metadata
+case. Presets do not imply user-agent emulation; custom metrics and clear retain their stable meanings.
 
 ### Interaction
 

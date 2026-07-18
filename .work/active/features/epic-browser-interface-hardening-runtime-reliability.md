@@ -32,7 +32,7 @@ No UI surface; this is target-scoped CDP and capture-pipeline reliability.
 
 - **Desktop acknowledgement**: for non-mobile overrides, exact declared width/height are verified against `cssLayoutViewport`; `cssVisualViewport` remains the observed content area and may be smaller due to scrollbars.
 - **Mobile acknowledgement**: preserve exact visual viewport verification because mobile emulation/page scale and viewport meta semantics intentionally control that surface.
-- **Capture recovery**: geometry-refresh failure completes the fence without adopting new geometry, declares a screencast-paused gap, and keeps capture active. Later geometry events may retry.
+- **Capture recovery**: geometry-refresh failure leaves the fence open without adopting new geometry. Capture stays active, but every crossing frame is acknowledged and declared as a screencast-paused gap until a later geometry event successfully refreshes the same transition.
 - **Envelope rejection**: malformed frame payloads remain terminal at the existing boundary; only geometry refresh/dispatch failure becomes recoverable.
 
 ## Architectural choice
@@ -65,20 +65,13 @@ Use layout dimensions for responsive desktop overrides and visual dimensions for
 
 **Files**: `crates/krometrail-cdp/src/capture/pipeline.rs`, `crates/krometrail-cdp/src/session/runtime.rs`
 
-```rust
-pub(crate) fn abandon_geometry_transition(
-    &self,
-    transition: CaptureGeometryTransition,
-) -> bool;
-```
-
-Complete the transition with no replacement geometry, declare the existing bounded paused gap, and leave the stream active. Rename the coordinator operation so callers cannot confuse a refresh failure with terminal capture failure. Keep logs/counters truthful.
+Only an authoritative `commit_geometry_transition` completes a transition. Retry exhaustion and dispatch loss retain that transition and its geometry fence, so later browser geometry events can redispatch it without treating a previously established geometry as current evidence. Keep logs/counters truthful.
 
 **Acceptance criteria**:
 
 - [ ] Exhausted geometry refresh retries do not set capture state to failed.
 - [ ] Frames crossing the transition are acknowledged and recorded as gaps, not persisted with uncertain geometry.
-- [ ] Subsequent frames use the last established geometry and a later refresh can adopt new geometry.
+- [ ] Subsequent frames remain fenced and are declared as gaps until a later authoritative refresh adopts new geometry.
 - [ ] W3Schools-style nested frames no longer permanently stop capture at `frame_envelope`.
 
 ## Implementation Order
@@ -100,14 +93,14 @@ Complete the transition with no replacement geometry, declare the existing bound
 
 ## Risks
 
-Using declared desktop geometry for capture could diverge from screencast payload pixels. Existing `RawFrame::after_ack` dimension validation remains the guard. If Chrome reports a truly different envelope, that frame is rejected explicitly rather than silently resized.
+Using declared desktop geometry for capture could diverge from screencast payload pixels. `RawFrame::after_ack` remains a malformed-envelope guard, not geometry authority: no frame payload can clear an unresolved geometry fence. A malformed frame is rejected explicitly rather than silently resized.
 
 ## Implementation summary
 
 - Desktop responsive acknowledgement now validates exact declared `cssLayoutViewport` dimensions while continuing to report the observed `cssVisualViewport`; mobile acknowledgement remains visual-viewport exact.
 - Capture geometry for an acknowledged desktop override uses declared layout dimensions, while raw frame-envelope rejection remains terminal.
-- Geometry-refresh exhaustion, refresh-dispatch loss, reconnect interruption, and failed viewport rollback now abandon only the geometry transition as a bounded `ScreencastPaused` gap; they do not invent a `frame_envelope` capture failure.
-- The established geometry remains active through a recoverable refresh gap and later transitions can commit a replacement. A separately failed target still stops its own stream without misreporting a frame-envelope failure.
+- Geometry-refresh exhaustion and refresh-dispatch loss keep the transition fenced. Crossing frames are acknowledged and declared as bounded `ScreencastPaused` gaps; they never inherit stale geometry provenance or invent a `frame_envelope` capture failure.
+- A later browser geometry event redispatches the existing transition, and only an authoritative geometry read can commit a replacement. A separately failed target still stops its own stream without misreporting a frame-envelope failure.
 
 ## Verification
 
