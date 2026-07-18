@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-ergonomics-viewport-intent
 kind: feature
-stage: implementing
+stage: review
 tags: [agent-ux, browser]
 parent: epic-agent-browser-ergonomics
 depends_on: []
@@ -235,3 +235,14 @@ fn decode_effective_viewport(
 - Chrome's approximately 980px no-meta layout can vary slightly with browser revision. Classification uses the ratio and metadata fact rather than equality; the real-browser test should assert the semantic threshold, not an exact 980 constant.
 - Preset names can become compatibility commitments. The deliberately small, vendor-neutral set covers the current responsive/mobile intent without implying a comprehensive device catalog.
 - Additional result fields increase the stable response surface. Keep them factual, bounded, and derived from the same acknowledged operation; do not expose viewport metadata content or infer user-agent/device identity.
+
+## Integrated implementation evidence
+
+- Both implementation stories are done: the stable additive intent/preset/guidance contract and the lifecycle/MCP/real-browser integration.
+- Existing custom and clear JSON remain exact; the additive preset mode offers five vendor-neutral choices and materializes immediately into the existing explicit metrics authority.
+- Apply, observe, supervisor commit, capture transition, rollback, clear, navigation restore, and reconnect retain their established ordering and state model. Only metrics persist; preset identity remains response provenance.
+- Visual and layout geometry plus viewport-meta presence are observed independently. Strict acknowledgement remains visual/DPR/touch based, while material layout divergence yields at most one bounded content-free guidance item.
+- The plugin skill leads with the smallest responsive preset as the reasonable ergonomic default, expands to larger responsive surfaces, and reserves mobile/custom options for explicit intent.
+- Integrated core, CDP session/decoder, MCP schema/projection, workspace all-target checks, and the bounded real-Chrome qualification passed.
+- Real Chrome verified responsive-small equal geometry and exact screenshot size, mobile-phone missing-meta guidance with a wider layout viewport, navigation persistence, clear, and target isolation.
+- No feature-scope blocker or adjacent finding remains; the feature is ready for independent review.
