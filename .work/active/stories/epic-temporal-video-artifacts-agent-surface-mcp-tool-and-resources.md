@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-video-artifacts-agent-surface-mcp-tool-and-resources
 kind: story
-stage: pending
+stage: implementing
 tags: [agent-ux, infra, testing]
 parent: epic-temporal-video-artifacts-agent-surface
 depends_on: [epic-temporal-video-artifacts-agent-surface-runtime-availability-and-composition]
