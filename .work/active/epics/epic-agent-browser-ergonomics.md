@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-ergonomics
 kind: epic
-stage: drafting
+stage: implementing
 tags: [agent-ux, browser, visual]
 parent: null
 depends_on: []
@@ -33,13 +33,44 @@ The resulting stable surface remains local-first and evidence-oriented. Full obs
 
 Consolidate response selection in the existing MCP projector, locator resolution in the existing snapshot/reference registry, temporal follow-up inputs behind one range authority, and viewport intent in the existing target-scoped override lifecycle. Reuse target supervision and browser-event infrastructure for popup/download discovery. Avoid parallel schema registries, duplicated range persistence, a second profile manager, or tool-specific compacting logic.
 
-## Anticipated child features
+## Design decisions
 
-- Agent-sized response projections and concise status.
-- Semantic locators and frame-scoped targeting.
-- Reusable temporal range handles.
-- Viewport intent presets and effective-layout guidance.
-- Managed-state guidance and targeted browser parity for clipboard, downloads, popups, frames, and page assets.
+- **Projection depth**: presentation controls reduce the MCP payload first; they do not suppress the underlying action observation in this minor release because that evidence is part of the mutation contract.
+- **Live image omission**: `omit` removes inline bytes; resource-only mode applies only where a canonical retained resource exists. Live post-action screenshots remain inline-or-omit until a durable live-image authority is independently justified.
+- **Semantic action model**: a semantic query returns exact references; existing actions continue consuming references. Automatic action-time locator reevaluation is deferred because it weakens explicit ambiguity and stale-reference behavior.
+- **Range-handle lifetime**: handles are opaque, process-local, immutable references to validated resolved ranges. They survive browser stop while retained evidence remains available, but not MCP restart or session deletion; every use revalidates retained availability.
+- **Viewport presets**: presets materialize into the existing override and report intent plus effective geometry. They do not emulate user agents.
+- **Parity boundary**: implement bounded browser/session metadata and explicit controls, not arbitrary DevTools access or response-body capture.
+
+## Decomposition
+
+Split by public capability so each feature can design and verify one stable contract while sharing existing registries and ports. Four contract features are independent; the browser-state parity feature composes target/frame lifecycle and therefore follows semantic targeting.
+
+### Child features
+
+- `epic-agent-browser-ergonomics-response-projections` — additive response detail selection plus concise browser status — depends on: `[]`
+- `epic-agent-browser-ergonomics-semantic-targeting` — bounded main-document semantic query-to-reference matching with descendant scope — depends on: `[]`
+- `epic-agent-browser-ergonomics-temporal-range-handles` — process-local opaque handles accepted by temporal follow-up tools — depends on: `[]`
+- `epic-agent-browser-ergonomics-viewport-intent` — responsive/mobile presets and effective-layout mismatch guidance — depends on: `[]`
+- `epic-agent-browser-ergonomics-browser-contexts` — managed-profile discovery, popup relationships/waits, frame inventory/scoping, and page-asset metadata — depends on: `[epic-agent-browser-ergonomics-semantic-targeting]`
+- `epic-agent-browser-ergonomics-local-io` — explicit clipboard and managed-download workflows with canonical local resources — depends on: `[]`
+
+### Simplification arcs
+
+- Response projection and compact status share one MCP detail vocabulary and projector.
+- Semantic targeting reuses exact snapshot references rather than creating persistent locator identities.
+- Range handles terminate at one application-service lookup authority; storage and artifact ports remain range-based.
+- Viewport presets reuse the lifecycle-complete override state instead of adding a device-emulation subsystem.
+- Browser contexts reuse target supervision, snapshot identity, sanitized resource metadata, and the existing managed-profile launcher.
+- Local I/O reuses explicit operation mutability, browser events, and canonical resources while keeping content out of logs.
+
+### Decomposition risks
+
+- Additive fields still affect generated schemas and every registry-derived batch shape; canonical schema tests are release-critical.
+- Clipboard and download behavior depends on browser permissions and platform paths; privacy and ownership must fail closed.
+- Same-origin frame targeting must retain target/document generation fences and never blur cross-origin boundaries.
+- Frame-scoped interaction is the highest-risk context slice; design must distinguish same-process same-origin support from OOPIF and cross-origin boundaries.
+- Clipboard and downloads require explicit managed-versus-attached authority decisions and must keep content and local paths out of diagnostics.
 
 ## Release intent
 
