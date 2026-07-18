@@ -337,17 +337,12 @@ impl PageControl {
                         "document changed while capturing the semantic snapshot",
                     ));
                 }
-                let actionable = nodes
-                    .iter()
-                    .filter_map(|node| node.reference.map(|_| node.id))
-                    .collect::<HashSet<_>>();
                 metadata
                     .into_iter()
                     .filter_map(|(backend, metadata)| {
                         node_by_backend
                             .get(&backend)
                             .copied()
-                            .filter(|node_id| actionable.contains(node_id))
                             .map(|node_id| (node_id, metadata))
                     })
                     .collect()
@@ -482,6 +477,8 @@ impl SnapshotRegistry {
                         .semantic
                         .get(&node.id)
                         .unwrap_or(&SemanticNodeMetadata::default()),
+                    &active.parent_by_node,
+                    &active.semantic,
                 )
                 .then(|| SemanticMatch {
                     reference,
@@ -649,14 +646,23 @@ fn semantic_query_matches(
     query: &SemanticQuery,
     node: &SnapshotNode,
     metadata: &SemanticNodeMetadata,
+    parents: &HashMap<SnapshotNodeId, Option<SnapshotNodeId>>,
+    semantic: &HashMap<SnapshotNodeId, SemanticNodeMetadata>,
 ) -> bool {
     match query {
-        SemanticQuery::Role { role, name } => {
+        SemanticQuery::Role {
+            role,
+            name,
+            container_text,
+        } => {
             node.role == role.as_str()
                 && name.as_ref().is_none_or(|name| {
                     node.name
                         .as_deref()
                         .is_some_and(|value| name.matches(value))
+                })
+                && container_text.as_ref().is_none_or(|expected| {
+                    nearest_container_text_matches(node.id, expected, parents, semantic)
                 })
         }
         SemanticQuery::Label { text } => metadata.labels.iter().any(|label| text.matches(label)),
@@ -666,6 +672,30 @@ fn semantic_query_matches(
             .as_deref()
             .is_some_and(|candidate| candidate == value.as_str()),
     }
+}
+
+fn nearest_container_text_matches(
+    node: SnapshotNodeId,
+    expected: &krometrail_core::SemanticTextMatch,
+    parents: &HashMap<SnapshotNodeId, Option<SnapshotNodeId>>,
+    semantic: &HashMap<SnapshotNodeId, SemanticNodeMetadata>,
+) -> bool {
+    let mut current = parents.get(&node).copied().flatten();
+    while let Some(ancestor) = current {
+        // The AX root's rendered text is page-wide. Containers must be a bounded ancestor below
+        // that root so unrelated page text cannot qualify a control.
+        if parents.get(&ancestor).copied().flatten().is_none() {
+            return false;
+        }
+        if semantic
+            .get(&ancestor)
+            .is_some_and(|metadata| expected.matches(&metadata.rendered_text))
+        {
+            return true;
+        }
+        current = parents.get(&ancestor).copied().flatten();
+    }
+    false
 }
 
 fn is_strict_descendant(
@@ -2034,6 +2064,160 @@ mod tests {
         .unwrap();
         assert!(metadata.contains_key(&110));
         assert!(!metadata.contains_key(&10));
+    }
+
+    #[test]
+    fn container_role_queries_use_only_bounded_ancestor_text() {
+        let generation = SnapshotGeneration::new(1).unwrap();
+        let root = SnapshotNodeId::new(1).unwrap();
+        let first_container = SnapshotNodeId::new(2).unwrap();
+        let first_checkbox = SnapshotNodeId::new(3).unwrap();
+        let second_container = SnapshotNodeId::new(4).unwrap();
+        let second_checkbox = SnapshotNodeId::new(5).unwrap();
+        let reference = |node_id| NodeReference {
+            target_id: target(),
+            generation,
+            node_id,
+        };
+        let node = |id, parent, depth, role: &str, actionable| SnapshotNode {
+            id,
+            parent,
+            depth,
+            role: role.into(),
+            name: None,
+            value: None,
+            description: None,
+            properties: vec![],
+            actionable,
+            reference: actionable.then(|| reference(id)),
+        };
+        let snapshot = PageSnapshot::new(
+            ObservationContext::new(
+                krometrail_core::SessionId::from_uuid(uuid::Uuid::from_u128(2)),
+                target(),
+                4,
+                krometrail_core::SessionTime::ZERO,
+                krometrail_core::SessionTime::ZERO,
+            )
+            .unwrap(),
+            generation,
+            vec![
+                node(root, None, 0, "document", false),
+                node(first_container, Some(root), 1, "listitem", false),
+                node(first_checkbox, Some(first_container), 2, "checkbox", true),
+                node(second_container, Some(root), 1, "listitem", false),
+                node(second_checkbox, Some(second_container), 2, "checkbox", true),
+            ],
+            0,
+        )
+        .unwrap();
+        let bound = BoundTarget {
+            target_id: target(),
+            browser_target_key: "target-a".into(),
+            attachment_generation: 4,
+            transport_session: crate::transport::TransportSessionId::new("session-a").unwrap(),
+            visibility: krometrail_core::TargetVisibility::Visible,
+        };
+        let mut registry = SnapshotRegistry::default();
+        registry.install(
+            target(),
+            ActiveSnapshot {
+                generation,
+                attachment_generation: 4,
+                document: DocumentFingerprint {
+                    frame_id: "main".into(),
+                    loader_id: "loader".into(),
+                },
+                frame: None,
+                bindings: HashMap::from([
+                    (first_checkbox, NodeBinding { backend_node_id: 3 }),
+                    (second_checkbox, NodeBinding { backend_node_id: 5 }),
+                ]),
+                node_by_backend: HashMap::from([
+                    (1, root),
+                    (2, first_container),
+                    (3, first_checkbox),
+                    (4, second_container),
+                    (5, second_checkbox),
+                ]),
+                semantic: HashMap::from([
+                    (
+                        root,
+                        SemanticNodeMetadata {
+                            rendered_text: "Page-wide unrelated text".into(),
+                            ..Default::default()
+                        },
+                    ),
+                    (
+                        first_container,
+                        SemanticNodeMetadata {
+                            rendered_text: "Buy milk".into(),
+                            ..Default::default()
+                        },
+                    ),
+                    (
+                        second_container,
+                        SemanticNodeMetadata {
+                            rendered_text: "Ship release".into(),
+                            ..Default::default()
+                        },
+                    ),
+                ]),
+                parent_by_node: HashMap::from([
+                    (root, None),
+                    (first_container, Some(root)),
+                    (first_checkbox, Some(first_container)),
+                    (second_container, Some(root)),
+                    (second_checkbox, Some(second_container)),
+                ]),
+                semantic_captured: true,
+                next_node_id: 5,
+            },
+        );
+        let request = |container_text| {
+            QueryPageRequest::new(
+                krometrail_core::PageSelection::Target(target()),
+                SemanticQuery::role_in_container(
+                    "checkbox",
+                    None,
+                    krometrail_core::SemanticTextMatch::new(
+                        container_text,
+                        krometrail_core::SemanticTextMatchMode::Exact,
+                        false,
+                    )
+                    .unwrap(),
+                )
+                .unwrap(),
+                None,
+                20,
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            registry
+                .query(&bound, &request("Buy milk"), &snapshot)
+                .unwrap()
+                .matches[0]
+                .reference
+                .node_id,
+            first_checkbox
+        );
+        assert_eq!(
+            registry
+                .query(&bound, &request("Ship release"), &snapshot)
+                .unwrap()
+                .matches[0]
+                .reference
+                .node_id,
+            second_checkbox
+        );
+        assert_eq!(
+            registry
+                .query(&bound, &request("Page-wide unrelated text"), &snapshot)
+                .unwrap()
+                .outcome,
+            krometrail_core::SemanticQueryOutcome::NoMatch
+        );
     }
 
     #[test]

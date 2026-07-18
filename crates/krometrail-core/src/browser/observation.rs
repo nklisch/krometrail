@@ -593,6 +593,8 @@ pub enum SemanticQuery {
     Role {
         role: NonEmptyText,
         name: Option<SemanticTextMatch>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        container_text: Option<SemanticTextMatch>,
     },
     Label {
         text: SemanticTextMatch,
@@ -612,6 +614,8 @@ enum SemanticQueryWire {
         #[schemars(length(min = 1, max = 1_024))]
         role: String,
         name: Option<SemanticTextMatch>,
+        #[serde(default)]
+        container_text: Option<SemanticTextMatch>,
     },
     Label {
         text: SemanticTextMatch,
@@ -628,7 +632,24 @@ enum SemanticQueryWire {
 impl SemanticQuery {
     pub fn role(role: impl Into<String>, name: Option<SemanticTextMatch>) -> Result<Self> {
         let role = validate_semantic_role(role.into())?;
-        Ok(Self::Role { role, name })
+        Ok(Self::Role {
+            role,
+            name,
+            container_text: None,
+        })
+    }
+
+    pub fn role_in_container(
+        role: impl Into<String>,
+        name: Option<SemanticTextMatch>,
+        container_text: SemanticTextMatch,
+    ) -> Result<Self> {
+        let role = validate_semantic_role(role.into())?;
+        Ok(Self::Role {
+            role,
+            name,
+            container_text: Some(container_text),
+        })
     }
 
     pub fn test_id(value: impl Into<String>) -> Result<Self> {
@@ -644,7 +665,14 @@ impl<'de> Deserialize<'de> for SemanticQuery {
         deserializer: D,
     ) -> std::result::Result<Self, D::Error> {
         deserialize_validated(deserializer, |wire: SemanticQueryWire| match wire {
-            SemanticQueryWire::Role { role, name } => Self::role(role, name),
+            SemanticQueryWire::Role {
+                role,
+                name,
+                container_text,
+            } => match container_text {
+                Some(container_text) => Self::role_in_container(role, name, container_text),
+                None => Self::role(role, name),
+            },
             SemanticQueryWire::Label { text } => Ok(Self::Label { text }),
             SemanticQueryWire::Text { text } => Ok(Self::Text { text }),
             SemanticQueryWire::TestId { value } => Self::test_id(value),
@@ -1164,13 +1192,15 @@ mod tests {
     #[test]
     fn semantic_query_wire_defaults_and_bounds_are_validated() {
         let request: QueryPageRequest = serde_json::from_str(
-            r#"{"query":{"kind":"role","role":"button","name":{"value":" Save\n now "}}}"#,
+            r#"{"query":{"kind":"role","role":"button","name":{"value":" Save\n now "},"container_text":{"value":"Todo one","mode":"contains"}}}"#,
         )
         .unwrap();
         assert_eq!(request.target, PageSelection::Selected);
         assert_eq!(request.max_matches, DEFAULT_SEMANTIC_MATCH_LIMIT);
         let SemanticQuery::Role {
-            name: Some(name), ..
+            name: Some(name),
+            container_text: Some(container_text),
+            ..
         } = request.query
         else {
             panic!("expected role query with name");
@@ -1178,6 +1208,16 @@ mod tests {
         assert_eq!(name.mode, SemanticTextMatchMode::Exact);
         assert!(!name.case_sensitive);
         assert!(name.matches("save now"));
+        assert_eq!(container_text.mode, SemanticTextMatchMode::Contains);
+        assert!(container_text.matches("first Todo one item"));
+
+        let legacy = SemanticQuery::role("button", None).unwrap();
+        assert!(
+            serde_json::to_value(legacy)
+                .unwrap()
+                .get("container_text")
+                .is_none()
+        );
 
         for invalid in [
             r#"{"query":{"kind":"role","role":"Button"}}"#,
