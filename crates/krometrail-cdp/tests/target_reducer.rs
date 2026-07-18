@@ -58,7 +58,7 @@ fn page_contexts_use_monotonic_sequences_and_resolve_only_known_openers() {
     .state;
 
     let inventory = state.page_contexts().unwrap();
-    assert_eq!(inventory.cursor.get(), 3);
+    assert_eq!(inventory.cursor.get(), 4);
     assert_eq!(inventory.pages.len(), 3);
     assert!(
         inventory
@@ -78,6 +78,30 @@ fn page_contexts_use_monotonic_sequences_and_resolve_only_known_openers() {
         .find(|page| page.page.target.target.browser_target_key() == "orphan")
         .unwrap();
     assert_eq!(orphan.opener_target_id, None);
+}
+
+#[test]
+fn empty_inventory_cursor_is_first_page_wait_safe_and_closed_pages_do_not_rewind_it() {
+    let state = SupervisorState::new(compatibility());
+    assert_eq!(state.page_contexts().unwrap().cursor.get(), 1);
+    let state = reduce(
+        state,
+        SupervisorInput::TargetCreated(page("first", "https://first.test")),
+    )
+    .unwrap()
+    .state;
+    let first = state.page_contexts().unwrap();
+    assert!(first.pages[0].sequence > krometrail_core::PageSequence::new(1).unwrap());
+    let high_water = first.cursor;
+    let state = reduce(
+        state,
+        SupervisorInput::TargetDestroyed {
+            target_key: "first".into(),
+        },
+    )
+    .unwrap()
+    .state;
+    assert_eq!(state.page_contexts().unwrap().cursor, high_water);
 }
 
 #[test]
@@ -116,6 +140,70 @@ fn popup_relationship_does_not_rebind_when_an_opener_key_is_reused() {
         .find(|page| page.page.target.target.browser_target_key() == "popup")
         .unwrap();
     assert_eq!(popup.opener_target_id, None);
+}
+
+#[test]
+fn reconnect_target_info_cannot_rebind_an_existing_popup_opener() {
+    let state = reduce(
+        SupervisorState::new(compatibility()),
+        SupervisorInput::InitialTargets(vec![
+            page("opener", "https://opener.test"),
+            popup("popup", "opener"),
+            page("other", "https://other.test"),
+        ]),
+    )
+    .unwrap()
+    .state;
+    let original = state
+        .page_contexts()
+        .unwrap()
+        .pages
+        .into_iter()
+        .find(|page| page.page.target.target.browser_target_key() == "popup")
+        .unwrap()
+        .opener_target_id;
+    let state = reduce(
+        state,
+        SupervisorInput::ConnectionLost(TransportClose {
+            reason: NonEmptyText::new("test reconnect").unwrap(),
+        }),
+    )
+    .unwrap()
+    .state;
+    let reconnected = reduce(
+        state,
+        SupervisorInput::Reconnected(ReconnectedSnapshot {
+            connection_generation: 1,
+            compatibility: compatibility(),
+            targets: vec![
+                ReconnectedTarget {
+                    info: page("opener", "https://opener.test"),
+                    session: None,
+                    visibility: TargetVisibility::Visible,
+                },
+                ReconnectedTarget {
+                    info: popup("popup", "other"),
+                    session: None,
+                    visibility: TargetVisibility::Visible,
+                },
+                ReconnectedTarget {
+                    info: page("other", "https://other.test"),
+                    session: None,
+                    visibility: TargetVisibility::Visible,
+                },
+            ],
+        }),
+    )
+    .unwrap()
+    .state;
+    let popup = reconnected
+        .page_contexts()
+        .unwrap()
+        .pages
+        .into_iter()
+        .find(|page| page.page.target.target.browser_target_key() == "popup")
+        .unwrap();
+    assert_eq!(popup.opener_target_id, original);
 }
 
 #[test]

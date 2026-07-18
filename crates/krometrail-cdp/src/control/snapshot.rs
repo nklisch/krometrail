@@ -58,8 +58,8 @@ const ACTIONABLE_SIGNALS: &[&str] = &["focusable", "editable", "clickable"];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct DocumentFingerprint {
-    frame_id: String,
-    loader_id: String,
+    pub(super) frame_id: String,
+    pub(super) loader_id: String,
 }
 
 #[derive(Clone, Debug)]
@@ -79,6 +79,7 @@ struct ActiveSnapshot {
     generation: SnapshotGeneration,
     attachment_generation: u64,
     document: DocumentFingerprint,
+    frame: Option<krometrail_core::PageFrameReference>,
     bindings: HashMap<SnapshotNodeId, NodeBinding>,
     node_by_backend: HashMap<i64, SnapshotNodeId>,
     semantic: HashMap<SnapshotNodeId, SemanticNodeMetadata>,
@@ -231,15 +232,15 @@ impl PageControl {
         request: QueryPageRequest,
         started_at: krometrail_core::SessionTime,
     ) -> Result<BrowserOperationResult> {
-        let frame_id = match &request.document {
+        let frame = match &request.document {
             krometrail_core::SemanticDocumentScope::MainDocument => None,
-            krometrail_core::SemanticDocumentScope::Frame(frame) => {
-                Some(self.resolve_frame_id(transport, bound, frame).await?)
-            }
+            krometrail_core::SemanticDocumentScope::Frame(frame) => Some((
+                frame.clone(),
+                Self::resolve_frame_id(transport, bound, frame).await?,
+            )),
         };
-        let frame_id = frame_id.as_ref().map(|(frame_id, _)| frame_id.as_str());
         let snapshot = self
-            .capture_snapshot_for_frame(transport, bound, started_at, true, frame_id)
+            .capture_snapshot_for_frame(transport, bound, started_at, true, frame.as_ref())
             .await?;
         let result = self.snapshots.query(bound, &request, &snapshot)?;
         Ok(BrowserOperationResult::QueryPage(Box::new(result)))
@@ -262,11 +263,20 @@ impl PageControl {
         bound: &BoundTarget,
         started_at: krometrail_core::SessionTime,
         include_semantic: bool,
-        frame_id: Option<&str>,
+        frame: Option<&(krometrail_core::PageFrameReference, (String, String))>,
     ) -> Result<PageSnapshot> {
         let scope = CommandScope::Session(bound.transport_session.clone());
-        let document = document_fingerprint(transport, &scope, bound.target_id).await?;
-        let ax_params = frame_id.map_or_else(|| json!({}), |frame_id| json!({"frameId": frame_id}));
+        let document = match frame {
+            Some((_, (frame_id, loader_id))) => DocumentFingerprint {
+                frame_id: frame_id.clone(),
+                loader_id: loader_id.clone(),
+            },
+            None => document_fingerprint(transport, &scope, bound.target_id).await?,
+        };
+        let ax_params = frame.map_or_else(
+            || json!({}),
+            |(_, (frame_id, _))| json!({"frameId": frame_id}),
+        );
         let ax_response = transport
             .send_raw(&scope, "Accessibility.getFullAXTree", ax_params)
             .await
@@ -310,7 +320,17 @@ impl PageControl {
         let semantic = match dom_response {
             Some(response) => {
                 let metadata = decode_dom_snapshot(&response, &document, bound.target_id)?;
-                let current = document_fingerprint(transport, &scope, bound.target_id).await?;
+                let current = match frame {
+                    Some((reference, _)) => {
+                        let (frame_id, loader_id) =
+                            Self::resolve_frame_id(transport, bound, reference).await?;
+                        DocumentFingerprint {
+                            frame_id,
+                            loader_id,
+                        }
+                    }
+                    None => document_fingerprint(transport, &scope, bound.target_id).await?,
+                };
                 if current != document {
                     return Err(stale(
                         bound.target_id,
@@ -350,6 +370,7 @@ impl PageControl {
                 generation,
                 attachment_generation: bound.attachment_generation,
                 document,
+                frame: frame.map(|(reference, _)| reference.clone()),
                 bindings,
                 node_by_backend,
                 semantic,
@@ -542,7 +563,22 @@ impl SnapshotRegistry {
     ) -> Result<i64> {
         let (document, backend) = self.active_reference_backend(bound, reference)?;
         let scope = CommandScope::Session(bound.transport_session.clone());
-        let current = document_fingerprint(transport, &scope, bound.target_id).await?;
+        let frame = self
+            .targets
+            .get(&bound.target_id)
+            .and_then(|target| target.active.as_ref())
+            .and_then(|active| active.frame.as_ref());
+        let current = match frame {
+            Some(frame) => {
+                let (frame_id, loader_id) =
+                    PageControl::resolve_frame_id(transport, bound, frame).await?;
+                DocumentFingerprint {
+                    frame_id,
+                    loader_id,
+                }
+            }
+            None => document_fingerprint(transport, &scope, bound.target_id).await?,
+        };
         if current != *document {
             return Err(stale(
                 bound.target_id,
@@ -874,7 +910,7 @@ fn required_parallel_array<'a>(
     Ok(values)
 }
 
-fn snapshot_string<'a>(strings: &'a [Value], index: u64) -> Result<&'a str> {
+fn snapshot_string(strings: &[Value], index: u64) -> Result<&str> {
     usize::try_from(index)
         .ok()
         .and_then(|index| strings.get(index))
@@ -1658,6 +1694,34 @@ mod tests {
     }
 
     #[test]
+    fn dom_snapshot_selects_the_qualified_child_document() {
+        let mut snapshot = semantic_dom_snapshot();
+        let child_index = snapshot["strings"].as_array().unwrap().len();
+        snapshot["strings"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!("child"));
+        let mut child = snapshot["documents"][0].clone();
+        child["frameId"] = json!(child_index);
+        for backend in child["nodes"]["backendNodeId"].as_array_mut().unwrap() {
+            *backend = json!(backend.as_i64().unwrap() + 100);
+        }
+        snapshot["documents"].as_array_mut().unwrap().push(child);
+
+        let metadata = decode_dom_snapshot(
+            &snapshot,
+            &DocumentFingerprint {
+                frame_id: "child".into(),
+                loader_id: "child-loader".into(),
+            },
+            target(),
+        )
+        .unwrap();
+        assert!(metadata.contains_key(&110));
+        assert!(!metadata.contains_key(&10));
+    }
+
+    #[test]
     fn semantic_query_is_preordered_scoped_bounded_and_explicit() {
         let generation = SnapshotGeneration::new(1).unwrap();
         let root = SnapshotNodeId::new(1).unwrap();
@@ -1715,6 +1779,7 @@ mod tests {
                     frame_id: "main".into(),
                     loader_id: "loader".into(),
                 },
+                frame: None,
                 bindings: HashMap::from([
                     (scope, NodeBinding { backend_node_id: 2 }),
                     (first, NodeBinding { backend_node_id: 3 }),
@@ -1983,6 +2048,7 @@ mod tests {
                 frame_id: "main".into(),
                 loader_id: "loader".into(),
             },
+            frame: None,
             bindings: HashMap::from([(
                 node_id,
                 NodeBinding {
@@ -2086,6 +2152,7 @@ mod tests {
                 generation,
                 attachment_generation: 4,
                 document: document.clone(),
+                frame: None,
                 bindings: HashMap::new(),
                 node_by_backend: HashMap::from([(42, node_id)]),
                 semantic: HashMap::new(),

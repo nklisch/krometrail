@@ -18,7 +18,6 @@ const RESOURCE_TIMING_EXPRESSION: &str = r#"(() => { const all = performance.get
 
 impl PageControl {
     pub(super) async fn resolve_frame_id(
-        &self,
         transport: &dyn CdpTransport,
         bound: &BoundTarget,
         reference: &PageFrameReference,
@@ -44,28 +43,17 @@ impl PageControl {
                 transport_error(error, ErrorCode::PageObservationFailed, bound.target_id)
             })?;
         let root = response.get("frameTree").unwrap_or(&response);
-        let root_origin = frame_url(root).and_then(|url| origin(&url));
+        let root_origin = frame_url(root).and_then(|url| inherited_origin(&url, None));
         let oopif_ids = oopif_frame_ids(transport).await;
-        let mut flat = Vec::new();
-        flatten_tree(root, &mut flat);
-        let frame = flat
-            .iter()
-            .find(|frame| frame_token(frame).as_deref() == Some(reference.frame_key.as_str()))
-            .copied()
-            .ok_or_else(|| {
-                operation_error(
-                    ErrorCode::StaleReference,
-                    bound.target_id,
-                    "frame reference is no longer present",
-                )
-            })?;
-        let frame_url = frame_url(frame).ok_or_else(|| {
-            operation_error(
-                ErrorCode::PageObservationFailed,
-                bound.target_id,
-                "browser returned an invalid frame URL",
-            )
-        })?;
+        let (frame, frame_origin) =
+            find_frame_context(root, reference.frame_key.as_str(), root_origin.as_deref())
+                .ok_or_else(|| {
+                    operation_error(
+                        ErrorCode::StaleReference,
+                        bound.target_id,
+                        "frame reference is no longer present",
+                    )
+                })?;
         let frame_id = frame
             .pointer("/frame/id")
             .and_then(Value::as_str)
@@ -95,7 +83,7 @@ impl PageControl {
                 Some(_) => {}
             }
         }
-        if !std::ptr::eq(frame, root) && origin(&frame_url).as_deref() != root_origin.as_deref() {
+        if !std::ptr::eq(frame, root) && frame_origin.as_deref() != root_origin.as_deref() {
             return Err(operation_error(
                 ErrorCode::Unsupported,
                 bound.target_id,
@@ -139,7 +127,7 @@ impl PageControl {
                 "browser returned an invalid frame tree",
             )
         })?;
-        let root_origin = origin(&root_url);
+        let root_origin = inherited_origin(&root_url, None);
         let oopif_ids = oopif_frame_ids(transport).await;
         let mut frames = Vec::new();
         let mut omitted = 0_u32;
@@ -148,6 +136,7 @@ impl PageControl {
             bound,
             None,
             0,
+            root_origin.as_deref(),
             root_origin.as_deref(),
             oopif_ids.as_ref(),
             &mut frames,
@@ -246,6 +235,7 @@ fn collect_frames(
     parent: Option<PageFrameReference>,
     depth: u16,
     root_origin: Option<&str>,
+    parent_origin: Option<&str>,
     oopif_ids: Option<&HashSet<String>>,
     frames: &mut Vec<PageFrameStatus>,
     omitted: &mut u32,
@@ -275,7 +265,7 @@ fn collect_frames(
         frame_key: NonEmptyText::new(frame_key).expect("generated frame key"),
     };
     let raw_frame_id = tree.pointer("/frame/id").and_then(Value::as_str);
-    let frame_origin = origin(&url);
+    let frame_origin = inherited_origin(&url, parent_origin);
     let access = if depth == 0 {
         FrameAccess::MainDocument
     } else if oopif_ids.is_none() {
@@ -304,6 +294,7 @@ fn collect_frames(
                 Some(reference.clone()),
                 depth.saturating_add(1),
                 root_origin,
+                frame_origin.as_deref(),
                 oopif_ids,
                 frames,
                 omitted,
@@ -357,6 +348,17 @@ fn origin(raw: &str) -> Option<String> {
     Some(parsed.origin().ascii_serialization())
 }
 
+fn inherited_origin(raw: &str, parent: Option<&str>) -> Option<String> {
+    if matches!(
+        raw.trim().to_ascii_lowercase().as_str(),
+        "about:blank" | "about:srcdoc"
+    ) {
+        return parent.map(str::to_owned);
+    }
+    let value = origin(raw)?;
+    (value != "null").then_some(value)
+}
+
 fn count_tree(tree: &Value) -> usize {
     1 + tree
         .get("childFrames")
@@ -365,13 +367,20 @@ fn count_tree(tree: &Value) -> usize {
         .unwrap_or(0)
 }
 
-fn flatten_tree<'a>(tree: &'a Value, frames: &mut Vec<&'a Value>) {
-    frames.push(tree);
-    if let Some(children) = tree.get("childFrames").and_then(Value::as_array) {
-        for child in children {
-            flatten_tree(child, frames);
-        }
+fn find_frame_context<'a>(
+    tree: &'a Value,
+    token: &str,
+    parent_origin: Option<&str>,
+) -> Option<(&'a Value, Option<String>)> {
+    let url = frame_url(tree)?;
+    let effective_origin = inherited_origin(&url, parent_origin);
+    if frame_token(tree).as_deref() == Some(token) {
+        return Some((tree, effective_origin));
     }
+    tree.get("childFrames")?
+        .as_array()?
+        .iter()
+        .find_map(|child| find_frame_context(child, token, effective_origin.as_deref()))
 }
 
 fn parse_asset(value: &Value) -> Option<(f64, PageAssetMetadata)> {
@@ -431,6 +440,8 @@ mod tests {
 
     #[test]
     fn malformed_assets_are_omitted_and_urls_are_sanitized() {
+        assert!(RESOURCE_TIMING_EXPRESSION.contains("slice(0, 256)"));
+        assert!(RESOURCE_TIMING_EXPRESSION.contains("omitted"));
         let (_, asset) = parse_asset(&json!({
             "name":"https://example.test/app.js?token=secret#fragment",
             "initiatorType":"script","startTime":1.0,"duration":2.0,
@@ -463,7 +474,9 @@ mod tests {
             "childFrames":[
                 {"frame":{"id":"same","loaderId":"same-loader","url":"https://example.test/frame"}},
                 {"frame":{"id":"cross","loaderId":"cross-loader","url":"https://other.test/frame"}},
-                {"frame":{"id":"oopif","loaderId":"oopif-loader","url":"https://example.test/isolated"}}
+                {"frame":{"id":"oopif","loaderId":"oopif-loader","url":"https://example.test/isolated"}},
+                {"frame":{"id":"blank","loaderId":"blank-loader","url":"about:blank"}},
+                {"frame":{"id":"opaque","loaderId":"opaque-loader","url":"data:text/html,opaque"}}
             ]
         });
         let oopif = HashSet::from(["oopif".to_owned()]);
@@ -475,6 +488,7 @@ mod tests {
             None,
             0,
             Some("https://example.test"),
+            Some("https://example.test"),
             Some(&oopif),
             &mut frames,
             &mut omitted,
@@ -485,5 +499,7 @@ mod tests {
         assert_eq!(frames[1].access, FrameAccess::SameOriginSameProcess);
         assert_eq!(frames[2].access, FrameAccess::CrossOrigin);
         assert_eq!(frames[3].access, FrameAccess::OutOfProcess);
+        assert_eq!(frames[4].access, FrameAccess::SameOriginSameProcess);
+        assert_eq!(frames[5].access, FrameAccess::Indeterminate);
     }
 }
