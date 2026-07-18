@@ -1,7 +1,7 @@
 ---
 id: gate-tests-reconnect-mobile-page-scale
 kind: story
-stage: review
+stage: done
 tags: [testing, browser]
 parent: null
 depends_on: []
@@ -34,3 +34,14 @@ Assert reconnect command order includes `setDeviceMetricsOverride`, touch emulat
 - Simplification: reused the transactional reconnect staging boundary and existing controlled transport.
 - Discrepancies from design: the session tests live in `session/mod.rs`, not the scanner's suggested nonexistent `session/tests.rs`.
 - Adjacent issues parked: none.
+
+## Review (2026-07-17)
+
+**Verdict**: Approve
+
+**Blockers**: none
+**Important**: none
+**Nits**: none
+**Rejected**: none
+
+**Notes**: Bounded inline standalone-story review. Verified command order, capture fencing, target-local failure reduction, deterministic transport control, and focused test success.
