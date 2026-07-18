@@ -562,17 +562,24 @@ mod interactions {
         let transport = RecordingTransport::default();
         transport.push(
             "Page.getLayoutMetrics",
-            Ok(json!({"result":{"cssVisualViewport":{"clientWidth":800,"clientHeight":600}}})),
+            Ok(json!({"result":{
+                "cssVisualViewport":{"clientWidth":800,"clientHeight":600},
+                "cssLayoutViewport":{"clientWidth":800,"clientHeight":600}
+            }})),
         );
         transport.push(
             "Runtime.evaluate",
-            Ok(json!({"result":{"result":{"value":{"width":800,"height":600,"scale":2.0,"touchPoints":0}}}})),
+            Ok(json!({"result":{"result":{"value":{
+                "scale":2.0,"touchPoints":0,"viewportMetaPresent":true
+            }}}})),
         );
         let metrics = ViewportMetrics::new(800, 600, 2.0, false, false).unwrap();
         let effective = viewport::observe_effective_viewport(&transport, &bound(), Some(metrics))
             .await
             .unwrap();
         assert_eq!(effective.css_size.width, 800.0);
+        assert_eq!(effective.layout_css_size.width, 800.0);
+        assert!(effective.viewport_meta_present);
         assert_eq!(effective.device_scale_factor.get(), 2.0);
         assert!(!effective.mobile && !effective.touch && effective.override_active);
     }

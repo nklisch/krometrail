@@ -313,6 +313,9 @@ pub fn viewport_guidance(
     materialization: ViewportMaterialization,
     effective: &EffectiveViewport,
 ) -> Vec<ViewportGuidance> {
+    if materialization.metrics.is_none() {
+        return Vec::new();
+    }
     let visual = effective.css_size;
     let layout = effective.layout_css_size;
     let mismatched = dimension_mismatched(layout.width, visual.width)
@@ -552,6 +555,17 @@ mod tests {
         assert_eq!(
             viewport_guidance(mobile, &effective(149.9, false))[0].code,
             ViewportGuidanceCode::LayoutViewportMismatch
+        );
+    }
+
+    #[test]
+    fn clear_never_describes_divergent_browser_default_geometry_as_acknowledged_override() {
+        let browser_default = EffectiveViewport {
+            override_active: false,
+            ..effective(150.0, false)
+        };
+        assert!(
+            viewport_guidance(ViewportOverride::Clear.materialize(), &browser_default).is_empty()
         );
     }
 

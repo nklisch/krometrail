@@ -272,14 +272,13 @@ impl ScriptedCdp {
             "Runtime.evaluate"
                 if params.get("expression").and_then(Value::as_str)
                     == Some(
-                        "({width:innerWidth,height:innerHeight,scale:devicePixelRatio,touchPoints:navigator.maxTouchPoints})",
+                        "({scale:devicePixelRatio,touchPoints:navigator.maxTouchPoints,viewportMetaPresent:document.querySelector('meta[name=\"viewport\"]')!==null})",
                     ) =>
             {
                 json!({"result":{"result":{"type":"object","value":{
-                    "width":800.0,
-                    "height":600.0,
                     "scale":1.0,
-                    "touchPoints":0
+                    "touchPoints":0,
+                    "viewportMetaPresent":true
                 }}}})
             }
             "Runtime.evaluate"

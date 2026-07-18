@@ -1092,10 +1092,11 @@ mod tests {
             self.calls.lock().unwrap().push(method.to_owned());
             let value = match method {
                 "Page.getLayoutMetrics" => json!({
-                    "cssVisualViewport":{"clientWidth":390,"clientHeight":844}
+                    "cssVisualViewport":{"clientWidth":390,"clientHeight":844},
+                    "cssLayoutViewport":{"clientWidth":390,"clientHeight":844}
                 }),
                 "Runtime.evaluate" => json!({"result":{"value":{
-                    "width":390,"height":844,"scale":3.0,"touchPoints":1
+                    "scale":3.0,"touchPoints":1,"viewportMetaPresent":true
                 }}}),
                 _ => json!({}),
             };
