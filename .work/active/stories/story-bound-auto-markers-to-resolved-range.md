@@ -1,7 +1,7 @@
 ---
 id: story-bound-auto-markers-to-resolved-range
 kind: story
-stage: review
+stage: done
 tags: [bug, visual, agent-ux]
 parent: null
 depends_on: []
@@ -34,3 +34,14 @@ A bounded timeline observation inside the range that resolves to an interaction 
 - Automatic interaction, navigation, and generic candidates are admitted only when their final marker time lies inside the resolved range.
 - Caller and natural-anchor marker handling is unchanged.
 - Verified the failing regression and all marker/debug-bundle tests.
+
+## Review (2026-07-17)
+
+**Verdict**: Approve
+
+**Blockers**: none
+**Important**: none
+**Nits**: none
+**Rejected**: none
+
+**Notes**: Bounded inline standalone-story review at standard depth. Checked caller-marker preservation, natural-anchor handling, warning emission, candidate ordering/caps, and authoritative interaction dispatch times. No material current-cycle findings.
