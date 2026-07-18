@@ -23,7 +23,7 @@ The resulting stable surface remains local-first and evidence-oriented. Full obs
 
 ## Strategic decisions
 
-- **Compatibility**: make every 1.x contract extension additive; omitted new fields preserve current request and response meaning.
+- **Compatibility**: preserve explicit full/legacy response expansion and every authoritative evidence/resource contract, while intentionally changing omitted presentation preferences to the lower-cost compact agent default. Record the default change plainly and cover it at the generated-schema and stdio boundaries.
 - **Product position**: optimize Krometrail for trustworthy diagnosis and temporal evidence while adding the smallest browser-control conveniences that remove repeated agent friction; do not recreate all of Playwright.
 - **Response authority**: projections may omit inline presentation detail but never discard retained evidence or change the authoritative domain result.
 - **Browser-state boundary**: add privacy-bounded metadata and explicit user-directed control for clipboard, downloads, frames, popups, and page assets; do not broaden into unrestricted DevTools or response-body capture.
@@ -36,6 +36,7 @@ Consolidate response selection in the existing MCP projector, locator resolution
 ## Design decisions
 
 - **Projection depth**: presentation controls reduce the MCP payload first; they do not suppress the underlying action observation in this minor release because that evidence is part of the mutation contract.
+- **Ergonomic default**: omitted response preferences select compact structured detail, omit inline image bytes, and select concise status. Callers expand with explicit full/inline options; an explicit legacy projection remains available for clients that need the former presentation shape.
 - **Live image omission**: `omit` removes inline bytes; resource-only mode applies only where a canonical retained resource exists. Live post-action screenshots remain inline-or-omit until a durable live-image authority is independently justified.
 - **Semantic action model**: a semantic query returns exact references; existing actions continue consuming references. Automatic action-time locator reevaluation is deferred because it weakens explicit ambiguity and stale-reference behavior.
 - **Range-handle lifetime**: handles are opaque, process-local, immutable references to validated resolved ranges. They survive browser stop while retained evidence remains available, but not MCP restart or session deletion; every use revalidates retained availability.

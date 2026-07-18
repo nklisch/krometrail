@@ -112,8 +112,10 @@ Read-only inspection operations do not generate additional screenshots unless re
 MCP callers can request an additive response projection that independently selects inline screenshot,
 snapshot, page-state, and diagnostic detail. Projection changes presentation only: the action outcome,
 interaction anchor, warnings, retained evidence, and canonical resource identities remain authoritative and
-available. Omitting the projection retains the stable full 1.x response. Status requests likewise support a
-concise operational projection while preserving the complete status contract as an explicit detail level.
+available. Omitting the projection selects the lower-cost agent response: compact structured detail and no
+inline image bytes. Callers explicitly request full structured detail, inline images, or the legacy presentation
+when needed. Status requests likewise default to a concise operational projection while preserving the complete
+status contract as an explicit detail level.
 
 A batch of actions returns per-step status and timeline anchors. It returns a final live observation and can include per-step screenshots when requested.
 
