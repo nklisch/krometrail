@@ -485,6 +485,10 @@ fn encoded(identity: VideoEncoderIdentity, profile: VideoEncodingProfile) -> Vid
     VideoEncodedClip::new(identity, profile, hash, bytes).unwrap()
 }
 
+fn selection() -> VideoSelectionIdentity {
+    VideoSelectionIdentity::meaningful_v1([9; 32])
+}
+
 #[test]
 fn temporal_video_manifest_round_trip_preserves_exact_plan_and_closed_media_profile() {
     let plan = one_frame_plan();
@@ -495,6 +499,7 @@ fn temporal_video_manifest_round_trip_preserves_exact_plan_and_closed_media_prof
         ArtifactId::from_uuid(Uuid::from_u128(50)),
         &scope,
         plan,
+        Some(selection()),
         &encoded,
     )
     .unwrap();
@@ -529,6 +534,7 @@ fn manifest_deserialization_rejects_scope_media_and_length_contradictions() {
         ArtifactId::from_uuid(Uuid::from_u128(50)),
         &scope,
         plan,
+        Some(selection()),
         &encoded,
     )
     .unwrap();
@@ -567,6 +573,7 @@ fn manifest_binds_and_revalidates_exact_canonical_gap_contributors() {
         ArtifactId::from_uuid(Uuid::from_u128(50)),
         &scope,
         plan,
+        None,
         &encoded,
     )
     .unwrap();
@@ -624,17 +631,21 @@ fn generated_video_schemas_publish_strict_wire_shapes_and_hard_bounds() {
 fn canonical_cache_transcript_is_stable_sensitive_and_contains_no_opaque_process_data() {
     let plan = one_frame_plan();
     let profile = VideoEncodingProfile::new(plan.output(), 1024).unwrap();
-    let first = canonical_video_cache_parameters(&plan, &identity(7), &profile).unwrap();
-    let repeated = canonical_video_cache_parameters(&plan, &identity(7), &profile).unwrap();
+    let selection = selection();
+    let first =
+        canonical_video_cache_parameters(&plan, &identity(7), &profile, Some(&selection)).unwrap();
+    let repeated =
+        canonical_video_cache_parameters(&plan, &identity(7), &profile, Some(&selection)).unwrap();
     assert_eq!(first, repeated);
     assert_ne!(
         first,
-        canonical_video_cache_parameters(&plan, &identity(8), &profile).unwrap()
+        canonical_video_cache_parameters(&plan, &identity(8), &profile, Some(&selection)).unwrap()
     );
     let smaller_profile = VideoEncodingProfile::new(plan.output(), 512).unwrap();
     assert_ne!(
         first,
-        canonical_video_cache_parameters(&plan, &identity(7), &smaller_profile).unwrap()
+        canonical_video_cache_parameters(&plan, &identity(7), &smaller_profile, Some(&selection))
+            .unwrap()
     );
 
     let mut timing_value = serde_json::to_value(&plan).unwrap();
@@ -646,7 +657,7 @@ fn canonical_cache_transcript_is_stable_sensitive_and_contains_no_opaque_process
     let timing_plan: VideoPresentationPlan = serde_json::from_value(timing_value).unwrap();
     assert_ne!(
         first,
-        canonical_video_cache_parameters(&timing_plan, &identity(7), &profile).unwrap()
+        canonical_video_cache_parameters(&timing_plan, &identity(7), &profile, None).unwrap()
     );
 
     let replacement = frame_id(99);
@@ -658,13 +669,14 @@ fn canonical_cache_transcript_is_stable_sensitive_and_contains_no_opaque_process
     let source_plan: VideoPresentationPlan = serde_json::from_value(source_value).unwrap();
     assert_ne!(
         first,
-        canonical_video_cache_parameters(&source_plan, &identity(7), &profile).unwrap()
+        canonical_video_cache_parameters(&source_plan, &identity(7), &profile, Some(&selection),)
+            .unwrap()
     );
 
     let gap_plan = gap_plan();
     assert_ne!(
         first,
-        canonical_video_cache_parameters(&gap_plan, &identity(7), &profile).unwrap()
+        canonical_video_cache_parameters(&gap_plan, &identity(7), &profile, None).unwrap()
     );
 
     let small = PixelDimensions::new(2, 2).unwrap();
@@ -678,7 +690,13 @@ fn canonical_cache_transcript_is_stable_sensitive_and_contains_no_opaque_process
     let geometry_profile = VideoEncodingProfile::new(small_geometry, 1024).unwrap();
     assert_ne!(
         first,
-        canonical_video_cache_parameters(&geometry_plan, &identity(7), &geometry_profile).unwrap()
+        canonical_video_cache_parameters(
+            &geometry_plan,
+            &identity(7),
+            &geometry_profile,
+            Some(&selection),
+        )
+        .unwrap()
     );
 
     let json = std::str::from_utf8(&first).unwrap();
@@ -691,4 +709,107 @@ fn canonical_cache_transcript_is_stable_sensitive_and_contains_no_opaque_process
     assert!(!json.contains("/tmp"));
     assert!(!json.contains("source_pixels"));
     assert!(!json.contains("provider"));
+}
+
+#[test]
+fn retained_video_request_handle_and_publication_are_constructor_validated() {
+    let plan = one_frame_plan();
+    let scope = resolved(plan.input_frame_ids().to_vec(), 10);
+    let request = TemporalVideoGenerationRequest::new(
+        scope.clone(),
+        VideoPresentationPolicy::ModelOptimized,
+        crate::OutputLimitsRequest::new(4, 4, 1024).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(request.range(), &scope);
+    assert_eq!(request.policy(), VideoPresentationPolicy::ModelOptimized);
+
+    let profile = VideoEncodingProfile::new(plan.output(), 1024).unwrap();
+    let encoded = encoded(identity(7), profile);
+    let manifest = TemporalVideoManifest::new(
+        ArtifactId::from_uuid(Uuid::from_u128(50)),
+        &scope,
+        plan,
+        Some(selection()),
+        &encoded,
+    )
+    .unwrap();
+    let digest = crate::Sha256Digest::from_bytes(*manifest.output_hash().as_bytes());
+    let handle = VideoArtifactEvidenceHandle::new(
+        manifest.artifact_id(),
+        crate::EvidenceScope::from_range(&scope).unwrap(),
+        crate::NonEmptyText::new("video/mp4").unwrap(),
+        digest,
+        manifest.encoded_byte_len(),
+        manifest.clone(),
+    )
+    .unwrap();
+    let read = VideoArtifactRead::new(handle.clone(), encoded.owned_encoded_bytes()).unwrap();
+    assert_eq!(read.encoded_bytes(), encoded.encoded_bytes());
+    assert_eq!(
+        serde_json::from_value::<VideoArtifactEvidenceHandle>(
+            serde_json::to_value(&handle).unwrap()
+        )
+        .unwrap(),
+        handle
+    );
+
+    let sources = manifest
+        .plan()
+        .input_frame_ids()
+        .iter()
+        .map(|frame_id| crate::ArtifactSourceFingerprint {
+            frame_id: *frame_id,
+            encoded_sha256: [3; 32],
+        })
+        .collect();
+    let publication = crate::VideoArtifactPublication::new(
+        manifest.session_id(),
+        manifest.target_id(),
+        sources,
+        crate::ArtifactCacheMetadata {
+            cache_key: crate::ArtifactCacheKey::from_bytes([1; 32]),
+            source_fingerprint: [2; 32],
+            parameter_hash: [3; 32],
+            visual_epoch_hash: [4; 32],
+            cache_schema_version: 1,
+            adapter_version: crate::NonEmptyText::new("adapter-v1").unwrap(),
+            generator_name: crate::NonEmptyText::new(crate::TEMPORAL_VIDEO_GENERATOR_NAME).unwrap(),
+            generator_version: crate::NonEmptyText::new(crate::TEMPORAL_VIDEO_GENERATOR_VERSION)
+                .unwrap(),
+        },
+        manifest,
+        encoded.owned_encoded_bytes(),
+    )
+    .unwrap();
+    assert_eq!(publication.encoded_bytes.as_ref(), encoded.encoded_bytes());
+}
+
+#[test]
+fn selector_policy_alignment_and_request_limits_fail_explicitly() {
+    let plan = one_frame_plan();
+    let scope = resolved(plan.input_frame_ids().to_vec(), 10);
+    let profile = VideoEncodingProfile::new(plan.output(), 1024).unwrap();
+    let encoded = encoded(identity(7), profile);
+    assert!(
+        TemporalVideoManifest::new(
+            ArtifactId::from_uuid(Uuid::from_u128(50)),
+            &scope,
+            plan,
+            None,
+            &encoded,
+        )
+        .is_err()
+    );
+    assert_eq!(
+        TemporalVideoGenerationRequest::new(
+            scope,
+            VideoPresentationPolicy::RealTime,
+            crate::OutputLimitsRequest::new(1, 2, 1024).unwrap(),
+        )
+        .unwrap_err()
+        .code,
+        ErrorCode::ResourceLimitExceeded
+    );
+    assert!(VideoSelectionIdentity::new("/private/selector", "v1", [0; 32]).is_err());
 }

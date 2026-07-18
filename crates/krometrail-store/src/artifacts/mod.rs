@@ -11,13 +11,13 @@ use std::{
 
 use krometrail_core::{
     ArtifactCacheKey, ArtifactManifest, ArtifactSourceFingerprint, ErrorCode, KrometrailError,
-    NonEmptyText, SessionId, StoredArtifact,
+    NonEmptyText, SessionId, StoredArtifact, StoredVideoArtifact, TemporalVideoManifest,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, Notify};
 
 use crate::{
-    index::artifacts::{ArtifactRow, ArtifactSourceRow, ArtifactState},
+    index::artifacts::{ArtifactRow, ArtifactSourceRow, ArtifactState, RetainedArtifactKind},
     persistence_error,
 };
 
@@ -162,17 +162,18 @@ impl CacheLocks {
     }
 }
 
+pub(crate) enum RetainedStoredArtifact {
+    Image(Box<StoredArtifact>),
+    Video(Box<StoredVideoArtifact>),
+}
+
 pub(crate) fn validate_stored_artifact(
     row: &ArtifactRow,
     sources: &[ArtifactSourceRow],
     bytes: Arc<[u8]>,
     expected_sources: Option<&[ArtifactSourceFingerprint]>,
-) -> krometrail_core::Result<StoredArtifact> {
-    if row.state != ArtifactState::Ready
-        || row.media_type.as_str() != "image/png"
-        || !bytes.starts_with(b"\x89PNG\r\n\x1a\n")
-        || u64::try_from(bytes.len()).ok() != Some(row.byte_len)
-    {
+) -> krometrail_core::Result<RetainedStoredArtifact> {
+    if row.state != ArtifactState::Ready || u64::try_from(bytes.len()).ok() != Some(row.byte_len) {
         return Err(corrupt_error());
     }
     let manifest_hash: [u8; 32] = Sha256::digest(row.manifest_json.as_bytes()).into();
@@ -180,24 +181,10 @@ pub(crate) fn validate_stored_artifact(
     if manifest_hash != row.manifest_hash || output_hash != row.output_hash {
         return Err(corrupt_error());
     }
-    let manifest: ArtifactManifest =
-        serde_json::from_str(&row.manifest_json).map_err(|_| corrupt_error())?;
-    if manifest.artifact_id() != &row.artifact_id
-        || manifest.artifact_kind() != row.kind
-        || manifest.range().start().as_nanos() != row.start_time_nanos
-        || manifest.range().end().as_nanos() != row.end_time_nanos
-        || manifest.output_hash().as_bytes() != &row.output_hash
-        || manifest.algorithm().name() != row.cache.generator_name.as_str()
-        || manifest.algorithm().version() != row.cache.generator_version.as_str()
-        || sources
-            .iter()
-            .enumerate()
-            .any(|(position, source)| source.source_position != position)
-        || sources
-            .iter()
-            .map(|source| source.frame_id)
-            .collect::<Vec<_>>()
-            != manifest.source_frame_ids()
+    if sources
+        .iter()
+        .enumerate()
+        .any(|(position, source)| source.source_position != position)
     {
         return Err(corrupt_error());
     }
@@ -211,12 +198,66 @@ pub(crate) fn validate_stored_artifact(
             return Err(corrupt_error());
         }
     }
-    Ok(StoredArtifact {
-        cache: row.cache.clone(),
-        manifest,
-        media_type: row.media_type.clone(),
-        encoded_bytes: bytes,
-    })
+    match row.kind {
+        RetainedArtifactKind::Image(kind) => {
+            if row.media_type.as_str() != "image/png" || !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+                return Err(corrupt_error());
+            }
+            let manifest: ArtifactManifest =
+                serde_json::from_str(&row.manifest_json).map_err(|_| corrupt_error())?;
+            if manifest.artifact_id() != &row.artifact_id
+                || manifest.artifact_kind() != kind
+                || manifest.range().start().as_nanos() != row.start_time_nanos
+                || manifest.range().end().as_nanos() != row.end_time_nanos
+                || manifest.output_hash().as_bytes() != &row.output_hash
+                || manifest.algorithm().name() != row.cache.generator_name.as_str()
+                || manifest.algorithm().version() != row.cache.generator_version.as_str()
+                || sources
+                    .iter()
+                    .map(|source| source.frame_id)
+                    .collect::<Vec<_>>()
+                    != manifest.source_frame_ids()
+            {
+                return Err(corrupt_error());
+            }
+            Ok(RetainedStoredArtifact::Image(Box::new(StoredArtifact {
+                cache: row.cache.clone(),
+                manifest,
+                media_type: row.media_type.clone(),
+                encoded_bytes: bytes,
+            })))
+        }
+        RetainedArtifactKind::TemporalVideo => {
+            if row.media_type.as_str() != "video/mp4" {
+                return Err(corrupt_error());
+            }
+            let manifest: TemporalVideoManifest =
+                serde_json::from_str(&row.manifest_json).map_err(|_| corrupt_error())?;
+            if manifest.artifact_id() != row.artifact_id
+                || manifest.resolved_range().start().as_nanos() != row.start_time_nanos
+                || manifest.resolved_range().end().as_nanos() != row.end_time_nanos
+                || manifest.output_hash().as_bytes() != &row.output_hash
+                || row.cache.generator_name.as_str()
+                    != krometrail_core::TEMPORAL_VIDEO_GENERATOR_NAME
+                || row.cache.generator_version.as_str()
+                    != krometrail_core::TEMPORAL_VIDEO_GENERATOR_VERSION
+                || sources
+                    .iter()
+                    .map(|source| source.frame_id)
+                    .collect::<Vec<_>>()
+                    != manifest.plan().input_frame_ids()
+            {
+                return Err(corrupt_error());
+            }
+            Ok(RetainedStoredArtifact::Video(Box::new(
+                StoredVideoArtifact {
+                    cache: row.cache.clone(),
+                    manifest,
+                    encoded_bytes: bytes,
+                },
+            )))
+        }
+    }
 }
 
 pub(crate) fn source_fingerprints(sources: &[ArtifactSourceRow]) -> Vec<ArtifactSourceFingerprint> {

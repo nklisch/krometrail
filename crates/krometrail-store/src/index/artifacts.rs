@@ -1,6 +1,7 @@
 use krometrail_core::{
     ArtifactCacheKey, ArtifactCacheMetadata, ArtifactId, ArtifactPublication,
     ArtifactSourceFingerprint, FrameId, NonEmptyText, SessionId, TargetId,
+    VideoArtifactPublication,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
@@ -31,7 +32,7 @@ pub(crate) struct ArtifactRow {
     pub session_id: SessionId,
     pub target_id: TargetId,
     pub state: ArtifactState,
-    pub kind: temporal_vision::ArtifactKind,
+    pub kind: RetainedArtifactKind,
     pub start_time_nanos: u64,
     pub end_time_nanos: u64,
     pub manifest_json: String,
@@ -41,6 +42,35 @@ pub(crate) struct ArtifactRow {
     pub relative_path: String,
     pub byte_len: u64,
     pub cache: ArtifactCacheMetadata,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RetainedArtifactKind {
+    Image(temporal_vision::ArtifactKind),
+    TemporalVideo,
+}
+
+impl RetainedArtifactKind {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Image(kind) => kind.as_str(),
+            Self::TemporalVideo => "temporal_video",
+        }
+    }
+
+    pub(crate) fn media_type(self) -> &'static str {
+        match self {
+            Self::Image(_) => "image/png",
+            Self::TemporalVideo => "video/mp4",
+        }
+    }
+
+    pub(crate) fn extension(self) -> &'static str {
+        match self {
+            Self::Image(_) => "png",
+            Self::TemporalVideo => "mp4",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -63,9 +93,50 @@ impl SqliteIndex {
         let artifact_id = *publication.manifest.artifact_id();
         let manifest_json = serde_json::to_string(&publication.manifest)
             .map_err(|_| persistence_error("could not serialize artifact provenance"))?;
-        let manifest_hash: [u8; 32] = Sha256::digest(manifest_json.as_bytes()).into();
-        let relative_path = format!("{artifact_id}.png");
-        let byte_len = u64::try_from(publication.encoded_bytes.len())
+        self.stage_artifact_parts(StageArtifactParts {
+            artifact_id,
+            session_id: publication.session_id,
+            target_id: publication.target_id,
+            kind: RetainedArtifactKind::Image(publication.manifest.artifact_kind()),
+            start_time_nanos: publication.manifest.range().start().as_nanos(),
+            end_time_nanos: publication.manifest.range().end().as_nanos(),
+            manifest_json,
+            output_hash: *publication.manifest.output_hash().as_bytes(),
+            sources: &publication.sources,
+            cache: &publication.cache,
+            byte_len: publication.encoded_bytes.len(),
+        })
+    }
+
+    pub(crate) fn stage_video_artifact(
+        &self,
+        publication: &VideoArtifactPublication,
+    ) -> krometrail_core::Result<StageArtifact> {
+        let artifact_id = publication.manifest.artifact_id();
+        let manifest_json = serde_json::to_string(&publication.manifest)
+            .map_err(|_| persistence_error("could not serialize video provenance"))?;
+        self.stage_artifact_parts(StageArtifactParts {
+            artifact_id,
+            session_id: publication.session_id,
+            target_id: publication.target_id,
+            kind: RetainedArtifactKind::TemporalVideo,
+            start_time_nanos: publication.manifest.resolved_range().start().as_nanos(),
+            end_time_nanos: publication.manifest.resolved_range().end().as_nanos(),
+            manifest_json,
+            output_hash: *publication.manifest.output_hash().as_bytes(),
+            sources: &publication.sources,
+            cache: &publication.cache,
+            byte_len: publication.encoded_bytes.len(),
+        })
+    }
+
+    fn stage_artifact_parts(
+        &self,
+        parts: StageArtifactParts<'_>,
+    ) -> krometrail_core::Result<StageArtifact> {
+        let manifest_hash: [u8; 32] = Sha256::digest(parts.manifest_json.as_bytes()).into();
+        let relative_path = format!("{}.{}", parts.artifact_id, parts.kind.extension());
+        let byte_len = u64::try_from(parts.byte_len)
             .map_err(|_| persistence_error("artifact byte length exceeds storage limits"))?;
 
         let mut connection = self.connection()?;
@@ -73,14 +144,19 @@ impl SqliteIndex {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|_| persistence_error("could not begin artifact staging"))?;
         if let Some(existing) =
-            artifact_by_cache_connection(&transaction, publication.cache.cache_key, false)?
+            artifact_by_cache_connection(&transaction, parts.cache.cache_key, false)?
         {
             transaction
                 .commit()
                 .map_err(|_| persistence_error("could not close artifact cache lookup"))?;
             return Ok(StageArtifact::Existing(existing));
         }
-        validate_source_rows(&transaction, publication)?;
+        validate_source_ids(
+            &transaction,
+            parts.session_id,
+            parts.target_id,
+            parts.sources,
+        )?;
         transaction.execute(
             "INSERT INTO artifacts(
                 artifact_id,session_id,target_id,state,kind,start_time_be,end_time_be,
@@ -89,35 +165,35 @@ impl SqliteIndex {
                 cache_schema_version,adapter_version,generator_name,generator_version
              ) VALUES (?1,?2,?3,'staging',?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
             params![
-                codec::id(artifact_id.as_uuid()).to_vec(),
-                codec::id(publication.session_id.as_uuid()).to_vec(),
-                codec::id(publication.target_id.as_uuid()).to_vec(),
-                publication.manifest.artifact_kind().as_str(),
-                codec::u64_blob(publication.manifest.range().start().as_nanos()).to_vec(),
-                codec::u64_blob(publication.manifest.range().end().as_nanos()).to_vec(),
-                &manifest_json,
+                codec::id(parts.artifact_id.as_uuid()).to_vec(),
+                codec::id(parts.session_id.as_uuid()).to_vec(),
+                codec::id(parts.target_id.as_uuid()).to_vec(),
+                parts.kind.as_str(),
+                codec::u64_blob(parts.start_time_nanos).to_vec(),
+                codec::u64_blob(parts.end_time_nanos).to_vec(),
+                &parts.manifest_json,
                 manifest_hash.to_vec(),
-                publication.media_type.as_str(),
-                publication.manifest.output_hash().as_bytes().to_vec(),
+                parts.kind.media_type(),
+                parts.output_hash.to_vec(),
                 &relative_path,
                 codec::u64_blob(byte_len).to_vec(),
-                publication.cache.cache_key.as_bytes().to_vec(),
-                publication.cache.source_fingerprint.to_vec(),
-                publication.cache.parameter_hash.to_vec(),
-                publication.cache.visual_epoch_hash.to_vec(),
-                i64::from(publication.cache.cache_schema_version),
-                publication.cache.adapter_version.as_str(),
-                publication.cache.generator_name.as_str(),
-                publication.cache.generator_version.as_str(),
+                parts.cache.cache_key.as_bytes().to_vec(),
+                parts.cache.source_fingerprint.to_vec(),
+                parts.cache.parameter_hash.to_vec(),
+                parts.cache.visual_epoch_hash.to_vec(),
+                i64::from(parts.cache.cache_schema_version),
+                parts.cache.adapter_version.as_str(),
+                parts.cache.generator_name.as_str(),
+                parts.cache.generator_version.as_str(),
             ],
         ).map_err(|_| persistence_error("could not create artifact staging metadata"))?;
-        for (position, source) in publication.sources.iter().enumerate() {
+        for (position, source) in parts.sources.iter().enumerate() {
             transaction
                 .execute(
                     "INSERT INTO artifact_frames(artifact_id,source_position,frame_id,encoded_hash)
                  VALUES (?1,?2,?3,?4)",
                     params![
-                        codec::id(artifact_id.as_uuid()).to_vec(),
+                        codec::id(parts.artifact_id.as_uuid()).to_vec(),
                         i64::try_from(position)
                             .map_err(|_| persistence_error("too many artifact source frames"))?,
                         codec::id(source.frame_id.as_uuid()).to_vec(),
@@ -131,8 +207,8 @@ impl SqliteIndex {
                 "INSERT INTO usage(class,object_key,session_id,byte_len_be)
              VALUES ('artifact',?1,?2,?3)",
                 params![
-                    codec::id(artifact_id.as_uuid()).to_vec(),
-                    codec::id(publication.session_id.as_uuid()).to_vec(),
+                    codec::id(parts.artifact_id.as_uuid()).to_vec(),
+                    codec::id(parts.session_id.as_uuid()).to_vec(),
                     codec::u64_blob(byte_len).to_vec(),
                 ],
             )
@@ -142,7 +218,7 @@ impl SqliteIndex {
             .map_err(|_| persistence_error("could not commit artifact staging"))?;
         drop(connection);
         let row = self
-            .artifact_row(artifact_id)?
+            .artifact_row(parts.artifact_id)?
             .ok_or_else(|| persistence_error("staged artifact metadata disappeared"))?;
         Ok(StageArtifact::Staged(row))
     }
@@ -222,16 +298,18 @@ impl SqliteIndex {
     }
 }
 
-fn validate_source_rows(
-    transaction: &Transaction<'_>,
-    publication: &ArtifactPublication,
-) -> krometrail_core::Result<()> {
-    validate_source_ids(
-        transaction,
-        publication.session_id,
-        publication.target_id,
-        &publication.sources,
-    )
+struct StageArtifactParts<'a> {
+    artifact_id: ArtifactId,
+    session_id: SessionId,
+    target_id: TargetId,
+    kind: RetainedArtifactKind,
+    start_time_nanos: u64,
+    end_time_nanos: u64,
+    manifest_json: String,
+    output_hash: [u8; 32],
+    sources: &'a [ArtifactSourceFingerprint],
+    cache: &'a ArtifactCacheMetadata,
+    byte_len: usize,
 }
 
 fn validate_source_ids(
@@ -433,16 +511,25 @@ fn raw_artifact(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawArtifact> {
 
 fn decode_artifact(raw: RawArtifact) -> krometrail_core::Result<ArtifactRow> {
     super::retention::validate_file_name(&raw.relative_path)?;
+    let artifact_id = ArtifactId::from_uuid(codec::decode_id(&raw.id)?);
+    let kind = decode_kind(&raw.kind)?;
+    if raw.media != kind.media_type()
+        || raw.relative_path != format!("{artifact_id}.{}", kind.extension())
+    {
+        return Err(persistence_error(
+            "stored artifact kind, media type, and relative path disagree",
+        ));
+    }
     let cache_version = u32::try_from(raw.cache_version)
         .ok()
         .filter(|version| *version > 0)
         .ok_or_else(|| persistence_error("stored artifact cache version is malformed"))?;
     Ok(ArtifactRow {
-        artifact_id: ArtifactId::from_uuid(codec::decode_id(&raw.id)?),
+        artifact_id,
         session_id: SessionId::from_uuid(codec::decode_id(&raw.session)?),
         target_id: TargetId::from_uuid(codec::decode_id(&raw.target)?),
         state: ArtifactState::decode(&raw.state)?,
-        kind: decode_kind(&raw.kind)?,
+        kind,
         start_time_nanos: codec::decode_u64(&raw.start)?,
         end_time_nanos: codec::decode_u64(&raw.end)?,
         manifest_json: raw.manifest,
@@ -474,11 +561,15 @@ fn decode_hash(value: &[u8]) -> krometrail_core::Result<[u8; 32]> {
         .map_err(|_| persistence_error("stored artifact hash is malformed"))
 }
 
-fn decode_kind(value: &str) -> krometrail_core::Result<temporal_vision::ArtifactKind> {
+fn decode_kind(value: &str) -> krometrail_core::Result<RetainedArtifactKind> {
+    if value == "temporal_video" {
+        return Ok(RetainedArtifactKind::TemporalVideo);
+    }
     temporal_vision::ArtifactKind::ALL
         .iter()
         .copied()
         .find(|kind| kind.as_str() == value)
+        .map(RetainedArtifactKind::Image)
         .ok_or_else(|| persistence_error("stored artifact kind is malformed"))
 }
 

@@ -5,11 +5,13 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::{
     ArtifactId, ErrorCode, GapId, KrometrailError, NonEmptyText, ResolvedRange, Result, SessionId,
     SessionRange, TargetId, VideoEncodedClip, VideoEncoderIdentity, VideoEncodingProfile,
-    VideoPresentationPlan, VideoSegmentSource,
+    VideoPresentationPlan, VideoPresentationPolicy, VideoSegmentSource,
     validation::{delegate_json_schema, deserialize_validated},
 };
 
 pub const TEMPORAL_VIDEO_MANIFEST_SCHEMA_VERSION: u32 = 1;
+pub const VIDEO_MEANINGFUL_SELECTOR_NAME: &str = "temporal-video-meaningful-selection";
+pub const VIDEO_MEANINGFUL_SELECTOR_VERSION: &str = "v1";
 const VIDEO_MEDIA_TYPE: &str = "video/mp4";
 const VIDEO_CODEC: &str = "h264";
 const VIDEO_PIXEL_FORMAT: &str = "yuv420p";
@@ -59,6 +61,76 @@ impl<'de> Deserialize<'de> for VideoGapEvidence {
 
 delegate_json_schema!(VideoGapEvidence => VideoGapEvidenceWire);
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct VideoSelectionIdentity {
+    name: NonEmptyText,
+    version: NonEmptyText,
+    #[serde(serialize_with = "serialize_sha256")]
+    parameters_sha256: [u8; 32],
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct VideoSelectionIdentityWire {
+    #[schemars(length(min = 1, max = 256))]
+    name: String,
+    #[schemars(length(min = 1, max = 256))]
+    version: String,
+    #[schemars(length(min = 64, max = 64), regex(pattern = "^[0-9a-f]{64}$"))]
+    parameters_sha256: String,
+}
+
+impl VideoSelectionIdentity {
+    pub fn new(
+        name: impl Into<String>,
+        version: impl Into<String>,
+        parameters_sha256: [u8; 32],
+    ) -> Result<Self> {
+        let name = bounded_label(name.into(), "selector name")?;
+        let version = bounded_label(version.into(), "selector version")?;
+        Ok(Self {
+            name,
+            version,
+            parameters_sha256,
+        })
+    }
+
+    pub fn meaningful_v1(parameters_sha256: [u8; 32]) -> Self {
+        Self::new(
+            VIDEO_MEANINGFUL_SELECTOR_NAME,
+            VIDEO_MEANINGFUL_SELECTOR_VERSION,
+            parameters_sha256,
+        )
+        .expect("static video selector identity is valid")
+    }
+
+    pub fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
+    pub fn version(&self) -> &str {
+        self.version.as_str()
+    }
+
+    pub const fn parameters_sha256(&self) -> &[u8; 32] {
+        &self.parameters_sha256
+    }
+}
+
+impl<'de> Deserialize<'de> for VideoSelectionIdentity {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        let wire = VideoSelectionIdentityWire::deserialize(deserializer)?;
+        Self::new(
+            wire.name,
+            wire.version,
+            decode_sha256(&wire.parameters_sha256).map_err(serde::de::Error::custom)?,
+        )
+        .map_err(serde::de::Error::custom)
+    }
+}
+
+delegate_json_schema!(VideoSelectionIdentity => VideoSelectionIdentityWire);
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct TemporalVideoManifest {
     schema_version: u32,
@@ -68,6 +140,7 @@ pub struct TemporalVideoManifest {
     requested_range: SessionRange,
     resolved_range: SessionRange,
     gap_evidence: Vec<VideoGapEvidence>,
+    selection: Option<VideoSelectionIdentity>,
     plan: VideoPresentationPlan,
     encoder: VideoEncoderIdentity,
     profile: VideoEncodingProfile,
@@ -91,6 +164,7 @@ struct TemporalVideoManifestWire {
     requested_range: SessionRange,
     resolved_range: SessionRange,
     gap_evidence: Vec<VideoGapEvidence>,
+    selection: Option<VideoSelectionIdentity>,
     plan: VideoPresentationPlan,
     encoder: VideoEncoderIdentity,
     profile: VideoEncodingProfile,
@@ -113,6 +187,7 @@ impl TemporalVideoManifest {
         artifact_id: ArtifactId,
         scope: &ResolvedRange,
         plan: VideoPresentationPlan,
+        selection: Option<VideoSelectionIdentity>,
         encoded: &VideoEncodedClip,
     ) -> Result<Self> {
         scope.validate()?;
@@ -159,6 +234,7 @@ impl TemporalVideoManifest {
             requested_range: scope.requested_range,
             resolved_range: scope.resolved_range,
             gap_evidence,
+            selection,
             plan,
             encoder: encoded.identity().clone(),
             profile: encoded.profile(),
@@ -201,6 +277,7 @@ impl TemporalVideoManifest {
         }
         validate_gap_evidence(&parts.gap_evidence, parts.plan.presented_source_range())?;
         validate_plan_gaps(&parts.gap_evidence, &parts.plan)?;
+        validate_selection(parts.selection.as_ref(), &parts.plan)?;
         if parts.media_type.as_str() != VIDEO_MEDIA_TYPE
             || parts.codec.as_str() != VIDEO_CODEC
             || parts.pixel_format.as_str() != VIDEO_PIXEL_FORMAT
@@ -230,6 +307,7 @@ impl TemporalVideoManifest {
             requested_range: parts.requested_range,
             resolved_range: parts.resolved_range,
             gap_evidence: parts.gap_evidence,
+            selection: parts.selection,
             plan: parts.plan,
             encoder: parts.encoder,
             profile: parts.profile,
@@ -268,6 +346,10 @@ impl TemporalVideoManifest {
 
     pub fn gap_evidence(&self) -> &[VideoGapEvidence] {
         &self.gap_evidence
+    }
+
+    pub const fn selection(&self) -> Option<&VideoSelectionIdentity> {
+        self.selection.as_ref()
     }
 
     pub const fn plan(&self) -> &VideoPresentationPlan {
@@ -320,12 +402,14 @@ pub fn canonical_video_cache_parameters(
     plan: &VideoPresentationPlan,
     identity: &VideoEncoderIdentity,
     profile: &VideoEncodingProfile,
+    selection: Option<&VideoSelectionIdentity>,
 ) -> Result<Arc<[u8]>> {
     if profile.geometry() != plan.output() {
         return Err(invalid_video(
             "video cache profile must exactly match the presentation plan",
         ));
     }
+    validate_selection(selection, plan)?;
     #[derive(Serialize)]
     struct Limits {
         max_source_duration_nanos: u64,
@@ -342,6 +426,7 @@ pub fn canonical_video_cache_parameters(
     struct Transcript<'a> {
         schema_version: u32,
         plan: &'a VideoPresentationPlan,
+        selection: Option<&'a VideoSelectionIdentity>,
         encoder: &'a VideoEncoderIdentity,
         profile: &'a VideoEncodingProfile,
         media_type: &'static str,
@@ -353,6 +438,7 @@ pub fn canonical_video_cache_parameters(
     let transcript = Transcript {
         schema_version: TEMPORAL_VIDEO_MANIFEST_SCHEMA_VERSION,
         plan,
+        selection,
         encoder: identity,
         profile,
         media_type: VIDEO_MEDIA_TYPE,
@@ -385,6 +471,7 @@ struct TemporalVideoManifestParts {
     requested_range: SessionRange,
     resolved_range: SessionRange,
     gap_evidence: Vec<VideoGapEvidence>,
+    selection: Option<VideoSelectionIdentity>,
     plan: VideoPresentationPlan,
     encoder: VideoEncoderIdentity,
     profile: VideoEncodingProfile,
@@ -405,6 +492,7 @@ fn deserialize_validated_parts(wire: TemporalVideoManifestWire) -> Result<Tempor
         requested_range: wire.requested_range,
         resolved_range: wire.resolved_range,
         gap_evidence: wire.gap_evidence,
+        selection: wire.selection,
         plan: wire.plan,
         encoder: wire.encoder,
         profile: wire.profile,
@@ -525,6 +613,74 @@ fn validate_plan_gaps(evidence: &[VideoGapEvidence], plan: &VideoPresentationPla
         ));
     }
     Ok(())
+}
+
+fn validate_selection(
+    selection: Option<&VideoSelectionIdentity>,
+    plan: &VideoPresentationPlan,
+) -> Result<()> {
+    match (
+        plan.policy(),
+        selection,
+        plan.meaningful_frame_ids().is_empty(),
+    ) {
+        (VideoPresentationPolicy::RealTime, None, true)
+        | (VideoPresentationPolicy::ModelOptimized, Some(_), false) => Ok(()),
+        _ => Err(invalid_video(
+            "real-time video forbids selector provenance and model-optimized video requires selector provenance and meaningful frame ids",
+        )),
+    }
+}
+
+fn bounded_label(value: String, label: &'static str) -> Result<NonEmptyText> {
+    if value.len() > crate::MAX_VIDEO_ENCODER_LABEL_BYTES
+        || value.bytes().any(|byte| byte.is_ascii_control())
+        || value.contains(['/', '\\'])
+    {
+        return Err(invalid_video(format!(
+            "temporal video {label} must be bounded and path-free"
+        )));
+    }
+    NonEmptyText::new(value)
+        .map_err(|_| invalid_video(format!("temporal video {label} must be non-empty")))
+}
+
+fn serialize_sha256<S: Serializer>(
+    value: &[u8; 32],
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    serializer.collect_str(&hex_sha256(value))
+}
+
+fn hex_sha256(value: &[u8; 32]) -> String {
+    use std::fmt::Write as _;
+    let mut output = String::with_capacity(64);
+    for byte in value {
+        write!(&mut output, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    output
+}
+
+fn decode_sha256(value: &str) -> Result<[u8; 32]> {
+    if value.len() != 64
+        || value
+            .bytes()
+            .any(|byte| !byte.is_ascii_digit() && !(b'a'..=b'f').contains(&byte))
+    {
+        return Err(invalid_video(
+            "temporal video selector hash must be lowercase SHA-256",
+        ));
+    }
+    let mut bytes = [0_u8; 32];
+    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+        let nibble = |byte| match byte {
+            b'0'..=b'9' => byte - b'0',
+            b'a'..=b'f' => byte - b'a' + 10,
+            _ => unreachable!("validated lowercase hexadecimal"),
+        };
+        bytes[index] = (nibble(pair[0]) << 4) | nibble(pair[1]);
+    }
+    Ok(bytes)
 }
 
 fn serialize_output_hash<S: Serializer>(

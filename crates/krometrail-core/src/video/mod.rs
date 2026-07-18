@@ -1,10 +1,16 @@
 //! Deterministic, infrastructure-free temporal-video contracts.
 
+mod generation;
 mod manifest;
 mod plan;
 
+pub use generation::{
+    TemporalVideoGeneration, TemporalVideoGenerationClip, TemporalVideoGenerationRequest,
+    TemporalVideoGenerationResult, VideoArtifactEvidenceHandle, VideoArtifactRead,
+};
 pub use manifest::{
-    TEMPORAL_VIDEO_MANIFEST_SCHEMA_VERSION, TemporalVideoManifest, VideoGapEvidence,
+    TEMPORAL_VIDEO_MANIFEST_SCHEMA_VERSION, TemporalVideoManifest, VIDEO_MEANINGFUL_SELECTOR_NAME,
+    VIDEO_MEANINGFUL_SELECTOR_VERSION, VideoGapEvidence, VideoSelectionIdentity,
     canonical_video_cache_parameters,
 };
 pub use plan::{

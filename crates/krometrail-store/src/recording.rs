@@ -20,9 +20,11 @@ use krometrail_core::{
     RetentionStore, RetrieveArtifactRequest, RetrieveSourceFrameRequest, RetryAdvice,
     SessionDeletion, SessionId, SessionRange, SessionTime, Sha256Digest, SourceFrameBatch,
     SourceFrameHandle, SourceFrameList, SourceFrameRead, SourceFrameSelection, SourceFramesRequest,
-    StorageUsage, StoredArtifact, TargetId, TemporalContext, TemporalContextQuery,
-    TemporalContextRequest, TemporalContextService, TemporalQuery, TemporalQueryRequest,
-    TemporalQueryService, TemporalRangeResolver, TimelineObservation, TimelineStore,
+    StorageUsage, StoredArtifact, StoredVideoArtifact, TargetId, TemporalContext,
+    TemporalContextQuery, TemporalContextRequest, TemporalContextService, TemporalQuery,
+    TemporalQueryRequest, TemporalQueryService, TemporalRangeResolver, TimelineObservation,
+    TimelineStore, VideoArtifactEvidenceHandle, VideoArtifactLookup, VideoArtifactPublication,
+    VideoArtifactPublish, VideoArtifactRead, VideoArtifactReadLookup,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, watch};
@@ -30,11 +32,13 @@ use tokio::sync::{Mutex, watch};
 use crate::{
     SegmentRegistration, SegmentWriter, SqliteIndex,
     artifacts::{
-        CacheLocks, PublicationRegistry, files::ArtifactFiles, recovery as artifact_recovery,
-        validate_stored_artifact,
+        CacheLocks, PublicationRegistry, RetainedStoredArtifact, files::ArtifactFiles,
+        recovery as artifact_recovery, validate_stored_artifact,
     },
     index::{
-        artifacts::{ArtifactRow, ArtifactSourceRow, ArtifactState, StageArtifact},
+        artifacts::{
+            ArtifactRow, ArtifactSourceRow, ArtifactState, RetainedArtifactKind, StageArtifact,
+        },
         deletion::{DeletionKind, DeletionObject, DeletionObjectKind, DeletionState},
         frames::{FrameReadSnapshot, index_frame_tx},
         retention::{ArtifactCandidate, SegmentCandidate},
@@ -806,7 +810,7 @@ impl RecordingStore {
         &self,
         snapshot: &ArtifactReadSnapshot,
         expected_sources: Option<&[ArtifactSourceFingerprint]>,
-    ) -> krometrail_core::Result<StoredArtifact> {
+    ) -> krometrail_core::Result<RetainedStoredArtifact> {
         self.pause_after_read_snapshot(EvidenceReadKind::Artifact)
             .await;
         let source_frames = snapshot
@@ -1065,6 +1069,7 @@ impl ArtifactStore for RecordingStore {
                 self.reject_deleted(request.scope.session_id)?;
                 let row = self.index.artifact_row(request.artifact_id)?.filter(|row| {
                     row.state == ArtifactState::Ready
+                        && matches!(row.kind, RetainedArtifactKind::Image(_))
                         && row.session_id == request.scope.session_id
                         && row.target_id == request.scope.target_id
                 });
@@ -1077,7 +1082,7 @@ impl ArtifactStore for RecordingStore {
                 return Err(artifact_limit_error(request.scope));
             }
             match self.read_artifact_snapshot(&snapshot, None).await {
-                Ok(stored) => {
+                Ok(RetainedStoredArtifact::Image(stored)) => {
                     let digest = Sha256Digest::from_bytes(snapshot.row.output_hash);
                     let handle = ArtifactEvidenceHandle::new(
                         snapshot.row.artifact_id,
@@ -1092,6 +1097,7 @@ impl ArtifactStore for RecordingStore {
                         Arc::clone(&stored.encoded_bytes),
                     )?)))
                 }
+                Ok(RetainedStoredArtifact::Video(_)) => Ok(ArtifactReadLookup::Missing),
                 Err(error) if error.code == ErrorCode::NotFound => Ok(ArtifactReadLookup::Missing),
                 Err(error) if error.code == ErrorCode::EvidenceInvalidated => {
                     self.invalidate_artifact_snapshot(&snapshot).await?;
@@ -1112,6 +1118,7 @@ impl ArtifactStore for RecordingStore {
                 let _mutation = self.mutations.lock().await;
                 self.index
                     .artifact_by_cache(key, true)?
+                    .filter(|row| matches!(row.kind, RetainedArtifactKind::Image(_)))
                     .map(|row| self.artifact_snapshot(row))
                     .transpose()?
             };
@@ -1122,7 +1129,8 @@ impl ArtifactStore for RecordingStore {
                 .read_artifact_snapshot(&snapshot, Some(&expected_sources))
                 .await
             {
-                Ok(artifact) => Ok(ArtifactLookup::Hit(Box::new(artifact))),
+                Ok(RetainedStoredArtifact::Image(artifact)) => Ok(ArtifactLookup::Hit(artifact)),
+                Ok(RetainedStoredArtifact::Video(_)) => Ok(ArtifactLookup::Miss),
                 Err(error) if error.code == ErrorCode::NotFound => Ok(ArtifactLookup::Miss),
                 Err(error) if error.code == ErrorCode::EvidenceInvalidated => {
                     self.invalidate_artifact_snapshot(&snapshot).await?;
@@ -1176,7 +1184,12 @@ impl ArtifactStore for RecordingStore {
                     let stored = self
                         .read_artifact_snapshot(&snapshot, Some(&publication.sources))
                         .await?;
-                    return Ok(ArtifactPublish::Existing(stored));
+                    let RetainedStoredArtifact::Image(stored) = stored else {
+                        return Err(persistence_error(
+                            "image cache key resolved to a temporal video artifact",
+                        ));
+                    };
+                    return Ok(ArtifactPublish::Existing(*stored));
                 }
                 StageArtifact::Existing(existing) => {
                     let _mutation = self.mutations.lock().await;
@@ -1191,6 +1204,7 @@ impl ArtifactStore for RecordingStore {
                 .artifact_files
                 .publish(
                     row.artifact_id,
+                    row.relative_path.clone(),
                     Arc::clone(&publication.encoded_bytes),
                     publication_guard.cancellation(),
                     publication.cancellation().cloned(),
@@ -1239,7 +1253,12 @@ impl ArtifactStore for RecordingStore {
             let stored = self
                 .read_artifact_snapshot(&ready, Some(&publication.sources))
                 .await?;
-            Ok(ArtifactPublish::Published(stored))
+            let RetainedStoredArtifact::Image(stored) = stored else {
+                return Err(persistence_error(
+                    "published image resolved to a temporal video artifact",
+                ));
+            };
+            Ok(ArtifactPublish::Published(*stored))
         })
     }
 
@@ -1252,7 +1271,10 @@ impl ArtifactStore for RecordingStore {
                 let _mutation = self.mutations.lock().await;
                 self.index
                     .artifact_row(artifact_id)?
-                    .filter(|row| row.state == ArtifactState::Ready)
+                    .filter(|row| {
+                        row.state == ArtifactState::Ready
+                            && matches!(row.kind, RetainedArtifactKind::Image(_))
+                    })
                     .map(|row| self.artifact_snapshot(row))
                     .transpose()?
             };
@@ -1260,7 +1282,249 @@ impl ArtifactStore for RecordingStore {
                 return Ok(None);
             };
             match self.read_artifact_snapshot(&snapshot, None).await {
-                Ok(artifact) => Ok(Some(artifact)),
+                Ok(RetainedStoredArtifact::Image(artifact)) => Ok(Some(*artifact)),
+                Ok(RetainedStoredArtifact::Video(_)) => Ok(None),
+                Err(error) if error.code == ErrorCode::NotFound => Ok(None),
+                Err(error) if error.code == ErrorCode::EvidenceInvalidated => {
+                    self.invalidate_artifact_snapshot(&snapshot).await?;
+                    Ok(None)
+                }
+                Err(error) => Err(error),
+            }
+        })
+    }
+
+    fn read_video_artifact(
+        &self,
+        request: RetrieveArtifactRequest,
+    ) -> PortFuture<'_, krometrail_core::Result<VideoArtifactReadLookup>> {
+        Box::pin(async move {
+            let snapshot = {
+                let _mutation = self.mutations.lock().await;
+                self.reject_deleted(request.scope.session_id)?;
+                self.index
+                    .artifact_row(request.artifact_id)?
+                    .filter(|row| {
+                        row.state == ArtifactState::Ready
+                            && row.kind == RetainedArtifactKind::TemporalVideo
+                            && row.session_id == request.scope.session_id
+                            && row.target_id == request.scope.target_id
+                    })
+                    .map(|row| self.artifact_snapshot(row))
+                    .transpose()?
+            };
+            let Some(snapshot) = snapshot else {
+                return Ok(VideoArtifactReadLookup::Missing);
+            };
+            if snapshot.row.byte_len > request.max_encoded_bytes() {
+                return Err(artifact_limit_error(request.scope));
+            }
+            match self.read_artifact_snapshot(&snapshot, None).await {
+                Ok(RetainedStoredArtifact::Video(stored)) => {
+                    let stored = *stored;
+                    let handle = VideoArtifactEvidenceHandle::new(
+                        snapshot.row.artifact_id,
+                        request.scope,
+                        NonEmptyText::new("video/mp4").expect("video media type is non-empty"),
+                        Sha256Digest::from_bytes(snapshot.row.output_hash),
+                        snapshot.row.byte_len,
+                        stored.manifest,
+                    )?;
+                    Ok(VideoArtifactReadLookup::Available(Box::new(
+                        VideoArtifactRead::new(handle, stored.encoded_bytes)?,
+                    )))
+                }
+                Ok(RetainedStoredArtifact::Image(_)) => Ok(VideoArtifactReadLookup::Missing),
+                Err(error) if error.code == ErrorCode::NotFound => {
+                    Ok(VideoArtifactReadLookup::Missing)
+                }
+                Err(error) if error.code == ErrorCode::EvidenceInvalidated => {
+                    self.invalidate_artifact_snapshot(&snapshot).await?;
+                    Ok(VideoArtifactReadLookup::Invalidated)
+                }
+                Err(error) => Err(error),
+            }
+        })
+    }
+
+    fn lookup_video_artifact(
+        &self,
+        key: ArtifactCacheKey,
+        expected_sources: Vec<ArtifactSourceFingerprint>,
+    ) -> PortFuture<'_, krometrail_core::Result<VideoArtifactLookup>> {
+        Box::pin(async move {
+            let snapshot = {
+                let _mutation = self.mutations.lock().await;
+                self.index
+                    .artifact_by_cache(key, true)?
+                    .filter(|row| row.kind == RetainedArtifactKind::TemporalVideo)
+                    .map(|row| self.artifact_snapshot(row))
+                    .transpose()?
+            };
+            let Some(snapshot) = snapshot else {
+                return Ok(VideoArtifactLookup::Miss);
+            };
+            match self
+                .read_artifact_snapshot(&snapshot, Some(&expected_sources))
+                .await
+            {
+                Ok(RetainedStoredArtifact::Video(artifact)) => {
+                    Ok(VideoArtifactLookup::Hit(artifact))
+                }
+                Ok(RetainedStoredArtifact::Image(_)) => Ok(VideoArtifactLookup::Miss),
+                Err(error) if error.code == ErrorCode::NotFound => Ok(VideoArtifactLookup::Miss),
+                Err(error) if error.code == ErrorCode::EvidenceInvalidated => {
+                    self.invalidate_artifact_snapshot(&snapshot).await?;
+                    Ok(VideoArtifactLookup::Invalidated)
+                }
+                Err(error) => Err(error),
+            }
+        })
+    }
+
+    fn publish_video_artifact(
+        &self,
+        publication: VideoArtifactPublication,
+    ) -> PortFuture<'_, krometrail_core::Result<VideoArtifactPublish>> {
+        Box::pin(async move {
+            let publication_guard = self.artifact_publications.begin(publication.session_id)?;
+            let cache_lock = self
+                .artifact_cache_locks
+                .for_key(publication.cache.cache_key);
+            let _cache = cache_lock.lock().await;
+
+            match self
+                .lookup_video_artifact(publication.cache.cache_key, publication.sources.clone())
+                .await?
+            {
+                VideoArtifactLookup::Hit(artifact) => {
+                    return Ok(VideoArtifactPublish::Existing(*artifact));
+                }
+                VideoArtifactLookup::Miss | VideoArtifactLookup::Invalidated => {}
+            }
+            self.validate_source_payloads(
+                publication.session_id,
+                publication.target_id,
+                &publication.sources,
+            )
+            .await?;
+
+            let staged = {
+                let _mutation = self.mutations.lock().await;
+                self.reject_deleted(publication.session_id)?;
+                if publication_guard.is_cancelled() {
+                    return Err(cancelled_publication_error());
+                }
+                self.index.stage_video_artifact(&publication)?
+            };
+            let row = match staged {
+                StageArtifact::Staged(row) => row,
+                StageArtifact::Existing(existing) if existing.state == ArtifactState::Ready => {
+                    let snapshot = {
+                        let _mutation = self.mutations.lock().await;
+                        self.artifact_snapshot(existing)?
+                    };
+                    let stored = self
+                        .read_artifact_snapshot(&snapshot, Some(&publication.sources))
+                        .await?;
+                    let RetainedStoredArtifact::Video(stored) = stored else {
+                        return Err(persistence_error(
+                            "video cache key resolved to an image artifact",
+                        ));
+                    };
+                    return Ok(VideoArtifactPublish::Existing(*stored));
+                }
+                StageArtifact::Existing(existing) => {
+                    let _mutation = self.mutations.lock().await;
+                    self.invalidate_artifact_row(existing).await?;
+                    return Err(persistence_error(
+                        "stale video staging state was invalidated; retry publication",
+                    ));
+                }
+            };
+
+            if let Err(error) = self
+                .artifact_files
+                .publish(
+                    row.artifact_id,
+                    row.relative_path.clone(),
+                    Arc::clone(&publication.encoded_bytes),
+                    publication_guard.cancellation(),
+                    publication.cancellation().cloned(),
+                )
+                .await
+            {
+                let _mutation = self.mutations.lock().await;
+                self.invalidate_artifact_row(row).await?;
+                return Err(error);
+            }
+
+            let finalized = {
+                let _mutation = self.mutations.lock().await;
+                if publication_guard.is_cancelled()
+                    || publication
+                        .cancellation()
+                        .is_some_and(|signal| signal.is_cancelled())
+                    || self.is_deleted(publication.session_id)
+                {
+                    self.invalidate_artifact_row(row.clone()).await?;
+                    return Err(cancelled_publication_error());
+                }
+                self.index.finalize_artifact(
+                    row.artifact_id,
+                    publication.cache.cache_key,
+                    publication.session_id,
+                    publication.target_id,
+                    &publication.sources,
+                )?
+            };
+            if !finalized {
+                let _mutation = self.mutations.lock().await;
+                self.invalidate_artifact_row(row).await?;
+                return Err(persistence_error(
+                    "video publication did not reach ready state",
+                ));
+            }
+            let ready = {
+                let _mutation = self.mutations.lock().await;
+                let row = self
+                    .index
+                    .artifact_row(publication.manifest.artifact_id())?
+                    .ok_or_else(|| persistence_error("ready video metadata disappeared"))?;
+                self.artifact_snapshot(row)?
+            };
+            let stored = self
+                .read_artifact_snapshot(&ready, Some(&publication.sources))
+                .await?;
+            let RetainedStoredArtifact::Video(stored) = stored else {
+                return Err(persistence_error("published video resolved to an image"));
+            };
+            Ok(VideoArtifactPublish::Published(*stored))
+        })
+    }
+
+    fn video_artifact(
+        &self,
+        artifact_id: krometrail_core::ArtifactId,
+    ) -> PortFuture<'_, krometrail_core::Result<Option<StoredVideoArtifact>>> {
+        Box::pin(async move {
+            let snapshot = {
+                let _mutation = self.mutations.lock().await;
+                self.index
+                    .artifact_row(artifact_id)?
+                    .filter(|row| {
+                        row.state == ArtifactState::Ready
+                            && row.kind == RetainedArtifactKind::TemporalVideo
+                    })
+                    .map(|row| self.artifact_snapshot(row))
+                    .transpose()?
+            };
+            let Some(snapshot) = snapshot else {
+                return Ok(None);
+            };
+            match self.read_artifact_snapshot(&snapshot, None).await {
+                Ok(RetainedStoredArtifact::Video(artifact)) => Ok(Some(*artifact)),
+                Ok(RetainedStoredArtifact::Image(_)) => Ok(None),
                 Err(error) if error.code == ErrorCode::NotFound => Ok(None),
                 Err(error) if error.code == ErrorCode::EvidenceInvalidated => {
                     self.invalidate_artifact_snapshot(&snapshot).await?;

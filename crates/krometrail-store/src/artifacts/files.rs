@@ -24,6 +24,7 @@ pub(crate) struct ArtifactFiles {
 enum Command {
     Publish {
         artifact_id: ArtifactId,
+        relative_path: String,
         bytes: Arc<[u8]>,
         cancellation: Arc<AtomicBool>,
         external_cancellation: Option<Arc<dyn CancellationSignal>>,
@@ -75,12 +76,14 @@ impl ArtifactFiles {
     pub(crate) async fn publish(
         &self,
         artifact_id: ArtifactId,
+        relative_path: String,
         bytes: Arc<[u8]>,
         cancellation: Arc<AtomicBool>,
         external_cancellation: Option<Arc<dyn CancellationSignal>>,
     ) -> krometrail_core::Result<()> {
         self.publish_with_failpoint(
             artifact_id,
+            relative_path,
             bytes,
             cancellation,
             external_cancellation,
@@ -92,6 +95,7 @@ impl ArtifactFiles {
     async fn publish_with_failpoint(
         &self,
         artifact_id: ArtifactId,
+        relative_path: String,
         bytes: Arc<[u8]>,
         cancellation: Arc<AtomicBool>,
         external_cancellation: Option<Arc<dyn CancellationSignal>>,
@@ -101,6 +105,7 @@ impl ArtifactFiles {
         self.commands
             .try_send(Command::Publish {
                 artifact_id,
+                relative_path,
                 bytes,
                 cancellation,
                 external_cancellation,
@@ -130,6 +135,12 @@ impl ArtifactFiles {
         &self.directory
     }
 
+    pub(crate) fn path(&self, relative_path: &str) -> krometrail_core::Result<PathBuf> {
+        validate_relative_path(relative_path, None)?;
+        Ok(self.directory.join(relative_path))
+    }
+
+    #[cfg(any(test, feature = "qualification-support"))]
     pub(crate) fn final_path(&self, artifact_id: ArtifactId) -> PathBuf {
         self.directory.join(format!("{artifact_id}.png"))
     }
@@ -144,6 +155,7 @@ fn run(directory: PathBuf, receiver: mpsc::Receiver<Command>) {
         match command {
             Command::Publish {
                 artifact_id,
+                relative_path,
                 bytes,
                 cancellation,
                 external_cancellation,
@@ -153,6 +165,7 @@ fn run(directory: PathBuf, receiver: mpsc::Receiver<Command>) {
                 let _ = reply.send(publish_file(
                     &directory,
                     artifact_id,
+                    &relative_path,
                     &bytes,
                     &cancellation,
                     external_cancellation.as_deref(),
@@ -172,6 +185,7 @@ fn run(directory: PathBuf, receiver: mpsc::Receiver<Command>) {
 fn publish_file(
     directory: &Path,
     artifact_id: ArtifactId,
+    relative_path: &str,
     bytes: &[u8],
     cancellation: &AtomicBool,
     external_cancellation: Option<&dyn CancellationSignal>,
@@ -180,8 +194,9 @@ fn publish_file(
     if is_cancelled(cancellation, external_cancellation) {
         return Err(cancelled_error());
     }
+    validate_relative_path(relative_path, Some(artifact_id))?;
     let temp = directory.join(format!("{artifact_id}.tmp"));
-    let final_path = directory.join(format!("{artifact_id}.png"));
+    let final_path = directory.join(relative_path);
     match fs::remove_file(&temp) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -233,6 +248,28 @@ fn read_file(directory: &Path, relative_path: &str) -> krometrail_core::Result<A
         .map_err(|error| io_error("read artifact bytes", error))
 }
 
+fn validate_relative_path(
+    relative_path: &str,
+    expected_id: Option<ArtifactId>,
+) -> krometrail_core::Result<()> {
+    if relative_path.is_empty() || relative_path.contains(['/', '\\']) {
+        return Err(persistence_error("artifact path is invalid"));
+    }
+    let path = Path::new(relative_path);
+    let extension = path.extension().and_then(|value| value.to_str());
+    let stem = path.file_stem().and_then(|value| value.to_str());
+    let id = stem.and_then(|value| value.parse::<ArtifactId>().ok());
+    if !matches!(extension, Some("png" | "mp4"))
+        || id.is_none()
+        || expected_id.is_some_and(|expected| id != Some(expected))
+    {
+        return Err(persistence_error(
+            "artifact path kind or identity is invalid",
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(unix)]
 pub(crate) fn sync_directory(directory: &Path) -> std::io::Result<()> {
     fs::File::open(directory)?.sync_all()
@@ -275,6 +312,7 @@ mod tests {
         files
             .publish(
                 id,
+                format!("{id}.png"),
                 Arc::from(&b"png"[..]),
                 Arc::new(AtomicBool::new(false)),
                 None,
@@ -313,6 +351,7 @@ mod tests {
                 files
                     .publish_with_failpoint(
                         id,
+                        format!("{id}.png"),
                         Arc::from(&b"png"[..]),
                         Arc::new(AtomicBool::new(false)),
                         None,

@@ -83,6 +83,13 @@ delegate_json_schema!(EvidenceScope => EvidenceScopeWire);
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
 pub struct Sha256Digest([u8; 32]);
 
+#[derive(schemars::JsonSchema)]
+#[schemars(transparent)]
+#[allow(dead_code)]
+struct Sha256DigestSchema(
+    #[schemars(length(min = 64, max = 64), regex(pattern = "^[0-9a-f]{64}$"))] String,
+);
+
 impl Sha256Digest {
     pub const fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
@@ -142,6 +149,8 @@ impl<'de> Deserialize<'de> for Sha256Digest {
         Ok(Self(bytes))
     }
 }
+
+delegate_json_schema!(Sha256Digest => Sha256DigestSchema);
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ArtifactEvidenceHandle {

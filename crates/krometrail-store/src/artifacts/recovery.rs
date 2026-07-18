@@ -47,7 +47,7 @@ pub(crate) fn plan(
     let mut report = ArtifactRecoveryReport::default();
 
     for row in rows {
-        let final_path = files.final_path(row.artifact_id);
+        let final_path = files.path(&row.relative_path)?;
         let temp_path = files.temp_path(row.artifact_id);
         let sources = index.artifact_sources(row.artifact_id)?;
         let valid = fs::read(&final_path)
@@ -98,7 +98,7 @@ pub(crate) fn plan(
         let Some(extension) = path.extension().and_then(|value| value.to_str()) else {
             continue;
         };
-        if !matches!(extension, "png" | "tmp") {
+        if !matches!(extension, "png" | "mp4" | "tmp") {
             continue;
         }
         let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
