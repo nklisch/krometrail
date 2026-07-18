@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-ergonomics-temporal-range-handles
 kind: feature
-stage: review
+stage: done
 tags: [agent-ux, visual]
 parent: epic-agent-browser-ergonomics
 depends_on: []
@@ -37,7 +37,7 @@ Resolve handle-or-range once at the application boundary and keep every store, a
 ## Design decisions
 
 - **Authority and lifetime**: use one injected process-local immutable handle table. Browser stop does not clear it; MCP restart does. Registration deduplicates equal ranges and never evicts a live entry, so an issued handle does not silently retarget or expire during the process lifetime.
-- **Capacity**: bound the table at 4,096 distinct ranges and fail new registration with `resource_limit_exceeded` rather than evicting issued handles. This preserves the lifetime promise and prevents unbounded agent-driven growth.
+- **Capacity**: bound the table at 4,096 distinct ranges and a 16 MiB aggregate serialized-range admission budget. Fail new registration with `resource_limit_exceeded` rather than evicting issued handles. The budget accounts for every variable-length range field without allocating a duplicate serialization, preserving the lifetime promise while bounding agent-driven memory and admission work.
 - **Wire shape**: temporal follow-up tools accept exactly one root property, `range` or `range_handle`. Existing full-range requests and schemas remain valid; no core artifact, event, retention, frame, or video request type learns about handles.
 - **Availability**: handle resolution revalidates the exact ordered source-frame metadata against the injected `FrameSource` before dispatch. Missing/session-deleted evidence fails `evidence_invalidated` with recovery to resolve a fresh interval; a stored handle is never evidence authority.
 - **Response location**: add optional `range_handle` to the common `ToolResponse` envelope. Bundle responses register their resolved range; follow-up responses echo the supplied or deduplicated handle. Non-temporal and legacy responses omit the field.
@@ -62,9 +62,13 @@ The highest-risk unit is lookup revalidation. A handle can outlive the active br
 ResolvedRangeHandleId,
 
 pub const MAX_RESOLVED_RANGE_HANDLES: usize = 4_096;
+pub const MAX_RESOLVED_RANGE_HANDLE_BUDGET_BYTES: usize = 16 * 1024 * 1024;
 
 pub trait ResolvedRangeHandles: Send + Sync {
-    fn register(&self, range: ResolvedRange) -> Result<ResolvedRangeHandleId>;
+    fn register(
+        &self,
+        range: ResolvedRange,
+    ) -> PortFuture<'_, Result<ResolvedRangeHandleId>>;
 
     fn resolve_available(
         &self,
@@ -87,8 +91,8 @@ impl ProcessResolvedRangeHandles {
 
 **Implementation notes**:
 
-- `register` calls `ResolvedRange::validate`, returns the existing handle for an exactly equal range, rejects nil/colliding IDs as internal contract failures, and refuses the 4,097th distinct range without removing prior entries.
-- `resolve_available` clones the range while holding the synchronous mutex, releases the lock, then calls `FrameSource::frame_metadata_by_id(range.frame_ids.clone())`. It requires the exact count and order plus matching session, target, frame ID, and a session time inside the resolved range. It never reads frame pixels.
+- `register` calls `ResolvedRange::validate`, measures the complete serialized contract against the aggregate budget, and validates available metadata before admission. It returns the existing handle for an exactly equal range, rejects nil/colliding IDs as internal contract failures, and refuses a capacity or budget overflow without removing prior entries.
+- Registration and `resolve_available` call `FrameSource::frame_metadata_by_id(range.frame_ids.clone())`. They require the exact count and ID order, matching session and target, in-range session times, strictly increasing capture ordinals, and nondecreasing session time. They never read frame pixels. `not_found` becomes `evidence_invalidated`; other stable source errors such as `persistence_failed` remain intact.
 - Unknown handles—including valid UUIDs from a previous process—return `evidence_invalidated`, retry `after_recovery`, with recovery instructing the caller to run `temporal_debug_bundle` again. Invalid wire UUIDs remain `invalid_input`.
 - `invalidate_session` removes only entries for the exact session. It is invoked by any composed public session-deletion path; current browser stop intentionally does not invoke it. Downstream availability validation remains mandatory because budget eviction can occur without an explicit deletion callback.
 - Construct one authority in `app.rs` from the same root `IdSource` and coherent recording store used by temporal services, then inject it into `McpDependencies`.
@@ -222,7 +226,31 @@ impl MappedResult {
 
 ## Risks
 
-- The key risk is promising process-lifetime handles while bounding memory. Non-evicting deduplication plus an explicit 4,096-range admission failure preserves already-issued handles; the fallback is to raise the documented cap only with measured process-memory evidence.
+- The key risk is promising process-lifetime handles while bounding memory. Non-evicting deduplication plus explicit 4,096-entry and 16 MiB aggregate admission failures preserve already-issued handles; either bound should change only with measured process-memory evidence.
 - Revalidating every frame's metadata adds a storage read before follow-ups. This is proportional to already-bounded resolved ranges and avoids a correctness hole; if profiling later shows material cost, an invalidation generation may optimize it without changing the public handle contract.
 - Schema decoration and runtime normalization could diverge. Both are exercised from the registry over the same detected root `range` shape, and all existing core decoders remain the final validation authority.
 - Concurrent eviction after preflight remains possible. Existing downstream services must keep their own availability checks; preflight narrows the race but does not replace transactional store semantics.
+
+## Review (2026-07-18)
+
+**Verdict**: Approve
+
+**Blockers**: Three standard-pass findings were accepted and fixed in `0f74544`: handle admission
+and use now reject source metadata without strict capture-ordinal and chronological order; the
+authority enforces a 16 MiB aggregate complete-contract budget in addition to its 4,096-entry cap;
+and non-`not_found` source failures retain their stable error codes rather than becoming evidence
+invalidation.
+**Important**: none
+**Nits**: none
+**Rejected**: none
+
+**Notes**: Substrate feature review at standard weight, one balanced independent pass. Corrective
+coverage includes a production-like reversed-ID-order admission regression, per-range and aggregate
+budget boundaries with non-eviction/release assertions, persistence-error preservation at admission
+and use, and successful source-list, browser-event context, and pin-state forwarding with compact
+handle echo. The existing test fixture has no successful injected video encoder, so no new video
+infrastructure was created solely for this review. Browser stop still intentionally leaves the
+authority untouched; because the authority has no active-browser dependency and there is no public
+session-deletion route, the existing retained-availability authority tests remain the proportional
+lifetime coverage. Focused tests, format, core/MCP clippy, and root no-dependency clippy passed. Per
+the standard closure policy, the verified fixes close the feature without a second independent pass.
