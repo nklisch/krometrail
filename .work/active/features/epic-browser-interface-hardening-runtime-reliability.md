@@ -1,7 +1,7 @@
 ---
 id: epic-browser-interface-hardening-runtime-reliability
 kind: feature
-stage: implementing
+stage: done
 tags: [browser, visual]
 parent: epic-browser-interface-hardening
 depends_on: []
@@ -87,8 +87,8 @@ Only an authoritative `commit_geometry_transition` completes a transition. Retry
 ## Testing
 
 - Viewport decoder tests cover scrollbar-reduced desktop, true mismatch, mobile, and clear paths.
-- Capture pipeline tests prove gap declaration, active state, last-geometry continuity, and later transition success.
-- Session runtime tests prove retry exhaustion calls the recoverable coordinator outcome.
+- Capture pipeline tests prove gap declaration, active-state continuity, an unresolved fence, and later authoritative transition success.
+- Session runtime tests prove retry exhaustion preserves the active transition until authoritative recovery.
 - Real managed-Chrome qualification repeats responsive_small and nested-frame capture.
 
 ## Risks
@@ -117,3 +117,18 @@ Standard review requested changes before approval:
 - Desktop viewport guidance and the stable specification must name declared layout geometry as the acknowledgement authority and visual content as a separate observation. Mobile retains visual-viewport acknowledgement semantics.
 
 This is the only corrective pass for these findings. Fix verification must prove both conditions before the feature returns to `done`; no additional independent review is required.
+
+## Fix verification
+
+The corrective implementation keeps a geometry transition fenced after both retry exhaustion and deferred refresh dispatch. Its top-level event regression proves frames are acknowledged as paused gaps, a later geometry event redispatches the exact same transition, and persistence resumes only after an authoritative geometry commit. The runtime regression proves exhausted observation retries leave that transition active for later recovery. Desktop scrollbar guidance and the stable specification now describe declared layout acknowledgement separately from observed visual content; the core regression locks in that wording. `RawFrame::after_ack` remains a malformed-envelope boundary and cannot establish geometry.
+
+Verified with:
+
+- `cargo test -p krometrail-cdp --all-targets --locked`
+- `cargo test -p krometrail-core --all-targets --locked`
+- `cargo test --workspace --all-targets --locked`
+- `cargo fmt --all -- --check`
+- `cargo check --workspace --all-targets --locked`
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`
+
+The requested correction is approved without a second independent review.
