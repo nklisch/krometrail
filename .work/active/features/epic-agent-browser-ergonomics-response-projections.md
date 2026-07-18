@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-ergonomics-response-projections
 kind: feature
-stage: review
+stage: done
 tags: [agent-ux, browser]
 parent: epic-agent-browser-ergonomics
 depends_on: []
@@ -247,10 +247,10 @@ fn attach_diagnostics(
 
 **Acceptance criteria**:
 
-- [ ] Registry validation proves every intended route has exactly one projection decoration and no duplicate compact route exists.
-- [ ] Error/degraded responses attach diagnostics by default, suppress them only after a valid explicit omission, and never expose request values.
-- [ ] Plugin guidance gives copyable economical request examples and still directs agents to full evidence/resources for strong claims.
-- [ ] Exact generated schema/fixture tests and an stdio round trip cover omitted, compact, full, invalid, and legacy requests.
+- [x] Registry validation proves every intended route has exactly one projection decoration and no duplicate compact route exists.
+- [x] Error/degraded responses attach diagnostics by default, suppress them only after a valid explicit omission, and never expose request values.
+- [x] Plugin guidance gives copyable economical request examples and still directs agents to full evidence/resources for strong claims.
+- [x] Exact generated schema/fixture tests and an stdio round trip cover omitted, compact, full, invalid, and legacy requests.
 
 ## Implementation order
 
@@ -295,3 +295,19 @@ fn attach_diagnostics(
 - `cargo test -p krometrail-mcp --locked` (52 passed).
 - `cargo check -p krometrail-mcp --all-targets --locked`.
 - `cargo clippy -p krometrail-mcp --all-targets --locked -- -D warnings`.
+
+## Review (2026-07-18)
+
+**Verdict**: Approve
+
+**Blockers**: The one standard-pass finding was accepted and fixed: lifecycle tools that do not
+advertise response projection can no longer suppress diagnostics by supplying an invalid
+`response.diagnostics: omit` argument.
+**Important**: none
+**Nits**: none
+**Rejected**: none
+
+**Notes**: Substrate feature review at standard weight, one balanced independent pass. The accepted
+diagnostic-boundary blocker was corrected in `83c1def` and verified with an in-memory MCP regression
+for invalid `browser_status` input plus focused MCP clippy with warnings denied. Per the standard
+closure policy, the verified fix closes the feature without a second independent pass.
