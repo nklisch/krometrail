@@ -111,8 +111,8 @@ as steps.
 - Full reads: returned `krometrail://evidence/...` resource links. For a compact bundle artifact,
   read its `manifest_uri` when the claim needs the full ordered source IDs, parameters, gaps, or
   normalization provenance; read the adjacent artifact URI when the rendered image is needed. Video
-  results likewise keep MP4 bytes and the complete presentation manifest behind their returned local
-  resource links; do not upload either unless the user explicitly authorizes a separate workflow.
+  results return local MP4 and manifest resource links. Read the MP4 when the host supports video input;
+  read the manifest when exact presentation provenance matters.
 - Browser context: `query_browser_events`
 - Retention: `pin_resolved_range`, `query_pin_state`, `unpin_resolved_range`
 

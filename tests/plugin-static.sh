@@ -153,7 +153,7 @@ for term in \
   'use `generate_temporal_video` only when it is advertised' \
   '`real_time`' \
   '`model_optimized`' \
-  'do not upload either'; do
+  'Read the MP4 when the host supports video input'; do
   require_text "$SKILL" "$term"
 done
 for term in \
