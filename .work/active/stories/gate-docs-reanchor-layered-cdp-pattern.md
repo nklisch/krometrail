@@ -1,7 +1,7 @@
 ---
 id: gate-docs-reanchor-layered-cdp-pattern
 kind: story
-stage: review
+stage: done
 tags: [documentation]
 parent: null
 depends_on: []
@@ -32,3 +32,7 @@ Re-anchor the real-browser example to its current test.
 - Re-anchored the real-Chrome reconnect example in `.agents/skills/patterns/layered-cdp-qualification.md` to the current opt-in test; guidance is unchanged.
 - Verification: exact source lines inspected, catalog-wide static anchor check passed, and `bun run docs:build` passed.
 - Discrepancies and adjacent issues: none.
+
+## Inline review
+
+- Verdict: pass. The real-browser citation lands on the current opt-in reconnect qualification test.

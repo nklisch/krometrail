@@ -1,7 +1,7 @@
 ---
 id: gate-docs-reanchor-exact-release-pattern
 kind: story
-stage: review
+stage: done
 tags: [documentation]
 parent: null
 depends_on: []
@@ -32,3 +32,7 @@ Replace the stale anchors while retaining the current pattern guidance.
 - Re-anchored launcher, release transaction, and static-contract examples in `.agents/skills/patterns/exact-release-managed-activation.md`; the installer anchor remained exact and guidance is unchanged.
 - Verification: exact source lines inspected, catalog-wide static anchor check passed, and `bun run docs:build` passed.
 - Discrepancies and adjacent issues: none.
+
+## Inline review
+
+- Verdict: pass. Launcher, release-transaction, installer, and static version-authority citations resolve exactly.

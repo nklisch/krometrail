@@ -1,7 +1,7 @@
 ---
 id: gate-docs-reanchor-validated-wire-pattern
 kind: story
-stage: review
+stage: done
 tags: [documentation]
 parent: null
 depends_on: []
@@ -32,3 +32,7 @@ Re-anchor the example to the current wire type/schema boundary.
 - Re-anchored `AttachBrowserWire` in `.agents/skills/patterns/validated-wire-contracts.md` to the current wire/schema boundary; the remaining examples still resolve and guidance is unchanged.
 - Verification: exact source lines inspected, catalog-wide static anchor check passed, and `bun run docs:build` passed.
 - Discrepancies and adjacent issues: none.
+
+## Inline review
+
+- Verdict: pass. The wire helper and delegated-schema boundary resolve exactly and surrounding examples remain current.

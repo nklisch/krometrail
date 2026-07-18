@@ -1,7 +1,7 @@
 ---
 id: gate-docs-reanchor-bounded-loss-pattern
 kind: story
-stage: review
+stage: done
 tags: [documentation]
 parent: null
 depends_on: []
@@ -32,3 +32,7 @@ Re-anchor the example to the current full/closed typed gap branches.
 - Re-anchored all three examples in `.agents/skills/patterns/bounded-loss-accounting.md` to the live queue-loss branches; guidance is unchanged.
 - Verification: exact source lines inspected, catalog-wide static anchor check passed, and `bun run docs:build` passed.
 - Discrepancies and adjacent issues: none.
+
+## Inline review
+
+- Verdict: pass. Each citation lands on the stated typed-loss branch and no guidance changed.

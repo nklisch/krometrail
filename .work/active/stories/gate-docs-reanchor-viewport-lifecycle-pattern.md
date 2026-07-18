@@ -1,7 +1,7 @@
 ---
 id: gate-docs-reanchor-viewport-lifecycle-pattern
 kind: story
-stage: review
+stage: done
 tags: [documentation]
 parent: null
 depends_on: []
@@ -32,3 +32,7 @@ Re-anchor apply/commit/rollback/replay/clear examples after release code stabili
 - Re-anchored apply/commit, rollback, navigation replay, reconnect replay, and complete apply/clear authorities in `.agents/skills/patterns/lifecycle-complete-browser-overrides.md`; guidance is unchanged.
 - Verification: exact source branches/functions inspected, catalog-wide static anchor check passed, and `bun run docs:build` passed.
 - Discrepancies and adjacent issues: none.
+
+## Inline review
+
+- Verdict: pass. Apply, rollback, navigation/reconnect replay, and complete clear citations cover the stated lifecycle contract.

@@ -1,7 +1,7 @@
 ---
 id: gate-docs-reanchor-single-writer-pattern
 kind: story
-stage: review
+stage: done
 tags: [documentation]
 parent: null
 depends_on: []
@@ -32,3 +32,7 @@ Re-anchor all three examples to the live reducer authorities.
 - Re-anchored lifecycle input, operation commit, and runtime reduction examples in `.agents/skills/patterns/single-writer-effect-reducer.md`; guidance is unchanged.
 - Verification: exact source lines inspected, catalog-wide static anchor check passed, and `bun run docs:build` passed.
 - Discrepancies and adjacent issues: none.
+
+## Inline review
+
+- Verdict: pass. Input, commit, and runtime reduction citations land on the live single-writer authorities.

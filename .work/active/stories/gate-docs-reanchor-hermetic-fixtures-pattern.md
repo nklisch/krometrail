@@ -1,7 +1,7 @@
 ---
 id: gate-docs-reanchor-hermetic-fixtures-pattern
 kind: story
-stage: review
+stage: done
 tags: [documentation]
 parent: null
 depends_on: []
@@ -32,3 +32,7 @@ Re-anchor every example to the current fixture/function boundary.
 - Re-anchored every fixture/function example in `.agents/skills/patterns/hermetic-release-boundary-fixtures.md`; guidance is unchanged.
 - Verification: exact source lines inspected, catalog-wide static anchor check passed, and `bun run docs:build` passed.
 - Discrepancies and adjacent issues: none.
+
+## Inline review
+
+- Verdict: pass. Every fixture citation lands on its current function or injected-command boundary.

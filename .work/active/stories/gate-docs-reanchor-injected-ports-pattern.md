@@ -1,7 +1,7 @@
 ---
 id: gate-docs-reanchor-injected-ports-pattern
 kind: story
-stage: review
+stage: done
 tags: [documentation]
 parent: null
 depends_on: []
@@ -32,3 +32,7 @@ Re-anchor both examples to the live dependency structure and composition root.
 - Re-anchored every example in `.agents/skills/patterns/injected-core-ports.md`, including the live dependency structure and production composition root; guidance is unchanged.
 - Verification: exact source lines inspected, catalog-wide static anchor check passed, and `bun run docs:build` passed.
 - Discrepancies and adjacent issues: none.
+
+## Inline review
+
+- Verdict: pass. All port, service, dependency-structure, and composition-root citations resolve exactly.

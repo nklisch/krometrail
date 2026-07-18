@@ -1,7 +1,7 @@
 ---
 id: gate-docs-reanchor-registry-pattern
 kind: story
-stage: review
+stage: done
 tags: [documentation]
 parent: null
 depends_on: []
@@ -32,3 +32,7 @@ Re-anchor both examples to the live registry loops.
 - Re-anchored every example in `.agents/skills/patterns/registry-declared-surfaces.md`, including the browser-operation declaration and progressive MCP loop; guidance is unchanged.
 - Verification: exact source lines inspected, catalog-wide static anchor check passed, and `bun run docs:build` passed.
 - Discrepancies and adjacent issues: none.
+
+## Inline review
+
+- Verdict: pass. All declarations, reverse lookup, and registration-loop citations match the stated registry guidance.
