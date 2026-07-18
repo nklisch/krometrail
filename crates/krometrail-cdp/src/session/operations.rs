@@ -136,6 +136,9 @@ pub(super) async fn execute_operation_unfenced(
         )));
     }
     match request {
+        BrowserOperationRequest::WaitForPage(request) => {
+            return wait_for_page(state, transport, shared, request, cancellation).await;
+        }
         BrowserOperationRequest::ListDownloads(_) => {
             let authority = shared
                 .downloads
@@ -178,6 +181,107 @@ pub(super) async fn execute_operation_unfenced(
             .await;
         }
     }
+}
+
+async fn wait_for_page(
+    state: &mut SupervisorState,
+    transport: Arc<dyn CdpTransport>,
+    shared: &Arc<SessionShared>,
+    request: krometrail_core::WaitForPageRequest,
+    cancellation: &OperationCancellation,
+) -> Result<BrowserOperationResult> {
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(request.timeout_ms);
+    loop {
+        if let Some(matched) = next_page_match(state, &request)? {
+            let cursor = state.page_contexts()?.cursor;
+            return Ok(BrowserOperationResult::WaitForPage(Box::new(
+                krometrail_core::WaitForPageResult { matched, cursor },
+            )));
+        }
+        if cancellation.request_is_cancelled() {
+            return Err(stable_error(
+                ErrorCode::Cancelled,
+                "browser page wait was cancelled",
+            ));
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(stable_error(
+                ErrorCode::WaitTimedOut,
+                "no matching browser page appeared before the wait timeout",
+            )
+            .with_retry(RetryAdvice::Safe)
+            .with_recovery(
+                NonEmptyText::new("refresh page contexts and retry from the returned cursor")
+                    .unwrap(),
+            ));
+        }
+        let response = transport
+            .send_raw(
+                &CommandScope::Browser,
+                "Target.getTargets",
+                serde_json::json!({}),
+            )
+            .await
+            .map_err(|error| transport_error_to_core(error, true))?;
+        let infos = response
+            .get("targetInfos")
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                stable_error(
+                    ErrorCode::TargetFailed,
+                    "browser returned an invalid target inventory",
+                )
+            })?
+            .iter()
+            .map(parse_target_info)
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| {
+                stable_error(
+                    ErrorCode::TargetFailed,
+                    "browser returned an invalid target inventory",
+                )
+            })?;
+        let reduction = reduce(state.clone(), SupervisorInput::InitialTargets(infos))?;
+        *state = reduction.state;
+        let browser_event_support = *shared
+            .browser_event_support
+            .lock()
+            .expect("browser event support lock");
+        apply_effects(
+            state,
+            reduction.effects,
+            Arc::clone(&transport),
+            Arc::clone(&shared.subscribers),
+            shared.capture.clone(),
+            Arc::clone(&shared.browser_events),
+            browser_event_support,
+            None,
+        )
+        .await?;
+        *shared.state.lock().expect("session state lock") = state.clone();
+        tokio::time::sleep(
+            Duration::from_millis(50)
+                .min(deadline.saturating_duration_since(tokio::time::Instant::now())),
+        )
+        .await;
+    }
+}
+
+fn next_page_match(
+    state: &SupervisorState,
+    request: &krometrail_core::WaitForPageRequest,
+) -> Result<Option<krometrail_core::PageContextStatus>> {
+    Ok(state
+        .page_contexts()?
+        .pages
+        .into_iter()
+        .filter(|page| page.sequence > request.after)
+        .filter(|page| {
+            request
+                .opener_target_id
+                .is_none_or(|opener| page.opener_target_id == Some(opener))
+        })
+        .min_by_key(|page| page.sequence))
 }
 
 async fn execute_non_local_operation(

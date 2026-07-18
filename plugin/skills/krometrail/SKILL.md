@@ -58,13 +58,29 @@ and `select_page` change Krometrail's logical selection without switching Chrome
 preserve mode. Omit `focus`
 or use `{"focus":"foreground"}` when the user wants automatic tab switching.
 
-- Lifecycle/pages: `start_browser`, `attach_browser`, `browser_status`, `stop_browser`, `list_pages`,
-  `create_page`, `select_page`, `close_page`
+- Lifecycle/pages: `list_managed_profiles`, `start_browser`, `attach_browser`, `browser_status`,
+  `stop_browser`, `list_pages`, `list_page_contexts`, `wait_for_page`, `create_page`, `select_page`,
+  `close_page`
 - Current state: `inspect_page`, `query_page`, `snapshot_page`, `take_screenshot`, `observe_live`, `evaluate_page`
+- Context detail: `list_frames`, `list_page_assets`
 - Navigation: `navigate_page`, `reload_page`, `go_back`, `go_forward`
 - Interaction: `click`, `fill`, `press_keys`, `select_option`, `hover`, `drag`, `scroll`,
   `upload_files`, `handle_dialog`, `wait`, `batch`
 - Responsive state: `set_viewport` applies ergonomic presets or custom target-scoped metrics, or restores browser defaults
+- Explicit local I/O: `read_clipboard`, `write_clipboard`, `list_downloads`, `wait_for_download`, `cancel_download`
+
+Clipboard calls are explicit, managed-session only, bounded text operations. Krometrail preserves
+focus and Chrome permission policy: it does not activate a page or grant clipboard permission. If a
+call reports focus, secure-context, API, or permission failure, correct that browser state instead of
+trying to bypass it. Clipboard content belongs only in the explicit request/result; do not copy it
+into issue reports or diagnostics.
+
+For a download-triggering action, call `list_downloads {}` first and keep its `cursor`, then trigger
+the action and call `wait_for_download` with `after` set to that cursor. This avoids racing a fast
+download. Expand to `list_downloads` again when reconciling timeout or cancellation. Read a completed
+download through its returned `krometrail://local/...` resource link. These bounded bytes remain local
+and exist only while the managed browser session is active; `stop_browser`, session loss, or MCP
+restart invalidates the link. Attached browser sessions do not expose clipboard or download authority.
 
 `browser_status {}` returns capture health, loss, retention pressure, cadence, selection, and page count
 without compatibility matrices or timing distributions. Use `{"detail":"full"}` only when those deeper
@@ -76,8 +92,13 @@ Prefer `query_page` for routine targeting by accessible role/name, label text, r
 matches; request `contains`, case sensitivity, or a larger bounded limit only when needed. Branch on
 the explicit `outcome`: proceed only with `unique`, narrow `ambiguous` or `truncated` queries, and
 revise `no_match` queries. A descendant `scope` must be an exact current reference and excludes the
-scope node itself. This surface covers the current main document only; it does not imply iframe or
-cross-origin matching.
+scope node itself. The default document is the current main document. When `list_frames` reports a
+qualified same-origin/same-process frame, pass its complete frame reference as the `document` scope.
+Refresh after frame navigation. Cross-origin, out-of-process, stale, or indeterminate frame scope
+fails explicitly; never retry it against main-document coordinates.
+
+Read [browser contexts and assets](references/browser-contexts.md) before work that reuses a named
+profile, opens popups, enters frames, or diagnoses resource loading.
 
 `query_page` returns exact generation-scoped references rather than persistent locators. Copy the
 unique reference into an existing mutation tool; the action does not reevaluate the semantic query.

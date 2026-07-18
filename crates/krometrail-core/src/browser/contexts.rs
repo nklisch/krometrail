@@ -53,13 +53,46 @@ pub struct ListPageContextsRequest {}
 #[allow(non_upper_case_globals)]
 pub const ListPageContextsRequest: ListPageContextsRequest = ListPageContextsRequest {};
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct WaitForPageRequest {
     pub after: PageSequence,
     pub opener_target_id: Option<TargetId>,
-    #[schemars(range(min = 1_u64, max = 30_000_u64))]
     pub timeout_ms: u64,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct WaitForPageRequestWire {
+    after: PageSequence,
+    opener_target_id: Option<TargetId>,
+    #[schemars(range(min = 1_u64, max = 30_000_u64))]
+    timeout_ms: u64,
+}
+
+impl<'de> Deserialize<'de> for WaitForPageRequest {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = WaitForPageRequestWire::deserialize(deserializer)?;
+        if !(1..=30_000).contains(&wire.timeout_ms) {
+            return Err(serde::de::Error::custom(
+                "page wait timeout must be between 1 and 30000 milliseconds",
+            ));
+        }
+        Ok(Self {
+            after: wire.after,
+            opener_target_id: wire.opener_target_id,
+            timeout_ms: wire.timeout_ms,
+        })
+    }
+}
+
+impl JsonSchema for WaitForPageRequest {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "WaitForPageRequest".into()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        WaitForPageRequestWire::json_schema(generator)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -130,5 +163,19 @@ mod tests {
     #[test]
     fn page_sequence_rejects_zero() {
         assert!(serde_json::from_str::<PageSequence>("0").is_err());
+    }
+
+    #[test]
+    fn page_wait_timeout_is_bounded() {
+        let valid = serde_json::json!({"after":1,"timeout_ms":500});
+        assert!(serde_json::from_value::<WaitForPageRequest>(valid).is_ok());
+        for timeout_ms in [0, 30_001] {
+            assert!(
+                serde_json::from_value::<WaitForPageRequest>(
+                    serde_json::json!({"after":1,"timeout_ms":timeout_ms})
+                )
+                .is_err()
+            );
+        }
     }
 }
