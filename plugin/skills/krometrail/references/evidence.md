@@ -20,7 +20,9 @@ successful browser action; it limits history without undoing the action.
 Responses default to compact structured evidence without inline image bytes. Screenshot availability,
 warnings, interaction identity, retained evidence, and canonical resource links remain visible. Request
 `inline_images: "inline"` only when pixels are needed in the immediate response, and request `full`
-snapshot/page-state detail only when the compact projection cannot answer the question.
+snapshot/page-state detail only when the compact projection cannot answer the question. Temporal bundles
+have their own independent `temporal: "full"` opt-in; changing snapshot or page-state detail does not expand
+them.
 
 ### Current live evidence
 

@@ -110,7 +110,7 @@ Action dispatch or mutation, current-state observation, and retained temporal ca
 Read-only inspection operations do not generate additional screenshots unless requested.
 
 MCP callers can request an additive response projection that independently selects inline screenshot,
-snapshot, page-state, and diagnostic detail. Projection changes presentation only: the action outcome,
+snapshot, page-state, temporal-bundle, and diagnostic detail. Projection changes presentation only: the action outcome,
 interaction anchor, warnings, retained evidence, and canonical resource identities remain authoritative and
 available. Omitting the projection selects the lower-cost agent response: compact structured detail and no
 inline image bytes. Callers explicitly request full structured detail, inline images, or the legacy presentation
@@ -135,7 +135,9 @@ Before executing an action against a reference, Krometrail verifies that the bac
 Snapshot references are the primary target form. Explicit CSS selectors remain a debugging escape hatch with weaker validation guarantees. Canvas, WebGL, video, and other DOM-opaque surfaces remain visible through screenshots and temporal capture even when structured targeting is unavailable; declared coordinate-space interaction is the final fallback.
 
 Callers can also describe a semantic locator by accessible role and name, label text, visible text, or test
-identifier, optionally scoped to a descendant and a same-origin frame. Krometrail resolves the locator through
+identifier, optionally scoped to a descendant and a same-origin frame. A role query may qualify an unnamed
+control by text rendered within its nearest matching ancestor container; this bounded relationship never
+falls back to spatial proximity or unrelated page text. Krometrail resolves the locator through
 the active document snapshot registry and returns or acts through an exact generation-scoped reference. A no-match,
 ambiguous, or truncated result is an explicit successful query outcome, but it contains no actionable
 reference and never authorizes mutation. Semantic matching never silently selects one of several or potentially

@@ -15,6 +15,9 @@ page, frame, or resource boundary.
   same-origin/same-process entries may be inspected; cross-origin, out-of-process, stale, and
   indeterminate entries fail explicitly. Refresh the inventory after frame navigation. Never retry a
   failed frame action against main-document coordinates.
+- For an unnamed control whose visible identity comes from its row, card, or other bounded ancestor,
+  use a role query with `container_text`. This is a semantic ancestor relationship, not a spatial-nearness
+  heuristic; narrow ambiguous outcomes before acting.
 - Call `list_page_assets` when resource identity, kind, timing, or browser-disclosed sizes can explain
   a layout or loading issue. The inventory is capped at 256 entries, reports omissions, strips URL
   query/fragment data, and never contains headers, bodies, cookies, raw URLs, or local paths.

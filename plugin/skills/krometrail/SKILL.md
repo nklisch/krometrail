@@ -20,10 +20,11 @@ Krometrail defaults tool responses to compact structured observations without in
 Omit `response` for routine work. Expand only the part needed:
 
 ```json
-{"response":{"inline_images":"inline","snapshot":"full","page_state":"full"}}
+{"response":{"inline_images":"inline","snapshot":"full","page_state":"full","temporal":"full"}}
 ```
 
-Use `"legacy"` only when reproducing the earlier automatic-presentation shape. `"omit"` replaces an
+Use `"legacy"` only when reproducing the earlier automatic-presentation shape. Temporal detail supports
+`"compact"` (default) or `"full"`; it is independent of snapshot and page-state detail. `"omit"` replaces an
 available structured part with an explicit projection marker; it does not mean acquisition failed.
 Projection never changes action outcome, interaction identity, warnings, retained capture, or canonical
 resource identities.
@@ -97,6 +98,14 @@ qualified same-origin/same-process frame, pass its complete frame reference as t
 Refresh after frame navigation. Cross-origin, out-of-process, stale, or indeterminate frame scope
 fails explicitly; never retry it against main-document coordinates.
 
+For an unnamed control whose visible identity is text in its surrounding row or card, add
+`container_text` to a role query. Krometrail qualifies the control against the nearest matching
+ancestor's rendered text; it does not use page-wide text or geometric proximity. For example:
+
+```json
+{"query":{"kind":"role","role":"checkbox","container_text":{"value":"Buy milk","mode":"exact","case_sensitive":false}}}
+```
+
 Read [browser contexts and assets](references/browser-contexts.md) before work that reuses a named
 profile, opens popups, enters frames, or diagnoses resource loading.
 
@@ -146,10 +155,12 @@ device fidelity. Use custom metrics only for bespoke geometry:
 ```
 
 The result reports the materialized metrics, responsive/mobile intent, independently observed visual
-and layout geometry, and at most one guidance item. A layout-mismatch guidance item means Chrome
-acknowledged the requested visual viewport but the page laid itself out differently; the specific
+and layout geometry, and at most one guidance item. Responsive desktop presets acknowledge the declared
+layout geometry; their visual content width may be smaller when Chrome reserves a scrollbar. Mobile
+presets acknowledge the visual viewport because page scale and viewport metadata govern that surface.
+A layout-mismatch guidance item describes page layout rather than an application failure; the specific
 missing-viewport-metadata guidance suggests adding page viewport metadata or using a responsive preset
-for CSS-breakpoint testing. It is not an application failure. Clear with
+for CSS-breakpoint testing. Clear with
 `{"viewport":{"mode":"clear"}}` to restore browser defaults. A geometry change creates a new visual
 epoch; do not compare pixels across incompatible epochs without declared normalization.
 
@@ -201,7 +212,9 @@ manifest provenance, ordered frame IDs, gap checks, or canonical evidence resour
 
 The default temporal bundle is a compact resource-and-provenance index without inline image bytes. Add
 `"response":{"inline_images":"inline"}` when the primary orientation/storyboard image should be embedded
-immediately; otherwise follow the returned canonical resource links for the exact artifact needed.
+immediately, or `"response":{"temporal":"full"}` when repeated full generator, frame, and provenance
+structures are genuinely needed in the tool result; otherwise follow the returned canonical resource links
+for the exact artifact needed. Snapshot and page-state projection choices never expand temporal detail.
 
 Video and manifest resources stay local by default. Reading them through Krometrail or handing a
 returned local resource to the active model host is normal tool use; do not upload or forward them
