@@ -745,9 +745,19 @@ impl PageControl {
         dispatched: SessionTime,
         change: PageChange,
     ) -> Result<BrowserOperationResult> {
-        let observed = self
-            .observe_after_operation(transport, state, selection, cancel)
-            .await?;
+        let observation = match self
+            .restore_viewport_before_navigation_observation(
+                transport, state, selection, target_id, cancel,
+            )
+            .await
+        {
+            Ok(()) => {
+                self.observe_after_operation(transport, state, selection, cancel)
+                    .await?
+                    .observation
+            }
+            Err(error) => ObservationPart::Unavailable(error),
+        };
         let result = self.navigation_result(
             target_id,
             kind,
@@ -755,9 +765,31 @@ impl PageControl {
             started,
             dispatched,
             PageOperationOutcome::Succeeded(change),
-            observed.observation,
+            observation,
         )?;
         Ok(wrap_result(kind, result))
+    }
+
+    async fn restore_viewport_before_navigation_observation(
+        &self,
+        transport: &dyn CdpTransport,
+        state: &SupervisorState,
+        selection: PageSelection,
+        target_id: TargetId,
+        cancel: &OperationCancellation,
+    ) -> Result<()> {
+        let target = state.resolve_selection(selection)?;
+        let Some(viewport) = target.viewport_override else {
+            return Ok(());
+        };
+        let bound = bind_target(state, selection)?;
+        cancel
+            .race(
+                state.connection_generation,
+                target_id,
+                restore_viewport_for_observation(transport, &bound, viewport),
+            )
+            .await?
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -986,6 +1018,16 @@ async fn read_document(
     })
 }
 
+async fn restore_viewport_for_observation(
+    transport: &dyn CdpTransport,
+    bound: &super::BoundTarget,
+    viewport: krometrail_core::ViewportMetrics,
+) -> Result<()> {
+    crate::control::viewport::apply_viewport(transport, bound, Some(viewport)).await?;
+    crate::control::viewport::observe_effective_viewport(transport, bound, Some(viewport)).await?;
+    Ok(())
+}
+
 fn navigation_error(target_id: TargetId, message: &'static str) -> KrometrailError {
     operation_error(ErrorCode::NavigationFailed, target_id, message)
         .with_retry(RetryAdvice::Safe)
@@ -1012,7 +1054,9 @@ mod tests {
     use super::*;
     use krometrail_core::{
         IdSource, IdValue, MonotonicClock, ObservedTime, SessionId, SessionOrigin,
+        TargetVisibility, ViewportMetrics,
     };
+    use std::sync::Mutex;
     use uuid::Uuid;
 
     use crate::transport::{TransportError, TransportEvents, TransportFuture, TransportSessionId};
@@ -1030,6 +1074,49 @@ mod tests {
     impl IdSource for TestIds {
         fn next(&self) -> IdValue {
             IdValue::from_uuid(Uuid::from_u128(2))
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingViewport {
+        calls: Mutex<Vec<String>>,
+    }
+
+    impl CdpTransport for RecordingViewport {
+        fn send_raw(
+            &self,
+            _scope: &CommandScope,
+            method: &str,
+            _params: Value,
+        ) -> TransportFuture<'_, std::result::Result<Value, TransportError>> {
+            self.calls.lock().unwrap().push(method.to_owned());
+            let value = match method {
+                "Page.getLayoutMetrics" => json!({
+                    "cssVisualViewport":{"clientWidth":390,"clientHeight":844}
+                }),
+                "Runtime.evaluate" => json!({"result":{"value":{
+                    "width":390,"height":844,"scale":3.0,"touchPoints":1
+                }}}),
+                _ => json!({}),
+            };
+            Box::pin(async move { Ok(value) })
+        }
+
+        fn subscribe_named(
+            &self,
+            _scope: &CommandScope,
+            _method: &str,
+        ) -> TransportFuture<'_, std::result::Result<Box<dyn TransportEvents>, TransportError>>
+        {
+            Box::pin(async { Err(TransportError::InvalidInput) })
+        }
+
+        fn close_reason(&self) -> Option<crate::transport::TransportClose> {
+            None
+        }
+
+        fn is_closed(&self) -> bool {
+            false
         }
     }
 
@@ -1094,6 +1181,34 @@ mod tests {
         cancellation.stop();
         let error = task.await.unwrap().unwrap_err();
         assert_eq!(error.code, ErrorCode::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn navigation_viewport_restore_is_verified_before_live_observation() {
+        let transport = RecordingViewport::default();
+        let bound = super::super::BoundTarget {
+            target_id: target(),
+            browser_target_key: "target-a".to_owned(),
+            attachment_generation: 1,
+            transport_session: TransportSessionId::new("session-a").unwrap(),
+            visibility: TargetVisibility::Visible,
+        };
+        let metrics = ViewportMetrics::new(390, 844, 3.0, true, true).unwrap();
+
+        restore_viewport_for_observation(&transport, &bound, metrics)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            transport.calls.lock().unwrap().as_slice(),
+            [
+                "Emulation.setDeviceMetricsOverride",
+                "Emulation.setTouchEmulationEnabled",
+                "Emulation.setPageScaleFactor",
+                "Page.getLayoutMetrics",
+                "Runtime.evaluate",
+            ]
+        );
     }
 
     #[tokio::test]
