@@ -16,11 +16,12 @@ use krometrail_core::{
     CaptureGapReason, CaptureOrdinal, CapturedFrame, DeviceScaleFactor, EncodedFrame,
     FrameAvailability, FrameId, FrameSource, IdSource, IdValue, ImageFormat, ObservedTime,
     OutputLimitsRequest, PixelDimensions, PortFuture, RangeResolutionOptions, RecordingSink,
-    ResolvedRange, RetentionStore, SessionId, SessionRange, SessionTime, StoredArtifact,
-    StoredVideoArtifact, TargetId, TargetLifecycle, TargetLifecycleEvent, TemporalRangeAnchorKind,
-    TemporalVideoEncoder, TemporalVideoGeneration, TemporalVideoGenerationRequest,
-    VideoArtifactLookup, VideoArtifactPublication, VideoArtifactPublish, VideoEncodeRequest,
-    VideoEncodedClip, VideoEncoderIdentity, VideoEncodingContext, VideoPresentationPolicy,
+    ResolvedRange, RetentionStore, RetrieveArtifactRequest, SessionId, SessionRange, SessionTime,
+    StoredArtifact, StoredVideoArtifact, TargetId, TargetLifecycle, TargetLifecycleEvent,
+    TemporalRangeAnchorKind, TemporalVideoEncoder, TemporalVideoGeneration,
+    TemporalVideoGenerationRequest, VideoArtifactLookup, VideoArtifactPublication,
+    VideoArtifactPublish, VideoEncodeRequest, VideoEncodedClip, VideoEncoderIdentity,
+    VideoEncodingContext, VideoPresentationPolicy,
 };
 use krometrail_store::{
     IndexStoreConfig, RecordingStore, RotationConfig, SegmentStoreConfig, SegmentWriter,
@@ -976,6 +977,45 @@ async fn real_store_cache_corruption_regenerates_through_the_service() {
         krometrail_core::ArtifactCacheDisposition::RegeneratedAfterInvalidation
     );
     assert_eq!(fixture.encoder.encodes.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn retained_video_read_stays_scoped_and_byte_bounded_behind_the_service() {
+    let fixture = real_fixture().await;
+    let generated = fixture
+        .service
+        .generate_video(
+            fixture.request.clone(),
+            ArtifactGenerationContext::default(),
+        )
+        .await
+        .unwrap();
+    let handle = &generated.clips[0].artifact;
+    let read = fixture
+        .service
+        .read_video_artifact(
+            RetrieveArtifactRequest::new(handle.scope, handle.artifact_id, handle.encoded_byte_len)
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(read.handle, *handle);
+    assert_eq!(read.encoded_bytes(), b"fake bounded mp4");
+
+    let wrong_scope = krometrail_core::EvidenceScope::new(
+        fixture.session,
+        TargetId::from_uuid(Uuid::from_u128(99_999)),
+    )
+    .unwrap();
+    let error = fixture
+        .service
+        .read_video_artifact(
+            RetrieveArtifactRequest::new(wrong_scope, handle.artifact_id, handle.encoded_byte_len)
+                .unwrap(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, krometrail_core::ErrorCode::NotFound);
 }
 
 #[tokio::test]

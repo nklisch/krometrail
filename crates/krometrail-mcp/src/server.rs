@@ -462,6 +462,7 @@ mod tests {
             temporal_debug_bundles: Arc::clone(&temporal) as Arc<dyn TemporalDebugBundles>,
             progressive_evidence: Arc::clone(&temporal) as Arc<dyn ProgressiveEvidence>,
             temporal_context: temporal as Arc<dyn TemporalContextQuery>,
+            temporal_video: None,
             diagnostics: DiagnosticContext::default(),
         }
     }
@@ -593,6 +594,7 @@ mod tests {
             temporal_debug_bundles: Arc::clone(&spy) as Arc<dyn TemporalDebugBundles>,
             progressive_evidence: Arc::clone(&spy) as Arc<dyn ProgressiveEvidence>,
             temporal_context: spy as Arc<dyn TemporalContextQuery>,
+            temporal_video: None,
             diagnostics: DiagnosticContext::default(),
         }
     }
@@ -1827,6 +1829,7 @@ mod tests {
             temporal_debug_bundles: Arc::clone(&spy) as Arc<dyn TemporalDebugBundles>,
             progressive_evidence: Arc::clone(&spy) as Arc<dyn ProgressiveEvidence>,
             temporal_context: spy as Arc<dyn TemporalContextQuery>,
+            temporal_video: None,
             diagnostics: DiagnosticContext::default(),
         };
         let (bundle, resource, manifest_resource, mismatch) =

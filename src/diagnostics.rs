@@ -36,6 +36,7 @@ pub(crate) fn initialize(data_directory: &Path) -> io::Result<Option<DiagnosticR
     let filter = Targets::new()
         .with_target("krometrail", Level::INFO)
         .with_target("krometrail_cdp", Level::INFO)
+        .with_target("krometrail_ffmpeg", Level::INFO)
         .with_target("krometrail_store", Level::INFO)
         .with_target("krometrail_mcp", Level::INFO);
     let subscriber = tracing_subscriber::registry().with(filter).with(

@@ -5,8 +5,9 @@ mod manifest;
 mod plan;
 
 pub use generation::{
-    TemporalVideoGeneration, TemporalVideoGenerationClip, TemporalVideoGenerationRequest,
-    TemporalVideoGenerationResult, VideoArtifactEvidenceHandle, VideoArtifactRead,
+    TEMPORAL_VIDEO_OPERATION, TemporalVideoGeneration, TemporalVideoGenerationClip,
+    TemporalVideoGenerationRequest, TemporalVideoGenerationResult,
+    TemporalVideoOperationDefinition, VideoArtifactEvidenceHandle, VideoArtifactRead,
 };
 pub use manifest::{
     TEMPORAL_VIDEO_MANIFEST_SCHEMA_VERSION, TemporalVideoManifest, VIDEO_MEANINGFUL_SELECTOR_NAME,

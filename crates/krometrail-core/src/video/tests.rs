@@ -1,4 +1,21 @@
 use super::*;
+
+#[test]
+fn temporal_video_operation_is_one_stable_registry_contract() {
+    assert_eq!(
+        TEMPORAL_VIDEO_OPERATION.stable_name,
+        "generate_temporal_video"
+    );
+    assert_eq!(
+        TEMPORAL_VIDEO_OPERATION.capability,
+        crate::CapabilityId::TemporalVideo
+    );
+    assert_eq!(
+        TEMPORAL_VIDEO_OPERATION.mutability,
+        crate::OperationMutability::ReadOnly
+    );
+    assert!(!TEMPORAL_VIDEO_OPERATION.description.trim().is_empty());
+}
 use crate::{
     ArtifactId, CaptureGap, CaptureGapReason, CaptureOrdinal, CapturedFrame, DeviceScaleFactor,
     ErrorCode, FrameId, GapId, ImageFormat, ObservedTime, PixelDimensions, RangeResolutionOptions,

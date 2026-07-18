@@ -749,6 +749,7 @@ dependencies = [
  "image",
  "krometrail-cdp",
  "krometrail-core",
+ "krometrail-ffmpeg",
  "krometrail-mcp",
  "krometrail-store",
  "libc",

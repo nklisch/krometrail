@@ -99,8 +99,8 @@ pub use browser::{
     wait_timeout_error,
 };
 pub use capabilities::{
-    CAPABILITY_REGISTRY, CapabilityDefault, CapabilityDefinition, CapabilityId, RecordingSubsystem,
-    capability, validate_capability_selection,
+    CAPABILITY_REGISTRY, CapabilityDefault, CapabilityDefinition, CapabilityId, CapabilitySnapshot,
+    CapabilityState, RecordingSubsystem, capability, validate_capability_selection,
 };
 pub use debug_bundle::{
     BundleArtifactEvidence, BundleContextEvidence, BundleDegradation, BundleEpochVisualSummary,

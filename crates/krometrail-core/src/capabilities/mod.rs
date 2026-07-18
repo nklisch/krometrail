@@ -1,5 +1,7 @@
 //! Capability registry: identifiers, defaults, dependencies, and subsystems live here once.
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -11,7 +13,22 @@ use crate::{
 pub enum CapabilityDefault {
     Enabled,
     Disabled,
+    RuntimeQualified,
     Unavailable,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CapabilityState {
+    Enabled,
+    Disabled,
+    Unavailable,
+}
+
+/// One immutable, registry-ordered capability decision for a process surface.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CapabilitySnapshot {
+    states: Arc<[CapabilityState]>,
+    enabled: Arc<[CapabilityId]>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -72,6 +89,11 @@ define_capability_registry!(
         dependencies: [],
         subsystems: [RecordingSubsystem::VisualCapture],
     },
+    TemporalVideo {
+        default: RuntimeQualified,
+        dependencies: [CapabilityId::TemporalVision],
+        subsystems: [],
+    },
     BrowserEvents {
         default: Enabled,
         dependencies: [],
@@ -122,6 +144,118 @@ pub fn validate_capability_selection(enabled: &[CapabilityId]) -> Result<()> {
     Ok(())
 }
 
+impl CapabilitySnapshot {
+    /// Resolve registry defaults against the capabilities proven available at startup.
+    pub fn resolve_defaults(runtime_qualified: &[CapabilityId]) -> Result<Self> {
+        Self::resolve(None, runtime_qualified)
+    }
+
+    /// Resolve an explicit operator selection against startup qualification.
+    pub fn resolve_explicit(
+        selected: Vec<CapabilityId>,
+        runtime_qualified: &[CapabilityId],
+    ) -> Result<Self> {
+        Self::resolve(Some(selected), runtime_qualified)
+    }
+
+    fn resolve(
+        selected: Option<Vec<CapabilityId>>,
+        runtime_qualified: &[CapabilityId],
+    ) -> Result<Self> {
+        validate_runtime_qualification(runtime_qualified)?;
+        if let Some(selected) = selected.as_deref() {
+            validate_capability_selection(selected)?;
+        }
+
+        let explicitly_selected = selected.is_some();
+        let requested = selected.unwrap_or_else(|| {
+            CAPABILITY_REGISTRY
+                .iter()
+                .filter(|definition| {
+                    matches!(
+                        definition.default,
+                        CapabilityDefault::Enabled | CapabilityDefault::RuntimeQualified
+                    )
+                })
+                .map(|definition| definition.id)
+                .collect()
+        });
+        let mut states = Vec::with_capacity(CAPABILITY_REGISTRY.len());
+        let mut enabled = Vec::with_capacity(CAPABILITY_REGISTRY.len());
+        for definition in CAPABILITY_REGISTRY {
+            let requested = requested.contains(&definition.id);
+            let state = if !requested {
+                match definition.default {
+                    CapabilityDefault::Unavailable => CapabilityState::Unavailable,
+                    _ => CapabilityState::Disabled,
+                }
+            } else if definition.default == CapabilityDefault::Unavailable {
+                return Err(unavailable_error(definition.id));
+            } else if definition.default == CapabilityDefault::RuntimeQualified
+                && !runtime_qualified.contains(&definition.id)
+            {
+                if explicitly_selected {
+                    return Err(unavailable_error(definition.id));
+                }
+                CapabilityState::Unavailable
+            } else {
+                for dependency in definition.dependencies {
+                    if !enabled.contains(dependency) {
+                        return Err(invalid(format!(
+                            "capability {:?} requires {dependency:?}",
+                            definition.id
+                        )));
+                    }
+                }
+                enabled.push(definition.id);
+                CapabilityState::Enabled
+            };
+            states.push(state);
+        }
+        Ok(Self {
+            states: states.into(),
+            enabled: enabled.into(),
+        })
+    }
+
+    pub fn state(&self, id: CapabilityId) -> CapabilityState {
+        let index = CAPABILITY_REGISTRY
+            .iter()
+            .position(|definition| definition.id == id)
+            .expect("capability registry contains every id");
+        self.states[index]
+    }
+
+    pub fn is_enabled(&self, id: CapabilityId) -> bool {
+        self.state(id) == CapabilityState::Enabled
+    }
+
+    pub fn enabled_capabilities(&self) -> &[CapabilityId] {
+        &self.enabled
+    }
+}
+
+fn validate_runtime_qualification(runtime_qualified: &[CapabilityId]) -> Result<()> {
+    for (index, id) in runtime_qualified.iter().enumerate() {
+        if runtime_qualified[..index].contains(id)
+            || capability(*id).default != CapabilityDefault::RuntimeQualified
+        {
+            return Err(invalid(format!(
+                "capability {id:?} has an invalid runtime qualification"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn unavailable_error(id: CapabilityId) -> KrometrailError {
+    KrometrailError::new(
+        ErrorCode::Unsupported,
+        NonEmptyText::new(format!("capability {id:?} is unavailable"))
+            .expect("capability error message is non-empty"),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -143,6 +277,10 @@ mod tests {
         assert_eq!(
             capability(CapabilityId::TemporalVision).default,
             CapabilityDefault::Enabled
+        );
+        assert_eq!(
+            capability(CapabilityId::TemporalVideo).default,
+            CapabilityDefault::RuntimeQualified
         );
         assert_eq!(
             capability(CapabilityId::BrowserEvents).default,
@@ -172,5 +310,56 @@ mod tests {
             validate_capability_selection(&[CapabilityId::Control, CapabilityId::TemporalVision])
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn startup_snapshot_is_registry_ordered_and_runtime_qualified_once() {
+        let unavailable = CapabilitySnapshot::resolve_defaults(&[]).unwrap();
+        assert_eq!(
+            unavailable.state(CapabilityId::TemporalVideo),
+            CapabilityState::Unavailable
+        );
+        assert!(!unavailable.is_enabled(CapabilityId::TemporalVideo));
+
+        let qualified =
+            CapabilitySnapshot::resolve_defaults(&[CapabilityId::TemporalVideo]).unwrap();
+        assert!(qualified.is_enabled(CapabilityId::TemporalVideo));
+        assert_eq!(
+            qualified.enabled_capabilities(),
+            &[
+                CapabilityId::Control,
+                CapabilityId::TemporalVision,
+                CapabilityId::TemporalVideo,
+                CapabilityId::BrowserEvents,
+            ]
+        );
+    }
+
+    #[test]
+    fn explicit_selection_can_disable_video_but_cannot_claim_unavailable_video() {
+        let disabled = CapabilitySnapshot::resolve_explicit(
+            vec![CapabilityId::Control, CapabilityId::TemporalVision],
+            &[CapabilityId::TemporalVideo],
+        )
+        .unwrap();
+        assert_eq!(
+            disabled.state(CapabilityId::TemporalVideo),
+            CapabilityState::Disabled
+        );
+        assert!(
+            CapabilitySnapshot::resolve_explicit(
+                vec![CapabilityId::TemporalVision, CapabilityId::TemporalVideo],
+                &[],
+            )
+            .is_err()
+        );
+        assert!(
+            CapabilitySnapshot::resolve_explicit(
+                vec![CapabilityId::TemporalVideo],
+                &[CapabilityId::TemporalVideo],
+            )
+            .is_err()
+        );
+        assert!(CapabilitySnapshot::resolve_defaults(&[CapabilityId::Control]).is_err());
     }
 }

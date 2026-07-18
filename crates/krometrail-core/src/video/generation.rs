@@ -6,7 +6,8 @@ use crate::{
     ArtifactCacheDisposition, ArtifactGenerationContext, ArtifactId, ErrorCode, EvidenceScope,
     KrometrailError, MAX_VIDEO_ENCODED_OUTPUT_BYTES, MAX_VIDEO_HEIGHT, MAX_VIDEO_SOURCE_DURATION,
     MAX_VIDEO_SOURCE_FRAMES, MAX_VIDEO_WIDTH, NonEmptyText, OutputLimitsRequest, PortFuture,
-    ResolvedRange, Result, Sha256Digest, TemporalVideoManifest, VideoPresentationPolicy,
+    ResolvedRange, Result, RetrieveArtifactRequest, Sha256Digest, TemporalVideoManifest,
+    VideoPresentationPolicy,
     validation::{delegate_json_schema, deserialize_validated},
 };
 
@@ -199,7 +200,28 @@ pub trait TemporalVideoGeneration: Send + Sync {
         request: TemporalVideoGenerationRequest,
         context: ArtifactGenerationContext,
     ) -> PortFuture<'_, Result<TemporalVideoGenerationResult>>;
+
+    fn read_video_artifact(
+        &self,
+        request: RetrieveArtifactRequest,
+    ) -> PortFuture<'_, Result<VideoArtifactRead>>;
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TemporalVideoOperationDefinition {
+    pub stable_name: &'static str,
+    pub description: &'static str,
+    pub capability: crate::CapabilityId,
+    pub mutability: crate::OperationMutability,
+}
+
+pub const TEMPORAL_VIDEO_OPERATION: TemporalVideoOperationDefinition =
+    TemporalVideoOperationDefinition {
+        stable_name: "generate_temporal_video",
+        description: "Generate bounded retained MP4/H.264 clips from an exact temporal range.",
+        capability: crate::CapabilityId::TemporalVideo,
+        mutability: crate::OperationMutability::ReadOnly,
+    };
 
 fn invalid(message: &'static str) -> KrometrailError {
     KrometrailError::new(

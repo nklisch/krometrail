@@ -5,11 +5,11 @@ use std::{
 
 use krometrail_core::{
     ArtifactGeneration, ArtifactStore, BrowserConnector, BrowserEventSink, CapabilityId,
-    CaptureGapStore, DiskBudgetBytes, ErrorCode, FrameSource, IdSource, IdValue,
-    InteractionEvidenceSink, KrometrailError, MonotonicClock, NonEmptyText, ProgressiveEvidence,
-    ProgressiveEvidenceStore, RecordingCatalog, RecordingSink, Result, RetentionStore,
-    TemporalContextQuery, TemporalDebugBundles, TemporalQuery, TemporalVideoEncoder,
-    TemporalVideoGeneration, TimelineStore, WallClock,
+    CapabilitySnapshot, CaptureGapStore, DiskBudgetBytes, ErrorCode, FrameSource, IdSource,
+    IdValue, InteractionEvidenceSink, KrometrailError, MonotonicClock, NonEmptyText,
+    ProgressiveEvidence, ProgressiveEvidenceStore, RecordingCatalog, RecordingSink, Result,
+    RetentionStore, TemporalContextQuery, TemporalDebugBundles, TemporalQuery,
+    TemporalVideoEncoder, TemporalVideoGeneration, TimelineStore, WallClock,
 };
 use uuid::Uuid;
 
@@ -26,6 +26,9 @@ use crate::{
 use krometrail_cdp::{
     BrowserEventConfig, CaptureConfig, LauncherConfig, ProductionBrowserConnector,
     SystemChromeLauncher,
+};
+use krometrail_ffmpeg::{
+    FfmpegDiscoveryOptions, FfmpegQualification, FfmpegUnavailable, qualify_ffmpeg,
 };
 use krometrail_mcp::{DiagnosticContext, McpConfig, McpDependencies, build_service};
 use krometrail_store::{
@@ -55,7 +58,7 @@ pub(crate) struct RuntimeDependencies {
     pub artifact_generation: Arc<dyn ArtifactGeneration>,
     pub progressive_evidence: Arc<dyn ProgressiveEvidence>,
     pub temporal_debug_bundles: Arc<dyn TemporalDebugBundles>,
-    pub mcp_config: McpConfig,
+    pub artifacts: Arc<dyn ArtifactStore>,
     pub diagnostics: DiagnosticContext,
 }
 
@@ -93,12 +96,16 @@ struct StorageDependencies {
 }
 
 impl RuntimeDependencies {
-    fn mcp_dependencies(&self) -> McpDependencies {
+    fn mcp_dependencies(
+        &self,
+        temporal_video: Option<Arc<dyn TemporalVideoGeneration>>,
+    ) -> McpDependencies {
         McpDependencies {
             browser: Arc::clone(&self.browser),
             temporal_debug_bundles: Arc::clone(&self.temporal_debug_bundles),
             progressive_evidence: Arc::clone(&self.progressive_evidence),
             temporal_context: Arc::clone(&self.temporal_context),
+            temporal_video,
             diagnostics: self.diagnostics.clone(),
         }
     }
@@ -144,11 +151,34 @@ impl Runtime {
                 Ok(())
             }
             Command::Mcp => {
-                // The complete runtime is assembled before this branch. MCP receives the
-                // already-created application ports and never constructs storage or CDP adapters.
+                // FFmpeg is optional and MCP-only. One bounded qualification result controls the
+                // immutable capability snapshot and the optional retained generation service.
+                let qualification = qualify_ffmpeg(
+                    FfmpegDiscoveryOptions::from_process_environment(),
+                    Arc::new(StartupCancellation),
+                    Instant::now() + krometrail_ffmpeg::FFMPEG_QUALIFICATION_TIMEOUT,
+                )
+                .await;
+                let (encoder, unavailable, identity) = match qualification {
+                    FfmpegQualification::Qualified(encoder) => {
+                        let identity = encoder.identity().clone();
+                        let encoder: Arc<dyn TemporalVideoEncoder> = encoder;
+                        (Some(encoder), None, Some(identity))
+                    }
+                    FfmpegQualification::Unavailable(unavailable) => {
+                        (None, Some(unavailable), None)
+                    }
+                };
+                let (mcp_config, temporal_video) =
+                    compose_temporal_video(&self.dependencies, encoder)?;
+                log_temporal_video_availability(
+                    temporal_video.as_ref(),
+                    unavailable.as_ref(),
+                    identity.as_ref(),
+                );
                 build_service(
-                    self.dependencies.mcp_dependencies(),
-                    self.dependencies.mcp_config.clone(),
+                    self.dependencies.mcp_dependencies(temporal_video),
+                    mcp_config,
                 )?
                 .serve_stdio()
                 .await
@@ -235,9 +265,75 @@ pub(crate) fn build_runtime(diagnostics: DiagnosticContext) -> Result<Runtime> {
         artifact_generation,
         progressive_evidence,
         temporal_debug_bundles,
-        mcp_config,
+        artifacts: storage.artifacts,
         diagnostics,
     }))
+}
+
+fn compose_temporal_video(
+    dependencies: &RuntimeDependencies,
+    encoder: Option<Arc<dyn TemporalVideoEncoder>>,
+) -> Result<(McpConfig, Option<Arc<dyn TemporalVideoGeneration>>)> {
+    let temporal_video = encoder
+        .map(|encoder| {
+            build_temporal_video_generation(
+                Arc::clone(&dependencies.frames),
+                Arc::clone(&dependencies.artifacts),
+                Arc::clone(&dependencies.ids),
+                encoder,
+                VideoGenerationLimits::default(),
+            )
+        })
+        .transpose()?;
+    let runtime_qualified = temporal_video
+        .is_some()
+        .then_some(CapabilityId::TemporalVideo)
+        .into_iter()
+        .collect::<Vec<_>>();
+    let snapshot = CapabilitySnapshot::resolve_defaults(&runtime_qualified)?;
+    Ok((McpConfig::from_snapshot(snapshot), temporal_video))
+}
+
+fn log_temporal_video_availability(
+    service: Option<&Arc<dyn TemporalVideoGeneration>>,
+    unavailable: Option<&FfmpegUnavailable>,
+    identity: Option<&krometrail_core::VideoEncoderIdentity>,
+) {
+    if service.is_some() {
+        let identity = identity.expect("qualified video service carries encoder identity");
+        tracing::info!(
+            event = "capability.availability",
+            capability = "temporal-video",
+            availability = "qualified",
+            encoder = identity.encoder_name(),
+            adapter_version = identity.adapter_version(),
+            argument_policy = identity.argument_policy_version(),
+            restart_required_for_change = true,
+            "temporal video startup availability resolved"
+        );
+    } else {
+        tracing::info!(
+            event = "capability.availability",
+            capability = "temporal-video",
+            availability = "unavailable",
+            qualification_stage = ?unavailable.map(|value| value.stage),
+            reason = ?unavailable.map(|value| value.reason),
+            restart_required_for_change = true,
+            "temporal video startup availability resolved"
+        );
+    }
+}
+
+struct StartupCancellation;
+
+impl krometrail_core::CancellationSignal for StartupCancellation {
+    fn is_cancelled(&self) -> bool {
+        false
+    }
+
+    fn cancelled(&self) -> krometrail_core::PortFuture<'_, ()> {
+        Box::pin(std::future::pending())
+    }
 }
 
 fn browser_event_config(capabilities: &McpConfig) -> BrowserEventConfig {
@@ -469,10 +565,10 @@ mod tests {
             artifact_generation,
             progressive_evidence,
             temporal_debug_bundles,
-            mcp_config: McpConfig::default(),
+            artifacts: storage.artifacts,
             diagnostics: DiagnosticContext::default(),
         };
-        let mcp_dependencies = runtime_dependencies.mcp_dependencies();
+        let mcp_dependencies = runtime_dependencies.mcp_dependencies(None);
         assert!(Arc::ptr_eq(
             &mcp_dependencies.browser,
             &runtime_dependencies.browser
@@ -589,6 +685,110 @@ mod tests {
         assert!(explicitly_disabled.is_enabled(CapabilityId::TemporalVision));
         assert!(!explicitly_disabled.is_enabled(CapabilityId::BrowserEvents));
         assert!(!browser_event_config(&explicitly_disabled).enabled);
+    }
+
+    struct CompositionEncoder {
+        identity: krometrail_core::VideoEncoderIdentity,
+    }
+
+    impl CompositionEncoder {
+        fn new() -> Self {
+            Self {
+                identity: krometrail_core::VideoEncoderIdentity::new(
+                    "fixture-ffmpeg",
+                    [7; 32],
+                    "libx264",
+                    "fixture-adapter",
+                    "fixture-policy",
+                )
+                .unwrap(),
+            }
+        }
+    }
+
+    impl TemporalVideoEncoder for CompositionEncoder {
+        fn identity(&self) -> &krometrail_core::VideoEncoderIdentity {
+            &self.identity
+        }
+
+        fn encode(
+            &self,
+            _request: krometrail_core::VideoEncodeRequest,
+            _context: krometrail_core::VideoEncodingContext,
+        ) -> PortFuture<'_, Result<krometrail_core::VideoEncodedClip>> {
+            panic!("composition test must not encode")
+        }
+    }
+
+    #[test]
+    fn one_startup_result_controls_video_capability_and_service_construction() {
+        let root =
+            std::env::temp_dir().join(format!("krometrail-video-composition-{}", Uuid::new_v4()));
+        let storage = open_storage_with_budget(&root, DiskBudgetBytes::default()).unwrap();
+        let ids: Arc<dyn IdSource> = Arc::new(ProcessIdSource);
+        let artifact_generation: Arc<dyn ArtifactGeneration> = Arc::new(
+            TemporalVisionArtifactService::new(
+                Arc::clone(&storage.frames),
+                Arc::clone(&storage.artifacts),
+                Arc::clone(&ids),
+                ArtifactWorkLimits::default(),
+            )
+            .unwrap(),
+        );
+        let dependencies = RuntimeDependencies {
+            clock: Arc::new(ProcessMonotonicClock {
+                origin: Instant::now(),
+            }),
+            wall_clock: Arc::new(SystemWallClock),
+            ids,
+            browser: Arc::new(DiscoveryOnlyFake {
+                installations_calls: AtomicUsize::new(0),
+            }),
+            recording: storage.recording,
+            retention: storage.retention,
+            timeline: storage.timeline,
+            catalog: storage.catalog,
+            gaps: storage.gaps,
+            frames: storage.frames,
+            temporal_queries: storage.temporal_queries,
+            temporal_context: storage.temporal_context,
+            progressive_evidence: Arc::new(ProgressiveEvidenceService::new(
+                Arc::clone(&storage.store) as Arc<dyn ProgressiveEvidenceStore>,
+                Arc::clone(&artifact_generation),
+            )),
+            temporal_debug_bundles: Arc::new(
+                TemporalDebugBundleService::new(
+                    Arc::clone(&storage.store) as Arc<dyn TemporalQuery>,
+                    Arc::clone(&storage.store) as Arc<dyn TemporalDebugEvidenceStore>,
+                    Arc::clone(&artifact_generation),
+                    Arc::clone(&storage.store) as Arc<dyn TemporalContextQuery>,
+                    BundleWorkLimits::default(),
+                )
+                .unwrap(),
+            ),
+            artifact_generation,
+            artifacts: storage.artifacts,
+            diagnostics: DiagnosticContext::default(),
+        };
+
+        let (unavailable_config, unavailable_service) =
+            compose_temporal_video(&dependencies, None).unwrap();
+        assert!(!unavailable_config.is_enabled(CapabilityId::TemporalVideo));
+        assert!(unavailable_service.is_none());
+
+        let encoder: Arc<dyn TemporalVideoEncoder> = Arc::new(CompositionEncoder::new());
+        let (qualified_config, qualified_service) =
+            compose_temporal_video(&dependencies, Some(encoder)).unwrap();
+        assert!(qualified_config.is_enabled(CapabilityId::TemporalVideo));
+        let qualified_service = qualified_service.expect("qualified startup builds the service");
+        let mcp = dependencies.mcp_dependencies(Some(Arc::clone(&qualified_service)));
+        assert!(Arc::ptr_eq(
+            mcp.temporal_video.as_ref().unwrap(),
+            &qualified_service
+        ));
+
+        drop(dependencies);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -28,6 +28,7 @@ repository = "https://github.com/nklisch/krometrail"
 [workspace.dependencies]
 krometrail-core = { path = "crates/krometrail-core" }
 krometrail-cdp = { path = "crates/krometrail-cdp" }
+krometrail-ffmpeg = { path = "crates/krometrail-ffmpeg" }
 krometrail-store = { path = "crates/krometrail-store" }
 krometrail-mcp = { path = "crates/krometrail-mcp" }
 temporal-vision = { path = "crates/temporal-vision" }
@@ -71,6 +72,7 @@ qualification-support = [
 clap.workspace = true
 krometrail-core.workspace = true
 krometrail-cdp.workspace = true
+krometrail-ffmpeg.workspace = true
 krometrail-store.workspace = true
 krometrail-mcp.workspace = true
 temporal-vision.workspace = true

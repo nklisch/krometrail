@@ -9,13 +9,13 @@ use std::{
 use krometrail_core::{
     ArtifactCacheDisposition, ArtifactCacheKey, ArtifactGenerationContext, ArtifactId,
     ArtifactStore, CancellationSignal, ErrorCode, EvidenceScope, FrameSource, IdSource,
-    KrometrailError, NonEmptyText, PortFuture, Result, Sha256Digest, StoredVideoArtifact,
-    TemporalVideoEncoder, TemporalVideoGeneration, TemporalVideoGenerationClip,
-    TemporalVideoGenerationRequest, TemporalVideoGenerationResult, TemporalVideoManifest,
-    VideoArtifactEvidenceHandle, VideoArtifactLookup, VideoArtifactPublication,
-    VideoArtifactPublish, VideoEncodeRequest, VideoEncodedClip, VideoEncodingContext,
-    VideoEncodingProfile, VideoPlanInput, VideoPresentationPolicy, VideoSegmentSource,
-    canonical_video_cache_parameters,
+    KrometrailError, NonEmptyText, PortFuture, Result, RetrieveArtifactRequest, Sha256Digest,
+    StoredVideoArtifact, TemporalVideoEncoder, TemporalVideoGeneration,
+    TemporalVideoGenerationClip, TemporalVideoGenerationRequest, TemporalVideoGenerationResult,
+    TemporalVideoManifest, VideoArtifactEvidenceHandle, VideoArtifactLookup,
+    VideoArtifactPublication, VideoArtifactPublish, VideoArtifactRead, VideoArtifactReadLookup,
+    VideoEncodeRequest, VideoEncodedClip, VideoEncodingContext, VideoEncodingProfile,
+    VideoPlanInput, VideoPresentationPolicy, VideoSegmentSource, canonical_video_cache_parameters,
 };
 use tokio::sync::Semaphore;
 
@@ -513,6 +513,25 @@ impl TemporalVideoGeneration for TemporalVideoGenerationService {
     ) -> PortFuture<'_, Result<TemporalVideoGenerationResult>> {
         Box::pin(async move { self.generate_inner(request, context).await })
     }
+
+    fn read_video_artifact(
+        &self,
+        request: RetrieveArtifactRequest,
+    ) -> PortFuture<'_, Result<VideoArtifactRead>> {
+        Box::pin(async move {
+            match self.artifacts.read_video_artifact(request).await? {
+                VideoArtifactReadLookup::Available(read) => Ok(*read),
+                VideoArtifactReadLookup::Missing => Err(video_read_error(
+                    ErrorCode::NotFound,
+                    "retained temporal video is not available",
+                )),
+                VideoArtifactReadLookup::Invalidated => Err(video_read_error(
+                    ErrorCode::EvidenceInvalidated,
+                    "retained temporal video failed validation and was invalidated",
+                )),
+            }
+        })
+    }
 }
 
 #[derive(Default)]
@@ -610,4 +629,12 @@ fn generation_error(message: impl Into<String>) -> KrometrailError {
         ErrorCode::ArtifactGenerationFailed,
         NonEmptyText::new(message.into()).expect("video generation messages are non-empty"),
     )
+}
+
+fn video_read_error(code: ErrorCode, message: &'static str) -> KrometrailError {
+    KrometrailError::new(
+        code,
+        NonEmptyText::new(message).expect("static video read message is non-empty"),
+    )
+    .with_retry(code.default_retry())
 }
