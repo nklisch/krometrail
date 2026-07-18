@@ -500,6 +500,40 @@ async fn storyboard_anchor_before_first_retained_frame_is_clamped() {
 }
 
 #[tokio::test]
+async fn storyboard_anchor_is_clamped_for_every_visual_epoch() {
+    let mut rig = rig(true, ArtifactWorkLimits::default());
+    let generator = rig.request.generators()[0].clone();
+    let semantic_anchor = rig.request.range().resolved_anchor.clone();
+    rig.request = ArtifactGenerationRequest::new(
+        rig.request.range().clone(),
+        vec![],
+        vec![generator],
+        ArtifactFailurePolicy::RequireAll,
+    )
+    .unwrap();
+
+    let result = rig
+        .service
+        .generate(rig.request.clone(), ArtifactGenerationContext::default())
+        .await
+        .unwrap();
+
+    for epoch_index in [0, 1] {
+        for kind in [
+            temporal_vision::ArtifactKind::Storyboard,
+            temporal_vision::ArtifactKind::BeforeDuringAfter,
+        ] {
+            assert!(result.outcomes.iter().any(|outcome| matches!(
+                outcome,
+                ArtifactOutcome::Available { epoch_index: actual_epoch, artifact, .. }
+                    if *actual_epoch == epoch_index && artifact.manifest.artifact_kind() == kind
+            )));
+        }
+    }
+    assert_eq!(rig.request.range().resolved_anchor, semantic_anchor);
+}
+
+#[tokio::test]
 async fn concurrent_identical_misses_share_generation_and_waiters() {
     let rig = rig(false, ArtifactWorkLimits::default());
     let (first, second) = tokio::join!(
