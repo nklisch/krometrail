@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-video-artifacts-agent-surface
 kind: feature
-stage: implementing
+stage: review
 tags: [agent-ux, infra, testing]
 parent: epic-temporal-video-artifacts
 depends_on: [epic-temporal-video-artifacts-ffmpeg-runtime, epic-temporal-video-artifacts-retained-generation]
@@ -145,3 +145,24 @@ The graph is deliberately linear at the public integration seam. It prevents plu
 
 - Invoked because: this feature completes a stable public MCP/plugin surface and composes both external-process and retained-data branches.
 - Skipped/degraded: the active autopilot delegation explicitly prohibited nested agents and peeragent. Source-grounded alternatives and the pre-mortem above substitute for design-time advisory only; normal independent feature review remains mandatory.
+
+## Implementation summary
+
+- One immutable startup capability snapshot now controls retained-video service construction, MCP tool
+  discovery, schemas, resource templates, and reads while preserving healthy still evidence when FFmpeg
+  is unavailable.
+- The conditional `generate_temporal_video` route returns compact per-epoch metadata and local MP4 and
+  manifest links; bounded retained reads enforce scope and size through the same injected authority.
+- Shipped agent guidance, distribution checks, optional F/G evaluation evidence, deterministic degraded
+  startup coverage, and an explicit real-FFmpeg end-to-end lane now describe and qualify the surface.
+
+## Verification evidence
+
+- `cargo fmt --all -- --check`
+- `cargo check --workspace --all-targets --locked`
+- `cargo test --workspace --all-targets --locked`
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`
+- `bun run docs:build`
+- `bash tests/plugin-static.sh`
+- skill-creator `quick_validate.py plugin/skills/krometrail` via isolated `uv --with pyyaml`
+- explicit selected-FFmpeg live integration for `real_time` and `model_optimized`
