@@ -2,15 +2,16 @@ use std::{sync::Arc, time::Duration};
 
 use krometrail_core::{
     ArtifactCacheKey, ArtifactCacheMetadata, ArtifactSourceFingerprint, ArtifactStore,
-    CaptureOrdinal, CapturedFrame, DeviceScaleFactor, EncodedFrame, ErrorCode, EvidenceScope,
-    FrameId, FrameSource, ImageFormat, NonEmptyText, ObservedTime, PixelDimensions,
-    PresentationRange, PresentationTime, RangeResolutionOptions, RecordingSink, ResolvedRange,
-    RetentionStore, RetrieveArtifactRequest, SessionId, SessionRange, SessionTime,
-    StoredVideoArtifact, TEMPORAL_VIDEO_GENERATOR_NAME, TEMPORAL_VIDEO_GENERATOR_VERSION, TargetId,
-    TemporalRangeAnchorKind, TemporalVideoManifest, VideoArtifactLookup, VideoArtifactPublication,
-    VideoArtifactPublish, VideoArtifactReadLookup, VideoEncodedClip, VideoEncoderIdentity,
-    VideoEncodingProfile, VideoOutputGeometry, VideoPresentationPlan, VideoPresentationPolicy,
-    VideoPresentationSegment, VideoSegmentSource, VideoTimingBasis, VisualEpoch,
+    CancellationSignal, CaptureOrdinal, CapturedFrame, DeviceScaleFactor, DiskBudgetBytes,
+    EncodedFrame, ErrorCode, EvidenceScope, FrameId, FrameSource, ImageFormat, NonEmptyText,
+    ObservedTime, PixelDimensions, PortFuture, PresentationRange, PresentationTime,
+    RangeResolutionOptions, RecordingSink, ResolvedRange, RetentionStore, RetrieveArtifactRequest,
+    SessionId, SessionRange, SessionTime, StoredVideoArtifact, TEMPORAL_VIDEO_GENERATOR_NAME,
+    TEMPORAL_VIDEO_GENERATOR_VERSION, TargetId, TemporalRangeAnchorKind, TemporalVideoManifest,
+    VideoArtifactLookup, VideoArtifactPublication, VideoArtifactPublish, VideoArtifactReadLookup,
+    VideoEncodedClip, VideoEncoderIdentity, VideoEncodingProfile, VideoOutputGeometry,
+    VideoPresentationPlan, VideoPresentationPolicy, VideoPresentationSegment, VideoSegmentSource,
+    VideoTimingBasis, VisualEpoch,
 };
 use krometrail_store::{
     IndexStoreConfig, RecordingStore, RotationConfig, SegmentStoreConfig, SegmentWriter,
@@ -30,6 +31,13 @@ struct Fixture {
 }
 
 fn open_store(directory: &std::path::Path) -> Arc<RecordingStore> {
+    open_store_with_budget(directory, None)
+}
+
+fn open_store_with_budget(
+    directory: &std::path::Path,
+    budget: Option<DiskBudgetBytes>,
+) -> Arc<RecordingStore> {
     let segments = directory.join("segments");
     let index = Arc::new(
         SqliteIndex::open(IndexStoreConfig {
@@ -39,14 +47,25 @@ fn open_store(directory: &std::path::Path) -> Arc<RecordingStore> {
         })
         .unwrap(),
     );
+    let rotation = if budget.is_some() {
+        RotationConfig {
+            max_duration: Duration::from_secs(60),
+            max_size: 1,
+        }
+    } else {
+        RotationConfig::suggested()
+    };
     let writer = Arc::new(
         SegmentWriter::open(SegmentStoreConfig {
             directory: segments,
-            rotation: RotationConfig::suggested(),
+            rotation,
         })
         .unwrap(),
     );
-    Arc::new(RecordingStore::new(writer, index).unwrap())
+    Arc::new(match budget {
+        Some(budget) => RecordingStore::with_budget(writer, index, budget).unwrap(),
+        None => RecordingStore::new(writer, index).unwrap(),
+    })
 }
 
 async fn fixture() -> Fixture {
@@ -290,4 +309,188 @@ async fn corrupt_video_is_invalidated_without_affecting_source_frames() {
             .len(),
         1
     );
+}
+
+struct AlreadyCancelled;
+
+impl CancellationSignal for AlreadyCancelled {
+    fn is_cancelled(&self) -> bool {
+        true
+    }
+
+    fn cancelled(&self) -> PortFuture<'_, ()> {
+        Box::pin(std::future::ready(()))
+    }
+}
+
+#[tokio::test]
+async fn cancelled_video_publication_leaves_no_visible_or_accounted_state() {
+    let fixture = fixture().await;
+    let publication = publication(&fixture, 40, 41).with_cancellation(Arc::new(AlreadyCancelled));
+    let error = fixture
+        .store
+        .publish_video_artifact(publication.clone())
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::Cancelled);
+    assert_eq!(
+        fixture
+            .store
+            .lookup_video_artifact(publication.cache.cache_key, publication.sources)
+            .await
+            .unwrap(),
+        VideoArtifactLookup::Miss
+    );
+    assert_eq!(
+        fixture.store.status().await.unwrap().usage.artifact_bytes,
+        0
+    );
+    let artifacts = fixture.directory.path().join("artifacts");
+    assert!(!artifacts.exists() || std::fs::read_dir(artifacts).unwrap().next().is_none());
+}
+
+#[tokio::test]
+async fn video_is_evicted_before_its_source_segment() {
+    let fixture = fixture().await;
+    let publication = publication(&fixture, 50, 51);
+    fixture
+        .store
+        .publish_video_artifact(publication.clone())
+        .await
+        .unwrap();
+    let usage = fixture.store.status().await.unwrap().usage;
+    let budget = DiskBudgetBytes::new(
+        usage
+            .total_bytes()
+            .unwrap()
+            .saturating_sub(usage.artifact_bytes),
+    )
+    .unwrap();
+    drop(fixture.store);
+    let store = open_store_with_budget(fixture.directory.path(), Some(budget));
+    store.enforce_budget().await.unwrap();
+    assert!(
+        store
+            .video_artifact(publication.manifest.artifact_id())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        store
+            .frames_by_id(vec![fixture.frame_id])
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn source_segment_eviction_removes_its_linked_video() {
+    let fixture = fixture().await;
+    let publication = publication(&fixture, 55, 56);
+    fixture
+        .store
+        .publish_video_artifact(publication.clone())
+        .await
+        .unwrap();
+    let usage = fixture.store.status().await.unwrap().usage;
+    let budget = DiskBudgetBytes::new(
+        usage
+            .total_bytes()
+            .unwrap()
+            .saturating_sub(usage.segment_bytes)
+            .saturating_sub(usage.artifact_bytes)
+            + 3_000,
+    )
+    .unwrap();
+    drop(fixture.store);
+    let store = open_store_with_budget(fixture.directory.path(), Some(budget));
+    let replacement = EncodedFrame::new(
+        CapturedFrame::new(
+            FrameId::from_uuid(Uuid::from_u128(5_500)),
+            SessionId::from_uuid(Uuid::from_u128(5_501)),
+            TargetId::from_uuid(Uuid::from_u128(5_502)),
+            CaptureOrdinal::new(1).unwrap(),
+            None,
+            ObservedTime::from_nanos(1),
+            SessionTime::from_nanos(1),
+            ImageFormat::Jpeg,
+            PixelDimensions::new(1, 1).unwrap(),
+            PixelDimensions::new(1, 1).unwrap(),
+            DeviceScaleFactor::new(1.0).unwrap(),
+            vec![],
+        )
+        .unwrap(),
+        vec![7; 3_000],
+    )
+    .unwrap();
+    if let Err(error) = store.append_frame(replacement).await {
+        assert_eq!(error.code, ErrorCode::BudgetExhausted);
+    }
+    assert!(
+        store
+            .video_artifact(publication.manifest.artifact_id())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(store.frames_by_id(vec![fixture.frame_id]).await.is_err());
+}
+
+#[tokio::test]
+async fn startup_removes_orphan_video_files_idempotently() {
+    let fixture = fixture().await;
+    let artifacts = fixture.directory.path().join("artifacts");
+    std::fs::create_dir_all(&artifacts).unwrap();
+    let orphan = artifacts.join(format!("{}.mp4", Uuid::from_u128(60)));
+    std::fs::write(&orphan, b"orphan mp4").unwrap();
+    drop(fixture.store);
+
+    let reopened = open_store(fixture.directory.path());
+    assert!(!orphan.exists());
+    drop(reopened);
+    let second_pass = open_store(fixture.directory.path());
+    assert!(!orphan.exists());
+    assert_eq!(second_pass.status().await.unwrap().usage.artifact_bytes, 0);
+}
+
+#[tokio::test]
+async fn startup_finalizes_a_durable_staged_video_idempotently() {
+    let fixture = fixture().await;
+    let publication = publication(&fixture, 70, 71);
+    fixture
+        .store
+        .publish_video_artifact(publication.clone())
+        .await
+        .unwrap();
+    drop(fixture.store);
+    let connection =
+        rusqlite::Connection::open(fixture.directory.path().join("index.sqlite3")).unwrap();
+    connection
+        .execute(
+            "UPDATE artifacts SET state='staging' WHERE cache_key=?1",
+            [publication.cache.cache_key.as_bytes().to_vec()],
+        )
+        .unwrap();
+    drop(connection);
+
+    let reopened = open_store(fixture.directory.path());
+    assert!(matches!(
+        reopened
+            .lookup_video_artifact(publication.cache.cache_key, publication.sources.clone())
+            .await
+            .unwrap(),
+        VideoArtifactLookup::Hit(_)
+    ));
+    drop(reopened);
+    let second_pass = open_store(fixture.directory.path());
+    assert!(matches!(
+        second_pass
+            .lookup_video_artifact(publication.cache.cache_key, publication.sources)
+            .await
+            .unwrap(),
+        VideoArtifactLookup::Hit(_)
+    ));
 }

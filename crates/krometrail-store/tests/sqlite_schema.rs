@@ -24,7 +24,7 @@ fn schema_migrates_reopens_and_has_the_declared_inventory() {
     let version: u32 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 5);
+    assert_eq!(version, 6);
     let mut statement = connection
         .prepare(
             "SELECT name FROM sqlite_master \
@@ -78,6 +78,8 @@ fn schema_migrates_reopens_and_has_the_declared_inventory() {
     ] {
         assert!(!sql.to_ascii_lowercase().contains(forbidden));
     }
+    assert!(sql.contains("'temporal_video'"));
+    assert!(sql.contains("'video/mp4'"));
 }
 
 #[test]
@@ -85,7 +87,7 @@ fn future_schema_is_refused_without_mutation() {
     let directory = TempDir::new().unwrap();
     let config = config(&directory);
     let connection = Connection::open(&config.database_path).unwrap();
-    connection.pragma_update(None, "user_version", 6).unwrap();
+    connection.pragma_update(None, "user_version", 7).unwrap();
     drop(connection);
 
     let error = SqliteIndex::open(config.clone()).err().unwrap();
@@ -94,7 +96,7 @@ fn future_schema_is_refused_without_mutation() {
     let version: u32 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 6);
+    assert_eq!(version, 7);
 }
 
 #[test]

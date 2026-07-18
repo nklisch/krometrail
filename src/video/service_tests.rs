@@ -1,22 +1,30 @@
 use std::{
     collections::HashMap,
+    num::NonZeroU64,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
+    time::Duration,
 };
 
 use image::ImageEncoder as _;
 use krometrail_core::{
     ArtifactGenerationContext, ArtifactId, ArtifactLookup, ArtifactPublication, ArtifactPublish,
-    ArtifactSourceFingerprint, ArtifactStore, CaptureOrdinal, CapturedFrame, DeviceScaleFactor,
-    EncodedFrame, FrameAvailability, FrameId, FrameSource, IdSource, IdValue, ImageFormat,
-    ObservedTime, OutputLimitsRequest, PixelDimensions, PortFuture, RangeResolutionOptions,
-    ResolvedRange, SessionId, SessionRange, SessionTime, StoredArtifact, StoredVideoArtifact,
-    TargetId, TemporalRangeAnchorKind, TemporalVideoEncoder, TemporalVideoGeneration,
-    TemporalVideoGenerationRequest, VideoArtifactLookup, VideoArtifactPublication,
-    VideoArtifactPublish, VideoEncodeRequest, VideoEncodedClip, VideoEncoderIdentity,
-    VideoEncodingContext, VideoPresentationPolicy,
+    ArtifactSourceFingerprint, ArtifactStore, BrowserEvent, BrowserEventBatch, BrowserEventId,
+    BrowserEventOrdinal, BrowserEventPayload, BrowserEventSeverity, BrowserEventSink, CaptureGap,
+    CaptureGapReason, CaptureOrdinal, CapturedFrame, DeviceScaleFactor, EncodedFrame,
+    FrameAvailability, FrameId, FrameSource, IdSource, IdValue, ImageFormat, ObservedTime,
+    OutputLimitsRequest, PixelDimensions, PortFuture, RangeResolutionOptions, RecordingSink,
+    ResolvedRange, RetentionStore, SessionId, SessionRange, SessionTime, StoredArtifact,
+    StoredVideoArtifact, TargetId, TargetLifecycle, TargetLifecycleEvent, TemporalRangeAnchorKind,
+    TemporalVideoEncoder, TemporalVideoGeneration, TemporalVideoGenerationRequest,
+    VideoArtifactLookup, VideoArtifactPublication, VideoArtifactPublish, VideoEncodeRequest,
+    VideoEncodedClip, VideoEncoderIdentity, VideoEncodingContext, VideoPresentationPolicy,
+};
+use krometrail_store::{
+    IndexStoreConfig, RecordingStore, RotationConfig, SegmentStoreConfig, SegmentWriter,
+    SqliteIndex,
 };
 use sha2::{Digest, Sha256};
 use temporal_vision::OutputHash;
@@ -222,6 +230,7 @@ struct FakeEncoder {
     pause: AtomicBool,
     fail_on_encode: AtomicUsize,
     started: tokio::sync::Notify,
+    release: tokio::sync::Semaphore,
     requests: Mutex<Vec<VideoEncodeRequest>>,
 }
 
@@ -234,6 +243,7 @@ impl FakeEncoder {
             pause: AtomicBool::new(false),
             fail_on_encode: AtomicUsize::new(0),
             started: tokio::sync::Notify::new(),
+            release: tokio::sync::Semaphore::new(0),
             requests: Mutex::new(Vec::new()),
         }
     }
@@ -254,11 +264,17 @@ impl TemporalVideoEncoder for FakeEncoder {
         Box::pin(async move {
             if self.pause.load(Ordering::SeqCst) {
                 self.started.notify_one();
-                context.cancellation.cancelled().await;
-                return Err(test_error(
-                    krometrail_core::ErrorCode::Cancelled,
-                    "fake encode cancelled",
-                ));
+                tokio::select! {
+                    () = context.cancellation.cancelled() => {
+                        return Err(test_error(
+                            krometrail_core::ErrorCode::Cancelled,
+                            "fake encode cancelled",
+                        ));
+                    }
+                    permit = self.release.acquire() => {
+                        permit.expect("fake encoder release semaphore is open").forget();
+                    }
+                }
             }
             if self.fail_on_encode.load(Ordering::SeqCst) == encode_number {
                 return Err(test_error(
@@ -289,6 +305,17 @@ struct Fixture {
     artifacts: Arc<FakeArtifacts>,
     encoder: Arc<FakeEncoder>,
     request: TemporalVideoGenerationRequest,
+}
+
+struct RealFixture {
+    directory: std::path::PathBuf,
+    index: Arc<SqliteIndex>,
+    store: Arc<RecordingStore>,
+    service: TemporalVideoGenerationService,
+    encoder: Arc<FakeEncoder>,
+    request: TemporalVideoGenerationRequest,
+    session: SessionId,
+    target: TargetId,
 }
 
 fn fixture(policy: VideoPresentationPolicy) -> Fixture {
@@ -360,6 +387,86 @@ fn fixture_with_frames(
         artifacts,
         encoder,
         request,
+    }
+}
+
+async fn real_fixture() -> RealFixture {
+    let directory = std::env::temp_dir().join(format!("krometrail-video-{}", Uuid::new_v4()));
+    let segments = directory.join("segments");
+    let index = Arc::new(
+        SqliteIndex::open(IndexStoreConfig {
+            database_path: directory.join("index.sqlite3"),
+            segments_directory: segments.clone(),
+            busy_timeout: Duration::from_secs(1),
+        })
+        .unwrap(),
+    );
+    let writer = Arc::new(
+        SegmentWriter::open(SegmentStoreConfig {
+            directory: segments,
+            rotation: RotationConfig::suggested(),
+        })
+        .unwrap(),
+    );
+    let store = Arc::new(RecordingStore::new(writer, Arc::clone(&index)).unwrap());
+    let session = SessionId::from_uuid(Uuid::from_u128(20_001));
+    let target = TargetId::from_uuid(Uuid::from_u128(20_002));
+    let dimensions = PixelDimensions::new(4, 4).unwrap();
+    let frames = vec![
+        frame(session, target, 20_003, 1, 1, dimensions, [20, 30, 40, 255]),
+        frame(
+            session,
+            target,
+            20_004,
+            2,
+            3,
+            dimensions,
+            [220, 210, 200, 255],
+        ),
+    ];
+    for frame in &frames {
+        store.append_frame(frame.clone()).await.unwrap();
+    }
+    store.flush(session).await.unwrap();
+    let range = ResolvedRange::new(
+        session,
+        target,
+        TemporalRangeAnchorKind::SessionTime,
+        SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(5)).unwrap(),
+        SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(5)).unwrap(),
+        frames.iter().map(|frame| frame.metadata().id()).collect(),
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+        RangeResolutionOptions::DEFAULT,
+    )
+    .unwrap();
+    let request = TemporalVideoGenerationRequest::new(
+        range,
+        VideoPresentationPolicy::RealTime,
+        OutputLimitsRequest::new(4, 4, 1_024).unwrap(),
+    )
+    .unwrap();
+    let encoder = Arc::new(FakeEncoder::new());
+    let service = TemporalVideoGenerationService::new(
+        Arc::clone(&index) as Arc<dyn FrameSource>,
+        Arc::clone(&store) as Arc<dyn ArtifactStore>,
+        Arc::new(FakeIds(AtomicU64::new(20_100))),
+        Arc::clone(&encoder) as Arc<dyn TemporalVideoEncoder>,
+        VideoGenerationLimits::default(),
+    )
+    .unwrap();
+    RealFixture {
+        directory,
+        index,
+        store,
+        service,
+        encoder,
+        request,
+        session,
+        target,
     }
 }
 
@@ -602,6 +709,166 @@ async fn later_epoch_failure_returns_no_partial_result() {
     assert_eq!(error.code, krometrail_core::ErrorCode::VideoEncodingFailed);
     assert_eq!(fixture.encoder.encodes.load(Ordering::SeqCst), 2);
     assert_eq!(fixture.artifacts.publications.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn real_store_cache_corruption_regenerates_through_the_service() {
+    let fixture = real_fixture().await;
+    let first = fixture
+        .service
+        .generate_video(
+            fixture.request.clone(),
+            ArtifactGenerationContext::default(),
+        )
+        .await
+        .unwrap();
+    let repeat = fixture
+        .service
+        .generate_video(
+            fixture.request.clone(),
+            ArtifactGenerationContext::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        repeat.clips[0].cache,
+        krometrail_core::ArtifactCacheDisposition::Hit
+    );
+    assert_eq!(fixture.encoder.encodes.load(Ordering::SeqCst), 1);
+    let path = fixture
+        .directory
+        .join("artifacts")
+        .join(format!("{}.mp4", first.clips[0].artifact.artifact_id));
+    std::fs::write(path, b"corrupt").unwrap();
+    let regenerated = fixture
+        .service
+        .generate_video(fixture.request, ArtifactGenerationContext::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        regenerated.clips[0].cache,
+        krometrail_core::ArtifactCacheDisposition::RegeneratedAfterInvalidation
+    );
+    assert_eq!(fixture.encoder.encodes.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn session_deletion_completes_during_encode_and_fences_late_publication() {
+    let fixture = real_fixture().await;
+    fixture.encoder.pause.store(true, Ordering::SeqCst);
+    let task = tokio::spawn({
+        let service = fixture.service.clone();
+        let request = fixture.request;
+        async move {
+            service
+                .generate_video(request, ArtifactGenerationContext::default())
+                .await
+        }
+    });
+    fixture.encoder.started.notified().await;
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        fixture.store.delete_session(fixture.session),
+    )
+    .await
+    .expect("session deletion must not wait for video encoding")
+    .unwrap();
+    fixture.encoder.release.add_permits(1);
+    assert!(task.await.unwrap().is_err());
+    assert_eq!(
+        fixture.store.status().await.unwrap().usage.artifact_bytes,
+        0
+    );
+    assert!(
+        fixture
+            .index
+            .frames_by_id(vec![FrameId::from_uuid(Uuid::from_u128(20_003))])
+            .await
+            .is_err()
+    );
+    let artifacts = fixture.directory.join("artifacts");
+    assert!(
+        !artifacts.exists() || std::fs::read_dir(artifacts).unwrap().next().is_none(),
+        "late video work must leave no ready, staged, or temporary artifact file"
+    );
+}
+
+#[tokio::test]
+async fn paused_video_encode_does_not_block_frame_gap_or_event_ingestion() {
+    let fixture = real_fixture().await;
+    fixture.encoder.pause.store(true, Ordering::SeqCst);
+    let task = tokio::spawn({
+        let service = fixture.service.clone();
+        let request = fixture.request;
+        async move {
+            service
+                .generate_video(request, ArtifactGenerationContext::default())
+                .await
+        }
+    });
+    fixture.encoder.started.notified().await;
+    let dimensions = PixelDimensions::new(4, 4).unwrap();
+    let retained = frame(
+        fixture.session,
+        fixture.target,
+        20_050,
+        3,
+        4,
+        dimensions,
+        [80, 90, 100, 255],
+    );
+    tokio::time::timeout(Duration::from_secs(1), fixture.store.append_frame(retained))
+        .await
+        .expect("frame ingestion must not wait for video encoding")
+        .unwrap();
+    let gap = CaptureGap::new(
+        krometrail_core::GapId::from_uuid(Uuid::from_u128(20_051)),
+        fixture.session,
+        fixture.target,
+        SessionRange::new(SessionTime::from_nanos(4), SessionTime::from_nanos(5)).unwrap(),
+        ObservedTime::from_nanos(5),
+        CaptureGapReason::FrameRejected,
+        NonZeroU64::new(1),
+        None,
+    )
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(1), fixture.store.append_gap(gap))
+        .await
+        .expect("gap ingestion must not wait for video encoding")
+        .unwrap();
+    let event = BrowserEvent::new(
+        BrowserEventId::from_uuid(Uuid::from_u128(20_052)),
+        fixture.session,
+        fixture.target,
+        1,
+        BrowserEventOrdinal::new(1).unwrap(),
+        SessionTime::from_nanos(4),
+        None,
+        ObservedTime::from_nanos(6),
+        BrowserEventSeverity::Info,
+        BrowserEventPayload::TargetLifecycle(TargetLifecycleEvent::new(TargetLifecycle::Attached)),
+    )
+    .unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        fixture
+            .store
+            .append_event_batch(BrowserEventBatch::new(fixture.session, vec![event]).unwrap()),
+    )
+    .await
+    .expect("event ingestion must not wait for video encoding")
+    .unwrap();
+    fixture.encoder.release.add_permits(1);
+    task.await.unwrap().unwrap();
+    assert_eq!(
+        fixture
+            .store
+            .frames_by_id(vec![FrameId::from_uuid(Uuid::from_u128(20_050))])
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[test]
