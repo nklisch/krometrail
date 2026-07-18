@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-video-artifacts
 kind: epic
-stage: drafting
+stage: implementing
 tags: [visual, agent-ux, infra, security, testing]
 parent: null
 depends_on: []
@@ -30,7 +30,7 @@ The shipped Krometrail skill must explain why the video tool may be absent, how 
 - `docs/EVALUATION.md` — optional video conditions and model/host/encoder-bounded claims
 - `plugin/skills/krometrail/SKILL.md` — installed agent guidance and capability discoverability
 
-## Strategic decisions
+## Design decisions
 
 - **User-installed encoder only.** Krometrail owns neither FFmpeg acquisition nor redistribution. The implementation must not enable any dependency feature that downloads FFmpeg and must not place FFmpeg binaries in release assets or plugin packages.
 - **Narrow licensing posture.** Keeping FFmpeg out of Krometrail's artifacts avoids taking on FFmpeg binary redistribution as part of this product, but it is not described as eliminating every licensing consideration. Dependency licenses, process-boundary assumptions, notices, and the supported encoder contract still receive release review; the user's FFmpeg installation remains outside Krometrail's managed installation.
@@ -41,12 +41,19 @@ The shipped Krometrail skill must explain why the video tool may be absent, how 
 - **External encoder provenance.** Cache and manifest identity include the exact FFmpeg build, selected H.264 encoder, adapter version, arguments, presentation plan, and output limits. The deterministic guarantee applies to the presentation plan; encoded byte equality is claimed only for the exact qualified encoder identity, never across arbitrary installations.
 - **Narrow subprocess boundary.** The production adapter invokes the executable directly with allowlisted arguments, not through a shell. It bounds input/output, concurrency, stderr, CPU time, deadline, cancellation, process-tree cleanup, and atomic publication. Logs contain no frame pixels, browser content, raw command input, or unredacted local paths.
 - **No UI work.** This epic adds an MCP capability, retained resources, diagnostics, evaluation fixtures, and skill guidance. It has no human screen or browser UI and needs no mockups.
+- **Capability-shaped decomposition.** The work is split into deterministic clip semantics, the external encoder boundary, retained generation/storage, and the conditional agent surface. A crate-by-crate or test-only split was rejected because each child must deliver a coherent behavior boundary and carry its own verification.
+- **Direct process adapter.** The initial production adapter uses `tokio::process::Command` directly. A wrapper crate does not earn its additional dependency and download-feature risk for one allowlisted operation; native FFmpeg bindings would also expand build and distribution obligations without improving the user-installed-executable contract.
+- **Qualification by produced contract.** Startup does not trust encoder names or `ffmpeg -version` alone. The adapter selects only from a versioned allowlist, performs a bounded encode, and validates that the result is an MP4 containing H.264 video. The exact initial encoder order and numeric ceilings remain reversible feature-level contract choices, but there is no generic codec auto-selection or unbounded caller override.
+- **Both policies ship together.** Real-time and model-optimized clips share one versioned deterministic presentation plan. Shipping only real-time first was rejected because sparse model sampling is the reason to offer video, while adding an unproven second timing surface later would produce two rounds of public-contract work.
+- **Typed video provenance without polluting the visual crate.** Video gets a typed manifest variant/envelope that records presentation and external-encoder identity while reusing common artifact/source identities. The still-only `temporal-vision` manifest remains browser- and process-independent; storage and MCP resource paths generalize additively so existing image artifacts remain readable.
+- **One startup availability snapshot.** The composition root resolves the conditional capability once before MCP router construction and injects both the qualified encoder and its availability result. Runtime disappearance becomes a stable tool error; availability does not silently change until restart.
+- **Provider-neutral guidance.** The generic local `video/mp4` resource is the only runtime output. Host/model-specific advice stays conditional in the installed skill and references; Krometrail does not add provider upload adapters or claim host capability discovery.
 
 ## Capability boundary
 
 The epic owns the public clip request and resource shapes, runtime availability projection, encoder qualification, encoding service/port, retained artifact and manifest integration, cancellation and failure behavior, plugin-skill discoverability, and deterministic plus opt-in live qualification. It should extend the existing capability and artifact registries rather than introduce parallel tool lists or a second storage index.
 
-The design phase must select the smallest maintainable process adapter. Direct `tokio::process::Command` is the baseline because the contract is one narrow encode operation with strict lifecycle control. `ffmpeg-sidecar` may be used only if it materially reduces lifecycle complexity with default download features disabled; native FFmpeg binding crates are out of scope unless design evidence shows that an external process cannot satisfy the contract.
+The selected process boundary is direct `tokio::process::Command`: the contract is one narrow encode operation with strict lifecycle control, so a wrapper crate does not justify another dependency or accidental download surface. Native FFmpeg bindings and managed binary acquisition remain outside this epic.
 
 ## Acceptance boundary
 
@@ -63,11 +70,32 @@ The design phase must select the smallest maintainable process adapter. Direct `
 
 Generalize capability registration from static enablement to one registry-owned runtime availability result, then reuse the existing resolved-range, artifact publication, resource, retention, and diagnostics boundaries. Keep external-process concerns in one adapter instead of spreading FFmpeg checks through MCP handlers, the visual crate, or skill-only workarounds.
 
-## Open design questions
+## Decomposition
 
-- Which allowlisted H.264 encoders and pixel-format/profile combinations form the portable initial qualification set across supported macOS and Linux installations?
-- What exact default caps balance model readability with local generation cost for duration, dimensions, frames, bytes, and deadline?
-- Should the public request expose both policies immediately or ship real-time first while retaining the policy/version field for additive expansion?
-- Which MCP hosts can currently attach a local `video/mp4` resource, and what host-specific instructions belong in progressive skill references rather than the primary workflow?
+The design uses one shared deterministic contract as the root, then lets the security-sensitive FFmpeg adapter and retained artifact service proceed independently against that contract. The final agent-surface feature joins both implementations at the composition root and owns conditional MCP registration plus shipped guidance. A monolithic video feature was rejected because it would couple process lifecycle, storage migration, wire contracts, and prose in one oversized review boundary; layer-only features were rejected because none would deliver a complete capability.
 
-Child feature decomposition is intentionally deferred to epic design after these portability and host-ingestion questions are resolved against the supported environments.
+### Child features
+
+- `epic-temporal-video-artifacts-clip-contracts` — deterministic presentation policies, typed provenance, limits, gap/epoch semantics, cache identity inputs, and the injected encoding contract — depends on: `[]`
+- `epic-temporal-video-artifacts-ffmpeg-runtime` — user-installed executable discovery, bounded real encode qualification, and cancellation-safe direct process adapter — depends on: `[epic-temporal-video-artifacts-clip-contracts]`
+- `epic-temporal-video-artifacts-retained-generation` — resolved-range planning, frame adaptation, encoding orchestration through the injected port, additive artifact persistence, cache validation, and retained video/manifest reads — depends on: `[epic-temporal-video-artifacts-clip-contracts]`
+- `epic-temporal-video-artifacts-agent-surface` — startup availability projection, conditional registry-derived MCP tool/resources, stable runtime failure mapping, installed-skill discoverability, and end-to-end qualification — depends on: `[epic-temporal-video-artifacts-ffmpeg-runtime, epic-temporal-video-artifacts-retained-generation]`
+
+### Simplification arcs
+
+- `epic-temporal-video-artifacts-clip-contracts` keeps one typed presentation/provenance model and reuses the existing range, frame, gap, epoch, cancellation, and artifact identities instead of creating a second timeline vocabulary.
+- `epic-temporal-video-artifacts-ffmpeg-runtime` keeps all executable discovery and child-process authority in one adapter and avoids downloader features, native bindings, shell invocation, and duplicate lifecycle helpers.
+- `epic-temporal-video-artifacts-retained-generation` generalizes the existing image-only artifact publication/read validation additively rather than creating another SQLite index, retention policy, URI authority, or deletion path.
+- `epic-temporal-video-artifacts-agent-surface` projects one registry-owned runtime availability snapshot into tool registration, diagnostics, resources, schemas, and guidance instead of maintaining parallel video-tool lists.
+
+### Decomposition risks
+
+- The retained artifact boundary currently validates only PNG bytes and a `temporal-vision` manifest. Its additive generalization is the largest compatibility risk: existing database rows, resource URIs, cache validation, deletion, recovery, and retention accounting must remain readable and authoritative.
+- FFmpeg builds expose materially different H.264 encoders. Qualification must prove the complete output contract and record the selected implementation without turning environment diversity into nondeterministic tool registration or unsafe argument fallback.
+- The two presentation policies can misstate observed duration if provenance and visible labeling diverge. One canonical plan must drive both encoder input and manifest mapping, with explicit gap slates and no cross-epoch stretching.
+- MCP hosts differ in local-video attachment support. The tool can truthfully return a resource even when a host cannot forward it, so guidance must distinguish Krometrail availability from host/model consumption and retain the still-first recovery path.
+
+## Other agent review
+
+- Invoked because: the epic changes a stable public MCP/artifact contract and introduces a security-sensitive external process boundary.
+- Skipped/degraded: the active autopilot delegation explicitly made this designer an endpoint and prohibited nested agents or peeragent. Design-time advisory review is therefore unavailable and non-blocking; the direct source-grounded pre-mortem above records the principal risks for feature design and the required standard completion review remains unchanged.
