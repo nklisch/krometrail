@@ -392,20 +392,11 @@ fn parse_asset(value: &Value) -> Option<(f64, PageAssetMetadata)> {
     let start = finite_non_negative(value.get("startTime")?)?;
     let duration_ms = finite_non_negative(value.get("duration")?)?;
     let url = SanitizedUrl::sanitize(value.get("name")?.as_str()?).ok()?;
-    let kind = match value
+    let initiator_type = value
         .get("initiatorType")
         .and_then(Value::as_str)
-        .unwrap_or_default()
-    {
-        "script" => PageAssetKind::Script,
-        "css" | "link" => PageAssetKind::Stylesheet,
-        "img" => PageAssetKind::Image,
-        "font" => PageAssetKind::Font,
-        "audio" | "video" => PageAssetKind::Media,
-        "fetch" => PageAssetKind::Fetch,
-        "xmlhttprequest" => PageAssetKind::XmlHttpRequest,
-        _ => PageAssetKind::Other,
-    };
+        .unwrap_or_default();
+    let kind = classify_asset(&url, initiator_type);
     Some((
         start,
         PageAssetMetadata {
@@ -417,6 +408,35 @@ fn parse_asset(value: &Value) -> Option<(f64, PageAssetMetadata)> {
             decoded_body_bytes: optional_size(value.get("decodedBodySize")),
         },
     ))
+}
+
+fn classify_asset(url: &SanitizedUrl, initiator_type: &str) -> PageAssetKind {
+    if let Some(kind) = url.extension().and_then(asset_kind_for_extension) {
+        return kind;
+    }
+    match initiator_type {
+        "script" => PageAssetKind::Script,
+        "css" | "link" => PageAssetKind::Stylesheet,
+        "img" => PageAssetKind::Image,
+        "font" => PageAssetKind::Font,
+        "audio" | "video" => PageAssetKind::Media,
+        "fetch" => PageAssetKind::Fetch,
+        "xmlhttprequest" => PageAssetKind::XmlHttpRequest,
+        _ => PageAssetKind::Other,
+    }
+}
+
+fn asset_kind_for_extension(extension: &str) -> Option<PageAssetKind> {
+    match extension {
+        "js" | "mjs" | "cjs" => Some(PageAssetKind::Script),
+        "css" => Some(PageAssetKind::Stylesheet),
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "ico" | "avif" => {
+            Some(PageAssetKind::Image)
+        }
+        "woff" | "woff2" | "ttf" | "otf" => Some(PageAssetKind::Font),
+        "mp3" | "mp4" | "webm" | "wav" => Some(PageAssetKind::Media),
+        _ => None,
+    }
 }
 
 fn finite_non_negative(value: &Value) -> Option<f64> {
@@ -460,6 +480,40 @@ mod tests {
         assert!(!serialized.contains("secret"));
         assert!(
             parse_asset(&json!({"name":"https://x.test","startTime":-1,"duration":1})).is_none()
+        );
+    }
+
+    #[test]
+    fn asset_extensions_override_only_unambiguous_resource_identities() {
+        let classify =
+            |url, initiator| classify_asset(&SanitizedUrl::sanitize(url).unwrap(), initiator);
+        assert_eq!(
+            classify("https://example.test/module.MJS?cache=1#fragment", "link"),
+            PageAssetKind::Script
+        );
+        assert_eq!(
+            classify("https://example.test/font.WOFF2", "link"),
+            PageAssetKind::Font
+        );
+        assert_eq!(
+            classify("https://example.test/site.css", "css"),
+            PageAssetKind::Stylesheet
+        );
+        assert_eq!(
+            classify("https://example.test/hero.avif", "img"),
+            PageAssetKind::Image
+        );
+        assert_eq!(
+            classify("https://example.test/intro.webm", "video"),
+            PageAssetKind::Media
+        );
+        assert_eq!(
+            classify("https://example.test/resource", "fetch"),
+            PageAssetKind::Fetch
+        );
+        assert_eq!(
+            classify("https://example.test/api.json", "xmlhttprequest"),
+            PageAssetKind::XmlHttpRequest
         );
     }
 
