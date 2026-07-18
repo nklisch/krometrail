@@ -1,11 +1,15 @@
-use std::{sync::Arc, time::Instant};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+    time::Instant,
+};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use krometrail_core::{
     ArtifactGenerationResult, ArtifactHandle, ArtifactId, ArtifactOutcome, BatchOutcome,
     BatchResult, BrowserOperationResult, EncodedScreenshot, ErrorCode, InteractionAnchor,
     KrometrailError, LiveObservation, NonEmptyText, ObservationPart, PageOperationOutcome,
-    PageOperationResult, ProgressiveEvidence, ProgressiveEvidenceContext,
+    PageOperationResult, PageSnapshot, ProgressiveEvidence, ProgressiveEvidenceContext,
     ProgressiveEvidenceRequest, ProgressiveEvidenceResult, RetrieveArtifactRequest,
     ScreenshotMetadata, SourceFrameBatch, SourceFrameHandle, TemporalDebugBundle, WaitOutcome,
 };
@@ -16,6 +20,9 @@ use serde_json::{Value, json};
 use temporal_vision::ArtifactKind;
 
 use crate::resources::{ResourceKind, ResourceProjection};
+
+const MAX_AUTOMATIC_SNAPSHOT_NODES: usize = 96;
+const MAX_AUTOMATIC_SNAPSHOT_JSON_BYTES: usize = 32 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -610,7 +617,15 @@ fn project_live_observation(
 ) -> Result<(Value, Vec<KrometrailError>, Option<EncodedMcpImage>), ResponseInvariantError> {
     let mut warnings = Vec::new();
     let page = project_serializable_part(value.page, &mut warnings)?;
-    let snapshot = project_serializable_part(value.snapshot, &mut warnings)?;
+    let snapshot = match value.snapshot {
+        ObservationPart::Available(snapshot)
+            if matches!(&role, ImageRole::PostAction | ImageRole::BatchFinal) =>
+        {
+            ObservationPart::Available(compact_automatic_snapshot(snapshot)?)
+        }
+        snapshot => snapshot,
+    };
+    let snapshot = project_serializable_part(snapshot, &mut warnings)?;
     let (screenshot, image) = match value.screenshot {
         ObservationPart::Available(screenshot) => (
             json!({"available": screenshot.metadata()}),
@@ -635,6 +650,115 @@ fn project_live_observation(
             screenshot,
         }),
     ))
+}
+
+fn compact_automatic_snapshot(
+    snapshot: PageSnapshot,
+) -> Result<PageSnapshot, ResponseInvariantError> {
+    let full_json_bytes = serde_json::to_vec(&snapshot.nodes)
+        .map_err(|_| ResponseInvariantError)?
+        .len();
+    if snapshot.nodes.len() <= MAX_AUTOMATIC_SNAPSHOT_NODES
+        && full_json_bytes <= MAX_AUTOMATIC_SNAPSHOT_JSON_BYTES
+    {
+        return Ok(snapshot);
+    }
+
+    let parents: HashMap<_, _> = snapshot
+        .nodes
+        .iter()
+        .map(|node| (node.id, node.parent))
+        .collect();
+    let mut priority = HashSet::new();
+    for node in snapshot.nodes.iter().filter(|node| node.actionable) {
+        let mut current = Some(node.id);
+        while let Some(node_id) = current {
+            if !priority.insert(node_id) {
+                break;
+            }
+            current = parents.get(&node_id).copied().flatten();
+        }
+    }
+
+    let mut selected = vec![false; snapshot.nodes.len()];
+    let mut selected_ids = HashSet::new();
+    let mut selected_count = 0;
+    let mut serialized_bytes = 2; // JSON array brackets.
+    for (index, node) in snapshot.nodes.iter().enumerate() {
+        if priority.contains(&node.id)
+            && node
+                .parent
+                .is_none_or(|parent| selected_ids.contains(&parent))
+        {
+            let Some(next_bytes) =
+                automatic_snapshot_bytes_after(node, selected_count, serialized_bytes)?
+            else {
+                continue;
+            };
+            selected[index] = true;
+            selected_ids.insert(node.id);
+            selected_count += 1;
+            serialized_bytes = next_bytes;
+        }
+    }
+    for (index, node) in snapshot.nodes.iter().enumerate() {
+        if selected[index]
+            || !node
+                .parent
+                .is_none_or(|parent| selected_ids.contains(&parent))
+        {
+            continue;
+        }
+        let Some(next_bytes) =
+            automatic_snapshot_bytes_after(node, selected_count, serialized_bytes)?
+        else {
+            continue;
+        };
+        selected[index] = true;
+        selected_ids.insert(node.id);
+        selected_count += 1;
+        serialized_bytes = next_bytes;
+    }
+
+    let original_node_count = snapshot.nodes.len();
+    let nodes = snapshot
+        .nodes
+        .into_iter()
+        .zip(selected)
+        .filter_map(|(node, selected)| selected.then_some(node))
+        .collect::<Vec<_>>();
+    let presentation_omissions =
+        u32::try_from(original_node_count - nodes.len()).map_err(|_| ResponseInvariantError)?;
+    let omitted_node_count = snapshot
+        .omitted_node_count
+        .checked_add(presentation_omissions)
+        .ok_or(ResponseInvariantError)?;
+    PageSnapshot::new(
+        snapshot.context,
+        snapshot.generation,
+        nodes,
+        omitted_node_count,
+    )
+    .map_err(|_| ResponseInvariantError)
+}
+
+fn automatic_snapshot_bytes_after(
+    node: &krometrail_core::SnapshotNode,
+    selected_count: usize,
+    serialized_bytes: usize,
+) -> Result<Option<usize>, ResponseInvariantError> {
+    if selected_count >= MAX_AUTOMATIC_SNAPSHOT_NODES {
+        return Ok(None);
+    }
+    let node_bytes = serde_json::to_vec(node)
+        .map_err(|_| ResponseInvariantError)?
+        .len();
+    let separator_bytes = usize::from(selected_count != 0);
+    let next_bytes = serialized_bytes
+        .checked_add(separator_bytes)
+        .and_then(|bytes| bytes.checked_add(node_bytes))
+        .ok_or(ResponseInvariantError)?;
+    Ok((next_bytes <= MAX_AUTOMATIC_SNAPSHOT_JSON_BYTES).then_some(next_bytes))
 }
 
 fn project_serializable_part<T: Serialize>(
@@ -1029,8 +1153,9 @@ mod tests {
         BatchSkipReason, BatchStepResult, BatchStepStatus, BrowserOperationKind,
         CaptureFailureStage, CaptureStatistics, CaptureStreamState, CaptureTimingSummary, CssPoint,
         CssRect, CssSize, DeviceScaleFactor, EveryNthFrame, ImageFormat, InteractionId,
-        InteractionTiming, ObservationContext, PageSelection, PixelDimensions, ScreenshotTarget,
-        SessionId, SessionTime, TargetCaptureStatus, TargetId, WaitCondition, WaitProbe,
+        InteractionTiming, NodeReference, ObservationContext, PageSelection, PageSnapshot,
+        PixelDimensions, ScreenshotTarget, SessionId, SessionTime, SnapshotGeneration,
+        SnapshotNode, SnapshotNodeId, TargetCaptureStatus, TargetId, WaitCondition, WaitProbe,
         WaitRequest, WaitResult,
     };
     use std::time::Duration;
@@ -1077,6 +1202,90 @@ mod tests {
         EncodedScreenshot::new(metadata, bytes).unwrap()
     }
 
+    fn complex_snapshot() -> PageSnapshot {
+        let generation = SnapshotGeneration::new(1).unwrap();
+        let root_id = SnapshotNodeId::new(1).unwrap();
+        let mut nodes = vec![SnapshotNode {
+            id: root_id,
+            parent: None,
+            depth: 0,
+            role: "document".into(),
+            name: Some("Synthetic 403-node page".into()),
+            value: None,
+            description: None,
+            properties: vec![],
+            actionable: false,
+            reference: None,
+        }];
+        for value in 2..=400 {
+            nodes.push(SnapshotNode {
+                id: SnapshotNodeId::new(value).unwrap(),
+                parent: Some(root_id),
+                depth: 1,
+                role: "static_text".into(),
+                name: Some(format!("section-{value}-{}", "x".repeat(512))),
+                value: None,
+                description: None,
+                properties: vec![],
+                actionable: false,
+                reference: None,
+            });
+        }
+        let group_id = SnapshotNodeId::new(401).unwrap();
+        nodes.push(SnapshotNode {
+            id: group_id,
+            parent: Some(root_id),
+            depth: 1,
+            role: "group".into(),
+            name: Some("Late controls".into()),
+            value: None,
+            description: None,
+            properties: vec![],
+            actionable: false,
+            reference: None,
+        });
+        let action_id = SnapshotNodeId::new(402).unwrap();
+        nodes.push(SnapshotNode {
+            id: action_id,
+            parent: Some(group_id),
+            depth: 2,
+            role: "button".into(),
+            name: Some("Publish".into()),
+            value: None,
+            description: None,
+            properties: vec![],
+            actionable: true,
+            reference: Some(NodeReference {
+                target_id: target_id(),
+                generation,
+                node_id: action_id,
+            }),
+        });
+        nodes.push(SnapshotNode {
+            id: SnapshotNodeId::new(403).unwrap(),
+            parent: Some(root_id),
+            depth: 1,
+            role: "static_text".into(),
+            name: Some("Trailing content".into()),
+            value: None,
+            description: None,
+            properties: vec![],
+            actionable: false,
+            reference: None,
+        });
+        PageSnapshot::new(context(), generation, nodes, 7).unwrap()
+    }
+
+    fn live_with_snapshot(snapshot: PageSnapshot) -> LiveObservation {
+        let unavailable = error(ErrorCode::PageObservationFailed, "component unavailable");
+        LiveObservation {
+            context: context(),
+            page: ObservationPart::Unavailable(unavailable.clone()),
+            snapshot: ObservationPart::Available(snapshot),
+            screenshot: ObservationPart::Unavailable(unavailable),
+        }
+    }
+
     fn failed_capture() -> TargetCaptureStatus {
         TargetCaptureStatus::new_with_failure_stage(
             target_id(),
@@ -1111,6 +1320,92 @@ mod tests {
             Some(target_id())
         );
         assert!(mapped.response.error.is_none());
+    }
+
+    #[test]
+    fn automatic_live_observations_bound_complex_snapshots_with_exact_omissions() {
+        let full = complex_snapshot();
+        for role in [ImageRole::PostAction, ImageRole::BatchFinal] {
+            let (value, _, _) =
+                project_live_observation(live_with_snapshot(full.clone()), role, None).unwrap();
+            let compact: PageSnapshot =
+                serde_json::from_value(value["snapshot"]["available"].clone()).unwrap();
+            assert!(compact.nodes.len() <= MAX_AUTOMATIC_SNAPSHOT_NODES);
+            assert!(
+                serde_json::to_vec(&compact.nodes).unwrap().len()
+                    <= MAX_AUTOMATIC_SNAPSHOT_JSON_BYTES
+            );
+            assert_eq!(
+                compact.omitted_node_count,
+                full.omitted_node_count
+                    + u32::try_from(full.nodes.len() - compact.nodes.len()).unwrap()
+            );
+            let action = compact
+                .nodes
+                .iter()
+                .find(|node| node.actionable)
+                .expect("the late actionable node is prioritized");
+            let group = compact
+                .nodes
+                .iter()
+                .find(|node| Some(node.id) == action.parent)
+                .expect("the action's parent is retained");
+            assert!(
+                compact
+                    .nodes
+                    .iter()
+                    .any(|node| Some(node.id) == group.parent)
+            );
+            PageSnapshot::new(
+                compact.context.clone(),
+                compact.generation,
+                compact.nodes.clone(),
+                compact.omitted_node_count,
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn explicit_snapshot_and_live_observation_keep_full_snapshots() {
+        let full = complex_snapshot();
+        let snapshot = map_operation_result(
+            "snapshot_page",
+            BrowserOperationResult::SnapshotPage(Box::new(full.clone())),
+        )
+        .unwrap();
+        assert_eq!(
+            snapshot.response.result["nodes"].as_array().unwrap().len(),
+            403
+        );
+
+        let observed = map_operation_result(
+            "observe_live",
+            BrowserOperationResult::ObserveLive(Box::new(live_with_snapshot(full))),
+        )
+        .unwrap();
+        assert_eq!(
+            observed.response.result["snapshot"]["available"]["nodes"]
+                .as_array()
+                .unwrap()
+                .len(),
+            403
+        );
+    }
+
+    #[test]
+    fn automatic_snapshot_below_limits_is_byte_equivalent() {
+        let full = complex_snapshot();
+        let small = PageSnapshot::new(
+            full.context,
+            full.generation,
+            full.nodes.into_iter().take(3).collect(),
+            full.omitted_node_count,
+        )
+        .unwrap();
+        let before = serde_json::to_vec(&small).unwrap();
+        let after = serde_json::to_vec(&compact_automatic_snapshot(small).unwrap()).unwrap();
+        assert_eq!(after, before);
     }
 
     #[test]
