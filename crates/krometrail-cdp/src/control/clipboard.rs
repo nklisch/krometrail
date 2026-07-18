@@ -20,12 +20,12 @@ impl PageControl {
         _request: ReadClipboardRequest,
     ) -> Result<ClipboardRead> {
         require_visible(bound)?;
-        let execution_context_id = clipboard_execution_context(transport, bound).await?;
+        let execution_object_id = clipboard_execution_object(transport, bound).await?;
         let response = transport.send_raw(
             &CommandScope::Session(bound.transport_session.clone()),
             "Runtime.callFunctionOn",
-            json!({"functionDeclaration": READ_CLIPBOARD, "executionContextId": execution_context_id, "awaitPromise": true, "returnByValue": true}),
-        ).await.map_err(|error| transport_error(error, ErrorCode::StaleReference, bound.target_id))?;
+            json!({"functionDeclaration": READ_CLIPBOARD, "objectId": execution_object_id, "awaitPromise": true, "returnByValue": true}),
+        ).await.map_err(|error| clipboard_dispatch_error(error, bound))?;
         let text = result_value(&response)
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| clipboard_response_error(bound, &response))?;
@@ -59,12 +59,12 @@ impl PageControl {
                 "write a smaller text value and retry",
             ));
         }
-        let execution_context_id = clipboard_execution_context(transport, bound).await?;
+        let execution_object_id = clipboard_execution_object(transport, bound).await?;
         let response = transport.send_raw(
             &CommandScope::Session(bound.transport_session.clone()),
             "Runtime.callFunctionOn",
-            json!({"functionDeclaration": WRITE_CLIPBOARD, "executionContextId": execution_context_id, "arguments": [{"value": request.text}], "awaitPromise": true, "returnByValue": true}),
-        ).await.map_err(|error| transport_error(error, ErrorCode::StaleReference, bound.target_id))?;
+            json!({"functionDeclaration": WRITE_CLIPBOARD, "objectId": execution_object_id, "arguments": [{"value": request.text}], "awaitPromise": true, "returnByValue": true}),
+        ).await.map_err(|error| clipboard_dispatch_error(error, bound))?;
         if result_value(&response).and_then(serde_json::Value::as_bool) != Some(true) {
             return Err(clipboard_response_error(bound, &response));
         }
@@ -72,10 +72,10 @@ impl PageControl {
     }
 }
 
-async fn clipboard_execution_context(
+async fn clipboard_execution_object(
     transport: &dyn CdpTransport,
     bound: &BoundTarget,
-) -> Result<i64> {
+) -> Result<String> {
     let frame_tree = transport
         .send_raw(
             &CommandScope::Session(bound.transport_session.clone()),
@@ -83,7 +83,13 @@ async fn clipboard_execution_context(
             json!({}),
         )
         .await
-        .map_err(|error| transport_error(error, ErrorCode::StaleReference, bound.target_id))?;
+        .map_err(|error| {
+            clipboard_transport_error(
+                error,
+                bound,
+                "clipboard document became stale while resolving its frame",
+            )
+        })?;
     let root = frame_tree.get("frameTree").unwrap_or(&frame_tree);
     let frame_id = root
         .pointer("/frame/id")
@@ -106,8 +112,14 @@ async fn clipboard_execution_context(
             }),
         )
         .await
-        .map_err(|error| transport_error(error, ErrorCode::StaleReference, bound.target_id))?;
-    world
+        .map_err(|error| {
+            clipboard_transport_error(
+                error,
+                bound,
+                "clipboard document became stale while creating its isolated world",
+            )
+        })?;
+    let execution_context_id = world
         .get("executionContextId")
         .or_else(|| world.pointer("/result/executionContextId"))
         .and_then(serde_json::Value::as_i64)
@@ -117,7 +129,68 @@ async fn clipboard_execution_context(
                 bound.target_id,
                 "clipboard document changed before its isolated world became available",
             )
+        })?;
+    let global = transport
+        .send_raw(
+            &CommandScope::Session(bound.transport_session.clone()),
+            "Runtime.evaluate",
+            json!({
+                "expression": "globalThis",
+                "contextId": execution_context_id,
+                "returnByValue": false,
+                "silent": true,
+            }),
+        )
+        .await
+        .map_err(|error| {
+            clipboard_transport_error(
+                error,
+                bound,
+                "clipboard isolated world became stale before its global object resolved",
+            )
+        })?;
+    global
+        .pointer("/result/objectId")
+        .or_else(|| global.pointer("/result/result/objectId"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            operation_error(
+                ErrorCode::StaleReference,
+                bound.target_id,
+                "clipboard isolated world became stale before its global object resolved",
+            )
         })
+}
+
+fn clipboard_transport_error(
+    error: crate::transport::TransportError,
+    bound: &BoundTarget,
+    stale_message: &'static str,
+) -> KrometrailError {
+    let error = transport_error(error, ErrorCode::StaleReference, bound.target_id);
+    if error.code == ErrorCode::BrowserDisconnected {
+        error
+    } else {
+        operation_error(ErrorCode::StaleReference, bound.target_id, stale_message)
+    }
+}
+
+fn clipboard_dispatch_error(
+    error: crate::transport::TransportError,
+    bound: &BoundTarget,
+) -> KrometrailError {
+    let error = transport_error(error, ErrorCode::InteractionFailed, bound.target_id);
+    if error.code == ErrorCode::BrowserDisconnected {
+        error
+    } else {
+        clipboard_failure(
+            ErrorCode::InteractionFailed,
+            bound,
+            "browser denied or did not complete the clipboard request",
+            "focus the visible page, allow clipboard access if prompted, and retry",
+        )
+    }
 }
 
 fn result_value(value: &serde_json::Value) -> Option<&serde_json::Value> {
@@ -279,6 +352,7 @@ mod tests {
             responses: Mutex::new(vec![
                 json!({"frameTree":{"frame":{"id":"main-frame"}}}),
                 json!({"executionContextId": 41}),
+                json!({"result":{"objectId":"isolated-global"}}),
                 json!({"result":{"result":{"value":true}}}),
             ]),
         };
@@ -291,17 +365,20 @@ mod tests {
             .await
             .unwrap();
         let calls = transport.calls.lock().unwrap();
-        assert_eq!(calls.len(), 3);
+        assert_eq!(calls.len(), 4);
         assert_eq!(calls[0].0, "Page.getFrameTree");
         assert_eq!(calls[1].0, "Page.createIsolatedWorld");
         assert_eq!(calls[1].1["frameId"], "main-frame");
         assert_eq!(calls[1].1["worldName"], CLIPBOARD_WORLD);
         assert_eq!(calls[1].1["grantUniveralAccess"], false);
-        assert_eq!(calls[2].0, "Runtime.callFunctionOn");
-        assert_eq!(calls[2].1["executionContextId"], 41);
-        assert_eq!(calls[2].1["arguments"][0]["value"], "sentinel-value");
+        assert_eq!(calls[2].0, "Runtime.evaluate");
+        assert_eq!(calls[2].1["contextId"], 41);
+        assert_eq!(calls[2].1["expression"], "globalThis");
+        assert_eq!(calls[3].0, "Runtime.callFunctionOn");
+        assert_eq!(calls[3].1["objectId"], "isolated-global");
+        assert_eq!(calls[3].1["arguments"][0]["value"], "sentinel-value");
         assert!(
-            !calls[2].1["functionDeclaration"]
+            !calls[3].1["functionDeclaration"]
                 .as_str()
                 .unwrap()
                 .contains("sentinel-value")
@@ -348,6 +425,11 @@ mod tests {
             );
             assert_eq!(error.code, ErrorCode::InteractionFailed);
         }
+        let error = clipboard_dispatch_error(TransportError::CommandFailed, &bound);
+        assert_eq!(error.code, ErrorCode::InteractionFailed);
+        assert!(error.recovery.is_some());
+        let error = clipboard_dispatch_error(TransportError::Disconnected, &bound);
+        assert_eq!(error.code, ErrorCode::BrowserDisconnected);
     }
 
     #[tokio::test]
