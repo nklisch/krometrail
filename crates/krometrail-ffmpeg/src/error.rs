@@ -24,6 +24,7 @@ pub(crate) enum AdapterFailureKind {
     DiagnosticOverflow,
     OutputOverflow,
     InvalidOutput,
+    UnrepresentableTiming,
     InvalidCandidate,
     ChangedCandidate,
     Internal,

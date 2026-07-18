@@ -6,10 +6,11 @@ no FFmpeg executable is stored or redistributed by this repository.
 
 The generation policy fixed one video stream, no audio/subtitle/data streams, `yuv420p`, all-intra
 `libx264`, one encoder thread, a 1 MHz track timebase, stripped metadata, a 350 ms output duration,
-and fast-start MP4 layout. `ffprobe` reported one H.264 video stream, 2x2 pixels, time base
-`1/1000000`, and duration `0.350000`. The file's SHA-256 is
-`beb459d999100e32a752cb62519de47fc2e053513916a69c43bfd2698ceb0188`.
+and fast-start MP4 layout. Its three samples carry the two source frames plus the terminal
+sentinel at microsecond PTS `[0, 100000, 349999]`. `ffprobe` reported one H.264 video stream,
+2x2 pixels, time base `1/1000000`, duration `0.350000`, and three frames. The file's SHA-256 is
+`8b3905f2acd80fc1f4c2a476e8339ca0c17d79c0efa668ba0f6894f6fad2c762`.
 
-Regenerate only through the ignored opt-in real-FFmpeg qualification workflow, then update this
-provenance and the hash together. Default tests only read the retained bytes and never invoke
-FFmpeg or contact a network.
+Regenerate only through the ignored opt-in real-FFmpeg qualification workflow with an explicit
+`KROMETRAIL_FFMPEG_FIXTURE_OUTPUT` path, then update this provenance and the hash together.
+Default tests only read the retained bytes and never invoke FFmpeg or contact a network.

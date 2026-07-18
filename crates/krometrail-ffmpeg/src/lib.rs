@@ -4,6 +4,7 @@
 //! fixed direct-process policy, private request state, bounded output, and checked MP4/H.264
 //! validation before bytes cross the core port boundary.
 
+mod control;
 mod discovery;
 mod encoder;
 mod error;

@@ -19,12 +19,5 @@ sha2.workspace = true
 tempfile.workspace = true
 temporal-vision.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["fs", "process", "sync", "time"] }
+tokio = { workspace = true, features = ["fs", "process", "rt", "sync", "time"] }
 tracing.workspace = true
-
-[target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true, features = [
-  "Win32_Foundation",
-  "Win32_System_JobObjects",
-  "Win32_System_Threading",
-] }

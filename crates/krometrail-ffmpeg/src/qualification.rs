@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     FFMPEG_ADAPTER_VERSION,
+    control::OperationControl,
     discovery::{FfmpegDiscoveryOptions, QualifiedExecutable, discover_candidates},
     encoder::QualifiedFfmpegEncoder,
     error::{AdapterFailure, AdapterFailureKind, AdapterFailureStage},
@@ -43,6 +44,7 @@ pub enum FfmpegUnavailableReason {
     InvalidOutput,
     ProcessFailed,
     Cancelled,
+    UnsupportedPlatform,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -61,21 +63,19 @@ pub async fn qualify_ffmpeg(
     cancellation: Arc<dyn CancellationSignal>,
     deadline: Instant,
 ) -> FfmpegQualification {
-    if cancellation.is_cancelled() {
+    if !cfg!(any(target_os = "linux", target_os = "macos")) {
         return unavailable(
             FfmpegQualificationStage::Discovery,
-            FfmpegUnavailableReason::Cancelled,
+            FfmpegUnavailableReason::UnsupportedPlatform,
         );
     }
-    if Instant::now() >= deadline {
-        return unavailable(
-            FfmpegQualificationStage::Discovery,
-            FfmpegUnavailableReason::TimedOut,
-        );
+    let qualification_deadline = deadline.min(Instant::now() + FFMPEG_QUALIFICATION_TIMEOUT);
+    let control = OperationControl::new(cancellation, qualification_deadline);
+    if let Err(failure) = control.check(AdapterFailureStage::ExecutableIdentity) {
+        return FfmpegQualification::Unavailable(map_failure(&failure));
     }
-
     let explicit = options.is_explicit();
-    let candidates = match discover_candidates(&options) {
+    let candidates = match discover_candidates(&options, &control).await {
         Ok(candidates) => candidates,
         Err(failure) => return FfmpegQualification::Unavailable(map_failure(&failure)),
     };
@@ -86,25 +86,15 @@ pub async fn qualify_ffmpeg(
         );
     }
 
-    let qualification_deadline = deadline.min(Instant::now() + FFMPEG_QUALIFICATION_TIMEOUT);
     let mut final_failure = FfmpegUnavailable {
         stage: FfmpegQualificationStage::Discovery,
         reason: FfmpegUnavailableReason::NotFound,
     };
     for candidate in candidates {
-        if cancellation.is_cancelled() {
-            return unavailable(
-                FfmpegQualificationStage::Discovery,
-                FfmpegUnavailableReason::Cancelled,
-            );
+        if let Err(failure) = control.check(AdapterFailureStage::ExecutableIdentity) {
+            return FfmpegQualification::Unavailable(map_failure(&failure));
         }
-        if Instant::now() >= qualification_deadline {
-            return unavailable(
-                FfmpegQualificationStage::Discovery,
-                FfmpegUnavailableReason::TimedOut,
-            );
-        }
-        let executable = match QualifiedExecutable::load(candidate) {
+        let executable = match QualifiedExecutable::load(candidate, &control).await {
             Ok(executable) => executable,
             Err(failure) => {
                 failure.trace();
@@ -115,13 +105,7 @@ pub async fn qualify_ffmpeg(
                 continue;
             }
         };
-        match qualify_candidate(
-            executable,
-            Arc::clone(&cancellation),
-            qualification_deadline,
-        )
-        .await
-        {
+        match qualify_candidate(executable, &control).await {
             Ok(encoder) => return FfmpegQualification::Qualified(Arc::new(encoder)),
             Err(failure) => {
                 failure.trace();
@@ -141,17 +125,16 @@ pub async fn qualify_ffmpeg(
 
 async fn qualify_candidate(
     executable: QualifiedExecutable,
-    cancellation: Arc<dyn CancellationSignal>,
-    deadline: Instant,
+    control: &OperationControl,
 ) -> Result<QualifiedFfmpegEncoder, AdapterFailure> {
-    executable.validate_unchanged()?;
-    let version = run_version_probe(&executable, cancellation.as_ref(), deadline).await?;
+    executable.validate_unchanged(control).await?;
+    let version = run_version_probe(&executable, control).await?;
     let build_report_sha256 = hash_build_report(&version.stdout, &version.stderr);
     let implementation_version =
         implementation_version(&version.stdout, &version.stderr, &build_report_sha256);
 
     let request = qualification_request()?;
-    let validated = encode_validated(&executable, &request, cancellation.as_ref(), deadline)
+    let validated = encode_validated(&executable, &request, control)
         .await
         .map_err(|failure| match failure.stage {
             AdapterFailureStage::OutputValidation | AdapterFailureStage::ProcessCleanup => failure,
@@ -189,12 +172,11 @@ async fn qualify_candidate(
 
 async fn run_version_probe(
     executable: &QualifiedExecutable,
-    cancellation: &dyn CancellationSignal,
-    deadline: Instant,
+    control: &OperationControl,
 ) -> Result<crate::process::SanitizedProcessOutcome, AdapterFailure> {
-    executable.validate_unchanged()?;
+    executable.validate_unchanged(control).await?;
     let limits = process_limits(
-        deadline,
+        control.deadline(),
         MAX_FFMPEG_VERSION_REPORT_BYTES,
         MAX_FFMPEG_VERSION_REPORT_BYTES,
     )?;
@@ -203,7 +185,7 @@ async fn run_version_probe(
             .await
             .map_err(|failure| failure.at_stage(AdapterFailureStage::VersionProbe))?;
     process
-        .wait_or_cancel(cancellation, limits)
+        .wait_or_cancel(control.cancellation(), limits)
         .await
         .map_err(|failure| failure.at_stage(AdapterFailureStage::VersionProbe))
 }
@@ -211,58 +193,57 @@ async fn run_version_probe(
 pub(crate) async fn encode_validated(
     executable: &QualifiedExecutable,
     request: &VideoEncodeRequest,
-    cancellation: &dyn CancellationSignal,
-    deadline: Instant,
+    control: &OperationControl,
 ) -> Result<ValidatedMp4, AdapterFailure> {
-    if cancellation.is_cancelled() {
-        return Err(AdapterFailure::new(
-            AdapterFailureStage::InputStaging,
-            AdapterFailureKind::Cancelled,
-        ));
-    }
-    if Instant::now() >= deadline {
-        return Err(AdapterFailure::new(
-            AdapterFailureStage::InputStaging,
-            AdapterFailureKind::Deadline,
-        ));
-    }
-    executable.validate_unchanged()?;
-    let staging = PreparedEncodeJob::from_request(request);
-    tokio::pin!(staging);
-    let job = tokio::select! {
-        biased;
-        _ = cancellation.cancelled() => return Err(AdapterFailure::new(
-            AdapterFailureStage::InputStaging,
-            AdapterFailureKind::Cancelled,
-        )),
-        _ = tokio::time::sleep_until(deadline.into()) => return Err(AdapterFailure::new(
-            AdapterFailureStage::InputStaging,
-            AdapterFailureKind::Deadline,
-        )),
-        result = &mut staging => result?,
+    control.check(AdapterFailureStage::InputStaging)?;
+    executable.validate_unchanged(control).await?;
+    let job = PreparedEncodeJob::from_request(request, control).await?;
+    executable.validate_unchanged(control).await?;
+    let limits = process_limits(control.deadline(), 4 * 1024, MAX_FFMPEG_STDERR_BYTES)?;
+    let invocation = FfmpegInvocation::Encode {
+        arguments: job.arguments(),
+        working_directory: job.workspace(),
+        output_path: job.output_path(),
+        output_limit: job.output_limit(),
     };
-    executable.validate_unchanged()?;
-    let limits = process_limits(deadline, 4 * 1024, MAX_FFMPEG_STDERR_BYTES)?;
-    let mut process = ManagedFfmpegProcess::spawn(
-        executable.path(),
-        FfmpegInvocation::Encode {
-            arguments: job.arguments(),
-            working_directory: job.workspace(),
-            output_path: job.output_path(),
-            output_limit: job.output_limit(),
-        },
-        limits,
-    )
-    .await?;
-    let outcome = process.wait_or_cancel(cancellation, limits).await?;
+    let mut process = match ManagedFfmpegProcess::spawn(executable.path(), invocation, limits).await
+    {
+        Ok(process) => process,
+        Err(failure) if failure.kind == AdapterFailureKind::Spawn => {
+            match executable.validate_unchanged(control).await {
+                Err(identity_failure)
+                    if matches!(
+                        identity_failure.kind,
+                        AdapterFailureKind::InvalidCandidate | AdapterFailureKind::ChangedCandidate
+                    ) =>
+                {
+                    return Err(AdapterFailure::new(
+                        AdapterFailureStage::Spawn,
+                        AdapterFailureKind::ChangedCandidate,
+                    ));
+                }
+                Err(control_failure) => return Err(control_failure),
+                Ok(()) => return Err(failure),
+            }
+        }
+        Err(failure) => return Err(failure),
+    };
+    let outcome = process
+        .wait_or_cancel(control.cancellation(), limits)
+        .await?;
     tracing::debug!(
         event = "ffmpeg.encode.process_completed",
         stderr_bytes = outcome.stderr.len(),
         diagnostic_sha256 = %HexDigest(outcome.diagnostic_sha256),
         "FFmpeg process completed with bounded diagnostics"
     );
-    let bytes = job.read_output().await?;
-    validate_mp4(bytes, job.expected())
+    let expected = job.expected();
+    control
+        .run_blocking(AdapterFailureStage::OutputValidation, move |control| {
+            let bytes = job.read_output_blocking(&control)?;
+            validate_mp4(bytes, expected, &control)
+        })
+        .await
 }
 
 fn process_limits(
@@ -442,9 +423,9 @@ fn map_failure(failure: &AdapterFailure) -> FfmpegUnavailable {
         AdapterFailureKind::Deadline => FfmpegUnavailableReason::TimedOut,
         AdapterFailureKind::InvalidCandidate => FfmpegUnavailableReason::InvalidCandidate,
         AdapterFailureKind::ChangedCandidate => FfmpegUnavailableReason::ChangedCandidate,
-        AdapterFailureKind::InvalidOutput | AdapterFailureKind::OutputOverflow => {
-            FfmpegUnavailableReason::InvalidOutput
-        }
+        AdapterFailureKind::InvalidOutput
+        | AdapterFailureKind::OutputOverflow
+        | AdapterFailureKind::UnrepresentableTiming => FfmpegUnavailableReason::InvalidOutput,
         AdapterFailureKind::ProcessExit if stage == FfmpegQualificationStage::EncodeProbe => {
             FfmpegUnavailableReason::UnsupportedEncoder
         }

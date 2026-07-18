@@ -30,16 +30,13 @@ impl H264Encoder {
         self,
         command: &mut Vec<OsString>,
         geometry: VideoOutputGeometry,
-        presentation_starts_micros: &[u64],
+        presentation_pts_micros: &[u64],
         duration_micros: u64,
         output_limit: u64,
     ) {
         let scaled = geometry.scaled();
         let canvas = geometry.canvas();
-        let presentation_timestamps = presentation_timestamps_filter(
-            presentation_starts_micros,
-            duration_micros.saturating_sub(1),
-        );
+        let presentation_timestamps = presentation_timestamps_filter(presentation_pts_micros);
         let filter = format!(
             "settb=expr=1/{FFMPEG_TIMEBASE_HZ},setpts={presentation_timestamps}/{FFMPEG_TIMEBASE_HZ}/TB,scale=w={}:h={}:flags=lanczos,pad=w={}:h={}:x=0:y=0:color=black",
             scaled.width(),
@@ -114,7 +111,7 @@ impl H264Encoder {
 
 pub(crate) fn encode_arguments(
     geometry: VideoOutputGeometry,
-    presentation_starts_micros: &[u64],
+    presentation_pts_micros: &[u64],
     duration_micros: u64,
     output_limit: u64,
 ) -> Vec<OsString> {
@@ -122,15 +119,18 @@ pub(crate) fn encode_arguments(
     H264Encoder::Libx264.append_arguments(
         &mut arguments,
         geometry,
-        presentation_starts_micros,
+        presentation_pts_micros,
         duration_micros,
         output_limit,
     );
     arguments
 }
 
-fn presentation_timestamps_filter(starts_micros: &[u64], terminal_micros: u64) -> String {
-    starts_micros
+fn presentation_timestamps_filter(presentation_pts_micros: &[u64]) -> String {
+    let (terminal_micros, source_pts_micros) = presentation_pts_micros
+        .split_last()
+        .expect("validated presentation PTS include a terminal sentinel");
+    source_pts_micros
         .iter()
         .enumerate()
         .rev()
@@ -150,24 +150,70 @@ mod tests {
         let scaled = PixelDimensions::new(5, 3).unwrap();
         let canvas = PixelDimensions::new(6, 4).unwrap();
         let geometry = VideoOutputGeometry::new(source, scaled, canvas).unwrap();
-        let arguments = encode_arguments(geometry, &[0, 100_000], 350_001, 8_192);
+        let arguments = encode_arguments(geometry, &[0, 100_000, 350_000], 350_001, 8_192);
         let actual: Vec<_> = arguments
             .iter()
-            .map(|argument| argument.to_string_lossy().into_owned())
+            .map(|argument| argument.to_string_lossy())
             .collect();
-        assert_eq!(actual.first().map(String::as_str), Some("-nostdin"));
-        assert_eq!(actual.last().map(String::as_str), Some(OUTPUT_FILE_NAME));
-        assert_eq!(actual.iter().filter(|value| *value == "libx264").count(), 1);
         assert_eq!(
-            actual.iter().filter(|value| value.as_str() == "-i").count(),
-            1
-        );
-        assert!(actual.windows(2).any(|pair| pair == ["-safe", "1"]));
-        assert!(actual.windows(2).any(|pair| pair == ["-r", "1000000"]));
-        assert!(actual.windows(2).any(|pair| pair == ["-fs", "8192"]));
-        assert!(actual.windows(2).any(|pair| pair == ["-t", "0.350001"]));
-        assert!(
-            actual.contains(&"settb=expr=1/1000000,setpts=if(eq(N\\,0)\\,0\\,if(eq(N\\,1)\\,100000\\,350000))/1000000/TB,scale=w=5:h=3:flags=lanczos,pad=w=6:h=4:x=0:y=0:color=black".to_owned())
+            actual,
+            vec![
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-filter_threads",
+                "1",
+                "-f",
+                "concat",
+                "-safe",
+                "1",
+                "-r",
+                "1000000",
+                "-i",
+                "frames.ffconcat",
+                "-map",
+                "0:v:0",
+                "-an",
+                "-sn",
+                "-dn",
+                "-fps_mode",
+                "vfr",
+                "-vf",
+                "settb=expr=1/1000000,setpts=if(eq(N\\,0)\\,0\\,if(eq(N\\,1)\\,100000\\,350000))/1000000/TB,scale=w=5:h=3:flags=lanczos,pad=w=6:h=4:x=0:y=0:color=black",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:v",
+                "libx264",
+                "-threads",
+                "1",
+                "-g",
+                "1",
+                "-keyint_min",
+                "1",
+                "-sc_threshold",
+                "0",
+                "-enc_time_base",
+                "1:1000000",
+                "-video_track_timescale",
+                "1000000",
+                "-map_metadata",
+                "-1",
+                "-map_chapters",
+                "-1",
+                "-metadata",
+                "encoder=",
+                "-metadata",
+                "creation_time=",
+                "-t",
+                "0.350001",
+                "-movflags",
+                "+faststart",
+                "-fs",
+                "8192",
+                "-y",
+                "output.partial.mp4",
+            ]
         );
         assert!(!actual.iter().any(|value| {
             value.starts_with('/')
@@ -183,7 +229,7 @@ mod tests {
     #[test]
     fn presentation_filter_assigns_each_source_and_the_terminal_sentinel() {
         assert_eq!(
-            presentation_timestamps_filter(&[0, 100_000, 225_000], 349_999),
+            presentation_timestamps_filter(&[0, 100_000, 225_000, 349_999]),
             "if(eq(N\\,0)\\,0\\,if(eq(N\\,1)\\,100000\\,if(eq(N\\,2)\\,225000\\,349999)))"
         );
     }

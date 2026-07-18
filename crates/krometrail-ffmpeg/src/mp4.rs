@@ -1,17 +1,20 @@
 use std::sync::Arc;
 
-use krometrail_core::PixelDimensions;
+use krometrail_core::{MAX_VIDEO_PRESENTATION_SEGMENTS, PixelDimensions};
 use sha2::{Digest, Sha256};
 
 use crate::error::{AdapterFailure, AdapterFailureKind, AdapterFailureStage};
+use crate::{control::OperationControl, policy::FFMPEG_TIMEBASE_HZ};
 
 const MAX_BOX_COUNT: usize = 1_024;
 const MAX_BOX_DEPTH: usize = 12;
+const MAX_MP4_SAMPLE_COUNT: usize = MAX_VIDEO_PRESENTATION_SEGMENTS + 1;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ExpectedMp4 {
     pub(crate) canvas: PixelDimensions,
     pub(crate) presentation_duration_micros: u64,
+    pub(crate) sample_durations_micros: Arc<[u64]>,
     pub(crate) max_bytes: u64,
 }
 
@@ -23,7 +26,9 @@ pub(crate) struct ValidatedMp4 {
 pub(crate) fn validate_mp4(
     bytes: Arc<[u8]>,
     expected: ExpectedMp4,
+    control: &OperationControl,
 ) -> Result<ValidatedMp4, AdapterFailure> {
+    control.check(AdapterFailureStage::OutputValidation)?;
     if bytes.is_empty() || bytes.len() as u64 > expected.max_bytes {
         return Err(failure(if bytes.len() as u64 > expected.max_bytes {
             AdapterFailureKind::OutputOverflow
@@ -39,7 +44,7 @@ pub(crate) fn validate_mp4(
     let mut moov_count = 0;
     let mut media_bytes = 0_u64;
     let mut movie = None;
-    while let Some(item) = top.next_box(&mut count)? {
+    while let Some(item) = top.next_box(&mut count, control)? {
         match &item.kind {
             b"ftyp" => {
                 ftyp_count += 1;
@@ -49,7 +54,12 @@ pub(crate) fn validate_mp4(
             }
             b"moov" => {
                 moov_count += 1;
-                movie = Some(parse_moov(item.payload, item.depth + 1, &mut count)?);
+                movie = Some(parse_moov(
+                    item.payload,
+                    item.depth + 1,
+                    &mut count,
+                    control,
+                )?);
             }
             b"mdat" => {
                 media_bytes = media_bytes
@@ -69,6 +79,9 @@ pub(crate) fn validate_mp4(
         movie.duration,
         expected.presentation_duration_micros,
     )?;
+    if movie.video_sample_durations.as_deref() != Some(&*expected.sample_durations_micros) {
+        return Err(failure(AdapterFailureKind::InvalidOutput));
+    }
     if movie.video_tracks != 1
         || movie.audio_tracks != 0
         || movie.video_codec != Some(*b"avc1") && movie.video_codec != Some(*b"avc3")
@@ -84,8 +97,16 @@ pub(crate) fn validate_mp4(
         track_duration,
         expected.presentation_duration_micros,
     )?;
+    if track_timescale != FFMPEG_TIMEBASE_HZ {
+        return Err(failure(AdapterFailureKind::InvalidOutput));
+    }
 
-    let output_hash = temporal_vision::OutputHash::from_bytes(Sha256::digest(&bytes).into());
+    let mut digest = Sha256::new();
+    for chunk in bytes.chunks(64 * 1024) {
+        control.check(AdapterFailureStage::OutputValidation)?;
+        digest.update(chunk);
+    }
+    let output_hash = temporal_vision::OutputHash::from_bytes(digest.finalize().into());
     Ok(ValidatedMp4 { bytes, output_hash })
 }
 
@@ -97,9 +118,15 @@ struct MovieInfo {
     video_codec: Option<[u8; 4]>,
     video_dimensions: Option<PixelDimensions>,
     video_duration: Option<(u32, u64)>,
+    video_sample_durations: Option<Arc<[u64]>>,
 }
 
-fn parse_moov(data: &[u8], depth: usize, count: &mut usize) -> Result<MovieInfo, AdapterFailure> {
+fn parse_moov(
+    data: &[u8],
+    depth: usize,
+    count: &mut usize,
+    control: &OperationControl,
+) -> Result<MovieInfo, AdapterFailure> {
     let mut cursor = BoxCursor::new(data, depth)?;
     let mut movie_duration = None;
     let mut video_tracks = 0;
@@ -107,7 +134,8 @@ fn parse_moov(data: &[u8], depth: usize, count: &mut usize) -> Result<MovieInfo,
     let mut video_codec = None;
     let mut video_dimensions = None;
     let mut video_duration = None;
-    while let Some(item) = cursor.next_box(count)? {
+    let mut video_sample_durations = None;
+    while let Some(item) = cursor.next_box(count, control)? {
         match &item.kind {
             b"mvhd" => {
                 if movie_duration.is_some() {
@@ -116,7 +144,7 @@ fn parse_moov(data: &[u8], depth: usize, count: &mut usize) -> Result<MovieInfo,
                 movie_duration = Some(parse_media_header(item.payload)?);
             }
             b"trak" => {
-                let track = parse_track(item.payload, item.depth + 1, count)?;
+                let track = parse_track(item.payload, item.depth + 1, count, control)?;
                 match &track.handler {
                     b"vide" => {
                         video_tracks += 1;
@@ -126,6 +154,7 @@ fn parse_moov(data: &[u8], depth: usize, count: &mut usize) -> Result<MovieInfo,
                         video_codec = track.codec;
                         video_dimensions = track.dimensions;
                         video_duration = track.duration;
+                        video_sample_durations = track.sample_durations;
                     }
                     b"soun" => audio_tracks += 1,
                     _ => {}
@@ -145,6 +174,7 @@ fn parse_moov(data: &[u8], depth: usize, count: &mut usize) -> Result<MovieInfo,
         video_codec,
         video_dimensions,
         video_duration,
+        video_sample_durations,
     })
 }
 
@@ -153,13 +183,19 @@ struct TrackInfo {
     codec: Option<[u8; 4]>,
     dimensions: Option<PixelDimensions>,
     duration: Option<(u32, u64)>,
+    sample_durations: Option<Arc<[u64]>>,
 }
 
-fn parse_track(data: &[u8], depth: usize, count: &mut usize) -> Result<TrackInfo, AdapterFailure> {
+fn parse_track(
+    data: &[u8],
+    depth: usize,
+    count: &mut usize,
+    control: &OperationControl,
+) -> Result<TrackInfo, AdapterFailure> {
     let mut cursor = BoxCursor::new(data, depth)?;
     let mut track_dimensions = None;
     let mut media = None;
-    while let Some(item) = cursor.next_box(count)? {
+    while let Some(item) = cursor.next_box(count, control)? {
         match &item.kind {
             b"tkhd" => {
                 if track_dimensions.is_some() {
@@ -171,7 +207,7 @@ fn parse_track(data: &[u8], depth: usize, count: &mut usize) -> Result<TrackInfo
                 if media.is_some() {
                     return Err(failure(AdapterFailureKind::InvalidOutput));
                 }
-                media = Some(parse_media(item.payload, item.depth + 1, count)?);
+                media = Some(parse_media(item.payload, item.depth + 1, count, control)?);
             }
             _ => {}
         }
@@ -185,6 +221,7 @@ fn parse_track(data: &[u8], depth: usize, count: &mut usize) -> Result<TrackInfo
         codec: media.codec,
         dimensions: media.dimensions,
         duration: Some(media.duration),
+        sample_durations: media.sample_durations,
     })
 }
 
@@ -193,14 +230,20 @@ struct MediaInfo {
     codec: Option<[u8; 4]>,
     dimensions: Option<PixelDimensions>,
     duration: (u32, u64),
+    sample_durations: Option<Arc<[u64]>>,
 }
 
-fn parse_media(data: &[u8], depth: usize, count: &mut usize) -> Result<MediaInfo, AdapterFailure> {
+fn parse_media(
+    data: &[u8],
+    depth: usize,
+    count: &mut usize,
+    control: &OperationControl,
+) -> Result<MediaInfo, AdapterFailure> {
     let mut cursor = BoxCursor::new(data, depth)?;
     let mut duration = None;
     let mut handler = None;
     let mut sample = None;
-    while let Some(item) = cursor.next_box(count)? {
+    while let Some(item) = cursor.next_box(count, control)? {
         match &item.kind {
             b"mdhd" => {
                 if duration.is_some() {
@@ -218,7 +261,7 @@ fn parse_media(data: &[u8], depth: usize, count: &mut usize) -> Result<MediaInfo
                 if sample.is_some() {
                     return Err(failure(AdapterFailureKind::InvalidOutput));
                 }
-                sample = parse_minf(item.payload, item.depth + 1, count)?;
+                sample = parse_minf(item.payload, item.depth + 1, count, control)?;
             }
             _ => {}
         }
@@ -227,7 +270,8 @@ fn parse_media(data: &[u8], depth: usize, count: &mut usize) -> Result<MediaInfo
         .filter(|(timescale, duration)| *timescale != 0 && *duration != 0)
         .ok_or_else(|| failure(AdapterFailureKind::InvalidOutput))?;
     let handler = handler.ok_or_else(|| failure(AdapterFailureKind::InvalidOutput))?;
-    let (codec, dimensions) = sample.unwrap_or((None, None));
+    let sample = sample.unwrap_or_default();
+    let (codec, dimensions) = (sample.codec, sample.dimensions);
     if handler == *b"vide" && (codec.is_none() || dimensions.is_none()) {
         return Err(failure(AdapterFailureKind::InvalidOutput));
     }
@@ -236,24 +280,31 @@ fn parse_media(data: &[u8], depth: usize, count: &mut usize) -> Result<MediaInfo
         codec,
         dimensions,
         duration,
+        sample_durations: sample.durations,
     })
 }
 
-type SampleDescription = (Option<[u8; 4]>, Option<PixelDimensions>);
+#[derive(Default)]
+struct SampleTable {
+    codec: Option<[u8; 4]>,
+    dimensions: Option<PixelDimensions>,
+    durations: Option<Arc<[u64]>>,
+}
 
 fn parse_minf(
     data: &[u8],
     depth: usize,
     count: &mut usize,
-) -> Result<Option<SampleDescription>, AdapterFailure> {
+    control: &OperationControl,
+) -> Result<Option<SampleTable>, AdapterFailure> {
     let mut cursor = BoxCursor::new(data, depth)?;
     let mut sample = None;
-    while let Some(item) = cursor.next_box(count)? {
+    while let Some(item) = cursor.next_box(count, control)? {
         if item.kind == *b"stbl" {
             if sample.is_some() {
                 return Err(failure(AdapterFailureKind::InvalidOutput));
             }
-            sample = parse_stbl(item.payload, item.depth + 1, count)?;
+            sample = Some(parse_stbl(item.payload, item.depth + 1, count, control)?);
         }
     }
     Ok(sample)
@@ -263,33 +314,172 @@ fn parse_stbl(
     data: &[u8],
     depth: usize,
     count: &mut usize,
-) -> Result<Option<SampleDescription>, AdapterFailure> {
+    control: &OperationControl,
+) -> Result<SampleTable, AdapterFailure> {
     let mut cursor = BoxCursor::new(data, depth)?;
-    let mut sample = None;
-    while let Some(item) = cursor.next_box(count)? {
-        if item.kind == *b"stsd" {
-            if sample.is_some() {
-                return Err(failure(AdapterFailureKind::InvalidOutput));
+    let mut description = None;
+    let mut durations = None;
+    let mut sample_count = None;
+    let mut composition_count = None;
+    while let Some(item) = cursor.next_box(count, control)? {
+        match &item.kind {
+            b"stsd" => {
+                if description.is_some() {
+                    return Err(failure(AdapterFailureKind::InvalidOutput));
+                }
+                description = Some(parse_stsd(item.payload, item.depth + 1, count, control)?);
             }
-            sample = Some(parse_stsd(item.payload, item.depth + 1, count)?);
+            b"stts" => {
+                if durations.is_some() {
+                    return Err(failure(AdapterFailureKind::InvalidOutput));
+                }
+                durations = Some(parse_stts(item.payload, control)?);
+            }
+            b"stsz" => {
+                if sample_count.is_some() {
+                    return Err(failure(AdapterFailureKind::InvalidOutput));
+                }
+                sample_count = Some(parse_stsz(item.payload)?);
+            }
+            b"ctts" => {
+                if composition_count.is_some() {
+                    return Err(failure(AdapterFailureKind::InvalidOutput));
+                }
+                composition_count = Some(parse_ctts(item.payload, control)?);
+            }
+            _ => {}
         }
     }
-    Ok(sample)
+    let (codec, dimensions) =
+        description.ok_or_else(|| failure(AdapterFailureKind::InvalidOutput))?;
+    let durations = durations.ok_or_else(|| failure(AdapterFailureKind::InvalidOutput))?;
+    let sample_count = sample_count.ok_or_else(|| failure(AdapterFailureKind::InvalidOutput))?;
+    if durations.len() != sample_count
+        || composition_count.is_some_and(|count| count != sample_count)
+    {
+        return Err(failure(AdapterFailureKind::InvalidOutput));
+    }
+    Ok(SampleTable {
+        codec,
+        dimensions,
+        durations: Some(durations),
+    })
+}
+
+fn parse_stts(data: &[u8], control: &OperationControl) -> Result<Arc<[u64]>, AdapterFailure> {
+    if data.len() < 8 || data[0..4] != [0; 4] {
+        return Err(failure(AdapterFailureKind::InvalidOutput));
+    }
+    let entries = usize::try_from(read_u32(data, 4)?)
+        .map_err(|_| failure(AdapterFailureKind::InvalidOutput))?;
+    if data.len()
+        != 8_usize
+            .checked_add(
+                entries
+                    .checked_mul(8)
+                    .ok_or_else(|| failure(AdapterFailureKind::InvalidOutput))?,
+            )
+            .ok_or_else(|| failure(AdapterFailureKind::InvalidOutput))?
+    {
+        return Err(failure(AdapterFailureKind::InvalidOutput));
+    }
+    let mut durations = Vec::new();
+    for index in 0..entries {
+        control.check(AdapterFailureStage::OutputValidation)?;
+        let offset = 8 + index * 8;
+        let run = usize::try_from(read_u32(data, offset)?)
+            .map_err(|_| failure(AdapterFailureKind::InvalidOutput))?;
+        let delta = u64::from(read_u32(data, offset + 4)?);
+        if run == 0 || delta == 0 || durations.len().saturating_add(run) > MAX_MP4_SAMPLE_COUNT {
+            return Err(failure(AdapterFailureKind::InvalidOutput));
+        }
+        durations.extend(std::iter::repeat_n(delta, run));
+    }
+    if durations.is_empty() {
+        return Err(failure(AdapterFailureKind::InvalidOutput));
+    }
+    Ok(durations.into())
+}
+
+fn parse_stsz(data: &[u8]) -> Result<usize, AdapterFailure> {
+    if data.len() < 12 || data[0..4] != [0; 4] {
+        return Err(failure(AdapterFailureKind::InvalidOutput));
+    }
+    let fixed_size = read_u32(data, 4)?;
+    let count = usize::try_from(read_u32(data, 8)?)
+        .map_err(|_| failure(AdapterFailureKind::InvalidOutput))?;
+    if count == 0 || count > MAX_MP4_SAMPLE_COUNT {
+        return Err(failure(AdapterFailureKind::InvalidOutput));
+    }
+    let expected = if fixed_size == 0 {
+        12_usize
+            .checked_add(
+                count
+                    .checked_mul(4)
+                    .ok_or_else(|| failure(AdapterFailureKind::InvalidOutput))?,
+            )
+            .ok_or_else(|| failure(AdapterFailureKind::InvalidOutput))?
+    } else {
+        12
+    };
+    if data.len() != expected {
+        return Err(failure(AdapterFailureKind::InvalidOutput));
+    }
+    Ok(count)
+}
+
+fn parse_ctts(data: &[u8], control: &OperationControl) -> Result<usize, AdapterFailure> {
+    if data.len() < 8 || !matches!(data[0], 0 | 1) || data[1..4] != [0; 3] {
+        return Err(failure(AdapterFailureKind::InvalidOutput));
+    }
+    let entries = usize::try_from(read_u32(data, 4)?)
+        .map_err(|_| failure(AdapterFailureKind::InvalidOutput))?;
+    if data.len()
+        != 8_usize
+            .checked_add(
+                entries
+                    .checked_mul(8)
+                    .ok_or_else(|| failure(AdapterFailureKind::InvalidOutput))?,
+            )
+            .ok_or_else(|| failure(AdapterFailureKind::InvalidOutput))?
+    {
+        return Err(failure(AdapterFailureKind::InvalidOutput));
+    }
+    let mut total = 0_usize;
+    for index in 0..entries {
+        control.check(AdapterFailureStage::OutputValidation)?;
+        let offset = 8 + index * 8;
+        let run = usize::try_from(read_u32(data, offset)?)
+            .map_err(|_| failure(AdapterFailureKind::InvalidOutput))?;
+        let composition_offset = read_u32(data, offset + 4)?;
+        if run == 0 || composition_offset != 0 {
+            return Err(failure(AdapterFailureKind::InvalidOutput));
+        }
+        total = total
+            .checked_add(run)
+            .filter(|value| *value <= MAX_MP4_SAMPLE_COUNT)
+            .ok_or_else(|| failure(AdapterFailureKind::InvalidOutput))?;
+    }
+    if total == 0 {
+        return Err(failure(AdapterFailureKind::InvalidOutput));
+    }
+    Ok(total)
 }
 
 fn parse_stsd(
     data: &[u8],
     depth: usize,
     count: &mut usize,
-) -> Result<SampleDescription, AdapterFailure> {
+    control: &OperationControl,
+) -> Result<(Option<[u8; 4]>, Option<PixelDimensions>), AdapterFailure> {
     if data.len() < 8 || read_u32(data, 4)? != 1 {
         return Err(failure(AdapterFailureKind::InvalidOutput));
     }
     let mut entries = BoxCursor::new(&data[8..], depth)?;
     let entry = entries
-        .next_box(count)?
+        .next_box(count, control)?
         .ok_or_else(|| failure(AdapterFailureKind::InvalidOutput))?;
-    if entries.next_box(count)?.is_some() || entry.payload.len() < 78 {
+    if entries.next_box(count, control)?.is_some() || entry.payload.len() < 78 {
         return Err(failure(AdapterFailureKind::InvalidOutput));
     }
     let codec = entry.kind;
@@ -302,7 +492,7 @@ fn parse_stsd(
         .map_err(|_| failure(AdapterFailureKind::InvalidOutput))?;
     let mut extensions = BoxCursor::new(&entry.payload[78..], entry.depth + 1)?;
     let mut avcc = 0;
-    while let Some(extension) = extensions.next_box(count)? {
+    while let Some(extension) = extensions.next_box(count, control)? {
         if extension.kind == *b"avcC" && !extension.payload.is_empty() {
             avcc += 1;
         }
@@ -380,7 +570,12 @@ impl<'a> BoxCursor<'a> {
         })
     }
 
-    fn next_box(&mut self, count: &mut usize) -> Result<Option<Mp4Box<'a>>, AdapterFailure> {
+    fn next_box(
+        &mut self,
+        count: &mut usize,
+        control: &OperationControl,
+    ) -> Result<Option<Mp4Box<'a>>, AdapterFailure> {
+        control.check(AdapterFailureStage::OutputValidation)?;
         if self.position == self.data.len() {
             return Ok(None);
         }
@@ -457,6 +652,43 @@ fn failure(kind: AdapterFailureKind) -> AdapterFailure {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use krometrail_core::{CancellationSignal, PortFuture};
+    use std::time::{Duration, Instant};
+
+    struct NeverCancelled;
+
+    impl CancellationSignal for NeverCancelled {
+        fn is_cancelled(&self) -> bool {
+            false
+        }
+        fn cancelled(&self) -> PortFuture<'_, ()> {
+            Box::pin(std::future::pending())
+        }
+    }
+
+    struct AlreadyCancelled;
+    impl CancellationSignal for AlreadyCancelled {
+        fn is_cancelled(&self) -> bool {
+            true
+        }
+        fn cancelled(&self) -> PortFuture<'_, ()> {
+            Box::pin(async {})
+        }
+    }
+
+    fn control() -> OperationControl {
+        OperationControl::new(
+            Arc::new(NeverCancelled),
+            Instant::now() + Duration::from_secs(10),
+        )
+    }
+
+    fn validate_mp4(
+        bytes: Arc<[u8]>,
+        expected: ExpectedMp4,
+    ) -> Result<ValidatedMp4, AdapterFailure> {
+        super::validate_mp4(bytes, expected, &control())
+    }
 
     fn make_box(kind: &[u8; 4], payload: &[u8]) -> Vec<u8> {
         let mut value = Vec::with_capacity(payload.len() + 8);
@@ -489,7 +721,21 @@ mod tests {
         let mut stsd = vec![0; 8];
         stsd[4..8].copy_from_slice(&1_u32.to_be_bytes());
         stsd.extend(avc1);
-        let stbl = make_box(b"stbl", &make_box(b"stsd", &stsd));
+        let mut stts = vec![0; 8];
+        stts[4..8].copy_from_slice(&3_u32.to_be_bytes());
+        for duration in [100_000_u32, 249_999, 1] {
+            stts.extend_from_slice(&1_u32.to_be_bytes());
+            stts.extend_from_slice(&duration.to_be_bytes());
+        }
+        let mut stsz = vec![0; 12];
+        stsz[8..12].copy_from_slice(&3_u32.to_be_bytes());
+        for size in [1_u32, 1, 1] {
+            stsz.extend_from_slice(&size.to_be_bytes());
+        }
+        let mut stbl_payload = make_box(b"stsd", &stsd);
+        stbl_payload.extend(make_box(b"stts", &stts));
+        stbl_payload.extend(make_box(b"stsz", &stsz));
+        let stbl = make_box(b"stbl", &stbl_payload);
         let minf = make_box(b"minf", &stbl);
 
         let mut mdia = Vec::new();
@@ -511,6 +757,7 @@ mod tests {
         ExpectedMp4 {
             canvas: PixelDimensions::new(2, 2).unwrap(),
             presentation_duration_micros: 350_000,
+            sample_durations_micros: vec![100_000, 249_999, 1].into(),
             max_bytes: 1_000_000,
         }
     }
@@ -588,5 +835,50 @@ mod tests {
             many.extend(make_box(b"free", &[]));
         }
         assert!(validate_mp4(many.into(), expected()).is_err());
+    }
+
+    #[test]
+    fn rejects_sample_count_timeline_and_composition_offset_mismatches() {
+        let mut wrong_timeline = expected();
+        wrong_timeline.sample_durations_micros = vec![100_000, 250_000, 1].into();
+        assert!(validate_mp4(valid_mp4(2, 2, 350_000).into(), wrong_timeline).is_err());
+
+        let mut wrong_count = valid_mp4(2, 2, 350_000);
+        let stsz = wrong_count
+            .windows(4)
+            .position(|window| window == b"stsz")
+            .unwrap();
+        wrong_count[stsz + 12..stsz + 16].copy_from_slice(&2_u32.to_be_bytes());
+        assert!(validate_mp4(wrong_count.into(), expected()).is_err());
+
+        let mut excessive_stts = vec![0; 16];
+        excessive_stts[4..8].copy_from_slice(&1_u32.to_be_bytes());
+        excessive_stts[8..12].copy_from_slice(
+            &u32::try_from(MAX_MP4_SAMPLE_COUNT + 1)
+                .unwrap()
+                .to_be_bytes(),
+        );
+        excessive_stts[12..16].copy_from_slice(&1_u32.to_be_bytes());
+        assert!(parse_stts(&excessive_stts, &control()).is_err());
+
+        let mut nonzero_ctts = vec![0; 16];
+        nonzero_ctts[4..8].copy_from_slice(&1_u32.to_be_bytes());
+        nonzero_ctts[8..12].copy_from_slice(&3_u32.to_be_bytes());
+        nonzero_ctts[12..16].copy_from_slice(&1_u32.to_be_bytes());
+        assert!(parse_ctts(&nonzero_ctts, &control()).is_err());
+    }
+
+    #[test]
+    fn cancellation_is_observed_during_output_validation() {
+        let control = OperationControl::new(
+            Arc::new(AlreadyCancelled),
+            Instant::now() + Duration::from_secs(10),
+        );
+        let Err(failure) =
+            super::validate_mp4(valid_mp4(2, 2, 350_000).into(), expected(), &control)
+        else {
+            panic!("cancelled validation must fail");
+        };
+        assert_eq!(failure.kind, AdapterFailureKind::Cancelled);
     }
 }

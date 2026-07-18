@@ -6,6 +6,7 @@ use krometrail_core::{
 };
 
 use crate::{
+    control::OperationControl,
     discovery::QualifiedExecutable,
     error::{AdapterFailure, AdapterFailureKind},
     qualification::encode_validated,
@@ -29,6 +30,8 @@ impl TemporalVideoEncoder for QualifiedFfmpegEncoder {
     ) -> PortFuture<'_, krometrail_core::Result<VideoEncodedClip>> {
         Box::pin(async move {
             check_context(&context)?;
+            let control =
+                OperationControl::new(Arc::clone(&context.cancellation), context.deadline);
             let permit = tokio::select! {
                 biased;
                 _ = context.cancellation.cancelled() => return Err(core_error(
@@ -46,32 +49,40 @@ impl TemporalVideoEncoder for QualifiedFfmpegEncoder {
             };
             check_context(&context)?;
             self.executable
-                .validate_unchanged()
+                .validate_unchanged(&control)
+                .await
                 .map_err(map_adapter_failure)?;
 
             let profile = request.profile();
-            let validated = encode_validated(
-                &self.executable,
-                &request,
-                context.cancellation.as_ref(),
-                context.deadline,
-            )
-            .await
-            .map_err(map_adapter_failure)?;
+            let validated = encode_validated(&self.executable, &request, &control)
+                .await
+                .map_err(map_adapter_failure)?;
             drop(permit);
-            VideoEncodedClip::new(
-                self.identity.clone(),
-                profile,
-                validated.output_hash,
-                validated.bytes,
-            )
-            .map_err(|failure| match failure.code {
-                ErrorCode::ResourceLimitExceeded => failure,
-                _ => core_error(
-                    ErrorCode::VideoEncodingFailed,
-                    "temporal video encoder returned a result that failed the core contract",
-                ),
-            })
+            let identity = self.identity.clone();
+            control
+                .run_blocking(
+                    crate::error::AdapterFailureStage::OutputValidation,
+                    move |_| {
+                        VideoEncodedClip::new(
+                            identity,
+                            profile,
+                            validated.output_hash,
+                            validated.bytes,
+                        )
+                        .map_err(|failure| {
+                            AdapterFailure::new(
+                                crate::error::AdapterFailureStage::OutputValidation,
+                                if failure.code == ErrorCode::ResourceLimitExceeded {
+                                    AdapterFailureKind::OutputOverflow
+                                } else {
+                                    AdapterFailureKind::Internal
+                                },
+                            )
+                        })
+                    },
+                )
+                .await
+                .map_err(map_adapter_failure)
         })
     }
 }
@@ -108,6 +119,7 @@ fn map_adapter_failure(failure: AdapterFailure) -> KrometrailError {
             "the qualified temporal video encoder is no longer available",
         ),
         AdapterFailureKind::Deadline
+        | AdapterFailureKind::UnrepresentableTiming
         | AdapterFailureKind::Spawn
         | AdapterFailureKind::ProcessExit
         | AdapterFailureKind::ProcessIo

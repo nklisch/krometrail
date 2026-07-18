@@ -9,6 +9,7 @@ use std::{
 use sha2::{Digest, Sha256};
 
 use crate::{
+    control::OperationControl,
     error::{AdapterFailure, AdapterFailureKind, AdapterFailureStage},
     policy::MAX_FFMPEG_DISCOVERY_CANDIDATES,
 };
@@ -48,27 +49,44 @@ impl FfmpegDiscoveryOptions {
     }
 }
 
-pub(crate) fn discover_candidates(
+pub(crate) async fn discover_candidates(
     options: &FfmpegDiscoveryOptions,
+    control: &OperationControl,
 ) -> Result<Vec<PathBuf>, AdapterFailure> {
+    let options = options.clone();
+    control
+        .run_blocking(AdapterFailureStage::ExecutableIdentity, move |control| {
+            discover_candidates_blocking(&options, &control)
+        })
+        .await
+}
+
+fn discover_candidates_blocking(
+    options: &FfmpegDiscoveryOptions,
+    control: &OperationControl,
+) -> Result<Vec<PathBuf>, AdapterFailure> {
+    control.check(AdapterFailureStage::ExecutableIdentity)?;
     if let Some(explicit) = &options.explicit_executable {
         if !explicit.is_absolute() {
             return Err(invalid_candidate());
         }
-        return canonical_candidate(explicit)
+        return canonical_candidate(explicit, control)?
             .map(|candidate| vec![candidate])
             .ok_or_else(invalid_candidate);
     }
 
     let mut candidates = Vec::new();
     let mut seen = HashSet::new();
+    let mut probes = 0_usize;
     if let Some(search_path) = &options.search_path {
         for directory in std::env::split_paths(search_path) {
-            if candidates.len() == MAX_FFMPEG_DISCOVERY_CANDIDATES {
+            control.check(AdapterFailureStage::ExecutableIdentity)?;
+            if probes == MAX_FFMPEG_DISCOVERY_CANDIDATES {
                 break;
             }
+            probes += 1;
             let path = directory.join(executable_name());
-            if let Some(candidate) = canonical_candidate(&path)
+            if let Some(candidate) = canonical_candidate(&path, control)?
                 && seen.insert(candidate.clone())
             {
                 candidates.push(candidate);
@@ -76,10 +94,12 @@ pub(crate) fn discover_candidates(
         }
     }
     for default in platform_defaults() {
-        if candidates.len() == MAX_FFMPEG_DISCOVERY_CANDIDATES {
+        control.check(AdapterFailureStage::ExecutableIdentity)?;
+        if probes == MAX_FFMPEG_DISCOVERY_CANDIDATES {
             break;
         }
-        if let Some(candidate) = canonical_candidate(Path::new(default))
+        probes += 1;
+        if let Some(candidate) = canonical_candidate(Path::new(default), control)?
             && seen.insert(candidate.clone())
         {
             candidates.push(candidate);
@@ -96,10 +116,22 @@ pub(crate) struct QualifiedExecutable {
 }
 
 impl QualifiedExecutable {
-    pub(crate) fn load(path: PathBuf) -> Result<Self, AdapterFailure> {
-        let before = executable_stamp(&path)?;
-        let executable_sha256 = hash_executable(&path, before.len)?;
-        let after = executable_stamp(&path)?;
+    pub(crate) async fn load(
+        path: PathBuf,
+        control: &OperationControl,
+    ) -> Result<Self, AdapterFailure> {
+        control
+            .run_blocking(AdapterFailureStage::ExecutableIdentity, move |control| {
+                Self::load_blocking(path, &control)
+            })
+            .await
+    }
+
+    fn load_blocking(path: PathBuf, control: &OperationControl) -> Result<Self, AdapterFailure> {
+        control.check(AdapterFailureStage::ExecutableIdentity)?;
+        let before = executable_stamp(&path, control)?;
+        let executable_sha256 = hash_executable(&path, before.len, control)?;
+        let after = executable_stamp(&path, control)?;
         if before != after {
             return Err(AdapterFailure::new(
                 AdapterFailureStage::ExecutableIdentity,
@@ -113,8 +145,29 @@ impl QualifiedExecutable {
         })
     }
 
-    pub(crate) fn validate_unchanged(&self) -> Result<(), AdapterFailure> {
-        let current = executable_stamp(&self.path).map_err(|_| {
+    pub(crate) async fn validate_unchanged(
+        &self,
+        control: &OperationControl,
+    ) -> Result<(), AdapterFailure> {
+        let executable = self.clone();
+        control
+            .run_blocking(AdapterFailureStage::ExecutableIdentity, move |control| {
+                executable.validate_unchanged_blocking(&control)
+            })
+            .await
+    }
+
+    fn validate_unchanged_blocking(
+        &self,
+        control: &OperationControl,
+    ) -> Result<(), AdapterFailure> {
+        let current = executable_stamp(&self.path, control).map_err(|failure| {
+            if matches!(
+                failure.kind,
+                AdapterFailureKind::Cancelled | AdapterFailureKind::Deadline
+            ) {
+                return failure;
+            }
             AdapterFailure::new(
                 AdapterFailureStage::ExecutableIdentity,
                 AdapterFailureKind::ChangedCandidate,
@@ -147,13 +200,26 @@ struct ExecutableStamp {
     modified_b: i64,
 }
 
-fn canonical_candidate(path: &Path) -> Option<PathBuf> {
-    let canonical = path.canonicalize().ok()?;
-    let metadata = canonical.metadata().ok()?;
-    (metadata.is_file() && is_executable(&metadata)).then_some(canonical)
+fn canonical_candidate(
+    path: &Path,
+    control: &OperationControl,
+) -> Result<Option<PathBuf>, AdapterFailure> {
+    control.check(AdapterFailureStage::ExecutableIdentity)?;
+    let Ok(canonical) = path.canonicalize() else {
+        return Ok(None);
+    };
+    control.check(AdapterFailureStage::ExecutableIdentity)?;
+    let Ok(metadata) = canonical.metadata() else {
+        return Ok(None);
+    };
+    Ok((metadata.is_file() && is_executable(&metadata)).then_some(canonical))
 }
 
-fn executable_stamp(path: &Path) -> Result<ExecutableStamp, AdapterFailure> {
+fn executable_stamp(
+    path: &Path,
+    control: &OperationControl,
+) -> Result<ExecutableStamp, AdapterFailure> {
+    control.check(AdapterFailureStage::ExecutableIdentity)?;
     let metadata = path.metadata().map_err(|_| invalid_candidate())?;
     if !metadata.is_file()
         || !is_executable(&metadata)
@@ -165,12 +231,17 @@ fn executable_stamp(path: &Path) -> Result<ExecutableStamp, AdapterFailure> {
     stamp_from_metadata(&metadata)
 }
 
-fn hash_executable(path: &Path, expected_len: u64) -> Result<[u8; 32], AdapterFailure> {
+fn hash_executable(
+    path: &Path,
+    expected_len: u64,
+    control: &OperationControl,
+) -> Result<[u8; 32], AdapterFailure> {
     let mut file = File::open(path).map_err(|_| invalid_candidate())?;
     let mut digest = Sha256::new();
     let mut buffer = [0_u8; 64 * 1024];
     let mut total = 0_u64;
     loop {
+        control.check(AdapterFailureStage::ExecutableIdentity)?;
         let read = file.read(&mut buffer).map_err(|_| invalid_candidate())?;
         if read == 0 {
             break;
@@ -196,12 +267,7 @@ fn is_executable(metadata: &std::fs::Metadata) -> bool {
     metadata.permissions().mode() & 0o111 != 0
 }
 
-#[cfg(windows)]
-fn is_executable(_metadata: &std::fs::Metadata) -> bool {
-    true
-}
-
-#[cfg(not(any(unix, windows)))]
+#[cfg(not(unix))]
 fn is_executable(_metadata: &std::fs::Metadata) -> bool {
     false
 }
@@ -218,29 +284,11 @@ fn stamp_from_metadata(metadata: &std::fs::Metadata) -> Result<ExecutableStamp, 
     })
 }
 
-#[cfg(windows)]
-fn stamp_from_metadata(metadata: &std::fs::Metadata) -> Result<ExecutableStamp, AdapterFailure> {
-    use std::os::windows::fs::MetadataExt;
-    Ok(ExecutableStamp {
-        len: metadata.file_size(),
-        identity_a: u64::from(metadata.file_attributes()),
-        identity_b: metadata.creation_time(),
-        modified_a: metadata.last_write_time() as i64,
-        modified_b: 0,
-    })
-}
-
-#[cfg(not(any(unix, windows)))]
+#[cfg(not(unix))]
 fn stamp_from_metadata(_metadata: &std::fs::Metadata) -> Result<ExecutableStamp, AdapterFailure> {
     Err(invalid_candidate())
 }
 
-#[cfg(windows)]
-const fn executable_name() -> &'static str {
-    "ffmpeg.exe"
-}
-
-#[cfg(not(windows))]
 const fn executable_name() -> &'static str {
     "ffmpeg"
 }
@@ -263,12 +311,7 @@ const fn platform_defaults() -> &'static [&'static str] {
     ]
 }
 
-#[cfg(windows)]
-const fn platform_defaults() -> &'static [&'static str] {
-    &[r"C:\ffmpeg\bin\ffmpeg.exe"]
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 const fn platform_defaults() -> &'static [&'static str] {
     &[]
 }
@@ -280,38 +323,69 @@ fn invalid_candidate() -> AdapterFailure {
     )
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use krometrail_core::{CancellationSignal, PortFuture};
+    use std::{sync::Arc, time::Duration};
 
     #[allow(dead_code)]
     mod support {
         include!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/support/mod.rs"));
     }
 
-    #[test]
-    fn explicit_relative_or_missing_candidate_fails_without_fallback() {
+    struct NeverCancelled;
+
+    impl CancellationSignal for NeverCancelled {
+        fn is_cancelled(&self) -> bool {
+            false
+        }
+
+        fn cancelled(&self) -> PortFuture<'_, ()> {
+            Box::pin(std::future::pending())
+        }
+    }
+
+    fn control() -> OperationControl {
+        OperationControl::new(
+            Arc::new(NeverCancelled),
+            std::time::Instant::now() + Duration::from_secs(5),
+        )
+    }
+
+    #[tokio::test]
+    async fn explicit_relative_or_missing_candidate_fails_without_fallback() {
         assert!(
-            discover_candidates(&FfmpegDiscoveryOptions::with_explicit_executable(
-                PathBuf::from("ffmpeg")
-            ))
+            discover_candidates(
+                &FfmpegDiscoveryOptions::with_explicit_executable(PathBuf::from("ffmpeg")),
+                &control()
+            )
+            .await
             .is_err()
         );
         assert!(
-            discover_candidates(&FfmpegDiscoveryOptions::with_explicit_executable(
-                std::env::temp_dir().join("krometrail-definitely-missing-ffmpeg")
-            ))
+            discover_candidates(
+                &FfmpegDiscoveryOptions::with_explicit_executable(
+                    std::env::temp_dir().join("krometrail-definitely-missing-ffmpeg")
+                ),
+                &control()
+            )
+            .await
             .is_err()
         );
     }
 
-    #[test]
-    fn path_discovery_deduplicates_canonical_candidates() {
+    #[tokio::test]
+    async fn path_discovery_deduplicates_canonical_candidates() {
         let fixture = support::FixtureExecutable::new("valid");
         let directory = fixture.path().parent().unwrap();
         let search = std::env::join_paths([directory, directory, directory]).unwrap();
-        let candidates =
-            discover_candidates(&FfmpegDiscoveryOptions::with_search_path(search)).unwrap();
+        let candidates = discover_candidates(
+            &FfmpegDiscoveryOptions::with_search_path(search),
+            &control(),
+        )
+        .await
+        .unwrap();
         assert_eq!(
             candidates.first().unwrap(),
             &fixture.path().canonicalize().unwrap()
@@ -326,14 +400,21 @@ mod tests {
         assert!(candidates.len() <= MAX_FFMPEG_DISCOVERY_CANDIDATES);
     }
 
-    #[test]
-    fn executable_identity_is_bounded_and_detects_replacement() {
+    #[tokio::test]
+    async fn executable_identity_is_bounded_and_detects_replacement() {
         let fixture = support::FixtureExecutable::new("valid");
-        let executable = QualifiedExecutable::load(fixture.path().canonicalize().unwrap()).unwrap();
+        let executable =
+            QualifiedExecutable::load(fixture.path().canonicalize().unwrap(), &control())
+                .await
+                .unwrap();
         assert_ne!(executable.executable_sha256(), &[0; 32]);
         std::fs::write(fixture.path(), b"changed executable").unwrap();
         assert_eq!(
-            executable.validate_unchanged().unwrap_err().kind,
+            executable
+                .validate_unchanged(&control())
+                .await
+                .unwrap_err()
+                .kind,
             AdapterFailureKind::ChangedCandidate
         );
     }

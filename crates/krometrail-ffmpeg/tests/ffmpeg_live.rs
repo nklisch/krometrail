@@ -65,6 +65,10 @@ async fn selected_real_ffmpeg_produces_the_playable_fixed_policy_clip() {
         clip.output_hash(),
         clip.encoded_bytes().len(),
     );
+    if let Some(output) = std::env::var_os("KROMETRAIL_FFMPEG_FIXTURE_OUTPUT") {
+        std::fs::write(PathBuf::from(output), clip.encoded_bytes())
+            .expect("explicit fixture output path must be writable");
+    }
     assert!(
         clip.encoded_bytes()
             .windows(4)

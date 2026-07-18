@@ -226,7 +226,7 @@ async fn qualified_adapter_is_object_safe_and_returns_core_validated_bytes() {
         .unwrap();
     assert_eq!(clip.identity(), encoder.identity());
     assert_eq!(clip.profile().max_encoded_bytes(), 1_000_000);
-    assert_eq!(clip.encoded_bytes().len(), 1_595);
+    assert_eq!(clip.encoded_bytes().len(), 1_508);
     assert_eq!(
         clip.output_hash().as_bytes(),
         temporal_vision::OutputHash::from_bytes(sha2::Sha256::digest(clip.encoded_bytes()).into())
