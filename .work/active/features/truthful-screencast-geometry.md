@@ -1,7 +1,7 @@
 ---
 id: truthful-screencast-geometry
 kind: feature
-stage: review
+stage: implementing
 tags: [bug, visual, browser]
 parent: null
 depends_on: []
@@ -149,6 +149,22 @@ capture.coordinator.update_geometry(
 
 - Browser-native window resizes must still reach capture geometry. The initial design relies on acknowledged viewport operations and start/reconnect observation; implementation must verify whether native target resize events already update the supervisor. If they do not, add a bounded target event update rather than falling back to adaptive screencast metadata.
 - CSS visual viewport can be fractional under page zoom. Conversion must reject or consistently round only values within the existing browser observation tolerance, preserving encoded dimensions separately.
+
+## Review findings (2026-07-17)
+
+**Effective weight**: standard — one same-harness fresh-context pass; closure requires verification of this named fix set without a second independent pass.
+
+**Blockers**:
+
+- The acknowledged geometry is refreshed only at capture start/resume and explicit set/clear. Add a generation-fenced authoritative refresh for native resize, monitor/DPR or zoom, and navigation-driven effective geometry changes. Refresh failure must remain target-local and produce explicit gap/failure evidence rather than stale provenance.
+- Explicit set/clear/rollback executes several asynchronous browser commands while capture continues under the old cache. Fence the ambiguous interval so no frame can be retained under an unproven epoch; declare exact loss before authoritative capture resumes.
+
+**Required regression evidence**:
+
+- Exercise session-level set, clear, rollback failure, reconnect/navigation refresh, native resize refresh, and an acknowledgement spanning a geometry transition.
+- Assert retained frames use only established old/new geometry and every ambiguous observation is represented as a gap.
+
+**Important**: the existing direct `update_geometry` test is useful but insufficient without the integrated lifecycle/race coverage above.
 
 ## Implementation notes
 
