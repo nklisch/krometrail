@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-video-artifacts
 kind: epic
-stage: implementing
+stage: review
 tags: [visual, agent-ux, infra, security, testing]
 parent: null
 depends_on: []
@@ -99,3 +99,27 @@ The design uses one shared deterministic contract as the root, then lets the sec
 
 - Invoked because: the epic changes a stable public MCP/artifact contract and introduces a security-sensitive external process boundary.
 - Skipped/degraded: the active autopilot delegation explicitly made this designer an endpoint and prohibited nested agents or peeragent. Design-time advisory review is therefore unavailable and non-blocking; the direct source-grounded pre-mortem above records the principal risks for feature design and the required standard completion review remains unchanged.
+
+## Implementation summary
+
+- Completed all four child features: deterministic clip/provenance contracts, qualified managed FFmpeg
+  runtime, retained generation/storage lifecycle, and the conditional MCP/plugin/evaluation surface.
+- Krometrail uses only a bounded user-selected or user-discoverable FFmpeg process; it ships no encoder,
+  downloader, wrapper acquisition path, audio support, provider upload adapter, or model-capability guess.
+- One immutable startup qualification result controls service construction, capability discovery, the
+  video-only output schema, tool/resource registration, and restart recovery while preserving the exact
+  legacy still-tool response schemas when video is unavailable.
+- Both presentation policies generate retained local MP4/H.264 resources with typed manifests, source and
+  timing provenance, visible gaps, bounded reads, cache identity, retention accounting, recovery, deletion,
+  cancellation, deadline, and late-publication fencing.
+- The shipped skill is still-first, explains conditional availability and user-installed setup, keeps local
+  evidence private by default, and separates encoder qualification from exact host/provider/model support.
+
+## Feature completion evidence
+
+- `epic-temporal-video-artifacts-clip-contracts`: done after one standard review and verified provenance/schema corrections.
+- `epic-temporal-video-artifacts-ffmpeg-runtime`: done after one standard review and verified lifecycle/timing/platform corrections.
+- `epic-temporal-video-artifacts-retained-generation`: done after one standard review and verified publication/cache/budget/gap corrections.
+- `epic-temporal-video-artifacts-agent-surface`: done after one standard review and an exact stable-schema correction.
+- Full workspace fmt/check/tests/Clippy and docs build passed before the final agent-surface review correction;
+  focused MCP, degraded startup, plugin, skill, evaluation, and real selected-FFmpeg lanes pass afterward.
