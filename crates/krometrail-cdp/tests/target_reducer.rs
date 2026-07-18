@@ -31,6 +31,55 @@ fn page(key: &str, url: &str) -> TransportTargetInfo {
     TransportTargetInfo::new(key, "page", url, key, false, Some("context".into())).unwrap()
 }
 
+fn popup(key: &str, opener: &str) -> TransportTargetInfo {
+    page(key, &format!("https://{key}.test")).with_opener_target_key(Some(opener.to_owned()))
+}
+
+#[test]
+fn page_contexts_use_monotonic_sequences_and_resolve_only_known_openers() {
+    let state = reduce(
+        SupervisorState::new(compatibility()),
+        SupervisorInput::InitialTargets(vec![page("opener", "https://opener.test")]),
+    )
+    .unwrap()
+    .state;
+    let opener_id = state.targets_by_key["opener"].target.target.id();
+    let state = reduce(
+        state,
+        SupervisorInput::TargetCreated(popup("popup", "opener")),
+    )
+    .unwrap()
+    .state;
+    let state = reduce(
+        state,
+        SupervisorInput::TargetCreated(popup("orphan", "raw-missing-key")),
+    )
+    .unwrap()
+    .state;
+
+    let inventory = state.page_contexts().unwrap();
+    assert_eq!(inventory.cursor.get(), 3);
+    assert_eq!(inventory.pages.len(), 3);
+    assert!(
+        inventory
+            .pages
+            .windows(2)
+            .all(|pages| pages[0].sequence < pages[1].sequence)
+    );
+    let popup = inventory
+        .pages
+        .iter()
+        .find(|page| page.page.target.target.browser_target_key() == "popup")
+        .unwrap();
+    assert_eq!(popup.opener_target_id, Some(opener_id));
+    let orphan = inventory
+        .pages
+        .iter()
+        .find(|page| page.page.target.target.browser_target_key() == "orphan")
+        .unwrap();
+    assert_eq!(orphan.opener_target_id, None);
+}
+
 #[test]
 fn subscription_before_enable_contract_is_represented_by_attach_effects() {
     let result = reduce(
