@@ -26,8 +26,8 @@ use temporal_vision::{ArtifactKind, EvidenceClass, PixelDimensions};
 
 use crate::resources::{ResourceKind, ResourceProjection};
 
-const MAX_AUTOMATIC_SNAPSHOT_NODES: usize = 96;
-const MAX_AUTOMATIC_SNAPSHOT_JSON_BYTES: usize = 32 * 1024;
+const MAX_AUTOMATIC_SNAPSHOT_NODES: usize = 48;
+const MAX_AUTOMATIC_SNAPSHOT_JSON_BYTES: usize = 12 * 1024;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -2353,10 +2353,14 @@ mod tests {
             .unwrap();
             let compact: PageSnapshot =
                 serde_json::from_value(value["snapshot"]["available"].clone()).unwrap();
-            assert!(compact.nodes.len() <= MAX_AUTOMATIC_SNAPSHOT_NODES);
+            assert!(
+                compact.nodes.len() <= 48,
+                "automatic live snapshots must retain at most 48 nodes"
+            );
             assert!(
                 serde_json::to_vec(&compact.nodes).unwrap().len()
-                    <= MAX_AUTOMATIC_SNAPSHOT_JSON_BYTES
+                    <= 12 * 1024,
+                "automatic live snapshots must fit the 12 KiB serialized-node budget"
             );
             assert_eq!(
                 compact.omitted_node_count,
