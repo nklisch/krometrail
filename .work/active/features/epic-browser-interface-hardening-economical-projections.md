@@ -1,7 +1,7 @@
 ---
 id: epic-browser-interface-hardening-economical-projections
 kind: feature
-stage: drafting
+stage: implementing
 tags: [agent-ux, browser]
 parent: epic-browser-interface-hardening
 depends_on: []
@@ -27,3 +27,81 @@ Preserve acquisition and canonical evidence. Put all change in the MCP presentat
 ## UI alignment
 
 No UI surface; this is an MCP response-projection feature.
+
+## Design decisions
+
+- **Live budget**: lower automatic compact snapshots to 48 nodes and 12 KiB of serialized node JSON. This keeps a usable tree and actionable ancestry while materially reducing routine mutation payloads.
+- **Temporal control**: add an additive `response.temporal` field with `compact` default and `full` opt-in. Temporal detail must not be inferred from `snapshot` or `page_state`.
+- **Drill-down**: `snapshot: full`, `temporal: full`, canonical resources, and retained artifacts remain authoritative and unchanged.
+
+## Architectural choice
+
+Keep one acquisition/result model and project it at the shared MCP response boundary. Add a temporal-specific presentation preference rather than overloading unrelated structured fields. This is preferable to changing domain bundles (which would weaken retained evidence) or tool-specific booleans (which would fragment the common response surface).
+
+## Implementation Units
+
+### Unit 1: Bounded automatic snapshots
+
+**Story**: `epic-browser-interface-hardening-economical-projections-bound-snapshots`
+
+**File**: `crates/krometrail-mcp/src/response.rs`
+
+```rust
+const MAX_AUTOMATIC_SNAPSHOT_NODES: usize = 48;
+const MAX_AUTOMATIC_SNAPSHOT_JSON_BYTES: usize = 12 * 1024;
+
+fn compact_snapshot(snapshot: PageSnapshot) -> Result<PageSnapshot, ResponseInvariantError>;
+```
+
+Keep actionable-first ancestor-preserving selection and exact omission accounting. Apply the tighter budget only to compact/automatic presentation.
+
+**Acceptance criteria**:
+
+- [ ] Large default post-action snapshots fit both 48-node and 12-KiB ceilings.
+- [ ] Explicit full snapshots remain complete.
+- [ ] Selected nodes retain valid preorder parents and exact omission counts.
+
+### Unit 2: Temporal-specific compact projection
+
+**Story**: `epic-browser-interface-hardening-economical-projections-compact-temporal`
+
+**Files**: `crates/krometrail-mcp/src/response.rs`, `crates/krometrail-mcp/src/schema.rs`
+
+```rust
+enum TemporalResponseDetail { Compact, Full }
+
+struct ResponseProjectionRequest {
+    temporal: TemporalResponseDetail,
+    // existing fields retained
+}
+
+fn apply_temporal_projection(value: &mut Value, detail: TemporalResponseDetail)
+    -> Result<(), ResponseInvariantError>;
+```
+
+Compact temporal output keeps range/header, counts, gap/warning summaries, artifact handles, and drill-down identifiers. It removes repeated per-frame/provenance structures already available through resources/full detail.
+
+**Acceptance criteria**:
+
+- [ ] Omitted snapshot/page-state fields do not disable temporal compaction.
+- [ ] Default temporal bundles stay under a deterministic serialized-size regression ceiling for the reproduced multi-frame shape.
+- [ ] `temporal: full` returns the existing bundle projection without loss.
+
+## Implementation Order
+
+1. Tighten and regress the live snapshot budget.
+2. Add the additive temporal preference and decouple bundle projection.
+
+## Simplification
+
+- One common response preference owns temporal detail; remove the duplicated snapshot/page-state conditional from both temporal mapping paths.
+- Retain one compact temporal helper rather than route-local summaries.
+
+## Testing
+
+- MCP response tests protect exact serialized budgets, full opt-in, schema generation, and independence among response preference fields.
+- Existing resource/canonical bundle tests remain unchanged as compatibility evidence.
+
+## Risks
+
+Dense control surfaces can exceed 48 actionable nodes. Omission accounting remains explicit and full snapshot drill-down is preserved. The new response field is additive and defaults to the already documented low-cost behavior.
