@@ -106,7 +106,9 @@ as steps.
 - Optional video: use `generate_temporal_video` only when it is advertised and a still artifact or
   source-frame read cannot answer the interval question economically. `real_time` preserves bounded
   relative timing; `model_optimized` may hold meaningful states and gap slates longer. Treat those
-  presentation holds as declared provenance, not additional observed time.
+  presentation holds as declared provenance, not additional observed time. When the user requests a
+  video, or video materially helps a video-capable model inspect the behavior, generate it without an
+  extra confirmation step.
 - Source detail: `list_source_frames`, `fetch_source_frames`
 - Full reads: returned `krometrail://evidence/...` resource links. For a compact bundle artifact,
   read its `manifest_uri` when the claim needs the full ordered source IDs, parameters, gaps, or
@@ -115,6 +117,14 @@ as steps.
   read the manifest when exact presentation provenance matters.
 - Browser context: `query_browser_events`
 - Retention: `pin_resolved_range`, `query_pin_state`, `unpin_resolved_range`
+
+Video and manifest resources stay local by default. Reading them through Krometrail or handing a
+returned local resource to the active model host is normal tool use; do not upload or forward them
+through a separate external workflow unless the user explicitly authorizes it. Prefer a smaller
+still artifact or targeted source read when it can answer the question, but do not let that preference
+block a requested or useful clip. Treat manifests as potentially sensitive evidence because they
+identify source frames, timing, gaps, and browsing-session artifacts. When reporting diagnostics,
+never expose frame pixels, page content, raw FFmpeg input or stderr, or local executable paths.
 
 Before relying on history, check `browser_status` capture state or the operation's capture warning.
 Capture failure means current control may still work while new retained frames are unavailable. Dark,
