@@ -183,7 +183,7 @@ The default storyboard contains no more than eight tiles. Callers can request be
 Each tile includes:
 
 - session-relative timestamp;
-- offset from the query anchor;
+- offset from the epoch-local render anchor, while the original semantic query anchor remains in resolved-range provenance;
 - source-frame identifier;
 - marker labels that intersect its time;
 - gap indication when applicable.

@@ -9,9 +9,9 @@ Capabilities, browser operations, browser events, evidence operations, and MCP r
 ## Examples
 
 - `crates/krometrail-core/src/capabilities/mod.rs:51` — `CAPABILITY_REGISTRY` is emitted with IDs, defaults, dependencies, and recording subsystems.
-- `crates/krometrail-core/src/browser/operation.rs:119` — `BrowserOperationKind::ALL`, stable names, and reverse lookup derive from the operation declaration/registry.
+- `crates/krometrail-core/src/browser/operation.rs:121` — `BrowserOperationKind::ALL`, stable names, and reverse lookup derive from the operation declaration/registry.
 - `crates/krometrail-core/src/browser/events.rs:1618` — event kinds resolve their definition through `BROWSER_EVENT_REGISTRY`.
-- `crates/krometrail-mcp/src/registry.rs:177` — MCP progressive routes iterate the core registry and generated input schema.
+- `crates/krometrail-mcp/src/registry.rs:178` — MCP progressive routes iterate the core registry and generated input schema.
 
 ## When to Use
 

@@ -9,6 +9,14 @@
 - Prevented automatically selected temporal-bundle markers outside an exact resolved range from invalidating artifact generation.
 - Clamped storyboard render anchors to each visual epoch's retained source-frame interval while preserving the original semantic range anchor as provenance.
 
+## v1.0.2 — 2026-07-17
+
+### Fixes
+
+- Hardened managed-browser discovery, pointer activation, dialog and fill races, target reference lifetimes, truthful shutdown, and viewport restoration across navigation and reconnect.
+- Added durable privacy-safe diagnostic logging and expanded the shipped agent skill with log-driven troubleshooting and issue-reporting guidance.
+- Added a companion issue-reporting skill that prepares reproducible, redacted Krometrail reports for authenticated GitHub submission.
+
 ## v1.0.1 — 2026-07-16
 
 ### Plugin distribution
