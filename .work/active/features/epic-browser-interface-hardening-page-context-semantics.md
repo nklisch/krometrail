@@ -1,7 +1,7 @@
 ---
 id: epic-browser-interface-hardening-page-context-semantics
 kind: feature
-stage: implementing
+stage: review
 tags: [browser, agent-ux]
 parent: epic-browser-interface-hardening
 depends_on: []
@@ -177,3 +177,14 @@ AX and DOMSnapshot node identities can differ across out-of-process frames. Same
 
 - Standard single-pass review found one receiver-confirmed blocker: container-text matching walked through generic/page-level ancestors whose propagated rendered text could include an unrelated sibling.
 - Closure requires a conservative local-container boundary, a sibling-text regression, and focused verification only; no second reviewer is required.
+
+## Review remediation
+
+- `container_text` now skips generic, main, document, and root wrappers, walks to the nearest allowlisted local AX container, and evaluates that container only. The allowlist is restricted to list/table/grid, group, article, region, and label-like roles.
+- The regression constructs a checkbox and unrelated sibling text beneath shared `main` and `generic` wrappers; a `contains` role query yields `no_match`. Existing distinct Todo-style `listitem` checkbox queries still resolve uniquely.
+
+## Review-fix verification
+
+- `cargo test -p krometrail-core -p krometrail-cdp --all-targets --locked` — passed.
+- `cargo clippy -p krometrail-core -p krometrail-cdp --all-targets --locked -- -D warnings` — passed.
+- `cargo fmt --all -- --check` — passed.

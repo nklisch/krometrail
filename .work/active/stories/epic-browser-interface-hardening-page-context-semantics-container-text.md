@@ -29,3 +29,8 @@ Allow role queries to qualify unnamed controls by bounded ancestor rendered text
 
 - `cargo test -p krometrail-core -p krometrail-cdp --lib --locked snapshot::tests -- --nocapture`
 - `cargo test -p krometrail-core --all-targets --locked`
+
+## Review fix
+
+- Review found that generic/page-level AX ancestors can carry propagated sibling text. `container_text` now skips those roles and evaluates only the nearest explicit local container (`listitem`, table/grid, group, article, region, or label-like roles).
+- Added a `contains` regression: a checkbox sharing `main` and `generic` wrappers with unrelated sibling text yields `no_match`; distinct Todo-style list-item checkboxes remain uniquely queryable.

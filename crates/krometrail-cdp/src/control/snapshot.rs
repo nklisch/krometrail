@@ -55,6 +55,17 @@ const ACTIONABLE_ROLES: &[&str] = &[
     "treeitem",
 ];
 const ACTIONABLE_SIGNALS: &[&str] = &["focusable", "editable", "clickable"];
+const LOCAL_CONTAINER_ROLES: &[&str] = &[
+    "listitem",
+    "row",
+    "cell",
+    "gridcell",
+    "group",
+    "article",
+    "region",
+    "label",
+    "labeltext",
+];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct DocumentFingerprint {
@@ -479,6 +490,7 @@ impl SnapshotRegistry {
                         .unwrap_or(&SemanticNodeMetadata::default()),
                     &active.parent_by_node,
                     &active.semantic,
+                    &snapshot.nodes,
                 )
                 .then(|| SemanticMatch {
                     reference,
@@ -648,6 +660,7 @@ fn semantic_query_matches(
     metadata: &SemanticNodeMetadata,
     parents: &HashMap<SnapshotNodeId, Option<SnapshotNodeId>>,
     semantic: &HashMap<SnapshotNodeId, SemanticNodeMetadata>,
+    nodes: &[SnapshotNode],
 ) -> bool {
     match query {
         SemanticQuery::Role {
@@ -662,7 +675,7 @@ fn semantic_query_matches(
                         .is_some_and(|value| name.matches(value))
                 })
                 && container_text.as_ref().is_none_or(|expected| {
-                    nearest_container_text_matches(node.id, expected, parents, semantic)
+                    nearest_container_text_matches(node.id, expected, parents, semantic, nodes)
                 })
         }
         SemanticQuery::Label { text } => metadata.labels.iter().any(|label| text.matches(label)),
@@ -679,23 +692,29 @@ fn nearest_container_text_matches(
     expected: &krometrail_core::SemanticTextMatch,
     parents: &HashMap<SnapshotNodeId, Option<SnapshotNodeId>>,
     semantic: &HashMap<SnapshotNodeId, SemanticNodeMetadata>,
+    nodes: &[SnapshotNode],
 ) -> bool {
     let mut current = parents.get(&node).copied().flatten();
     while let Some(ancestor) = current {
-        // The AX root's rendered text is page-wide. Containers must be a bounded ancestor below
-        // that root so unrelated page text cannot qualify a control.
-        if parents.get(&ancestor).copied().flatten().is_none() {
+        let Some(ancestor_node) = nodes.iter().find(|candidate| candidate.id == ancestor) else {
             return false;
-        }
-        if semantic
-            .get(&ancestor)
-            .is_some_and(|metadata| expected.matches(&metadata.rendered_text))
-        {
-            return true;
+        };
+        if is_local_container_role(&ancestor_node.role) {
+            // Rendered DOM text propagates through generic/page-level ancestors. The nearest
+            // explicit local container is the only authority for a container-qualified query.
+            return semantic
+                .get(&ancestor)
+                .is_some_and(|metadata| expected.matches(&metadata.rendered_text));
         }
         current = parents.get(&ancestor).copied().flatten();
     }
     false
+}
+
+fn is_local_container_role(role: &str) -> bool {
+    LOCAL_CONTAINER_ROLES
+        .iter()
+        .any(|candidate| role.eq_ignore_ascii_case(candidate))
 }
 
 fn is_strict_descendant(
@@ -2067,13 +2086,17 @@ mod tests {
     }
 
     #[test]
-    fn container_role_queries_use_only_bounded_ancestor_text() {
+    fn container_role_queries_use_only_the_nearest_explicit_local_ancestor() {
         let generation = SnapshotGeneration::new(1).unwrap();
         let root = SnapshotNodeId::new(1).unwrap();
         let first_container = SnapshotNodeId::new(2).unwrap();
         let first_checkbox = SnapshotNodeId::new(3).unwrap();
         let second_container = SnapshotNodeId::new(4).unwrap();
         let second_checkbox = SnapshotNodeId::new(5).unwrap();
+        let main = SnapshotNodeId::new(6).unwrap();
+        let generic_wrapper = SnapshotNodeId::new(7).unwrap();
+        let unrelated_text = SnapshotNodeId::new(8).unwrap();
+        let uncontained_checkbox = SnapshotNodeId::new(9).unwrap();
         let reference = |node_id| NodeReference {
             target_id: target(),
             generation,
@@ -2107,6 +2130,22 @@ mod tests {
                 node(first_checkbox, Some(first_container), 2, "checkbox", true),
                 node(second_container, Some(root), 1, "listitem", false),
                 node(second_checkbox, Some(second_container), 2, "checkbox", true),
+                node(main, Some(root), 1, "main", false),
+                node(generic_wrapper, Some(main), 2, "generic", false),
+                node(
+                    unrelated_text,
+                    Some(generic_wrapper),
+                    3,
+                    "StaticText",
+                    false,
+                ),
+                node(
+                    uncontained_checkbox,
+                    Some(generic_wrapper),
+                    3,
+                    "checkbox",
+                    true,
+                ),
             ],
             0,
         )
@@ -2132,6 +2171,7 @@ mod tests {
                 bindings: HashMap::from([
                     (first_checkbox, NodeBinding { backend_node_id: 3 }),
                     (second_checkbox, NodeBinding { backend_node_id: 5 }),
+                    (uncontained_checkbox, NodeBinding { backend_node_id: 9 }),
                 ]),
                 node_by_backend: HashMap::from([
                     (1, root),
@@ -2139,6 +2179,10 @@ mod tests {
                     (3, first_checkbox),
                     (4, second_container),
                     (5, second_checkbox),
+                    (6, main),
+                    (7, generic_wrapper),
+                    (8, unrelated_text),
+                    (9, uncontained_checkbox),
                 ]),
                 semantic: HashMap::from([
                     (
@@ -2162,6 +2206,27 @@ mod tests {
                             ..Default::default()
                         },
                     ),
+                    (
+                        main,
+                        SemanticNodeMetadata {
+                            rendered_text: "Unrelated sibling text".into(),
+                            ..Default::default()
+                        },
+                    ),
+                    (
+                        generic_wrapper,
+                        SemanticNodeMetadata {
+                            rendered_text: "Unrelated sibling text".into(),
+                            ..Default::default()
+                        },
+                    ),
+                    (
+                        unrelated_text,
+                        SemanticNodeMetadata {
+                            rendered_text: "Unrelated sibling text".into(),
+                            ..Default::default()
+                        },
+                    ),
                 ]),
                 parent_by_node: HashMap::from([
                     (root, None),
@@ -2169,9 +2234,13 @@ mod tests {
                     (first_checkbox, Some(first_container)),
                     (second_container, Some(root)),
                     (second_checkbox, Some(second_container)),
+                    (main, Some(root)),
+                    (generic_wrapper, Some(main)),
+                    (unrelated_text, Some(generic_wrapper)),
+                    (uncontained_checkbox, Some(generic_wrapper)),
                 ]),
                 semantic_captured: true,
-                next_node_id: 5,
+                next_node_id: 9,
             },
         );
         let request = |container_text| {
@@ -2214,6 +2283,30 @@ mod tests {
         assert_eq!(
             registry
                 .query(&bound, &request("Page-wide unrelated text"), &snapshot)
+                .unwrap()
+                .outcome,
+            krometrail_core::SemanticQueryOutcome::NoMatch
+        );
+        let shared_page_text = QueryPageRequest::new(
+            krometrail_core::PageSelection::Target(target()),
+            SemanticQuery::role_in_container(
+                "checkbox",
+                None,
+                krometrail_core::SemanticTextMatch::new(
+                    "unrelated sibling",
+                    krometrail_core::SemanticTextMatchMode::Contains,
+                    false,
+                )
+                .unwrap(),
+            )
+            .unwrap(),
+            None,
+            20,
+        )
+        .unwrap();
+        assert_eq!(
+            registry
+                .query(&bound, &shared_page_text, &snapshot)
                 .unwrap()
                 .outcome,
             krometrail_core::SemanticQueryOutcome::NoMatch
