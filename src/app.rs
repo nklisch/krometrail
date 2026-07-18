@@ -8,7 +8,8 @@ use krometrail_core::{
     CaptureGapStore, DiskBudgetBytes, ErrorCode, FrameSource, IdSource, IdValue,
     InteractionEvidenceSink, KrometrailError, MonotonicClock, NonEmptyText, ProgressiveEvidence,
     ProgressiveEvidenceStore, RecordingCatalog, RecordingSink, Result, RetentionStore,
-    TemporalContextQuery, TemporalDebugBundles, TemporalQuery, TimelineStore, WallClock,
+    TemporalContextQuery, TemporalDebugBundles, TemporalQuery, TemporalVideoEncoder,
+    TemporalVideoGeneration, TimelineStore, WallClock,
 };
 use uuid::Uuid;
 
@@ -20,6 +21,7 @@ use crate::{
     cli::Command,
     debug_bundle::{BundleWorkLimits, TemporalDebugBundleService, TemporalDebugEvidenceStore},
     progressive::ProgressiveEvidenceService,
+    video::{TemporalVideoGenerationService, VideoGenerationLimits},
 };
 use krometrail_cdp::{
     BrowserEventConfig, CaptureConfig, LauncherConfig, ProductionBrowserConnector,
@@ -55,6 +57,21 @@ pub(crate) struct RuntimeDependencies {
     pub temporal_debug_bundles: Arc<dyn TemporalDebugBundles>,
     pub mcp_config: McpConfig,
     pub diagnostics: DiagnosticContext,
+}
+
+/// Composition hook retained for the later agent-facing video surface. The caller supplies the
+/// qualified encoder; this feature does not conditionally discover FFmpeg or wire MCP tools.
+#[allow(dead_code)]
+pub(crate) fn build_temporal_video_generation(
+    frames: Arc<dyn FrameSource>,
+    artifacts: Arc<dyn ArtifactStore>,
+    ids: Arc<dyn IdSource>,
+    encoder: Arc<dyn TemporalVideoEncoder>,
+    limits: VideoGenerationLimits,
+) -> Result<Arc<dyn TemporalVideoGeneration>> {
+    Ok(Arc::new(TemporalVideoGenerationService::new(
+        frames, artifacts, ids, encoder, limits,
+    )?))
 }
 
 struct StorageDependencies {

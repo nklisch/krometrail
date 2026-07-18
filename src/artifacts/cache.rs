@@ -1,6 +1,7 @@
 use krometrail_core::{
     ArtifactCacheKey, ArtifactCacheMetadata, ArtifactSourceFingerprint, EncodedFrame, FrameId,
-    ImageFormat, NonEmptyText, SessionId, TargetId,
+    ImageFormat, NonEmptyText, SessionId, TEMPORAL_VIDEO_GENERATOR_NAME,
+    TEMPORAL_VIDEO_GENERATOR_VERSION, TargetId, VideoSelectionIdentity,
 };
 use sha2::{Digest, Sha256};
 use temporal_vision::{ArtifactKind, GeneratorDescriptor};
@@ -97,6 +98,54 @@ pub(crate) fn cache_metadata(input: CacheIdentityInput<'_>) -> ArtifactCacheMeta
             .expect("generator registry names are non-empty"),
         generator_version: NonEmptyText::new(input.descriptor.version)
             .expect("generator registry versions are non-empty"),
+    }
+}
+
+pub(crate) struct VideoCacheIdentityInput<'a> {
+    pub session_id: SessionId,
+    pub target_id: TargetId,
+    pub sources: &'a [SourceFingerprint],
+    pub canonical_parameters: &'a [u8],
+    pub selector: Option<&'a VideoSelectionIdentity>,
+}
+
+pub(crate) fn video_cache_metadata(input: VideoCacheIdentityInput<'_>) -> ArtifactCacheMetadata {
+    let source_fingerprint = hash_sources(input.sources, "krometrail-video-sources-v1");
+    let visual_epoch_hash = hash_epoch(input.sources);
+    let parameter_hash = framed_hash(
+        "krometrail-video-parameters-v1",
+        [input.canonical_parameters],
+    );
+    let mut transcript = FramedHasher::new("krometrail-video-cache-key");
+    transcript.u32(CACHE_SCHEMA_VERSION);
+    transcript.bytes(input.session_id.as_uuid().as_bytes());
+    transcript.bytes(input.target_id.as_uuid().as_bytes());
+    transcript.bytes(TEMPORAL_VIDEO_GENERATOR_NAME.as_bytes());
+    transcript.bytes(TEMPORAL_VIDEO_GENERATOR_VERSION.as_bytes());
+    transcript.bytes(input.canonical_parameters);
+    if let Some(selector) = input.selector {
+        transcript.bytes(selector.name().as_bytes());
+        transcript.bytes(selector.version().as_bytes());
+        transcript.bytes(selector.parameters_sha256());
+    } else {
+        transcript.bytes(b"no-selection");
+    }
+    transcript.u64(input.sources.len() as u64);
+    for source in input.sources {
+        write_source(&mut transcript, source);
+    }
+    ArtifactCacheMetadata {
+        cache_key: ArtifactCacheKey::from_bytes(transcript.finish()),
+        source_fingerprint,
+        parameter_hash,
+        visual_epoch_hash,
+        cache_schema_version: CACHE_SCHEMA_VERSION,
+        adapter_version: NonEmptyText::new("krometrail-retained-video-v1")
+            .expect("static video adapter version is non-empty"),
+        generator_name: NonEmptyText::new(TEMPORAL_VIDEO_GENERATOR_NAME)
+            .expect("static video generator name is non-empty"),
+        generator_version: NonEmptyText::new(TEMPORAL_VIDEO_GENERATOR_VERSION)
+            .expect("static video generator version is non-empty"),
     }
 }
 
@@ -213,6 +262,20 @@ mod tests {
             decoder_profile: "decoder-v1",
         })
         .cache_key
+    }
+
+    fn video_key(
+        sources: &[SourceFingerprint],
+        parameters: &[u8],
+        selector: Option<&VideoSelectionIdentity>,
+    ) -> ArtifactCacheMetadata {
+        video_cache_metadata(VideoCacheIdentityInput {
+            session_id: SessionId::from_uuid(uuid::Uuid::from_u128(100)),
+            target_id: TargetId::from_uuid(uuid::Uuid::from_u128(101)),
+            sources,
+            canonical_parameters: parameters,
+            selector,
+        })
     }
 
     #[test]
@@ -374,6 +437,49 @@ mod tests {
                 materialized,
                 "adapter-v1"
             ),
+        );
+    }
+
+    #[test]
+    fn video_cache_identity_is_stable_sensitive_and_uses_the_video_generator() {
+        let sources = vec![source(1), source(2)];
+        let selector = VideoSelectionIdentity::meaningful_v1([7; 32]);
+        let expected = video_key(&sources, b"canonical-plan-a", Some(&selector));
+        assert_eq!(
+            expected,
+            video_key(&sources, b"canonical-plan-a", Some(&selector))
+        );
+        assert_eq!(
+            expected.generator_name.as_str(),
+            TEMPORAL_VIDEO_GENERATOR_NAME
+        );
+        assert_eq!(
+            expected.generator_version.as_str(),
+            TEMPORAL_VIDEO_GENERATOR_VERSION
+        );
+
+        let mut reordered = sources.clone();
+        reordered.reverse();
+        assert_ne!(
+            expected.cache_key,
+            video_key(&reordered, b"canonical-plan-a", Some(&selector)).cache_key
+        );
+        assert_ne!(
+            expected.cache_key,
+            video_key(&sources, b"canonical-plan-b", Some(&selector)).cache_key
+        );
+        assert_ne!(
+            expected.cache_key,
+            video_key(
+                &sources,
+                b"canonical-plan-a",
+                Some(&VideoSelectionIdentity::meaningful_v1([8; 32]))
+            )
+            .cache_key
+        );
+        assert_ne!(
+            expected.cache_key,
+            video_key(&sources, b"canonical-plan-a", None).cache_key
         );
     }
 }
