@@ -18,6 +18,125 @@ use tokio::sync::Notify;
 use crate::targets::supervisor::SubscriberRegistry;
 use crate::transport::{CdpTransport, CommandScope, NamedEvent, TransportEvents};
 
+pub(crate) struct LazyManagedDownloadAuthority {
+    session_id: SessionId,
+    base_root: PathBuf,
+    ids: Arc<dyn IdSource>,
+    subscribers: Arc<SubscriberRegistry>,
+    active: tokio::sync::Mutex<Option<Arc<ManagedDownloadAuthority>>>,
+}
+
+impl LazyManagedDownloadAuthority {
+    pub(crate) fn new(
+        base_root: PathBuf,
+        session_id: SessionId,
+        ids: Arc<dyn IdSource>,
+        subscribers: Arc<SubscriberRegistry>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            session_id,
+            base_root,
+            ids,
+            subscribers,
+            active: tokio::sync::Mutex::new(None),
+        })
+    }
+
+    async fn activate(
+        &self,
+        transport: Arc<dyn CdpTransport>,
+    ) -> Result<Arc<ManagedDownloadAuthority>> {
+        let mut active = self.active.lock().await;
+        if let Some(authority) = active.as_ref() {
+            return Ok(Arc::clone(authority));
+        }
+        let authority = ManagedDownloadAuthority::configure(
+            transport,
+            &self.base_root,
+            self.session_id,
+            Arc::clone(&self.ids),
+            Arc::clone(&self.subscribers),
+        )
+        .await?;
+        *active = Some(Arc::clone(&authority));
+        Ok(authority)
+    }
+
+    pub(crate) async fn list(&self, transport: Arc<dyn CdpTransport>) -> Result<DownloadInventory> {
+        Ok(self.activate(transport).await?.list())
+    }
+
+    async fn activated(&self) -> Result<Arc<ManagedDownloadAuthority>> {
+        self.active.lock().await.as_ref().cloned().ok_or_else(|| {
+            download_error(
+                ErrorCode::Unsupported,
+                self.session_id,
+                "managed download control has not been activated",
+                "call list_downloads before triggering a download, then retry",
+            )
+        })
+    }
+
+    pub(crate) async fn wait_with_cancellation(
+        &self,
+        request: WaitForDownloadRequest,
+        cancellation: Option<Arc<dyn CancellationSignal>>,
+    ) -> Result<DownloadInventory> {
+        self.activated()
+            .await?
+            .wait_with_cancellation(request, cancellation)
+            .await
+    }
+
+    pub(crate) async fn cancel(
+        &self,
+        transport: &dyn CdpTransport,
+        id: DownloadId,
+    ) -> Result<CancelDownloadResult> {
+        self.activated().await?.cancel(transport, id).await
+    }
+
+    pub(crate) async fn read(
+        &self,
+        request: ReadManagedDownloadRequest,
+    ) -> Result<ManagedDownloadRead> {
+        let active = self.active.lock().await.as_ref().cloned();
+        match active {
+            Some(authority) => authority.read(request).await,
+            None => Err(resource_not_found(self.session_id)),
+        }
+    }
+
+    pub(crate) async fn rebind(&self, transport: Arc<dyn CdpTransport>) -> Result<()> {
+        let active = self.active.lock().await.as_ref().cloned();
+        match active {
+            Some(authority) => match authority.rebind(Arc::clone(&transport)).await {
+                Ok(()) => Ok(()),
+                Err(error) => {
+                    let _ = authority.shutdown(Some(transport.as_ref())).await;
+                    let mut active = self.active.lock().await;
+                    if active
+                        .as_ref()
+                        .is_some_and(|current| Arc::ptr_eq(current, &authority))
+                    {
+                        *active = None;
+                    }
+                    Err(error)
+                }
+            },
+            None => Ok(()),
+        }
+    }
+
+    pub(crate) async fn shutdown(&self, transport: Option<&dyn CdpTransport>) -> Result<()> {
+        let active = self.active.lock().await.as_ref().cloned();
+        match active {
+            Some(authority) => authority.shutdown(transport).await,
+            None => Ok(()),
+        }
+    }
+}
+
 pub(crate) struct ManagedDownloadAuthority {
     session_id: SessionId,
     root: PathBuf,
@@ -160,10 +279,6 @@ impl ManagedDownloadAuthority {
         spawn_progress_pump(Arc::clone(self), transport, generation, progress);
         self.changed.notify_waiters();
         Ok(())
-    }
-
-    pub(crate) async fn wait(&self, request: WaitForDownloadRequest) -> Result<DownloadInventory> {
-        self.wait_with_cancellation(request, None).await
     }
 
     pub(crate) async fn wait_with_cancellation(
@@ -838,6 +953,81 @@ mod tests {
     struct Transport {
         calls: Mutex<Vec<(String, Value)>>,
     }
+
+    struct ActivationTransport {
+        activity: Mutex<Vec<String>>,
+        fail_behavior_once: AtomicBool,
+    }
+
+    impl ActivationTransport {
+        fn new(fail_behavior_once: bool) -> Self {
+            Self {
+                activity: Mutex::new(Vec::new()),
+                fail_behavior_once: AtomicBool::new(fail_behavior_once),
+            }
+        }
+
+        fn activity(&self) -> Vec<String> {
+            self.activity.lock().unwrap().clone()
+        }
+
+        fn fail_next_behavior(&self) {
+            self.fail_behavior_once.store(true, Ordering::Release);
+        }
+    }
+
+    impl CdpTransport for ActivationTransport {
+        fn send_raw(
+            &self,
+            _scope: &CommandScope,
+            method: &str,
+            _params: Value,
+        ) -> TransportFuture<'_, std::result::Result<Value, TransportError>> {
+            self.activity
+                .lock()
+                .unwrap()
+                .push(format!("command:{method}"));
+            let fail = method == "Browser.setDownloadBehavior"
+                && self.fail_behavior_once.swap(false, Ordering::AcqRel);
+            Box::pin(std::future::ready(if fail {
+                Err(TransportError::CommandFailed)
+            } else {
+                Ok(json!({}))
+            }))
+        }
+
+        fn subscribe_named(
+            &self,
+            _scope: &CommandScope,
+            method: &str,
+        ) -> TransportFuture<'_, std::result::Result<Box<dyn TransportEvents>, TransportError>>
+        {
+            self.activity
+                .lock()
+                .unwrap()
+                .push(format!("subscribe:{method}"));
+            Box::pin(std::future::ready(Ok(
+                Box::new(NoEvents) as Box<dyn TransportEvents>
+            )))
+        }
+
+        fn close_reason(&self) -> Option<TransportClose> {
+            None
+        }
+
+        fn is_closed(&self) -> bool {
+            false
+        }
+    }
+
+    fn lazy(base: PathBuf) -> Arc<LazyManagedDownloadAuthority> {
+        LazyManagedDownloadAuthority::new(
+            base,
+            SessionId::from_uuid(uuid::Uuid::from_u128(200)),
+            Arc::new(Ids(AtomicU64::new(0))),
+            Arc::new(SubscriberRegistry::new(4)),
+        )
+    }
     impl CdpTransport for Transport {
         fn send_raw(
             &self,
@@ -934,6 +1124,75 @@ mod tests {
         authority.shutdown(Some(&transport)).await.unwrap();
         assert!(sibling.is_dir());
         assert!(!authority.root.exists());
+    }
+
+    #[tokio::test]
+    async fn managed_and_named_profile_defaults_stay_inert_until_first_list() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path().join("downloads");
+        let authority = lazy(base.clone());
+        let transport = Arc::new(ActivationTransport::new(false));
+
+        authority.rebind(transport.clone()).await.unwrap();
+        assert!(transport.activity().is_empty());
+        assert!(!base.exists());
+
+        let transport_port: Arc<dyn CdpTransport> = transport.clone();
+        let inventory = authority.list(transport_port.clone()).await.unwrap();
+        assert!(inventory.downloads.is_empty());
+        assert_eq!(
+            transport.activity(),
+            vec![
+                "subscribe:Browser.downloadWillBegin",
+                "subscribe:Browser.downloadProgress",
+                "command:Browser.setDownloadBehavior",
+            ]
+        );
+        assert!(base.join(authority.session_id.to_string()).is_dir());
+
+        authority.list(transport_port).await.unwrap();
+        assert_eq!(transport.activity().len(), 3, "activation is shared");
+    }
+
+    #[tokio::test]
+    async fn activation_failure_is_local_and_retryable() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path().join("downloads");
+        let authority = lazy(base.clone());
+        let transport = Arc::new(ActivationTransport::new(true));
+        let transport_port: Arc<dyn CdpTransport> = transport.clone();
+
+        let error = authority.list(transport_port.clone()).await.unwrap_err();
+        assert_eq!(error.code, ErrorCode::BrowserCompatibilityFailed);
+        assert!(!base.join(authority.session_id.to_string()).exists());
+
+        authority.list(transport_port).await.unwrap();
+        assert_eq!(
+            transport
+                .activity()
+                .iter()
+                .filter(|entry| entry.as_str() == "command:Browser.setDownloadBehavior")
+                .count(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn reconnect_failure_deactivates_only_download_control() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path().join("downloads");
+        let authority = lazy(base.clone());
+        let transport = Arc::new(ActivationTransport::new(false));
+        let transport_port: Arc<dyn CdpTransport> = transport.clone();
+        authority.list(transport_port.clone()).await.unwrap();
+
+        transport.fail_next_behavior();
+        let error = authority.rebind(transport_port.clone()).await.unwrap_err();
+        assert_eq!(error.code, ErrorCode::BrowserCompatibilityFailed);
+        assert!(!base.join(authority.session_id.to_string()).exists());
+
+        authority.list(transport_port).await.unwrap();
+        assert!(base.join(authority.session_id.to_string()).is_dir());
     }
 
     #[tokio::test]
@@ -1081,12 +1340,15 @@ mod tests {
         let rejected = inventory.downloads.last().unwrap();
         assert_eq!(rejected.state, DownloadState::Rejected);
         let error = authority
-            .wait(WaitForDownloadRequest {
-                after: None,
-                download_id: Some(rejected.id),
-                terminal: true,
-                timeout: 100,
-            })
+            .wait_with_cancellation(
+                WaitForDownloadRequest {
+                    after: None,
+                    download_id: Some(rejected.id),
+                    terminal: true,
+                    timeout: 100,
+                },
+                None,
+            )
             .await
             .unwrap_err();
         assert_eq!(error.code, ErrorCode::ResourceLimitExceeded);

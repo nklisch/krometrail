@@ -145,7 +145,7 @@ pub(super) async fn execute_operation_unfenced(
                 .as_ref()
                 .expect("managed ownership has download authority");
             Ok(BrowserOperationResult::ListDownloads(Box::new(
-                authority.list(),
+                authority.list(Arc::clone(&transport)).await?,
             )))
         }
         BrowserOperationRequest::WaitForDownload(request) => {
@@ -154,7 +154,7 @@ pub(super) async fn execute_operation_unfenced(
                 .as_ref()
                 .expect("managed ownership has download authority");
             authority
-                .wait(request)
+                .wait_with_cancellation(request, None)
                 .await
                 .map(|value| BrowserOperationResult::WaitForDownload(Box::new(value)))
         }

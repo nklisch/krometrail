@@ -758,12 +758,14 @@ pub(super) async fn reconnect_loop_transactional(
             Ok(Err(_)) => continue,
             Ok(Ok(mut prepared)) => {
                 if let Some(downloads) = shared.downloads.as_ref()
-                    && downloads
+                    && let Err(error) = downloads
                         .rebind(Arc::clone(&prepared.connection.transport))
                         .await
-                        .is_err()
                 {
-                    continue;
+                    tracing::warn!(
+                        code = error.code.as_str(),
+                        "browser.download_control.reconnect_failed"
+                    );
                 }
                 prepared.connection.restart_pumps(
                     shared.command_tx.clone(),

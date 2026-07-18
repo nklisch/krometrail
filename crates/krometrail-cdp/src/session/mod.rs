@@ -418,16 +418,12 @@ impl BrowserConnector for ProductionBrowserConnector {
             )
             .await?;
             let downloads = if ownership == BrowserOwnership::Managed {
-                Some(
-                    downloads::ManagedDownloadAuthority::configure(
-                        Arc::clone(&connection.transport),
-                        &managed_download_root,
-                        session_id,
-                        Arc::clone(&ids),
-                        Arc::clone(&subscribers),
-                    )
-                    .await?,
-                )
+                Some(downloads::LazyManagedDownloadAuthority::new(
+                    managed_download_root,
+                    session_id,
+                    Arc::clone(&ids),
+                    Arc::clone(&subscribers),
+                ))
             } else {
                 None
             };
@@ -578,7 +574,7 @@ pub(crate) struct SessionShared {
     capture: Option<Arc<CaptureRuntime>>,
     browser_events: Arc<SessionDomainAuthority>,
     interaction_evidence: Option<Arc<dyn krometrail_core::InteractionEvidenceSink>>,
-    downloads: Option<Arc<downloads::ManagedDownloadAuthority>>,
+    downloads: Option<Arc<downloads::LazyManagedDownloadAuthority>>,
     pub(crate) operation_cancellation: OperationCancellation,
     stop_result: Mutex<Option<Result<BrowserStopOutcome>>>,
 }
