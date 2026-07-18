@@ -1,7 +1,7 @@
 ---
 id: compact-live-observations
 kind: feature
-stage: drafting
+stage: implementing
 tags: [agent-ux, browser]
 parent: null
 depends_on: []
@@ -22,3 +22,108 @@ Bound automatic observation snapshots while preserving explicit drill-down throu
 ## Simplification opportunity
 
 Centralize automatic-observation response policy instead of letting each action or observation component independently expand snapshots and append equivalent warnings. Reuse the snapshot model's existing `omitted_node_count` and the shared response composer.
+
+## Design decisions
+
+- **Bounded surface**: compact automatic post-action and batch-final snapshots at the MCP presentation boundary. Explicit `snapshot_page` and user-requested `observe_live` retain their full existing behavior as drill-down surfaces.
+- **Selection policy**: preserve actionable nodes and their ancestor context first, then fill remaining preorder context within both node and serialized-byte budgets. Never emit a child whose parent was omitted.
+- **Omission truth**: add presentation-dropped nodes to the snapshot's existing `omitted_node_count`; do not mutate the CDP snapshot registry or reference generation.
+- **Warning identity**: structural `KrometrailError` equality defines equivalence. Same code with different message, context, retry, or recovery remains distinct; exact clones are logged and exposed once.
+- **Dispatch rationale**: one read-only generic explorer mapped the shared observation, snapshot, and response seams; the host verified the decoder and response tests.
+
+## Architectural choice
+
+Leave acquisition and domain snapshots unchanged, then project an agent-sized `PageSnapshot` only when the shared MCP response composer knows the observation role is automatic. This preserves stable explicit inspection and backing-reference registries while enforcing context bounds in the one place that owns model-facing presentation. Deduplicate warnings in `Projection::degrade_with_stage`, before both diagnostics logging and top-level accumulation.
+
+Alternatives rejected:
+
+- Lowering the global CDP decoder's 5,000-node/1 MiB limits would also truncate explicit `snapshot_page` and weaken the existing drill-down contract.
+- Prefix-only truncation can discard the primary interactive controls on pages with large navigation or document trees.
+- Adding component labels to cloned warnings would make three copies technically different while retaining context waste; nested component positions already explain which evidence is unavailable.
+
+## Implementation Units
+
+### Unit 1: Role-aware compact snapshot projection
+
+**Story**: `compact-live-observations-bound-snapshots`
+
+**Files**: `crates/krometrail-mcp/src/response.rs`
+
+```rust
+const MAX_AUTOMATIC_SNAPSHOT_NODES: usize = 96;
+const MAX_AUTOMATIC_SNAPSHOT_JSON_BYTES: usize = 32 * 1024;
+
+fn project_live_observation(
+    value: LiveObservation,
+    role: ImageRole,
+    step_index: Option<u32>,
+) -> Result<(Value, Vec<KrometrailError>, Option<EncodedMcpImage>), ResponseInvariantError>;
+
+fn compact_automatic_snapshot(snapshot: PageSnapshot) -> Result<PageSnapshot, ResponseInvariantError>;
+```
+
+**Implementation notes**:
+
+- Invoke compaction for `PostAction` and `BatchFinal`, not `LiveObservation` or explicit `SnapshotPage`.
+- If the snapshot already fits both budgets, return it byte-for-byte equivalent.
+- Precompute actionable nodes plus their ancestor chains, select those in original preorder while budgets allow, then fill remaining nodes whose parent is selected. Reconstruct through `PageSnapshot::new` so preorder/reference invariants remain enforced.
+- Budget serialized node JSON bytes, not only text payload, because field/structure overhead caused the reproduced context pressure.
+
+**Acceptance criteria**:
+
+- [ ] A 403-node automatic snapshot is bounded to at most 96 nodes/32 KiB of node JSON with exact presentation omission accounting.
+- [ ] Actionable nodes are preferred over non-actionable prose while all emitted parent relationships remain valid.
+- [ ] Explicit snapshot and explicit live-observation responses remain unprojected.
+
+### Unit 2: Equivalent warning coalescing
+
+**Story**: `compact-live-observations-deduplicate-warnings`
+
+**Files**: `crates/krometrail-mcp/src/response.rs`
+
+```rust
+impl Projection {
+    fn degrade_with_stage(&mut self, warnings: Vec<KrometrailError>, failure_stage: &str) {
+        for warning in warnings {
+            if self.warnings.contains(&warning) {
+                continue;
+            }
+            // log once, then retain once
+        }
+    }
+}
+```
+
+**Implementation notes**:
+
+- Deduplicate before logging so the local diagnostic file mirrors the response signal.
+- Preserve first-seen deterministic order.
+- Do not deduplicate by error code alone.
+
+**Acceptance criteria**:
+
+- [ ] The dialog-blocked observation exposes and logs one `page_observation_failed` warning while each nested component remains explicitly unavailable.
+- [ ] Distinct errors sharing one code remain separate and retain order.
+- [ ] Capture-failure degradation still composes without duplicates.
+
+## Implementation Order
+
+1. Add snapshot compaction and role-aware projection tests.
+2. Coalesce warnings in the shared projection and update dialog/batch regressions.
+
+## Simplification
+
+- Keep one full snapshot acquisition path and one presentation compactor rather than adding automatic modes throughout CDP control.
+- Use existing snapshot omission and error identity contracts.
+- Remove the test expectation that duplicated warnings are useful output.
+
+## Testing
+
+- MCP response tests protect serialized byte/node ceilings, actionable selection, parent validity, unchanged explicit surfaces, and exact omission count.
+- Warning tests protect full-identity deduplication and distinct-error preservation.
+- Existing CDP partial-observation tests continue protecting non-error degradation and are not weakened.
+
+## Risks
+
+- Dense pages can contain more actionable controls than the automatic budget. Deterministic preorder and explicit omission make that loss visible; callers can request `snapshot_page` for complete detail.
+- Reconstructing a compact snapshot must not alter active registry bindings. Keeping compaction after domain execution and validating the reconstructed value isolates that risk.
