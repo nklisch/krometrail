@@ -90,6 +90,89 @@ fn reconnect_policy_is_finite_and_fixture_is_static() {
 }
 
 #[tokio::test]
+async fn closed_capture_frame_stream_reconnects_and_restores_capture_generation() {
+    let initial = Arc::new(support::scripted_cdp::ScriptedCdp::chrome());
+    initial.hold_events_open();
+    initial.push_response(
+        "Target.attachToTarget",
+        json!({"sessionId": "probe-session"}),
+    );
+    initial.push_response("Target.attachToTarget", json!({"sessionId": "session-a"}));
+
+    let reconnected = Arc::new(support::scripted_cdp::ScriptedCdp::chrome());
+    reconnected.hold_events_open();
+    let targets = json!({"targetInfos": [{
+        "targetId": "target-a",
+        "type": "page",
+        "url": "http://fixture/",
+        "title": "fixture"
+    }]});
+    reconnected.push_response("Target.getTargets", targets.clone());
+    reconnected.push_response("Target.getTargets", targets);
+    reconnected.push_response(
+        "Target.attachToTarget",
+        json!({"sessionId": "probe-session-reconnected"}),
+    );
+    reconnected.push_response(
+        "Target.attachToTarget",
+        json!({"sessionId": "session-a-reconnected"}),
+    );
+
+    let factory = Arc::new(support::scripted_cdp::ScriptedCdpFactory::new([
+        Arc::clone(&initial),
+        Arc::clone(&reconnected),
+    ]));
+    let connector = ProductionBrowserConnector::new(
+        Arc::new(krometrail_cdp::SystemChromeLauncher::new(
+            krometrail_cdp::LauncherConfig::default(),
+        )),
+        factory,
+    )
+    .with_capture(
+        Arc::new(CaptureTestClock),
+        Arc::new(CaptureTestIds::default()),
+        Arc::new(CaptureTestSink),
+        Arc::new(support::retention::AlwaysAvailableRetention),
+        CaptureConfig::default(),
+    )
+    .with_config(SupervisorConfig {
+        reconnect: ReconnectPolicy {
+            delays: vec![Duration::ZERO].into_boxed_slice(),
+            attempt_timeout: Duration::from_secs(1),
+        },
+        subscriber_capacity: 64,
+        reconnect_target_limit: 8,
+        reconnect_attach_concurrency: 2,
+    });
+    let session = connector
+        .connect(BrowserConnectRequest::Attach(
+            AttachBrowser::new("ws://127.0.0.1:9222/devtools/browser/fake").unwrap(),
+        ))
+        .await
+        .unwrap();
+    initial
+        .wait_for_command_count("Page.startScreencast", 1)
+        .await;
+
+    initial.close_event_stream("Page.screencastFrame", Some("session-a"));
+
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        reconnected.wait_for_command_count("Page.startScreencast", 1),
+    )
+    .await
+    .expect("capture stream closure must drive reconnect");
+    let status = session.status().await.unwrap();
+    assert_eq!(status.capture.len(), 1);
+    assert_eq!(status.capture[0].attachment_generation(), 2);
+    assert_eq!(
+        status.capture[0].state(),
+        krometrail_core::CaptureStreamState::Capturing
+    );
+    assert_eq!(session.stop().await.unwrap(), BrowserStopOutcome::Detached);
+}
+
+#[tokio::test]
 async fn scripted_capture_preserves_stride_for_jpeg_png_dynamic_and_reconnect_generations() {
     for (format, jpeg_quality) in [(ImageFormat::Jpeg, Some(80)), (ImageFormat::Png, None)] {
         let stride = EveryNthFrame::new(7).unwrap();

@@ -178,6 +178,14 @@ impl ScriptedCdp {
         self.disconnect_notify.notify_waiters();
     }
 
+    pub fn close_event_stream(&self, method: &str, session: Option<&str>) {
+        self.state
+            .lock()
+            .unwrap()
+            .live_events
+            .remove(&(method.to_owned(), session.map(str::to_owned)));
+    }
+
     #[allow(dead_code)]
     pub fn subscriptions(&self) -> Vec<(String, Option<String>)> {
         self.state.lock().unwrap().subscriptions.clone()

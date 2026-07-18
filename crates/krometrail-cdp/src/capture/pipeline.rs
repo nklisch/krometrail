@@ -860,6 +860,9 @@ async fn frame_reader(
             Ok(Some(event)) => event,
             Ok(None) | Err(_) => {
                 runtime.fail(CaptureFailureStage::FrameEventStream);
+                runtime
+                    .observer
+                    .frame_event_stream_closed(runtime.target.connection_generation);
                 break;
             }
         };

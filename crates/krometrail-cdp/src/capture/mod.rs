@@ -171,6 +171,8 @@ pub(crate) trait CaptureObserver: Send + Sync {
     fn status_changed(&self, status: krometrail_core::TargetCaptureStatus);
     fn gap_declared(&self, gap: krometrail_core::CaptureGap);
 
+    fn frame_event_stream_closed(&self, _connection_generation: u64) {}
+
     fn visibility_changed(
         &self,
         _target_id: TargetId,

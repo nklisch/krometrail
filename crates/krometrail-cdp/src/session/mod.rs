@@ -485,6 +485,23 @@ impl CaptureObserver for SessionCaptureObserver {
             .publish(BrowserSessionEvent::CaptureGapDeclared { gap });
     }
 
+    fn frame_event_stream_closed(&self, connection_generation: u64) {
+        let command_tx = self.command_tx.clone();
+        tokio::spawn(async move {
+            let _ = command_tx
+                .send(SupervisorCommand::Input(
+                    SupervisorInput::ForConnectionGeneration {
+                        generation: connection_generation,
+                        input: Box::new(SupervisorInput::ConnectionLost(TransportClose {
+                            reason: NonEmptyText::new("capture frame event stream closed")
+                                .expect("static reason is non-empty"),
+                        })),
+                    },
+                ))
+                .await;
+        });
+    }
+
     fn visibility_changed(
         &self,
         target_id: krometrail_core::TargetId,
