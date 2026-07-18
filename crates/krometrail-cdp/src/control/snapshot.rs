@@ -2,9 +2,10 @@ use std::collections::{HashMap, HashSet};
 
 use krometrail_core::{
     AccessibleProperty, AccessibleValue, BrowserOperationResult, CssPoint, CssRect, CssSize,
-    CurrentReferenceGeometryRequest, ErrorCode, ErrorContext, NodeReference, NonEmptyText,
-    ObservationContext, PageSnapshot, ResolvedReferenceGeometry, Result, SnapshotGeneration,
-    SnapshotNode, SnapshotNodeId, SnapshotPageRequest, TargetId,
+    CurrentReferenceGeometryRequest, ErrorCode, ErrorContext, MAX_SEMANTIC_QUERY_TEXT_BYTES,
+    NodeReference, NonEmptyText, ObservationContext, PageSnapshot, QueryPageRequest,
+    QueryPageResult, ResolvedReferenceGeometry, Result, SemanticMatch, SemanticQuery,
+    SnapshotGeneration, SnapshotNode, SnapshotNodeId, SnapshotPageRequest, TargetId,
 };
 use serde_json::{Value, json};
 
@@ -66,6 +67,13 @@ struct NodeBinding {
     backend_node_id: i64,
 }
 
+#[derive(Clone, Debug, Default)]
+struct SemanticNodeMetadata {
+    labels: Vec<String>,
+    rendered_text: String,
+    test_id: Option<String>,
+}
+
 #[derive(Clone, Debug)]
 struct ActiveSnapshot {
     generation: SnapshotGeneration,
@@ -73,6 +81,9 @@ struct ActiveSnapshot {
     document: DocumentFingerprint,
     bindings: HashMap<SnapshotNodeId, NodeBinding>,
     node_by_backend: HashMap<i64, SnapshotNodeId>,
+    semantic: HashMap<SnapshotNodeId, SemanticNodeMetadata>,
+    parent_by_node: HashMap<SnapshotNodeId, Option<SnapshotNodeId>>,
+    semantic_captured: bool,
     next_node_id: u32,
 }
 
@@ -208,26 +219,102 @@ impl PageControl {
         _request: SnapshotPageRequest,
         started_at: krometrail_core::SessionTime,
     ) -> Result<BrowserOperationResult> {
+        self.capture_snapshot(transport, bound, started_at, false)
+            .await
+            .map(|snapshot| BrowserOperationResult::SnapshotPage(Box::new(snapshot)))
+    }
+
+    pub(super) async fn query_page(
+        &mut self,
+        transport: &dyn CdpTransport,
+        bound: &BoundTarget,
+        request: QueryPageRequest,
+        started_at: krometrail_core::SessionTime,
+    ) -> Result<BrowserOperationResult> {
+        let snapshot = self
+            .capture_snapshot(transport, bound, started_at, true)
+            .await?;
+        let result = self.snapshots.query(bound, &request, &snapshot)?;
+        Ok(BrowserOperationResult::QueryPage(Box::new(result)))
+    }
+
+    async fn capture_snapshot(
+        &mut self,
+        transport: &dyn CdpTransport,
+        bound: &BoundTarget,
+        started_at: krometrail_core::SessionTime,
+        include_semantic: bool,
+    ) -> Result<PageSnapshot> {
         let scope = CommandScope::Session(bound.transport_session.clone());
         let document = document_fingerprint(transport, &scope, bound.target_id).await?;
-        let response = transport
+        let ax_response = transport
             .send_raw(&scope, "Accessibility.getFullAXTree", json!({}))
             .await
             .map_err(|error| {
                 transport_error(error, ErrorCode::PageObservationFailed, bound.target_id)
             })?;
+        let dom_response = if include_semantic {
+            Some(
+                transport
+                    .send_raw(
+                        &scope,
+                        "DOMSnapshot.captureSnapshot",
+                        json!({
+                            "computedStyles": [],
+                            "includePaintOrder": false,
+                            "includeDOMRects": false,
+                            "includeBlendedBackgroundColors": false,
+                            "includeTextColorOpacities": false,
+                        }),
+                    )
+                    .await
+                    .map_err(|error| {
+                        transport_error(error, ErrorCode::PageObservationFailed, bound.target_id)
+                    })?,
+            )
+        } else {
+            None
+        };
         let (generation, mut node_by_backend, mut next_node_id) = self.snapshots.begin_snapshot(
             bound.target_id,
             bound.attachment_generation,
             &document,
         )?;
         let (nodes, bindings, omitted_node_count) = decode_ax_tree_with_ids(
-            &response,
+            &ax_response,
             bound.target_id,
             generation,
             &mut node_by_backend,
             &mut next_node_id,
         )?;
+        let semantic = match dom_response {
+            Some(response) => {
+                let metadata = decode_dom_snapshot(&response, &document, bound.target_id)?;
+                let current = document_fingerprint(transport, &scope, bound.target_id).await?;
+                if current != document {
+                    return Err(stale(
+                        bound.target_id,
+                        "document changed while capturing the semantic snapshot",
+                    ));
+                }
+                let actionable = nodes
+                    .iter()
+                    .filter_map(|node| node.reference.map(|_| node.id))
+                    .collect::<HashSet<_>>();
+                metadata
+                    .into_iter()
+                    .filter_map(|(backend, metadata)| {
+                        node_by_backend
+                            .get(&backend)
+                            .copied()
+                            .filter(|node_id| actionable.contains(node_id))
+                            .map(|node_id| (node_id, metadata))
+                    })
+                    .collect()
+            }
+            None => HashMap::new(),
+        };
+        let parent_by_node = nodes.iter().map(|node| (node.id, node.parent)).collect();
         let completed_at = self.session_time()?;
         let context = ObservationContext::new(
             self.session_id,
@@ -245,10 +332,13 @@ impl PageControl {
                 document,
                 bindings,
                 node_by_backend,
+                semantic,
+                parent_by_node,
+                semantic_captured: include_semantic,
                 next_node_id,
             },
         );
-        Ok(BrowserOperationResult::SnapshotPage(Box::new(snapshot)))
+        Ok(snapshot)
     }
 }
 
@@ -284,6 +374,65 @@ impl SnapshotRegistry {
         let target = self.targets.entry(target_id).or_default();
         target.next_generation = active.generation.get();
         target.active = Some(active);
+    }
+
+    fn query(
+        &self,
+        bound: &BoundTarget,
+        request: &QueryPageRequest,
+        snapshot: &PageSnapshot,
+    ) -> Result<QueryPageResult> {
+        let active = self
+            .targets
+            .get(&bound.target_id)
+            .and_then(|target| target.active.as_ref())
+            .filter(|active| {
+                active.generation == snapshot.generation
+                    && active.attachment_generation == bound.attachment_generation
+            })
+            .ok_or_else(|| stale(bound.target_id, "semantic snapshot is no longer active"))?;
+        if !active.semantic_captured {
+            return Err(operation_error(
+                ErrorCode::PageObservationFailed,
+                bound.target_id,
+                "semantic snapshot metadata is unavailable",
+            ));
+        }
+        if let Some(scope) = request.scope {
+            self.active_reference_backend(bound, scope)?;
+        }
+
+        let matches = snapshot
+            .nodes
+            .iter()
+            .filter_map(|node| {
+                let reference = node.reference?;
+                if request.scope.is_some_and(|scope| {
+                    !is_strict_descendant(node.id, scope.node_id, &active.parent_by_node)
+                }) {
+                    return None;
+                }
+                semantic_query_matches(
+                    &request.query,
+                    node,
+                    active
+                        .semantic
+                        .get(&node.id)
+                        .unwrap_or(&SemanticNodeMetadata::default()),
+                )
+                .then(|| SemanticMatch {
+                    reference,
+                    role: node.role.clone(),
+                    name: node.name.clone(),
+                })
+            })
+            .collect();
+        QueryPageResult::new(
+            snapshot.context.clone(),
+            snapshot.generation,
+            matches,
+            request.max_matches,
+        )
     }
 
     pub(crate) fn retain_targets(&mut self, live: impl Iterator<Item = TargetId>) {
@@ -415,6 +564,367 @@ impl SnapshotRegistry {
                 )
             })?;
         Ok((&active.document, backend))
+    }
+}
+
+fn semantic_query_matches(
+    query: &SemanticQuery,
+    node: &SnapshotNode,
+    metadata: &SemanticNodeMetadata,
+) -> bool {
+    match query {
+        SemanticQuery::Role { role, name } => {
+            node.role == role.as_str()
+                && name.as_ref().is_none_or(|name| {
+                    node.name
+                        .as_deref()
+                        .is_some_and(|value| name.matches(value))
+                })
+        }
+        SemanticQuery::Label { text } => metadata.labels.iter().any(|label| text.matches(label)),
+        SemanticQuery::Text { text } => text.matches(&metadata.rendered_text),
+        SemanticQuery::TestId { value } => metadata
+            .test_id
+            .as_deref()
+            .is_some_and(|candidate| candidate == value.as_str()),
+    }
+}
+
+fn is_strict_descendant(
+    candidate: SnapshotNodeId,
+    scope: SnapshotNodeId,
+    parents: &HashMap<SnapshotNodeId, Option<SnapshotNodeId>>,
+) -> bool {
+    let mut current = parents.get(&candidate).copied().flatten();
+    while let Some(node) = current {
+        if node == scope {
+            return true;
+        }
+        current = parents.get(&node).copied().flatten();
+    }
+    false
+}
+
+#[derive(Debug)]
+struct DecodedDomNode {
+    backend_node_id: i64,
+    parent: Option<usize>,
+    is_label: bool,
+    label_for: Option<String>,
+    aria_labelledby: Option<String>,
+    test_id: Option<String>,
+}
+
+fn decode_dom_snapshot(
+    response: &Value,
+    document: &DocumentFingerprint,
+    target_id: TargetId,
+) -> Result<HashMap<i64, SemanticNodeMetadata>> {
+    let root = response
+        .get("result")
+        .filter(|result| result.get("documents").is_some())
+        .unwrap_or(response);
+    let strings = root
+        .get("strings")
+        .and_then(Value::as_array)
+        .ok_or_else(|| malformed(target_id, "DOM snapshot string table is malformed"))?;
+    if strings.iter().any(|value| value.as_str().is_none()) {
+        return Err(malformed(
+            target_id,
+            "DOM snapshot string table contains a non-string value",
+        ));
+    }
+    let documents = root
+        .get("documents")
+        .and_then(Value::as_array)
+        .ok_or_else(|| malformed(target_id, "DOM snapshot documents are malformed"))?;
+    let document = documents
+        .iter()
+        .find(|candidate| {
+            candidate
+                .get("frameId")
+                .and_then(Value::as_u64)
+                .and_then(|index| snapshot_string(strings, index).ok())
+                == Some(document.frame_id.as_str())
+        })
+        .ok_or_else(|| malformed(target_id, "DOM snapshot does not contain the main document"))?;
+    let nodes = document
+        .get("nodes")
+        .ok_or_else(|| malformed(target_id, "DOM snapshot node table is missing"))?;
+    let backend_ids = required_array(nodes, "backendNodeId", target_id)?;
+    if backend_ids.len() > MAX_SNAPSHOT_NODES {
+        return Err(malformed(
+            target_id,
+            "DOM snapshot exceeds the 5000-node semantic limit",
+        ));
+    }
+    let node_count = backend_ids.len();
+    let parents = required_parallel_array(nodes, "parentIndex", node_count, target_id)?;
+    let node_names = required_parallel_array(nodes, "nodeName", node_count, target_id)?;
+    let attributes = required_parallel_array(nodes, "attributes", node_count, target_id)?;
+    let mut text_bytes = 0_usize;
+    let mut decoded = Vec::with_capacity(node_count);
+    let mut id_to_index = HashMap::new();
+    for index in 0..node_count {
+        let backend_node_id = backend_ids[index]
+            .as_i64()
+            .filter(|value| *value > 0)
+            .ok_or_else(|| malformed(target_id, "DOM snapshot backend node id is invalid"))?;
+        let parent = match parents[index].as_i64() {
+            Some(-1) => None,
+            Some(value)
+                if value >= 0 && usize::try_from(value).is_ok_and(|value| value < index) =>
+            {
+                Some(usize::try_from(value).expect("validated parent index"))
+            }
+            _ => return Err(malformed(target_id, "DOM snapshot parent index is invalid")),
+        };
+        let node_name = snapshot_string_value(strings, &node_names[index], target_id)
+            .map_err(|_| malformed(target_id, "DOM snapshot node-name string index is invalid"))?;
+        let attrs = attributes[index]
+            .as_array()
+            .filter(|values| values.len() % 2 == 0)
+            .ok_or_else(|| malformed(target_id, "DOM snapshot attributes are malformed"))?;
+        let mut id = None;
+        let mut label_for = None;
+        let mut aria_labelledby = None;
+        let mut test_id = None;
+        for pair in attrs.chunks_exact(2) {
+            let name = snapshot_string_value(strings, &pair[0], target_id).map_err(|_| {
+                malformed(
+                    target_id,
+                    "DOM snapshot attribute-name string index is invalid",
+                )
+            })?;
+            let destination = match name {
+                "id" => &mut id,
+                "for" => &mut label_for,
+                "aria-labelledby" => &mut aria_labelledby,
+                "data-testid" => &mut test_id,
+                _ => continue,
+            };
+            let value = optional_snapshot_string_value(strings, &pair[1], target_id)
+                .map_err(|_| {
+                    malformed(
+                        target_id,
+                        "DOM snapshot attribute-value string index is invalid",
+                    )
+                })?
+                .unwrap_or("");
+            text_bytes = text_bytes.saturating_add(value.len());
+            if text_bytes > MAX_SNAPSHOT_TEXT_BYTES {
+                return Err(malformed(
+                    target_id,
+                    "DOM snapshot exceeds the semantic text limit",
+                ));
+            }
+            *destination = bounded_semantic_value(value);
+        }
+        if let Some(id) = &id {
+            id_to_index.entry(id.clone()).or_insert(index);
+        }
+        decoded.push(DecodedDomNode {
+            backend_node_id,
+            parent,
+            is_label: node_name.eq_ignore_ascii_case("label"),
+            label_for,
+            aria_labelledby,
+            test_id,
+        });
+    }
+
+    let layout = document
+        .get("layout")
+        .ok_or_else(|| malformed(target_id, "DOM snapshot layout table is missing"))?;
+    let layout_nodes = required_array(layout, "nodeIndex", target_id)?;
+    let layout_text = required_parallel_array(layout, "text", layout_nodes.len(), target_id)?;
+    let mut rendered = vec![String::new(); node_count];
+    for (node_index, text) in layout_nodes.iter().zip(layout_text) {
+        let node_index = node_index
+            .as_u64()
+            .and_then(|value| usize::try_from(value).ok())
+            .filter(|value| *value < node_count)
+            .ok_or_else(|| malformed(target_id, "DOM snapshot layout node index is invalid"))?;
+        let Some(text) =
+            optional_snapshot_string_value(strings, text, target_id).map_err(|_| {
+                malformed(
+                    target_id,
+                    "DOM snapshot layout-text string index is invalid",
+                )
+            })?
+        else {
+            continue;
+        };
+        text_bytes = text_bytes.saturating_add(text.len());
+        if text_bytes > MAX_SNAPSHOT_TEXT_BYTES {
+            return Err(malformed(
+                target_id,
+                "DOM snapshot exceeds the semantic text limit",
+            ));
+        }
+        let mut ancestor = Some(node_index);
+        while let Some(index) = ancestor {
+            append_semantic_text(&mut rendered[index], text);
+            ancestor = decoded[index].parent;
+        }
+    }
+
+    let mut metadata = decoded
+        .iter()
+        .enumerate()
+        .map(|(index, node)| {
+            (
+                node.backend_node_id,
+                SemanticNodeMetadata {
+                    labels: Vec::new(),
+                    rendered_text: rendered[index].clone(),
+                    test_id: node.test_id.clone(),
+                },
+            )
+        })
+        .collect::<HashMap<_, _>>();
+
+    for (label_index, label) in decoded.iter().enumerate().filter(|(_, node)| node.is_label) {
+        let text = &rendered[label_index];
+        if text.is_empty() {
+            continue;
+        }
+        if let Some(target) = label
+            .label_for
+            .as_ref()
+            .and_then(|value| id_to_index.get(value))
+            .and_then(|index| decoded.get(*index))
+        {
+            push_label(&mut metadata, target.backend_node_id, text);
+        }
+    }
+    for node in &decoded {
+        let mut parent = node.parent;
+        while let Some(parent_index) = parent {
+            if decoded[parent_index].is_label {
+                push_label(&mut metadata, node.backend_node_id, &rendered[parent_index]);
+                break;
+            }
+            parent = decoded[parent_index].parent;
+        }
+        if let Some(labelledby) = &node.aria_labelledby {
+            for id in labelledby.split_ascii_whitespace() {
+                if let Some(label_index) = id_to_index.get(id) {
+                    push_label(&mut metadata, node.backend_node_id, &rendered[*label_index]);
+                }
+            }
+        }
+    }
+    Ok(metadata)
+}
+
+fn required_array<'a>(
+    value: &'a Value,
+    field: &str,
+    target_id: TargetId,
+) -> Result<&'a Vec<Value>> {
+    value
+        .get(field)
+        .and_then(Value::as_array)
+        .ok_or_else(|| malformed(target_id, "DOM snapshot parallel array is missing"))
+}
+
+fn required_parallel_array<'a>(
+    value: &'a Value,
+    field: &str,
+    expected: usize,
+    target_id: TargetId,
+) -> Result<&'a Vec<Value>> {
+    let values = required_array(value, field, target_id)?;
+    if values.len() != expected {
+        return Err(malformed(
+            target_id,
+            "DOM snapshot parallel arrays have inconsistent lengths",
+        ));
+    }
+    Ok(values)
+}
+
+fn snapshot_string<'a>(strings: &'a [Value], index: u64) -> Result<&'a str> {
+    usize::try_from(index)
+        .ok()
+        .and_then(|index| strings.get(index))
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            krometrail_core::KrometrailError::new(
+                ErrorCode::PageObservationFailed,
+                NonEmptyText::new("DOM snapshot string index is invalid").unwrap(),
+            )
+        })
+}
+
+fn snapshot_string_value<'a>(
+    strings: &'a [Value],
+    value: &Value,
+    target_id: TargetId,
+) -> Result<&'a str> {
+    value
+        .as_u64()
+        .ok_or_else(|| malformed(target_id, "DOM snapshot string index is invalid"))
+        .and_then(|index| {
+            snapshot_string(strings, index)
+                .map_err(|_| malformed(target_id, "DOM snapshot string index is invalid"))
+        })
+}
+
+fn optional_snapshot_string_value<'a>(
+    strings: &'a [Value],
+    value: &Value,
+    target_id: TargetId,
+) -> Result<Option<&'a str>> {
+    match value.as_i64() {
+        Some(-1) => Ok(None),
+        Some(index) if index >= 0 => snapshot_string(strings, index as u64)
+            .map(Some)
+            .map_err(|_| malformed(target_id, "DOM snapshot string index is invalid")),
+        _ => Err(malformed(target_id, "DOM snapshot string index is invalid")),
+    }
+}
+
+fn bounded_semantic_value(value: &str) -> Option<String> {
+    (!value.is_empty() && value.len() <= MAX_SEMANTIC_QUERY_TEXT_BYTES).then(|| value.to_owned())
+}
+
+fn append_semantic_text(destination: &mut String, value: &str) {
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() || destination.len() >= MAX_SEMANTIC_QUERY_TEXT_BYTES {
+        return;
+    }
+    let separator = usize::from(!destination.is_empty());
+    let remaining = MAX_SEMANTIC_QUERY_TEXT_BYTES - destination.len();
+    if remaining <= separator {
+        return;
+    }
+    if separator == 1 {
+        destination.push(' ');
+    }
+    let available = remaining - separator;
+    let end = normalized
+        .char_indices()
+        .map(|(index, _)| index)
+        .chain(std::iter::once(normalized.len()))
+        .take_while(|index| *index <= available)
+        .last()
+        .unwrap_or(0);
+    destination.push_str(&normalized[..end]);
+}
+
+fn push_label(
+    metadata: &mut HashMap<i64, SemanticNodeMetadata>,
+    backend_node_id: i64,
+    value: &str,
+) {
+    if value.is_empty() {
+        return;
+    }
+    let labels = &mut metadata.entry(backend_node_id).or_default().labels;
+    if !labels.iter().any(|label| label == value) {
+        labels.push(value.to_owned());
     }
 }
 
@@ -971,6 +1481,288 @@ mod tests {
         assert_eq!(nodes[1].properties.len(), 1);
     }
 
+    fn semantic_dom_snapshot() -> Value {
+        let strings = vec![
+            "main",
+            "DIV",
+            "BUTTON",
+            "#text",
+            "LABEL",
+            "INPUT",
+            "SPAN",
+            "id",
+            "scope",
+            "save",
+            "data-testid",
+            "primary-action",
+            "Save action",
+            "for",
+            "named-input",
+            "Explicit label",
+            "Wrapping label",
+            "wrapped-action",
+            "aria-caption",
+            "Aria caption",
+            "aria-labelledby",
+        ];
+        let index = |value: &str| {
+            strings
+                .iter()
+                .position(|candidate| *candidate == value)
+                .unwrap()
+        };
+        json!({
+            "strings": strings,
+            "documents": [{
+                "frameId": index("main"),
+                "nodes": {
+                    "parentIndex": [-1,0,1,2,1,4,1,6,1,8,8,10,1,12],
+                    "nodeName": [
+                        index("DIV"), index("DIV"), index("BUTTON"), index("#text"),
+                        index("LABEL"), index("#text"), index("INPUT"), index("#text"),
+                        index("LABEL"), index("#text"), index("INPUT"), index("#text"),
+                        index("SPAN"), index("#text")
+                    ],
+                    "backendNodeId": [1,2,10,11,20,21,30,31,40,41,50,51,60,61],
+                    "attributes": [
+                        [], [index("id"),index("scope")],
+                        [index("id"),index("save"),index("data-testid"),index("primary-action")],
+                        [], [index("for"),index("named-input")], [],
+                        [index("id"),index("named-input")], [],
+                        [], [], [index("data-testid"),index("wrapped-action")], [],
+                        [index("id"),index("aria-caption")], []
+                    ]
+                },
+                "layout": {
+                    "nodeIndex": [3,5,7,9,13],
+                    "text": [
+                        index("Save action"), index("Explicit label"), index("Save action"),
+                        index("Wrapping label"), index("Aria caption")
+                    ]
+                }
+            }]
+        })
+    }
+
+    #[test]
+    fn dom_snapshot_enriches_text_labels_and_test_identifiers() {
+        let metadata = decode_dom_snapshot(
+            &semantic_dom_snapshot(),
+            &DocumentFingerprint {
+                frame_id: "main".into(),
+                loader_id: "loader".into(),
+            },
+            target(),
+        )
+        .unwrap();
+        assert_eq!(metadata.get(&10).unwrap().rendered_text, "Save action");
+        assert_eq!(
+            metadata.get(&10).unwrap().test_id.as_deref(),
+            Some("primary-action")
+        );
+        assert_eq!(metadata.get(&30).unwrap().labels, vec!["Explicit label"]);
+        assert_eq!(metadata.get(&50).unwrap().labels, vec!["Wrapping label"]);
+
+        let mut aria = semantic_dom_snapshot();
+        let strings = aria["strings"].as_array_mut().unwrap();
+        let labelledby_name = strings
+            .iter()
+            .position(|value| value == "aria-labelledby")
+            .unwrap();
+        let caption_id = strings
+            .iter()
+            .position(|value| value == "aria-caption")
+            .unwrap();
+        aria["documents"][0]["nodes"]["attributes"][10] = json!([labelledby_name, caption_id]);
+        let metadata = decode_dom_snapshot(
+            &aria,
+            &DocumentFingerprint {
+                frame_id: "main".into(),
+                loader_id: "loader".into(),
+            },
+            target(),
+        )
+        .unwrap();
+        assert_eq!(
+            metadata.get(&50).unwrap().labels,
+            vec!["Wrapping label", "Aria caption"]
+        );
+    }
+
+    #[test]
+    fn semantic_query_is_preordered_scoped_bounded_and_explicit() {
+        let generation = SnapshotGeneration::new(1).unwrap();
+        let root = SnapshotNodeId::new(1).unwrap();
+        let scope = SnapshotNodeId::new(2).unwrap();
+        let first = SnapshotNodeId::new(3).unwrap();
+        let second = SnapshotNodeId::new(4).unwrap();
+        let outside = SnapshotNodeId::new(5).unwrap();
+        let reference = |node_id| NodeReference {
+            target_id: target(),
+            generation,
+            node_id,
+        };
+        let node = |id, parent, depth, name: &str| SnapshotNode {
+            id,
+            parent,
+            depth,
+            role: if id == root { "document" } else { "button" }.into(),
+            name: (!name.is_empty()).then(|| name.to_owned()),
+            value: None,
+            description: None,
+            properties: vec![],
+            actionable: id != root,
+            reference: (id != root).then(|| reference(id)),
+        };
+        let nodes = vec![
+            node(root, None, 0, ""),
+            node(scope, Some(root), 1, "Scope"),
+            node(first, Some(scope), 2, "Duplicate"),
+            node(second, Some(scope), 2, "Duplicate"),
+            node(outside, Some(root), 1, "Duplicate"),
+        ];
+        let context = ObservationContext::new(
+            krometrail_core::SessionId::from_uuid(uuid::Uuid::from_u128(2)),
+            target(),
+            4,
+            krometrail_core::SessionTime::ZERO,
+            krometrail_core::SessionTime::ZERO,
+        )
+        .unwrap();
+        let snapshot = PageSnapshot::new(context, generation, nodes, 0).unwrap();
+        let bound = BoundTarget {
+            target_id: target(),
+            browser_target_key: "target-a".into(),
+            attachment_generation: 4,
+            transport_session: crate::transport::TransportSessionId::new("session-a").unwrap(),
+            visibility: krometrail_core::TargetVisibility::Visible,
+        };
+        let mut registry = SnapshotRegistry::default();
+        registry.install(
+            target(),
+            ActiveSnapshot {
+                generation,
+                attachment_generation: 4,
+                document: DocumentFingerprint {
+                    frame_id: "main".into(),
+                    loader_id: "loader".into(),
+                },
+                bindings: HashMap::from([
+                    (scope, NodeBinding { backend_node_id: 2 }),
+                    (first, NodeBinding { backend_node_id: 3 }),
+                    (second, NodeBinding { backend_node_id: 4 }),
+                    (outside, NodeBinding { backend_node_id: 5 }),
+                ]),
+                node_by_backend: HashMap::from([(2, scope), (3, first), (4, second), (5, outside)]),
+                semantic: HashMap::from([
+                    (
+                        first,
+                        SemanticNodeMetadata {
+                            test_id: Some("duplicate".into()),
+                            ..Default::default()
+                        },
+                    ),
+                    (
+                        second,
+                        SemanticNodeMetadata {
+                            test_id: Some("duplicate".into()),
+                            ..Default::default()
+                        },
+                    ),
+                    (
+                        outside,
+                        SemanticNodeMetadata {
+                            test_id: Some("duplicate".into()),
+                            ..Default::default()
+                        },
+                    ),
+                ]),
+                parent_by_node: HashMap::from([
+                    (root, None),
+                    (scope, Some(root)),
+                    (first, Some(scope)),
+                    (second, Some(scope)),
+                    (outside, Some(root)),
+                ]),
+                semantic_captured: true,
+                next_node_id: 5,
+            },
+        );
+        let query = SemanticQuery::test_id("duplicate").unwrap();
+        let scoped = QueryPageRequest::new(
+            krometrail_core::PageSelection::Target(target()),
+            query.clone(),
+            Some(reference(scope)),
+            1,
+        )
+        .unwrap();
+        let result = registry.query(&bound, &scoped, &snapshot).unwrap();
+        assert_eq!(
+            result.outcome,
+            krometrail_core::SemanticQueryOutcome::Truncated
+        );
+        assert_eq!(result.matches[0].reference.node_id, first);
+        assert_eq!(result.omitted_match_count, 1);
+
+        let unscoped = QueryPageRequest::new(
+            krometrail_core::PageSelection::Target(target()),
+            query,
+            None,
+            20,
+        )
+        .unwrap();
+        let result = registry.query(&bound, &unscoped, &snapshot).unwrap();
+        assert_eq!(
+            result.outcome,
+            krometrail_core::SemanticQueryOutcome::Ambiguous
+        );
+        assert_eq!(
+            result
+                .matches
+                .iter()
+                .map(|candidate| candidate.reference.node_id)
+                .collect::<Vec<_>>(),
+            vec![first, second, outside]
+        );
+
+        let stale_scope = QueryPageRequest::new(
+            krometrail_core::PageSelection::Target(target()),
+            SemanticQuery::test_id("missing").unwrap(),
+            Some(NodeReference {
+                generation: SnapshotGeneration::new(2).unwrap(),
+                ..reference(scope)
+            }),
+            20,
+        )
+        .unwrap();
+        assert_eq!(
+            registry
+                .query(&bound, &stale_scope, &snapshot)
+                .unwrap_err()
+                .code,
+            ErrorCode::StaleReference
+        );
+    }
+
+    #[test]
+    fn malformed_dom_snapshot_fails_closed() {
+        let mut malformed_snapshot = semantic_dom_snapshot();
+        malformed_snapshot["documents"][0]["nodes"]["parentIndex"] = json!([-1]);
+        assert_eq!(
+            decode_dom_snapshot(
+                &malformed_snapshot,
+                &DocumentFingerprint {
+                    frame_id: "main".into(),
+                    loader_id: "loader".into(),
+                },
+                target(),
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::PageObservationFailed
+        );
+    }
+
     #[test]
     fn visible_geometry_ignores_interaction_only_inert_and_disabled_state() {
         let blocked_but_visible = json!({
@@ -1099,6 +1891,9 @@ mod tests {
                 },
             )]),
             node_by_backend: HashMap::from([(42, node_id)]),
+            semantic: HashMap::new(),
+            parent_by_node: HashMap::new(),
+            semantic_captured: false,
             next_node_id: 1,
         };
         let assert_stale = |error: krometrail_core::KrometrailError| {
@@ -1194,6 +1989,9 @@ mod tests {
                 document: document.clone(),
                 bindings: HashMap::new(),
                 node_by_backend: HashMap::from([(42, node_id)]),
+                semantic: HashMap::new(),
+                parent_by_node: HashMap::new(),
+                semantic_captured: false,
                 next_node_id: 7,
             },
         );

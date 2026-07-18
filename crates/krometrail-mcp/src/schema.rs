@@ -594,6 +594,21 @@ mod tests {
     }
 
     #[test]
+    fn published_semantic_query_schema_is_bounded_and_complete() {
+        let config = McpConfig::default();
+        let schema = operation_input_schema(BrowserOperationKind::QueryPage, &config).unwrap();
+        assert_eq!(schema["properties"]["max_matches"]["minimum"], 1);
+        assert_eq!(schema["properties"]["max_matches"]["maximum"], 100);
+        assert_eq!(schema["properties"]["max_matches"]["default"], 20);
+        let encoded = serde_json::to_string(schema.as_ref()).unwrap();
+        for value in ["role", "label", "text", "test_id", "exact", "contains"] {
+            assert!(encoded.contains(&format!("\"{value}\"")), "missing {value}");
+        }
+        assert!(encoded.contains("scope"));
+        assert!(encoded.contains("1024"));
+    }
+
+    #[test]
     fn published_wait_schema_explains_unscoped_exact_text_semantics() {
         let config = McpConfig::default();
         let schema = operation_input_schema(BrowserOperationKind::Wait, &config).unwrap();

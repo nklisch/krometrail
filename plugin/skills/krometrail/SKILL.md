@@ -60,7 +60,7 @@ or use `{"focus":"foreground"}` when the user wants automatic tab switching.
 
 - Lifecycle/pages: `start_browser`, `attach_browser`, `browser_status`, `stop_browser`, `list_pages`,
   `create_page`, `select_page`, `close_page`
-- Current state: `inspect_page`, `snapshot_page`, `take_screenshot`, `observe_live`, `evaluate_page`
+- Current state: `inspect_page`, `query_page`, `snapshot_page`, `take_screenshot`, `observe_live`, `evaluate_page`
 - Navigation: `navigate_page`, `reload_page`, `go_back`, `go_forward`
 - Interaction: `click`, `fill`, `press_keys`, `select_option`, `hover`, `drag`, `scroll`,
   `upload_files`, `handle_dialog`, `wait`, `batch`
@@ -71,7 +71,18 @@ without compatibility matrices or timing distributions. Use `{"detail":"full"}` 
 diagnostics are needed.
 
 Page-scoped requests default to the selected page unless their schema requires an explicit target.
-Prefer an actionable reference returned by `snapshot_page`. Same-document snapshots preserve stable
+Prefer `query_page` for routine targeting by accessible role/name, label text, rendered text, or
+`data-testid`. The ergonomic default is exact, case-insensitive normalized text with at most 20
+matches; request `contains`, case sensitivity, or a larger bounded limit only when needed. Branch on
+the explicit `outcome`: proceed only with `unique`, narrow `ambiguous` or `truncated` queries, and
+revise `no_match` queries. A descendant `scope` must be an exact current reference and excludes the
+scope node itself. This surface covers the current main document only; it does not imply iframe or
+cross-origin matching.
+
+`query_page` returns exact generation-scoped references rather than persistent locators. Copy the
+unique reference into an existing mutation tool; the action does not reevaluate the semantic query.
+Prefer a full actionable reference returned by `snapshot_page` when examining page structure or when
+semantic matching is insufficient. Same-document snapshots preserve stable
 node identities when possible; navigation, document replacement, target reattachment, or node removal
 can make a reference stale. On `stale_reference`, request a fresh snapshot and retry once.
 

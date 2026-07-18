@@ -13,10 +13,11 @@ use krometrail_core::{
     BrowserOperationResult, ClickRequest, CoordinateSpace, CreatePageRequest, CssPoint,
     DialogAction, DragRequest, ElementLocator, FillMode, FillRequest, HandleDialogRequest,
     HoverRequest, InteractionLocator, InteractionOutcome, KeyChord, Modifiers, MouseButton,
-    NavigatePageRequest, ObservationPart, PageSelection, PressKeysRequest,
-    ReadOnlyEvaluationRequest, ScrollDelta, ScrollRequest, SelectOptionRequest, SelectPageRequest,
-    SelectValue, SetViewportRequest, SnapshotPageRequest, UploadFilesRequest, ValidatedFilePath,
-    ViewportMetrics, ViewportOverride,
+    NavigatePageRequest, ObservationPart, PageSelection, PressKeysRequest, QueryPageRequest,
+    QueryPageResult, ReadOnlyEvaluationRequest, ScrollDelta, ScrollRequest, SelectOptionRequest,
+    SelectPageRequest, SelectValue, SemanticQuery, SemanticQueryOutcome, SemanticTextMatch,
+    SemanticTextMatchMode, SetViewportRequest, SnapshotPageRequest, UploadFilesRequest,
+    ValidatedFilePath, ViewportMetrics, ViewportOverride,
 };
 use serde_json::{Value, json};
 use support::scripted_cdp::ScriptedCdp;
@@ -476,6 +477,33 @@ async fn evaluate(
         krometrail_core::EvaluationValue::Json(value) => value,
         _ => Value::Null,
     }
+}
+
+async fn query_page(
+    session: &Arc<dyn krometrail_core::BrowserSessionPort>,
+    target: krometrail_core::TargetId,
+    query: SemanticQuery,
+    scope: Option<krometrail_core::NodeReference>,
+    max_matches: u16,
+) -> QueryPageResult {
+    let result = session
+        .execute(
+            BrowserOperationRequest::QueryPage(
+                QueryPageRequest::new(PageSelection::Target(target), query, scope, max_matches)
+                    .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .expect("semantic page query");
+    let BrowserOperationResult::QueryPage(result) = result else {
+        panic!("semantic query result")
+    };
+    *result
+}
+
+fn exact_semantic_text(value: &str) -> SemanticTextMatch {
+    SemanticTextMatch::new(value, SemanticTextMatchMode::Exact, false).unwrap()
 }
 
 #[tokio::test]
@@ -1057,6 +1085,169 @@ async fn opt_in_real_chrome_executes_verified_interaction_families() {
         json!(1)
     );
 
+    session.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn opt_in_real_chrome_resolves_semantic_queries_to_exact_references() {
+    if !support::chrome::real_browser_tests_enabled() {
+        eprintln!(
+            "skipping real Chrome semantic-query qualification; set KROMETRAIL_REAL_CHROME_TESTS=1"
+        );
+        return;
+    }
+    let _lock = support::chrome::real_browser_lock().await;
+    let root = support::chrome::temporary_profile_root("verified-semantic-query");
+    let connector = ProductionBrowserConnector::new(
+        Arc::new(krometrail_cdp::SystemChromeLauncher::new(
+            krometrail_cdp::LauncherConfig {
+                profile_root: root.path().to_path_buf(),
+                startup_timeout: std::time::Duration::from_secs(45),
+                shutdown_timeout: std::time::Duration::from_secs(3),
+            },
+        )),
+        Arc::new(
+            krometrail_cdp::transport::CdpkitTransportFactory::new()
+                .with_command_timeout(std::time::Duration::from_secs(15)),
+        ),
+    )
+    .with_interaction_evidence(support::evidence_sink());
+    let fixture_url = support::chrome::verified_interactions_fixture_url();
+    let session = connector
+        .connect(BrowserConnectRequest::Launch(
+            krometrail_core::LaunchBrowser {
+                executable: None,
+                profile: krometrail_core::ManagedProfile::Temporary,
+                initial_url: Some(fixture_url.clone()),
+                every_nth_frame: krometrail_core::EveryNthFrame::default(),
+                focus: krometrail_core::BrowserFocusPolicy::default(),
+            },
+        ))
+        .await
+        .expect("semantic query fixture");
+    let target = session.status().await.unwrap().pages[0].target.target.id();
+    await_fixture_ready(&session, target).await;
+
+    let by_role = query_page(
+        &session,
+        target,
+        SemanticQuery::role("button", Some(exact_semantic_text("Semantic save"))).unwrap(),
+        None,
+        20,
+    )
+    .await;
+    assert_eq!(by_role.outcome, SemanticQueryOutcome::Unique);
+    let save_reference = by_role.matches[0].reference;
+
+    for query in [
+        SemanticQuery::Label {
+            text: exact_semantic_text("Explicit semantic input"),
+        },
+        SemanticQuery::Label {
+            text: exact_semantic_text("Wrapped semantic input"),
+        },
+        SemanticQuery::Label {
+            text: exact_semantic_text("ARIA semantic input"),
+        },
+        SemanticQuery::Text {
+            text: exact_semantic_text("Semantic save"),
+        },
+        SemanticQuery::test_id("semantic-primary").unwrap(),
+    ] {
+        assert_eq!(
+            query_page(&session, target, query, None, 20).await.outcome,
+            SemanticQueryOutcome::Unique
+        );
+    }
+
+    let unscoped = query_page(
+        &session,
+        target,
+        SemanticQuery::Text {
+            text: exact_semantic_text("Repeated semantic action"),
+        },
+        None,
+        20,
+    )
+    .await;
+    assert_eq!(unscoped.outcome, SemanticQueryOutcome::Ambiguous);
+    assert_eq!(unscoped.matches.len(), 3);
+    let scope = query_page(
+        &session,
+        target,
+        SemanticQuery::role("region", Some(exact_semantic_text("Semantic scope"))).unwrap(),
+        None,
+        20,
+    )
+    .await;
+    assert_eq!(scope.outcome, SemanticQueryOutcome::Unique);
+    let scoped = query_page(
+        &session,
+        target,
+        SemanticQuery::Text {
+            text: exact_semantic_text("Repeated semantic action"),
+        },
+        Some(scope.matches[0].reference),
+        20,
+    )
+    .await;
+    assert_eq!(scoped.outcome, SemanticQueryOutcome::Ambiguous);
+    assert_eq!(scoped.matches.len(), 2);
+
+    session
+        .execute(
+            BrowserOperationRequest::Click(
+                ClickRequest::new(
+                    PageSelection::Target(target),
+                    InteractionLocator::Element(ElementLocator::Reference(save_reference)),
+                    MouseButton::Left,
+                    Modifiers::default(),
+                    1,
+                    false,
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .expect("semantic reference click");
+    assert_eq!(
+        evaluate(&session, target, "window.fixtureState.semanticClicks").await,
+        json!(1)
+    );
+
+    session
+        .execute(
+            BrowserOperationRequest::NavigatePage(
+                NavigatePageRequest::new(
+                    PageSelection::Target(target),
+                    format!("{fixture_url}?semantic-document-replacement=1"),
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .expect("replace semantic document");
+    await_fixture_ready(&session, target).await;
+    let stale = session
+        .execute(
+            BrowserOperationRequest::Click(
+                ClickRequest::new(
+                    PageSelection::Target(target),
+                    InteractionLocator::Element(ElementLocator::Reference(save_reference)),
+                    MouseButton::Left,
+                    Modifiers::default(),
+                    1,
+                    false,
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(stale.code, krometrail_core::ErrorCode::StaleReference);
     session.stop().await.unwrap();
 }
 

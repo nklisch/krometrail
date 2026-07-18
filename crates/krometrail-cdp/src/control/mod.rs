@@ -174,11 +174,15 @@ impl PageControl {
                     )
                     .await?
             }
-            BrowserOperationRequest::QueryPage(_) => Err(KrometrailError::new(
-                ErrorCode::Unsupported,
-                NonEmptyText::new("semantic page queries are not available in this adapter")
-                    .expect("static semantic query error is non-empty"),
-            )),
+            BrowserOperationRequest::QueryPage(request) => {
+                cancel
+                    .race(
+                        state.connection_generation,
+                        bound.target_id,
+                        self.query_page(transport, &bound, request, started_at),
+                    )
+                    .await?
+            }
             BrowserOperationRequest::TakeScreenshot(request) => {
                 cancel
                     .race(

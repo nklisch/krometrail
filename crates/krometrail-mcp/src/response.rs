@@ -1871,13 +1871,13 @@ mod tests {
         CssRect, CssSize, DeviceScaleFactor, ErrorContext, EveryNthFrame, FrameId, ImageFormat,
         InteractionId, InteractionTiming, NodeReference, ObservationContext, PageChange,
         PageSelection, PageSnapshot, PixelDimensions, PresentationRange, PresentationTime,
-        RangeResolutionOptions, ResolvedRange, ScreenshotTarget, SessionId, SessionRange,
-        SessionTime, Sha256Digest, SnapshotGeneration, SnapshotNode, SnapshotNodeId,
-        TargetCaptureStatus, TargetId, TemporalRangeAnchorKind, TemporalVideoGenerationClip,
-        TemporalVideoManifest, VideoArtifactEvidenceHandle, VideoEncodedClip, VideoEncoderIdentity,
-        VideoEncodingProfile, VideoOutputGeometry, VideoPresentationPlan, VideoPresentationSegment,
-        VideoSegmentSource, VideoTimingBasis, VisualEpoch, WaitCondition, WaitProbe, WaitRequest,
-        WaitResult,
+        QueryPageResult, RangeResolutionOptions, ResolvedRange, ScreenshotTarget, SemanticMatch,
+        SemanticQueryOutcome, SessionId, SessionRange, SessionTime, Sha256Digest,
+        SnapshotGeneration, SnapshotNode, SnapshotNodeId, TargetCaptureStatus, TargetId,
+        TemporalRangeAnchorKind, TemporalVideoGenerationClip, TemporalVideoManifest,
+        VideoArtifactEvidenceHandle, VideoEncodedClip, VideoEncoderIdentity, VideoEncodingProfile,
+        VideoOutputGeometry, VideoPresentationPlan, VideoPresentationSegment, VideoSegmentSource,
+        VideoTimingBasis, VisualEpoch, WaitCondition, WaitProbe, WaitRequest, WaitResult,
     };
     use std::{
         sync::atomic::{AtomicUsize, Ordering},
@@ -2322,6 +2322,41 @@ mod tests {
                 .unwrap()
                 .len(),
             403
+        );
+    }
+
+    #[test]
+    fn semantic_query_response_is_bounded_structured_and_image_free() {
+        let generation = SnapshotGeneration::new(1).unwrap();
+        let reference = NodeReference {
+            target_id: target_id(),
+            generation,
+            node_id: SnapshotNodeId::new(1).unwrap(),
+        };
+        let result = QueryPageResult::new(
+            context(),
+            generation,
+            vec![SemanticMatch {
+                reference,
+                role: "button".into(),
+                name: Some("Save".into()),
+            }],
+            20,
+        )
+        .unwrap();
+        assert_eq!(result.outcome, SemanticQueryOutcome::Unique);
+        let mapped = map_operation_result(
+            "query_page",
+            BrowserOperationResult::QueryPage(Box::new(result)),
+        )
+        .unwrap();
+        assert!(mapped.images.is_empty());
+        assert!(mapped.response.images.is_empty());
+        assert!(mapped.response.resources.is_empty());
+        assert_eq!(mapped.response.result["outcome"], "unique");
+        assert_eq!(
+            mapped.response.result["matches"][0]["reference"]["node_id"],
+            1
         );
     }
 
