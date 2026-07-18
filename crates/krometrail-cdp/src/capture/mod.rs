@@ -150,6 +150,23 @@ pub(crate) struct CaptureGeometry {
     pub(crate) device_scale_factor: DeviceScaleFactor,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CaptureGeometryTransition {
+    target_id: TargetId,
+    attachment_generation: u64,
+    revision: u64,
+}
+
+impl CaptureGeometryTransition {
+    pub(crate) const fn target_id(self) -> TargetId {
+        self.target_id
+    }
+
+    pub(crate) const fn attachment_generation(self) -> u64 {
+        self.attachment_generation
+    }
+}
+
 pub(crate) trait CaptureObserver: Send + Sync {
     fn status_changed(&self, status: krometrail_core::TargetCaptureStatus);
     fn gap_declared(&self, gap: krometrail_core::CaptureGap);
@@ -159,6 +176,10 @@ pub(crate) trait CaptureObserver: Send + Sync {
         _target_id: TargetId,
         _visibility: krometrail_core::TargetVisibility,
     ) {
+    }
+
+    fn geometry_refresh_requested(&self, _transition: CaptureGeometryTransition) -> bool {
+        true
     }
 }
 
@@ -265,13 +286,34 @@ impl CaptureCoordinator {
         pipeline::statuses(self)
     }
 
-    pub(crate) fn update_geometry(
+    pub(crate) fn begin_geometry_transition(
         &self,
         target_id: TargetId,
         attachment_generation: u64,
+    ) -> Option<CaptureGeometryTransition> {
+        pipeline::begin_geometry_transition(self, target_id, attachment_generation)
+            .map(|(transition, _started)| transition)
+    }
+
+    pub(crate) fn commit_geometry_transition(
+        &self,
+        transition: CaptureGeometryTransition,
         geometry: CaptureGeometry,
     ) -> bool {
-        pipeline::update_geometry(self, target_id, attachment_generation, geometry)
+        pipeline::commit_geometry_transition(self, transition, geometry)
+    }
+
+    pub(crate) fn fail_geometry_transition(&self, transition: CaptureGeometryTransition) -> bool {
+        pipeline::fail_geometry_transition(self, transition)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn geometry_for_test(
+        &self,
+        target_id: TargetId,
+        attachment_generation: u64,
+    ) -> Option<(CaptureGeometry, bool)> {
+        pipeline::geometry_for_test(self, target_id, attachment_generation)
     }
 
     pub(crate) async fn shutdown(

@@ -62,7 +62,7 @@ pub(crate) async fn execute_operation(
     Ok(result)
 }
 
-async fn execute_operation_unfenced(
+pub(super) async fn execute_operation_unfenced(
     page_control: &mut PageControl,
     state: &mut SupervisorState,
     transport: Arc<dyn CdpTransport>,
@@ -331,6 +331,11 @@ async fn execute_operation_unfenced(
             let started_at = page_control.session_time()?;
             let interaction_id = page_control.next_interaction_id();
             let dispatched_at = page_control.session_time()?;
+            let geometry_transition = shared.capture.as_ref().and_then(|capture| {
+                capture
+                    .coordinator
+                    .begin_geometry_transition(target_id, bound.attachment_generation)
+            });
             let applied = cancellation
                 .race(
                     state.connection_generation,
@@ -347,6 +352,7 @@ async fn execute_operation_unfenced(
                     &bound,
                     &target_key,
                     previous,
+                    geometry_transition,
                 )
                 .await;
                 return viewport_failure_result(
@@ -374,6 +380,7 @@ async fn execute_operation_unfenced(
                         &bound,
                         &target_key,
                         previous,
+                        geometry_transition,
                     )
                     .await;
                     return viewport_failure_result(
@@ -397,6 +404,7 @@ async fn execute_operation_unfenced(
                             &bound,
                             &target_key,
                             previous,
+                            geometry_transition,
                         )
                         .await;
                         return viewport_failure_result(
@@ -427,6 +435,7 @@ async fn execute_operation_unfenced(
                     &bound,
                     &target_key,
                     previous,
+                    geometry_transition,
                 )
                 .await;
                 return viewport_failure_result(
@@ -439,11 +448,11 @@ async fn execute_operation_unfenced(
                 );
             }
             if let Some(capture) = shared.capture.as_ref() {
-                capture.coordinator.update_geometry(
-                    target_id,
-                    bound.attachment_generation,
-                    capture_geometry,
-                );
+                if let Some(transition) = geometry_transition {
+                    capture
+                        .coordinator
+                        .commit_geometry_transition(transition, capture_geometry);
+                }
             }
             page_control.invalidate_target_snapshot(target_id);
             let observation = page_control
@@ -578,12 +587,29 @@ async fn rollback_viewport_or_fail_target(
     bound: &crate::control::BoundTarget,
     target_key: &str,
     previous: Option<krometrail_core::ViewportMetrics>,
+    geometry_transition: Option<crate::capture::CaptureGeometryTransition>,
 ) {
-    if crate::control::viewport::apply_viewport(transport.as_ref(), bound, previous)
-        .await
-        .is_ok()
-    {
+    let restored_geometry = async {
+        crate::control::viewport::apply_viewport(transport.as_ref(), bound, previous).await?;
+        let effective = crate::control::viewport::observe_effective_viewport(
+            transport.as_ref(),
+            bound,
+            previous,
+        )
+        .await?;
+        crate::control::viewport::capture_geometry(effective)
+    }
+    .await;
+    if let Ok(geometry) = restored_geometry {
+        if let (Some(capture), Some(transition)) = (shared.capture.as_ref(), geometry_transition) {
+            capture
+                .coordinator
+                .commit_geometry_transition(transition, geometry);
+        }
         return;
+    }
+    if let (Some(capture), Some(transition)) = (shared.capture.as_ref(), geometry_transition) {
+        capture.coordinator.fail_geometry_transition(transition);
     }
     tracing::error!(
         event = "viewport_rollback_failed",

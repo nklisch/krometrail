@@ -220,6 +220,7 @@ struct TestObserver {
     statuses: Mutex<Vec<krometrail_core::TargetCaptureStatus>>,
     gaps: Mutex<Vec<krometrail_core::CaptureGap>>,
     visibility: Mutex<Vec<krometrail_core::TargetVisibility>>,
+    geometry_refreshes: Mutex<Vec<CaptureGeometryTransition>>,
 }
 
 impl CaptureObserver for TestObserver {
@@ -237,6 +238,23 @@ impl CaptureObserver for TestObserver {
         visibility: krometrail_core::TargetVisibility,
     ) {
         self.visibility.lock().unwrap().push(visibility);
+    }
+
+    fn geometry_refresh_requested(&self, transition: CaptureGeometryTransition) -> bool {
+        self.geometry_refreshes.lock().unwrap().push(transition);
+        true
+    }
+}
+
+impl TestObserver {
+    async fn wait_for_geometry_refreshes(&self, count: usize) {
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while self.geometry_refreshes.lock().unwrap().len() < count {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
     }
 }
 
@@ -457,6 +475,8 @@ struct TestTransport {
     visibility_senders: Mutex<HashMap<TransportSessionId, mpsc::Sender<NamedEvent>>>,
     frame_receivers: Mutex<HashMap<TransportSessionId, mpsc::Receiver<NamedEvent>>>,
     visibility_receivers: Mutex<HashMap<TransportSessionId, mpsc::Receiver<NamedEvent>>>,
+    geometry_senders: Mutex<HashMap<(TransportSessionId, String), mpsc::Sender<NamedEvent>>>,
+    geometry_receivers: Mutex<HashMap<(TransportSessionId, String), mpsc::Receiver<NamedEvent>>>,
     calls: Mutex<Vec<String>>,
     start_params: Mutex<Vec<serde_json::Value>>,
     ack_watch: watch::Sender<usize>,
@@ -465,6 +485,9 @@ struct TestTransport {
     ack_completed: Arc<AtomicBool>,
     order: Arc<Mutex<Vec<&'static str>>>,
     fail_ack: AtomicBool,
+    hold_ack: AtomicBool,
+    ack_started: Arc<Notify>,
+    release_ack: Arc<Notify>,
 }
 
 impl TestTransport {
@@ -480,6 +503,17 @@ impl TestTransport {
         let mut visibility_receivers = HashMap::new();
         visibility_senders.insert(default_session.clone(), visibility_sender);
         visibility_receivers.insert(default_session.clone(), visibility_receiver);
+        let mut geometry_senders = HashMap::new();
+        let mut geometry_receivers = HashMap::new();
+        for method in [
+            "Page.frameResized",
+            "Page.frameNavigated",
+            "Page.navigatedWithinDocument",
+        ] {
+            let (sender, receiver) = mpsc::channel(16);
+            geometry_senders.insert((default_session.clone(), method.to_owned()), sender);
+            geometry_receivers.insert((default_session.clone(), method.to_owned()), receiver);
+        }
         let (ack_watch, _) = watch::channel(0);
         Arc::new(Self {
             default_session,
@@ -487,6 +521,8 @@ impl TestTransport {
             visibility_senders: Mutex::new(visibility_senders),
             frame_receivers: Mutex::new(frame_receivers),
             visibility_receivers: Mutex::new(visibility_receivers),
+            geometry_senders: Mutex::new(geometry_senders),
+            geometry_receivers: Mutex::new(geometry_receivers),
             calls: Mutex::new(Vec::new()),
             start_params: Mutex::new(Vec::new()),
             ack_watch,
@@ -495,6 +531,9 @@ impl TestTransport {
             ack_completed,
             order,
             fail_ack: AtomicBool::new(false),
+            hold_ack: AtomicBool::new(false),
+            ack_started: Arc::new(Notify::new()),
+            release_ack: Arc::new(Notify::new()),
         })
     }
 
@@ -523,6 +562,21 @@ impl TestTransport {
             .lock()
             .unwrap()
             .insert(session.clone(), visibility_receiver);
+        for method in [
+            "Page.frameResized",
+            "Page.frameNavigated",
+            "Page.navigatedWithinDocument",
+        ] {
+            let (sender, receiver) = mpsc::channel(16);
+            self.geometry_senders
+                .lock()
+                .unwrap()
+                .insert((session.clone(), method.to_owned()), sender);
+            self.geometry_receivers
+                .lock()
+                .unwrap()
+                .insert((session.clone(), method.to_owned()), receiver);
+        }
     }
 
     async fn frame(&self, ack_token: i64) {
@@ -627,6 +681,23 @@ impl TestTransport {
             .unwrap();
     }
 
+    async fn geometry_event(&self, method: &str) {
+        let sender = self
+            .geometry_senders
+            .lock()
+            .unwrap()
+            .get(&(self.default_session.clone(), method.to_owned()))
+            .cloned()
+            .expect("geometry event session is registered");
+        sender
+            .send(NamedEvent {
+                method: method.to_owned(),
+                params: serde_json::json!({}),
+            })
+            .await
+            .unwrap();
+    }
+
     fn start_params(&self) -> Vec<serde_json::Value> {
         self.start_params.lock().unwrap().clone()
     }
@@ -636,6 +707,18 @@ impl TestTransport {
         while *receiver.borrow() < count {
             receiver.changed().await.unwrap();
         }
+    }
+
+    fn hold_ack(&self) {
+        self.hold_ack.store(true, Ordering::Release);
+    }
+
+    async fn wait_for_ack_start(&self) {
+        self.ack_started.notified().await;
+    }
+
+    fn release_ack(&self) {
+        self.release_ack.notify_one();
     }
 }
 
@@ -656,6 +739,23 @@ impl CdpTransport for TestTransport {
             }
             if self.fail_ack.load(Ordering::Acquire) {
                 return Box::pin(std::future::ready(Err(TransportError::CommandFailed)));
+            }
+            if self.hold_ack.swap(false, Ordering::AcqRel) {
+                let started = Arc::clone(&self.ack_started);
+                let release = Arc::clone(&self.release_ack);
+                let order = Arc::clone(&self.order);
+                let completed = Arc::clone(&self.ack_completed);
+                let count = &self.ack_count;
+                let watch = self.ack_watch.clone();
+                return Box::pin(async move {
+                    started.notify_one();
+                    release.notified().await;
+                    order.lock().unwrap().push("ack");
+                    completed.store(true, Ordering::Release);
+                    let count = count.fetch_add(1, Ordering::AcqRel) + 1;
+                    let _ = watch.send(count as usize);
+                    Ok(serde_json::json!({}))
+                });
             }
             self.order.lock().unwrap().push("ack");
             self.ack_completed.store(true, Ordering::Release);
@@ -679,6 +779,11 @@ impl CdpTransport for TestTransport {
             "Page.screencastVisibilityChanged" => {
                 self.visibility_receivers.lock().unwrap().remove(&session)
             }
+            "Page.frameResized" | "Page.frameNavigated" | "Page.navigatedWithinDocument" => self
+                .geometry_receivers
+                .lock()
+                .unwrap()
+                .remove(&(session, method.to_owned())),
             _ => None,
         };
         Box::pin(async move {
@@ -1016,9 +1121,14 @@ async fn runtime_geometry_change_keeps_one_continuous_stream_and_per_frame_metad
         .frame_with_metadata(11, 1280, 720, Some(1.0))
         .await;
     transport.wait_for_acks(1).await;
-    assert!(coordinator.update_geometry(
-        capture_target.target_id,
-        capture_target.attachment_generation,
+    let transition = coordinator
+        .begin_geometry_transition(
+            capture_target.target_id,
+            capture_target.attachment_generation,
+        )
+        .unwrap();
+    assert!(coordinator.commit_geometry_transition(
+        transition,
         CaptureGeometry {
             viewport: krometrail_core::PixelDimensions::new(390, 844).unwrap(),
             device_scale_factor: krometrail_core::DeviceScaleFactor::new(3.0).unwrap(),
@@ -1062,7 +1172,15 @@ async fn runtime_geometry_change_keeps_one_continuous_stream_and_per_frame_metad
                 .contains(&krometrail_core::CaptureWarning::MissingSourceTime)
         );
     }
-    assert!(observer.gaps.lock().unwrap().is_empty());
+    {
+        let gaps = observer.gaps.lock().unwrap();
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(*gaps[0].reason(), CaptureGapReason::ScreencastPaused);
+        assert_eq!(
+            gaps[0].detail(),
+            Some("capture geometry transition completed")
+        );
+    }
     let status = coordinator.statuses().pop().unwrap();
     assert_eq!(status.state(), CaptureStreamState::Capturing);
     assert_eq!(status.statistics().persisted_frames(), 2);
@@ -1075,6 +1193,187 @@ async fn runtime_geometry_change_keeps_one_continuous_stream_and_per_frame_metad
         )
         .await;
     assert!(outcome.complete);
+}
+
+#[tokio::test]
+async fn acknowledgement_spanning_geometry_transition_is_dropped_with_exact_gap_evidence() {
+    let ack_completed = Arc::new(AtomicBool::new(false));
+    let transport =
+        TestTransport::new(Arc::clone(&ack_completed), Arc::new(Mutex::new(Vec::new())));
+    let sink = Arc::new(TestSink::new(
+        ack_completed,
+        Arc::new(Mutex::new(Vec::new())),
+    ));
+    let observer = Arc::new(TestObserver::default());
+    let coordinator = coordinator(
+        CaptureConfig::default(),
+        Arc::new(TestClock::new()),
+        Arc::new(TestIds::new()),
+        Arc::clone(&sink),
+        Arc::clone(&observer),
+    );
+    let capture_target = target();
+    coordinator
+        .start_target(
+            capture_target.clone(),
+            Arc::clone(&transport) as Arc<dyn CdpTransport>,
+        )
+        .await
+        .unwrap();
+
+    transport.hold_ack();
+    transport.frame(31).await;
+    transport.wait_for_ack_start().await;
+    let transition = coordinator
+        .begin_geometry_transition(
+            capture_target.target_id,
+            capture_target.attachment_generation,
+        )
+        .unwrap();
+    assert!(coordinator.commit_geometry_transition(
+        transition,
+        CaptureGeometry {
+            viewport: krometrail_core::PixelDimensions::new(390, 844).unwrap(),
+            device_scale_factor: krometrail_core::DeviceScaleFactor::new(3.0).unwrap(),
+        },
+    ));
+    transport.release_ack();
+    transport.wait_for_acks(1).await;
+
+    sink.release_first_frame.notify_one();
+    transport.frame(32).await;
+    transport.wait_for_acks(2).await;
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while sink.frames.lock().unwrap().len() != 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+
+    {
+        let frames = sink.frames.lock().unwrap();
+        assert_eq!(frames[0].metadata().capture_ordinal().get(), 2);
+        assert_eq!(
+            frames[0].metadata().viewport(),
+            krometrail_core::PixelDimensions::new(390, 844).unwrap()
+        );
+    }
+    {
+        let gaps = observer.gaps.lock().unwrap();
+        assert_eq!(gaps.len(), 2);
+        assert!(
+            gaps.iter()
+                .all(|gap| *gap.reason() == CaptureGapReason::ScreencastPaused)
+        );
+        assert!(gaps.iter().any(|gap| {
+            gap.detail() == Some("frame crossed an unproven capture geometry transition")
+                && gap
+                    .estimated_missing_frames()
+                    .is_some_and(|count| count.get() == 1)
+        }));
+    }
+    let status = coordinator.statuses().pop().unwrap();
+    assert_eq!(status.statistics().acknowledged_frames(), 2);
+    assert_eq!(status.statistics().accepted_frames(), 1);
+    assert_eq!(status.statistics().dropped_frames(), 1);
+
+    assert!(
+        coordinator
+            .stop_target(
+                &capture_target,
+                CaptureStopReason::TargetClosed,
+                tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+            )
+            .await
+            .complete
+    );
+}
+
+#[tokio::test]
+async fn native_resize_and_navigation_events_fence_generation_scoped_geometry_refreshes() {
+    let ack_completed = Arc::new(AtomicBool::new(false));
+    let transport =
+        TestTransport::new(Arc::clone(&ack_completed), Arc::new(Mutex::new(Vec::new())));
+    let sink = Arc::new(TestSink::new(
+        ack_completed,
+        Arc::new(Mutex::new(Vec::new())),
+    ));
+    let observer = Arc::new(TestObserver::default());
+    let coordinator = coordinator(
+        CaptureConfig::default(),
+        Arc::new(TestClock::new()),
+        Arc::new(TestIds::new()),
+        Arc::clone(&sink),
+        Arc::clone(&observer),
+    );
+    let capture_target = target();
+    coordinator
+        .start_target(
+            capture_target.clone(),
+            Arc::clone(&transport) as Arc<dyn CdpTransport>,
+        )
+        .await
+        .unwrap();
+
+    transport.geometry_event("Page.frameResized").await;
+    observer.wait_for_geometry_refreshes(1).await;
+    let resize = observer.geometry_refreshes.lock().unwrap()[0];
+    assert_eq!(resize.target_id(), capture_target.target_id);
+    assert_eq!(
+        resize.attachment_generation(),
+        capture_target.attachment_generation
+    );
+    assert!(coordinator.commit_geometry_transition(
+        resize,
+        CaptureGeometry {
+            viewport: krometrail_core::PixelDimensions::new(800, 600).unwrap(),
+            device_scale_factor: krometrail_core::DeviceScaleFactor::new(2.0).unwrap(),
+        },
+    ));
+
+    transport.geometry_event("Page.frameNavigated").await;
+    observer.wait_for_geometry_refreshes(2).await;
+    let navigation = observer.geometry_refreshes.lock().unwrap()[1];
+    assert_ne!(navigation, resize);
+    assert!(coordinator.commit_geometry_transition(
+        navigation,
+        CaptureGeometry {
+            viewport: krometrail_core::PixelDimensions::new(1024, 768).unwrap(),
+            device_scale_factor: krometrail_core::DeviceScaleFactor::new(1.5).unwrap(),
+        },
+    ));
+
+    sink.release_first_frame.notify_one();
+    transport.frame(41).await;
+    transport.wait_for_acks(1).await;
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while sink.frames.lock().unwrap().len() != 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    {
+        let frames = sink.frames.lock().unwrap();
+        assert_eq!(
+            frames[0].metadata().viewport(),
+            krometrail_core::PixelDimensions::new(1024, 768).unwrap()
+        );
+        assert_eq!(frames[0].metadata().device_scale_factor().get(), 1.5);
+    }
+    assert_eq!(observer.gaps.lock().unwrap().len(), 2);
+
+    assert!(
+        coordinator
+            .stop_target(
+                &capture_target,
+                CaptureStopReason::TargetClosed,
+                tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+            )
+            .await
+            .complete
+    );
 }
 
 #[tokio::test]

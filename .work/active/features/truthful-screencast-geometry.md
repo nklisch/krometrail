@@ -1,7 +1,7 @@
 ---
 id: truthful-screencast-geometry
 kind: feature
-stage: implementing
+stage: review
 tags: [bug, visual, browser]
 parent: null
 depends_on: []
@@ -171,14 +171,14 @@ capture.coordinator.update_geometry(
 - Replaced the per-stream device-scale mutex with one atomic `CaptureGeometry` containing CSS viewport dimensions and DPR. `RawFrame::after_ack` now snapshots that value after acknowledgement and no longer interprets `deviceWidth` or `deviceHeight` as layout geometry.
 - Capture start and reconnect resume now use the existing `observe_effective_viewport` boundary for native and restored-override targets. Positive fractional CSS sizes round to the nearest integral pixel within the existing half-pixel browser tolerance.
 - Viewport apply/clear converts the independently observed effective geometry before supervisor commit, rolls back on conversion failure, and updates capture only after the supervisor transaction commits. Existing navigation/reconnect replay ordering remains unchanged.
-- The supported geometry mutation surface is target-scoped viewport apply/clear plus initial/reconnect observation. No separate native-resize supervisor authority exists; adaptive screencast delivery changes remain intentionally non-authoritative rather than being mistaken for native resize evidence.
+- The supported geometry mutation surface now includes target-scoped viewport apply/clear, initial/reconnect observation, and generation-fenced refreshes triggered by `Page.frameResized`, `Page.frameNavigated`, and `Page.navigatedWithinDocument`. Adaptive screencast delivery metadata remains intentionally non-authoritative.
 - Persisted frame fields, MCP shapes, acknowledgement ordering, bounded handoff, capture ordinals, and gap accounting are unchanged.
 
 ## Regression evidence
 
 - Before the production correction, `capture::tests::adaptive_screencast_encoding_does_not_invent_viewport_changes` failed with retained viewport `1200×1000` instead of the authoritative `600×500`.
 - The regression now proves a 1200×1000 encoded frame and a 600×500 encoded frame with 300×250 screencast metadata both retain 600×500/DPR1, with one stream start and no capture gap.
-- `runtime_geometry_change_keeps_one_continuous_stream_and_per_frame_metadata` proves an atomic 390×844/DPR3 update reaches the subsequent frame without restarting the stream or declaring a gap.
+- `runtime_geometry_change_keeps_one_continuous_stream_and_per_frame_metadata` proves an atomic 390×844/DPR3 update reaches the subsequent frame without restarting the stream and records the fenced transition as an exact interval gap.
 - Existing viewport transaction and reconnect tests continue to prove complete apply/clear/rollback command ordering, mobile page-scale replay before capture, and target-local replay failure.
 
 ## Files changed
@@ -203,3 +203,29 @@ capture.coordinator.update_geometry(
 ## Deviations
 
 - The repository keeps session unit tests in `crates/krometrail-cdp/src/session/mod.rs` rather than a separate `session/tests.rs`; the existing lifecycle tests there and the capture regressions jointly cover the transaction behavior.
+
+## Review fix implementation (2026-07-17)
+
+- Capture geometry is now a generation-scoped, revisioned authority. A transition token fences the previous revision until independently observed CSS viewport and DPR are committed for the exact target attachment generation.
+- Native resize, navigation, same-document navigation, monitor DPR, and zoom effects enter the fence from `Page.frameResized`, `Page.frameNavigated`, and `Page.navigatedWithinDocument`. The event reader fences immediately; the serialized session supervisor then re-observes effective geometry and commits the matching token.
+- Frame ingestion snapshots the geometry revision before acknowledgement and retains the frame only when the same established revision remains authoritative after acknowledgement. An acknowledgement that spans a transition is completed, then the ambiguous observation is dropped with `screencast_paused` gap evidence.
+- Explicit viewport set/clear begins a transition immediately before browser mutation. Success commits independently observed geometry; every apply, observation, conversion, supervisor-commit, and rollback path keeps the fence active until rollback geometry is re-observed or capture fails target-locally.
+- Transition interval evidence is declared before the new geometry becomes established. Refresh dispatch or observation failure closes the interval as a gap and fails only the affected capture/target generation rather than retaining stale provenance.
+- Persisted frame fields and MCP schemas remain unchanged.
+
+## Review fix regression evidence
+
+- `capture::tests::acknowledgement_spanning_geometry_transition_is_dropped_with_exact_gap_evidence` proves an acknowledged frame spanning a revision change is not retained and receives exact loss evidence before a subsequent new-geometry frame is accepted.
+- `capture::tests::native_resize_and_navigation_events_fence_generation_scoped_geometry_refreshes` proves resize and navigation events create generation-scoped refresh requests and only established geometry is retained.
+- `session::tests::session_refresh_commits_observed_geometry_and_fails_only_capture_on_observation_error` proves a supervisor refresh commits independently observed CSS viewport/DPR and an observation failure closes the fence with target-local capture failure.
+- `session::tests::session_set_clear_and_rollback_fence_capture_geometry_transactions` covers successful set, successful clear, rollback after apply failure, and rollback failure. It asserts established geometry changes only at commit and every transition is represented by an interval gap.
+- Existing reconnect tests continue to prove replay happens before capture resume, restored geometry is independently observed, stale generations are rejected, and replay failures remain target-local.
+
+## Review fix verification
+
+- `cargo test -p krometrail-cdp --lib --locked geometry` — passed, 8 tests.
+- `cargo test -p krometrail-cdp --lib --locked reconnect` — passed, 12 tests.
+- `cargo test -p krometrail-cdp --lib --locked` — passed, 132 tests.
+- `cargo fmt --all -- --check` — passed.
+- `cargo clippy -p krometrail-cdp --all-targets --locked -- -D warnings` — passed.
+- `cargo test -p krometrail-cdp --all-targets --locked` — the unit suite and preceding integration binaries passed, but the existing scripted session-supervision capture case waited indefinitely for `Page.startScreencast`. A diagnostic run showed its fake transport returns an empty `Page.getLayoutMetrics` response, so initial authoritative geometry observation rejects the target before capture start. The out-of-scope integration harness was restored unchanged and no test process remains.

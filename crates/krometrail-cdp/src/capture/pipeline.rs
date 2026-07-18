@@ -21,13 +21,19 @@ use tokio::{
 };
 
 use super::{
-    CaptureCoordinator, CaptureDependencies, CaptureError, CaptureGeometry, CaptureObserver,
-    CaptureStopOutcome, CaptureStopReason, CaptureTarget, StreamKey,
+    CaptureCoordinator, CaptureDependencies, CaptureError, CaptureGeometry,
+    CaptureGeometryTransition, CaptureObserver, CaptureStopOutcome, CaptureStopReason,
+    CaptureTarget, StreamKey,
 };
 use crate::transport::{CdpTransport, CommandScope, NamedEvent, TransportEvents};
 
 const FRAME_EVENT: &str = "Page.screencastFrame";
 const VISIBILITY_EVENT: &str = "Page.screencastVisibilityChanged";
+const GEOMETRY_EVENTS: &[&str] = &[
+    "Page.frameResized",
+    "Page.frameNavigated",
+    "Page.navigatedWithinDocument",
+];
 const START_METHOD: &str = "Page.startScreencast";
 const STOP_METHOD: &str = "Page.stopScreencast";
 const ACK_METHOD: &str = "Page.screencastFrameAck";
@@ -142,14 +148,35 @@ pub(super) struct StreamRuntime {
     stop_notification: Notify,
     state: Mutex<RuntimeState>,
     control: Mutex<ControlHandles>,
-    geometry: Mutex<CaptureGeometry>,
+    geometry: Mutex<GeometryAuthority>,
 }
 
 struct ControlHandles {
     sender: Option<mpsc::Sender<RawFrame>>,
     frame_reader: Option<JoinHandle<()>>,
     visibility_reader: Option<JoinHandle<()>>,
+    geometry_readers: Vec<JoinHandle<()>>,
     worker: Option<JoinHandle<()>>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct GeometryAuthority {
+    established: CaptureGeometry,
+    revision: u64,
+    transition: Option<GeometryTransitionState>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct GeometryTransitionState {
+    token: CaptureGeometryTransition,
+    started_at: SessionTime,
+    completing: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct GeometryFence {
+    revision: u64,
+    established: bool,
 }
 
 struct RuntimeState {
@@ -251,24 +278,107 @@ impl StreamRuntime {
                 sender: None,
                 frame_reader: None,
                 visibility_reader: None,
+                geometry_readers: Vec::new(),
                 worker: None,
             }),
-            geometry: Mutex::new(geometry),
+            geometry: Mutex::new(GeometryAuthority {
+                established: geometry,
+                revision: 1,
+                transition: None,
+            }),
         }
     }
 
-    fn geometry(&self) -> CaptureGeometry {
-        *self
+    fn geometry_fence(&self) -> GeometryFence {
+        let authority = self
             .geometry
             .lock()
-            .expect("capture geometry lock poisoned")
+            .expect("capture geometry lock poisoned");
+        GeometryFence {
+            revision: authority.revision,
+            established: authority.transition.is_none(),
+        }
     }
 
-    fn update_geometry(&self, geometry: CaptureGeometry) {
-        *self
+    fn geometry_after_ack(&self, fence: GeometryFence) -> Option<CaptureGeometry> {
+        let authority = self
             .geometry
             .lock()
-            .expect("capture geometry lock poisoned") = geometry;
+            .expect("capture geometry lock poisoned");
+        (fence.established
+            && authority.transition.is_none()
+            && authority.revision == fence.revision)
+            .then_some(authority.established)
+    }
+
+    fn begin_geometry_transition(&self) -> Option<(CaptureGeometryTransition, bool)> {
+        let started_at = self.session_time_for(self.dependencies.clock.now());
+        let mut authority = self
+            .geometry
+            .lock()
+            .expect("capture geometry lock poisoned");
+        if let Some(transition) = authority.transition {
+            return Some((transition.token, false));
+        }
+        let revision = authority.revision.checked_add(1)?;
+        let token = CaptureGeometryTransition {
+            target_id: self.target.target_id,
+            attachment_generation: self.target.attachment_generation,
+            revision,
+        };
+        authority.revision = revision;
+        authority.transition = Some(GeometryTransitionState {
+            token,
+            started_at,
+            completing: false,
+        });
+        Some((token, true))
+    }
+
+    fn finish_geometry_transition(
+        &self,
+        transition: CaptureGeometryTransition,
+        geometry: Option<CaptureGeometry>,
+        detail: &'static str,
+    ) -> bool {
+        let started_at = {
+            let mut authority = self
+                .geometry
+                .lock()
+                .expect("capture geometry lock poisoned");
+            let Some(active) = authority.transition.as_mut() else {
+                return false;
+            };
+            if active.token != transition || active.completing {
+                return false;
+            }
+            active.completing = true;
+            active.started_at
+        };
+        let ended_at = self
+            .session_time_for(self.dependencies.clock.now())
+            .max(started_at);
+        self.declare_gap_range(
+            CaptureGapReason::ScreencastPaused,
+            SessionRange::new(started_at, ended_at).expect("ordered transition range is valid"),
+            None,
+            Some(detail),
+        );
+        let mut authority = self
+            .geometry
+            .lock()
+            .expect("capture geometry lock poisoned");
+        let Some(active) = authority.transition else {
+            return false;
+        };
+        if active.token != transition || !active.completing {
+            return false;
+        }
+        if let Some(geometry) = geometry {
+            authority.established = geometry;
+        }
+        authority.transition = None;
+        true
     }
 
     fn key(&self) -> StreamKey {
@@ -289,11 +399,13 @@ impl StreamRuntime {
         &self,
         frame_reader: JoinHandle<()>,
         visibility_reader: JoinHandle<()>,
+        geometry_readers: Vec<JoinHandle<()>>,
         worker: JoinHandle<()>,
     ) {
         let mut control = self.control.lock().expect("capture control lock poisoned");
         control.frame_reader = Some(frame_reader);
         control.visibility_reader = Some(visibility_reader);
+        control.geometry_readers = geometry_readers;
         control.worker = Some(worker);
     }
 
@@ -312,6 +424,9 @@ impl StreamRuntime {
             handle.abort();
         }
         if let Some(handle) = control.visibility_reader.take() {
+            handle.abort();
+        }
+        for handle in control.geometry_readers.drain(..) {
             handle.abort();
         }
     }
@@ -465,7 +580,16 @@ impl StreamRuntime {
     }
 
     fn dropped(&self, reason: CaptureGapReason, at: SessionTime) {
-        let _ = self.declare_gap(reason, at, Some(1), None);
+        self.dropped_with_detail(reason, at, None);
+    }
+
+    fn dropped_with_detail(
+        &self,
+        reason: CaptureGapReason,
+        at: SessionTime,
+        detail: Option<&'static str>,
+    ) {
+        let _ = self.declare_gap(reason, at, Some(1), detail);
         let mut state = self.state.lock().expect("capture state lock poisoned");
         state.statistics = state
             .statistics
@@ -499,11 +623,26 @@ impl StreamRuntime {
         estimated: Option<u64>,
         detail: Option<&'static str>,
     ) -> Option<CaptureGap> {
+        self.declare_gap_range(
+            reason,
+            SessionRange::new(at, at).expect("equal range is valid"),
+            estimated,
+            detail,
+        )
+    }
+
+    fn declare_gap_range(
+        &self,
+        reason: CaptureGapReason,
+        range: SessionRange,
+        estimated: Option<u64>,
+        detail: Option<&'static str>,
+    ) -> Option<CaptureGap> {
         let gap = CaptureGap::new(
             GapId::from_uuid(*self.dependencies.ids.next().as_uuid()),
             self.target.session_id,
             self.target.target_id,
-            SessionRange::new(at, at).expect("equal range is valid"),
+            range,
             self.dependencies.clock.now(),
             reason,
             estimated.and_then(std::num::NonZeroU64::new),
@@ -653,6 +792,10 @@ pub(super) async fn start_target(
     let scope = CommandScope::Session(target.transport_session.clone());
     let mut frames = transport.subscribe_named(&scope, FRAME_EVENT).await?;
     let mut visibility = transport.subscribe_named(&scope, VISIBILITY_EVENT).await?;
+    let mut geometry_events = Vec::with_capacity(GEOMETRY_EVENTS.len());
+    for method in GEOMETRY_EVENTS {
+        geometry_events.push(transport.subscribe_named(&scope, method).await?);
+    }
     let runtime = Arc::new(StreamRuntime::new(
         target,
         coordinator.config.clone(),
@@ -674,11 +817,20 @@ pub(super) async fn start_target(
     let visibility_task = tokio::spawn(async move {
         visibility_reader(visibility_runtime, &mut visibility).await;
     });
+    let geometry_tasks = geometry_events
+        .into_iter()
+        .map(|mut events| {
+            let geometry_runtime = Arc::clone(&runtime);
+            tokio::spawn(async move {
+                geometry_reader(geometry_runtime, &mut events).await;
+            })
+        })
+        .collect();
     let worker_runtime = Arc::clone(&runtime);
     let worker_task = tokio::spawn(async move {
         worker_loop(worker_runtime, receiver).await;
     });
-    runtime.set_tasks(frame_task, visibility_task, worker_task);
+    runtime.set_tasks(frame_task, visibility_task, geometry_tasks, worker_task);
 
     let start_params = start_screencast_params(&runtime.config, runtime.every_nth_frame);
     if let Err(error) = transport.send_raw(&scope, START_METHOD, start_params).await {
@@ -715,6 +867,7 @@ async fn frame_reader(
         // from this sample through successful ack completion; it includes token extraction but
         // excludes the preceding wait on the event stream and any downstream parse/handoff work.
         let observed = runtime.dependencies.clock.now();
+        let geometry_fence = runtime.geometry_fence();
         runtime.record_received();
         let Some(ack_token) = event.params.get("sessionId").and_then(Value::as_i64) else {
             runtime.declare_gap(
@@ -764,6 +917,14 @@ async fn frame_reader(
             }
         };
         runtime.transition(Transition::ActualFrame);
+        let Some(geometry) = runtime.geometry_after_ack(geometry_fence) else {
+            runtime.dropped_with_detail(
+                CaptureGapReason::ScreencastPaused,
+                session_time,
+                Some("frame crossed an unproven capture geometry transition"),
+            );
+            continue;
+        };
         let raw = match RawFrame::after_ack(
             event,
             ordinal,
@@ -771,7 +932,7 @@ async fn frame_reader(
             session_time,
             runtime.config.format,
             runtime.config.max_base64_payload_bytes.get(),
-            runtime.geometry(),
+            geometry,
         ) {
             Ok(raw) => raw,
             Err(_) => {
@@ -781,6 +942,40 @@ async fn frame_reader(
             }
         };
         runtime.handoff(raw);
+    }
+}
+
+async fn geometry_reader(runtime: Arc<StreamRuntime>, events: &mut Box<dyn TransportEvents>) {
+    while runtime.accepting.load(Ordering::Acquire) {
+        match events.next().await {
+            Ok(Some(_)) => {
+                let Some((transition, started)) = runtime.begin_geometry_transition() else {
+                    runtime.fail(CaptureFailureStage::FrameEnvelope);
+                    break;
+                };
+                if started && !runtime.observer.geometry_refresh_requested(transition) {
+                    runtime.finish_geometry_transition(
+                        transition,
+                        None,
+                        "capture geometry refresh dispatch failed",
+                    );
+                    runtime.fail(CaptureFailureStage::FrameEnvelope);
+                    break;
+                }
+            }
+            Ok(None) | Err(_) => {
+                let transition = runtime.begin_geometry_transition().map(|value| value.0);
+                if let Some(transition) = transition {
+                    runtime.finish_geometry_transition(
+                        transition,
+                        None,
+                        "capture geometry event stream failed",
+                    );
+                }
+                runtime.fail(CaptureFailureStage::FrameEventStream);
+                break;
+            }
+        }
     }
 }
 
@@ -1430,13 +1625,12 @@ impl RawFrame {
     }
 }
 
-pub(super) fn update_geometry(
+fn runtime_for_transition(
     coordinator: &CaptureCoordinator,
     target_id: krometrail_core::TargetId,
     attachment_generation: u64,
-    geometry: CaptureGeometry,
-) -> bool {
-    let runtime = coordinator
+) -> Option<Arc<StreamRuntime>> {
+    coordinator
         .streams
         .lock()
         .expect("capture registry lock poisoned")
@@ -1444,13 +1638,68 @@ pub(super) fn update_geometry(
             target_id,
             attachment_generation,
         })
-        .cloned();
-    if let Some(runtime) = runtime {
-        runtime.update_geometry(geometry);
+        .cloned()
+}
+
+pub(super) fn begin_geometry_transition(
+    coordinator: &CaptureCoordinator,
+    target_id: krometrail_core::TargetId,
+    attachment_generation: u64,
+) -> Option<(CaptureGeometryTransition, bool)> {
+    runtime_for_transition(coordinator, target_id, attachment_generation)?
+        .begin_geometry_transition()
+}
+
+pub(super) fn commit_geometry_transition(
+    coordinator: &CaptureCoordinator,
+    transition: CaptureGeometryTransition,
+    geometry: CaptureGeometry,
+) -> bool {
+    runtime_for_transition(
+        coordinator,
+        transition.target_id,
+        transition.attachment_generation,
+    )
+    .is_some_and(|runtime| {
+        runtime.finish_geometry_transition(
+            transition,
+            Some(geometry),
+            "capture geometry transition completed",
+        )
+    })
+}
+
+pub(super) fn fail_geometry_transition(
+    coordinator: &CaptureCoordinator,
+    transition: CaptureGeometryTransition,
+) -> bool {
+    runtime_for_transition(
+        coordinator,
+        transition.target_id,
+        transition.attachment_generation,
+    )
+    .is_some_and(|runtime| {
+        if !runtime.finish_geometry_transition(transition, None, "capture geometry refresh failed")
+        {
+            return false;
+        }
+        runtime.fail(CaptureFailureStage::FrameEnvelope);
         true
-    } else {
-        false
-    }
+    })
+}
+
+#[cfg(test)]
+pub(super) fn geometry_for_test(
+    coordinator: &CaptureCoordinator,
+    target_id: krometrail_core::TargetId,
+    attachment_generation: u64,
+) -> Option<(CaptureGeometry, bool)> {
+    let runtime = runtime_for_transition(coordinator, target_id, attachment_generation)?;
+    let authority = runtime
+        .geometry
+        .lock()
+        .expect("capture geometry lock poisoned");
+    Some((authority.established, authority.transition.is_some()))
 }
 
 // Keep the transport future and sink future on the same bounded worker path. This helper exists

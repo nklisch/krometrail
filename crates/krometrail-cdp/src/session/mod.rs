@@ -63,6 +63,8 @@ mod reconnect;
 mod runtime;
 mod shutdown;
 
+#[cfg(test)]
+use operations::execute_operation_unfenced;
 pub(crate) use operations::{OperationExecutionContext, execute_operation};
 use reconnect::reconnect_loop_transactional;
 #[cfg(test)]
@@ -79,7 +81,7 @@ use runtime::{
     run_supervisor, setup_connection, setup_connection_with_target_limit,
 };
 #[cfg(test)]
-use runtime::{TargetEventKind, parse_event, restore_session_domains};
+use runtime::{TargetEventKind, parse_event, refresh_capture_geometry, restore_session_domains};
 #[cfg(test)]
 use shutdown::{ShutdownBudgetSource, ShutdownPhase};
 use shutdown::{ShutdownDeadline, ShutdownPlan, finish_state, perform_shutdown, stop_outcome};
@@ -488,6 +490,15 @@ impl CaptureObserver for SessionCaptureObserver {
             },
         ));
     }
+
+    fn geometry_refresh_requested(
+        &self,
+        transition: crate::capture::CaptureGeometryTransition,
+    ) -> bool {
+        self.command_tx
+            .try_send(SupervisorCommand::RefreshCaptureGeometry { transition })
+            .is_ok()
+    }
 }
 
 pub(crate) struct SessionShared {
@@ -515,6 +526,9 @@ enum SupervisorCommand {
         CurrentReferenceGeometryRequest,
         oneshot::Sender<Result<ResolvedReferenceGeometry>>,
     ),
+    RefreshCaptureGeometry {
+        transition: crate::capture::CaptureGeometryTransition,
+    },
     Execute(
         BrowserOperationRequest,
         BrowserOperationContext,
@@ -806,10 +820,11 @@ mod tests {
     };
     use krometrail_core::{
         BrowserProduct, BrowserProductVersion, BrowserVersion, ByteOffset, CapabilitySupport,
-        CaptureGap, EncodedFrame, FrameAddress, IdValue, MonotonicClock, PortFuture, RecordingSink,
-        RendererCapability, SegmentId, SessionOrigin,
+        CaptureGap, CaptureStreamState, EncodedFrame, FrameAddress, IdValue, MonotonicClock,
+        PortFuture, RecordingSink, RendererCapability, SegmentId, SessionOrigin, TargetLifecycle,
     };
     use std::{
+        collections::VecDeque,
         net::{IpAddr, Ipv4Addr, SocketAddr},
         process::Command,
         sync::atomic::AtomicUsize,
@@ -1647,6 +1662,454 @@ mod tests {
         fn status_changed(&self, _status: krometrail_core::TargetCaptureStatus) {}
 
         fn gap_declared(&self, _gap: CaptureGap) {}
+    }
+
+    #[derive(Default)]
+    struct GeometryTestObserver {
+        statuses: Mutex<Vec<TargetCaptureStatus>>,
+        gaps: Mutex<Vec<CaptureGap>>,
+    }
+
+    impl CaptureObserver for GeometryTestObserver {
+        fn status_changed(&self, status: TargetCaptureStatus) {
+            self.statuses.lock().unwrap().push(status);
+        }
+
+        fn gap_declared(&self, gap: CaptureGap) {
+            self.gaps.lock().unwrap().push(gap);
+        }
+    }
+
+    struct GeometryTestTransport {
+        width: Mutex<f64>,
+        height: Mutex<f64>,
+        scale: Mutex<f64>,
+        fail_observation: AtomicBool,
+        fail_methods: Mutex<VecDeque<String>>,
+    }
+
+    impl GeometryTestTransport {
+        fn new(width: f64, height: f64, scale: f64) -> Self {
+            Self {
+                width: Mutex::new(width),
+                height: Mutex::new(height),
+                scale: Mutex::new(scale),
+                fail_observation: AtomicBool::new(false),
+                fail_methods: Mutex::new(VecDeque::new()),
+            }
+        }
+
+        fn set_effective(&self, width: f64, height: f64, scale: f64) {
+            *self.width.lock().unwrap() = width;
+            *self.height.lock().unwrap() = height;
+            *self.scale.lock().unwrap() = scale;
+        }
+
+        fn fail_sequence(&self, methods: impl IntoIterator<Item = &'static str>) {
+            *self.fail_methods.lock().unwrap() = methods.into_iter().map(str::to_owned).collect();
+        }
+    }
+
+    impl CdpTransport for GeometryTestTransport {
+        fn send_raw(
+            &self,
+            _scope: &CommandScope,
+            method: &str,
+            _params: Value,
+        ) -> TransportFuture<'_, std::result::Result<Value, TransportError>> {
+            let should_fail = self
+                .fail_methods
+                .lock()
+                .unwrap()
+                .front()
+                .is_some_and(|candidate| candidate == method);
+            if should_fail {
+                self.fail_methods.lock().unwrap().pop_front();
+                return Box::pin(std::future::ready(Err(TransportError::CommandFailed)));
+            }
+            if self.fail_observation.load(Ordering::Acquire)
+                && matches!(method, "Page.getLayoutMetrics" | "Runtime.evaluate")
+            {
+                return Box::pin(std::future::ready(Err(TransportError::CommandFailed)));
+            }
+            let response = match method {
+                "Page.getLayoutMetrics" => serde_json::json!({
+                    "result": {"cssVisualViewport": {
+                        "clientWidth": *self.width.lock().unwrap(),
+                        "clientHeight": *self.height.lock().unwrap()
+                    }}
+                }),
+                "Runtime.evaluate" => serde_json::json!({
+                    "result": {"result": {"value": {
+                        "width": *self.width.lock().unwrap(),
+                        "height": *self.height.lock().unwrap(),
+                        "scale": *self.scale.lock().unwrap(),
+                        "touchPoints": 0
+                    }}}
+                }),
+                _ => Value::Object(Default::default()),
+            };
+            Box::pin(std::future::ready(Ok(response)))
+        }
+
+        fn subscribe_named(
+            &self,
+            _scope: &CommandScope,
+            _method: &str,
+        ) -> TransportFuture<'_, std::result::Result<Box<dyn TransportEvents>, TransportError>>
+        {
+            Box::pin(std::future::ready(Ok(
+                Box::new(ShutdownTestEvents) as Box<dyn TransportEvents>
+            )))
+        }
+
+        fn close_reason(&self) -> Option<TransportClose> {
+            None
+        }
+
+        fn is_closed(&self) -> bool {
+            false
+        }
+    }
+
+    struct GeometrySessionFixture {
+        state: SupervisorState,
+        target_id: krometrail_core::TargetId,
+        attachment_generation: u64,
+        session_id: SessionId,
+        origin: SessionOrigin,
+        sink: Arc<ShutdownTestSink>,
+        observer: Arc<GeometryTestObserver>,
+        coordinator: Arc<CaptureCoordinator>,
+        transport: Arc<GeometryTestTransport>,
+        capture: Arc<CaptureRuntime>,
+    }
+
+    async fn geometry_session_fixture() -> GeometrySessionFixture {
+        let state = reduce(
+            SupervisorState::new(test_compatibility()),
+            SupervisorInput::InitialTargets(vec![page_info("geometry-target")]),
+        )
+        .unwrap()
+        .state;
+        let state = reduce(
+            state,
+            SupervisorInput::Attached {
+                target_key: "geometry-target".into(),
+                session: TransportSessionId::new("geometry-session").unwrap(),
+            },
+        )
+        .unwrap()
+        .state;
+        let state = reduce(
+            state,
+            SupervisorInput::VisibilityChanged {
+                target_key: "geometry-target".into(),
+                visibility: TargetVisibility::Visible,
+            },
+        )
+        .unwrap()
+        .state;
+        let state = reduce(state, SupervisorInput::InitialReconciliationCompleted)
+            .unwrap()
+            .state;
+        let target = &state.targets_by_key["geometry-target"];
+        let target_id = target.target.target.id();
+        let attachment_generation = target.target.attachment_generation;
+        let session_id = SessionId::from_uuid(Uuid::from_u128(70));
+        let origin = SessionOrigin::new(krometrail_core::ObservedTime::from_nanos(0));
+        let sink = Arc::new(ShutdownTestSink {
+            log: Arc::new(Mutex::new(Vec::new())),
+        });
+        let observer = Arc::new(GeometryTestObserver::default());
+        let coordinator = Arc::new(
+            CaptureCoordinator::new(
+                CaptureConfig::default(),
+                EveryNthFrame::default(),
+                CaptureDependencies {
+                    clock: Arc::new(ShutdownTestClock),
+                    ids: Arc::new(ShutdownTestIds),
+                    sink: Arc::clone(&sink) as Arc<dyn RecordingSink>,
+                    retention: Arc::clone(&sink) as Arc<dyn krometrail_core::RetentionStore>,
+                },
+                Arc::clone(&observer) as Arc<dyn CaptureObserver>,
+            )
+            .unwrap(),
+        );
+        let transport = Arc::new(GeometryTestTransport::new(600.0, 500.0, 1.0));
+        coordinator
+            .start_target(
+                CaptureTarget {
+                    session_id,
+                    session_origin: origin,
+                    target_id,
+                    connection_generation: state.connection_generation,
+                    attachment_generation,
+                    transport_session: TransportSessionId::new("geometry-session").unwrap(),
+                    geometry: crate::capture::CaptureGeometry {
+                        viewport: krometrail_core::PixelDimensions::new(600, 500).unwrap(),
+                        device_scale_factor: krometrail_core::DeviceScaleFactor::new(1.0).unwrap(),
+                    },
+                },
+                Arc::clone(&transport) as Arc<dyn CdpTransport>,
+            )
+            .await
+            .unwrap();
+        let capture = Arc::new(CaptureRuntime {
+            coordinator: Arc::clone(&coordinator),
+            clock: Arc::new(ShutdownTestClock),
+            session_id,
+            session_origin: origin,
+            retention: Arc::clone(&sink) as Arc<dyn krometrail_core::RetentionStore>,
+            shutdown_timeout: Duration::from_secs(1),
+        });
+        GeometrySessionFixture {
+            state,
+            target_id,
+            attachment_generation,
+            session_id,
+            origin,
+            sink,
+            observer,
+            coordinator,
+            transport,
+            capture,
+        }
+    }
+
+    #[tokio::test]
+    async fn session_refresh_commits_observed_geometry_and_fails_only_capture_on_observation_error()
+    {
+        let fixture = geometry_session_fixture().await;
+        let GeometrySessionFixture {
+            state,
+            target_id,
+            attachment_generation,
+            observer,
+            coordinator,
+            transport,
+            capture,
+            ..
+        } = fixture;
+
+        transport.set_effective(800.0, 600.0, 2.0);
+        let transition = coordinator
+            .begin_geometry_transition(target_id, attachment_generation)
+            .unwrap();
+        assert!(refresh_capture_geometry(&state, transport.as_ref(), &capture, transition).await);
+        assert_eq!(
+            coordinator
+                .geometry_for_test(target_id, attachment_generation)
+                .unwrap(),
+            (
+                crate::capture::CaptureGeometry {
+                    viewport: krometrail_core::PixelDimensions::new(800, 600).unwrap(),
+                    device_scale_factor: krometrail_core::DeviceScaleFactor::new(2.0).unwrap(),
+                },
+                false
+            )
+        );
+
+        transport.fail_observation.store(true, Ordering::Release);
+        let failed = coordinator
+            .begin_geometry_transition(target_id, attachment_generation)
+            .unwrap();
+        assert!(!refresh_capture_geometry(&state, transport.as_ref(), &capture, failed).await);
+        assert!(coordinator.fail_geometry_transition(failed));
+        assert!(
+            observer
+                .statuses
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|status| status.state() == CaptureStreamState::Failed)
+        );
+        assert_eq!(
+            state.targets_by_key["geometry-target"].target.lifecycle,
+            TargetLifecycle::Attached
+        );
+        assert_eq!(observer.gaps.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn session_set_clear_and_rollback_fence_capture_geometry_transactions() {
+        let GeometrySessionFixture {
+            mut state,
+            target_id,
+            attachment_generation,
+            session_id,
+            origin,
+            sink,
+            observer,
+            coordinator,
+            transport,
+            capture,
+        } = geometry_session_fixture().await;
+        let (command_tx, _commands) = mpsc::channel(8);
+        let browser_events = Arc::new(
+            SessionDomainAuthority::new(
+                session_id,
+                origin,
+                Arc::new(ShutdownTestClock),
+                Arc::new(ShutdownTestIds),
+                None,
+                BrowserEventConfig::disabled(),
+            )
+            .unwrap(),
+        );
+        let shared = Arc::new(SessionShared {
+            compatibility: state.compatibility.clone(),
+            browser_event_support: Mutex::new(crate::BrowserEventSupport::default()),
+            ownership: BrowserOwnership::Attached,
+            profile: ProfileRef::External,
+            state: Mutex::new(state.clone()),
+            subscribers: Arc::new(SubscriberRegistry::new(8)),
+            command_tx,
+            session_id,
+            session_origin: origin,
+            every_nth_frame: EveryNthFrame::default(),
+            capture: Some(Arc::clone(&capture)),
+            browser_events,
+            interaction_evidence: None,
+            operation_cancellation: OperationCancellation::default(),
+            stop_result: Mutex::new(None),
+        });
+        let mut page_control = PageControl::new(
+            Arc::new(ShutdownTestClock),
+            Arc::new(ShutdownTestIds),
+            session_id,
+            origin,
+        );
+        let cancellation = OperationCancellation::default();
+
+        transport.set_effective(390.0, 844.0, 3.0);
+        let set = execute_operation_unfenced(
+            &mut page_control,
+            &mut state,
+            Arc::clone(&transport) as Arc<dyn CdpTransport>,
+            &shared,
+            BrowserOperationRequest::SetViewport(krometrail_core::SetViewportRequest {
+                target: PageSelection::Target(target_id),
+                viewport: ViewportOverride::Override(
+                    krometrail_core::ViewportMetrics::new(390, 844, 3.0, false, false).unwrap(),
+                ),
+            }),
+            &cancellation,
+            OperationExecutionContext::default(),
+        )
+        .await;
+        assert!(set.is_ok(), "set failed: {set:?}");
+        assert_eq!(
+            coordinator
+                .geometry_for_test(target_id, attachment_generation)
+                .unwrap(),
+            (
+                crate::capture::CaptureGeometry {
+                    viewport: krometrail_core::PixelDimensions::new(390, 844).unwrap(),
+                    device_scale_factor: krometrail_core::DeviceScaleFactor::new(3.0).unwrap(),
+                },
+                false
+            )
+        );
+
+        transport.set_effective(700.0, 550.0, 1.25);
+        let clear = execute_operation_unfenced(
+            &mut page_control,
+            &mut state,
+            Arc::clone(&transport) as Arc<dyn CdpTransport>,
+            &shared,
+            BrowserOperationRequest::SetViewport(krometrail_core::SetViewportRequest {
+                target: PageSelection::Target(target_id),
+                viewport: ViewportOverride::Clear,
+            }),
+            &cancellation,
+            OperationExecutionContext::default(),
+        )
+        .await;
+        assert!(clear.is_ok());
+        let native_geometry = crate::capture::CaptureGeometry {
+            viewport: krometrail_core::PixelDimensions::new(700, 550).unwrap(),
+            device_scale_factor: krometrail_core::DeviceScaleFactor::new(1.25).unwrap(),
+        };
+        assert_eq!(
+            coordinator
+                .geometry_for_test(target_id, attachment_generation)
+                .unwrap(),
+            (native_geometry, false)
+        );
+
+        transport.fail_sequence(["Emulation.setTouchEmulationEnabled"]);
+        let rolled_back = execute_operation_unfenced(
+            &mut page_control,
+            &mut state,
+            Arc::clone(&transport) as Arc<dyn CdpTransport>,
+            &shared,
+            BrowserOperationRequest::SetViewport(krometrail_core::SetViewportRequest {
+                target: PageSelection::Target(target_id),
+                viewport: ViewportOverride::Override(
+                    krometrail_core::ViewportMetrics::new(1024, 768, 2.0, false, false).unwrap(),
+                ),
+            }),
+            &cancellation,
+            OperationExecutionContext::default(),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            rolled_back,
+            BrowserOperationResult::SetViewport(result)
+                if matches!(result.operation.outcome, PageOperationOutcome::Failed(_))
+        ));
+        assert_eq!(
+            coordinator
+                .geometry_for_test(target_id, attachment_generation)
+                .unwrap(),
+            (native_geometry, false)
+        );
+        assert_eq!(
+            coordinator.statuses()[0].state(),
+            CaptureStreamState::Capturing
+        );
+
+        transport.fail_sequence([
+            "Emulation.setTouchEmulationEnabled",
+            "Emulation.setTouchEmulationEnabled",
+        ]);
+        let rollback_failed = execute_operation_unfenced(
+            &mut page_control,
+            &mut state,
+            Arc::clone(&transport) as Arc<dyn CdpTransport>,
+            &shared,
+            BrowserOperationRequest::SetViewport(krometrail_core::SetViewportRequest {
+                target: PageSelection::Target(target_id),
+                viewport: ViewportOverride::Override(
+                    krometrail_core::ViewportMetrics::new(1280, 720, 2.0, false, false).unwrap(),
+                ),
+            }),
+            &cancellation,
+            OperationExecutionContext::default(),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            rollback_failed,
+            BrowserOperationResult::SetViewport(result)
+                if matches!(result.operation.outcome, PageOperationOutcome::Failed(_))
+        ));
+        assert!(
+            observer
+                .statuses
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|status| status.state() == CaptureStreamState::Failed)
+        );
+        assert_eq!(
+            state.targets_by_key["geometry-target"].target.lifecycle,
+            TargetLifecycle::Failed
+        );
+        assert_eq!(observer.gaps.lock().unwrap().len(), 4);
+        assert_eq!(sink.log.lock().unwrap().len(), 0);
     }
 
     struct ShutdownTestClock;

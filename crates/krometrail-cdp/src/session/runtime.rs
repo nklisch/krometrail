@@ -712,6 +712,25 @@ pub(super) async fn run_supervisor(
                 };
                 let _ = sender.send(result);
             }
+            SupervisorCommand::RefreshCaptureGeometry { transition } => {
+                let refreshed = match (connection.as_ref(), shared.capture.as_ref()) {
+                    (Some(connection), Some(capture)) => {
+                        refresh_capture_geometry(
+                            &state,
+                            connection.transport.as_ref(),
+                            capture,
+                            transition,
+                        )
+                        .await
+                    }
+                    _ => false,
+                };
+                if !refreshed {
+                    if let Some(capture) = shared.capture.as_ref() {
+                        capture.coordinator.fail_geometry_transition(transition);
+                    }
+                }
+            }
             SupervisorCommand::Execute(request, context, sender) => {
                 let target_id = direct_request_target(&request);
                 let cancellation = shared.operation_cancellation.for_request(&context);
@@ -800,6 +819,43 @@ pub(super) async fn run_supervisor(
     }
     // Dropping the connection aborts event pumps. Process/profile Arcs remain owned by this task
     // and are cleaned by the explicit shutdown path or by their guards on cancellation.
+}
+
+pub(super) async fn refresh_capture_geometry(
+    state: &SupervisorState,
+    transport: &dyn CdpTransport,
+    capture: &CaptureRuntime,
+    transition: crate::capture::CaptureGeometryTransition,
+) -> bool {
+    let Some((target_key, target)) = state.targets_by_key.iter().find(|(_, target)| {
+        target.target.target.id() == transition.target_id()
+            && target.target.attachment_generation == transition.attachment_generation()
+    }) else {
+        return false;
+    };
+    let Some(transport_session) = target.transport_session.clone() else {
+        return false;
+    };
+    let bound = crate::control::BoundTarget {
+        target_id: transition.target_id(),
+        browser_target_key: target_key.clone(),
+        attachment_generation: transition.attachment_generation(),
+        transport_session,
+        visibility: target.target.visibility,
+    };
+    let geometry = crate::control::viewport::observe_effective_viewport(
+        transport,
+        &bound,
+        target.viewport_override,
+    )
+    .await
+    .and_then(crate::control::viewport::capture_geometry);
+    match geometry {
+        Ok(geometry) => capture
+            .coordinator
+            .commit_geometry_transition(transition, geometry),
+        Err(_) => false,
+    }
 }
 
 async fn watch_process(
