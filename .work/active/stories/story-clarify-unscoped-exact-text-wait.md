@@ -1,7 +1,7 @@
 ---
 id: story-clarify-unscoped-exact-text-wait
 kind: story
-stage: review
+stage: done
 tags: [bug, agent-ux, docs]
 parent: null
 depends_on: []
@@ -34,3 +34,14 @@ A schema test must prove the public `wait` tool exposes both descriptions after 
 - Added field descriptions to the schema-generating wire contract without changing matching behavior.
 - Added the same operational guidance to the shipped Krometrail skill.
 - Verified core wait serialization, the published MCP schema regression, and plugin distribution contracts.
+
+## Review (2026-07-17)
+
+**Verdict**: Approve
+
+**Blockers**: none
+**Important**: none
+**Nits**: none
+**Rejected**: none
+
+**Notes**: Bounded inline standalone-story review at standard depth. Checked runtime/schema agreement, compatibility preservation, public description propagation, and shipped skill guidance. No material current-cycle findings.
