@@ -78,6 +78,23 @@ impl BrowserSessionOwner {
         Ok(self.active_session().await?.capture_statuses())
     }
 
+    pub async fn read_managed_download(
+        &self,
+        request: krometrail_core::ReadManagedDownloadRequest,
+    ) -> Result<krometrail_core::ManagedDownloadRead> {
+        let session = self.active.lock().await.clone().ok_or_else(|| {
+            KrometrailError::new(
+                ErrorCode::NotFound,
+                NonEmptyText::new("managed download resource is unavailable").unwrap(),
+            )
+            .with_recovery(
+                NonEmptyText::new("list completed downloads in the active managed browser session")
+                    .unwrap(),
+            )
+        })?;
+        session.read_managed_download(request).await
+    }
+
     pub async fn stop(&self) -> Result<BrowserStopOutcome> {
         let session = self.active.lock().await.take().ok_or_else(|| {
             lifecycle_error(
@@ -162,6 +179,19 @@ mod tests {
         fn subscribe(&self) -> PortFuture<'_, Result<Box<dyn BrowserSessionEvents>>> {
             Box::pin(std::future::ready(Ok(
                 Box::new(ClosedEvents) as Box<dyn BrowserSessionEvents>
+            )))
+        }
+        fn read_managed_download(
+            &self,
+            request: krometrail_core::ReadManagedDownloadRequest,
+        ) -> PortFuture<'_, Result<krometrail_core::ManagedDownloadRead>> {
+            Box::pin(std::future::ready(Ok(
+                krometrail_core::ManagedDownloadRead {
+                    session_id: request.session_id,
+                    download_id: request.download_id,
+                    media_type: NonEmptyText::new("application/octet-stream").unwrap(),
+                    bytes: b"managed bytes".to_vec(),
+                },
             )))
         }
         fn execute(
@@ -294,6 +324,37 @@ mod tests {
         );
         owner.shutdown().await.unwrap();
         assert_eq!(session.stop_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn managed_download_reads_exist_only_through_the_active_session() {
+        let session = Arc::new(FakeSession {
+            status: status(),
+            execute_calls: AtomicUsize::new(0),
+            stop_calls: AtomicUsize::new(0),
+        });
+        let owner = BrowserSessionOwner::new(Arc::new(FakeConnector {
+            session,
+            connect_calls: AtomicUsize::new(0),
+        }));
+        owner
+            .attach(AttachBrowser::new("http://127.0.0.1:9222").unwrap())
+            .await
+            .unwrap();
+        let request = krometrail_core::ReadManagedDownloadRequest {
+            session_id: "00000000-0000-0000-0000-000000000001".parse().unwrap(),
+            download_id: "00000000-0000-0000-0000-000000000002".parse().unwrap(),
+            max_bytes: 64,
+        };
+        assert_eq!(
+            owner.read_managed_download(request).await.unwrap().bytes,
+            b"managed bytes"
+        );
+        owner.stop().await.unwrap();
+        assert_eq!(
+            owner.read_managed_download(request).await.unwrap_err().code,
+            ErrorCode::NotFound
+        );
     }
 
     #[tokio::test]

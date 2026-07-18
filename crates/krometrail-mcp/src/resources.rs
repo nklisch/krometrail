@@ -19,6 +19,7 @@ use rmcp::model::{
 use serde_json::json;
 
 use crate::config::McpConfig;
+use crate::session::BrowserSessionOwner;
 
 const ARTIFACT_READ_LIMIT: u64 = 64 * 1024 * 1024;
 const SOURCE_FRAME_READ_LIMIT: u64 = 32 * 1024 * 1024;
@@ -30,6 +31,7 @@ const SOURCE_FRAME_URI_TEMPLATE: &str = "krometrail://evidence/{session}/{target
 const VIDEO_URI_TEMPLATE: &str = "krometrail://evidence/{session}/{target}/videos/{id}";
 const VIDEO_MANIFEST_URI_TEMPLATE: &str =
     "krometrail://evidence/{session}/{target}/video-manifests/{id}";
+const MANAGED_DOWNLOAD_URI_TEMPLATE: &str = "krometrail://local/{session}/downloads/{id}";
 
 #[derive(Clone, Copy)]
 struct ResourceDefinition {
@@ -94,7 +96,7 @@ const RESOURCE_DEFINITIONS: &[ResourceDefinition] = &[
 /// resources remain intentionally unlisted because storage is dynamic and may
 /// contain a large number of weak evidence handles.
 pub(crate) fn resource_templates(config: &McpConfig) -> Vec<ResourceTemplate> {
-    RESOURCE_DEFINITIONS
+    let mut templates = RESOURCE_DEFINITIONS
         .iter()
         .filter(|definition| config.is_enabled(definition.capability))
         .map(|definition| {
@@ -109,7 +111,141 @@ pub(crate) fn resource_templates(config: &McpConfig) -> Vec<ResourceTemplate> {
                 None,
             )
         })
-        .collect()
+        .collect::<Vec<_>>();
+    if config.is_enabled(CapabilityId::Control) {
+        templates.push(Annotated::new(
+            RawResourceTemplate {
+                uri_template: MANAGED_DOWNLOAD_URI_TEMPLATE.to_owned(),
+                name: "managed-download".to_owned(),
+                title: Some("Active managed-session download".to_owned()),
+                description: Some("Read one completed bounded download while its managed browser session remains active.".to_owned()),
+                mime_type: Some("application/octet-stream".to_owned()),
+            },
+            None,
+        ));
+    }
+    templates
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ManagedDownloadResourceUri {
+    session_id: SessionId,
+    download_id: krometrail_core::DownloadId,
+}
+
+impl ManagedDownloadResourceUri {
+    fn parse(uri: &str) -> Result<Self> {
+        if uri.is_empty() || uri.contains(['%', '?', '#', '\\']) {
+            return Err(krometrail_core::KrometrailError::new(
+                ErrorCode::InvalidInput,
+                NonEmptyText::new("managed download resource URI is not canonical").unwrap(),
+            ));
+        }
+        let parts = uri.split('/').collect::<Vec<_>>();
+        if parts.len() != 6
+            || parts[0] != "krometrail:"
+            || !parts[1].is_empty()
+            || parts[2] != "local"
+            || parts[4] != "downloads"
+        {
+            return Err(krometrail_core::KrometrailError::new(
+                ErrorCode::InvalidInput,
+                NonEmptyText::new("managed download resource URI is not canonical").unwrap(),
+            ));
+        }
+        let session_id = parts[3].parse::<SessionId>().map_err(|_| {
+            krometrail_core::KrometrailError::new(
+                ErrorCode::InvalidInput,
+                NonEmptyText::new("managed download session ID is invalid").unwrap(),
+            )
+        })?;
+        let download_id = parts[5]
+            .parse::<krometrail_core::DownloadId>()
+            .map_err(|_| {
+                krometrail_core::KrometrailError::new(
+                    ErrorCode::InvalidInput,
+                    NonEmptyText::new("managed download ID is invalid").unwrap(),
+                )
+            })?;
+        let parsed = Self {
+            session_id,
+            download_id,
+        };
+        if parsed.canonical_uri() != uri {
+            return Err(krometrail_core::KrometrailError::new(
+                ErrorCode::InvalidInput,
+                NonEmptyText::new("managed download resource URI is not canonical").unwrap(),
+            ));
+        }
+        Ok(parsed)
+    }
+
+    fn canonical_uri(self) -> String {
+        format!(
+            "krometrail://local/{}/downloads/{}",
+            self.session_id, self.download_id
+        )
+    }
+}
+
+pub(crate) async fn read_resource_with_local(
+    uri: &str,
+    config: &McpConfig,
+    sessions: &BrowserSessionOwner,
+    progressive: &dyn ProgressiveEvidence,
+    temporal_video: Option<&dyn TemporalVideoGeneration>,
+    deadline: Instant,
+    cancellation: Arc<dyn CancellationSignal>,
+) -> std::result::Result<ReadResourceResult, rmcp::ErrorData> {
+    if uri.starts_with("krometrail://local/") {
+        if !config.is_enabled(CapabilityId::Control) {
+            return Err(rmcp::ErrorData::resource_not_found(
+                "local browser resource is not registered",
+                None,
+            ));
+        }
+        let parsed = ManagedDownloadResourceUri::parse(uri).map_err(|_| {
+            rmcp::ErrorData::invalid_params(
+                "resource URI is not a canonical managed-download URI",
+                None,
+            )
+        })?;
+        let read = sessions
+            .read_managed_download(krometrail_core::ReadManagedDownloadRequest {
+                session_id: parsed.session_id,
+                download_id: parsed.download_id,
+                max_bytes: 64 * 1024 * 1024,
+            })
+            .await
+            .map_err(map_resource_domain_error)?;
+        if read.session_id != parsed.session_id
+            || read.download_id != parsed.download_id
+            || parsed.canonical_uri() != uri
+            || read.bytes.len() as u64 > 64 * 1024 * 1024
+        {
+            return Err(rmcp::ErrorData::internal_error(
+                "managed download resource identity mismatch",
+                None,
+            ));
+        }
+        return Ok(ReadResourceResult {
+            contents: vec![ResourceContents::BlobResourceContents {
+                uri: uri.to_owned(),
+                mime_type: Some(read.media_type.as_str().to_owned()),
+                blob: STANDARD.encode(read.bytes),
+                meta: None,
+            }],
+        });
+    }
+    read_resource(
+        uri,
+        config,
+        progressive,
+        temporal_video,
+        deadline,
+        cancellation,
+    )
+    .await
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -735,14 +871,34 @@ mod tests {
     fn one_capability_snapshot_filters_video_templates_as_one_registry() {
         let unavailable = resource_templates(&McpConfig::default());
         let qualified = resource_templates(&qualified_config());
-        assert_eq!(unavailable.len(), 3);
-        assert_eq!(qualified.len(), 5);
+        assert_eq!(unavailable.len(), 4);
+        assert_eq!(qualified.len(), 6);
         let encoded = serde_json::to_value(qualified).unwrap();
         let text = encoded.to_string();
         assert!(text.contains(VIDEO_URI_TEMPLATE));
         assert!(text.contains(VIDEO_MANIFEST_URI_TEMPLATE));
         assert_eq!(text.matches("temporal-video\"").count(), 1);
         assert_eq!(text.matches("temporal-video-manifest\"").count(), 1);
+        assert!(text.contains(MANAGED_DOWNLOAD_URI_TEMPLATE));
+    }
+
+    #[test]
+    fn managed_download_uri_is_strict_and_canonical() {
+        let uri = "krometrail://local/00000000-0000-0000-0000-000000000001/downloads/00000000-0000-0000-0000-000000000002";
+        let parsed = ManagedDownloadResourceUri::parse(uri).unwrap();
+        assert_eq!(parsed.canonical_uri(), uri);
+        for alternate in [
+            format!("{uri}?x=1"),
+            format!("{uri}/extra"),
+            uri.replace("downloads", "%64ownloads"),
+            uri.to_uppercase(),
+            uri.replace("krometrail", "file"),
+        ] {
+            assert!(
+                ManagedDownloadResourceUri::parse(&alternate).is_err(),
+                "{alternate}"
+            );
+        }
     }
 
     struct ErrorSpy {

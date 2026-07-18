@@ -120,6 +120,18 @@ Encoder qualification establishes only that this server can produce its fixed lo
 contract. It does not establish that a particular host, provider, or model accepts or interprets
 video. Any model-effectiveness claim must name and separately qualify that exact host/provider/model.
 
+## Active-session download resources
+
+Completed managed downloads use `krometrail://local/{session}/downloads/{download}` resource links.
+Unlike retained temporal evidence, these are active-session conveniences: their bytes are served only
+through the current managed browser owner and are removed on stop, session loss, or process shutdown.
+There is no historical lookup or filesystem-path fallback. Capture a `list_downloads` cursor before
+triggering a download, wait after that cursor, and read only a result whose state is `completed`.
+
+Download names and sanitized source metadata may appear in explicit download tool results. Raw URLs,
+Chrome GUIDs, local paths, partial bytes, and content never belong in browser-event evidence, ordinary
+status, logs, diagnostics, or issue reports.
+
 ## Ranges, gaps, and epochs
 
 Temporal requests can resolve from an interaction, recent interaction, marker/navigation anchor,

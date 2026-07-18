@@ -19,7 +19,7 @@ use uuid::Uuid;
 use crate::{
     config::{DiagnosticContext, McpConfig, McpDependencies},
     registry::{MCP_REQUEST_DEADLINE, McpCancellation, build_router},
-    resources::{read_resource, resource_templates},
+    resources::{read_resource_with_local, resource_templates},
     response::{DiagnosticDetail, split_response_projection},
     session::BrowserSessionOwner,
 };
@@ -134,9 +134,10 @@ impl ServerHandler for KrometrailMcpServer {
             route = "resources/read"
         );
         async {
-            let mut result = read_resource(
+            let mut result = read_resource_with_local(
                 &request.uri,
                 &self.config,
+                self.sessions.as_ref(),
                 self.dependencies.progressive_evidence.as_ref(),
                 self.dependencies.temporal_video.as_deref(),
                 deadline,
@@ -1301,7 +1302,7 @@ mod tests {
         expected.sort_unstable();
         assert_eq!(names, expected);
         assert!(names.windows(2).all(|pair| pair[0] < pair[1]));
-        assert!(service.server().get_info().capabilities.resources.is_none());
+        assert!(service.server().get_info().capabilities.resources.is_some());
 
         let output_schema = tools[0].output_schema.clone().unwrap();
         for tool in tools {
@@ -1390,7 +1391,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(names.contains(&"generate_temporal_video".to_owned()));
         let templates = resource_templates(&service.server.config);
-        assert_eq!(templates.len(), 5);
+        assert_eq!(templates.len(), 6);
         let encoded = serde_json::to_string(&templates).unwrap();
         assert!(encoded.contains("/videos/{id}"));
         assert!(encoded.contains("/video-manifests/{id}"));
@@ -1826,6 +1827,19 @@ mod tests {
         ) -> PortFuture<'_, krometrail_core::Result<Box<dyn BrowserSessionEvents>>> {
             Box::pin(std::future::ready(Ok(
                 Box::new(ProtocolEvents) as Box<dyn BrowserSessionEvents>
+            )))
+        }
+        fn read_managed_download(
+            &self,
+            request: krometrail_core::ReadManagedDownloadRequest,
+        ) -> PortFuture<'_, krometrail_core::Result<krometrail_core::ManagedDownloadRead>> {
+            Box::pin(std::future::ready(Ok(
+                krometrail_core::ManagedDownloadRead {
+                    session_id: request.session_id,
+                    download_id: request.download_id,
+                    media_type: NonEmptyText::new("application/octet-stream").unwrap(),
+                    bytes: b"protocol download bytes".to_vec(),
+                },
             )))
         }
         fn execute(
@@ -2677,6 +2691,7 @@ mod tests {
 
     #[tokio::test]
     async fn in_memory_json_rpc_initializes_lists_calls_validates_and_closes() {
+        use base64::Engine as _;
         let execute_calls = Arc::new(AtomicUsize::new(0));
         let stop_calls = Arc::new(AtomicUsize::new(0));
         let session = Arc::new(ProtocolSession {
@@ -2722,9 +2737,17 @@ mod tests {
             json!({"jsonrpc":"2.0","id":2,"method":"resources/templates/list","params":{}}),
         )
         .await;
+        let templates = read_json(&mut read).await;
         assert_eq!(
-            read_json(&mut read).await["result"]["resourceTemplates"],
-            json!([])
+            templates["result"]["resourceTemplates"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            templates["result"]["resourceTemplates"][0]["uriTemplate"],
+            "krometrail://local/{session}/downloads/{id}"
         );
         send_json(
             &mut write,
@@ -2733,7 +2756,10 @@ mod tests {
         .await;
         let listed = read_json(&mut read).await;
         let tools = listed["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), BROWSER_OPERATION_REGISTRY.len() + 4);
+        assert_eq!(
+            tools.len(),
+            BROWSER_OPERATION_REGISTRY.len() + lifecycle_tool_names().count()
+        );
         assert!(
             tools.windows(2).all(|pair| {
                 pair[0]["name"].as_str().unwrap() < pair[1]["name"].as_str().unwrap()
@@ -2756,9 +2782,27 @@ mod tests {
         assert_eq!(valid["result"]["structuredContent"]["status"], "succeeded");
         assert_eq!(execute_calls.load(Ordering::SeqCst), 1);
 
+        let download_uri = "krometrail://local/00000000-0000-0000-0000-000000000001/downloads/00000000-0000-0000-0000-000000000002";
         send_json(
             &mut write,
-            json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"navigate_page","arguments":{"url":""}}}),
+            json!({"jsonrpc":"2.0","id":6,"method":"resources/read","params":{"uri":download_uri}}),
+        )
+        .await;
+        let download = read_json(&mut read).await;
+        assert_eq!(
+            download["result"]["contents"][0]["mimeType"],
+            "application/octet-stream"
+        );
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(download["result"]["contents"][0]["blob"].as_str().unwrap())
+                .unwrap(),
+            b"protocol download bytes"
+        );
+
+        send_json(
+            &mut write,
+            json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"navigate_page","arguments":{"url":""}}}),
         )
         .await;
         let invalid = read_json(&mut read).await;
@@ -2768,6 +2812,15 @@ mod tests {
             "invalid_input"
         );
         assert_eq!(execute_calls.load(Ordering::SeqCst), 1);
+
+        send_json(&mut write, json!({"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"stop_browser","arguments":{}}})).await;
+        assert_eq!(read_json(&mut read).await["result"]["isError"], false);
+        send_json(
+            &mut write,
+            json!({"jsonrpc":"2.0","id":9,"method":"resources/read","params":{"uri":download_uri}}),
+        )
+        .await;
+        assert!(read_json(&mut read).await["error"].is_object());
 
         drop(write);
         drop(read);
