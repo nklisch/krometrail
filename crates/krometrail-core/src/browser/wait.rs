@@ -92,8 +92,10 @@ enum WaitConditionWire {
         duration: u64,
     },
     Text {
+        /// Limits text matching to this element. When omitted, the scope is the full document body text; use a locator for exact element text.
         locator: Option<ElementLocator>,
         text: NonEmptyText,
+        /// `exact` compares the complete text in that scope. For an unscoped substring, use `contains`.
         match_mode: WaitTextMatch,
         presence: WaitPresence,
         case_sensitive: bool,

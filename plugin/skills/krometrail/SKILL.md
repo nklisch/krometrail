@@ -62,6 +62,10 @@ activated, select or foreground it and follow the returned recovery guidance.
 Krometrail dispatches modifier chords without inserting their printable character. Use named keys such
 as `Enter` for activation.
 
+For text waits, omitting `locator` scopes the match to the full document-body text. `match_mode:
+"exact"` compares the complete text in that scope; use a locator for exact element text or
+`match_mode: "contains"` for an unscoped substring.
+
 Apply an explicit responsive viewport with:
 
 ```json

@@ -277,6 +277,16 @@ mod tests {
     }
 
     #[test]
+    fn published_wait_schema_explains_unscoped_exact_text_semantics() {
+        let config = McpConfig::default();
+        let schema = operation_input_schema(BrowserOperationKind::Wait, &config).unwrap();
+        let encoded = serde_json::to_string(schema.as_ref()).unwrap();
+        assert!(encoded.contains("full document body text"));
+        assert!(encoded.contains("complete text in that scope"));
+        assert!(encoded.contains("use a locator"));
+    }
+
+    #[test]
     fn local_references_preserve_nested_constraints_and_site_annotations() {
         let schema = object_schema(serde_json::json!({
             "$defs": {
