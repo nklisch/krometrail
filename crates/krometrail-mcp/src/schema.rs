@@ -181,10 +181,30 @@ fn filter_batch_operations(schema: &mut Value, config: &McpConfig) -> Result<()>
         matches += 1;
         branches
             .retain(|branch| operation_const(branch).is_some_and(|name| expected.contains(name)));
-        let branches = object
-            .remove("oneOf")
-            .expect("matched operation union contains oneOf");
-        object.insert("anyOf".into(), branches);
+        let operations = branches
+            .iter()
+            .filter_map(operation_const)
+            .map(|name| Value::String(name.to_owned()))
+            .collect::<Vec<_>>();
+        *object = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "operation": {
+                    "type": "string",
+                    "enum": operations,
+                    "description": "A batchable standalone browser operation name."
+                },
+                "request": {
+                    "type": "object",
+                    "description": "The same arguments advertised by the named standalone operation."
+                }
+            },
+            "required": ["operation", "request"],
+            "additionalProperties": false
+        })
+        .as_object()
+        .expect("flat batch step schema is an object")
+        .clone();
     });
 
     if matches != 1 {
@@ -255,16 +275,22 @@ mod tests {
                 definition.stable_name
             );
         }
-        let steps = &schema["properties"]["steps"]["items"]["anyOf"];
-        assert!(
-            steps.as_array().is_some_and(|steps| {
-                !steps.is_empty()
-                    && steps.iter().all(|step| {
-                        step["properties"]["operation"]["const"].is_string()
-                            && step["properties"]["request"]["type"] == "object"
-                    })
-            }),
-            "batch steps must publish concrete operation request schemas: {schema:#?}"
+        let steps = &schema["properties"]["steps"]["items"];
+        assert_eq!(steps["type"], "object");
+        assert!(steps.get("oneOf").is_none());
+        assert!(steps.get("anyOf").is_none());
+        assert_eq!(steps["properties"]["request"]["type"], "object");
+        assert_eq!(
+            steps["required"],
+            serde_json::json!(["operation", "request"])
+        );
+        let operations = steps["properties"]["operation"]["enum"].as_array().unwrap();
+        assert_eq!(
+            operations.len(),
+            BROWSER_OPERATION_REGISTRY
+                .iter()
+                .filter(|definition| definition.batchable)
+                .count()
         );
     }
 
