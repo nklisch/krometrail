@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-ergonomics
 kind: epic
-stage: implementing
+stage: review
 tags: [agent-ux, browser, visual]
 parent: null
 depends_on: []
@@ -76,3 +76,9 @@ Split by public capability so each feature can design and verify one stable cont
 ## Release intent
 
 Ship the completed epic as the next minor release after feature and aggregate review. Release binding remains late-bound until implementation and review are complete.
+
+## Implementation handoff
+
+All six child features are complete and have passed one fresh standard review with accepted material findings repaired. The combined surface now defaults to compact structured responses with no inline image bytes, while explicit full, inline, legacy, custom-metrics, frame, asset, context, and local-I/O expansion remains available. Focused validation includes real-Chrome semantic targeting, viewport, and managed-download workflows plus strict core/CDP clippy and registry/schema coverage.
+
+Aggregate review should concentrate on cross-feature schema consistency, default projection behavior, session/reconnect cancellation, evidence privacy, canonical resource lifetime, skill guidance, and foundation-document drift before binding the minor release.
