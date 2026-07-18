@@ -1,11 +1,11 @@
 ---
 id: resilient-compact-temporal-bundles
 kind: feature
-stage: review
+stage: done
 tags: [agent-ux, visual]
 parent: null
 depends_on: [truthful-screencast-geometry]
-release_binding: null
+release_binding: 1.0.4
 gate_origin: null
 created: 2026-07-17
 updated: 2026-07-17
@@ -189,4 +189,11 @@ enum ResourceKind {
 - The 53-frame production-dimension planning proof remains, and a proportional service regression now supplies nine real 1200×704 PNG frames declared as a 600×352 DPR-2 viewport. It decodes all frames, selects exact `Down(2)` normalization for both default generators, acquires a 108,926,464-byte peak reservation below a 109,250,000-byte cap that rejects the old 142,480,896-byte cumulative estimate, publishes all three outputs, and round-trips every full manifest.
 - The shipped Krometrail skill now directs agents from compact `manifest_uri` handles to exact full provenance, the evidence reference distinguishes manifest/image/source resource reads, and activation guidance plus the native plugin smoke contract require the `temporal-artifact-manifest` resource template.
 - Review-fix verification passes for store temporal queries, all artifact service tests, all MCP targets, static plugin distribution contracts, focused package checking, and focused clippy with warnings denied. The opt-in installer smoke script is syntax-checked; its three-template activation assertion is exercised locally by the MCP resource-template suite without invoking external harness installation.
-- The feature remains at `review`; these corrections address the standard-review findings without performing a second review or closing the item.
+- At fix submission the feature remained at `review`; these corrections addressed the standard-review findings without performing a second independent pass.
+
+## Review closure (2026-07-17)
+
+- The standard review's eviction-semantics blocker is resolved: intersecting durable evictions retain `retry: never`, while captured-bound recovery is limited to never-captured intervals.
+- The memory acceptance claim is now exercised through real dimension-matching PNG decode, peak-only scheduler admission, all default generators, artifact publication, and manifest round-trips.
+- The shipped agent skill and plugin activation checks now teach and verify the canonical `manifest_uri` drill-down workflow.
+- Focused closure verification passed for the high-DPI service regression, eviction regression, and plugin static contract. No second independent review was run under the standard-weight policy. The feature is approved, closed, and bound to patch release `1.0.4`.
