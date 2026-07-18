@@ -11,6 +11,10 @@ This skill contains detailed pattern documentation for this project.
 See individual pattern files for full details with code examples.
 
 Available patterns:
+- [canonical-result-projection.md](canonical-result-projection.md) — Derive compact or omitted agent presentations only after canonical acquisition and mapping, preserving outcomes and drill-down authority.
+- [ergonomic-input-canonicalization.md](ergonomic-input-canonicalization.md) — Materialize convenience inputs into existing explicit domain authorities before execution, retaining convenience metadata only as provenance.
+- [authority-revalidated-handles.md](authority-revalidated-handles.md) — On every dereference, revalidate handle scope, generation, backing identity, and current availability against the owning authority.
+- [privacy-bounded-debug.md](privacy-bounded-debug.md) — Give secret-bearing types explicit Debug implementations that emit only safe identities, counts, states, flags, or digests.
 - [validated-wire-contracts.md](validated-wire-contracts.md) — Wire decoding delegates to domain validation while schemas remain source-aligned.
 - [injected-core-ports.md](injected-core-ports.md) — Domain contracts flow inward; concrete adapters are wired at the composition root.
 - [registry-declared-surfaces.md](registry-declared-surfaces.md) — One registry declaration drives identities, metadata, schemas, and registration.
