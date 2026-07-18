@@ -1,11 +1,11 @@
 ---
 id: truthful-screencast-geometry
 kind: feature
-stage: review
+stage: done
 tags: [bug, visual, browser]
 parent: null
 depends_on: []
-release_binding: null
+release_binding: 1.0.4
 gate_origin: null
 created: 2026-07-17
 updated: 2026-07-17
@@ -230,3 +230,9 @@ capture.coordinator.update_geometry(
 - `cargo clippy -p krometrail-cdp --all-targets --locked -- -D warnings` — passed.
 - `cargo test -p krometrail-cdp --test session_supervision --locked scripted_capture_preserves_stride_for_jpeg_png_dynamic_and_reconnect_generations -- --exact` — passed. The scripted transport now returns valid 800×600/DPR1 effective geometry, and the test asserts every screencast start follows authoritative layout observation plus the frame-resize/navigation subscriptions.
 - `cargo test -p krometrail-cdp --all-targets --locked` — passed, including all 132 library tests and the complete CDP integration suite.
+
+## Review closure (2026-07-17)
+
+- The standard review's named blocker set is resolved: authoritative geometry refresh is generation-fenced, viewport transactions cannot retain transition-ambiguous frames, and resize/navigation/ACK-crossing/rollback/failure paths have direct regression coverage.
+- The scripted integration transport now models the required initial geometry observation, and both the isolated startup regression and complete CDP all-target suite pass.
+- No second independent review was run under the standard-weight policy. The feature is approved, closed, and bound to patch release `1.0.4`.
