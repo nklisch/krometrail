@@ -1,11 +1,11 @@
 ---
 id: story-fix-pointer-activation-visibility
 kind: story
-stage: review
+stage: done
 tags: [bug, browser, agent-ux]
 parent: null
 depends_on: []
-release_binding: null
+release_binding: 1.0.5
 gate_origin: null
 created: 2026-07-17
 updated: 2026-07-17
@@ -44,3 +44,13 @@ pointer preparation succeeds after two probes. It failed after the first probe b
   activation tests pass afterward, including the persistent-hidden failure case. Live React.dev
   reproduction is reserved for the integrated browser qualification pass.
 - Adjacent issues parked: none.
+
+## Review
+
+- **Mode:** bounded inline standalone-story review; no independent or cross-model reviewer ran.
+- **Verdict:** approve.
+- **Correctness:** pointer preparation now waits for Chrome's visibility propagation inside the existing activation deadline; a target that remains hidden still returns the same specific `target_hidden` error.
+- **Tests:** transient-hidden, persistent-hidden, and already-visible paths pass, along with the complete workspace suite and real-Chrome interaction qualification.
+- **Design and compatibility:** the loop reuses the existing deadline and cancellation-aware CDP path, adds at most a 16-millisecond cancellation delay between probes, and changes no public request or persisted format.
+- **Security:** target activation authority and interaction validation are unchanged; no new input, process, filesystem, network, or secret handling was introduced.
+- **Findings:** no blockers, important findings, or nits.

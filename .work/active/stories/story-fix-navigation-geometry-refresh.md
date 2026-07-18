@@ -1,11 +1,11 @@
 ---
 id: story-fix-navigation-geometry-refresh
 kind: story
-stage: review
+stage: done
 tags: [bug, browser, visual]
 parent: null
 depends_on: []
-release_binding: null
+release_binding: 1.0.5
 gate_origin: null
 created: 2026-07-17
 updated: 2026-07-17
@@ -48,3 +48,13 @@ first transient response before the fix; the existing persistent-failure asserti
   count includes the additional fenced transition. Live Wikipedia qualification is deferred to the
   integrated browser pass.
 - Adjacent issues parked: none.
+
+## Review
+
+- **Mode:** bounded inline standalone-story review; no independent or cross-model reviewer ran.
+- **Verdict:** approve.
+- **Correctness:** geometry remains fenced until independently observed, transitional frames remain explicit gaps, and persistent failure still terminates capture. The bounded retry admits only transient document-replacement failures.
+- **Tests:** the transient-failure regression and existing persistent-failure contract both pass, as do the complete workspace suite and real-Chrome viewport/navigation qualification.
+- **Design and compatibility:** the retry is local to read-only geometry observation, bounded to 200 milliseconds, and preserves the stable retained-evidence and failure contracts.
+- **Security:** no external input validation, privileges, filesystem paths, network destinations, secrets, or privacy boundaries changed.
+- **Findings:** no blockers, important findings, or nits.

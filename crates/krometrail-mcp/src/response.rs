@@ -11,8 +11,8 @@ use krometrail_core::{
     ErrorCode, InteractionAnchor, KrometrailError, LiveObservation, NonEmptyText, ObservationPart,
     PageOperationOutcome, PageOperationResult, PageSnapshot, ProgressiveEvidence,
     ProgressiveEvidenceContext, ProgressiveEvidenceRequest, ProgressiveEvidenceResult,
-    RetrieveArtifactRequest, ScreenshotMetadata, SourceFrameBatch, SourceFrameHandle,
-    TargetId, TemporalDebugBundle, WaitOutcome,
+    RetrieveArtifactRequest, ScreenshotMetadata, SourceFrameBatch, SourceFrameHandle, TargetId,
+    TemporalDebugBundle, WaitOutcome,
 };
 use rmcp::model::{CallToolResult, Content, RawResource};
 use schemars::JsonSchema;

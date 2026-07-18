@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.0.5 — 2026-07-17
+
+### Fixes
+
+- Kept capture healthy through transient navigation-time geometry reads while preserving fenced transition gaps and fail-closed behavior for persistent geometry failures.
+- Let pointer activation visibility settle within its existing deadline, avoiding false `target_hidden` failures without weakening the persistent-hidden error contract.
+- Scoped page-operation capture warnings to the operated target so one failed tab no longer degrades healthy pages, while retaining session-wide health on browser-scoped results.
+- Published concrete tagged batch-step branches in the MCP schema so agent hosts can construct `batch` requests from the advertised tool contract.
+
+### Agent guidance
+
+- Added an explicit batch-step request shape and example to the shipped Krometrail skill.
+
 ## v1.0.4 — 2026-07-17
 
 ### Fixes
