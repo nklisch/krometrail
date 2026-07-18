@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-video-artifacts-retained-generation
 kind: feature
-stage: review
+stage: implementing
 tags: [visual, storage, security]
 parent: epic-temporal-video-artifacts
 depends_on: [epic-temporal-video-artifacts-clip-contracts]
@@ -498,3 +498,19 @@ The stories are durable checkpoints inside one cohesive feature implementation a
 - `cargo clippy --workspace --all-targets --locked -- -D warnings` — passed.
 - The four authoritative integrated commands ran serially after `epic-temporal-video-artifacts-ffmpeg-runtime` reached review, avoiding concurrent browser-profile ownership and validating the combined tree.
 - No existing test was removed, weakened, loosened, or newly skipped to obtain these results.
+
+## Review findings (2026-07-18)
+
+**Review weight**: `standard` (default) — one same-harness fresh-context pass after the preferred Claude peer was unavailable on expired OAuth. Closure after correction is fix verification only; do not run a second independent pass.
+
+**Receiver-confirmed blockers**:
+
+- When caller cancellation/deadline wins during publication, signal the publication token and await bounded store cleanup so staged MP4 work cannot later become ready through restart recovery; cover every durable publication boundary and reopen.
+- Hash one retained-adapter version authority into video cache identity and fully validate expected cache metadata, plan, selection, encoder, and profile for `Hit` and concurrent `Existing` results.
+- Enforce the global disk budget before a video publication becomes ready without evicting the just-published winner and returning a stale handle.
+- Guarantee visibly labeled gap evidence: reject gap-bearing canvases below a declared readable minimum or render a scalable label/interval, with boundary and pixel evidence.
+- Replace the SQL-only migration sample with a genuinely valid v5 image artifact/source/usage/file fixture that reopens and reads byte-identically after v6; preserve a stable image JSON/cache golden.
+- Bind the fixed analysis filter, maximum edge, normalization profile, and selector version into selection provenance; make generated clip/results output-only or constructor-validated on decode.
+- Add the promised fake profile-mismatch and store-failure service cases while correcting the above boundaries.
+
+The reviewer confirmed transactional contiguous migration, one shared artifact authority, source-link/recovery/deletion/epoch/geometry behavior, no path/privacy leakage, and later ownership of concrete FFmpeg/MCP/plugin wiring. The duplicate image/video publication-flow nit is not promoted into this correction because behavioral consolidation is not required to close the verified contract gaps.
