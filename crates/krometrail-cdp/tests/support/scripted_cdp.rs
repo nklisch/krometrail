@@ -262,10 +262,38 @@ impl ScriptedCdp {
                 json!({"result":{"type":"string","value":"visible"}})
             }
             "Runtime.evaluate"
+                if params.get("expression").and_then(Value::as_str)
+                    == Some(
+                        "({width:innerWidth,height:innerHeight,scale:devicePixelRatio,touchPoints:navigator.maxTouchPoints})",
+                    ) =>
+            {
+                json!({"result":{"result":{"type":"object","value":{
+                    "width":800.0,
+                    "height":600.0,
+                    "scale":1.0,
+                    "touchPoints":0
+                }}}})
+            }
+            "Runtime.evaluate"
                 if params.get("expression").and_then(Value::as_str) == Some("devicePixelRatio") =>
             {
                 json!({"result":{"type":"number","value":1.0}})
             }
+            "Page.getLayoutMetrics" => json!({"result":{
+                "cssLayoutViewport":{
+                    "pageX":0.0,
+                    "pageY":0.0,
+                    "clientWidth":800.0,
+                    "clientHeight":600.0
+                },
+                "cssVisualViewport":{
+                    "pageX":0.0,
+                    "pageY":0.0,
+                    "clientWidth":800.0,
+                    "clientHeight":600.0,
+                    "scale":1.0
+                }
+            }}),
             "Schema.getDomains" => {
                 json!({"domains":[{"name":"Page","commands":[{"name":"startScreencast"}]}]})
             }

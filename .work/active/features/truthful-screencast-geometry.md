@@ -228,4 +228,5 @@ capture.coordinator.update_geometry(
 - `cargo test -p krometrail-cdp --lib --locked` — passed, 132 tests.
 - `cargo fmt --all -- --check` — passed.
 - `cargo clippy -p krometrail-cdp --all-targets --locked -- -D warnings` — passed.
-- `cargo test -p krometrail-cdp --all-targets --locked` — the unit suite and preceding integration binaries passed, but the existing scripted session-supervision capture case waited indefinitely for `Page.startScreencast`. A diagnostic run showed its fake transport returns an empty `Page.getLayoutMetrics` response, so initial authoritative geometry observation rejects the target before capture start. The out-of-scope integration harness was restored unchanged and no test process remains.
+- `cargo test -p krometrail-cdp --test session_supervision --locked scripted_capture_preserves_stride_for_jpeg_png_dynamic_and_reconnect_generations -- --exact` — passed. The scripted transport now returns valid 800×600/DPR1 effective geometry, and the test asserts every screencast start follows authoritative layout observation plus the frame-resize/navigation subscriptions.
+- `cargo test -p krometrail-cdp --all-targets --locked` — passed, including all 132 library tests and the complete CDP integration suite.

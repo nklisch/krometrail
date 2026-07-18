@@ -276,16 +276,42 @@ fn assert_start_commands_are_subscribed(script: &support::scripted_cdp::Scripted
                 if method == "Page.startScreencast"
         ) {
             starts += 1;
-            let subscribed = activity[..index].iter().any(|item| {
+            let session = match item {
+                support::scripted_cdp::ScriptedActivity::Command { session, .. } => session,
+                _ => unreachable!("matched command"),
+            };
+            for method in [
+                "Page.screencastFrame",
+                "Page.frameResized",
+                "Page.frameNavigated",
+                "Page.navigatedWithinDocument",
+            ] {
+                let subscribed = activity[..index].iter().any(|item| {
+                    matches!(
+                        item,
+                        support::scripted_cdp::ScriptedActivity::Subscription {
+                            method: subscribed_method,
+                            session: subscribed_session,
+                        } if subscribed_method == method && subscribed_session == session
+                    )
+                });
+                assert!(
+                    subscribed,
+                    "start screencast must follow generation-scoped {method} subscription"
+                );
+            }
+            let observed_geometry = activity[..index].iter().any(|item| {
                 matches!(
                     item,
-                    support::scripted_cdp::ScriptedActivity::Subscription { method, .. }
-                        if method == "Page.screencastFrame"
+                    support::scripted_cdp::ScriptedActivity::Command {
+                        method,
+                        session: observed_session,
+                    } if method == "Page.getLayoutMetrics" && observed_session == session
                 )
             });
             assert!(
-                subscribed,
-                "start screencast must follow frame subscription"
+                observed_geometry,
+                "start screencast must follow authoritative geometry observation"
             );
         }
     }
