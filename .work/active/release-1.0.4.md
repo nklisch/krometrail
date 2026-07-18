@@ -1,7 +1,7 @@
 ---
 id: release-1.0.4
 kind: release
-stage: quality-gate
+stage: release-ready
 tags: []
 parent: null
 depends_on: []
@@ -39,3 +39,12 @@ The operator selected the complete manual-test finding set for the next patch. N
 ## Changelog
 
 The `v1.0.4` changelog entry covers the complete selected patch scope.
+
+## Validation
+
+- `cargo fmt --all -- --check` — passed.
+- `cargo check --workspace --all-targets --locked` — passed.
+- `cargo test --workspace --all-targets --locked` — passed.
+- `cargo clippy --workspace --all-targets --locked -- -D warnings` — passed.
+- Real Chrome viewport apply/navigation/clear/target-isolation qualification — passed.
+- Real headless capture produced and validated an initial frame with source-safe fidelity metadata. The legacy 30-frame ambient-compositor cadence smoke timed out identically at the released `v1.0.3` tag on this host, so it is recorded as an environment/Chrome limitation rather than a 1.0.4 regression.
