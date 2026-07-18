@@ -135,6 +135,22 @@ as steps.
 - Browser context: `query_browser_events`
 - Retention: `pin_resolved_range`, `query_pin_state`, `unpin_resolved_range`
 
+Keep the `range_handle` returned by `temporal_debug_bundle`. For follow-up artifact, region,
+source-frame, browser-event, pin-state, and advertised video tools, pass that handle instead of
+copying the full resolved range:
+
+```json
+{"range_handle":"<returned-range-handle>"}
+```
+
+Those tools require exactly one of `range_handle` or `range`; keep every other argument required by
+the tool schema. A handle is an immutable process-local convenience for the exact validated range.
+It survives `stop_browser` while its retained frames remain available, but it does not survive a
+plugin/MCP restart or session-data deletion. On `evidence_invalidated`, run
+`temporal_debug_bundle` again and use the new handle. Copy the full `range` only when crossing MCP
+process boundaries or preserving an exact external record. The handle never replaces artifact/video
+manifest provenance, ordered frame IDs, gap checks, or canonical evidence resource links.
+
 The default temporal bundle is a compact resource-and-provenance index without inline image bytes. Add
 `"response":{"inline_images":"inline"}` when the primary orientation/storyboard image should be embedded
 immediately; otherwise follow the returned canonical resource links for the exact artifact needed.

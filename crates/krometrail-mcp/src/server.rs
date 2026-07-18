@@ -376,8 +376,8 @@ mod tests {
         ProgressiveEvidenceRequest, ProgressiveEvidenceResult, ProgressiveRegion,
         RangeResolutionOptions, RegionFilmstripEvidenceRequest, RendererCapability, ResolvedRange,
         ResolvedRangeEvidenceRequest, ResolvedRangeHandleId, ResolvedRangeHandles, RetentionStatus,
-        SessionId, SessionOrigin, SessionRange, SessionTime, Sha256Digest, SourceFrameSelection,
-        SourceFramesRequest, SourceReadLimitsRequest, StoryboardRequest,
+        SessionId, SessionOrigin, SessionRange, SessionTime, Sha256Digest, SourceFrameList,
+        SourceFrameSelection, SourceFramesRequest, SourceReadLimitsRequest, StoryboardRequest,
         TEMPORAL_DEBUG_BUNDLE_POLICY_VERSION, TargetCaptureStatus, TargetId, TemporalContext,
         TemporalContextQuery, TemporalContextRequest, TemporalDebugBundle,
         TemporalDebugBundleContext, TemporalDebugBundleRequest, TemporalDebugBundles,
@@ -405,14 +405,14 @@ mod tests {
             &self,
             _range: ResolvedRange,
         ) -> krometrail_core::Result<ResolvedRangeHandleId> {
-            panic!("unused range handle authority must not register")
+            Ok(range_handle_id())
         }
 
         fn resolve_available(
             &self,
             _handle: ResolvedRangeHandleId,
         ) -> PortFuture<'_, krometrail_core::Result<ResolvedRange>> {
-            panic!("unused range handle authority must not resolve")
+            Box::pin(std::future::ready(Err(unknown_range_handle_error())))
         }
 
         fn invalidate_session(&self, _session_id: SessionId) -> krometrail_core::Result<usize> {
@@ -716,6 +716,130 @@ mod tests {
         context_request: Mutex<Option<Value>>,
     }
 
+    struct TestRangeHandles {
+        entry: Mutex<Option<(ResolvedRangeHandleId, ResolvedRange)>>,
+        resolve_calls: AtomicUsize,
+    }
+
+    impl TestRangeHandles {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                entry: Mutex::new(None),
+                resolve_calls: AtomicUsize::new(0),
+            })
+        }
+    }
+
+    impl ResolvedRangeHandles for TestRangeHandles {
+        fn register(&self, range: ResolvedRange) -> krometrail_core::Result<ResolvedRangeHandleId> {
+            range.validate()?;
+            let mut entry = self.entry.lock().unwrap();
+            match entry.as_ref() {
+                Some((handle, registered)) if registered == &range => Ok(*handle),
+                Some(_) => Err(KrometrailError::new(
+                    ErrorCode::Internal,
+                    NonEmptyText::new("test range handle collision").unwrap(),
+                )),
+                None => {
+                    let handle = range_handle_id();
+                    *entry = Some((handle, range));
+                    Ok(handle)
+                }
+            }
+        }
+
+        fn resolve_available(
+            &self,
+            handle: ResolvedRangeHandleId,
+        ) -> PortFuture<'_, krometrail_core::Result<ResolvedRange>> {
+            self.resolve_calls.fetch_add(1, Ordering::SeqCst);
+            let result = self
+                .entry
+                .lock()
+                .unwrap()
+                .as_ref()
+                .filter(|(registered, _)| *registered == handle)
+                .map(|(_, range)| range.clone())
+                .ok_or_else(unknown_range_handle_error);
+            Box::pin(std::future::ready(result))
+        }
+
+        fn invalidate_session(&self, session_id: SessionId) -> krometrail_core::Result<usize> {
+            let mut entry = self.entry.lock().unwrap();
+            if entry
+                .as_ref()
+                .is_some_and(|(_, range)| range.session_id == session_id)
+            {
+                *entry = None;
+                Ok(1)
+            } else {
+                Ok(0)
+            }
+        }
+    }
+
+    struct HandleFlowSpy {
+        bundle: TemporalDebugBundle,
+        progressive_requests: Mutex<Vec<Value>>,
+        context_requests: Mutex<Vec<Value>>,
+    }
+
+    impl HandleFlowSpy {
+        fn new(bundle: TemporalDebugBundle) -> Arc<Self> {
+            Arc::new(Self {
+                bundle,
+                progressive_requests: Mutex::new(Vec::new()),
+                context_requests: Mutex::new(Vec::new()),
+            })
+        }
+    }
+
+    impl TemporalDebugBundles for HandleFlowSpy {
+        fn bundle(
+            &self,
+            _request: TemporalDebugBundleRequest,
+            _context: TemporalDebugBundleContext,
+        ) -> PortFuture<'_, krometrail_core::Result<TemporalDebugBundle>> {
+            Box::pin(std::future::ready(Ok(self.bundle.clone())))
+        }
+    }
+
+    impl ProgressiveEvidence for HandleFlowSpy {
+        fn execute(
+            &self,
+            request: ProgressiveEvidenceRequest,
+            _context: ProgressiveEvidenceContext,
+        ) -> PortFuture<'_, krometrail_core::Result<ProgressiveEvidenceResult>> {
+            self.progressive_requests
+                .lock()
+                .unwrap()
+                .push(serde_json::to_value(&request).unwrap());
+            let result = match request {
+                ProgressiveEvidenceRequest::ListSourceFrames(request) => Ok(
+                    ProgressiveEvidenceResult::ListSourceFrames(Box::new(SourceFrameList {
+                        range: request.range,
+                        frames: Vec::new(),
+                    })),
+                ),
+                _ => Err(TemporalSpy::error()),
+            };
+            Box::pin(std::future::ready(result))
+        }
+    }
+
+    impl TemporalContextQuery for HandleFlowSpy {
+        fn context(
+            &self,
+            request: TemporalContextRequest,
+        ) -> PortFuture<'_, krometrail_core::Result<TemporalContext>> {
+            self.context_requests
+                .lock()
+                .unwrap()
+                .push(serde_json::to_value(request).unwrap());
+            Box::pin(std::future::ready(Err(TemporalSpy::error())))
+        }
+    }
+
     impl TemporalSpy {
         fn new() -> Arc<Self> {
             Arc::new(Self {
@@ -840,6 +964,21 @@ mod tests {
         }
     }
 
+    fn handle_flow_dependencies(
+        spy: Arc<HandleFlowSpy>,
+        range_handles: Arc<TestRangeHandles>,
+    ) -> McpDependencies {
+        McpDependencies {
+            browser: Arc::new(UnusedConnector),
+            temporal_debug_bundles: Arc::clone(&spy) as Arc<dyn TemporalDebugBundles>,
+            progressive_evidence: Arc::clone(&spy) as Arc<dyn ProgressiveEvidence>,
+            temporal_context: spy as Arc<dyn TemporalContextQuery>,
+            range_handles,
+            temporal_video: None,
+            diagnostics: DiagnosticContext::default(),
+        }
+    }
+
     fn session_id() -> SessionId {
         "00000000-0000-0000-0000-000000000001".parse().unwrap()
     }
@@ -850,6 +989,21 @@ mod tests {
 
     fn frame_id() -> FrameId {
         "00000000-0000-0000-0000-000000000003".parse().unwrap()
+    }
+
+    fn range_handle_id() -> ResolvedRangeHandleId {
+        "00000000-0000-0000-0000-000000000005".parse().unwrap()
+    }
+
+    fn unknown_range_handle_error() -> KrometrailError {
+        KrometrailError::new(
+            ErrorCode::EvidenceInvalidated,
+            NonEmptyText::new("resolved range handle is unavailable").unwrap(),
+        )
+        .with_retry(krometrail_core::RetryAdvice::AfterRecovery)
+        .with_recovery(
+            NonEmptyText::new("run temporal_debug_bundle again to resolve a fresh range").unwrap(),
+        )
     }
 
     fn resolved_range() -> ResolvedRange {
@@ -2194,6 +2348,221 @@ mod tests {
         .await;
         assert!(invalid["result"]["isError"].as_bool().unwrap_or(false));
         assert_eq!(spy.context_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn bundle_range_handle_drives_followups_and_restart_failure_stays_pre_dispatch() {
+        let (fixture, _, _) = successful_bundle_fixture();
+        let spy = HandleFlowSpy::new(fixture.bundle.clone());
+        let handles = TestRangeHandles::new();
+        let service = build_service(
+            handle_flow_dependencies(Arc::clone(&spy), Arc::clone(&handles)),
+            McpConfig::new(vec![
+                CapabilityId::TemporalVision,
+                CapabilityId::BrowserEvents,
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+        let (client_io, server_io) = tokio::io::duplex(256 * 1024);
+        let server_task = tokio::spawn(async move {
+            let running = service.server.serve(server_io).await.unwrap();
+            running.waiting().await.unwrap();
+        });
+        let (read, mut write) = tokio::io::split(client_io);
+        let mut read = BufReader::new(read);
+        send_json(
+            &mut write,
+            json!({
+                "jsonrpc":"2.0","id":1,"method":"initialize","params":{
+                    "protocolVersion":"2025-06-18","capabilities":{},
+                    "clientInfo":{"name":"range-handle-flow-test","version":"1"}
+                }
+            }),
+        )
+        .await;
+        assert_eq!(
+            read_json(&mut read).await["result"]["protocolVersion"],
+            "2025-06-18"
+        );
+        send_json(
+            &mut write,
+            json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+        )
+        .await;
+
+        send_json(
+            &mut write,
+            json!({
+                "jsonrpc":"2.0","id":2,"method":"tools/call",
+                "params":{"name":"temporal_debug_bundle","arguments":serde_json::to_value(bundle_request()).unwrap()}
+            }),
+        )
+        .await;
+        let bundle_response = read_json(&mut read).await;
+        assert_eq!(bundle_response["result"]["isError"], false);
+        let handle = bundle_response["result"]["structuredContent"]["range_handle"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(handle, range_handle_id().to_string());
+
+        let range = resolved_range();
+        let mut list_arguments =
+            serde_json::to_value(ProgressiveEvidenceRequest::ListSourceFrames(
+                SourceFramesRequest::new(
+                    range.clone(),
+                    SourceFrameSelection::ResolvedOrder,
+                    SourceReadLimitsRequest::new(1, 1024, 2048).unwrap(),
+                )
+                .unwrap(),
+            ))
+            .unwrap()["request"]
+                .clone();
+        list_arguments.as_object_mut().unwrap().remove("range");
+        list_arguments["range_handle"] = Value::String(handle.clone());
+        send_json(
+            &mut write,
+            json!({
+                "jsonrpc":"2.0","id":3,"method":"tools/call",
+                "params":{"name":"list_source_frames","arguments":list_arguments}
+            }),
+        )
+        .await;
+        let list_response = read_json(&mut read).await;
+        assert_eq!(list_response["result"]["isError"], false);
+        assert_eq!(
+            list_response["result"]["structuredContent"]["range_handle"],
+            handle
+        );
+
+        let mut event_arguments = serde_json::to_value(
+            BrowserEventDetailRequest::new(
+                range.clone(),
+                None,
+                BrowserEventFilter::default(),
+                1,
+                None,
+                Vec::new(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        event_arguments.as_object_mut().unwrap().remove("range");
+        event_arguments["range_handle"] = Value::String(handle.clone());
+        send_json(
+            &mut write,
+            json!({
+                "jsonrpc":"2.0","id":4,"method":"tools/call",
+                "params":{"name":"query_browser_events","arguments":event_arguments}
+            }),
+        )
+        .await;
+        assert_eq!(read_json(&mut read).await["result"]["isError"], true);
+
+        let mut pin_arguments = serde_json::to_value(ProgressiveEvidenceRequest::QueryPinState(
+            ResolvedRangeEvidenceRequest::new(range.clone()).unwrap(),
+        ))
+        .unwrap()["request"]
+            .clone();
+        pin_arguments.as_object_mut().unwrap().remove("range");
+        pin_arguments["range_handle"] = Value::String(handle.clone());
+        send_json(
+            &mut write,
+            json!({
+                "jsonrpc":"2.0","id":5,"method":"tools/call",
+                "params":{"name":"query_pin_state","arguments":pin_arguments.clone()}
+            }),
+        )
+        .await;
+        assert_eq!(read_json(&mut read).await["result"]["isError"], true);
+
+        drop(write);
+        drop(read);
+        let _ = server_task.await;
+        assert_eq!(handles.resolve_calls.load(Ordering::SeqCst), 3);
+        {
+            let progressive_requests = spy.progressive_requests.lock().unwrap();
+            let progressive = progressive_requests
+                .iter()
+                .filter(|request| {
+                    matches!(
+                        request["operation"].as_str(),
+                        Some("list_source_frames" | "query_pin_state")
+                    )
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(progressive.len(), 2);
+            assert_eq!(
+                progressive[0]["request"]["range"],
+                serde_json::to_value(&range).unwrap()
+            );
+            assert_eq!(
+                progressive[1]["request"]["range"],
+                serde_json::to_value(&range).unwrap()
+            );
+        }
+        {
+            let context = spy.context_requests.lock().unwrap();
+            assert_eq!(context.len(), 1);
+            assert_eq!(context[0]["range"], serde_json::to_value(&range).unwrap());
+        }
+
+        let restarted_handles = TestRangeHandles::new();
+        let restarted = invoke_temporal_tool(
+            handle_flow_dependencies(Arc::clone(&spy), Arc::clone(&restarted_handles)),
+            "query_pin_state",
+            pin_arguments,
+        )
+        .await;
+        assert_eq!(restarted["result"]["isError"], true);
+        let error = &restarted["result"]["structuredContent"]["error"];
+        assert_eq!(error["code"], "evidence_invalidated");
+        assert!(
+            error["recovery"]
+                .as_str()
+                .unwrap()
+                .contains("temporal_debug_bundle")
+        );
+        assert_eq!(restarted_handles.resolve_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            spy.progressive_requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|request| request["operation"] == "query_pin_state")
+                .count(),
+            1
+        );
+
+        let mut both_arguments = serde_json::to_value(ProgressiveEvidenceRequest::QueryPinState(
+            ResolvedRangeEvidenceRequest::new(range).unwrap(),
+        ))
+        .unwrap()["request"]
+            .clone();
+        both_arguments["range_handle"] = Value::String(handle);
+        let both_handles = TestRangeHandles::new();
+        let both = invoke_temporal_tool(
+            handle_flow_dependencies(Arc::clone(&spy), Arc::clone(&both_handles)),
+            "query_pin_state",
+            both_arguments,
+        )
+        .await;
+        assert_eq!(both["result"]["isError"], true);
+        assert_eq!(
+            both["result"]["structuredContent"]["error"]["code"],
+            "invalid_input"
+        );
+        assert_eq!(both_handles.resolve_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            spy.progressive_requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|request| request["operation"] == "query_pin_state")
+                .count(),
+            1
+        );
     }
 
     #[tokio::test]

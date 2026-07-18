@@ -2,9 +2,11 @@ use std::{collections::BTreeSet, sync::Arc};
 
 use krometrail_core::{
     BROWSER_OPERATION_REGISTRY, BrowserOperationKind, ErrorCode, KrometrailError, NonEmptyText,
-    Result,
+    ResolvedRangeHandleId, Result,
 };
 use rmcp::model::JsonObject;
+use schemars::JsonSchema;
+use serde::Deserialize;
 use serde_json::Value;
 
 use crate::{
@@ -29,6 +31,73 @@ pub(crate) fn projected_input_schema(base: Arc<JsonObject>) -> Result<Arc<JsonOb
     }
     let response = type_input_schema::<ResponseProjectionRequest>()?;
     properties.insert("response".into(), Value::Object((*response).clone()));
+    Ok(Arc::new(root))
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ResolvedRangeHandleArgument {
+    pub range_handle: ResolvedRangeHandleId,
+}
+
+pub(crate) fn range_handle_input_schema(base: Arc<JsonObject>) -> Result<Arc<JsonObject>> {
+    let mut root = (*base).clone();
+    if root.get("type") != Some(&Value::String("object".into())) {
+        return Err(schema_error(
+            "range-handle MCP tool schema must be an object",
+        ));
+    }
+    let properties = root
+        .get_mut("properties")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| schema_error("range-handle MCP tool schema properties must be an object"))?;
+    if !properties.contains_key("range") || properties.contains_key("range_handle") {
+        return Err(schema_error(
+            "range-handle MCP tool schema must declare exactly one range property",
+        ));
+    }
+    let handle_schema = type_input_schema::<ResolvedRangeHandleArgument>()?;
+    let handle_property = handle_schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .and_then(|properties| properties.get("range_handle"))
+        .cloned()
+        .ok_or_else(|| schema_error("generated range-handle schema is missing its property"))?;
+    properties.insert("range_handle".into(), handle_property);
+
+    let required = root
+        .get_mut("required")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| schema_error("range-handle MCP tool schema must require range"))?;
+    let range_positions = required
+        .iter()
+        .enumerate()
+        .filter_map(|(index, value)| (value.as_str() == Some("range")).then_some(index))
+        .collect::<Vec<_>>();
+    if range_positions.len() != 1 {
+        return Err(schema_error(
+            "range-handle MCP tool schema must require range exactly once",
+        ));
+    }
+    required.remove(range_positions[0]);
+    if root.contains_key("oneOf") {
+        return Err(schema_error(
+            "range-handle MCP tool schema already declares a root oneOf",
+        ));
+    }
+    root.insert(
+        "oneOf".into(),
+        serde_json::json!([
+            {
+                "required": ["range"],
+                "not": {"required": ["range_handle"]}
+            },
+            {
+                "required": ["range_handle"],
+                "not": {"required": ["range"]}
+            }
+        ]),
+    );
     Ok(Arc::new(root))
 }
 
@@ -321,8 +390,8 @@ fn schema_error(message: &'static str) -> KrometrailError {
 mod tests {
     use super::*;
     use krometrail_core::{
-        BrowserEventDetailRequest, CapabilityId, RetrieveSourceFrameRequest,
-        TemporalDebugBundleRequest, TemporalVideoGenerationRequest,
+        BrowserEventDetailRequest, CapabilityId, ProgressiveEvidenceOperationKind,
+        RetrieveSourceFrameRequest, TemporalDebugBundleRequest, TemporalVideoGenerationRequest,
     };
 
     #[test]
@@ -374,6 +443,98 @@ mod tests {
         assert_eq!(
             output["properties"]["max_encoded_bytes"]["maximum"],
             67_108_864_u64
+        );
+    }
+
+    #[test]
+    fn temporal_followup_schemas_require_exactly_one_range_or_handle() {
+        let progressive_kinds = [
+            ProgressiveEvidenceOperationKind::GenerateArtifacts,
+            ProgressiveEvidenceOperationKind::GenerateRegionFilmstrip,
+            ProgressiveEvidenceOperationKind::ListSourceFrames,
+            ProgressiveEvidenceOperationKind::FetchSourceFrames,
+            ProgressiveEvidenceOperationKind::PinResolvedRange,
+            ProgressiveEvidenceOperationKind::QueryPinState,
+            ProgressiveEvidenceOperationKind::UnpinResolvedRange,
+        ];
+        let mut schemas = progressive_kinds
+            .into_iter()
+            .map(|kind| {
+                (
+                    kind.as_str(),
+                    range_handle_input_schema(generated_input_schema(kind.input_schema()).unwrap())
+                        .unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        schemas.push((
+            "query_browser_events",
+            range_handle_input_schema(type_input_schema::<BrowserEventDetailRequest>().unwrap())
+                .unwrap(),
+        ));
+        schemas.push((
+            "generate_temporal_video",
+            range_handle_input_schema(
+                type_input_schema::<TemporalVideoGenerationRequest>().unwrap(),
+            )
+            .unwrap(),
+        ));
+
+        for (name, schema) in schemas {
+            assert_eq!(schema["additionalProperties"], false, "{name}");
+            assert!(schema["properties"].get("range").is_some(), "{name}");
+            assert!(schema["properties"].get("range_handle").is_some(), "{name}");
+            assert_eq!(schema["properties"]["range_handle"]["type"], "string");
+            assert!(
+                !schema["required"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|value| value == "range"),
+                "{name}"
+            );
+            assert_eq!(
+                schema["oneOf"],
+                serde_json::json!([
+                    {
+                        "required": ["range"],
+                        "not": {"required": ["range_handle"]}
+                    },
+                    {
+                        "required": ["range_handle"],
+                        "not": {"required": ["range"]}
+                    }
+                ]),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn exact_resource_retrieval_schemas_do_not_gain_range_handles() {
+        for kind in [
+            ProgressiveEvidenceOperationKind::RetrieveArtifact,
+            ProgressiveEvidenceOperationKind::RetrieveSourceFrame,
+        ] {
+            let schema = generated_input_schema(kind.input_schema()).unwrap();
+            assert!(schema["properties"].get("range_handle").is_none());
+            assert!(range_handle_input_schema(schema).is_err());
+        }
+    }
+
+    #[test]
+    fn response_schema_publishes_optional_range_handle() {
+        let schema = tool_response_schema(true).unwrap();
+        assert_eq!(
+            schema["properties"]["range_handle"]["type"],
+            serde_json::json!(["string", "null"])
+        );
+        assert!(
+            !schema["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|value| value == "range_handle")
         );
     }
 

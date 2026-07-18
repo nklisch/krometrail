@@ -12,9 +12,10 @@ use krometrail_core::{
     BrowserOperationRequest, CancellationSignal, CapabilityId, CurrentReferenceGeometry, ErrorCode,
     KrometrailError, LaunchBrowser, NonEmptyText, OperationExposure, OperationMutability,
     PortFuture, ProgressiveEvidenceContext, ProgressiveEvidenceOperationKind,
-    ProgressiveEvidenceRequest, Result, RetryAdvice, TEMPORAL_CONTEXT_OPERATION_REGISTRY,
-    TEMPORAL_DEBUG_BUNDLE_OPERATION, TEMPORAL_VIDEO_OPERATION, TemporalContextOperationKind,
-    TemporalDebugBundleContext, TemporalDebugBundleRequest, TemporalVideoGenerationRequest,
+    ProgressiveEvidenceRequest, ResolvedRange, ResolvedRangeHandleId, Result, RetryAdvice,
+    TEMPORAL_CONTEXT_OPERATION_REGISTRY, TEMPORAL_DEBUG_BUNDLE_OPERATION, TEMPORAL_VIDEO_OPERATION,
+    TemporalContextOperationKind, TemporalDebugBundleContext, TemporalDebugBundleRequest,
+    TemporalVideoGenerationRequest,
 };
 use rmcp::{
     handler::server::tool::{ToolCallContext, ToolRoute, ToolRouter},
@@ -34,8 +35,8 @@ use crate::{
         visible_error_with_capture,
     },
     schema::{
-        generated_input_schema, operation_input_schema, projected_input_schema,
-        tool_response_schema, type_input_schema,
+        ResolvedRangeHandleArgument, generated_input_schema, operation_input_schema,
+        projected_input_schema, range_handle_input_schema, tool_response_schema, type_input_schema,
     },
     server::KrometrailMcpServer,
     session::BrowserSessionOwner,
@@ -186,7 +187,9 @@ pub(crate) fn build_router(
         let mut tool = Tool::new(
             name,
             definition.description,
-            projected_input_schema(type_input_schema::<TemporalVideoGenerationRequest>()?)?,
+            projected_input_schema(range_handle_input_schema(type_input_schema::<
+                TemporalVideoGenerationRequest,
+            >()?)?)?,
         )
         .annotate(temporal_annotations(definition.mutability, false));
         tool.output_schema = Some(tool_response_schema(true)?);
@@ -207,7 +210,7 @@ pub(crate) fn build_router(
     {
         let kind = definition.kind;
         let name = definition.stable_name;
-        let input_schema = projected_input_schema(generated_input_schema(kind.input_schema())?)?;
+        let input_schema = progressive_input_schema(kind)?;
         let annotations = temporal_annotations(
             definition.mutability,
             kind == ProgressiveEvidenceOperationKind::UnpinResolvedRange,
@@ -230,8 +233,9 @@ pub(crate) fn build_router(
         for definition in TEMPORAL_CONTEXT_OPERATION_REGISTRY {
             let kind = definition.kind;
             let name = definition.stable_name;
-            let input_schema =
-                projected_input_schema(generated_input_schema(kind.input_schema())?)?;
+            let input_schema = projected_input_schema(range_handle_input_schema(
+                generated_input_schema(kind.input_schema())?,
+            )?)?;
             let mut tool = Tool::new(name, definition.description, input_schema)
                 .annotate(temporal_annotations(definition.mutability, false));
             tool.output_schema = Some(tool_response_schema(false)?);
@@ -284,7 +288,7 @@ fn validate_route_registry(config: &McpConfig) -> Result<()> {
             ));
         }
         register_route_name(&mut names, definition.stable_name, definition.description)?;
-        let _ = projected_input_schema(generated_input_schema(definition.kind.input_schema())?)?;
+        let _ = progressive_input_schema(definition.kind)?;
     }
     register_route_name(
         &mut names,
@@ -297,7 +301,9 @@ fn validate_route_registry(config: &McpConfig) -> Result<()> {
         TEMPORAL_VIDEO_OPERATION.stable_name,
         TEMPORAL_VIDEO_OPERATION.description,
     )?;
-    let _ = projected_input_schema(type_input_schema::<TemporalVideoGenerationRequest>()?)?;
+    let _ = projected_input_schema(range_handle_input_schema(type_input_schema::<
+        TemporalVideoGenerationRequest,
+    >()?)?)?;
     if TEMPORAL_CONTEXT_OPERATION_REGISTRY.len() != TemporalContextOperationKind::ALL.len()
         || TEMPORAL_CONTEXT_OPERATION_REGISTRY
             .iter()
@@ -315,9 +321,36 @@ fn validate_route_registry(config: &McpConfig) -> Result<()> {
             ));
         }
         register_route_name(&mut names, definition.stable_name, definition.description)?;
-        let _ = projected_input_schema(generated_input_schema(definition.kind.input_schema())?)?;
+        let _ = projected_input_schema(range_handle_input_schema(generated_input_schema(
+            definition.kind.input_schema(),
+        )?)?)?;
     }
     Ok(())
+}
+
+fn progressive_input_schema(
+    kind: ProgressiveEvidenceOperationKind,
+) -> Result<Arc<rmcp::model::JsonObject>> {
+    let base = generated_input_schema(kind.input_schema())?;
+    let base = if progressive_accepts_range_handle(kind) {
+        range_handle_input_schema(base)?
+    } else {
+        base
+    };
+    projected_input_schema(base)
+}
+
+const fn progressive_accepts_range_handle(kind: ProgressiveEvidenceOperationKind) -> bool {
+    matches!(
+        kind,
+        ProgressiveEvidenceOperationKind::ListSourceFrames
+            | ProgressiveEvidenceOperationKind::FetchSourceFrames
+            | ProgressiveEvidenceOperationKind::GenerateArtifacts
+            | ProgressiveEvidenceOperationKind::GenerateRegionFilmstrip
+            | ProgressiveEvidenceOperationKind::PinResolvedRange
+            | ProgressiveEvidenceOperationKind::UnpinResolvedRange
+            | ProgressiveEvidenceOperationKind::QueryPinState
+    )
 }
 
 async fn call_temporal_video(
@@ -334,8 +367,26 @@ async fn call_temporal_video(
             Ok(value) => value,
             Err(error) => return Ok(call_error_result(name, error)),
         };
+    let (arguments, supplied_handle) = match budget
+        .run(resolve_range_argument(
+            arguments,
+            dependencies.range_handles.as_ref(),
+        ))
+        .await
+    {
+        Ok(value) => value,
+        Err(error) => return Ok(call_error_result(name, error)),
+    };
     let request = match parse_arguments::<TemporalVideoGenerationRequest>(arguments) {
         Ok(request) => request,
+        Err(error) => return Ok(call_error_result(name, error)),
+    };
+    let handle = match range_handle_for_request(
+        dependencies.range_handles.as_ref(),
+        supplied_handle,
+        request.range(),
+    ) {
+        Ok(handle) => handle,
         Err(error) => return Ok(call_error_result(name, error)),
     };
     let cancellation: Arc<dyn CancellationSignal> = budget.cancellation.clone();
@@ -360,6 +411,7 @@ async fn call_temporal_video(
         .await;
     match result {
         Ok(result) => map_temporal_video_result_projected(name, result, preference)
+            .map(|mapped| mapped.with_range_handle(handle))
             .map_err(|_| {
                 rmcp::ErrorData::internal_error("temporal video response mapping failed", None)
             })
@@ -421,19 +473,26 @@ async fn call_bundle(
         ))
         .await;
     match result {
-        Ok(bundle) => map_temporal_bundle_result_projected(
-            name,
-            bundle,
-            dependencies.progressive_evidence.as_ref(),
-            budget.deadline,
-            budget.cancellation.clone(),
-            preference,
-        )
-        .await
-        .map_err(|_| {
-            rmcp::ErrorData::internal_error("temporal bundle response mapping failed", None)
-        })
-        .and_then(into_call_tool_result),
+        Ok(bundle) => {
+            let handle = match dependencies.range_handles.register(bundle.range.clone()) {
+                Ok(handle) => handle,
+                Err(error) => return Ok(call_error_result(name, error)),
+            };
+            map_temporal_bundle_result_projected(
+                name,
+                bundle,
+                dependencies.progressive_evidence.as_ref(),
+                budget.deadline,
+                budget.cancellation.clone(),
+                preference,
+            )
+            .await
+            .map(|mapped| mapped.with_range_handle(handle))
+            .map_err(|_| {
+                rmcp::ErrorData::internal_error("temporal bundle response mapping failed", None)
+            })
+            .and_then(into_call_tool_result)
+        }
         Err(error) => Ok(call_error_result(name, error)),
     }
 }
@@ -454,6 +513,16 @@ async fn call_progressive(
             Ok(value) => value,
             Err(error) => return Ok(call_error_result(name, error)),
         };
+    let (arguments, supplied_handle) = match budget
+        .run(resolve_range_argument(
+            arguments,
+            dependencies.range_handles.as_ref(),
+        ))
+        .await
+    {
+        Ok(value) => value,
+        Err(error) => return Ok(call_error_result(name, error)),
+    };
     let request = match progressive_request(name, Some(arguments)) {
         Ok(request) if request.kind() == kind => request,
         Ok(_) => {
@@ -464,6 +533,18 @@ async fn call_progressive(
         }
         Err(error) => return Ok(call_error_result(name, error)),
     };
+    let Some(range) = progressive_request_range(&request) else {
+        return Err(rmcp::ErrorData::internal_error(
+            "handle-enabled temporal route is missing its resolved range",
+            None,
+        ));
+    };
+    let handle =
+        match range_handle_for_request(dependencies.range_handles.as_ref(), supplied_handle, range)
+        {
+            Ok(handle) => handle,
+            Err(error) => return Ok(call_error_result(name, error)),
+        };
     let cancellation: Arc<dyn CancellationSignal> = budget.cancellation.clone();
     let result = budget
         .run(dependencies.progressive_evidence.execute(
@@ -477,6 +558,7 @@ async fn call_progressive(
         .await;
     match result {
         Ok(result) => map_progressive_result_projected(name, result, preference)
+            .map(|mapped| mapped.with_range_handle(handle))
             .map_err(|_| {
                 rmcp::ErrorData::internal_error("progressive response mapping failed", None)
             })
@@ -500,19 +582,42 @@ async fn call_context(
             Ok(value) => value,
             Err(error) => return Ok(call_error_result(name, error)),
         };
+    let (arguments, supplied_handle) = match budget
+        .run(resolve_range_argument(
+            arguments,
+            dependencies.range_handles.as_ref(),
+        ))
+        .await
+    {
+        Ok(value) => value,
+        Err(error) => return Ok(call_error_result(name, error)),
+    };
     let request = match kind {
         TemporalContextOperationKind::QueryBrowserEvents => {
             match parse_arguments::<BrowserEventDetailRequest>(arguments) {
-                Ok(request) => request.into_context_request(),
+                Ok(request) => request,
                 Err(error) => return Ok(call_error_result(name, error)),
             }
         }
     };
+    let handle = match range_handle_for_request(
+        dependencies.range_handles.as_ref(),
+        supplied_handle,
+        request.context_request().range(),
+    ) {
+        Ok(handle) => handle,
+        Err(error) => return Ok(call_error_result(name, error)),
+    };
     let result = budget
-        .run(dependencies.temporal_context.context(request))
+        .run(
+            dependencies
+                .temporal_context
+                .context(request.into_context_request()),
+        )
         .await;
     match result {
         Ok(value) => map_temporal_context_result(name, value, preference)
+            .map(|mapped| mapped.with_range_handle(handle))
             .map_err(|_| {
                 rmcp::ErrorData::internal_error("browser event response mapping failed", None)
             })
@@ -529,6 +634,56 @@ fn progressive_request(
         "operation": operation,
         "request": Value::Object(arguments.unwrap_or_default()),
     }))
+}
+
+async fn resolve_range_argument(
+    mut arguments: rmcp::model::JsonObject,
+    handles: &dyn krometrail_core::ResolvedRangeHandles,
+) -> Result<(rmcp::model::JsonObject, Option<ResolvedRangeHandleId>)> {
+    let has_range = arguments.contains_key("range");
+    let has_handle = arguments.contains_key("range_handle");
+    match (has_range, has_handle) {
+        (true, false) => Ok((arguments, None)),
+        (false, true) => {
+            let handle_value = arguments
+                .remove("range_handle")
+                .expect("range handle presence was checked");
+            let handle_argument = parse_arguments::<ResolvedRangeHandleArgument>(
+                [("range_handle".into(), handle_value)]
+                    .into_iter()
+                    .collect(),
+            )?;
+            let range = handles
+                .resolve_available(handle_argument.range_handle)
+                .await?;
+            arguments.insert("range".into(), serializable(range)?);
+            Ok((arguments, Some(handle_argument.range_handle)))
+        }
+        (true, true) => Err(invalid_arguments("range_handle")),
+        (false, false) => Err(invalid_arguments("range")),
+    }
+}
+
+fn range_handle_for_request(
+    handles: &dyn krometrail_core::ResolvedRangeHandles,
+    supplied_handle: Option<ResolvedRangeHandleId>,
+    range: &ResolvedRange,
+) -> Result<ResolvedRangeHandleId> {
+    supplied_handle.map_or_else(|| handles.register(range.clone()), Ok)
+}
+
+fn progressive_request_range(request: &ProgressiveEvidenceRequest) -> Option<&ResolvedRange> {
+    match request {
+        ProgressiveEvidenceRequest::ListSourceFrames(request)
+        | ProgressiveEvidenceRequest::FetchSourceFrames(request) => Some(&request.range),
+        ProgressiveEvidenceRequest::GenerateArtifacts(request) => Some(request.request().range()),
+        ProgressiveEvidenceRequest::GenerateRegionFilmstrip(request) => Some(&request.range),
+        ProgressiveEvidenceRequest::PinResolvedRange(request)
+        | ProgressiveEvidenceRequest::UnpinResolvedRange(request)
+        | ProgressiveEvidenceRequest::QueryPinState(request) => Some(&request.range),
+        ProgressiveEvidenceRequest::RetrieveArtifact(_)
+        | ProgressiveEvidenceRequest::RetrieveSourceFrame(_) => None,
+    }
 }
 
 fn temporal_annotations(mutability: OperationMutability, destructive: bool) -> ToolAnnotations {

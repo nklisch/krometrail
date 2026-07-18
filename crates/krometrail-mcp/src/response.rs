@@ -12,9 +12,10 @@ use krometrail_core::{
     ErrorCode, EveryNthFrame, InteractionAnchor, KrometrailError, LiveObservation, NonEmptyText,
     ObservationPart, PageOperationOutcome, PageOperationResult, PageSnapshot, ProfileRef,
     ProgressiveEvidence, ProgressiveEvidenceContext, ProgressiveEvidenceRequest,
-    ProgressiveEvidenceResult, RecordingBudgetState, RetrieveArtifactRequest, ScreenshotMetadata,
-    SessionId, SessionTime, SourceFrameBatch, SourceFrameHandle, TargetId, TemporalDebugBundle,
-    TemporalVideoGenerationResult, VideoPresentationPolicy, WaitOutcome,
+    ProgressiveEvidenceResult, RecordingBudgetState, ResolvedRangeHandleId,
+    RetrieveArtifactRequest, ScreenshotMetadata, SessionId, SessionTime, SourceFrameBatch,
+    SourceFrameHandle, TargetId, TemporalDebugBundle, TemporalVideoGenerationResult,
+    VideoPresentationPolicy, WaitOutcome,
 };
 use rmcp::model::JsonObject;
 use rmcp::model::{CallToolResult, Content, RawResource};
@@ -293,6 +294,8 @@ pub struct ToolResponse {
     pub tool: String,
     pub status: ToolResponseStatus,
     pub result: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub range_handle: Option<ResolvedRangeHandleId>,
     pub interaction: Option<InteractionAnchor>,
     pub warnings: Vec<KrometrailError>,
     pub images: Vec<ResponseImage>,
@@ -337,6 +340,13 @@ pub(crate) struct MappedResult {
     pub summary: String,
     images: Vec<EncodedMcpImage>,
     pub is_error: bool,
+}
+
+impl MappedResult {
+    pub(crate) fn with_range_handle(mut self, handle: ResolvedRangeHandleId) -> Self {
+        self.response.range_handle = Some(handle);
+        self
+    }
 }
 
 #[derive(Clone, Copy, Debug, thiserror::Error)]
@@ -786,6 +796,7 @@ fn mapped(tool: &str, projection: Projection, summary: String) -> MappedResult {
             tool: tool.to_owned(),
             status: projection.status,
             result: projection.result,
+            range_handle: None,
             interaction: projection.interaction,
             warnings: projection.warnings,
             images: response_images,

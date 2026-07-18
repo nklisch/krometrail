@@ -80,6 +80,14 @@ generator parameters. Full-resolution images and exact source frames remain behi
 resource links. If a claim depends on fine text or an exact intermediate state, retrieve that linked
 artifact or source frame rather than relying on the inline preview.
 
+The common response envelope also publishes a `range_handle` for the bundle's exact resolved range.
+Reuse it as the root range argument for progressive artifact/frame, browser-event, retention, and
+advertised video tools in the same MCP process. These tools accept exactly one of `range_handle` or
+the unchanged full `range`; all their other inputs and limits still apply. The opaque handle survives
+browser stop but not MCP restart or deletion of its retained session evidence. It is not persisted
+evidence and does not replace the full resolved range, manifests, resource identities, or provenance.
+If lookup reports `evidence_invalidated`, resolve a fresh bundle rather than reconstructing a handle.
+
 ## Progressive detail
 
 Choose the least detail that answers the question, then drill down only where uncertainty remains:
