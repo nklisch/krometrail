@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-ergonomics-temporal-range-handles
 kind: feature
-stage: implementing
+stage: review
 tags: [agent-ux, visual]
 parent: epic-agent-browser-ergonomics
 depends_on: []
@@ -95,10 +95,10 @@ impl ProcessResolvedRangeHandles {
 
 **Acceptance criteria**:
 
-- [ ] Equal resolved ranges receive the same handle within one process; different ranges never share a handle.
-- [ ] Handles remain resolvable after browser stop while every expected frame remains retained.
-- [ ] Unknown/restarted, invalidated-session, partially evicted, reordered, or cross-scope evidence fails before a temporal follow-up service is called.
-- [ ] The capacity boundary rejects only new distinct ranges and leaves every previously issued handle usable.
+- [x] Equal resolved ranges receive the same handle within one process; different ranges never share a handle.
+- [x] Handles remain resolvable after browser stop while every expected frame remains retained.
+- [x] Unknown/restarted, invalidated-session, partially evicted, reordered, or cross-scope evidence fails before a temporal follow-up service is called.
+- [x] The capacity boundary rejects only new distinct ranges and leaves every previously issued handle usable.
 
 ### Unit 2: Additive handle-or-range schema and normalization
 
@@ -131,9 +131,9 @@ async fn resolve_range_argument(
 
 **Acceptance criteria**:
 
-- [ ] Every named follow-up schema accepts legacy full `range` or `range_handle`, requires exactly one, remains closed, and continues to advertise its existing non-range fields and limits.
-- [ ] The normalized request reaches the existing core deserializer/service as the exact registered `ResolvedRange`; no downstream port signature changes.
-- [ ] A handle lookup error prevents artifact, frame, event, pin, and video service dispatch and returns the stable sanitized error envelope.
+- [x] Every named follow-up schema accepts legacy full `range` or `range_handle`, requires exactly one, remains closed, and continues to advertise its existing non-range fields and limits.
+- [x] The normalized request reaches the existing core deserializer/service as the exact registered `ResolvedRange`; no downstream port signature changes.
+- [x] A handle lookup error prevents artifact, frame, event, pin, and video service dispatch and returns the stable sanitized error envelope.
 
 ### Unit 3: Handle publication, echo, and projection compatibility
 
@@ -165,9 +165,9 @@ impl MappedResult {
 
 **Acceptance criteria**:
 
-- [ ] `temporal_debug_bundle` returns one handle beside the unchanged full range and the handle can drive each named follow-up without copying range JSON.
-- [ ] Legacy requests/responses retain their existing `range` fields; the optional common envelope field is absent on non-temporal operations.
-- [ ] Compact response projection preserves the handle and all canonical resource/provenance links.
+- [x] `temporal_debug_bundle` returns one handle beside the unchanged full range and the handle can drive each named follow-up without copying range JSON.
+- [x] Legacy requests/responses retain their existing `range` fields; the optional common envelope field is absent on non-temporal operations.
+- [x] Compact response projection preserves the handle and all canonical resource/provenance links.
 
 ### Unit 4: Agent guidance and end-to-end contract tests
 
@@ -183,9 +183,9 @@ impl MappedResult {
 
 **Acceptance criteria**:
 
-- [ ] One end-to-end test proves bundle-to-follow-up reuse and one proves restart/unknown-handle recovery without a browser.
-- [ ] Existing full-range stdio and generated-schema tests remain green unchanged.
-- [ ] Plugin guidance never describes a handle as persisted evidence or a replacement for manifest provenance.
+- [x] One end-to-end test proves bundle-to-follow-up reuse and one proves restart/unknown-handle recovery without a browser.
+- [x] Existing full-range stdio and generated-schema tests remain green unchanged.
+- [x] Plugin guidance never describes a handle as persisted evidence or a replacement for manifest provenance.
 
 ## Implementation order
 
@@ -205,6 +205,20 @@ impl MappedResult {
 - Schema table tests protect exclusive handle-or-range input across every named follow-up and unchanged legacy limits.
 - Router/stdio tests protect bundle publication, exact normalized forwarding, response echo, invalidation recovery, and conditional video registration.
 - Existing store/service tests continue to protect range validity, eviction, gaps, pin semantics, artifact provenance, and video bounds; the feature does not duplicate them.
+
+## Implementation outcome
+
+- Implemented the typed ID, bounded process-local authority, exact retained-metadata revalidation,
+  composition wiring, and session-scoped invalidation operation in
+  `epic-agent-browser-ergonomics-temporal-range-handles-authority`.
+- Implemented the one schema adapter and one runtime normalization path across all designed temporal
+  follow-ups in `epic-agent-browser-ergonomics-temporal-range-handles-followups`. Existing core
+  service and store ports remain expressed only in `ResolvedRange`.
+- Bundle and successful follow-up envelopes publish the optional handle outside projected result
+  detail. Existing full ranges, resource identities, manifests, and persistence remain unchanged.
+- Focused authority, schema, stdio, compact-projection, restart recovery, compatibility, and skill
+  guidance evidence is recorded in the two child stories. The feature is ready for an independent
+  review pass.
 
 ## Risks
 
