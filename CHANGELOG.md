@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.0.4 — 2026-07-17
+
+### Fixes
+
+- Made screencast frame geometry truthful across dynamic viewport changes, native resize, navigation, zoom, reconnect, and viewport rollback by fencing ambiguous transitions and recording exact capture gaps instead of attaching stale viewport or DPR provenance.
+- Made compact temporal bundles recover cleanly from never-captured ranges, preserve eviction semantics, fit high-DPI default artifacts within the fixed combined memory budget, and expose canonical manifest resources for progressive full-provenance reads.
+- Bounded automatic post-action page snapshots while preserving explicit full observations, and deduplicated equivalent warnings across logs and MCP responses so agent feedback stays concise and actionable.
+
+### Agent guidance
+
+- Updated the shipped Krometrail skill and activation checks to teach `manifest_uri` drill-down and verify the temporal artifact-manifest resource alongside image and source-frame resources.
+
 ## v1.0.3 — 2026-07-17
 
 ### Fixes
