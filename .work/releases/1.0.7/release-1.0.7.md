@@ -1,7 +1,7 @@
 ---
 id: release-1.0.7
 kind: release
-stage: release-ready
+stage: released
 tags: []
 parent: null
 depends_on: []
@@ -43,5 +43,19 @@ The `v1.0.7` changelog entry covers the complete selected patch scope.
 - Opt-in real Chrome disconnect/reconnect qualification — passed with 20 frames before disconnect
   and 8 frames on the replacement generation.
 - Locked full workspace all-target tests — passed.
-- Locked workspace formatting, check, all-target tests, and Clippy — pending release helper.
+- Locked workspace formatting, check, all-target tests, and Clippy — passed.
+
+## Shipment
+
+- **Date shipped:** 2026-07-17
+- **Release tag:** `v1.0.7` at `689e91990548bee3411a585a18b06e9135997a78`
+- **GitHub release:** https://github.com/nklisch/krometrail/releases/tag/v1.0.7
+- **Release workflow:** https://github.com/nklisch/krometrail/actions/runs/29632909876
+- **Rust CI:** https://github.com/nklisch/krometrail/actions/runs/29632909505
+- **Documentation deployment:** https://github.com/nklisch/krometrail/actions/runs/29632909514
+- **Published files:** five platform executables plus `checksums.txt`; every build, architecture
+  smoke test, attestation, and publication step passed.
+- **Plugin projection:** native Claude and Codex manifests, catalogs, and the exact binary version
+  marker were atomically advanced to 1.0.7 by the release helper.
+- **Total items shipped:** 1.
 
