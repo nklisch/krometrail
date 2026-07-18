@@ -75,6 +75,16 @@ Apply an explicit responsive viewport with:
 Clear it with `{"viewport":{"mode":"clear"}}`. A geometry change creates a new visual epoch; do not
 compare pixels across incompatible epochs without declared normalization.
 
+For `batch`, each step is `{"operation":"<standalone tool name>","request":{...}}`; the request object
+uses the same arguments advertised by that standalone operation. For example:
+
+```json
+{"steps":[{"operation":"fill","request":{"locator":{"kind":"element","value":{"kind":"css_selector","value":"#query"}},"value":"krometrail"}},{"operation":"press_keys","request":{"locator":{"kind":"element","value":{"kind":"css_selector","value":"#query"}},"keys":["Enter"],"wait_for_navigation":true}}],"timeout":5000}
+```
+
+The outer page target applies by default; do not nest `batch` or include browser-lifecycle operations
+as steps.
+
 ## Inspect retained time only when needed
 
 - Compact interval: `temporal_debug_bundle`

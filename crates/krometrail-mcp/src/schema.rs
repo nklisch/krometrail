@@ -181,6 +181,10 @@ fn filter_batch_operations(schema: &mut Value, config: &McpConfig) -> Result<()>
         matches += 1;
         branches
             .retain(|branch| operation_const(branch).is_some_and(|name| expected.contains(name)));
+        let branches = object
+            .remove("oneOf")
+            .expect("matched operation union contains oneOf");
+        object.insert("anyOf".into(), branches);
     });
 
     if matches != 1 {
@@ -251,6 +255,17 @@ mod tests {
                 definition.stable_name
             );
         }
+        let steps = &schema["properties"]["steps"]["items"]["anyOf"];
+        assert!(
+            steps.as_array().is_some_and(|steps| {
+                !steps.is_empty()
+                    && steps.iter().all(|step| {
+                        step["properties"]["operation"]["const"].is_string()
+                            && step["properties"]["request"]["type"] == "object"
+                    })
+            }),
+            "batch steps must publish concrete operation request schemas: {schema:#?}"
+        );
     }
 
     #[test]
