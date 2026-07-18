@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-ergonomics-browser-contexts
 kind: feature
-stage: implementing
+stage: review
 tags: [agent-ux, browser, security]
 parent: epic-agent-browser-ergonomics
 depends_on: [epic-agent-browser-ergonomics-semantic-targeting]
@@ -275,3 +275,28 @@ pub struct PageAssetInventory {
 - Same-origin can change during a race. Every query and action revalidates the frame generation and security origin immediately before accessing DOM or dispatching input.
 - OOPIF representation differs by Chrome version. Indeterminate qualification fails closed and remains visible in inventory.
 - Resource Timing is page-controlled and may omit sizes due to browser privacy rules. Results describe browser-disclosed metadata only and never claim a complete network log.
+
+## Implementation notes
+
+- Execution capability: one direct feature owner with serialized coordination around the shared core/CDP/MCP registries and local-I/O feature work.
+- Delivered all four designed units through the existing connector, target reducer, page-control, operation registry, MCP projector, and installed skill; no parallel browser automation or locator authority was introduced.
+- Compact ergonomic defaults remain unchanged: callers opt into context/profile/frame/asset detail only when needed, page selection remains implicit where supported, and response expansion stays explicit.
+- Generation safety was tightened during implementation: popup relationships retain resolved target identities instead of dynamically rebinding raw keys, and frame tokens hash adapter-private frame plus loader identity so navigation invalidates old scope.
+- Frame process qualification cross-checks browser `iframe` targets. An unavailable process inventory marks descendants indeterminate and fails closed; cross-origin and OOPIF scope never falls back to main-document inspection or coordinates.
+- `wait_for_page` uses bounded browser inventory polling because the serialized operation owner cannot consume supervisor events while awaiting its own completion. Reconciliation still flows through the single-writer reducer and applies attach effects without activation/focus.
+- The installed skill defaults to reusable `default`, cursor-first popup waits, main-document semantic scope, and small bounded asset reads, with explicit expansion to named profiles, frames, and metadata.
+
+## Verification
+
+- `cargo check --workspace --all-targets --locked`
+- `cargo test -p krometrail-core browser::contexts::tests`
+- `cargo test -p krometrail-core browser::operation::tests::declaration_is_the_complete_operation_registry`
+- `cargo test -p krometrail-cdp control::contexts::tests`
+- `cargo test -p krometrail-cdp --test target_reducer`
+- `cargo test -p krometrail-mcp schema`
+- `cargo test -p krometrail-mcp route_registry`
+
+## Review handoff
+
+- Review weight: standard feature review.
+- Pay particular attention to frame process/generation qualification, popup-key reuse, wait polling lifecycle behavior, profile filesystem privacy, and Resource Timing omission accounting.
