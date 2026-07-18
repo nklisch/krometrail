@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-video-artifacts-retained-generation
 kind: feature
-stage: review
+stage: done
 tags: [visual, storage, security]
 parent: epic-temporal-video-artifacts
 depends_on: [epic-temporal-video-artifacts-clip-contracts]
@@ -514,6 +514,17 @@ The stories are durable checkpoints inside one cohesive feature implementation a
 - Add the promised fake profile-mismatch and store-failure service cases while correcting the above boundaries.
 
 The reviewer confirmed transactional contiguous migration, one shared artifact authority, source-link/recovery/deletion/epoch/geometry behavior, no path/privacy leakage, and later ownership of concrete FFmpeg/MCP/plugin wiring. The duplicate image/video publication-flow nit is not promoted into this correction because behavioral consolidation is not required to close the verified contract gaps.
+
+## Review (2026-07-18)
+
+**Verdict**: Approve after verified corrections
+
+**Blockers**: none — publication cancellation cleanup, exact cache expectation, winner-safe budget enforcement, readable gap evidence, valid v5 image migration/goldens, complete selector provenance, validated outputs, and missing fake-store cases were fixed in `dddbce1`.
+**Important**: none
+**Nits**: duplicate image/video publication flow remains accepted local duplication; no separate work item was justified.
+**Rejected**: none
+
+**Notes**: `standard` review used one same-harness fresh-context pass after Claude peer OAuth failure. Per single-pass closure, the receiver inspected the correction evidence and accepted the focused core/root/store/migration suites plus combined serial workspace fmt/check/tests/Clippy without another independent pass.
 
 ## Review-fix implementation (2026-07-18)
 
