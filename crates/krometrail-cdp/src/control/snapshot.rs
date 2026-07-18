@@ -63,6 +63,12 @@ pub(crate) struct DocumentFingerprint {
 }
 
 #[derive(Clone, Debug)]
+struct ResolvedFrameDocument {
+    reference: krometrail_core::PageFrameReference,
+    fingerprint: DocumentFingerprint,
+}
+
+#[derive(Clone, Debug)]
 struct NodeBinding {
     backend_node_id: i64,
 }
@@ -234,10 +240,9 @@ impl PageControl {
     ) -> Result<BrowserOperationResult> {
         let frame = match &request.document {
             krometrail_core::SemanticDocumentScope::MainDocument => None,
-            krometrail_core::SemanticDocumentScope::Frame(frame) => Some((
-                frame.clone(),
-                Self::resolve_frame_id(transport, bound, frame).await?,
-            )),
+            krometrail_core::SemanticDocumentScope::Frame(reference) => {
+                Some(Self::resolve_frame_document(transport, bound, reference).await?)
+            }
         };
         let snapshot = self
             .capture_snapshot_for_frame(transport, bound, started_at, true, frame.as_ref())
@@ -263,19 +268,16 @@ impl PageControl {
         bound: &BoundTarget,
         started_at: krometrail_core::SessionTime,
         include_semantic: bool,
-        frame: Option<&(krometrail_core::PageFrameReference, (String, String))>,
+        frame: Option<&ResolvedFrameDocument>,
     ) -> Result<PageSnapshot> {
         let scope = CommandScope::Session(bound.transport_session.clone());
         let document = match frame {
-            Some((_, (frame_id, loader_id))) => DocumentFingerprint {
-                frame_id: frame_id.clone(),
-                loader_id: loader_id.clone(),
-            },
+            Some(frame) => frame.fingerprint.clone(),
             None => document_fingerprint(transport, &scope, bound.target_id).await?,
         };
         let ax_params = frame.map_or_else(
             || json!({}),
-            |(_, (frame_id, _))| json!({"frameId": frame_id}),
+            |frame| json!({"frameId": frame.fingerprint.frame_id}),
         );
         let ax_response = transport
             .send_raw(&scope, "Accessibility.getFullAXTree", ax_params)
@@ -316,18 +318,16 @@ impl PageControl {
             generation,
             &mut node_by_backend,
             &mut next_node_id,
+            Some(document.frame_id.as_str()),
         )?;
         let semantic = match dom_response {
             Some(response) => {
                 let metadata = decode_dom_snapshot(&response, &document, bound.target_id)?;
                 let current = match frame {
-                    Some((reference, _)) => {
-                        let (frame_id, loader_id) =
-                            Self::resolve_frame_id(transport, bound, reference).await?;
-                        DocumentFingerprint {
-                            frame_id,
-                            loader_id,
-                        }
+                    Some(frame) => {
+                        Self::resolve_frame_document(transport, bound, &frame.reference)
+                            .await?
+                            .fingerprint
                     }
                     None => document_fingerprint(transport, &scope, bound.target_id).await?,
                 };
@@ -370,7 +370,7 @@ impl PageControl {
                 generation,
                 attachment_generation: bound.attachment_generation,
                 document,
-                frame: frame.map(|(reference, _)| reference.clone()),
+                frame: frame.map(|frame| frame.reference.clone()),
                 bindings,
                 node_by_backend,
                 semantic,
@@ -380,6 +380,21 @@ impl PageControl {
             },
         );
         Ok(snapshot)
+    }
+
+    async fn resolve_frame_document(
+        transport: &dyn CdpTransport,
+        bound: &BoundTarget,
+        reference: &krometrail_core::PageFrameReference,
+    ) -> Result<ResolvedFrameDocument> {
+        let (frame_id, loader_id) = Self::resolve_frame_id(transport, bound, reference).await?;
+        Ok(ResolvedFrameDocument {
+            reference: reference.clone(),
+            fingerprint: DocumentFingerprint {
+                frame_id,
+                loader_id,
+            },
+        })
     }
 }
 
@@ -1282,6 +1297,7 @@ fn decode_ax_tree(
         generation,
         &mut node_by_backend,
         &mut next_node_id,
+        None,
     )
 }
 
@@ -1291,21 +1307,46 @@ fn decode_ax_tree_with_ids(
     generation: SnapshotGeneration,
     node_by_backend: &mut HashMap<i64, SnapshotNodeId>,
     next_node_id: &mut u32,
+    expected_frame_id: Option<&str>,
 ) -> Result<(Vec<SnapshotNode>, HashMap<SnapshotNodeId, NodeBinding>, u32)> {
     let raw_nodes = response
         .get("nodes")
         .or_else(|| response.pointer("/result/nodes"))
         .and_then(Value::as_array)
         .ok_or_else(|| malformed(target_id, "accessibility tree response is malformed"))?;
-    let by_id = raw_nodes
+    let observed_frame_ids = raw_nodes
         .iter()
+        .filter_map(|node| node.get("frameId").and_then(Value::as_str))
+        .collect::<HashSet<_>>();
+    let nodes: Vec<&Value> = raw_nodes
+        .iter()
+        .filter(|node| {
+            expected_frame_id.is_none_or(|expected| {
+                node.get("frameId")
+                    .and_then(Value::as_str)
+                    .is_none_or(|actual| actual == expected)
+            })
+        })
+        .collect();
+    if expected_frame_id.is_some()
+        && !observed_frame_ids.is_empty()
+        && !observed_frame_ids.contains(expected_frame_id.expect("checked expected frame"))
+    {
+        return Err(stale(
+            target_id,
+            "accessibility tree belongs to a different document than the resolved frame",
+        ));
+    }
+    let by_id = nodes
+        .iter()
+        .copied()
         .filter_map(|node| {
             node.get("nodeId")
                 .and_then(Value::as_str)
                 .map(|id| (id, node))
         })
         .collect::<HashMap<_, _>>();
-    let children = raw_nodes
+    let children = nodes
         .iter()
         .flat_map(|node| {
             node.get("childIds")
@@ -1315,7 +1356,7 @@ fn decode_ax_tree_with_ids(
                 .filter_map(Value::as_str)
         })
         .collect::<HashSet<_>>();
-    let roots = raw_nodes.iter().filter_map(|node| {
+    let roots = nodes.iter().filter_map(|node| {
         node.get("nodeId")
             .and_then(Value::as_str)
             .filter(|id| !children.contains(id))
@@ -1336,7 +1377,7 @@ fn decode_ax_tree_with_ids(
     for root in roots {
         decoder.visit(root, None, 0)?;
     }
-    for node in raw_nodes {
+    for node in nodes {
         if let Some(id) = node.get("nodeId").and_then(Value::as_str) {
             if !decoder.visited.contains(id) {
                 decoder.visit(id, None, 0)?;
@@ -1521,11 +1562,171 @@ fn not_actionable(target_id: TargetId, message: &'static str) -> krometrail_core
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        collections::VecDeque,
+        sync::{Arc, Mutex},
+    };
+
+    use krometrail_core::{
+        IdSource, IdValue, MonotonicClock, ObservedTime, SessionId, SessionOrigin,
+    };
+
     use super::*;
+    use crate::transport::{
+        CdpTransport, CommandScope, TransportClose, TransportError, TransportEvents,
+        TransportFuture, TransportSessionId,
+    };
 
     const UUID: &str = "123e4567-e89b-12d3-a456-426614174000";
     fn target() -> TargetId {
         TargetId::from_uuid(UUID.parse().unwrap())
+    }
+
+    #[derive(Default)]
+    struct SnapshotTransport {
+        calls: Mutex<Vec<(String, Value)>>,
+        responses: Mutex<HashMap<String, VecDeque<std::result::Result<Value, TransportError>>>>,
+    }
+
+    impl SnapshotTransport {
+        fn push(&self, method: &str, response: Value) {
+            self.responses
+                .lock()
+                .unwrap()
+                .entry(method.to_owned())
+                .or_default()
+                .push_back(Ok(response));
+        }
+    }
+
+    struct EmptyEvents;
+
+    impl TransportEvents for EmptyEvents {
+        fn next(
+            &mut self,
+        ) -> TransportFuture<
+            '_,
+            std::result::Result<Option<crate::transport::NamedEvent>, TransportError>,
+        > {
+            Box::pin(std::future::ready(Ok(None)))
+        }
+    }
+
+    impl CdpTransport for SnapshotTransport {
+        fn send_raw(
+            &self,
+            _scope: &CommandScope,
+            method: &str,
+            params: Value,
+        ) -> TransportFuture<'_, std::result::Result<Value, TransportError>> {
+            self.calls.lock().unwrap().push((method.to_owned(), params));
+            let response = self
+                .responses
+                .lock()
+                .unwrap()
+                .get_mut(method)
+                .and_then(VecDeque::pop_front)
+                .unwrap_or_else(|| Ok(json!({})));
+            Box::pin(std::future::ready(response))
+        }
+
+        fn subscribe_named(
+            &self,
+            _scope: &CommandScope,
+            _method: &str,
+        ) -> TransportFuture<'_, std::result::Result<Box<dyn TransportEvents>, TransportError>>
+        {
+            Box::pin(std::future::ready(Ok(
+                Box::new(EmptyEvents) as Box<dyn TransportEvents>
+            )))
+        }
+
+        fn close_reason(&self) -> Option<TransportClose> {
+            None
+        }
+
+        fn is_closed(&self) -> bool {
+            false
+        }
+    }
+
+    struct TestClock;
+
+    impl MonotonicClock for TestClock {
+        fn now(&self) -> ObservedTime {
+            ObservedTime::from_nanos(0)
+        }
+    }
+
+    struct TestIds;
+
+    impl IdSource for TestIds {
+        fn next(&self) -> IdValue {
+            IdValue::from_uuid(uuid::Uuid::from_u128(1))
+        }
+    }
+
+    fn frame_bound() -> BoundTarget {
+        BoundTarget {
+            target_id: target(),
+            browser_target_key: "target-a".into(),
+            attachment_generation: 1,
+            transport_session: TransportSessionId::new("session-a").unwrap(),
+            visibility: krometrail_core::TargetVisibility::Visible,
+        }
+    }
+
+    fn page_control() -> PageControl {
+        PageControl::new(
+            Arc::new(TestClock),
+            Arc::new(TestIds),
+            SessionId::from_uuid(uuid::Uuid::from_u128(2)),
+            SessionOrigin::new(ObservedTime::from_nanos(0)),
+        )
+    }
+
+    fn frame_tree(loader_id: &str) -> Value {
+        json!({"frameTree": {
+            "frame": {"id":"main","loaderId":"main-loader","url":"https://example.test/"},
+            "childFrames": [{
+                "frame": {"id":"child","loaderId":loader_id,"url":"https://example.test/child"}
+            }]
+        }})
+    }
+
+    fn child_ax_tree() -> Value {
+        json!({"nodes":[
+            {"nodeId":"main-root","frameId":"main","ignored":false,"role":{"value":"document"},"childIds":["main-button"]},
+            {"nodeId":"main-button","frameId":"main","ignored":false,"role":{"value":"button"},"name":{"value":"Main action"},"backendDOMNodeId":7,"properties":[{"name":"focusable","value":{"value":true}}]},
+            {"nodeId":"child-root","frameId":"child","ignored":false,"role":{"value":"document"},"childIds":["child-heading"]},
+            {"nodeId":"child-heading","frameId":"child","ignored":false,"role":{"value":"heading"},"name":{"value":"Nested heading"},"backendDOMNodeId":107,"properties":[{"name":"focusable","value":{"value":true}}]}
+        ]})
+    }
+
+    fn multi_document_snapshot() -> Value {
+        let strings = vec!["main", "child", "DIV", "H1", "#text", "Nested heading"];
+        let document = |frame_id, backend_offset| {
+            json!({
+                "frameId": frame_id,
+                "nodes": {
+                    "parentIndex": [-1, 0, 1],
+                    "nodeName": [2, 3, 4],
+                    "backendNodeId": [1 + backend_offset, 2 + backend_offset, 3 + backend_offset],
+                    "attributes": [[], [], []]
+                },
+                "layout": {"nodeIndex": [2], "text": [5]}
+            })
+        };
+        json!({"strings": strings, "documents": [document(0, 0), document(1, 100)]})
+    }
+
+    fn script_frame_capture(transport: &SnapshotTransport, final_loader_id: &str) {
+        for loader_id in ["child-loader", "child-loader", final_loader_id] {
+            transport.push("Page.getFrameTree", frame_tree(loader_id));
+            transport.push("Target.getTargets", json!({"targetInfos": []}));
+        }
+        transport.push("Accessibility.getFullAXTree", child_ax_tree());
+        transport.push("DOMSnapshot.captureSnapshot", multi_document_snapshot());
     }
 
     #[test]
@@ -1544,6 +1745,120 @@ mod tests {
         assert_eq!(bindings.len(), 1);
         assert_eq!(omitted, 0);
         assert_eq!(nodes[1].properties.len(), 1);
+    }
+
+    #[test]
+    fn ax_snapshot_selects_nodes_from_the_resolved_frame() {
+        let response = json!({"nodes":[
+            {"nodeId":"main-root","frameId":"main","ignored":false,"role":{"value":"document"},"childIds":["main-button"]},
+            {"nodeId":"main-button","frameId":"main","ignored":false,"role":{"value":"button"},"name":{"value":"Main action"},"backendDOMNodeId":7,"properties":[{"name":"focusable","value":{"value":true}}]},
+            {"nodeId":"child-root","frameId":"child","ignored":false,"role":{"value":"document"},"childIds":["child-heading"]},
+            {"nodeId":"child-heading","frameId":"child","ignored":false,"role":{"value":"heading"},"name":{"value":"Nested heading"},"backendDOMNodeId":107,"properties":[{"name":"focusable","value":{"value":true}}]}
+        ]});
+        let mut node_by_backend = HashMap::new();
+        let mut next_node_id = 0;
+        let (nodes, bindings, omitted) = decode_ax_tree_with_ids(
+            &response,
+            target(),
+            SnapshotGeneration::new(1).unwrap(),
+            &mut node_by_backend,
+            &mut next_node_id,
+            Some("child"),
+        )
+        .unwrap();
+        assert_eq!(omitted, 0);
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[1].name.as_deref(), Some("Nested heading"));
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(node_by_backend.len(), 1);
+        assert!(node_by_backend.contains_key(&107));
+    }
+
+    #[tokio::test]
+    async fn same_origin_frame_query_uses_the_matching_ax_and_dom_documents() {
+        let transport = SnapshotTransport::default();
+        script_frame_capture(&transport, "child-loader");
+        let mut control = page_control();
+        let bound = frame_bound();
+        let frames = control.list_frames(&transport, &bound).await.unwrap();
+        let child = frames.frames[1].reference.clone();
+        let resolved = PageControl::resolve_frame_document(&transport, &bound, &child)
+            .await
+            .unwrap();
+        let snapshot = control
+            .capture_snapshot_for_frame(
+                &transport,
+                &bound,
+                krometrail_core::SessionTime::ZERO,
+                true,
+                Some(&resolved),
+            )
+            .await
+            .unwrap();
+        let request = QueryPageRequest::new(
+            krometrail_core::PageSelection::Target(target()),
+            SemanticQuery::role(
+                "heading",
+                Some(
+                    krometrail_core::SemanticTextMatch::new(
+                        "Nested heading",
+                        krometrail_core::SemanticTextMatchMode::Exact,
+                        false,
+                    )
+                    .unwrap(),
+                ),
+            )
+            .unwrap(),
+            None,
+            10,
+        )
+        .unwrap();
+        let result = control
+            .snapshots
+            .query(&bound, &request, &snapshot)
+            .unwrap();
+        assert_eq!(
+            result.outcome,
+            krometrail_core::SemanticQueryOutcome::Unique
+        );
+        assert_eq!(result.matches[0].name.as_deref(), Some("Nested heading"));
+        assert!(
+            transport
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(method, params)| {
+                    method == "Accessibility.getFullAXTree" && params["frameId"] == "child"
+                })
+        );
+    }
+
+    #[tokio::test]
+    async fn frame_navigation_during_semantic_capture_returns_stale_evidence() {
+        let transport = SnapshotTransport::default();
+        script_frame_capture(&transport, "child-loader-after-navigation");
+        let mut control = page_control();
+        let bound = frame_bound();
+        let frames = control.list_frames(&transport, &bound).await.unwrap();
+        let child = frames.frames[1].reference.clone();
+        let resolved = PageControl::resolve_frame_document(&transport, &bound, &child)
+            .await
+            .unwrap();
+        assert_eq!(
+            control
+                .capture_snapshot_for_frame(
+                    &transport,
+                    &bound,
+                    krometrail_core::SessionTime::ZERO,
+                    true,
+                    Some(&resolved),
+                )
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::StaleReference
+        );
     }
 
     fn semantic_dom_snapshot() -> Value {
