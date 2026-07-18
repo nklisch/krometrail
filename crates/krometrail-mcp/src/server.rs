@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::BTreeSet, sync::Arc};
 
 use krometrail_core::{
     CancellationSignal, CapabilityId, ErrorCode, KrometrailError, NonEmptyText, Result, RetryAdvice,
@@ -31,6 +31,7 @@ pub struct KrometrailMcpServer {
     dependencies: Arc<McpDependencies>,
     config: McpConfig,
     diagnostics: DiagnosticContext,
+    projection_routes: BTreeSet<String>,
 }
 
 impl KrometrailMcpServer {
@@ -51,12 +52,24 @@ impl KrometrailMcpServer {
             Arc::clone(&sessions),
         )?);
         let diagnostics = dependencies.diagnostics.clone();
+        let projection_routes = router
+            .list_all()
+            .into_iter()
+            .filter(|tool| {
+                tool.input_schema
+                    .get("properties")
+                    .and_then(serde_json::Value::as_object)
+                    .is_some_and(|properties| properties.contains_key("response"))
+            })
+            .map(|tool| tool.name.to_string())
+            .collect();
         let server = Self {
             sessions,
             router,
             dependencies,
             config: config.clone(),
             diagnostics,
+            projection_routes,
         };
         Ok(server)
     }
@@ -153,7 +166,10 @@ impl ServerHandler for KrometrailMcpServer {
         request: CallToolRequestParam,
         context: RequestContext<RoleServer>,
     ) -> std::result::Result<CallToolResult, ErrorData> {
-        let diagnostic_detail = requested_diagnostic_detail(&request);
+        let diagnostic_detail = requested_diagnostic_detail(
+            &request,
+            self.projection_routes.contains(request.name.as_ref()),
+        );
         let correlation_id = Uuid::new_v4().to_string();
         let route = request.name.to_string();
         let span = tracing::info_span!(
@@ -271,7 +287,13 @@ fn attach_diagnostics(
     outcome
 }
 
-fn requested_diagnostic_detail(request: &CallToolRequestParam) -> DiagnosticDetail {
+fn requested_diagnostic_detail(
+    request: &CallToolRequestParam,
+    projection_enabled: bool,
+) -> DiagnosticDetail {
+    if !projection_enabled {
+        return DiagnosticDetail::Automatic;
+    }
     request
         .arguments
         .clone()
@@ -1616,6 +1638,7 @@ mod tests {
                     "navigate_page",
                     json!({"url":"", "response":{"diagnostics":"omit", "snapshot":"not-valid"}}),
                 ),
+                ("browser_status", json!({"response":{"diagnostics":"omit"}})),
             ],
         )
         .await;
@@ -1629,6 +1652,16 @@ mod tests {
         );
         assert!(
             responses[3]["result"]["structuredContent"]
+                .get("diagnostics")
+                .is_some()
+        );
+        assert_eq!(responses[4]["result"]["isError"], true);
+        assert_eq!(
+            responses[4]["result"]["structuredContent"]["error"]["code"],
+            "invalid_input"
+        );
+        assert!(
+            responses[4]["result"]["structuredContent"]
                 .get("diagnostics")
                 .is_some()
         );
