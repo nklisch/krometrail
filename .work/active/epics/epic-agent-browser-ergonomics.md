@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-ergonomics
 kind: epic
-stage: review
+stage: done
 tags: [agent-ux, browser, visual]
 parent: null
 depends_on: []
@@ -82,3 +82,14 @@ Ship the completed epic as the next minor release after feature and aggregate re
 All six child features are complete and have passed one fresh standard review with accepted material findings repaired. The combined surface now defaults to compact structured responses with no inline image bytes, while explicit full, inline, legacy, custom-metrics, frame, asset, context, and local-I/O expansion remains available. Focused validation includes real-Chrome semantic targeting, viewport, and managed-download workflows plus strict core/CDP clippy and registry/schema coverage.
 
 Aggregate review should concentrate on cross-feature schema consistency, default projection behavior, session/reconnect cancellation, evidence privacy, canonical resource lifetime, skill guidance, and foundation-document drift before binding the minor release.
+
+## Aggregate review
+
+Standard review requested changes and was resolved in one pass:
+
+- Managed-download interception moved from browser startup to explicit first `list_downloads` activation, preserving existing managed and named-profile defaults while keeping subscription-before-enable ordering.
+- Page-target state now enforces the 128-live-page bound, reclaims terminal state under sustained churn, and preserves monotonic cursors and immutable opener identity.
+- Semantic outcome wording, public generated docs, batch projection guidance, managed-download URI guidance, root agent rules, and stdio smoke counts were rolled forward to the implemented contract.
+- An adjacent macOS release-test failure was traced to comparing canonical and non-canonical temporary path spellings; the test now compares one canonical path domain without changing production profile behavior.
+
+Review evidence includes 10 lazy-download tests, 13 reducer unit tests, 13 target-reducer integration tests including 10,001-cycle churn, 6 root runtime smoke tests, 160 CDP library tests, docs generation, workspace checks, and warning-denied core/CDP clippy slices. The full release helper remains the final shipment gate.
