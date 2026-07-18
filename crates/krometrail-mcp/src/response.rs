@@ -181,15 +181,18 @@ impl Projection {
         if !warnings.is_empty() && self.status == ToolResponseStatus::Succeeded {
             self.status = ToolResponseStatus::Degraded;
         }
-        for warning in &warnings {
+        for warning in warnings {
+            if self.warnings.contains(&warning) {
+                continue;
+            }
             tracing::warn!(
                 event = "mcp.response.degraded",
                 failure_stage,
                 error_code = warning.code.as_str(),
                 "mcp.response.degraded"
             );
+            self.warnings.push(warning);
         }
-        self.warnings.extend(warnings);
     }
 
     fn fail_with(&mut self, error: KrometrailError) {
@@ -1152,13 +1155,41 @@ mod tests {
     use krometrail_core::{
         BatchSkipReason, BatchStepResult, BatchStepStatus, BrowserOperationKind,
         CaptureFailureStage, CaptureStatistics, CaptureStreamState, CaptureTimingSummary, CssPoint,
-        CssRect, CssSize, DeviceScaleFactor, EveryNthFrame, ImageFormat, InteractionId,
-        InteractionTiming, NodeReference, ObservationContext, PageSelection, PageSnapshot,
-        PixelDimensions, ScreenshotTarget, SessionId, SessionTime, SnapshotGeneration,
-        SnapshotNode, SnapshotNodeId, TargetCaptureStatus, TargetId, WaitCondition, WaitProbe,
-        WaitRequest, WaitResult,
+        CssRect, CssSize, DeviceScaleFactor, ErrorContext, EveryNthFrame, ImageFormat,
+        InteractionId, InteractionTiming, NodeReference, ObservationContext, PageSelection,
+        PageSnapshot, PixelDimensions, ScreenshotTarget, SessionId, SessionTime,
+        SnapshotGeneration, SnapshotNode, SnapshotNodeId, TargetCaptureStatus, TargetId,
+        WaitCondition, WaitProbe, WaitRequest, WaitResult,
     };
-    use std::time::Duration;
+    use std::{
+        sync::atomic::{AtomicUsize, Ordering},
+        time::Duration,
+    };
+
+    #[derive(Clone)]
+    struct EventCounter(Arc<AtomicUsize>);
+
+    impl tracing::Subscriber for EventCounter {
+        fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+
+        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+
+        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+
+        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+
+        fn event(&self, _event: &tracing::Event<'_>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+
+        fn enter(&self, _span: &tracing::span::Id) {}
+
+        fn exit(&self, _span: &tracing::span::Id) {}
+    }
 
     fn session_id() -> SessionId {
         "00000000-0000-0000-0000-000000000001".parse().unwrap()
@@ -1308,7 +1339,7 @@ mod tests {
         let mapped = map_operation_result_with_capture(
             "take_screenshot",
             BrowserOperationResult::TakeScreenshot(Box::new(screenshot(ImageFormat::Png))),
-            &[failed_capture()],
+            &[failed_capture(), failed_capture()],
         )
         .unwrap();
         assert_eq!(mapped.response.status, ToolResponseStatus::Degraded);
@@ -1320,6 +1351,35 @@ mod tests {
             Some(target_id())
         );
         assert!(mapped.response.error.is_none());
+    }
+
+    #[test]
+    fn equivalent_warnings_are_logged_and_retained_once_without_collapsing_same_code() {
+        let first = error(
+            ErrorCode::PageObservationFailed,
+            "dialog blocked observation",
+        );
+        let distinct = first.clone().with_context(ErrorContext {
+            target_id: Some(target_id()),
+            ..ErrorContext::default()
+        });
+        let events = Arc::new(AtomicUsize::new(0));
+        let counter = EventCounter(Arc::clone(&events));
+        let mut projection = Projection::success(json!({}));
+        tracing::subscriber::with_default(counter, || {
+            projection.degrade_with_stage(
+                vec![
+                    first.clone(),
+                    first.clone(),
+                    distinct.clone(),
+                    first.clone(),
+                ],
+                "live_observation",
+            );
+        });
+
+        assert_eq!(projection.warnings, vec![first, distinct]);
+        assert_eq!(events.load(Ordering::Relaxed), 2);
     }
 
     #[test]
@@ -1465,7 +1525,15 @@ mod tests {
         .unwrap();
         assert_eq!(degraded.response.status, ToolResponseStatus::Degraded);
         assert!(!degraded.is_error);
-        assert_eq!(degraded.response.warnings.len(), 3);
+        assert_eq!(degraded.response.warnings, vec![unavailable]);
+        for component in ["page", "snapshot", "screenshot"] {
+            assert!(
+                degraded.response.result[component]
+                    .get("unavailable")
+                    .is_some(),
+                "{component} remains explicitly unavailable"
+            );
+        }
 
         let wait = WaitResult::new(
             context(),
