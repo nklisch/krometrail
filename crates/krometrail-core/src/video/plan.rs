@@ -19,6 +19,10 @@ pub const MAX_VIDEO_WIDTH: u32 = 1_920;
 pub const MAX_VIDEO_HEIGHT: u32 = 1_080;
 pub const MAX_VIDEO_ENCODED_INPUT_BYTES: u64 = 512 * 1024 * 1024;
 pub const MAX_VIDEO_ENCODED_OUTPUT_BYTES: u64 = 64 * 1024 * 1024;
+pub const MINIMUM_VISIBLE_FRAME_NANOS: u64 = 1_000_000;
+pub const TERMINAL_HOLD_NANOS: u64 = 250_000_000;
+pub const MODEL_MEANINGFUL_HOLD_NANOS: u64 = 1_000_000_000;
+pub const MODEL_GAP_HOLD_NANOS: u64 = 500_000_000;
 
 define_stable_enum! {
     pub enum VideoPresentationPolicy {
@@ -38,9 +42,14 @@ define_stable_enum! {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, schemars::JsonSchema)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
 pub struct PresentationTime(u64);
+
+#[derive(schemars::JsonSchema)]
+#[schemars(transparent)]
+#[allow(dead_code)] // Schema-only proxy keeps the serialized u64 ceiling source-aligned.
+struct PresentationTimeSchema(#[schemars(range(max = 60_000_000_000_u64))] u64);
 
 impl PresentationTime {
     pub const ZERO: Self = Self(0);
@@ -64,6 +73,8 @@ impl<'de> Deserialize<'de> for PresentationTime {
         deserialize_validated(deserializer, |value: u64| Self::from_nanos(value))
     }
 }
+
+delegate_json_schema!(PresentationTime => PresentationTimeSchema);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct PresentationRange {
@@ -124,10 +135,23 @@ pub struct VideoOutputGeometry {
 #[serde(deny_unknown_fields)]
 struct VideoOutputGeometryWire {
     source: PixelDimensions,
+    #[schemars(with = "VideoCanvasDimensionsSchema")]
     scaled: PixelDimensions,
+    #[schemars(with = "VideoCanvasDimensionsSchema")]
     canvas: PixelDimensions,
+    #[schemars(range(max = 1_u8))]
     pad_right: u8,
+    #[schemars(range(max = 1_u8))]
     pad_bottom: u8,
+}
+
+#[derive(schemars::JsonSchema)]
+#[allow(dead_code)] // Schema-only proxy publishes the independently enforceable output ceilings.
+struct VideoCanvasDimensionsSchema {
+    #[schemars(range(min = 1_u32, max = 1_920_u32))]
+    width: u32,
+    #[schemars(range(min = 1_u32, max = 1_080_u32))]
+    height: u32,
 }
 
 impl VideoOutputGeometry {
@@ -232,7 +256,7 @@ impl<'de> Deserialize<'de> for VideoOutputGeometry {
 
 delegate_json_schema!(VideoOutputGeometry => VideoOutputGeometryWire);
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum VideoSegmentSource {
     SourceFrame {
@@ -245,7 +269,7 @@ pub enum VideoSegmentSource {
     },
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum VideoSegmentSourceWire {
     SourceFrame {
@@ -253,6 +277,7 @@ enum VideoSegmentSourceWire {
         session_time: SessionTime,
     },
     GapSlate {
+        #[schemars(length(min = 1))]
         gap_ids: Vec<GapId>,
         source_range: SessionRange,
     },
@@ -316,6 +341,8 @@ impl<'de> Deserialize<'de> for VideoSegmentSource {
         .map_err(serde::de::Error::custom)
     }
 }
+
+delegate_json_schema!(VideoSegmentSource => VideoSegmentSourceWire);
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct VideoPresentationSegment {
@@ -487,6 +514,7 @@ pub struct VideoPresentationPlan {
     presented_source_range: SessionRange,
     epoch: VisualEpoch,
     input_frame_ids: Vec<FrameId>,
+    input_frame_times: Vec<SessionTime>,
     meaningful_frame_ids: Vec<FrameId>,
     segments: Vec<VideoPresentationSegment>,
     output: VideoOutputGeometry,
@@ -494,16 +522,27 @@ pub struct VideoPresentationPlan {
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
+enum TemporalVideoPlanVersionWire {
+    #[serde(rename = "temporal-video-plan-v1")]
+    V1,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct VideoPresentationPlanWire {
-    version: NonEmptyText,
+    version: TemporalVideoPlanVersionWire,
     policy: VideoPresentationPolicy,
     requested_range: SessionRange,
     resolved_range: SessionRange,
     presented_source_range: SessionRange,
     epoch: VisualEpoch,
+    #[schemars(length(min = 1, max = 120))]
     input_frame_ids: Vec<FrameId>,
+    #[schemars(length(min = 1, max = 120))]
+    input_frame_times: Vec<SessionTime>,
+    #[schemars(length(max = 12))]
     meaningful_frame_ids: Vec<FrameId>,
+    #[schemars(length(min = 1, max = 512))]
     segments: Vec<VideoPresentationSegment>,
     output: VideoOutputGeometry,
     duration: PresentationTime,
@@ -518,6 +557,7 @@ impl VideoPresentationPlan {
         presented_source_range: SessionRange,
         epoch: VisualEpoch,
         input_frame_ids: Vec<FrameId>,
+        input_frame_times: Vec<SessionTime>,
         meaningful_frame_ids: Vec<FrameId>,
         segments: Vec<VideoPresentationSegment>,
         output: VideoOutputGeometry,
@@ -528,9 +568,11 @@ impl VideoPresentationPlan {
             presented_source_range,
             &epoch,
             &input_frame_ids,
+            &input_frame_times,
             &meaningful_frame_ids,
             &segments,
             output,
+            policy,
         )?;
         Ok(Self {
             version: NonEmptyText::new(TEMPORAL_VIDEO_PLAN_VERSION)
@@ -541,6 +583,7 @@ impl VideoPresentationPlan {
             presented_source_range,
             epoch,
             input_frame_ids,
+            input_frame_times,
             meaningful_frame_ids,
             segments,
             output,
@@ -576,6 +619,10 @@ impl VideoPresentationPlan {
         &self.input_frame_ids
     }
 
+    pub fn input_frame_times(&self) -> &[SessionTime] {
+        &self.input_frame_times
+    }
+
     pub fn meaningful_frame_ids(&self) -> &[FrameId] {
         &self.meaningful_frame_ids
     }
@@ -596,11 +643,7 @@ impl VideoPresentationPlan {
 impl<'de> Deserialize<'de> for VideoPresentationPlan {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
         let wire = VideoPresentationPlanWire::deserialize(deserializer)?;
-        if wire.version.as_str() != TEMPORAL_VIDEO_PLAN_VERSION {
-            return Err(serde::de::Error::custom(
-                "unsupported temporal video presentation plan version",
-            ));
-        }
+        let _version = wire.version;
         let value = Self::new(
             wire.policy,
             wire.requested_range,
@@ -608,6 +651,7 @@ impl<'de> Deserialize<'de> for VideoPresentationPlan {
             wire.presented_source_range,
             wire.epoch,
             wire.input_frame_ids,
+            wire.input_frame_times,
             wire.meaningful_frame_ids,
             wire.segments,
             wire.output,
@@ -631,9 +675,11 @@ fn validate_plan_parts(
     presented_source_range: SessionRange,
     epoch: &VisualEpoch,
     input_frame_ids: &[FrameId],
+    input_frame_times: &[SessionTime],
     meaningful_frame_ids: &[FrameId],
     segments: &[VideoPresentationSegment],
     output: VideoOutputGeometry,
+    policy: VideoPresentationPolicy,
 ) -> Result<PresentationTime> {
     if resolved_range.start() < requested_range.start()
         || resolved_range.end() > requested_range.end()
@@ -645,12 +691,36 @@ fn validate_plan_parts(
         ));
     }
     if input_frame_ids.is_empty()
+        || input_frame_times.len() != input_frame_ids.len()
         || input_frame_ids.iter().any(|id| id.as_uuid().is_nil())
         || has_duplicates(input_frame_ids)
         || epoch.frame_ids != input_frame_ids
     {
         return Err(invalid(
             "video plan input frame ids must be unique, non-nil, and match the visual epoch",
+        ));
+    }
+    if input_frame_times.windows(2).any(|pair| pair[0] > pair[1]) {
+        return Err(invalid(
+            "video plan input frame times must preserve nondecreasing capture order",
+        ));
+    }
+    let first_time = input_frame_times[0];
+    let last_time = *input_frame_times
+        .last()
+        .expect("validated video input times are non-empty");
+    if presented_source_range.start() != first_time || presented_source_range.end() != last_time {
+        return Err(invalid(
+            "video presented source range must exactly span the first and last input frames",
+        ));
+    }
+    let source_duration = last_time
+        .as_nanos()
+        .checked_sub(first_time.as_nanos())
+        .ok_or_else(|| invalid("video input frame times must be ordered"))?;
+    if source_duration > max_source_nanos() {
+        return Err(limit_error(
+            "video plan exceeds the 30 second source range server limit",
         ));
     }
     validate_meaningful_frames(input_frame_ids, meaningful_frame_ids)?;
@@ -697,6 +767,11 @@ fn validate_plan_parts(
                     .iter()
                     .position(|candidate| candidate == frame_id)
                     .ok_or_else(|| invalid("video segment references a frame outside its epoch"))?;
+                if input_frame_times[frame_position] != *session_time {
+                    return Err(invalid(
+                        "video source-frame segment time must exactly match its input frame identity",
+                    ));
+                }
                 if last_frame_position.is_some_and(|last| frame_position < last) {
                     return Err(invalid(
                         "video source-frame segments must preserve capture order",
@@ -730,7 +805,187 @@ fn validate_plan_parts(
             "every meaningful frame must have a visible presentation segment",
         ));
     }
+    validate_canonical_timing(
+        policy,
+        input_frame_ids,
+        input_frame_times,
+        meaningful_frame_ids,
+        segments,
+    )?;
     Ok(expected_start)
+}
+
+fn validate_canonical_timing(
+    policy: VideoPresentationPolicy,
+    input_frame_ids: &[FrameId],
+    input_frame_times: &[SessionTime],
+    meaningful_frame_ids: &[FrameId],
+    segments: &[VideoPresentationSegment],
+) -> Result<()> {
+    let mut gap_ranges = Vec::new();
+    for segment in segments {
+        let duration = segment.presentation.duration_nanos();
+        match segment.source() {
+            VideoSegmentSource::SourceFrame { .. } => {
+                if matches!(
+                    segment.timing_basis,
+                    VideoTimingBasis::RecordedGap | VideoTimingBasis::ModelGapHold
+                ) {
+                    return Err(invalid("video source frames cannot use a gap timing basis"));
+                }
+                if policy == VideoPresentationPolicy::RealTime
+                    && segment.timing_basis == VideoTimingBasis::ModelMeaningfulHold
+                {
+                    return Err(invalid(
+                        "real-time video plans cannot use model-optimized frame holds",
+                    ));
+                }
+            }
+            VideoSegmentSource::GapSlate { source_range, .. } => {
+                if !matches!(
+                    segment.timing_basis,
+                    VideoTimingBasis::RecordedGap | VideoTimingBasis::ModelGapHold
+                ) {
+                    return Err(invalid("video gap slates require a gap timing basis"));
+                }
+                let source_duration = range_duration(*source_range)?;
+                let (expected_duration, expected_basis) = match policy {
+                    VideoPresentationPolicy::RealTime => {
+                        (source_duration, VideoTimingBasis::RecordedGap)
+                    }
+                    VideoPresentationPolicy::ModelOptimized
+                        if source_duration < MODEL_GAP_HOLD_NANOS =>
+                    {
+                        (MODEL_GAP_HOLD_NANOS, VideoTimingBasis::ModelGapHold)
+                    }
+                    VideoPresentationPolicy::ModelOptimized => {
+                        (source_duration, VideoTimingBasis::RecordedGap)
+                    }
+                };
+                if duration != expected_duration || segment.timing_basis != expected_basis {
+                    return Err(invalid(
+                        "video gap timing must match the canonical v1 presentation policy",
+                    ));
+                }
+                if gap_ranges
+                    .last()
+                    .is_some_and(|prior: &SessionRange| prior.end() >= source_range.start())
+                {
+                    return Err(invalid(
+                        "video gap slate source ranges must remain ordered, disjoint, and coalesced",
+                    ));
+                }
+                gap_ranges.push(*source_range);
+            }
+        }
+    }
+
+    for (position, frame_id) in input_frame_ids.iter().enumerate() {
+        let source_segments: Vec<_> = segments
+            .iter()
+            .filter(|segment| {
+                matches!(
+                    segment.source(),
+                    VideoSegmentSource::SourceFrame { frame_id: candidate, .. } if candidate == frame_id
+                )
+            })
+            .collect();
+        let (base_visible_duration, ordinary_basis) = if position + 1 == input_frame_ids.len() {
+            (TERMINAL_HOLD_NANOS, VideoTimingBasis::TerminalHold)
+        } else {
+            let interval =
+                SessionRange::new(input_frame_times[position], input_frame_times[position + 1])?;
+            let source_duration = range_duration(interval)?;
+            if source_duration == 0 {
+                (
+                    MINIMUM_VISIBLE_FRAME_NANOS,
+                    VideoTimingBasis::MinimumVisibleFrame,
+                )
+            } else {
+                let obscured_duration = gap_ranges.iter().try_fold(0_u64, |total, gap| {
+                    let start = gap.start().max(interval.start());
+                    let end = gap.end().min(interval.end());
+                    let overlap = end.as_nanos().saturating_sub(start.as_nanos());
+                    total.checked_add(overlap).ok_or_else(|| {
+                        limit_error("video source gap duration accounting overflowed")
+                    })
+                })?;
+                let visible = source_duration
+                    .checked_sub(obscured_duration)
+                    .ok_or_else(|| {
+                        invalid("video gap ranges exceed their source-frame interval")
+                    })?;
+                (visible, VideoTimingBasis::RecordedDelta)
+            }
+        };
+
+        let meaningful = meaningful_frame_ids.contains(frame_id);
+        if source_segments.is_empty() {
+            if base_visible_duration != 0 || meaningful {
+                return Err(invalid(
+                    "video source timing omits a frame with canonical visible duration",
+                ));
+            }
+            continue;
+        }
+        if base_visible_duration == 0 {
+            return Err(invalid(
+                "video source timing presents a frame fully replaced by capture gaps",
+            ));
+        }
+
+        let actual_duration = source_segments.iter().try_fold(0_u64, |total, segment| {
+            total
+                .checked_add(segment.presentation.duration_nanos())
+                .ok_or_else(|| limit_error("video source presentation duration overflowed"))
+        })?;
+        let model_adjusted = policy == VideoPresentationPolicy::ModelOptimized
+            && meaningful
+            && base_visible_duration < MODEL_MEANINGFUL_HOLD_NANOS;
+        let expected_duration = if model_adjusted {
+            MODEL_MEANINGFUL_HOLD_NANOS
+        } else {
+            base_visible_duration
+        };
+        if actual_duration != expected_duration {
+            return Err(invalid(
+                "video source timing must match the canonical v1 presentation duration",
+            ));
+        }
+        for (source_position, segment) in source_segments.iter().enumerate() {
+            let expected_basis = if model_adjusted && source_position == 0 {
+                VideoTimingBasis::ModelMeaningfulHold
+            } else {
+                ordinary_basis
+            };
+            if segment.timing_basis != expected_basis {
+                return Err(invalid(
+                    "video source timing basis must match the canonical v1 presentation policy",
+                ));
+            }
+        }
+    }
+
+    let last_id = input_frame_ids
+        .last()
+        .expect("validated input frame ids are non-empty");
+    if !matches!(
+        segments.last().map(VideoPresentationSegment::source),
+        Some(VideoSegmentSource::SourceFrame { frame_id, .. }) if frame_id == last_id
+    ) {
+        return Err(invalid(
+            "video presentation must end with the terminal source frame",
+        ));
+    }
+    Ok(())
+}
+
+fn range_duration(range: SessionRange) -> Result<u64> {
+    range
+        .end()
+        .as_nanos()
+        .checked_sub(range.start().as_nanos())
+        .ok_or_else(|| invalid("video source ranges must be ordered"))
 }
 
 fn validate_epoch(

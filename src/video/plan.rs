@@ -1,14 +1,10 @@
 use krometrail_core::{
     CaptureGap, ErrorCode, FrameId, GapId, KrometrailError, MAX_VIDEO_PRESENTATION_SEGMENTS,
-    NonEmptyText, PresentationRange, PresentationTime, Result, SessionRange, SessionTime,
+    MINIMUM_VISIBLE_FRAME_NANOS, MODEL_GAP_HOLD_NANOS, MODEL_MEANINGFUL_HOLD_NANOS, NonEmptyText,
+    PresentationRange, PresentationTime, Result, SessionRange, SessionTime, TERMINAL_HOLD_NANOS,
     VideoPlanInput, VideoPresentationPlan, VideoPresentationPolicy, VideoPresentationSegment,
     VideoSegmentSource, VideoTimingBasis,
 };
-
-const MINIMUM_VISIBLE_FRAME_NANOS: u64 = 1_000_000;
-const TERMINAL_HOLD_NANOS: u64 = 250_000_000;
-const MODEL_MEANINGFUL_HOLD_NANOS: u64 = 1_000_000_000;
-const MODEL_GAP_HOLD_NANOS: u64 = 500_000_000;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct CoalescedGap {
@@ -48,6 +44,11 @@ pub(super) fn build_presentation_plan(input: VideoPlanInput) -> Result<VideoPres
         presented_source_range,
         input.epoch().clone(),
         input.frames().iter().map(|frame| frame.id()).collect(),
+        input
+            .frames()
+            .iter()
+            .map(|frame| frame.session_time())
+            .collect(),
         input.meaningful_frame_ids().to_vec(),
         segments,
         input.output(),

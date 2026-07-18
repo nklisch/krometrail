@@ -12,25 +12,41 @@ use crate::{
 
 pub const MAX_VIDEO_ENCODER_LABEL_BYTES: usize = 256;
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct VideoEncoderIdentity {
     implementation_version: NonEmptyText,
     #[serde(serialize_with = "serialize_sha256")]
-    #[schemars(with = "String")]
     build_report_sha256: [u8; 32],
     encoder_name: NonEmptyText,
     adapter_version: NonEmptyText,
     argument_policy_version: NonEmptyText,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct VideoEncoderIdentityWire {
-    implementation_version: NonEmptyText,
+    #[schemars(
+        length(min = 1, max = 256),
+        regex(pattern = r"^[^/\\\u0000-\u001F\u007F]+$")
+    )]
+    implementation_version: String,
+    #[schemars(length(min = 64, max = 64), regex(pattern = "^[0-9a-f]{64}$"))]
     build_report_sha256: String,
-    encoder_name: NonEmptyText,
-    adapter_version: NonEmptyText,
-    argument_policy_version: NonEmptyText,
+    #[schemars(
+        length(min = 1, max = 256),
+        regex(pattern = r"^[^/\\\u0000-\u001F\u007F]+$")
+    )]
+    encoder_name: String,
+    #[schemars(
+        length(min = 1, max = 256),
+        regex(pattern = r"^[^/\\\u0000-\u001F\u007F]+$")
+    )]
+    adapter_version: String,
+    #[schemars(
+        length(min = 1, max = 256),
+        regex(pattern = r"^[^/\\\u0000-\u001F\u007F]+$")
+    )]
+    argument_policy_version: String,
 }
 
 impl VideoEncoderIdentity {
@@ -94,15 +110,17 @@ impl<'de> Deserialize<'de> for VideoEncoderIdentity {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
         let wire = VideoEncoderIdentityWire::deserialize(deserializer)?;
         Self::new(
-            wire.implementation_version.as_str(),
+            wire.implementation_version,
             parse_sha256(&wire.build_report_sha256).map_err(serde::de::Error::custom)?,
-            wire.encoder_name.as_str(),
-            wire.adapter_version.as_str(),
-            wire.argument_policy_version.as_str(),
+            wire.encoder_name,
+            wire.adapter_version,
+            wire.argument_policy_version,
         )
         .map_err(serde::de::Error::custom)
     }
 }
+
+delegate_json_schema!(VideoEncoderIdentity => VideoEncoderIdentityWire);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct VideoEncodingProfile {
@@ -114,6 +132,7 @@ pub struct VideoEncodingProfile {
 #[serde(deny_unknown_fields)]
 struct VideoEncodingProfileWire {
     geometry: VideoOutputGeometry,
+    #[schemars(range(min = 1_u64, max = 67_108_864_u64))]
     max_encoded_bytes: u64,
 }
 
@@ -148,6 +167,7 @@ delegate_json_schema!(VideoEncodingProfile => VideoEncodingProfileWire);
 #[derive(Clone, Debug, PartialEq)]
 pub struct VideoEncodeFrame {
     segment_index: u32,
+    source: VideoSegmentSource,
     format: ImageFormat,
     dimensions: PixelDimensions,
     bytes: Arc<[u8]>,
@@ -156,6 +176,7 @@ pub struct VideoEncodeFrame {
 impl VideoEncodeFrame {
     pub fn new(
         segment_index: u32,
+        source: VideoSegmentSource,
         format: ImageFormat,
         dimensions: PixelDimensions,
         bytes: impl Into<Arc<[u8]>>,
@@ -168,6 +189,7 @@ impl VideoEncodeFrame {
         }
         Ok(Self {
             segment_index,
+            source,
             format,
             dimensions,
             bytes,
@@ -176,6 +198,10 @@ impl VideoEncodeFrame {
 
     pub const fn segment_index(&self) -> u32 {
         self.segment_index
+    }
+
+    pub const fn source(&self) -> &VideoSegmentSource {
+        &self.source
     }
 
     pub const fn format(&self) -> ImageFormat {
@@ -223,6 +249,11 @@ impl VideoEncodeRequest {
             if frame.segment_index != segment.index() {
                 return Err(invalid_video(
                     "video encoded images must preserve exact presentation segment order",
+                ));
+            }
+            if frame.source != *segment.source() {
+                return Err(invalid_video(
+                    "video encoded images must match the exact source identity of their presentation segment",
                 ));
             }
             let expected_dimensions = match segment.source() {
@@ -471,8 +502,57 @@ mod tests {
                 device_scale_factor: DeviceScaleFactor::new(1.0).unwrap(),
             },
             vec![frame_id],
+            vec![SessionTime::from_nanos(2)],
             vec![],
             vec![segment],
+            geometry(),
+        )
+        .unwrap()
+    }
+
+    fn two_frame_plan() -> VideoPresentationPlan {
+        let first = FrameId::from_uuid(Uuid::from_u128(3));
+        let second = FrameId::from_uuid(Uuid::from_u128(4));
+        let segments = vec![
+            VideoPresentationSegment::new(
+                0,
+                VideoSegmentSource::source_frame(first, SessionTime::from_nanos(2)).unwrap(),
+                crate::PresentationRange::new(
+                    crate::PresentationTime::ZERO,
+                    crate::PresentationTime::from_nanos(2).unwrap(),
+                )
+                .unwrap(),
+                VideoTimingBasis::RecordedDelta,
+            )
+            .unwrap(),
+            VideoPresentationSegment::new(
+                1,
+                VideoSegmentSource::source_frame(second, SessionTime::from_nanos(4)).unwrap(),
+                crate::PresentationRange::new(
+                    crate::PresentationTime::from_nanos(2).unwrap(),
+                    crate::PresentationTime::from_nanos(250_000_002).unwrap(),
+                )
+                .unwrap(),
+                VideoTimingBasis::TerminalHold,
+            )
+            .unwrap(),
+        ];
+        VideoPresentationPlan::new(
+            VideoPresentationPolicy::RealTime,
+            SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(5)).unwrap(),
+            SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(5)).unwrap(),
+            SessionRange::new(SessionTime::from_nanos(2), SessionTime::from_nanos(4)).unwrap(),
+            VisualEpoch {
+                index: 0,
+                frame_ids: vec![first, second],
+                image: geometry().source(),
+                viewport: geometry().source(),
+                device_scale_factor: DeviceScaleFactor::new(1.0).unwrap(),
+            },
+            vec![first, second],
+            vec![SessionTime::from_nanos(2), SessionTime::from_nanos(4)],
+            vec![],
+            segments,
             geometry(),
         )
         .unwrap()
@@ -574,7 +654,14 @@ mod tests {
         let request = VideoEncodeRequest::new(
             plan(),
             vec![
-                VideoEncodeFrame::new(0, ImageFormat::Jpeg, geometry().source(), vec![9]).unwrap(),
+                VideoEncodeFrame::new(
+                    0,
+                    plan().segments()[0].source().clone(),
+                    ImageFormat::Jpeg,
+                    geometry().source(),
+                    vec![9],
+                )
+                .unwrap(),
             ],
             profile(),
         )
@@ -601,8 +688,14 @@ mod tests {
             VideoEncodeRequest::new(
                 plan(),
                 vec![
-                    VideoEncodeFrame::new(1, ImageFormat::Png, geometry().source(), vec![1],)
-                        .unwrap()
+                    VideoEncodeFrame::new(
+                        1,
+                        plan().segments()[0].source().clone(),
+                        ImageFormat::Png,
+                        geometry().source(),
+                        vec![1],
+                    )
+                    .unwrap()
                 ],
                 profile(),
             )
@@ -614,6 +707,7 @@ mod tests {
                 vec![
                     VideoEncodeFrame::new(
                         0,
+                        plan().segments()[0].source().clone(),
                         ImageFormat::Png,
                         PixelDimensions::new(2, 2).unwrap(),
                         vec![1],
@@ -624,6 +718,30 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn request_rejects_swapped_same_geometry_source_frames() {
+        let plan = two_frame_plan();
+        let frames = vec![
+            VideoEncodeFrame::new(
+                0,
+                plan.segments()[1].source().clone(),
+                ImageFormat::Png,
+                geometry().source(),
+                vec![1],
+            )
+            .unwrap(),
+            VideoEncodeFrame::new(
+                1,
+                plan.segments()[0].source().clone(),
+                ImageFormat::Png,
+                geometry().source(),
+                vec![2],
+            )
+            .unwrap(),
+        ];
+        assert!(VideoEncodeRequest::new(plan, frames, profile()).is_err());
     }
 
     #[test]

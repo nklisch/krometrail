@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-video-artifacts-clip-contracts
 kind: feature
-stage: implementing
+stage: review
 tags: [visual, agent-ux, security]
 parent: epic-temporal-video-artifacts
 depends_on: []
@@ -426,3 +426,14 @@ No separate active findings were created: these corrections remain cohesive with
 - `cargo clippy --workspace --all-targets --locked -- -D warnings` — passed.
 - No existing test was removed, weakened, or skipped to obtain these results.
 - `.work/bin/work-view` is an x86-64 Linux executable in this checkout and cannot execute on the macOS host. Dependency readiness and child stages were therefore verified directly from item frontmatter; this did not block implementation or verification.
+
+## Review correction verification (2026-07-18)
+
+- **Exact encoder source identity**: `VideoEncodeFrame` now carries the exact `VideoSegmentSource` it materializes, and `VideoEncodeRequest` requires equality with the corresponding plan segment in addition to index, format, dimensions, and byte bounds. An adversarial two-frame test proves that swapping same-geometry inputs is rejected rather than encoded under false `FrameId` provenance.
+- **Durable canonical timing**: plans now persist the ordered session time for every input frame and rebind every visible source segment to that exact `(FrameId, SessionTime)` pair. Constructor and serde validation enforce the 30-second source ceiling, 60-second presentation ceiling, source-kind/timing-basis matrix, real-time versus model policy compatibility, exact v1 terminal/tied/meaningful/gap holds, ordered coalesced gap ranges, and exact terminal-frame placement. Canonical timing constants moved into core so the root planner and durable validator share one authority.
+- **Canonical gap evidence**: manifests now carry constructor-backed `VideoGapEvidence` for every retained gap intersecting the presented range. Construction derives the clipped, sorted evidence from the exact `ResolvedRange`; construction and deserialization independently coalesce it and require the plan's gap slates, ranges, and complete contributor IDs to match exactly. Adversarial tests reject substituted plan IDs, substituted evidence IDs, and omitted evidence.
+- **Source-aligned schemas**: public video schemas now delegate to the strict `deny_unknown_fields` wire shapes. They publish exact plan/media versions, no-audio, array ceilings, presentation/output geometry limits, byte ceilings, bounded privacy-safe encoder labels, and exact lowercase SHA-256 patterns. Schema regression tests inspect generated output so relaxed refs or omitted constraints fail visibly.
+- Focused verification passed: `cargo test -p krometrail-core --locked` (135 passed), `cargo test --bin krometrail video:: --locked` (7 passed), and `cargo clippy -p krometrail-core --all-targets --locked -- -D warnings`.
+- Full verification passed: `cargo fmt --all -- --check`, `cargo check --workspace --all-targets --locked`, `cargo test --workspace --all-targets --locked`, and `cargo clippy --workspace --all-targets --locked -- -D warnings`. Only the pre-existing explicitly manual performance tests remained ignored.
+- All four receiver-confirmed blockers are corrected within the existing clip-contract boundary. No FFmpeg, storage publication, MCP registration, selector-version binding, provider, or new adjacent scope was introduced. No new issue was parked.
+- The shared modified `.work/bin/work-view` remained untouched and is excluded from this feature commit.

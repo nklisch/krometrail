@@ -3,15 +3,61 @@ use std::sync::Arc;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{
-    ArtifactId, ErrorCode, KrometrailError, NonEmptyText, ResolvedRange, Result, SessionId,
+    ArtifactId, ErrorCode, GapId, KrometrailError, NonEmptyText, ResolvedRange, Result, SessionId,
     SessionRange, TargetId, VideoEncodedClip, VideoEncoderIdentity, VideoEncodingProfile,
-    VideoPresentationPlan, VideoSegmentSource, validation::delegate_json_schema,
+    VideoPresentationPlan, VideoSegmentSource,
+    validation::{delegate_json_schema, deserialize_validated},
 };
 
 pub const TEMPORAL_VIDEO_MANIFEST_SCHEMA_VERSION: u32 = 1;
 const VIDEO_MEDIA_TYPE: &str = "video/mp4";
 const VIDEO_CODEC: &str = "h264";
 const VIDEO_PIXEL_FORMAT: &str = "yuv420p";
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct VideoGapEvidence {
+    gap_id: GapId,
+    source_range: SessionRange,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct VideoGapEvidenceWire {
+    gap_id: GapId,
+    source_range: SessionRange,
+}
+
+impl VideoGapEvidence {
+    pub fn new(gap_id: GapId, source_range: SessionRange) -> Result<Self> {
+        if gap_id.as_uuid().is_nil() || source_range.start() >= source_range.end() {
+            return Err(invalid_video(
+                "temporal video gap evidence requires a non-nil id and non-empty range",
+            ));
+        }
+        Ok(Self {
+            gap_id,
+            source_range,
+        })
+    }
+
+    pub const fn gap_id(&self) -> GapId {
+        self.gap_id
+    }
+
+    pub const fn source_range(&self) -> SessionRange {
+        self.source_range
+    }
+}
+
+impl<'de> Deserialize<'de> for VideoGapEvidence {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        deserialize_validated(deserializer, |wire: VideoGapEvidenceWire| {
+            Self::new(wire.gap_id, wire.source_range)
+        })
+    }
+}
+
+delegate_json_schema!(VideoGapEvidence => VideoGapEvidenceWire);
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct TemporalVideoManifest {
@@ -21,6 +67,7 @@ pub struct TemporalVideoManifest {
     target_id: TargetId,
     requested_range: SessionRange,
     resolved_range: SessionRange,
+    gap_evidence: Vec<VideoGapEvidence>,
     plan: VideoPresentationPlan,
     encoder: VideoEncoderIdentity,
     profile: VideoEncodingProfile,
@@ -36,20 +83,28 @@ pub struct TemporalVideoManifest {
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct TemporalVideoManifestWire {
+    #[schemars(range(min = 1_u32, max = 1_u32))]
     schema_version: u32,
     artifact_id: ArtifactId,
     session_id: SessionId,
     target_id: TargetId,
     requested_range: SessionRange,
     resolved_range: SessionRange,
+    gap_evidence: Vec<VideoGapEvidence>,
     plan: VideoPresentationPlan,
     encoder: VideoEncoderIdentity,
     profile: VideoEncodingProfile,
-    media_type: NonEmptyText,
-    codec: NonEmptyText,
-    pixel_format: NonEmptyText,
+    #[schemars(regex(pattern = "^video/mp4$"))]
+    media_type: String,
+    #[schemars(regex(pattern = "^h264$"))]
+    codec: String,
+    #[schemars(regex(pattern = "^yuv420p$"))]
+    pixel_format: String,
+    #[schemars(extend("const" = false))]
     has_audio: bool,
+    #[schemars(range(min = 1_u64, max = 67_108_864_u64))]
     encoded_byte_len: u64,
+    #[schemars(length(min = 64, max = 64), regex(pattern = "^[0-9a-f]{64}$"))]
     output_hash: String,
 }
 
@@ -89,7 +144,8 @@ impl TemporalVideoManifest {
                 "temporal video plan frames must preserve one contiguous resolved-scope epoch",
             ));
         }
-        validate_plan_gaps(scope, &plan)?;
+        let gap_evidence = canonical_gap_evidence(scope, plan.presented_source_range())?;
+        validate_plan_gaps(&gap_evidence, &plan)?;
         if encoded.profile().geometry() != plan.output() {
             return Err(invalid_video(
                 "encoded video profile must exactly match the presentation plan",
@@ -102,6 +158,7 @@ impl TemporalVideoManifest {
             target_id: scope.target_id,
             requested_range: scope.requested_range,
             resolved_range: scope.resolved_range,
+            gap_evidence,
             plan,
             encoder: encoded.identity().clone(),
             profile: encoded.profile(),
@@ -142,6 +199,8 @@ impl TemporalVideoManifest {
                 "temporal video manifest profile must match its embedded plan",
             ));
         }
+        validate_gap_evidence(&parts.gap_evidence, parts.plan.presented_source_range())?;
+        validate_plan_gaps(&parts.gap_evidence, &parts.plan)?;
         if parts.media_type.as_str() != VIDEO_MEDIA_TYPE
             || parts.codec.as_str() != VIDEO_CODEC
             || parts.pixel_format.as_str() != VIDEO_PIXEL_FORMAT
@@ -170,6 +229,7 @@ impl TemporalVideoManifest {
             target_id: parts.target_id,
             requested_range: parts.requested_range,
             resolved_range: parts.resolved_range,
+            gap_evidence: parts.gap_evidence,
             plan: parts.plan,
             encoder: parts.encoder,
             profile: parts.profile,
@@ -204,6 +264,10 @@ impl TemporalVideoManifest {
 
     pub const fn resolved_range(&self) -> SessionRange {
         self.resolved_range
+    }
+
+    pub fn gap_evidence(&self) -> &[VideoGapEvidence] {
+        &self.gap_evidence
     }
 
     pub const fn plan(&self) -> &VideoPresentationPlan {
@@ -320,6 +384,7 @@ struct TemporalVideoManifestParts {
     target_id: TargetId,
     requested_range: SessionRange,
     resolved_range: SessionRange,
+    gap_evidence: Vec<VideoGapEvidence>,
     plan: VideoPresentationPlan,
     encoder: VideoEncoderIdentity,
     profile: VideoEncodingProfile,
@@ -339,12 +404,16 @@ fn deserialize_validated_parts(wire: TemporalVideoManifestWire) -> Result<Tempor
         target_id: wire.target_id,
         requested_range: wire.requested_range,
         resolved_range: wire.resolved_range,
+        gap_evidence: wire.gap_evidence,
         plan: wire.plan,
         encoder: wire.encoder,
         profile: wire.profile,
-        media_type: wire.media_type,
-        codec: wire.codec,
-        pixel_format: wire.pixel_format,
+        media_type: NonEmptyText::new(wire.media_type)
+            .map_err(|_| invalid_video("temporal video media type is empty"))?,
+        codec: NonEmptyText::new(wire.codec)
+            .map_err(|_| invalid_video("temporal video codec is empty"))?,
+        pixel_format: NonEmptyText::new(wire.pixel_format)
+            .map_err(|_| invalid_video("temporal video pixel format is empty"))?,
         has_audio: wire.has_audio,
         encoded_byte_len: wire.encoded_byte_len,
         output_hash: wire
@@ -354,50 +423,106 @@ fn deserialize_validated_parts(wire: TemporalVideoManifestWire) -> Result<Tempor
     })
 }
 
-fn validate_plan_gaps(scope: &ResolvedRange, plan: &VideoPresentationPlan) -> Result<()> {
-    for segment in plan.segments() {
-        let VideoSegmentSource::GapSlate {
-            gap_ids,
-            source_range,
-        } = segment.source()
-        else {
-            continue;
-        };
-        let mut ranges: Vec<_> = gap_ids
-            .iter()
-            .map(|id| {
-                scope
-                    .gaps
-                    .iter()
-                    .find(|gap| gap.id() == *id)
-                    .map(|gap| gap.range())
-                    .ok_or_else(|| {
-                        invalid_video(
-                            "temporal video gap slate references a gap outside the resolved scope",
-                        )
-                    })
-            })
-            .collect::<Result<_>>()?;
-        ranges.sort_unstable_by_key(|range| (range.start(), range.end()));
-        let mut covered_to = source_range.start();
-        for range in ranges {
-            let start = range.start().max(source_range.start());
-            let end = range.end().min(source_range.end());
-            if end <= covered_to {
-                continue;
-            }
-            if start > covered_to {
-                return Err(invalid_video(
-                    "temporal video gap slate range is not covered by its contributing gaps",
-                ));
-            }
-            covered_to = end;
-        }
-        if covered_to < source_range.end() {
+fn canonical_gap_evidence(
+    scope: &ResolvedRange,
+    presented_source_range: SessionRange,
+) -> Result<Vec<VideoGapEvidence>> {
+    let mut evidence: Vec<_> = scope
+        .gaps
+        .iter()
+        .filter_map(|gap| {
+            let start = gap.range().start().max(presented_source_range.start());
+            let end = gap.range().end().min(presented_source_range.end());
+            (start < end).then_some((start, end, gap.id()))
+        })
+        .map(|(start, end, id)| {
+            VideoGapEvidence::new(
+                id,
+                SessionRange::new(start, end).expect("clipped gap is ordered"),
+            )
+        })
+        .collect::<Result<_>>()?;
+    evidence
+        .sort_unstable_by_key(|gap| (gap.source_range.start(), gap.source_range.end(), gap.gap_id));
+    validate_gap_evidence(&evidence, presented_source_range)?;
+    Ok(evidence)
+}
+
+fn validate_gap_evidence(
+    evidence: &[VideoGapEvidence],
+    presented_source_range: SessionRange,
+) -> Result<()> {
+    let mut prior_key = None;
+    let mut ids = std::collections::HashSet::with_capacity(evidence.len());
+    for gap in evidence {
+        let key = (gap.source_range.start(), gap.source_range.end(), gap.gap_id);
+        if gap.gap_id.as_uuid().is_nil()
+            || !ids.insert(gap.gap_id)
+            || gap.source_range.start() < presented_source_range.start()
+            || gap.source_range.end() > presented_source_range.end()
+            || prior_key.is_some_and(|prior| prior >= key)
+        {
             return Err(invalid_video(
-                "temporal video gap slate range is not covered by its contributing gaps",
+                "temporal video gap evidence must be unique, clipped, and canonically ordered",
             ));
         }
+        prior_key = Some(key);
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CanonicalGapComponent {
+    gap_ids: Vec<GapId>,
+    source_range: SessionRange,
+}
+
+fn canonical_gap_components(evidence: &[VideoGapEvidence]) -> Result<Vec<CanonicalGapComponent>> {
+    let mut components: Vec<CanonicalGapComponent> = Vec::new();
+    for gap in evidence {
+        if let Some(last) = components.last_mut()
+            && gap.source_range.start() <= last.source_range.end()
+        {
+            last.source_range = SessionRange::new(
+                last.source_range.start(),
+                last.source_range.end().max(gap.source_range.end()),
+            )?;
+            last.gap_ids.push(gap.gap_id);
+            last.gap_ids.sort_unstable();
+            continue;
+        }
+        components.push(CanonicalGapComponent {
+            gap_ids: vec![gap.gap_id],
+            source_range: gap.source_range,
+        });
+    }
+    Ok(components)
+}
+
+fn validate_plan_gaps(evidence: &[VideoGapEvidence], plan: &VideoPresentationPlan) -> Result<()> {
+    let components = canonical_gap_components(evidence)?;
+    let plan_gaps: Vec<_> = plan
+        .segments()
+        .iter()
+        .filter_map(|segment| match segment.source() {
+            VideoSegmentSource::GapSlate {
+                gap_ids,
+                source_range,
+            } => Some((gap_ids.as_slice(), *source_range)),
+            VideoSegmentSource::SourceFrame { .. } => None,
+        })
+        .collect();
+    if plan_gaps.len() != components.len()
+        || plan_gaps
+            .iter()
+            .zip(&components)
+            .any(|((ids, range), component)| {
+                *ids != component.gap_ids.as_slice() || *range != component.source_range
+            })
+    {
+        return Err(invalid_video(
+            "temporal video gap slates must exactly match canonical gap contributor evidence",
+        ));
     }
     Ok(())
 }

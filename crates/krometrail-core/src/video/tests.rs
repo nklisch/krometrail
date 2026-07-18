@@ -1,9 +1,9 @@
 use super::*;
 use crate::{
-    ArtifactId, CaptureOrdinal, CapturedFrame, DeviceScaleFactor, ErrorCode, FrameId, ImageFormat,
-    ObservedTime, PixelDimensions, RangeResolutionOptions, ResolvedRange, SessionId, SessionRange,
-    SessionTime, TargetId, TemporalRangeAnchorKind, VideoEncodedClip, VideoEncoderIdentity,
-    VideoEncodingProfile, VisualEpoch,
+    ArtifactId, CaptureGap, CaptureGapReason, CaptureOrdinal, CapturedFrame, DeviceScaleFactor,
+    ErrorCode, FrameId, GapId, ImageFormat, ObservedTime, PixelDimensions, RangeResolutionOptions,
+    ResolvedRange, SessionId, SessionRange, SessionTime, TargetId, TemporalRangeAnchorKind,
+    VideoEncodedClip, VideoEncoderIdentity, VideoEncodingProfile, VisualEpoch,
 };
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -64,6 +64,24 @@ fn resolved(frame_ids: Vec<FrameId>, end: u64) -> ResolvedRange {
     .unwrap()
 }
 
+fn resolved_with_gaps(frame_ids: Vec<FrameId>, end: u64, gaps: Vec<CaptureGap>) -> ResolvedRange {
+    ResolvedRange::new(
+        session(),
+        target(),
+        TemporalRangeAnchorKind::SessionTime,
+        SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(end)).unwrap(),
+        SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(end)).unwrap(),
+        frame_ids,
+        vec![],
+        vec![],
+        vec![],
+        gaps,
+        vec![],
+        RangeResolutionOptions::DEFAULT,
+    )
+    .unwrap()
+}
+
 fn epoch(frame_ids: Vec<FrameId>) -> VisualEpoch {
     VisualEpoch {
         index: 0,
@@ -83,6 +101,7 @@ fn one_frame_plan() -> VideoPresentationPlan {
         SessionRange::new(SessionTime::from_nanos(2), SessionTime::from_nanos(2)).unwrap(),
         epoch(vec![id]),
         vec![id],
+        vec![SessionTime::from_nanos(2)],
         vec![id],
         vec![
             VideoPresentationSegment::new(
@@ -94,6 +113,52 @@ fn one_frame_plan() -> VideoPresentationPlan {
                 )
                 .unwrap(),
                 VideoTimingBasis::ModelMeaningfulHold,
+            )
+            .unwrap(),
+        ],
+        geometry(),
+    )
+    .unwrap()
+}
+
+fn gap_plan() -> VideoPresentationPlan {
+    let first = frame_id(3);
+    let second = frame_id(4);
+    VideoPresentationPlan::new(
+        VideoPresentationPolicy::RealTime,
+        SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(10)).unwrap(),
+        SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(10)).unwrap(),
+        SessionRange::new(SessionTime::from_nanos(2), SessionTime::from_nanos(4)).unwrap(),
+        epoch(vec![first, second]),
+        vec![first, second],
+        vec![SessionTime::from_nanos(2), SessionTime::from_nanos(4)],
+        vec![],
+        vec![
+            VideoPresentationSegment::new(
+                0,
+                VideoSegmentSource::gap_slate(
+                    vec![GapId::from_uuid(Uuid::from_u128(80))],
+                    SessionRange::new(SessionTime::from_nanos(2), SessionTime::from_nanos(4))
+                        .unwrap(),
+                )
+                .unwrap(),
+                PresentationRange::new(
+                    PresentationTime::ZERO,
+                    PresentationTime::from_nanos(2).unwrap(),
+                )
+                .unwrap(),
+                VideoTimingBasis::RecordedGap,
+            )
+            .unwrap(),
+            VideoPresentationSegment::new(
+                1,
+                VideoSegmentSource::source_frame(second, SessionTime::from_nanos(4)).unwrap(),
+                PresentationRange::new(
+                    PresentationTime::from_nanos(2).unwrap(),
+                    PresentationTime::from_nanos(250_000_002).unwrap(),
+                )
+                .unwrap(),
+                VideoTimingBasis::TerminalHold,
             )
             .unwrap(),
         ],
@@ -141,6 +206,101 @@ fn plan_round_trip_revalidates_version_duration_and_unknown_fields() {
     value["version"] = serde_json::json!(TEMPORAL_VIDEO_PLAN_VERSION);
     value["unexpected"] = serde_json::json!(true);
     assert!(serde_json::from_value::<VideoPresentationPlan>(value).is_err());
+}
+
+#[test]
+fn persisted_plan_rejects_identity_policy_source_kind_and_canonical_timing_drift() {
+    let original = serde_json::to_value(one_frame_plan()).unwrap();
+
+    let mut value = original.clone();
+    value["segments"][0]["source"]["session_time"] = serde_json::json!(3_u64);
+    assert!(serde_json::from_value::<VideoPresentationPlan>(value).is_err());
+
+    let mut value = original.clone();
+    value["policy"] = serde_json::json!("real_time");
+    assert!(serde_json::from_value::<VideoPresentationPlan>(value).is_err());
+
+    let mut value = original.clone();
+    value["segments"][0]["timing_basis"] = serde_json::json!("recorded_gap");
+    assert!(serde_json::from_value::<VideoPresentationPlan>(value).is_err());
+
+    let mut value = original;
+    value["segments"][0]["presentation"]["end"] = serde_json::json!(999_999_999_u64);
+    value["duration"] = serde_json::json!(999_999_999_u64);
+    assert!(serde_json::from_value::<VideoPresentationPlan>(value).is_err());
+}
+
+#[test]
+fn durable_plan_enforces_source_and_presentation_duration_ceilings() {
+    let first = frame_id(3);
+    let second = frame_id(4);
+    let over_source_limit = MAX_VIDEO_SOURCE_DURATION.as_nanos() as u64 + 1;
+    let segments = vec![
+        VideoPresentationSegment::new(
+            0,
+            VideoSegmentSource::source_frame(first, SessionTime::ZERO).unwrap(),
+            PresentationRange::new(
+                PresentationTime::ZERO,
+                PresentationTime::from_nanos(over_source_limit).unwrap(),
+            )
+            .unwrap(),
+            VideoTimingBasis::RecordedDelta,
+        )
+        .unwrap(),
+        VideoPresentationSegment::new(
+            1,
+            VideoSegmentSource::source_frame(second, SessionTime::from_nanos(over_source_limit))
+                .unwrap(),
+            PresentationRange::new(
+                PresentationTime::from_nanos(over_source_limit).unwrap(),
+                PresentationTime::from_nanos(over_source_limit + TERMINAL_HOLD_NANOS).unwrap(),
+            )
+            .unwrap(),
+            VideoTimingBasis::TerminalHold,
+        )
+        .unwrap(),
+    ];
+    assert_eq!(
+        VideoPresentationPlan::new(
+            VideoPresentationPolicy::RealTime,
+            SessionRange::new(
+                SessionTime::ZERO,
+                SessionTime::from_nanos(over_source_limit)
+            )
+            .unwrap(),
+            SessionRange::new(
+                SessionTime::ZERO,
+                SessionTime::from_nanos(over_source_limit)
+            )
+            .unwrap(),
+            SessionRange::new(
+                SessionTime::ZERO,
+                SessionTime::from_nanos(over_source_limit)
+            )
+            .unwrap(),
+            epoch(vec![first, second]),
+            vec![first, second],
+            vec![
+                SessionTime::ZERO,
+                SessionTime::from_nanos(over_source_limit)
+            ],
+            vec![],
+            segments,
+            geometry(),
+        )
+        .unwrap_err()
+        .code,
+        ErrorCode::ResourceLimitExceeded
+    );
+    assert!(
+        PresentationTime::from_nanos(MAX_VIDEO_PRESENTATION_DURATION.as_nanos() as u64).is_ok()
+    );
+    assert_eq!(
+        PresentationTime::from_nanos(MAX_VIDEO_PRESENTATION_DURATION.as_nanos() as u64 + 1)
+            .unwrap_err()
+            .code,
+        ErrorCode::ResourceLimitExceeded
+    );
 }
 
 #[test]
@@ -387,6 +547,80 @@ fn manifest_deserialization_rejects_scope_media_and_length_contradictions() {
 }
 
 #[test]
+fn manifest_binds_and_revalidates_exact_canonical_gap_contributors() {
+    let plan = gap_plan();
+    let gap = CaptureGap::new(
+        GapId::from_uuid(Uuid::from_u128(80)),
+        session(),
+        target(),
+        SessionRange::new(SessionTime::from_nanos(2), SessionTime::from_nanos(4)).unwrap(),
+        ObservedTime::from_nanos(4),
+        CaptureGapReason::FrameRejected,
+        None,
+        None,
+    )
+    .unwrap();
+    let scope = resolved_with_gaps(plan.input_frame_ids().to_vec(), 10, vec![gap]);
+    let profile = VideoEncodingProfile::new(plan.output(), 1024).unwrap();
+    let encoded = encoded(identity(7), profile);
+    let manifest = TemporalVideoManifest::new(
+        ArtifactId::from_uuid(Uuid::from_u128(50)),
+        &scope,
+        plan,
+        &encoded,
+    )
+    .unwrap();
+    assert_eq!(manifest.gap_evidence().len(), 1);
+    assert_eq!(
+        manifest.gap_evidence()[0].gap_id(),
+        GapId::from_uuid(Uuid::from_u128(80))
+    );
+
+    let original = serde_json::to_value(manifest).unwrap();
+    let mut value = original.clone();
+    value["gap_evidence"][0]["gap_id"] = serde_json::json!(GapId::from_uuid(Uuid::from_u128(81)));
+    assert!(serde_json::from_value::<TemporalVideoManifest>(value).is_err());
+
+    let mut value = original.clone();
+    value["plan"]["segments"][0]["source"]["gap_ids"][0] =
+        serde_json::json!(GapId::from_uuid(Uuid::from_u128(81)));
+    assert!(serde_json::from_value::<TemporalVideoManifest>(value).is_err());
+
+    let mut value = original;
+    value["gap_evidence"] = serde_json::json!([]);
+    assert!(serde_json::from_value::<TemporalVideoManifest>(value).is_err());
+}
+
+#[test]
+fn generated_video_schemas_publish_strict_wire_shapes_and_hard_bounds() {
+    let plan_schema = serde_json::to_string(&schemars::schema_for!(VideoPresentationPlan)).unwrap();
+    assert!(plan_schema.contains("additionalProperties\":false"));
+    assert!(plan_schema.contains("temporal-video-plan-v1"));
+    assert!(plan_schema.contains("maxItems\":120"));
+    assert!(plan_schema.contains("maxItems\":512"));
+    assert!(plan_schema.contains("maximum\":60000000000"));
+    assert!(plan_schema.contains("maximum\":1920"));
+    assert!(plan_schema.contains("maximum\":1080"));
+
+    let identity_schema =
+        serde_json::to_string(&schemars::schema_for!(VideoEncoderIdentity)).unwrap();
+    assert!(identity_schema.contains("additionalProperties\":false"));
+    assert!(
+        identity_schema.contains("maxLength\":256"),
+        "{identity_schema}"
+    );
+    assert!(identity_schema.contains("^[0-9a-f]{64}$"));
+
+    let manifest_schema =
+        serde_json::to_string(&schemars::schema_for!(TemporalVideoManifest)).unwrap();
+    assert!(manifest_schema.contains("gap_evidence"));
+    assert!(manifest_schema.contains("maximum\":67108864"));
+    assert!(manifest_schema.contains("^video/mp4$"));
+    assert!(manifest_schema.contains("^[0-9a-f]{64}$"));
+    assert!(manifest_schema.contains("const\":false"));
+}
+
+#[test]
 fn canonical_cache_transcript_is_stable_sensitive_and_contains_no_opaque_process_data() {
     let plan = one_frame_plan();
     let profile = VideoEncodingProfile::new(plan.output(), 1024).unwrap();
@@ -404,8 +638,11 @@ fn canonical_cache_transcript_is_stable_sensitive_and_contains_no_opaque_process
     );
 
     let mut timing_value = serde_json::to_value(&plan).unwrap();
-    timing_value["segments"][0]["presentation"]["end"] = serde_json::json!(1_000_000_001_u64);
-    timing_value["duration"] = serde_json::json!(1_000_000_001_u64);
+    timing_value["policy"] = serde_json::json!("real_time");
+    timing_value["meaningful_frame_ids"] = serde_json::json!([]);
+    timing_value["segments"][0]["presentation"]["end"] = serde_json::json!(250_000_000_u64);
+    timing_value["segments"][0]["timing_basis"] = serde_json::json!("terminal_hold");
+    timing_value["duration"] = serde_json::json!(250_000_000_u64);
     let timing_plan: VideoPresentationPlan = serde_json::from_value(timing_value).unwrap();
     assert_ne!(
         first,
@@ -424,47 +661,7 @@ fn canonical_cache_transcript_is_stable_sensitive_and_contains_no_opaque_process
         canonical_video_cache_parameters(&source_plan, &identity(7), &profile).unwrap()
     );
 
-    let second_id = frame_id(4);
-    let gap_plan = VideoPresentationPlan::new(
-        VideoPresentationPolicy::RealTime,
-        SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(10)).unwrap(),
-        SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(10)).unwrap(),
-        SessionRange::new(SessionTime::from_nanos(2), SessionTime::from_nanos(4)).unwrap(),
-        epoch(vec![frame_id(3), second_id]),
-        vec![frame_id(3), second_id],
-        vec![],
-        vec![
-            VideoPresentationSegment::new(
-                0,
-                VideoSegmentSource::gap_slate(
-                    vec![crate::GapId::from_uuid(Uuid::from_u128(80))],
-                    SessionRange::new(SessionTime::from_nanos(2), SessionTime::from_nanos(3))
-                        .unwrap(),
-                )
-                .unwrap(),
-                PresentationRange::new(
-                    PresentationTime::ZERO,
-                    PresentationTime::from_nanos(500_000_000).unwrap(),
-                )
-                .unwrap(),
-                VideoTimingBasis::RecordedGap,
-            )
-            .unwrap(),
-            VideoPresentationSegment::new(
-                1,
-                VideoSegmentSource::source_frame(second_id, SessionTime::from_nanos(4)).unwrap(),
-                PresentationRange::new(
-                    PresentationTime::from_nanos(500_000_000).unwrap(),
-                    PresentationTime::from_nanos(750_000_000).unwrap(),
-                )
-                .unwrap(),
-                VideoTimingBasis::TerminalHold,
-            )
-            .unwrap(),
-        ],
-        geometry(),
-    )
-    .unwrap();
+    let gap_plan = gap_plan();
     assert_ne!(
         first,
         canonical_video_cache_parameters(&gap_plan, &identity(7), &profile).unwrap()
