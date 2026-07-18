@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-video-artifacts
 kind: epic
-stage: review
+stage: done
 tags: [visual, agent-ux, infra, security, testing]
 parent: null
 depends_on: []
@@ -123,3 +123,24 @@ The design uses one shared deterministic contract as the root, then lets the sec
 - `epic-temporal-video-artifacts-agent-surface`: done after one standard review and an exact stable-schema correction.
 - Full workspace fmt/check/tests/Clippy and docs build passed before the final agent-surface review correction;
   focused MCP, degraded startup, plugin, skill, evaluation, and real selected-FFmpeg lanes pass afterward.
+
+## Aggregate review findings (2026-07-18)
+
+- The single standard aggregate pass found one P1 cross-layer cancellation race: MCP independently raced
+  and dropped the generation future on the same cancellation/deadline that the video service must own to
+  cancel and drain a durable retained publication. A cancellation after staging could therefore leave a
+  recoverable MP4 and staging row.
+- No other material end-to-end blockers were found, and the reviewed legacy still-schema correction was
+  confirmed. Review source was the same-harness OpenAI-lineage fallback because cross-model Claude OAuth
+  was unavailable.
+
+## Aggregate review correction (2026-07-18)
+
+- MCP now performs its initial budget check, passes the exact deadline/token into the service, and awaits
+  the service directly. The retained-video service is the single owner of the cancellation race and cannot
+  be dropped before it cancels and drains publication cleanup.
+- A protocol-boundary regression sends `notifications/cancelled` while a fake durable-publication phase is
+  paused and proves the service cleanup completes before the request future ends.
+- Focused service cancellation/deadline cleanup tests pass. Store tests that cancel at every durable file
+  boundary, reopen storage, and prove no video recovers also pass, as does the no-visible/no-accounted-state
+  cancellation test. The accepted finding was fixed and verified without a second aggregate review pass.

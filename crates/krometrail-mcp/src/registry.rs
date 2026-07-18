@@ -338,14 +338,18 @@ async fn call_temporal_video(
             None,
         ));
     };
-    let result = budget
-        .run(service.generate_video(
+    // The retained-video service owns the cancellation/deadline race because it must
+    // cancel and drain any in-flight durable publication before returning. Wrapping
+    // this future in `RequestBudget::run` would drop that cleanup path when MCP wins
+    // the same race.
+    let result = service
+        .generate_video(
             request,
             ArtifactGenerationContext {
                 deadline: Some(budget.deadline),
                 cancellation: Some(cancellation),
             },
-        ))
+        )
         .await;
     match result {
         Ok(result) => map_temporal_video_result(name, result)

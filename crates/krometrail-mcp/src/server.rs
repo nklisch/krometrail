@@ -372,10 +372,11 @@ mod tests {
         num::NonZeroU32,
         sync::{
             Mutex,
-            atomic::{AtomicUsize, Ordering},
+            atomic::{AtomicBool, AtomicUsize, Ordering},
         },
     };
     use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
+    use tokio::sync::Notify;
 
     struct UnusedConnector;
 
@@ -501,6 +502,42 @@ mod tests {
     struct FailingVideo {
         calls: AtomicUsize,
         context: Mutex<Option<(bool, bool)>>,
+    }
+
+    struct CleanupVideo {
+        publication_started: Notify,
+        publication_cleanup_complete: Notify,
+        cleaned: AtomicBool,
+    }
+
+    impl TemporalVideoGeneration for CleanupVideo {
+        fn generate_video(
+            &self,
+            _request: TemporalVideoGenerationRequest,
+            context: krometrail_core::ArtifactGenerationContext,
+        ) -> PortFuture<'_, Result<TemporalVideoGenerationResult>> {
+            Box::pin(async move {
+                let cancellation = context
+                    .cancellation
+                    .expect("MCP video request carries cancellation into publication");
+                self.publication_started.notify_one();
+                cancellation.cancelled().await;
+                tokio::task::yield_now().await;
+                self.cleaned.store(true, Ordering::SeqCst);
+                self.publication_cleanup_complete.notify_one();
+                Err(KrometrailError::new(
+                    ErrorCode::Cancelled,
+                    NonEmptyText::new("fixture publication was cancelled and cleaned").unwrap(),
+                ))
+            })
+        }
+
+        fn read_video_artifact(
+            &self,
+            _request: krometrail_core::RetrieveArtifactRequest,
+        ) -> PortFuture<'_, Result<VideoArtifactRead>> {
+            panic!("cancellation cleanup test must not read retained artifacts")
+        }
     }
 
     impl TemporalVideoGeneration for FailingVideo {
@@ -1050,6 +1087,77 @@ mod tests {
         );
         assert_eq!(video.calls.load(Ordering::SeqCst), 1);
         assert_eq!(*video.context.lock().unwrap(), Some((true, true)));
+        drop(write);
+        drop(read);
+        server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn mcp_cancellation_does_not_drop_video_publication_cleanup() {
+        let video = Arc::new(CleanupVideo {
+            publication_started: Notify::new(),
+            publication_cleanup_complete: Notify::new(),
+            cleaned: AtomicBool::new(false),
+        });
+        let mut deps = dependencies(Arc::new(UnusedConnector));
+        deps.temporal_video = Some(Arc::clone(&video) as Arc<dyn TemporalVideoGeneration>);
+        let service = build_service(deps, qualified_video_config()).unwrap();
+        let (client_io, server_io) = tokio::io::duplex(256 * 1024);
+        let server_task = tokio::spawn(async move {
+            let running = service.server.serve(server_io).await.unwrap();
+            running.waiting().await.unwrap();
+        });
+        let (read, mut write) = tokio::io::split(client_io);
+        let mut read = BufReader::new(read);
+        send_json(
+            &mut write,
+            json!({
+                "jsonrpc":"2.0","id":1,"method":"initialize","params":{
+                    "protocolVersion":"2025-06-18","capabilities":{},
+                    "clientInfo":{"name":"video-cancellation-test","version":"1"}
+                }
+            }),
+        )
+        .await;
+        let _ = read_json(&mut read).await;
+        send_json(
+            &mut write,
+            json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+        )
+        .await;
+        let fixture = crate::test_fixture::video_fixture();
+        send_json(
+            &mut write,
+            json!({
+                "jsonrpc":"2.0","id":2,"method":"tools/call","params":{
+                    "name":"generate_temporal_video",
+                    "arguments": serde_json::to_value(fixture.request).unwrap()
+                }
+            }),
+        )
+        .await;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            video.publication_started.notified(),
+        )
+        .await
+        .unwrap();
+        send_json(
+            &mut write,
+            json!({
+                "jsonrpc":"2.0","method":"notifications/cancelled",
+                "params":{"requestId":2,"reason":"test durable publication cancellation"}
+            }),
+        )
+        .await;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            video.publication_cleanup_complete.notified(),
+        )
+        .await
+        .expect("MCP cancellation must await service-owned publication cleanup");
+        assert!(video.cleaned.load(Ordering::SeqCst));
+
         drop(write);
         drop(read);
         server_task.await.unwrap();
