@@ -396,14 +396,15 @@ mod tests {
         GenerateArtifactsRequest, NonEmptyText, NormalizationRequest, OutputLimitsRequest,
         PageStatus, PortFuture, ProfileRef, ProgressiveEvidence, ProgressiveEvidenceContext,
         ProgressiveEvidenceRequest, ProgressiveEvidenceResult, ProgressiveRegion,
-        RangeResolutionOptions, RegionFilmstripEvidenceRequest, RendererCapability, ResolvedRange,
-        ResolvedRangeEvidenceRequest, ResolvedRangeHandleId, ResolvedRangeHandles, RetentionStatus,
-        SessionId, SessionOrigin, SessionRange, SessionTime, Sha256Digest, SourceFrameList,
-        SourceFrameSelection, SourceFramesRequest, SourceReadLimitsRequest, StoryboardRequest,
-        TEMPORAL_DEBUG_BUNDLE_POLICY_VERSION, TargetCaptureStatus, TargetId, TemporalContext,
-        TemporalContextQuery, TemporalContextRequest, TemporalDebugBundle,
-        TemporalDebugBundleContext, TemporalDebugBundleRequest, TemporalDebugBundles,
-        TemporalDebugHeader, TemporalQueryRequest, TemporalRangeAnchor, TemporalRangeAnchorKind,
+        RangeEvidenceAvailability, RangeResolutionOptions, RegionFilmstripEvidenceRequest,
+        RendererCapability, ResolvedRange, ResolvedRangeEvidenceRequest, ResolvedRangeHandleId,
+        ResolvedRangeHandles, RetentionStatus, SessionId, SessionOrigin, SessionRange, SessionTime,
+        Sha256Digest, SourceFrameList, SourceFrameSelection, SourceFramesRequest,
+        SourceReadLimitsRequest, StoryboardRequest, TEMPORAL_DEBUG_BUNDLE_POLICY_VERSION,
+        TargetCaptureStatus, TargetId, TemporalContext, TemporalContextQuery,
+        TemporalContextRequest, TemporalDebugBundle, TemporalDebugBundleContext,
+        TemporalDebugBundleRequest, TemporalDebugBundles, TemporalDebugHeader,
+        TemporalQueryRequest, TemporalRangeAnchor, TemporalRangeAnchorKind,
         TemporalVideoGeneration, TemporalVideoGenerationRequest, TemporalVideoGenerationResult,
         VideoArtifactRead,
     };
@@ -426,8 +427,8 @@ mod tests {
         fn register(
             &self,
             _range: ResolvedRange,
-        ) -> krometrail_core::Result<ResolvedRangeHandleId> {
-            Ok(range_handle_id())
+        ) -> PortFuture<'_, krometrail_core::Result<ResolvedRangeHandleId>> {
+            Box::pin(std::future::ready(Ok(range_handle_id())))
         }
 
         fn resolve_available(
@@ -753,21 +754,26 @@ mod tests {
     }
 
     impl ResolvedRangeHandles for TestRangeHandles {
-        fn register(&self, range: ResolvedRange) -> krometrail_core::Result<ResolvedRangeHandleId> {
-            range.validate()?;
-            let mut entry = self.entry.lock().unwrap();
-            match entry.as_ref() {
-                Some((handle, registered)) if registered == &range => Ok(*handle),
-                Some(_) => Err(KrometrailError::new(
-                    ErrorCode::Internal,
-                    NonEmptyText::new("test range handle collision").unwrap(),
-                )),
-                None => {
-                    let handle = range_handle_id();
-                    *entry = Some((handle, range));
-                    Ok(handle)
+        fn register(
+            &self,
+            range: ResolvedRange,
+        ) -> PortFuture<'_, krometrail_core::Result<ResolvedRangeHandleId>> {
+            let result = range.validate().and_then(|()| {
+                let mut entry = self.entry.lock().unwrap();
+                match entry.as_ref() {
+                    Some((handle, registered)) if registered == &range => Ok(*handle),
+                    Some(_) => Err(KrometrailError::new(
+                        ErrorCode::Internal,
+                        NonEmptyText::new("test range handle collision").unwrap(),
+                    )),
+                    None => {
+                        let handle = range_handle_id();
+                        *entry = Some((handle, range));
+                        Ok(handle)
+                    }
                 }
-            }
+            });
+            Box::pin(std::future::ready(result))
         }
 
         fn resolve_available(
@@ -843,6 +849,22 @@ mod tests {
                         frames: Vec::new(),
                     })),
                 ),
+                ProgressiveEvidenceRequest::QueryPinState(request) => {
+                    let state = krometrail_core::PinState::new(
+                        request.pin_request().unwrap(),
+                        false,
+                        RangeEvidenceAvailability::Complete,
+                        krometrail_core::PinProtectionScope::SourceSegmentsOnly,
+                        Vec::new(),
+                        Vec::new(),
+                        0,
+                        RetentionStatus::empty(
+                            krometrail_core::DiskBudgetBytes::new(1024).unwrap(),
+                        ),
+                    )
+                    .unwrap();
+                    Ok(ProgressiveEvidenceResult::QueryPinState(Box::new(state)))
+                }
                 _ => Err(TemporalSpy::error()),
             };
             Box::pin(std::future::ready(result))
@@ -854,11 +876,56 @@ mod tests {
             &self,
             request: TemporalContextRequest,
         ) -> PortFuture<'_, krometrail_core::Result<TemporalContext>> {
+            let range = request.range().clone();
             self.context_requests
                 .lock()
                 .unwrap()
-                .push(serde_json::to_value(request).unwrap());
-            Box::pin(std::future::ready(Err(TemporalSpy::error())))
+                .push(serde_json::to_value(&request).unwrap());
+            let result = serde_json::from_value(json!({
+                "range": range,
+                "capture_quality": {
+                    "requested_range": range.requested_range,
+                    "retained_range": range.resolved_range,
+                    "frame_count": 1,
+                    "first_frame": {
+                        "frame_id": range.frame_ids[0],
+                        "capture_ordinal": 1,
+                        "session_time": 0
+                    },
+                    "last_frame": {
+                        "frame_id": range.frame_ids[0],
+                        "capture_ordinal": 1,
+                        "session_time": 0
+                    },
+                    "cadence": null,
+                    "frame_warnings": [],
+                    "gaps": [],
+                    "gap_summary": {
+                        "gap_count": 0,
+                        "covered_duration_nanos": 0,
+                        "known_missing_frames": 0,
+                        "has_unknown_missing_estimate": false
+                    },
+                    "retention_warnings": [],
+                    "capture_status": {
+                        "at_range_start": null,
+                        "at_range_end": null,
+                        "transitions": []
+                    },
+                    "warnings": []
+                },
+                "browser_events": {
+                    "effective_range": range.resolved_range,
+                    "matched_count": 0,
+                    "returned_count": 0,
+                    "events": [],
+                    "next_cursor": null,
+                    "collection_gaps": [],
+                    "unavailable_ranges": [],
+                    "warnings": []
+                }
+            }));
+            Box::pin(std::future::ready(result.map_err(|_| TemporalSpy::error())))
         }
     }
 
@@ -2491,7 +2558,12 @@ mod tests {
             }),
         )
         .await;
-        assert_eq!(read_json(&mut read).await["result"]["isError"], true);
+        let event_response = read_json(&mut read).await;
+        assert_eq!(event_response["result"]["isError"], false);
+        assert_eq!(
+            event_response["result"]["structuredContent"]["range_handle"],
+            handle
+        );
 
         let mut pin_arguments = serde_json::to_value(ProgressiveEvidenceRequest::QueryPinState(
             ResolvedRangeEvidenceRequest::new(range.clone()).unwrap(),
@@ -2508,7 +2580,12 @@ mod tests {
             }),
         )
         .await;
-        assert_eq!(read_json(&mut read).await["result"]["isError"], true);
+        let pin_response = read_json(&mut read).await;
+        assert_eq!(pin_response["result"]["isError"], false);
+        assert_eq!(
+            pin_response["result"]["structuredContent"]["range_handle"],
+            handle
+        );
 
         drop(write);
         drop(read);

@@ -381,11 +381,14 @@ async fn call_temporal_video(
         Ok(request) => request,
         Err(error) => return Ok(call_error_result(name, error)),
     };
-    let handle = match range_handle_for_request(
-        dependencies.range_handles.as_ref(),
-        supplied_handle,
-        request.range(),
-    ) {
+    let handle = match budget
+        .run(range_handle_for_request(
+            dependencies.range_handles.as_ref(),
+            supplied_handle,
+            request.range(),
+        ))
+        .await
+    {
         Ok(handle) => handle,
         Err(error) => return Ok(call_error_result(name, error)),
     };
@@ -474,7 +477,10 @@ async fn call_bundle(
         .await;
     match result {
         Ok(bundle) => {
-            let handle = match dependencies.range_handles.register(bundle.range.clone()) {
+            let handle = match budget
+                .run(dependencies.range_handles.register(bundle.range.clone()))
+                .await
+            {
                 Ok(handle) => handle,
                 Err(error) => return Ok(call_error_result(name, error)),
             };
@@ -539,12 +545,17 @@ async fn call_progressive(
             None,
         ));
     };
-    let handle =
-        match range_handle_for_request(dependencies.range_handles.as_ref(), supplied_handle, range)
-        {
-            Ok(handle) => handle,
-            Err(error) => return Ok(call_error_result(name, error)),
-        };
+    let handle = match budget
+        .run(range_handle_for_request(
+            dependencies.range_handles.as_ref(),
+            supplied_handle,
+            range,
+        ))
+        .await
+    {
+        Ok(handle) => handle,
+        Err(error) => return Ok(call_error_result(name, error)),
+    };
     let cancellation: Arc<dyn CancellationSignal> = budget.cancellation.clone();
     let result = budget
         .run(dependencies.progressive_evidence.execute(
@@ -600,11 +611,14 @@ async fn call_context(
             }
         }
     };
-    let handle = match range_handle_for_request(
-        dependencies.range_handles.as_ref(),
-        supplied_handle,
-        request.context_request().range(),
-    ) {
+    let handle = match budget
+        .run(range_handle_for_request(
+            dependencies.range_handles.as_ref(),
+            supplied_handle,
+            request.context_request().range(),
+        ))
+        .await
+    {
         Ok(handle) => handle,
         Err(error) => return Ok(call_error_result(name, error)),
     };
@@ -664,12 +678,15 @@ async fn resolve_range_argument(
     }
 }
 
-fn range_handle_for_request(
+async fn range_handle_for_request(
     handles: &dyn krometrail_core::ResolvedRangeHandles,
     supplied_handle: Option<ResolvedRangeHandleId>,
     range: &ResolvedRange,
 ) -> Result<ResolvedRangeHandleId> {
-    supplied_handle.map_or_else(|| handles.register(range.clone()), Ok)
+    match supplied_handle {
+        Some(handle) => Ok(handle),
+        None => handles.register(range.clone()).await,
+    }
 }
 
 fn progressive_request_range(request: &ProgressiveEvidenceRequest) -> Option<&ResolvedRange> {
