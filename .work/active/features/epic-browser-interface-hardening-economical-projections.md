@@ -1,7 +1,7 @@
 ---
 id: epic-browser-interface-hardening-economical-projections
 kind: feature
-stage: implementing
+stage: review
 tags: [agent-ux, browser]
 parent: epic-browser-interface-hardening
 depends_on: []
@@ -105,3 +105,14 @@ Compact temporal output keeps range/header, counts, gap/warning summaries, artif
 ## Risks
 
 Dense control surfaces can exceed 48 actionable nodes. Omission accounting remains explicit and full snapshot drill-down is preserved. The new response field is additive and defaults to the already documented low-cost behavior.
+
+## Implementation summary
+
+- Reduced automatic post-action snapshot presentation to 48 nodes and 12 KiB of serialized node JSON, preserving actionable ancestors, validated preorder structure, exact omission accounting, and explicit full snapshots.
+- Added `response.temporal` with a compact default and full opt-in. Both temporal response mappings use this preference directly; snapshot and page-state detail cannot expand temporal responses.
+- Compact temporal results retain range/header, quality and warning summaries, artifact handles, and canonical resources. `temporal: full` retains the prior bundle projection and explicit resource drill-down.
+
+## Verification
+
+- Passed: `cargo test -p krometrail-mcp --all-targets --locked` (63 tests), `cargo check -p krometrail-mcp --all-targets --locked`, and `cargo clippy -p krometrail-mcp --all-targets --locked -- -D warnings`.
+- MCP files pass direct `rustfmt --check`. The workspace-wide `cargo fmt --all -- --check` currently reports only concurrent, out-of-scope formatting in `crates/krometrail-cdp/src/control/snapshot.rs`.
