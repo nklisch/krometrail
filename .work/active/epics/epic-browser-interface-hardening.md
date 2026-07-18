@@ -1,7 +1,7 @@
 ---
 id: epic-browser-interface-hardening
 kind: epic
-stage: implementing
+stage: review
 tags: [browser, agent-ux]
 parent: null
 depends_on: []
@@ -105,3 +105,11 @@ No product UI surface is introduced. These are MCP/CDP contract repairs and agen
 - `idea-fix-viewport-preset-regression`
 - `idea-fix-frame-envelope-capture`
 - `idea-fix-nested-frame-query`
+
+## Child features reviewed and complete
+
+- `epic-browser-interface-hardening-economical-projections` — done after one standard fresh-context pass with no findings.
+- `epic-browser-interface-hardening-page-context-semantics` — done after the standard pass's local-container blocker was fixed and the named fix set verified without a second review.
+- `epic-browser-interface-hardening-runtime-reliability` — done after the standard pass's geometry-fence and viewport-guidance blockers were fixed and the named fix set verified without a second review.
+
+Aggregate verification is green across workspace tests, workspace check, workspace clippy with warnings denied, formatting, plugin distribution contracts, and opt-in real-Chrome viewport and same-origin-frame qualification.
