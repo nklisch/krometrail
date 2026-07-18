@@ -1,7 +1,7 @@
 ---
 id: gate-tests-mcp-successful-mutation-projections
 kind: story
-stage: drafting
+stage: implementing
 tags: [testing]
 parent: null
 depends_on: []
@@ -31,3 +31,17 @@ Drive one successful live mutation through in-memory JSON-RPC using omitted, leg
 
 ## Test location
 `crates/krometrail-mcp/src/server.rs`
+
+## Acceptance criteria
+
+- An in-memory JSON-RPC test drives a successful state-changing browser tool through request splitting, routing, response projection, and MCP serialization.
+- Omitted response preferences produce compact snapshot/page-state detail and no inline image.
+- Explicit legacy/full/inline variants expand presentation as requested.
+- Every variant preserves the same successful operation outcome, interaction anchor, warnings, and resource identities.
+- The test asserts MCP content shape as well as structured content and fails if mutation dispatch is skipped or duplicated.
+
+## Implementation plan
+
+- Extend the protocol fake with one deterministic successful mutation result containing full observation data and an encoded screenshot.
+- Call the mutation through in-memory JSON-RPC for default, legacy, full, and inline projections.
+- Compare authoritative envelope fields across variants and assert only the intended presentation differences.

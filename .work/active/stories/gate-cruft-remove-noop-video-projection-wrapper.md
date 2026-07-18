@@ -1,7 +1,7 @@
 ---
 id: gate-cruft-remove-noop-video-projection-wrapper
 kind: story
-stage: drafting
+stage: implementing
 tags: [cleanup]
 parent: null
 depends_on: []
@@ -29,3 +29,16 @@ The base temporal-video mapper emits video/manifest resources but no inline imag
 ## Removal
 
 Route the registry directly through `map_temporal_video_result` and remove the projected-video wrapper and unused preference argument.
+
+## Acceptance criteria
+
+- The temporal-video registry route calls `map_temporal_video_result` directly.
+- The no-op projected-video wrapper and its import are removed.
+- Response projection input remains accepted and validated consistently, but no unused preference value is threaded into video mapping.
+- Existing temporal-video response/resource tests remain green.
+
+## Implementation plan
+
+- Keep projection argument splitting at the MCP boundary for schema/validation compatibility.
+- Discard the validated preference for the video route and invoke the canonical mapper directly.
+- Remove the wrapper and any now-unused imports.

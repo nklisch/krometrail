@@ -1,7 +1,7 @@
 ---
 id: gate-cruft-remove-unreachable-range-invalidation
 kind: story
-stage: drafting
+stage: implementing
 tags: [cleanup]
 parent: null
 depends_on: []
@@ -29,3 +29,16 @@ dead function
 ## Removal
 
 Remove the trait method, implementations, invalidation-only tests, and `StoredRange.budget_bytes` state used solely for that path. Store the resolved range directly until a real lifecycle callback exists.
+
+## Acceptance criteria
+
+- `ResolvedRangeHandles` has no session-invalidation method and every implementation/fake compiles without it.
+- The process authority stores `ResolvedRange` directly; no per-entry `budget_bytes` field or invalidation-only test remains.
+- Admission still enforces both entry count and aggregate serialized-byte budget without evicting accepted handles.
+- Handle resolution still revalidates exact retained frame order, scope, and availability.
+
+## Implementation plan
+
+- Remove the unused trait method and fake implementations.
+- Replace `StoredRange` with direct range storage while retaining aggregate admission accounting.
+- Rewrite budget coverage around admission behavior and remove invalidation-only assertions.

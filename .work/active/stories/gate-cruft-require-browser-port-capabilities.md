@@ -1,7 +1,7 @@
 ---
 id: gate-cruft-require-browser-port-capabilities
 kind: story
-stage: drafting
+stage: implementing
 tags: [cleanup]
 parent: null
 depends_on: []
@@ -29,3 +29,16 @@ New managed-profile and managed-download capabilities provide empty/not-found tr
 ## Removal
 
 Make the new trait methods required and add explicit empty/not-found behavior only to adapters or fakes where it is intentional, restoring compiler-enforced adapter completeness.
+
+## Acceptance criteria
+
+- `BrowserConnector::managed_profiles`, `BrowserSessionPort::read_managed_download`, and `ChromeLauncher::managed_profiles` have no default implementation.
+- Every production adapter, delegating wrapper, and test fake implements the required capability explicitly.
+- Intentional fake behavior is locally visible as an empty inventory or stable not-found result rather than inherited silently.
+- Workspace check and Clippy prove adapter completeness.
+
+## Implementation plan
+
+- Remove the three compatibility defaults from the core/CDP traits.
+- Add explicit implementations to every workspace adapter and fake, preserving each test's intended behavior.
+- Let compiler errors identify any missed implementation.
