@@ -1,7 +1,7 @@
 ---
 id: epic-agent-browser-ergonomics-viewport-intent
 kind: feature
-stage: review
+stage: done
 tags: [agent-ux, browser]
 parent: epic-agent-browser-ergonomics
 depends_on: []
@@ -246,3 +246,11 @@ fn decode_effective_viewport(
 - Integrated core, CDP session/decoder, MCP schema/projection, workspace all-target checks, and the bounded real-Chrome qualification passed.
 - Real Chrome verified responsive-small equal geometry and exact screenshot size, mobile-phone missing-meta guidance with a wider layout viewport, navigation persistence, clear, and target isolation.
 - No feature-scope blocker or adjacent finding remains; the feature is ready for independent review.
+
+## Review record
+
+- Effective weight: standard; pass: 1; verdict: approve after fixes.
+- Findings fixed: legacy navigation/control/shared-CDP observation doubles now provide the independently required layout viewport and viewport-meta fact, protecting full-library execution rather than only focused new tests; browser-default/clear materialization with no requested metrics now returns no mismatch guidance and therefore never claims an override was acknowledged.
+- Regression evidence: divergent clear geometry produces an empty guidance list, the independent viewport observation test asserts layout geometry and metadata presence, and the navigation restore plus shared scripted transport use the exact current side-effect-free runtime expression.
+- Verification: core viewport tests passed (10), the complete `krometrail-cdp` library suite passed (140), and the earlier bounded real-Chrome responsive/mobile preset qualification remains green.
+- Closure: accepted blockers were corrected in `15f6825`; per the standard one-pass policy, verified fixes close the feature without a second independent review.
