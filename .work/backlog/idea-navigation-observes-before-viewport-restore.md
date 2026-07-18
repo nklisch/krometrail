@@ -10,6 +10,10 @@ post-navigation evidence race on Wikipedia. `navigate_page` succeeded without wa
 returned page observation and screenshot were captured before the asynchronous override replay:
 the response reported a 1120x1991 visual viewport with page scale 0.3214. A later `inspect_page`
 reported the restored 360x640 visual viewport with page scale 1, and `browser_status` showed capture
-still healthy. Navigation should not advertise successful post-action evidence that contradicts the
+still healthy. The same target reproduced the mismatch after `go_forward`: the response reported a
+1120x1991 layout viewport and screenshot rectangle while simultaneously reporting a 360x640 visual
+viewport at DPR 3. `go_back` to MDN happened to return coherent 360x640 evidence, so the race is
+page- or timing-sensitive rather than limited to `navigate_page`. Navigation should not advertise
+successful post-action evidence that contradicts the
 declared target viewport; restoration and independent verification need to precede that observation,
 or the response must explicitly degrade the premature evidence.
