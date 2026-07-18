@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{DownloadId, NonEmptyText, SessionId, TargetId, error::invalid};
 
-use super::{PageOperationResult, PageSelection, SanitizedUrl};
+use super::{InteractionAnchor, PageOperationResult, PageSelection, SanitizedUrl};
 
 pub const MAX_CLIPBOARD_TEXT_BYTES: usize = 64 * 1024;
 pub const MAX_MANAGED_DOWNLOADS: usize = 32;
@@ -189,6 +189,7 @@ pub struct CancelDownloadRequest {
 pub struct CancelDownloadResult {
     pub download_id: DownloadId,
     pub state: DownloadState,
+    pub operation: InteractionAnchor,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

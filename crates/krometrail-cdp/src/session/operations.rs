@@ -163,10 +163,36 @@ pub(super) async fn execute_operation_unfenced(
                 .downloads
                 .as_ref()
                 .expect("managed ownership has download authority");
-            authority
+            let target_id = state
+                .selected_target()
+                .map(|target| target.target.target.id())
+                .ok_or_else(|| {
+                    stable_error(
+                        ErrorCode::TargetFailed,
+                        "download cancellation requires one current supervised page",
+                    )
+                })?;
+            let started_at = page_control.session_time()?;
+            let dispatched_at = page_control.session_time()?;
+            let download_id = request.download_id;
+            let state = authority
                 .cancel(transport.as_ref(), request.download_id)
-                .await
-                .map(|value| BrowserOperationResult::CancelDownload(Box::new(value)))
+                .await?;
+            let completed_at = page_control.session_time()?;
+            let operation = InteractionAnchor::new(
+                page_control.next_interaction_id(),
+                shared.session_id,
+                target_id,
+                krometrail_core::BrowserOperationKind::CancelDownload,
+                InteractionTiming::new(started_at, dispatched_at, completed_at, None)?,
+            )?;
+            Ok(BrowserOperationResult::CancelDownload(Box::new(
+                krometrail_core::CancelDownloadResult {
+                    download_id,
+                    state,
+                    operation,
+                },
+            )))
         }
         request => {
             execute_non_local_operation(

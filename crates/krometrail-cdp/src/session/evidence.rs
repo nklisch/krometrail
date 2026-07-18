@@ -102,6 +102,35 @@ fn project_result(
         }));
     }
 
+    if let BrowserOperationResult::CancelDownload(value) = result {
+        let anchor = value.operation.clone();
+        let record = InteractionRecord::new(
+            anchor.interaction_id,
+            ObservationContext::new(
+                anchor.session_id,
+                anchor.target_id,
+                0,
+                anchor.timing.started_at,
+                anchor.timing.completed_at,
+            )?,
+            anchor.timing.dispatched_at,
+            anchor.timing.completed_at,
+            BrowserOperationKind::CancelDownload,
+            SanitizedParameters::new(serde_json::json!({
+                "download_id": value.download_id,
+                "state": value.state,
+            }))?,
+            LocatorSummary::from_locator(None),
+            InteractionOutcome::Dispatched,
+            None,
+        )?;
+        return Ok(Some(EvidenceProjection {
+            anchor,
+            record: Some(record),
+            navigation_id: None,
+        }));
+    }
+
     let action = match result {
         BrowserOperationResult::Click(value)
         | BrowserOperationResult::Fill(value)
@@ -126,7 +155,6 @@ fn project_result(
         | BrowserOperationResult::ReadClipboard(_)
         | BrowserOperationResult::ListDownloads(_)
         | BrowserOperationResult::WaitForDownload(_)
-        | BrowserOperationResult::CancelDownload(_)
         | BrowserOperationResult::Wait(_)
         | BrowserOperationResult::Batch(_) => None,
         BrowserOperationResult::CreatePage(_)
@@ -139,6 +167,9 @@ fn project_result(
         | BrowserOperationResult::SetViewport(_) => unreachable!("page results handled above"),
         BrowserOperationResult::WriteClipboard(_) => {
             unreachable!("clipboard result handled above")
+        }
+        BrowserOperationResult::CancelDownload(_) => {
+            unreachable!("download cancellation handled above")
         }
     };
     action
@@ -308,5 +339,40 @@ mod tests {
                 .unwrap()
                 .contains("clipboard text")
         );
+    }
+
+    #[test]
+    fn download_cancellation_evidence_contains_only_opaque_id_and_state() {
+        let operation = page_result(
+            BrowserOperationKind::CancelDownload,
+            PageChange::ClipboardWritten,
+        )
+        .interaction;
+        let download_id = krometrail_core::DownloadId::from_uuid(Uuid::from_u128(44));
+        let projection = project_result(
+            &BrowserOperationResult::CancelDownload(Box::new(
+                krometrail_core::CancelDownloadResult {
+                    download_id,
+                    state: krometrail_core::DownloadState::Cancelled,
+                    operation,
+                },
+            )),
+            &FixedIds,
+        )
+        .unwrap()
+        .unwrap();
+        let record = projection.record.unwrap();
+        assert_eq!(record.action, BrowserOperationKind::CancelDownload);
+        assert_eq!(
+            record.sanitized_parameters.as_json(),
+            &serde_json::json!({
+                "download_id": download_id,
+                "state": "cancelled",
+            })
+        );
+        let encoded = serde_json::to_string(&record).unwrap();
+        for forbidden in ["guid", "filename", "source_url", "resource_uri", "path"] {
+            assert!(!encoded.contains(forbidden));
+        }
     }
 }

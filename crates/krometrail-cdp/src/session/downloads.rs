@@ -6,11 +6,11 @@ use std::{
 };
 
 use krometrail_core::{
-    BrowserSessionEvent, CancelDownloadResult, CancellationSignal, DownloadDisplayName, DownloadId,
-    DownloadInventory, DownloadSequence, DownloadState, ErrorCode, ErrorContext, IdSource,
-    KrometrailError, MAX_MANAGED_DOWNLOAD_BYTES, MAX_MANAGED_DOWNLOADS, ManagedDownload,
-    ManagedDownloadRead, NonEmptyText, ReadManagedDownloadRequest, Result, RetryAdvice,
-    SanitizedUrl, SessionId, WaitForDownloadRequest,
+    BrowserSessionEvent, CancellationSignal, DownloadDisplayName, DownloadId, DownloadInventory,
+    DownloadSequence, DownloadState, ErrorCode, ErrorContext, IdSource, KrometrailError,
+    MAX_MANAGED_DOWNLOAD_BYTES, MAX_MANAGED_DOWNLOADS, ManagedDownload, ManagedDownloadRead,
+    NonEmptyText, ReadManagedDownloadRequest, Result, RetryAdvice, SanitizedUrl, SessionId,
+    WaitForDownloadRequest,
 };
 use serde_json::{Value, json};
 use tokio::sync::Notify;
@@ -110,7 +110,7 @@ impl LazyManagedDownloadAuthority {
         &self,
         transport: &dyn CdpTransport,
         id: DownloadId,
-    ) -> Result<CancelDownloadResult> {
+    ) -> Result<DownloadState> {
         self.activated().await?.cancel(transport, id).await
     }
 
@@ -361,7 +361,7 @@ impl ManagedDownloadAuthority {
         &self,
         transport: &dyn CdpTransport,
         id: DownloadId,
-    ) -> Result<CancelDownloadResult> {
+    ) -> Result<DownloadState> {
         let _gate = self.gate.lock().await;
         let guid = {
             let state = self.state.lock().expect("download state lock");
@@ -378,10 +378,7 @@ impl ManagedDownloadAuthority {
                     )
                 })?;
             if is_terminal(entry.public.state) {
-                return Ok(CancelDownloadResult {
-                    download_id: id,
-                    state: entry.public.state,
-                });
+                return Ok(entry.public.state);
             }
             guid.clone()
         };
@@ -402,10 +399,7 @@ impl ManagedDownloadAuthority {
             })?;
         self.transition(&guid, DownloadState::Cancelled, None, None);
         remove_file(&self.root.join(&guid));
-        Ok(CancelDownloadResult {
-            download_id: id,
-            state: DownloadState::Cancelled,
-        })
+        Ok(DownloadState::Cancelled)
     }
 
     pub(crate) async fn read(
