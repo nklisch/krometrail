@@ -1,7 +1,7 @@
 ---
 id: epic-temporal-video-artifacts-ffmpeg-runtime
 kind: feature
-stage: review
+stage: implementing
 tags: [infra, security, testing]
 parent: epic-temporal-video-artifacts
 depends_on: [epic-temporal-video-artifacts-clip-contracts]
@@ -383,3 +383,17 @@ These are sequential security/acceptance checkpoints inside one cohesive adapter
 - `cargo tree -p krometrail-ffmpeg` plus a lockfile audit found no FFmpeg binary, binding, wrapper, downloader, or network dependency; the only FFmpeg-named package is this workspace crate.
 - No existing test was removed, weakened, or skipped to obtain these results.
 - `.work/bin/work-view` is an x86-64 Linux executable in this checkout and cannot execute on the macOS host. Dependency readiness and child stages were therefore verified directly from item frontmatter; this did not block implementation or verification.
+
+## Review findings (2026-07-18)
+
+**Review weight**: `standard` (default) — one same-harness fresh-context pass after the preferred Claude peer was unavailable on expired OAuth. Closure after correction is fix verification only; do not run a second independent pass.
+
+**Receiver-confirmed blockers**:
+
+- Carry cancellation and the exact deadline through bounded PATH enumeration, candidate metadata/hash work, output reading, MP4 validation, and final result construction; move blocking filesystem/parse work off the async runtime.
+- Define a total versioned microsecond representability rule so every constructor-valid plan maps to strictly increasing encoded PTS or fails at the validated boundary with explicit semantics; cover dense and sub-tick boundaries.
+- Validate bounded MP4 sample count/timing tables against the quantized plan, not only total duration, and regenerate the retained fixture from the final argument policy.
+- Keep process ownership fail-closed. Because Krometrail's supported runtime contract is Linux/macOS, simplify the unqualified Windows Job/DACL path to an explicit unavailable outcome rather than advertising privacy/tree guarantees not proven by this feature.
+- Make the argv test compare the entire ordered vector and remap ordinary final-launch disappearance/drift to `video_encoder_unavailable`.
+
+The same-harness reviewer also confirmed the no-shell/no-download boundary, Unix private staging/process groups, bounded diagnostics/output/parser arithmetic, fixed caller-independent argv, dependency direction, and later ownership of MCP/store composition.
