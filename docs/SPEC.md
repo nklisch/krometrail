@@ -109,6 +109,12 @@ Action dispatch or mutation, current-state observation, and retained temporal ca
 
 Read-only inspection operations do not generate additional screenshots unless requested.
 
+MCP callers can request an additive response projection that independently selects inline screenshot,
+snapshot, page-state, and diagnostic detail. Projection changes presentation only: the action outcome,
+interaction anchor, warnings, retained evidence, and canonical resource identities remain authoritative and
+available. Omitting the projection retains the stable full 1.x response. Status requests likewise support a
+concise operational projection while preserving the complete status contract as an explicit detail level.
+
 A batch of actions returns per-step status and timeline anchors. It returns a final live observation and can include per-step screenshots when requested.
 
 ## Structured Page Snapshots
@@ -125,6 +131,11 @@ backing-node replacement.
 Before executing an action against a reference, Krometrail verifies that the backing node remains valid and actionable. It fails with a specific stale-reference error when it cannot safely resolve the target. Errors instruct the agent to refresh the snapshot.
 
 Snapshot references are the primary target form. Explicit CSS selectors remain a debugging escape hatch with weaker validation guarantees. Canvas, WebGL, video, and other DOM-opaque surfaces remain visible through screenshots and temporal capture even when structured targeting is unavailable; declared coordinate-space interaction is the final fallback.
+
+Callers can also describe a semantic locator by accessible role and name, label text, visible text, or test
+identifier, optionally scoped to a descendant and a same-origin frame. Krometrail resolves the locator through
+the active document snapshot registry and returns or acts through an exact generation-scoped reference. Zero
+matches and ambiguous matches fail explicitly; semantic matching never silently selects one of several nodes.
 
 ## Browser-Control Surface
 
@@ -145,15 +156,22 @@ The control capability provides operations for:
 - take a screenshot of the viewport, full page, element, or region;
 - evaluate JavaScript in the page context;
 - inspect current URL, title, viewport, and navigation state.
+- inspect privacy-bounded page assets and frame structure;
+- read or write the selected page clipboard only through an explicit tool request;
+- observe popup and download lifecycle metadata and retrieve completed local download resources within the
+  managed session boundary.
 
 ### Viewport emulation
 
 - apply explicit width, height, device scale, mobile-layout, and touch metrics to one selected page;
+- select a named responsive-CSS or mobile-device preset that materializes into those same explicit metrics;
 - clear that target-scoped override and report the independently observed effective CSS visual viewport.
 
 Overrides survive ordinary navigation and same-target reattachment, are restored before capture
 resumes, and never affect another target. A clear removes both device metrics and touch emulation.
-Named device presets and user-agent emulation are outside this contract.
+The result identifies the selected intent and warns when the observed layout viewport differs materially from
+the requested visual viewport, including the common missing-viewport-metadata case. Presets do not imply user-
+agent emulation; custom metrics and clear retain their stable meanings.
 
 ### Interaction
 
@@ -294,6 +312,11 @@ A temporal range can be specified by:
 - a source-frame range.
 
 Natural anchors resolve to an explicit target and time range before artifact generation. When an interaction query omits an explicit range, Krometrail uses bounded pre-action context through the interaction lifecycle and post-action observation, plus bounded trailing context. The resolved range is returned with every response.
+
+Range resolution can also return an opaque session-scoped handle. Temporal artifact, event, source-frame,
+pinning, and video requests accept either the complete resolved range or that handle. A handle resolves to the
+same immutable range payload for the lifetime of the MCP process and fails explicitly after restart,
+invalidation, or session deletion; it is a convenience reference, not an independent evidence authority.
 
 Queries fail clearly when part or all of the requested range has been evicted, was never captured, belongs to a different target, or contains known capture gaps.
 

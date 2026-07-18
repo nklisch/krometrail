@@ -145,6 +145,10 @@ actionable references. The CDP control adapter owns the active per-target regist
 backing DOM-node bindings, document fingerprint, and attachment-generation fence;
 its stale-reference boundary is described below.
 
+Semantic locators are validated domain inputs resolved by that same registry. Role/name, label, text, test-id,
+descendant, and same-origin-frame scope narrow to exactly one backing node before an operation dispatches. The
+resolved action still uses a generation-scoped `NodeReference`; there is no parallel locator identity system.
+
 The core timeline contains ordered observations:
 
 ```text
@@ -234,6 +238,11 @@ the adapter changes device metrics, touch emulation, and mobile page scale, obse
 then commits supervisor state. Reconnect restores the exact target-key override before capture resumes;
 a restore failure is target-local. Capture remains continuous across acknowledged geometry changes,
 and each frame retains its own viewport and device scale so artifact generation can split visual epochs.
+
+Viewport presets materialize into the existing typed override before reaching CDP. Intent and preset identity
+are presentation provenance; the acknowledged explicit metrics remain the lifecycle and reconnect authority.
+Observed layout-versus-visual viewport divergence is derived after acknowledgement and returned as guidance,
+not silently corrected.
 
 ## Capture Configuration Flow
 
@@ -442,6 +451,11 @@ ResolvedRange
 
 Artifact generation consumes only resolved ranges. This prevents each artifact implementation from interpreting natural anchors differently.
 
+The application service can register an immutable resolved range in a process-local handle table keyed by an
+opaque identifier. MCP follow-up tools resolve a handle through this table before invoking existing range-based
+ports. The table stores validated `ResolvedRange` values, is scoped to the current process and session, and is
+cleared by process restart or session deletion; storage and artifact services remain unaware of handles.
+
 ## Temporal Visual Crate
 
 The temporal visual crate is a standalone computation library.
@@ -558,6 +572,15 @@ Tool handlers:
 4. map domain errors into stable external errors.
 
 Tool handlers do not contain CDP commands, SQL, image processing, or retention logic.
+
+The MCP response projector owns additive agent-facing detail selection. It can replace inline screenshots or
+full structures with compact summaries and canonical resource links without changing domain acquisition or
+retention. Concise status is a projection of the same `BrowserStatus`, not a second status model.
+
+Target supervision remains the authority for pages, frames, and popup relationships. CDP adapters expose
+privacy-bounded page assets, clipboard operations, and download lifecycle through core ports; completed
+downloads are published through canonical local resources. These conveniences reuse the existing capability
+registry and generated schemas rather than introducing a parallel automation adapter.
 
 Large binary outputs are persisted and returned as MCP resources or file references. This includes local `video/mp4` resources when temporal video is available. Krometrail does not upload or attach them to a provider. A response can additionally include one context-sized image for immediate inspection.
 

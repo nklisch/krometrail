@@ -45,7 +45,7 @@ The system preserves the evidence. The agent performs the diagnosis.
 
 Krometrail provides browser controls comparable to contemporary coding-agent browser tools. Significant actions return a post-action screenshot and structured page observation so an agent can see the current result without making a separate temporal query. Recording begins with the controlled browser session and continues without requiring the agent to predict when a defect will occur.
 
-The live observation loop supports normal browser use. The temporal layer is an additional queryable history, not a replacement for current-state vision.
+The live observation loop supports normal browser use. Agent-sized projections keep routine responses concise while canonical resources and explicit inspection preserve full evidence for drill-down. Semantic targeting and intention-revealing viewport controls reduce orchestration overhead without hiding target, document, frame, or effective-layout boundaries. The temporal layer is an additional queryable history, not a replacement for current-state vision.
 
 When an interaction looks suspicious, the agent can inspect the interval around its last action. A temporal query returns a compact package such as:
 
@@ -55,7 +55,7 @@ When an interaction looks suspicious, the agent can inspect the interval around 
 - capture timing and gap information;
 - related action, navigation, console, and network markers.
 
-The agent can expand a region or retrieve additional source frames without loading the entire recording into its context.
+The agent can expand a region, retrieve additional source frames, or reuse a compact resolved-range handle without loading the entire recording or repeating its full provenance structure in context.
 
 ## Visual Evidence
 
