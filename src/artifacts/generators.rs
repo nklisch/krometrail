@@ -313,6 +313,7 @@ fn materialize_effective_scales(
     epoch: &super::epoch::EpochPlan,
     limits: ArtifactWorkLimits,
 ) -> Result<()> {
+    let reserved_output_bytes = output_reservation(request, limits)?;
     let normalization = match request {
         ArtifactGeneratorRequest::Storyboard(request) => Some(&mut request.normalization),
         ArtifactGeneratorRequest::DifferenceMap(request) => Some(&mut request.normalization),
@@ -321,7 +322,7 @@ fn materialize_effective_scales(
     };
     if let Some(normalization) = normalization {
         if normalization.scale == AnalysisScale::FitLimits {
-            normalization.scale = fit_scale(*normalization, epoch, limits)?;
+            normalization.scale = fit_scale(*normalization, epoch, limits, reserved_output_bytes)?;
         }
         validate_normalized_limit(*normalization, epoch, limits)?;
     }
@@ -332,7 +333,17 @@ fn fit_scale(
     request: NormalizationRequest,
     epoch: &super::epoch::EpochPlan,
     limits: ArtifactWorkLimits,
+    reserved_output_bytes: usize,
 ) -> Result<AnalysisScale> {
+    let normalized_budget = limits
+        .max_combined_request_bytes
+        .get()
+        .checked_sub(epoch.decoded_bytes)
+        .and_then(|remaining| remaining.checked_sub(reserved_output_bytes))
+        .ok_or_else(|| {
+            limit_error("decoded frames and bounded output exceed the combined memory limit")
+        })?
+        .min(limits.max_normalized_bytes.get());
     for factor in [1_u8, 2, 4, 8] {
         let scale = if factor == 1 {
             AnalysisScale::Identity
@@ -340,7 +351,9 @@ fn fit_scale(
             AnalysisScale::Down(factor)
         };
         let effective = NormalizationRequest { scale, ..request };
-        if validate_normalized_limit(effective, epoch, limits).is_ok() {
+        if validate_normalized_limit_with_budget(effective, epoch, limits, normalized_budget)
+            .is_ok()
+        {
             return Ok(scale);
         }
     }
@@ -354,6 +367,15 @@ fn validate_normalized_limit(
     epoch: &super::epoch::EpochPlan,
     limits: ArtifactWorkLimits,
 ) -> Result<()> {
+    validate_normalized_limit_with_budget(request, epoch, limits, limits.max_normalized_bytes.get())
+}
+
+fn validate_normalized_limit_with_budget(
+    request: NormalizationRequest,
+    epoch: &super::epoch::EpochPlan,
+    limits: ArtifactWorkLimits,
+    normalized_budget: usize,
+) -> Result<()> {
     let (width, height) = normalized_dimensions(
         request,
         epoch.descriptor.image.width(),
@@ -365,12 +387,32 @@ fn validate_normalized_limit(
         .checked_mul(6)
         .and_then(|bytes| bytes.checked_mul(epoch.frames.len()))
         .ok_or_else(|| limit_error("normalized retained bytes overflow"))?;
-    if pixels > limits.max_pixels_per_frame.get() || retained > limits.max_normalized_bytes.get() {
+    if pixels > limits.max_pixels_per_frame.get() || retained > normalized_budget {
         return Err(limit_error(
             "normalized sequence exceeds configured pixel or byte limits",
         ));
     }
     Ok(())
+}
+
+pub(crate) fn reserved_output_bytes(
+    prepared: &PreparedGenerator,
+    limits: ArtifactWorkLimits,
+) -> Result<usize> {
+    output_reservation(&prepared.request, limits)
+}
+
+fn output_reservation(
+    request: &ArtifactGeneratorRequest,
+    limits: ArtifactWorkLimits,
+) -> Result<usize> {
+    let per_output = usize::try_from(output_limits(request).max_encoded_bytes())
+        .map_err(|_| limit_error("requested output byte limit exceeds this platform"))?
+        .min(limits.max_output_bytes_each.get());
+    per_output
+        .checked_mul(request.output_kinds().len())
+        .map(|bytes| bytes.min(limits.max_output_bytes_total.get()))
+        .ok_or_else(|| limit_error("bounded output reservation overflows"))
 }
 
 fn normalized_dimensions(

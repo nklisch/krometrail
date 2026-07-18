@@ -23,7 +23,10 @@ use temporal_vision::{FrequencyMode, RegionDefinition, Rgb8, SignedPixelRect};
 use uuid::Uuid;
 
 use super::{
-    TemporalVisionArtifactService, epoch::WorkCancellation, scheduler::ArtifactWorkLimits,
+    TemporalVisionArtifactService,
+    epoch::{WorkCancellation, validate_and_plan},
+    generators::{estimated_normalized_bytes, prepare_generator},
+    scheduler::ArtifactWorkLimits,
 };
 
 const PNG: &[u8] = include_bytes!("../../tests/fixtures/artifacts/chrome-rgba.png");
@@ -665,6 +668,140 @@ async fn fit_limits_materializes_smallest_exact_divisor_in_manifest() {
     assert_eq!(
         scale.parameters().get("factor"),
         Some(&temporal_vision::ParameterValue::Unsigned(2))
+    );
+}
+
+#[test]
+fn default_limits_fit_reproduced_high_dpi_sequence_with_fixed_combined_budget() {
+    let session = SessionId::from_uuid(Uuid::from_u128(8_000));
+    let target = TargetId::from_uuid(Uuid::from_u128(8_001));
+    let image = PixelDimensions::new(2_400, 1_410).unwrap();
+    let viewport = PixelDimensions::new(1_200, 705).unwrap();
+    let frame = |position: u64| {
+        EncodedFrame::new(
+            CapturedFrame::new(
+                FrameId::from_uuid(Uuid::from_u128(8_100 + u128::from(position))),
+                session,
+                target,
+                CaptureOrdinal::new(position + 1).unwrap(),
+                None,
+                ObservedTime::from_nanos(position + 1),
+                SessionTime::from_nanos(position + 1),
+                ImageFormat::Png,
+                image,
+                viewport,
+                DeviceScaleFactor::new(2.0).unwrap(),
+                vec![],
+            )
+            .unwrap(),
+            PNG.to_vec(),
+        )
+        .unwrap()
+    };
+    let frames: Vec<_> = (0_u64..53).map(&frame).collect();
+    let time = SessionRange::new(SessionTime::from_nanos(1), SessionTime::from_nanos(53)).unwrap();
+    let range = ResolvedRange::new(
+        session,
+        target,
+        TemporalRangeAnchorKind::SessionTime,
+        time,
+        time,
+        frames.iter().map(|frame| frame.metadata().id()).collect(),
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+        RangeResolutionOptions::DEFAULT,
+    )
+    .unwrap();
+    let limits = ArtifactWorkLimits::default();
+    assert_eq!(limits.max_combined_request_bytes.get(), 1024 * 1024 * 1024);
+    let plans = validate_and_plan(
+        &range,
+        frames,
+        &[],
+        limits.adaptation(),
+        &WorkCancellation::default(),
+    )
+    .unwrap();
+    assert_eq!(plans.len(), 1);
+    assert_eq!(plans[0].decoded_bytes, 717_408_000);
+    assert_eq!(limits.max_decoded_bytes.get(), 768 * 1024 * 1024);
+
+    let mut peak_reservation = 0;
+    for generator in
+        crate::debug_bundle::default_generators(&range, krometrail_core::OrientationPolicy::Include)
+    {
+        let prepared = prepare_generator(&generator, &plans[0], limits).unwrap();
+        let repeated = prepare_generator(&generator, &plans[0], limits).unwrap();
+        assert_eq!(prepared.canonical_parameters, repeated.canonical_parameters);
+        let normalization = match &prepared.request {
+            ArtifactGeneratorRequest::Storyboard(request) => request.normalization,
+            ArtifactGeneratorRequest::DifferenceMap(request) => request.normalization,
+            _ => unreachable!(),
+        };
+        assert_eq!(normalization.scale, AnalysisScale::Down(2));
+        let output_bytes = match &prepared.request {
+            ArtifactGeneratorRequest::Storyboard(request) => {
+                request.output.max_encoded_bytes() as usize * prepared.request.output_kinds().len()
+            }
+            ArtifactGeneratorRequest::DifferenceMap(request) => {
+                request.output.max_encoded_bytes() as usize
+            }
+            _ => unreachable!(),
+        };
+        peak_reservation = peak_reservation.max(
+            plans[0].decoded_bytes
+                + estimated_normalized_bytes(&prepared, &plans[0]).unwrap()
+                + output_bytes,
+        );
+    }
+    assert_eq!(peak_reservation, 1_053_544_864);
+    assert!(peak_reservation <= limits.max_combined_request_bytes.get());
+
+    let oversized_frames: Vec<_> = (0_u64..55).map(frame).collect();
+    let oversized_time =
+        SessionRange::new(SessionTime::from_nanos(1), SessionTime::from_nanos(55)).unwrap();
+    let oversized_range = ResolvedRange::new(
+        session,
+        target,
+        TemporalRangeAnchorKind::SessionTime,
+        oversized_time,
+        oversized_time,
+        oversized_frames
+            .iter()
+            .map(|frame| frame.metadata().id())
+            .collect(),
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+        RangeResolutionOptions::DEFAULT,
+    )
+    .unwrap();
+    let oversized_plan = validate_and_plan(
+        &oversized_range,
+        oversized_frames,
+        &[],
+        limits.adaptation(),
+        &WorkCancellation::default(),
+    )
+    .unwrap();
+    let difference_map = crate::debug_bundle::default_generators(
+        &oversized_range,
+        krometrail_core::OrientationPolicy::Include,
+    )
+    .pop()
+    .unwrap();
+    let error = match prepare_generator(&difference_map, &oversized_plan[0], limits) {
+        Ok(_) => panic!("oversized sequence must fail before allocation"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        error.code,
+        krometrail_core::ErrorCode::ResourceLimitExceeded
     );
 }
 

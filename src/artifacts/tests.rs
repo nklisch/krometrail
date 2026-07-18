@@ -90,7 +90,7 @@ fn range(frames: &[EncodedFrame], gaps: Vec<CaptureGap>) -> ResolvedRange {
 #[test]
 fn real_jpeg_and_png_decode_to_declared_straight_rgba8() {
     assert!(DECODER_PROFILE.contains("image-0.25.9"));
-    assert_eq!(ADAPTER_VERSION, "krometrail-artifact-adapter-v1");
+    assert_eq!(ADAPTER_VERSION, "krometrail-artifact-adapter-v2");
     let jpeg = frame(
         metadata(1, 1, 1, ImageFormat::Jpeg, (2, 2), (2, 2), 1.0),
         JPEG,

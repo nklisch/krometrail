@@ -75,7 +75,7 @@ impl Default for ArtifactWorkLimits {
             max_encoded_source_bytes: NonZeroUsize::new(512 * 1024 * 1024).unwrap(),
             max_dimension: NonZeroU32::new(8192).unwrap(),
             max_pixels_per_frame: NonZeroUsize::new(16_777_216).unwrap(),
-            max_decoded_bytes: NonZeroUsize::new(512 * 1024 * 1024).unwrap(),
+            max_decoded_bytes: NonZeroUsize::new(768 * 1024 * 1024).unwrap(),
             max_normalized_bytes: NonZeroUsize::new(512 * 1024 * 1024).unwrap(),
             max_combined_request_bytes: NonZeroUsize::new(1024 * 1024 * 1024).unwrap(),
             max_outputs: NonZeroUsize::new(16).unwrap(),

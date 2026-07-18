@@ -17,7 +17,7 @@ use super::{
     decode::{DecodeLimits, decode_frame},
 };
 
-pub(crate) const ADAPTER_VERSION: &str = "krometrail-artifact-adapter-v1";
+pub(crate) const ADAPTER_VERSION: &str = "krometrail-artifact-adapter-v2";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct AdaptationLimits {

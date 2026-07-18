@@ -648,6 +648,68 @@ async fn non_fatal_artifact_failure_degrades_but_context_remains_useful() {
 }
 
 #[tokio::test]
+async fn bundle_resource_limits_recommend_shorter_or_progressive_evidence() {
+    let log = Arc::new(CallLog::default());
+    let range = resolved_range();
+    let mut result = generation_result(&range);
+    result.outcomes = vec![ArtifactOutcome::Unavailable {
+        epoch_index: 0,
+        generator_index: 0,
+        artifact_kind: ArtifactKind::Storyboard,
+        error: krometrail_core::KrometrailError::new(
+            ErrorCode::ResourceLimitExceeded,
+            NonEmptyText::new("fixture limit").unwrap(),
+        ),
+    }];
+    let generation = Arc::new(SpyGeneration {
+        log: Arc::clone(&log),
+        result,
+        error: None,
+        block: None,
+        reached: None,
+    });
+    let context = Arc::new(SpyContext {
+        log: Arc::clone(&log),
+        context: temporal_context(&range),
+        error: None,
+    });
+    let service = TemporalDebugBundleService::new(
+        Arc::new(SpyQuery {
+            log: Arc::clone(&log),
+            range: range.clone(),
+            error: None,
+        }),
+        Arc::new(SpyEvidenceStore {
+            log: Arc::clone(&log),
+            timeline: empty_slice(),
+            interactions: BTreeMap::new(),
+            timeline_error: None,
+        }),
+        generation,
+        context,
+        BundleWorkLimits::default(),
+    )
+    .unwrap();
+    let bundle = service
+        .bundle(request(), TemporalDebugBundleContext::default())
+        .await
+        .unwrap();
+    let BundleArtifactEvidence::Available(result) = bundle.artifacts else {
+        panic!("per-artifact limit should remain a partial result")
+    };
+    let ArtifactOutcome::Unavailable { error, .. } = &result.outcomes[0] else {
+        panic!("fixture outcome should remain unavailable")
+    };
+    assert_eq!(error.retry, krometrail_core::RetryAdvice::AfterRecovery);
+    assert_eq!(error.context.session_id, Some(range.session_id));
+    assert_eq!(error.context.target_id, Some(range.target_id));
+    assert_eq!(error.context.range, Some(range.resolved_range));
+    let recovery = error.recovery.as_ref().unwrap().as_str();
+    assert!(recovery.contains("shorten the requested interval"));
+    assert!(recovery.contains("progressive source-frame evidence"));
+}
+
+#[tokio::test]
 async fn context_unavailable_with_available_artifact_does_not_claim_cooccurrence() {
     let log = Arc::new(CallLog::default());
     let range = resolved_range();

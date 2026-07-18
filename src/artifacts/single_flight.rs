@@ -5,7 +5,10 @@ use std::{
     time::Instant,
 };
 
-use krometrail_core::{ArtifactCacheKey, CancellationSignal, KrometrailError, StoredArtifact};
+use krometrail_core::{
+    ArtifactCacheKey, ArtifactManifest, CancellationSignal, KrometrailError, NonEmptyText,
+    StoredArtifact,
+};
 use tokio::sync::{Mutex, Notify};
 
 use super::{
@@ -15,8 +18,25 @@ use super::{
 
 #[derive(Clone)]
 pub(crate) struct FlightValue {
-    pub artifact: StoredArtifact,
+    pub artifact: FlightArtifact,
     pub generated: bool,
+}
+
+#[derive(Clone)]
+pub(crate) struct FlightArtifact {
+    pub manifest: ArtifactManifest,
+    pub media_type: NonEmptyText,
+    pub encoded_byte_len: u64,
+}
+
+impl From<StoredArtifact> for FlightArtifact {
+    fn from(artifact: StoredArtifact) -> Self {
+        Self {
+            manifest: artifact.manifest,
+            media_type: artifact.media_type,
+            encoded_byte_len: artifact.encoded_bytes.len() as u64,
+        }
+    }
 }
 
 pub(crate) type FlightArtifacts =

@@ -105,6 +105,33 @@ pub(crate) fn no_useful_evidence_error(range: &ResolvedRange) -> KrometrailError
     )
 }
 
+/// Adds bundle-specific recovery to an otherwise opaque artifact resource limit.
+/// Generic artifact generation keeps its existing error contract; only the
+/// progressive bundle entry point recommends a smaller interval or source-frame
+/// drill-down.
+pub(crate) fn recoverable_artifact_limit(
+    error: KrometrailError,
+    range: &ResolvedRange,
+) -> KrometrailError {
+    if error.code != ErrorCode::ResourceLimitExceeded {
+        return error;
+    }
+    error
+        .with_context(ErrorContext {
+            session_id: Some(range.session_id),
+            target_id: Some(range.target_id),
+            range: Some(range.resolved_range),
+            ..ErrorContext::default()
+        })
+        .with_retry(RetryAdvice::AfterRecovery)
+        .with_recovery(
+            NonEmptyText::new(
+                "shorten the requested interval or inspect progressive source-frame evidence, then retry",
+            )
+            .expect("static artifact-limit recovery is non-empty"),
+        )
+}
+
 /// A permit could not be acquired from the bundle semaphore.
 pub(crate) fn permit_error() -> KrometrailError {
     KrometrailError::new(

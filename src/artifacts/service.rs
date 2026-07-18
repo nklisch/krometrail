@@ -9,7 +9,7 @@ use krometrail_core::{
     ArtifactGenerationRequest, ArtifactGenerationResult, ArtifactHandle, ArtifactId,
     ArtifactLookup, ArtifactOutcome, ArtifactPublication, ArtifactPublish,
     ArtifactSourceFingerprint, ArtifactStore, ErrorCode, FrameSource, IdSource, KrometrailError,
-    NonEmptyText, PortFuture, Result, StoredArtifact,
+    NonEmptyText, PortFuture, Result,
 };
 use temporal_vision::{ArtifactKind, generator_descriptor};
 
@@ -21,13 +21,13 @@ use super::{
     },
     generators::{
         PreparedGenerator, estimated_normalized_bytes, generate, normalization_identity, normalize,
-        prepare_generator,
+        prepare_generator, reserved_output_bytes,
     },
     scheduler::{
         ArtifactScheduler, ArtifactWorkLimits, cancelled_error, controlled, deadline_error,
         limit_error,
     },
-    single_flight::{FlightArtifacts, FlightValue, SingleFlight},
+    single_flight::{FlightArtifact, FlightArtifacts, FlightValue, SingleFlight},
 };
 
 #[derive(Clone)]
@@ -53,7 +53,7 @@ struct Slot {
 struct WorkSlot(Slot);
 
 struct Available {
-    artifact: StoredArtifact,
+    artifact: FlightArtifact,
     disposition: ArtifactCacheDisposition,
 }
 
@@ -213,7 +213,7 @@ impl TemporalVisionArtifactService {
             {
                 ArtifactLookup::Hit(artifact) => {
                     result_slots[*slot_index] = Some(Ok(Available {
-                        artifact: *artifact,
+                        artifact: (*artifact).into(),
                         disposition: ArtifactCacheDisposition::Hit,
                     }))
                 }
@@ -323,7 +323,7 @@ impl TemporalVisionArtifactService {
                     result.insert(
                         slot.0.cache.cache_key,
                         Ok(FlightValue {
-                            artifact: *artifact,
+                            artifact: (*artifact).into(),
                             generated: false,
                         }),
                     );
@@ -351,10 +351,10 @@ impl TemporalVisionArtifactService {
                         .ok_or_else(|| limit_error("normalized memory estimate overflows"))?;
                 }
             }
-            output_reservation = output_reservation
-                .checked_add(self.scheduler.limits().max_output_bytes_each.get())
-                .ok_or_else(|| limit_error("output memory reservation overflows"))?
-                .min(self.scheduler.limits().max_output_bytes_total.get());
+            output_reservation = output_reservation.max(reserved_output_bytes(
+                &slot.0.prepared,
+                self.scheduler.limits(),
+            )?);
         }
         if normalized_bytes > self.scheduler.limits().max_normalized_bytes.get() {
             return Err(limit_error(
@@ -537,7 +537,7 @@ impl TemporalVisionArtifactService {
                         result.insert(
                             slot.0.cache.cache_key,
                             Ok(FlightValue {
-                                artifact,
+                                artifact: artifact.into(),
                                 generated: true,
                             }),
                         );
@@ -546,7 +546,7 @@ impl TemporalVisionArtifactService {
                         result.insert(
                             slot.0.cache.cache_key,
                             Ok(FlightValue {
-                                artifact,
+                                artifact: artifact.into(),
                                 generated: false,
                             }),
                         );
@@ -573,12 +573,12 @@ impl ArtifactGeneration for TemporalVisionArtifactService {
     }
 }
 
-fn handle(artifact: StoredArtifact, disposition: ArtifactCacheDisposition) -> ArtifactHandle {
+fn handle(artifact: FlightArtifact, disposition: ArtifactCacheDisposition) -> ArtifactHandle {
     ArtifactHandle {
         artifact_id: *artifact.manifest.artifact_id(),
         cache: disposition,
         media_type: artifact.media_type,
-        encoded_byte_len: artifact.encoded_bytes.len() as u64,
+        encoded_byte_len: artifact.encoded_byte_len,
         manifest: artifact.manifest,
     }
 }

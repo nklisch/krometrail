@@ -29,7 +29,10 @@ use tokio::sync::Semaphore;
 use super::{
     BrowserEventEvidenceState, TemporalDebugEvidenceStore, VisualEvidenceState, assemble_markers,
     compose_header, controlled, default_artifact_request,
-    error::{cancelled_error, evidence_lifetime_error, no_useful_evidence_error, permit_error},
+    error::{
+        cancelled_error, evidence_lifetime_error, no_useful_evidence_error, permit_error,
+        recoverable_artifact_limit,
+    },
     extract_focus_times,
 };
 use crate::debug_bundle::{MarkerEvidence, build_effective_policy};
@@ -169,14 +172,20 @@ impl TemporalDebugBundleService {
         )
         .await;
         let (artifact_evidence, artifact_outcomes) = match artifact_result {
-            Ok(Ok(result)) => (
-                BundleArtifactEvidence::Available(result.clone()),
-                result.outcomes,
-            ),
+            Ok(Ok(mut result)) => {
+                for outcome in &mut result.outcomes {
+                    if let ArtifactOutcome::Unavailable { error, .. } = outcome {
+                        *error = recoverable_artifact_limit(error.clone(), &range);
+                    }
+                }
+                let outcomes = result.outcomes.clone();
+                (BundleArtifactEvidence::Available(result), outcomes)
+            }
             Ok(Err(error)) => {
                 if is_fatal_after_resolution(&error, bundle_deadline) {
                     return Err(evidence_lifetime_error(&range));
                 }
+                let error = recoverable_artifact_limit(error, &range);
                 (
                     BundleArtifactEvidence::Unavailable {
                         error: error.clone(),
