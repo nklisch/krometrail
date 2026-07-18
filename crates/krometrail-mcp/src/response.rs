@@ -12,7 +12,7 @@ use krometrail_core::{
     PageOperationOutcome, PageOperationResult, PageSnapshot, ProgressiveEvidence,
     ProgressiveEvidenceContext, ProgressiveEvidenceRequest, ProgressiveEvidenceResult,
     RetrieveArtifactRequest, ScreenshotMetadata, SourceFrameBatch, SourceFrameHandle,
-    TemporalDebugBundle, WaitOutcome,
+    TargetId, TemporalDebugBundle, WaitOutcome,
 };
 use rmcp::model::{CallToolResult, Content, RawResource};
 use schemars::JsonSchema;
@@ -240,7 +240,8 @@ pub(crate) fn map_operation_result_with_capture(
     capture_statuses: &[krometrail_core::TargetCaptureStatus],
 ) -> Result<MappedResult, ResponseInvariantError> {
     let mut projection = project_operation(result)?;
-    add_capture_warnings(&mut projection, capture_statuses);
+    let target_id = projection_target_id(&projection);
+    add_capture_warnings(&mut projection, capture_statuses, target_id);
     let status = projection.status;
     Ok(mapped(
         tool,
@@ -295,9 +296,10 @@ pub(crate) fn visible_error_with_capture(
     capture_statuses: &[krometrail_core::TargetCaptureStatus],
 ) -> CallToolResult {
     let summary = format!("{tool} failed: {}", error.message);
+    let target_id = error.context.target_id;
     let mut projection = Projection::success(json!({}));
     projection.fail_with(error);
-    add_capture_warnings(&mut projection, capture_statuses);
+    add_capture_warnings(&mut projection, capture_statuses, target_id);
     into_call_tool_result(mapped(tool, projection, summary))
         .expect("stable error envelopes always serialize")
 }
@@ -305,16 +307,30 @@ pub(crate) fn visible_error_with_capture(
 fn add_capture_warnings(
     projection: &mut Projection,
     capture_statuses: &[krometrail_core::TargetCaptureStatus],
+    target_id: Option<TargetId>,
 ) {
     for status in capture_statuses
         .iter()
         .filter(|status| status.state() == krometrail_core::CaptureStreamState::Failed)
+        .filter(|status| target_id.is_none_or(|target_id| status.target_id() == target_id))
     {
         let stage = status
             .failure_stage()
             .expect("failed capture status is validated with a failure stage");
         projection.degrade_with_stage(vec![capture_failed_warning(status)], stage.as_str());
     }
+}
+
+fn projection_target_id(projection: &Projection) -> Option<TargetId> {
+    projection
+        .interaction
+        .as_ref()
+        .map(|interaction| interaction.target_id)
+        .or_else(|| {
+            ["/context/target_id", "/target_id"]
+                .into_iter()
+                .find_map(|pointer| projection.result.pointer(pointer)?.as_str()?.parse().ok())
+        })
 }
 
 pub(crate) fn into_call_tool_result(
@@ -1422,9 +1438,9 @@ mod tests {
         }
     }
 
-    fn failed_capture() -> TargetCaptureStatus {
+    fn failed_capture_for(target_id: TargetId) -> TargetCaptureStatus {
         TargetCaptureStatus::new_with_failure_stage(
-            target_id(),
+            target_id,
             1,
             CaptureStreamState::Failed,
             CaptureStatistics::default(),
@@ -1437,6 +1453,10 @@ mod tests {
             Some(CaptureFailureStage::FramePersistence),
         )
         .unwrap()
+    }
+
+    fn failed_capture() -> TargetCaptureStatus {
+        failed_capture_for(target_id())
     }
 
     #[test]
@@ -1456,6 +1476,19 @@ mod tests {
             Some(target_id())
         );
         assert!(mapped.response.error.is_none());
+    }
+
+    #[test]
+    fn failed_capture_on_another_target_does_not_degrade_page_result() {
+        let other = TargetId::from_uuid(uuid::Uuid::from_u128(99));
+        let mapped = map_operation_result_with_capture(
+            "take_screenshot",
+            BrowserOperationResult::TakeScreenshot(Box::new(screenshot(ImageFormat::Png))),
+            &[failed_capture_for(other)],
+        )
+        .unwrap();
+        assert_eq!(mapped.response.status, ToolResponseStatus::Succeeded);
+        assert!(mapped.response.warnings.is_empty());
     }
 
     #[test]
