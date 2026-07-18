@@ -284,6 +284,7 @@ fn invalid_candidate() -> AdapterFailure {
 mod tests {
     use super::*;
 
+    #[allow(dead_code)]
     mod support {
         include!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/support/mod.rs"));
     }

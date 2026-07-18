@@ -14,14 +14,17 @@ const VALID_MP4: &[u8] = include_bytes!(concat!(
 
 fn main() {
     let arguments: Vec<_> = std::env::args_os().skip(1).collect();
-    if arguments.first().is_some_and(|value| value == "--fixture-child") {
+    if arguments
+        .first()
+        .is_some_and(|value| value == "--fixture-child")
+    {
         thread::sleep(Duration::from_secs(60));
         return;
     }
     let executable = std::env::current_exe().expect("fixture executable path");
     let directory = executable.parent().expect("fixture executable directory");
-    let mode = fs::read_to_string(directory.join("fixture-mode"))
-        .unwrap_or_else(|_| "valid".to_owned());
+    let mode =
+        fs::read_to_string(directory.join("fixture-mode")).unwrap_or_else(|_| "valid".to_owned());
 
     if arguments.iter().any(|value| value == "-version") {
         if mode.trim() == "version-overflow" {
@@ -35,6 +38,15 @@ fn main() {
     }
 
     let encode_number = increment_encode_count(directory);
+    fs::write(directory.join("active-pid"), std::process::id().to_string()).unwrap();
+    fs::write(
+        directory.join("working-directory"),
+        std::env::current_dir()
+            .unwrap()
+            .to_string_lossy()
+            .as_bytes(),
+    )
+    .unwrap();
     let effective_mode = if mode.trim() == "valid-version2"
         || encode_number == 1 && mode.trim().ends_with("_after_qualification")
     {
@@ -88,9 +100,13 @@ fn has_exact_policy_shape(arguments: &[std::ffi::OsString]) -> bool {
         .map(|value| value.to_string_lossy())
         .collect();
     values.first().is_some_and(|value| value == "-nostdin")
-        && values.last().is_some_and(|value| value == "output.partial.mp4")
+        && values
+            .last()
+            .is_some_and(|value| value == "output.partial.mp4")
         && values.windows(2).any(|pair| pair == ["-c:v", "libx264"])
         && values.windows(2).any(|pair| pair == ["-safe", "1"])
         && values.windows(2).any(|pair| pair == ["-an", "-sn"])
-        && !values.iter().any(|value| value == "sh" || value == "cmd.exe")
+        && !values
+            .iter()
+            .any(|value| value == "sh" || value == "cmd.exe")
 }

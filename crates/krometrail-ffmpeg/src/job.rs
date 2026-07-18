@@ -45,7 +45,8 @@ impl PreparedEncodeJob {
             names.push(name);
         }
 
-        let (concat, duration_micros) = concat_document(request, &names)?;
+        let (concat, presentation_starts_micros, duration_micros) =
+            concat_document(request, &names)?;
         let mut concat_file = tokio::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -61,7 +62,12 @@ impl PreparedEncodeJob {
         let output_limit = request.profile().max_encoded_bytes();
         let geometry = request.profile().geometry();
         Ok(Self {
-            arguments: encode_arguments(geometry, duration_micros, output_limit),
+            arguments: encode_arguments(
+                geometry,
+                &presentation_starts_micros,
+                duration_micros,
+                output_limit,
+            ),
             expected: ExpectedMp4 {
                 canvas: geometry.canvas(),
                 presentation_duration_micros: duration_micros,
@@ -124,13 +130,15 @@ impl PreparedEncodeJob {
 fn concat_document(
     request: &VideoEncodeRequest,
     names: &[String],
-) -> Result<(String, u64), AdapterFailure> {
+) -> Result<(String, Vec<u64>, u64), AdapterFailure> {
     if names.len() != request.plan().segments().len() || names.is_empty() {
         return Err(staging_failure());
     }
     let mut document = String::from("ffconcat version 1.0\n");
+    let mut presentation_starts_micros = Vec::with_capacity(names.len());
     let mut previous_endpoint = 0_u64;
     for (segment, name) in request.plan().segments().iter().zip(names) {
+        presentation_starts_micros.push(previous_endpoint);
         let endpoint = round_nanos_to_micros(segment.presentation().end().as_nanos())?;
         let duration = endpoint
             .checked_sub(previous_endpoint)
@@ -147,7 +155,7 @@ fn concat_document(
     document.push_str("file ");
     document.push_str(names.last().expect("validated names are non-empty"));
     document.push('\n');
-    Ok((document, previous_endpoint))
+    Ok((document, presentation_starts_micros, previous_endpoint))
 }
 
 fn round_nanos_to_micros(nanos: u64) -> Result<u64, AdapterFailure> {

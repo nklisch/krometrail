@@ -2,15 +2,21 @@ mod support;
 
 use std::{
     path::PathBuf,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
-use krometrail_core::{CancellationSignal, PortFuture};
+use krometrail_core::{
+    CancellationSignal, ErrorCode, PortFuture, TemporalVideoEncoder, VideoEncodingContext,
+};
 use krometrail_ffmpeg::{
     FfmpegDiscoveryOptions, FfmpegQualification, FfmpegQualificationStage, FfmpegUnavailableReason,
     qualify_ffmpeg,
 };
+use sha2::Digest as _;
 
 struct NeverCancelled;
 
@@ -21,6 +27,39 @@ impl CancellationSignal for NeverCancelled {
 
     fn cancelled(&self) -> PortFuture<'_, ()> {
         Box::pin(std::future::pending())
+    }
+}
+
+struct ManualCancellation {
+    cancelled: AtomicBool,
+    notify: tokio::sync::Notify,
+}
+
+impl ManualCancellation {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            cancelled: AtomicBool::new(false),
+            notify: tokio::sync::Notify::new(),
+        })
+    }
+
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+        self.notify.notify_waiters();
+    }
+}
+
+impl CancellationSignal for ManualCancellation {
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+
+    fn cancelled(&self) -> PortFuture<'_, ()> {
+        Box::pin(async move {
+            while !self.is_cancelled() {
+                self.notify.notified().await;
+            }
+        })
     }
 }
 
@@ -35,6 +74,38 @@ async fn qualify(fixture: &support::FixtureExecutable) -> FfmpegQualification {
         Instant::now() + Duration::from_secs(5),
     )
     .await
+}
+
+async fn qualified(
+    mode: &str,
+) -> (
+    support::FixtureExecutable,
+    Arc<krometrail_ffmpeg::QualifiedFfmpegEncoder>,
+) {
+    let fixture = support::FixtureExecutable::new(mode);
+    let FfmpegQualification::Qualified(encoder) = qualify(&fixture).await else {
+        panic!("fixture must qualify before its request-time mode activates");
+    };
+    fixture.clear_observation();
+    (fixture, encoder)
+}
+
+fn context(cancellation: Arc<dyn CancellationSignal>, duration: Duration) -> VideoEncodingContext {
+    VideoEncodingContext {
+        deadline: Instant::now() + duration,
+        cancellation,
+    }
+}
+
+async fn wait_for_active_pid(fixture: &support::FixtureExecutable) -> u32 {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if let Some(pid) = fixture.active_pid() {
+            return pid;
+        }
+        assert!(Instant::now() < deadline, "compiled fixture did not start");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }
 
 #[tokio::test]
@@ -140,4 +211,172 @@ async fn snapshotted_path_search_discovers_only_the_exact_platform_name() {
     )
     .await;
     assert!(matches!(result, FfmpegQualification::Qualified(_)));
+}
+
+#[tokio::test]
+async fn qualified_adapter_is_object_safe_and_returns_core_validated_bytes() {
+    let (_fixture, encoder) = qualified("valid").await;
+    let encoder: Arc<dyn TemporalVideoEncoder> = encoder;
+    let clip = encoder
+        .encode(
+            support::video_request(),
+            context(cancellation(), Duration::from_secs(5)),
+        )
+        .await
+        .unwrap();
+    assert_eq!(clip.identity(), encoder.identity());
+    assert_eq!(clip.profile().max_encoded_bytes(), 1_000_000);
+    assert_eq!(clip.encoded_bytes().len(), 1_595);
+    assert_eq!(
+        clip.output_hash().as_bytes(),
+        temporal_vision::OutputHash::from_bytes(sha2::Sha256::digest(clip.encoded_bytes()).into())
+            .as_bytes()
+    );
+}
+
+#[tokio::test]
+async fn request_failures_map_to_stable_safe_core_errors_and_remove_private_state() {
+    for (mode, expected) in [
+        (
+            "invalid_after_qualification",
+            ErrorCode::VideoEncodingFailed,
+        ),
+        ("exit_after_qualification", ErrorCode::VideoEncodingFailed),
+        (
+            "stderr-overflow_after_qualification",
+            ErrorCode::VideoEncodingFailed,
+        ),
+        (
+            "output-overflow_after_qualification",
+            ErrorCode::ResourceLimitExceeded,
+        ),
+    ] {
+        let (fixture, encoder) = qualified(mode).await;
+        let error = encoder
+            .encode(
+                support::video_request(),
+                context(cancellation(), Duration::from_secs(5)),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, expected, "mode {mode}");
+        let private_workspace = fixture.working_directory().unwrap();
+        assert!(
+            !private_workspace.exists(),
+            "mode {mode} leaked private state"
+        );
+        let rendered = format!("{error:?}");
+        assert!(!rendered.contains(fixture.path().to_string_lossy().as_ref()));
+        assert!(!rendered.contains(private_workspace.to_string_lossy().as_ref()));
+    }
+}
+
+#[tokio::test]
+async fn executable_drift_fails_as_unavailable_before_request_staging() {
+    let (fixture, encoder) = qualified("valid").await;
+    fixture.mutate_executable();
+    let error = encoder
+        .encode(
+            support::video_request(),
+            context(cancellation(), Duration::from_secs(5)),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::VideoEncoderUnavailable);
+    assert!(fixture.working_directory().is_none());
+}
+
+#[tokio::test]
+async fn active_encode_honors_cancellation_and_deadline() {
+    let (fixture, encoder) = qualified("hang_after_qualification").await;
+    let active_cancellation = ManualCancellation::new();
+    let trigger = Arc::clone(&active_cancellation);
+    let trigger_task = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        trigger.cancel();
+    });
+    let error = encoder
+        .encode(
+            support::video_request(),
+            context(active_cancellation, Duration::from_secs(5)),
+        )
+        .await
+        .unwrap_err();
+    trigger_task.await.unwrap();
+    assert_eq!(error.code, ErrorCode::Cancelled);
+    assert!(!fixture.working_directory().unwrap().exists());
+
+    let (fixture, encoder) = qualified("hang_after_qualification").await;
+    let error = encoder
+        .encode(
+            support::video_request(),
+            context(cancellation(), Duration::from_millis(50)),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::VideoEncodingFailed);
+    assert!(!fixture.working_directory().unwrap().exists());
+}
+
+#[tokio::test]
+async fn permit_wait_honors_cancellation_and_deadline() {
+    let (fixture, encoder) = qualified("hang_after_qualification").await;
+    let active_encoder = Arc::clone(&encoder);
+    let active = tokio::spawn(async move {
+        active_encoder
+            .encode(
+                support::video_request(),
+                context(cancellation(), Duration::from_secs(5)),
+            )
+            .await
+    });
+    wait_for_active_pid(&fixture).await;
+
+    let cancelled = ManualCancellation::new();
+    cancelled.cancel();
+    let error = encoder
+        .encode(
+            support::video_request(),
+            context(cancelled, Duration::from_secs(5)),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::Cancelled);
+
+    let error = encoder
+        .encode(
+            support::video_request(),
+            context(cancellation(), Duration::from_millis(40)),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::VideoEncodingFailed);
+    active.abort();
+    let _ = active.await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn dropping_encode_future_force_kills_compiled_descendants() {
+    let (fixture, encoder) = qualified("descendant_after_qualification").await;
+    let active_encoder = Arc::clone(&encoder);
+    let active = tokio::spawn(async move {
+        active_encoder
+            .encode(
+                support::video_request(),
+                context(cancellation(), Duration::from_secs(5)),
+            )
+            .await
+    });
+    let pid = wait_for_active_pid(&fixture).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    active.abort();
+    let _ = active.await;
+    let group = libc::pid_t::try_from(pid).unwrap();
+    let exists = unsafe { libc::kill(-group, 0) } == 0;
+    assert!(
+        !exists,
+        "compiled FFmpeg descendant group survived future drop"
+    );
+    assert!(!fixture.working_directory().unwrap().exists());
 }
