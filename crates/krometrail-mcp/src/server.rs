@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use krometrail_core::{
-    CancellationSignal, ErrorCode, KrometrailError, NonEmptyText, Result, RetryAdvice,
+    CancellationSignal, CapabilityId, ErrorCode, KrometrailError, NonEmptyText, Result, RetryAdvice,
 };
 use rmcp::{
     ErrorData, ServerHandler,
@@ -28,7 +28,7 @@ pub struct KrometrailMcpServer {
     sessions: Arc<BrowserSessionOwner>,
     router: Arc<ToolRouter<KrometrailMcpServer>>,
     dependencies: Arc<McpDependencies>,
-    temporal_resources: bool,
+    config: McpConfig,
     diagnostics: DiagnosticContext,
 }
 
@@ -38,6 +38,12 @@ impl KrometrailMcpServer {
         dependencies: Arc<McpDependencies>,
         config: &McpConfig,
     ) -> Result<Self> {
+        let temporal_video_enabled = config.is_enabled(CapabilityId::TemporalVideo);
+        if temporal_video_enabled != dependencies.temporal_video.is_some() {
+            return Err(service_error(
+                "temporal video capability and service construction disagree",
+            ));
+        }
         let router = Arc::new(build_router(
             config,
             Arc::clone(&dependencies),
@@ -48,7 +54,7 @@ impl KrometrailMcpServer {
             sessions,
             router,
             dependencies,
-            temporal_resources: config.is_enabled(krometrail_core::CapabilityId::TemporalVision),
+            config: config.clone(),
             diagnostics,
         };
         Ok(server)
@@ -89,13 +95,9 @@ impl ServerHandler for KrometrailMcpServer {
         _request: Option<PaginatedRequestParam>,
         _context: RequestContext<RoleServer>,
     ) -> std::result::Result<ListResourceTemplatesResult, ErrorData> {
-        if self.temporal_resources {
-            Ok(ListResourceTemplatesResult::with_all_items(
-                resource_templates(),
-            ))
-        } else {
-            Ok(ListResourceTemplatesResult::with_all_items(Vec::new()))
-        }
+        Ok(ListResourceTemplatesResult::with_all_items(
+            resource_templates(&self.config),
+        ))
     }
 
     async fn read_resource(
@@ -103,7 +105,7 @@ impl ServerHandler for KrometrailMcpServer {
         request: ReadResourceRequestParam,
         context: RequestContext<RoleServer>,
     ) -> std::result::Result<rmcp::model::ReadResourceResult, ErrorData> {
-        if !self.temporal_resources {
+        if resource_templates(&self.config).is_empty() {
             return Err(ErrorData::method_not_found::<
                 rmcp::model::ReadResourceRequestMethod,
             >());
@@ -120,7 +122,9 @@ impl ServerHandler for KrometrailMcpServer {
         async {
             let mut result = read_resource(
                 &request.uri,
+                &self.config,
                 self.dependencies.progressive_evidence.as_ref(),
+                self.dependencies.temporal_video.as_deref(),
                 deadline,
                 cancellation,
             )
@@ -181,13 +185,13 @@ impl ServerHandler for KrometrailMcpServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
             protocol_version: ProtocolVersion::V_2025_06_18,
-            capabilities: if self.temporal_resources {
+            capabilities: if resource_templates(&self.config).is_empty() {
+                ServerCapabilities::builder().enable_tools().build()
+            } else {
                 ServerCapabilities::builder()
                     .enable_tools()
                     .enable_resources()
                     .build()
-            } else {
-                ServerCapabilities::builder().enable_tools().build()
             },
             server_info: Implementation {
                 name: "krometrail".into(),
@@ -347,12 +351,12 @@ mod tests {
         BrowserProduct, BrowserProductVersion, BrowserSessionEvent, BrowserSessionEvents,
         BrowserSessionPort, BrowserSessionState, BrowserStatus, BrowserStopOutcome, BrowserVersion,
         BundleArtifactEvidence, BundleContextEvidence, BundleDegradation, CapabilityId,
-        CapabilitySupport, CaptureStatistics, CaptureStreamState, CaptureTimingSummary,
-        EffectiveBundlePolicy, EveryNthFrame, EvidenceScope, FrameId, GenerateArtifactsRequest,
-        NonEmptyText, NormalizationRequest, OutputLimitsRequest, PageStatus, PortFuture,
-        ProfileRef, ProgressiveEvidence, ProgressiveEvidenceContext, ProgressiveEvidenceRequest,
-        ProgressiveEvidenceResult, ProgressiveRegion, RangeResolutionOptions,
-        RegionFilmstripEvidenceRequest, RendererCapability, ResolvedRange,
+        CapabilitySnapshot, CapabilitySupport, CaptureStatistics, CaptureStreamState,
+        CaptureTimingSummary, EffectiveBundlePolicy, EveryNthFrame, EvidenceScope, FrameId,
+        GenerateArtifactsRequest, NonEmptyText, NormalizationRequest, OutputLimitsRequest,
+        PageStatus, PortFuture, ProfileRef, ProgressiveEvidence, ProgressiveEvidenceContext,
+        ProgressiveEvidenceRequest, ProgressiveEvidenceResult, ProgressiveRegion,
+        RangeResolutionOptions, RegionFilmstripEvidenceRequest, RendererCapability, ResolvedRange,
         ResolvedRangeEvidenceRequest, RetentionStatus, SessionId, SessionOrigin, SessionRange,
         SessionTime, Sha256Digest, SourceFrameSelection, SourceFramesRequest,
         SourceReadLimitsRequest, StoryboardRequest, TEMPORAL_DEBUG_BUNDLE_POLICY_VERSION,
@@ -360,6 +364,8 @@ mod tests {
         TemporalContextRequest, TemporalDebugBundle, TemporalDebugBundleContext,
         TemporalDebugBundleRequest, TemporalDebugBundles, TemporalDebugHeader,
         TemporalQueryRequest, TemporalRangeAnchor, TemporalRangeAnchorKind,
+        TemporalVideoGeneration, TemporalVideoGenerationRequest, TemporalVideoGenerationResult,
+        VideoArtifactRead,
     };
     use serde_json::{Value, json};
     use std::{
@@ -464,6 +470,65 @@ mod tests {
             temporal_context: temporal as Arc<dyn TemporalContextQuery>,
             temporal_video: None,
             diagnostics: DiagnosticContext::default(),
+        }
+    }
+
+    struct UnusedVideo;
+
+    impl TemporalVideoGeneration for UnusedVideo {
+        fn generate_video(
+            &self,
+            _request: TemporalVideoGenerationRequest,
+            _context: krometrail_core::ArtifactGenerationContext,
+        ) -> PortFuture<'_, Result<TemporalVideoGenerationResult>> {
+            panic!("unused video service must not generate")
+        }
+
+        fn read_video_artifact(
+            &self,
+            _request: krometrail_core::RetrieveArtifactRequest,
+        ) -> PortFuture<'_, Result<VideoArtifactRead>> {
+            panic!("unused video service must not read")
+        }
+    }
+
+    fn qualified_video_config() -> McpConfig {
+        McpConfig::from_snapshot(
+            CapabilitySnapshot::resolve_defaults(&[CapabilityId::TemporalVideo]).unwrap(),
+        )
+    }
+
+    struct FailingVideo {
+        calls: AtomicUsize,
+        context: Mutex<Option<(bool, bool)>>,
+    }
+
+    impl TemporalVideoGeneration for FailingVideo {
+        fn generate_video(
+            &self,
+            _request: TemporalVideoGenerationRequest,
+            context: krometrail_core::ArtifactGenerationContext,
+        ) -> PortFuture<'_, Result<TemporalVideoGenerationResult>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            *self.context.lock().unwrap() =
+                Some((context.deadline.is_some(), context.cancellation.is_some()));
+            Box::pin(std::future::ready(Err(KrometrailError::new(
+                ErrorCode::VideoEncoderUnavailable,
+                NonEmptyText::new("qualified encoder stopped after server startup").unwrap(),
+            )
+            .with_recovery(
+                NonEmptyText::new(
+                    "restore the qualified FFmpeg installation and restart the MCP server",
+                )
+                .unwrap(),
+            ))))
+        }
+
+        fn read_video_artifact(
+            &self,
+            _request: krometrail_core::RetrieveArtifactRequest,
+        ) -> PortFuture<'_, Result<VideoArtifactRead>> {
+            panic!("encoder failure test must not read retained artifacts")
         }
     }
 
@@ -835,6 +900,124 @@ mod tests {
                 assert_eq!(annotations.idempotent_hint, Some(read_only));
             }
         }
+    }
+
+    #[test]
+    fn temporal_video_construction_and_registry_share_the_startup_snapshot_exactly() {
+        let missing_service = match build_service(
+            dependencies(Arc::new(UnusedConnector)),
+            qualified_video_config(),
+        ) {
+            Ok(_) => panic!("qualified video capability must require its service"),
+            Err(error) => error,
+        };
+        assert_eq!(missing_service.code, ErrorCode::Internal);
+        assert_eq!(
+            missing_service.message.as_str(),
+            "temporal video capability and service construction disagree"
+        );
+
+        let mut unexpected = dependencies(Arc::new(UnusedConnector));
+        unexpected.temporal_video = Some(Arc::new(UnusedVideo));
+        let unexpected_service = match build_service(unexpected, McpConfig::default()) {
+            Ok(_) => panic!("disabled video capability must reject an unexpected service"),
+            Err(error) => error,
+        };
+        assert_eq!(unexpected_service.code, ErrorCode::Internal);
+
+        let mut available = dependencies(Arc::new(UnusedConnector));
+        available.temporal_video = Some(Arc::new(UnusedVideo));
+        let service = build_service(available, qualified_video_config()).unwrap();
+        let names = service
+            .server()
+            .tools()
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"generate_temporal_video".to_owned()));
+        let templates = resource_templates(&service.server.config);
+        assert_eq!(templates.len(), 5);
+        let encoded = serde_json::to_string(&templates).unwrap();
+        assert!(encoded.contains("/videos/{id}"));
+        assert!(encoded.contains("/video-manifests/{id}"));
+    }
+
+    #[tokio::test]
+    async fn post_start_encoder_failure_is_stable_and_does_not_poison_other_routes() {
+        let video = Arc::new(FailingVideo {
+            calls: AtomicUsize::new(0),
+            context: Mutex::new(None),
+        });
+        let mut deps = dependencies(Arc::new(UnusedConnector));
+        deps.temporal_video = Some(Arc::clone(&video) as Arc<dyn TemporalVideoGeneration>);
+        let service = build_service(deps, qualified_video_config()).unwrap();
+        let (client_io, server_io) = tokio::io::duplex(256 * 1024);
+        let server_task = tokio::spawn(async move {
+            let running = service.server.serve(server_io).await.unwrap();
+            running.waiting().await.unwrap();
+        });
+        let (read, mut write) = tokio::io::split(client_io);
+        let mut read = BufReader::new(read);
+        send_json(
+            &mut write,
+            json!({
+                "jsonrpc":"2.0","id":1,"method":"initialize","params":{
+                    "protocolVersion":"2025-06-18","capabilities":{},
+                    "clientInfo":{"name":"video-error-test","version":"1"}
+                }
+            }),
+        )
+        .await;
+        let _ = read_json(&mut read).await;
+        send_json(
+            &mut write,
+            json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+        )
+        .await;
+        let fixture = crate::test_fixture::video_fixture();
+        assert_eq!(fixture.result.clips.len(), 2);
+        send_json(
+            &mut write,
+            json!({
+                "jsonrpc":"2.0","id":2,"method":"tools/call","params":{
+                    "name":"generate_temporal_video",
+                    "arguments": serde_json::to_value(fixture.request).unwrap()
+                }
+            }),
+        )
+        .await;
+        let failed = read_json(&mut read).await;
+        assert_eq!(failed["result"]["isError"], true);
+        assert_eq!(
+            failed["result"]["structuredContent"]["error"]["code"],
+            "video_encoder_unavailable"
+        );
+        assert!(
+            failed["result"]["structuredContent"]["error"]["recovery"]
+                .as_str()
+                .unwrap()
+                .contains("restart the MCP server")
+        );
+        send_json(
+            &mut write,
+            json!({
+                "jsonrpc":"2.0","id":3,"method":"tools/list","params":{}
+            }),
+        )
+        .await;
+        let listed = read_json(&mut read).await;
+        assert!(
+            listed["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool["name"] == "browser_status")
+        );
+        assert_eq!(video.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(*video.context.lock().unwrap(), Some((true, true)));
+        drop(write);
+        drop(read);
+        server_task.await.unwrap();
     }
 
     #[test]

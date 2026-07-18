@@ -7,13 +7,14 @@ use std::{
 
 use futures_util::FutureExt as _;
 use krometrail_core::{
-    AttachBrowser, BROWSER_OPERATION_REGISTRY, BrowserEventDetailRequest, BrowserOperationContext,
-    BrowserOperationKind, BrowserOperationRequest, CancellationSignal, CapabilityId,
-    CurrentReferenceGeometry, ErrorCode, KrometrailError, LaunchBrowser, NonEmptyText,
-    OperationExposure, OperationMutability, PortFuture, ProgressiveEvidenceContext,
-    ProgressiveEvidenceOperationKind, ProgressiveEvidenceRequest, Result, RetryAdvice,
-    TEMPORAL_CONTEXT_OPERATION_REGISTRY, TEMPORAL_DEBUG_BUNDLE_OPERATION,
-    TemporalContextOperationKind, TemporalDebugBundleContext, TemporalDebugBundleRequest,
+    ArtifactGenerationContext, AttachBrowser, BROWSER_OPERATION_REGISTRY,
+    BrowserEventDetailRequest, BrowserOperationContext, BrowserOperationKind,
+    BrowserOperationRequest, CancellationSignal, CapabilityId, CurrentReferenceGeometry, ErrorCode,
+    KrometrailError, LaunchBrowser, NonEmptyText, OperationExposure, OperationMutability,
+    PortFuture, ProgressiveEvidenceContext, ProgressiveEvidenceOperationKind,
+    ProgressiveEvidenceRequest, Result, RetryAdvice, TEMPORAL_CONTEXT_OPERATION_REGISTRY,
+    TEMPORAL_DEBUG_BUNDLE_OPERATION, TEMPORAL_VIDEO_OPERATION, TemporalContextOperationKind,
+    TemporalDebugBundleContext, TemporalDebugBundleRequest, TemporalVideoGenerationRequest,
 };
 use rmcp::{
     handler::server::tool::{ToolCallContext, ToolRoute, ToolRouter},
@@ -28,7 +29,7 @@ use crate::{
     response::{
         ToolResponse, into_call_tool_result, map_lifecycle_result,
         map_operation_result_with_capture, map_progressive_result, map_temporal_bundle_result,
-        visible_error, visible_error_with_capture,
+        map_temporal_video_result, visible_error, visible_error_with_capture,
     },
     schema::{generated_input_schema, operation_input_schema, type_input_schema},
     server::KrometrailMcpServer,
@@ -174,6 +175,23 @@ pub(crate) fn build_router(
         }));
     }
 
+    if config.is_enabled(TEMPORAL_VIDEO_OPERATION.capability) {
+        let definition = &TEMPORAL_VIDEO_OPERATION;
+        let name = definition.stable_name;
+        let mut tool = Tool::new(
+            name,
+            definition.description,
+            type_input_schema::<TemporalVideoGenerationRequest>()?,
+        )
+        .annotate(temporal_annotations(definition.mutability, false));
+        tool.output_schema = Some(type_input_schema::<ToolResponse>()?);
+        let dependencies = Arc::clone(&dependencies);
+        router.add_route(ToolRoute::new_dyn(tool, move |context| {
+            let dependencies = Arc::clone(&dependencies);
+            async move { call_temporal_video(context, dependencies, name).await }.boxed()
+        }));
+    }
+
     let current_geometry: Arc<dyn CurrentReferenceGeometry> = sessions;
     for definition in krometrail_core::PROGRESSIVE_EVIDENCE_REGISTRY
         .iter()
@@ -268,6 +286,12 @@ fn validate_route_registry(config: &McpConfig) -> Result<()> {
         TEMPORAL_DEBUG_BUNDLE_OPERATION.description,
     )?;
     let _ = type_input_schema::<TemporalDebugBundleRequest>()?;
+    register_route_name(
+        &mut names,
+        TEMPORAL_VIDEO_OPERATION.stable_name,
+        TEMPORAL_VIDEO_OPERATION.description,
+    )?;
+    let _ = type_input_schema::<TemporalVideoGenerationRequest>()?;
     if TEMPORAL_CONTEXT_OPERATION_REGISTRY.len() != TemporalContextOperationKind::ALL.len()
         || TEMPORAL_CONTEXT_OPERATION_REGISTRY
             .iter()
@@ -288,6 +312,47 @@ fn validate_route_registry(config: &McpConfig) -> Result<()> {
         let _ = generated_input_schema(definition.kind.input_schema())?;
     }
     Ok(())
+}
+
+async fn call_temporal_video(
+    context: ToolCallContext<'_, KrometrailMcpServer>,
+    dependencies: Arc<McpDependencies>,
+    name: &'static str,
+) -> std::result::Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
+    let budget = RequestBudget::new(context.request_context.ct.clone());
+    if let Err(error) = budget.check() {
+        return Ok(call_error_result(name, error));
+    }
+    let request = match parse_arguments::<TemporalVideoGenerationRequest>(
+        context.arguments.unwrap_or_default(),
+    ) {
+        Ok(request) => request,
+        Err(error) => return Ok(call_error_result(name, error)),
+    };
+    let cancellation: Arc<dyn CancellationSignal> = budget.cancellation.clone();
+    let Some(service) = dependencies.temporal_video.as_ref() else {
+        return Err(rmcp::ErrorData::internal_error(
+            "temporal video service is missing for a registered route",
+            None,
+        ));
+    };
+    let result = budget
+        .run(service.generate_video(
+            request,
+            ArtifactGenerationContext {
+                deadline: Some(budget.deadline),
+                cancellation: Some(cancellation),
+            },
+        ))
+        .await;
+    match result {
+        Ok(result) => map_temporal_video_result(name, result)
+            .map_err(|_| {
+                rmcp::ErrorData::internal_error("temporal video response mapping failed", None)
+            })
+            .and_then(into_call_tool_result),
+        Err(error) => Ok(call_error_result(name, error)),
+    }
 }
 
 fn register_route_name(

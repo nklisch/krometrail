@@ -12,7 +12,7 @@ use krometrail_core::{
     PageOperationOutcome, PageOperationResult, PageSnapshot, ProgressiveEvidence,
     ProgressiveEvidenceContext, ProgressiveEvidenceRequest, ProgressiveEvidenceResult,
     RetrieveArtifactRequest, ScreenshotMetadata, SourceFrameBatch, SourceFrameHandle, TargetId,
-    TemporalDebugBundle, WaitOutcome,
+    TemporalDebugBundle, TemporalVideoGenerationResult, VideoPresentationPolicy, WaitOutcome,
 };
 use rmcp::model::{CallToolResult, Content, RawResource};
 use schemars::JsonSchema;
@@ -51,6 +51,33 @@ pub enum ResourceRole {
     Artifact,
     ArtifactManifest,
     SourceFrame,
+    Video,
+    VideoManifest,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, JsonSchema)]
+pub struct VideoOutputDimensions {
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, JsonSchema)]
+pub struct TemporalVideoClipHandle {
+    pub epoch_index: u32,
+    #[schemars(with = "String")]
+    pub cache: ArtifactCacheDisposition,
+    pub artifact_id: ArtifactId,
+    pub media_type: String,
+    pub encoded_byte_len: u64,
+    pub output_hash: String,
+    pub presentation_policy: VideoPresentationPolicy,
+    pub presentation_duration_nanos: u64,
+    pub source_frame_count: u32,
+    pub meaningful_frame_count: u32,
+    pub gap_count: u32,
+    pub output_dimensions: VideoOutputDimensions,
+    pub video_uri: String,
+    pub manifest_uri: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, JsonSchema)]
@@ -283,6 +310,69 @@ pub(crate) fn map_lifecycle_result<T: Serialize>(
         tool,
         Projection::success(value),
         format!("{tool} succeeded"),
+    ))
+}
+
+pub(crate) fn map_temporal_video_result(
+    tool: &str,
+    result: TemporalVideoGenerationResult,
+) -> Result<MappedResult, ResponseInvariantError> {
+    let scope = artifact_scope(&result.range)?;
+    let clip_count = result.clips.len();
+    let mut clips = Vec::with_capacity(clip_count);
+    let mut projection = Projection::success(Value::Null);
+    for clip in &result.clips {
+        let artifact = &clip.artifact;
+        let manifest = &artifact.provenance;
+        if artifact.scope != scope
+            || artifact.media_type.as_str() != "video/mp4"
+            || clip.epoch_index != manifest.plan().epoch().index
+        {
+            return Err(ResponseInvariantError);
+        }
+        let video =
+            ResourceProjection::from_video(scope, artifact.artifact_id, artifact.encoded_byte_len)
+                .map_err(|_| ResponseInvariantError)?;
+        let manifest_bytes = serde_json::to_vec(manifest).map_err(|_| ResponseInvariantError)?;
+        let manifest_resource = ResourceProjection::from_video_manifest(
+            scope,
+            artifact.artifact_id,
+            manifest_bytes.len() as u64,
+        )
+        .map_err(|_| ResponseInvariantError)?;
+        clips.push(TemporalVideoClipHandle {
+            epoch_index: clip.epoch_index,
+            cache: clip.cache,
+            artifact_id: artifact.artifact_id,
+            media_type: artifact.media_type.as_str().to_owned(),
+            encoded_byte_len: artifact.encoded_byte_len,
+            output_hash: artifact.content_sha256.to_string(),
+            presentation_policy: manifest.plan().policy(),
+            presentation_duration_nanos: manifest.plan().duration().as_nanos(),
+            source_frame_count: u32::try_from(manifest.plan().input_frame_ids().len())
+                .map_err(|_| ResponseInvariantError)?,
+            meaningful_frame_count: u32::try_from(manifest.plan().meaningful_frame_ids().len())
+                .map_err(|_| ResponseInvariantError)?,
+            gap_count: u32::try_from(manifest.gap_evidence().len())
+                .map_err(|_| ResponseInvariantError)?,
+            output_dimensions: VideoOutputDimensions {
+                width: manifest.profile().geometry().canvas().width(),
+                height: manifest.profile().geometry().canvas().height(),
+            },
+            video_uri: video.uri.clone(),
+            manifest_uri: manifest_resource.uri.clone(),
+        });
+        add_resource(&mut projection, video)?;
+        add_resource(&mut projection, manifest_resource)?;
+    }
+    projection.result = json!({
+        "range": result.range,
+        "clips": clips,
+    });
+    Ok(mapped(
+        tool,
+        projection,
+        format!("{tool} generated {clip_count} retained clip(s)"),
     ))
 }
 
@@ -1219,6 +1309,8 @@ fn add_resource(
         ResourceKind::Artifact => ResourceRole::Artifact,
         ResourceKind::ArtifactManifest => ResourceRole::ArtifactManifest,
         ResourceKind::SourceFrame => ResourceRole::SourceFrame,
+        ResourceKind::Video => ResourceRole::Video,
+        ResourceKind::VideoManifest => ResourceRole::VideoManifest,
     };
     projection.resources.push(ResponseResource {
         role,
@@ -1283,11 +1375,16 @@ mod tests {
     use krometrail_core::{
         BatchSkipReason, BatchStepResult, BatchStepStatus, BrowserOperationKind,
         CaptureFailureStage, CaptureStatistics, CaptureStreamState, CaptureTimingSummary, CssPoint,
-        CssRect, CssSize, DeviceScaleFactor, ErrorContext, EveryNthFrame, ImageFormat,
+        CssRect, CssSize, DeviceScaleFactor, ErrorContext, EveryNthFrame, FrameId, ImageFormat,
         InteractionId, InteractionTiming, NodeReference, ObservationContext, PageChange,
-        PageSelection, PageSnapshot, PixelDimensions, ScreenshotTarget, SessionId, SessionTime,
-        SnapshotGeneration, SnapshotNode, SnapshotNodeId, TargetCaptureStatus, TargetId,
-        WaitCondition, WaitProbe, WaitRequest, WaitResult,
+        PageSelection, PageSnapshot, PixelDimensions, PresentationRange, PresentationTime,
+        RangeResolutionOptions, ResolvedRange, ScreenshotTarget, SessionId, SessionRange,
+        SessionTime, Sha256Digest, SnapshotGeneration, SnapshotNode, SnapshotNodeId,
+        TargetCaptureStatus, TargetId, TemporalRangeAnchorKind, TemporalVideoGenerationClip,
+        TemporalVideoManifest, VideoArtifactEvidenceHandle, VideoEncodedClip, VideoEncoderIdentity,
+        VideoEncodingProfile, VideoOutputGeometry, VideoPresentationPlan, VideoPresentationSegment,
+        VideoSegmentSource, VideoTimingBasis, VisualEpoch, WaitCondition, WaitProbe, WaitRequest,
+        WaitResult,
     };
     use std::{
         sync::atomic::{AtomicUsize, Ordering},
@@ -1340,6 +1437,138 @@ mod tests {
     }
     fn error(code: ErrorCode, message: &str) -> KrometrailError {
         KrometrailError::new(code, NonEmptyText::new(message).unwrap())
+    }
+
+    fn video_result() -> TemporalVideoGenerationResult {
+        let first = FrameId::from_uuid(uuid::Uuid::from_u128(30));
+        let second = FrameId::from_uuid(uuid::Uuid::from_u128(31));
+        let range = SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(10)).unwrap();
+        let resolved = ResolvedRange::new(
+            session_id(),
+            target_id(),
+            TemporalRangeAnchorKind::SessionTime,
+            range,
+            range,
+            vec![first, second],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            RangeResolutionOptions::DEFAULT,
+        )
+        .unwrap();
+        let dimensions = PixelDimensions::new(4, 4).unwrap();
+        let geometry = VideoOutputGeometry::new(dimensions, dimensions, dimensions).unwrap();
+        let clips = [(0_u32, first, 50_u128), (1, second, 51)]
+            .into_iter()
+            .map(|(epoch_index, frame_id, artifact_value)| {
+                let frame_time = SessionTime::from_nanos(2 + u64::from(epoch_index) * 2);
+                let plan = VideoPresentationPlan::new(
+                    VideoPresentationPolicy::RealTime,
+                    range,
+                    range,
+                    SessionRange::new(frame_time, frame_time).unwrap(),
+                    VisualEpoch {
+                        index: epoch_index,
+                        frame_ids: vec![frame_id],
+                        image: dimensions,
+                        viewport: dimensions,
+                        device_scale_factor: DeviceScaleFactor::new(1.0).unwrap(),
+                    },
+                    vec![frame_id],
+                    vec![frame_time],
+                    vec![],
+                    vec![
+                        VideoPresentationSegment::new(
+                            0,
+                            VideoSegmentSource::source_frame(frame_id, frame_time).unwrap(),
+                            PresentationRange::new(
+                                PresentationTime::ZERO,
+                                PresentationTime::from_nanos(250_000_000).unwrap(),
+                            )
+                            .unwrap(),
+                            VideoTimingBasis::TerminalHold,
+                        )
+                        .unwrap(),
+                    ],
+                    geometry,
+                )
+                .unwrap();
+                let bytes: Arc<[u8]> = Arc::from(
+                    format!("fixture-mp4-{epoch_index}")
+                        .into_bytes()
+                        .into_boxed_slice(),
+                );
+                let digest = Sha256Digest::digest(&bytes);
+                let encoded = VideoEncodedClip::new(
+                    VideoEncoderIdentity::new(
+                        "fixture-encoder-1",
+                        [epoch_index as u8 + 1; 32],
+                        "libx264",
+                        "adapter-v1",
+                        "args-v1",
+                    )
+                    .unwrap(),
+                    VideoEncodingProfile::new(geometry, 1024).unwrap(),
+                    temporal_vision::OutputHash::from_bytes(*digest.as_bytes()),
+                    Arc::clone(&bytes),
+                )
+                .unwrap();
+                let manifest = TemporalVideoManifest::new(
+                    ArtifactId::from_uuid(uuid::Uuid::from_u128(artifact_value)),
+                    &resolved,
+                    plan,
+                    None,
+                    &encoded,
+                )
+                .unwrap();
+                let artifact = VideoArtifactEvidenceHandle::new(
+                    manifest.artifact_id(),
+                    krometrail_core::EvidenceScope::from_range(&resolved).unwrap(),
+                    NonEmptyText::new("video/mp4").unwrap(),
+                    Sha256Digest::from_bytes(*manifest.output_hash().as_bytes()),
+                    manifest.encoded_byte_len(),
+                    manifest,
+                )
+                .unwrap();
+                TemporalVideoGenerationClip {
+                    epoch_index,
+                    cache: ArtifactCacheDisposition::Generated,
+                    artifact,
+                }
+            })
+            .collect();
+        TemporalVideoGenerationResult {
+            range: resolved,
+            clips,
+        }
+    }
+
+    #[test]
+    fn temporal_video_result_is_compact_ordered_and_links_each_clip_twice() {
+        let mapped = map_temporal_video_result("generate_temporal_video", video_result()).unwrap();
+        assert_eq!(mapped.response.status, ToolResponseStatus::Succeeded);
+        assert_eq!(mapped.response.result["clips"].as_array().unwrap().len(), 2);
+        assert_eq!(mapped.response.result["clips"][0]["epoch_index"], 0);
+        assert_eq!(mapped.response.result["clips"][1]["epoch_index"], 1);
+        assert_eq!(mapped.response.resources.len(), 4);
+        assert_eq!(mapped.response.resources[0].role, ResourceRole::Video);
+        assert_eq!(
+            mapped.response.resources[1].role,
+            ResourceRole::VideoManifest
+        );
+        let compact = serde_json::to_string(&mapped.response.result).unwrap();
+        for forbidden in ["provenance", "encoded_bytes", "provider", "upload"] {
+            assert!(!compact.contains(forbidden), "leaked {forbidden}");
+        }
+        let result = into_call_tool_result(mapped).unwrap();
+        let links = result
+            .content
+            .iter()
+            .filter(|content| serde_json::to_value(content).unwrap()["type"] == "resource_link")
+            .count();
+        assert_eq!(links, 4);
     }
     fn screenshot(format: ImageFormat) -> EncodedScreenshot {
         let metadata = ScreenshotMetadata::new(

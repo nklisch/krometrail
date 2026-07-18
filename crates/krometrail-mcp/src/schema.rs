@@ -252,7 +252,7 @@ mod tests {
     use super::*;
     use krometrail_core::{
         BrowserEventDetailRequest, CapabilityId, RetrieveSourceFrameRequest,
-        TemporalDebugBundleRequest,
+        TemporalDebugBundleRequest, TemporalVideoGenerationRequest,
     };
 
     #[test]
@@ -260,6 +260,29 @@ mod tests {
         assert!(type_input_schema::<BrowserEventDetailRequest>().is_ok());
         assert!(type_input_schema::<RetrieveSourceFrameRequest>().is_ok());
         assert!(type_input_schema::<TemporalDebugBundleRequest>().is_ok());
+        assert!(type_input_schema::<TemporalVideoGenerationRequest>().is_ok());
+    }
+
+    #[test]
+    fn temporal_video_schema_is_closed_inlined_and_publishes_fixed_output_limits() {
+        let schema = type_input_schema::<TemporalVideoGenerationRequest>().unwrap();
+        let schema = Value::Object(schema.as_ref().clone());
+        assert_no_references(&schema);
+        assert_eq!(schema["additionalProperties"], false);
+        assert_eq!(
+            schema["properties"]["policy"]["enum"],
+            serde_json::json!(["real_time", "model_optimized"])
+        );
+        let output = &schema["properties"]["output"];
+        assert_eq!(output["additionalProperties"], false);
+        assert_eq!(output["properties"]["max_width"]["minimum"], 2);
+        assert_eq!(output["properties"]["max_width"]["maximum"], 1_920);
+        assert_eq!(output["properties"]["max_height"]["minimum"], 2);
+        assert_eq!(output["properties"]["max_height"]["maximum"], 1_080);
+        assert_eq!(
+            output["properties"]["max_encoded_bytes"]["maximum"],
+            67_108_864_u64
+        );
     }
 
     #[test]

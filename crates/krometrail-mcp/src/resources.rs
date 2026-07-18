@@ -8,15 +8,17 @@ use std::{str::FromStr, sync::Arc, time::Instant};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use krometrail_core::{
-    ArtifactId, CancellationSignal, ErrorCode, EvidenceScope, FrameId, KrometrailError,
-    NonEmptyText, ProgressiveEvidence, ProgressiveEvidenceContext, ProgressiveEvidenceRequest,
-    ProgressiveEvidenceResult, Result, RetrieveArtifactRequest, RetrieveSourceFrameRequest,
-    SessionId, TargetId,
+    ArtifactId, CancellationSignal, CapabilityId, ErrorCode, EvidenceScope, FrameId,
+    KrometrailError, NonEmptyText, ProgressiveEvidence, ProgressiveEvidenceContext,
+    ProgressiveEvidenceRequest, ProgressiveEvidenceResult, Result, RetrieveArtifactRequest,
+    RetrieveSourceFrameRequest, SessionId, TargetId, TemporalVideoGeneration,
 };
 use rmcp::model::{
     Annotated, RawResourceTemplate, ReadResourceResult, ResourceContents, ResourceTemplate,
 };
 use serde_json::json;
+
+use crate::config::McpConfig;
 
 const ARTIFACT_READ_LIMIT: u64 = 64 * 1024 * 1024;
 const SOURCE_FRAME_READ_LIMIT: u64 = 32 * 1024 * 1024;
@@ -25,50 +27,89 @@ const ARTIFACT_URI_TEMPLATE: &str = "krometrail://evidence/{session}/{target}/ar
 const ARTIFACT_MANIFEST_URI_TEMPLATE: &str =
     "krometrail://evidence/{session}/{target}/artifact-manifests/{id}";
 const SOURCE_FRAME_URI_TEMPLATE: &str = "krometrail://evidence/{session}/{target}/frames/{id}";
+const VIDEO_URI_TEMPLATE: &str = "krometrail://evidence/{session}/{target}/videos/{id}";
+const VIDEO_MANIFEST_URI_TEMPLATE: &str =
+    "krometrail://evidence/{session}/{target}/video-manifests/{id}";
+
+#[derive(Clone, Copy)]
+struct ResourceDefinition {
+    kind: ResourceKind,
+    capability: CapabilityId,
+    uri_template: &'static str,
+    name: &'static str,
+    title: &'static str,
+    description: &'static str,
+    mime_type: Option<&'static str>,
+}
+
+const RESOURCE_DEFINITIONS: &[ResourceDefinition] = &[
+    ResourceDefinition {
+        kind: ResourceKind::Artifact,
+        capability: CapabilityId::TemporalVision,
+        uri_template: ARTIFACT_URI_TEMPLATE,
+        name: "temporal-artifact",
+        title: "Temporal artifact evidence",
+        description: "Read one retained generated artifact by canonical evidence URI.",
+        mime_type: Some("image/png"),
+    },
+    ResourceDefinition {
+        kind: ResourceKind::ArtifactManifest,
+        capability: CapabilityId::TemporalVision,
+        uri_template: ARTIFACT_MANIFEST_URI_TEMPLATE,
+        name: "temporal-artifact-manifest",
+        title: "Temporal artifact provenance manifest",
+        description: "Read one retained artifact's complete provenance as canonical JSON.",
+        mime_type: Some("application/json"),
+    },
+    ResourceDefinition {
+        kind: ResourceKind::SourceFrame,
+        capability: CapabilityId::TemporalVision,
+        uri_template: SOURCE_FRAME_URI_TEMPLATE,
+        name: "temporal-source-frame",
+        title: "Temporal source-frame evidence",
+        description: "Read one retained source frame by canonical evidence URI.",
+        mime_type: None,
+    },
+    ResourceDefinition {
+        kind: ResourceKind::Video,
+        capability: CapabilityId::TemporalVideo,
+        uri_template: VIDEO_URI_TEMPLATE,
+        name: "temporal-video",
+        title: "Temporal video evidence",
+        description: "Read one retained bounded MP4/H.264 clip by canonical evidence URI.",
+        mime_type: Some("video/mp4"),
+    },
+    ResourceDefinition {
+        kind: ResourceKind::VideoManifest,
+        capability: CapabilityId::TemporalVideo,
+        uri_template: VIDEO_MANIFEST_URI_TEMPLATE,
+        name: "temporal-video-manifest",
+        title: "Temporal video provenance manifest",
+        description: "Read one retained temporal video's complete provenance as canonical JSON.",
+        mime_type: Some("application/json"),
+    },
+];
 
 /// The only resource templates exposed by this adapter. Concrete retained
 /// resources remain intentionally unlisted because storage is dynamic and may
 /// contain a large number of weak evidence handles.
-pub(crate) fn resource_templates() -> Vec<ResourceTemplate> {
-    vec![
-        Annotated::new(
-            RawResourceTemplate {
-                uri_template: ARTIFACT_URI_TEMPLATE.to_owned(),
-                name: "temporal-artifact".to_owned(),
-                title: Some("Temporal artifact evidence".to_owned()),
-                description: Some(
-                    "Read one retained generated artifact by canonical evidence URI.".to_owned(),
-                ),
-                mime_type: Some("image/png".to_owned()),
-            },
-            None,
-        ),
-        Annotated::new(
-            RawResourceTemplate {
-                uri_template: ARTIFACT_MANIFEST_URI_TEMPLATE.to_owned(),
-                name: "temporal-artifact-manifest".to_owned(),
-                title: Some("Temporal artifact provenance manifest".to_owned()),
-                description: Some(
-                    "Read one retained artifact's complete provenance as canonical JSON."
-                        .to_owned(),
-                ),
-                mime_type: Some("application/json".to_owned()),
-            },
-            None,
-        ),
-        Annotated::new(
-            RawResourceTemplate {
-                uri_template: SOURCE_FRAME_URI_TEMPLATE.to_owned(),
-                name: "temporal-source-frame".to_owned(),
-                title: Some("Temporal source-frame evidence".to_owned()),
-                description: Some(
-                    "Read one retained source frame by canonical evidence URI.".to_owned(),
-                ),
-                mime_type: None,
-            },
-            None,
-        ),
-    ]
+pub(crate) fn resource_templates(config: &McpConfig) -> Vec<ResourceTemplate> {
+    RESOURCE_DEFINITIONS
+        .iter()
+        .filter(|definition| config.is_enabled(definition.capability))
+        .map(|definition| {
+            Annotated::new(
+                RawResourceTemplate {
+                    uri_template: definition.uri_template.to_owned(),
+                    name: definition.name.to_owned(),
+                    title: Some(definition.title.to_owned()),
+                    description: Some(definition.description.to_owned()),
+                    mime_type: definition.mime_type.map(str::to_owned),
+                },
+                None,
+            )
+        })
+        .collect()
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -76,6 +117,8 @@ pub(crate) enum ResourceKind {
     Artifact,
     ArtifactManifest,
     SourceFrame,
+    Video,
+    VideoManifest,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -116,11 +159,29 @@ impl EvidenceResourceUri {
         }
     }
 
+    pub(crate) fn video(scope: EvidenceScope, artifact_id: ArtifactId) -> Self {
+        Self {
+            kind: ResourceKind::Video,
+            scope,
+            id: EvidenceResourceId::Artifact(artifact_id),
+        }
+    }
+
+    pub(crate) fn video_manifest(scope: EvidenceScope, artifact_id: ArtifactId) -> Self {
+        Self {
+            kind: ResourceKind::VideoManifest,
+            scope,
+            id: EvidenceResourceId::Artifact(artifact_id),
+        }
+    }
+
     pub(crate) fn canonical_uri(self) -> String {
         let kind = match self.kind {
             ResourceKind::Artifact => "artifacts",
             ResourceKind::ArtifactManifest => "artifact-manifests",
             ResourceKind::SourceFrame => "frames",
+            ResourceKind::Video => "videos",
+            ResourceKind::VideoManifest => "video-manifests",
         };
         let id = match self.id {
             EvidenceResourceId::Artifact(id) => id.to_string(),
@@ -137,6 +198,8 @@ impl EvidenceResourceUri {
             ResourceKind::Artifact => "artifact",
             ResourceKind::ArtifactManifest => "artifact-manifest",
             ResourceKind::SourceFrame => "source-frame",
+            ResourceKind::Video => "video",
+            ResourceKind::VideoManifest => "video-manifest",
         };
         format!(
             "{kind}-{}",
@@ -195,6 +258,20 @@ impl EvidenceResourceUri {
                 }
                 Self::source_frame(scope, id)
             }
+            "videos" => {
+                let id = ArtifactId::from_str(segments[3]).map_err(|_| invalid_uri())?;
+                if id.as_uuid().is_nil() || segments[3] != id.to_string() {
+                    return Err(invalid_uri());
+                }
+                Self::video(scope, id)
+            }
+            "video-manifests" => {
+                let id = ArtifactId::from_str(segments[3]).map_err(|_| invalid_uri())?;
+                if id.as_uuid().is_nil() || segments[3] != id.to_string() {
+                    return Err(invalid_uri());
+                }
+                Self::video_manifest(scope, id)
+            }
             _ => return Err(invalid_uri()),
         };
         if parsed.canonical_uri() != uri {
@@ -252,6 +329,30 @@ impl ResourceProjection {
         )
     }
 
+    pub(crate) fn from_video(
+        scope: EvidenceScope,
+        artifact_id: ArtifactId,
+        encoded_byte_len: u64,
+    ) -> Result<Self> {
+        Self::new(
+            EvidenceResourceUri::video(scope, artifact_id),
+            "video/mp4",
+            encoded_byte_len,
+        )
+    }
+
+    pub(crate) fn from_video_manifest(
+        scope: EvidenceScope,
+        artifact_id: ArtifactId,
+        encoded_byte_len: u64,
+    ) -> Result<Self> {
+        Self::new(
+            EvidenceResourceUri::video_manifest(scope, artifact_id),
+            "application/json",
+            encoded_byte_len,
+        )
+    }
+
     fn new(uri: EvidenceResourceUri, mime_type: &str, encoded_byte_len: u64) -> Result<Self> {
         if encoded_byte_len == 0 || mime_type.trim().is_empty() {
             return Err(invalid_uri());
@@ -272,13 +373,43 @@ impl ResourceProjection {
 
 pub(crate) async fn read_resource(
     uri: &str,
+    config: &McpConfig,
     progressive: &dyn ProgressiveEvidence,
+    temporal_video: Option<&dyn TemporalVideoGeneration>,
     deadline: Instant,
     cancellation: Arc<dyn CancellationSignal>,
 ) -> std::result::Result<ReadResourceResult, rmcp::ErrorData> {
     let parsed = EvidenceResourceUri::parse(uri).map_err(|_| {
         rmcp::ErrorData::invalid_params("resource URI is not a canonical evidence URI", None)
     })?;
+    let definition = RESOURCE_DEFINITIONS
+        .iter()
+        .find(|definition| definition.kind == parsed.kind)
+        .expect("resource registry contains every resource kind");
+    if !config.is_enabled(definition.capability) {
+        return Err(rmcp::ErrorData::resource_not_found(
+            "evidence resource is not registered",
+            None,
+        ));
+    }
+    if matches!(
+        parsed.kind,
+        ResourceKind::Video | ResourceKind::VideoManifest
+    ) {
+        return read_video_resource(
+            parsed,
+            uri,
+            temporal_video.ok_or_else(|| {
+                rmcp::ErrorData::internal_error(
+                    "temporal video resource service is unavailable",
+                    None,
+                )
+            })?,
+            deadline,
+            cancellation,
+        )
+        .await;
+    }
     let request = match parsed.id {
         EvidenceResourceId::Artifact(artifact_id) => ProgressiveEvidenceRequest::RetrieveArtifact(
             RetrieveArtifactRequest::new(parsed.scope, artifact_id, ARTIFACT_READ_LIMIT)
@@ -323,6 +454,9 @@ pub(crate) async fn read_resource(
                         None,
                     ));
                 }
+                ResourceKind::Video | ResourceKind::VideoManifest => unreachable!(
+                    "video resource kinds return through the retained video authority above"
+                ),
             };
             if read.handle.artifact_id != expected_id
                 || read.handle.scope != parsed.scope
@@ -352,6 +486,9 @@ pub(crate) async fn read_resource(
                     meta: None,
                 },
                 ResourceKind::SourceFrame => unreachable!("source-frame result rejected above"),
+                ResourceKind::Video | ResourceKind::VideoManifest => unreachable!(
+                    "video resource kinds return through the retained video authority above"
+                ),
             }
         }
         ProgressiveEvidenceResult::RetrieveSourceFrame(read) => {
@@ -385,6 +522,75 @@ pub(crate) async fn read_resource(
                 None,
             ));
         }
+    };
+    Ok(ReadResourceResult {
+        contents: vec![contents],
+    })
+}
+
+async fn read_video_resource(
+    parsed: EvidenceResourceUri,
+    uri: &str,
+    temporal_video: &dyn TemporalVideoGeneration,
+    deadline: Instant,
+    cancellation: Arc<dyn CancellationSignal>,
+) -> std::result::Result<ReadResourceResult, rmcp::ErrorData> {
+    let EvidenceResourceId::Artifact(artifact_id) = parsed.id else {
+        return Err(rmcp::ErrorData::internal_error(
+            "video resource identity kind mismatch",
+            None,
+        ));
+    };
+    let request = RetrieveArtifactRequest::new(parsed.scope, artifact_id, ARTIFACT_READ_LIMIT)
+        .map_err(internal_resource_error)?;
+    let read = tokio::select! {
+        result = temporal_video.read_video_artifact(request) => result,
+        () = cancellation.cancelled() => Err(cancelled_error()),
+        () = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => Err(deadline_error()),
+    }
+    .map_err(map_resource_domain_error)?;
+    let expected = match parsed.kind {
+        ResourceKind::Video => {
+            EvidenceResourceUri::video(read.handle.scope, read.handle.artifact_id)
+        }
+        ResourceKind::VideoManifest => {
+            EvidenceResourceUri::video_manifest(read.handle.scope, read.handle.artifact_id)
+        }
+        _ => {
+            return Err(rmcp::ErrorData::internal_error(
+                "video resource result kind mismatch",
+                None,
+            ));
+        }
+    };
+    if read.handle.scope != parsed.scope
+        || read.handle.artifact_id != artifact_id
+        || expected.canonical_uri() != uri
+    {
+        return Err(rmcp::ErrorData::internal_error(
+            "video resource handle identity mismatch",
+            None,
+        ));
+    }
+    let contents = match parsed.kind {
+        ResourceKind::Video => ResourceContents::BlobResourceContents {
+            uri: uri.to_owned(),
+            mime_type: Some("video/mp4".to_owned()),
+            blob: STANDARD.encode(read.encoded_bytes()),
+            meta: None,
+        },
+        ResourceKind::VideoManifest => ResourceContents::TextResourceContents {
+            uri: uri.to_owned(),
+            mime_type: Some("application/json".to_owned()),
+            text: serde_json::to_string(&read.handle.provenance).map_err(|_| {
+                rmcp::ErrorData::internal_error(
+                    "temporal video manifest could not be serialized",
+                    None,
+                )
+            })?,
+            meta: None,
+        },
+        _ => unreachable!("video resource kind checked above"),
     };
     Ok(ReadResourceResult {
         contents: vec![contents],
@@ -437,8 +643,10 @@ fn deadline_error() -> KrometrailError {
 mod tests {
     use super::*;
     use krometrail_core::{
-        CaptureOrdinal, CapturedFrame, DeviceScaleFactor, ImageFormat, PixelDimensions, PortFuture,
-        SourceFrameHandle, SourceFrameRead,
+        ArtifactGenerationContext, CapabilitySnapshot, CaptureOrdinal, CapturedFrame,
+        DeviceScaleFactor, ImageFormat, PixelDimensions, PortFuture, SourceFrameHandle,
+        SourceFrameRead, TemporalVideoGenerationRequest, TemporalVideoGenerationResult,
+        VideoArtifactRead,
     };
     use std::{sync::Mutex, time::Duration};
     use tokio::sync::Notify;
@@ -450,6 +658,12 @@ mod tests {
             "00000000-0000-0000-0000-000000000002".parse().unwrap(),
         )
         .unwrap()
+    }
+
+    fn qualified_config() -> McpConfig {
+        McpConfig::from_snapshot(
+            CapabilitySnapshot::resolve_defaults(&[CapabilityId::TemporalVideo]).unwrap(),
+        )
     }
 
     struct NeverCancelled;
@@ -492,6 +706,16 @@ mod tests {
             EvidenceResourceUri::parse(&manifest.canonical_uri()).unwrap(),
             manifest
         );
+        let video = EvidenceResourceUri::video(scope(), artifact_id);
+        assert_eq!(
+            EvidenceResourceUri::parse(&video.canonical_uri()).unwrap(),
+            video
+        );
+        let video_manifest = EvidenceResourceUri::video_manifest(scope(), artifact_id);
+        assert_eq!(
+            EvidenceResourceUri::parse(&video_manifest.canonical_uri()).unwrap(),
+            video_manifest
+        );
         for alternate in [
             text.to_uppercase(),
             text.replace("artifacts", "artifact"),
@@ -507,8 +731,51 @@ mod tests {
         }
     }
 
+    #[test]
+    fn one_capability_snapshot_filters_video_templates_as_one_registry() {
+        let unavailable = resource_templates(&McpConfig::default());
+        let qualified = resource_templates(&qualified_config());
+        assert_eq!(unavailable.len(), 3);
+        assert_eq!(qualified.len(), 5);
+        let encoded = serde_json::to_value(qualified).unwrap();
+        let text = encoded.to_string();
+        assert!(text.contains(VIDEO_URI_TEMPLATE));
+        assert!(text.contains(VIDEO_MANIFEST_URI_TEMPLATE));
+        assert_eq!(text.matches("temporal-video\"").count(), 1);
+        assert_eq!(text.matches("temporal-video-manifest\"").count(), 1);
+    }
+
     struct ErrorSpy {
         error: KrometrailError,
+    }
+
+    struct VideoResourceSpy {
+        reads: Vec<VideoArtifactRead>,
+        requests: Mutex<Vec<RetrieveArtifactRequest>>,
+    }
+
+    impl TemporalVideoGeneration for VideoResourceSpy {
+        fn generate_video(
+            &self,
+            _request: TemporalVideoGenerationRequest,
+            _context: ArtifactGenerationContext,
+        ) -> PortFuture<'_, Result<TemporalVideoGenerationResult>> {
+            panic!("resource test must not generate video")
+        }
+
+        fn read_video_artifact(
+            &self,
+            request: RetrieveArtifactRequest,
+        ) -> PortFuture<'_, Result<VideoArtifactRead>> {
+            self.requests.lock().unwrap().push(request.clone());
+            let read = self
+                .reads
+                .iter()
+                .find(|read| read.handle.artifact_id == request.artifact_id)
+                .unwrap()
+                .clone();
+            Box::pin(std::future::ready(Ok(read)))
+        }
     }
 
     impl ProgressiveEvidence for ErrorSpy {
@@ -571,7 +838,9 @@ mod tests {
         .canonical_uri();
         let result = read_resource(
             &uri,
+            &McpConfig::default(),
             &ErrorSpy { error },
+            None,
             Instant::now() + Duration::from_secs(1),
             Arc::new(NeverCancelled),
         )
@@ -579,6 +848,110 @@ mod tests {
         .unwrap_err();
         assert_eq!(result.code, rmcp::model::ErrorCode::RESOURCE_NOT_FOUND);
         assert!(result.data.unwrap()["krometrail_error"].is_object());
+    }
+
+    #[tokio::test]
+    async fn unavailable_video_resource_is_rejected_before_any_retained_read() {
+        let uri = EvidenceResourceUri::video(
+            scope(),
+            "00000000-0000-0000-0000-000000000003".parse().unwrap(),
+        )
+        .canonical_uri();
+        let result = read_resource(
+            &uri,
+            &McpConfig::default(),
+            &ErrorSpy {
+                error: KrometrailError::new(
+                    ErrorCode::Internal,
+                    NonEmptyText::new("must not be called").unwrap(),
+                ),
+            },
+            None,
+            Instant::now() + Duration::from_secs(1),
+            Arc::new(NeverCancelled),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(result.code, rmcp::model::ErrorCode::RESOURCE_NOT_FOUND);
+        assert_eq!(result.message, "evidence resource is not registered");
+    }
+
+    #[tokio::test]
+    async fn retained_video_and_manifest_reads_preserve_identity_bytes_and_provenance() {
+        let fixture = crate::test_fixture::video_fixture();
+        let expected = fixture.reads[0].clone();
+        let spy = VideoResourceSpy {
+            reads: fixture.reads,
+            requests: Mutex::new(Vec::new()),
+        };
+        let scope = expected.handle.scope;
+        let artifact_id = expected.handle.artifact_id;
+        let video_uri = EvidenceResourceUri::video(scope, artifact_id).canonical_uri();
+        let manifest_uri = EvidenceResourceUri::video_manifest(scope, artifact_id).canonical_uri();
+        let video = read_resource(
+            &video_uri,
+            &qualified_config(),
+            &ErrorSpy {
+                error: KrometrailError::new(
+                    ErrorCode::Internal,
+                    NonEmptyText::new("still authority must not be called").unwrap(),
+                ),
+            },
+            Some(&spy),
+            Instant::now() + Duration::from_secs(1),
+            Arc::new(NeverCancelled),
+        )
+        .await
+        .unwrap();
+        let manifest = read_resource(
+            &manifest_uri,
+            &qualified_config(),
+            &ErrorSpy {
+                error: KrometrailError::new(
+                    ErrorCode::Internal,
+                    NonEmptyText::new("still authority must not be called").unwrap(),
+                ),
+            },
+            Some(&spy),
+            Instant::now() + Duration::from_secs(1),
+            Arc::new(NeverCancelled),
+        )
+        .await
+        .unwrap();
+        let ResourceContents::BlobResourceContents {
+            uri,
+            mime_type,
+            blob,
+            ..
+        } = &video.contents[0]
+        else {
+            panic!("video resource must be a blob")
+        };
+        assert_eq!(uri, &video_uri);
+        assert_eq!(mime_type.as_deref(), Some("video/mp4"));
+        assert_eq!(STANDARD.decode(blob).unwrap(), expected.encoded_bytes());
+        let ResourceContents::TextResourceContents {
+            uri,
+            mime_type,
+            text,
+            ..
+        } = &manifest.contents[0]
+        else {
+            panic!("video manifest resource must be text")
+        };
+        assert_eq!(uri, &manifest_uri);
+        assert_eq!(mime_type.as_deref(), Some("application/json"));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(text).unwrap(),
+            serde_json::to_value(&expected.handle.provenance).unwrap()
+        );
+        let requests = spy.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(requests.iter().all(|request| {
+            request.scope == scope
+                && request.artifact_id == artifact_id
+                && request.max_encoded_bytes() == ARTIFACT_READ_LIMIT
+        }));
     }
 
     #[tokio::test]
@@ -598,7 +971,9 @@ mod tests {
             async move {
                 read_resource(
                     &uri,
+                    &McpConfig::default(),
                     spy.as_ref(),
+                    None,
                     Instant::now() + Duration::from_secs(1),
                     Arc::new(TokenCancellation(token)),
                 )
@@ -651,7 +1026,9 @@ mod tests {
         let uri = EvidenceResourceUri::source_frame(scope(), frame_id).canonical_uri();
         let result = read_resource(
             &uri,
+            &McpConfig::default(),
             &spy,
+            None,
             Instant::now() + Duration::from_secs(1),
             Arc::new(NeverCancelled),
         )

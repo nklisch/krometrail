@@ -23,7 +23,20 @@ pub struct TemporalVideoGenerationRequest {
 struct TemporalVideoGenerationRequestWire {
     range: ResolvedRange,
     policy: VideoPresentationPolicy,
+    #[schemars(with = "TemporalVideoOutputLimitsSchema")]
     output: OutputLimitsRequest,
+}
+
+#[derive(schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)] // Schema-only proxy publishes the stricter video output ceilings.
+struct TemporalVideoOutputLimitsSchema {
+    #[schemars(range(min = 2_u32, max = 1_920_u32))]
+    max_width: u32,
+    #[schemars(range(min = 2_u32, max = 1_080_u32))]
+    max_height: u32,
+    #[schemars(range(min = 1_u64, max = 67_108_864_u64))]
+    max_encoded_bytes: u64,
 }
 
 impl TemporalVideoGenerationRequest {
