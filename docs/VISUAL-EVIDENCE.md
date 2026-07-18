@@ -285,6 +285,23 @@ Anchor: click I-52     During selected at maximum baseline difference
 
 The composite provides a low-complexity entry point before the agent inspects denser temporal artifacts.
 
+## Temporal Video Clip
+
+A temporal video clip is an optional source-derived presentation of a resolved interval. It is generated only when Krometrail qualified a user-installed FFmpeg implementation at MCP startup. It does not replace still artifacts, source-frame access, or the temporal debug bundle.
+
+The initial container and codec contract is MP4/H.264 without audio. Output duration, dimensions, presentation frame count, encoded bytes, CPU concurrency, wall-clock deadline, and external-process lifetime are bounded. Frames from incompatible visual epochs are not silently stretched together.
+
+Two presentation policies serve different inspection needs:
+
+- **real time** preserves the resolved interval's relative timing within declared output bounds;
+- **model optimized** lengthens selected meaningful states so provider-side sparse sampling or keyframe selection is less likely to omit them.
+
+Both policies are derived views. The model-optimized policy does not imply that held frames lasted that long in the recorded session. Its manifest maps every presentation interval back to session time and ordered source-frame identifiers.
+
+Known capture gaps become explicit labeled gap slates whose duration and mapping are recorded. The encoder never interpolates motion or invents intermediate observations across a gap. The clip manifest records its presentation policy and plan, source identities, gaps, epoch handling, exact FFmpeg build, selected H.264 encoder, encoding parameters, media type, and output hash.
+
+The presentation plan is deterministic for identical inputs and parameters. Encoded bytes are deterministic only for the exact recorded external encoder identity; Krometrail makes no byte-equality claim across FFmpeg builds, platforms, or H.264 implementations.
+
 ## Temporal Debug Bundle
 
 The default bundle combines complementary evidence rather than relying on one image.

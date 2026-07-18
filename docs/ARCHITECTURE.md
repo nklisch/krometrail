@@ -522,6 +522,10 @@ Artifact generation never blocks frame ingestion. Query concurrency and decoded-
 
 A cache key derives from source-frame identities, artifact kind, parameters, and algorithm version. Identical artifact requests reuse retained outputs.
 
+Temporal video is an outer application-service branch over the same resolved ranges and frame source. A core video-encoding port accepts an already validated presentation plan and writes a bounded output through an injected adapter. The production adapter invokes a user-installed FFmpeg executable directly, never through a shell, using fixed allowlisted arguments. It owns cancellation, deadline enforcement, child-process termination and reaping, bounded sanitized stderr, and atomic artifact publication. `temporal-vision` remains free of process and codec dependencies.
+
+The video cache identity includes source-frame identities, presentation policy and timing plan, gap slates, output limits, adapter version, exact FFmpeg build, and selected encoder. The presentation plan and manifest are deterministic; encoded bytes are reusable only under that exact encoder identity and are not claimed to match across different external builds.
+
 ## Capability Registry
 
 Capabilities are declared once as data:
@@ -536,9 +540,9 @@ CapabilityDefinition
   configuration_schema
 ```
 
-MCP registration, configuration validation, status reporting, and subsystem startup derive from this registry.
+MCP registration, configuration validation, status reporting, startup qualification, and subsystem startup derive from this registry.
 
-A disabled capability contributes no MCP tools. Recorded browser-event evidence can remain enabled independently from event-inspection tools because capture and presentation are separate registry concerns.
+A disabled capability contributes no MCP tools. A conditional capability contributes tools only when its startup probe returns a qualified implementation. The temporal-video probe resolves a user-installed FFmpeg executable and verifies the selected MP4/H.264 path with a tiny bounded encode; a version string alone is insufficient. Probe failure is logged safely and does not fail MCP startup. Recorded browser-event evidence can remain enabled independently from event-inspection tools because capture and presentation are separate registry concerns.
 
 Unavailable extension capabilities have contracts but no active implementation.
 
@@ -555,7 +559,7 @@ Tool handlers:
 
 Tool handlers do not contain CDP commands, SQL, image processing, or retention logic.
 
-Large binary outputs are persisted and returned as MCP resources or file references. A response can additionally include one context-sized image for immediate inspection.
+Large binary outputs are persisted and returned as MCP resources or file references. This includes local `video/mp4` resources when temporal video is available. Krometrail does not upload or attach them to a provider. A response can additionally include one context-sized image for immediate inspection.
 
 Tool schemas derive from the same Rust contracts used by application services. Generated schemas are build artifacts, not hand-maintained duplicates. In particular, `start_browser` and `attach_browser` expose the same generated `every_nth_frame` field from the core launch and attach requests, while `start_browser` alone exposes the generated managed-launch `focus` policy. The flat MCP adapter modules are `config.rs`, `registry.rs`, `resources.rs`, `response.rs`, `schema.rs`, `server.rs`, and `session.rs`; there are no parallel directory-based tool, schema, or response registries.
 
@@ -595,6 +599,7 @@ Failures remain inside the narrowest responsible boundary:
 - a target closure ends one target stream;
 - a terminal capture failure preserves its first sanitized failure stage and degrades later tool responses without disabling current-state control;
 - an artifact failure does not interrupt capture;
+- a video encoder probe or encode failure does not disable still-image artifacts or interrupt capture;
 - an SQLite failure stops persistence before accepting unsupported writes;
 - an unrecoverable browser connection ends the session after flushing accepted data.
 
@@ -619,6 +624,7 @@ Krometrail emits local structured logs for:
 - retention decisions;
 - temporal query timing;
 - artifact cache behavior;
+- external video-encoder qualification, selected implementation identity, bounded execution outcome, and sanitized failure stage;
 - errors and recovery.
 
 Target logs use Krometrail target IDs and hashed or opaque browser keys. They do not include page text, titles, full URLs, query values, screenshot contents, credentials, event parameters, executable/profile paths, or sensitive network values by default. Adapter source errors remain debug-only and are mapped to stable core errors.
@@ -645,6 +651,8 @@ temporal-vision  ──▶ no Krometrail crate
 
 The composition root provides an adapter around `temporal-vision` for the artifact-generation port defined by `krometrail-core`.
 
+The composition root also owns optional external executable discovery and injects a qualified video-encoder adapter through a core port. No core, MCP, storage, CDP, or temporal-vision module discovers or launches FFmpeg on its own.
+
 ## Technology Decisions
 
 - Rust 2024 edition provides the implementation language.
@@ -657,4 +665,4 @@ The composition root provides an adapter around `temporal-vision` for the artifa
 - The `image` ecosystem provides initial decoding and rendering.
 - Current final5 schema-v2 evidence selects exact cdpkit 0.4.0 behind a replaceable adapter. Its named-event-params and unbounded-subscriber limitations remain explicit, and the adapter must pass the required-domain compatibility probe at runtime.
 
-OpenCV, FFmpeg, a browser extension, and framework-specific instrumentation are not architectural prerequisites.
+OpenCV, bundled FFmpeg, a browser extension, and framework-specific instrumentation are not architectural prerequisites. A user-installed FFmpeg is an optional qualified dependency only for temporal-video export.

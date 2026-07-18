@@ -217,6 +217,15 @@ This tests the complete debugging workflow rather than one-shot interpretation.
 
 Conditions use the same captured source interval. They differ only in presentation and permitted retrieval.
 
+### Optional video conditions
+
+When both a qualified local encoder and an explicitly identified model host that accepts video are available, the same interval is additionally evaluated under:
+
+- **Condition F: real-time MP4/H.264 clip** — relative source timing is preserved within declared bounds;
+- **Condition G: model-optimized MP4/H.264 clip** — meaningful selected states may be held longer, with the exact presentation mapping retained in provenance.
+
+Video conditions are compared with the change-aware storyboard, temporal bundle, and progressive-source conditions. Encoder absence, unsupported host attachment, or a model without declared video input makes these rows not applicable; it does not fail the still-first product or permit a substituted pass. Every result identifies the host, provider, model version, FFmpeg build, H.264 encoder, presentation policy, source interval, gaps, and output hash.
+
 ## Visual Interpretation Tasks
 
 Agents answer structured questions before seeing application source code.
@@ -340,6 +349,20 @@ Motion history is evaluated for:
 - false direction inference.
 
 An artifact that consistently harms interpretation is removed from the default bundle even if its implementation is technically correct.
+
+### Temporal video
+
+Temporal video is evaluated for:
+
+- temporal-state recall after provider-side video sampling;
+- temporal-order accuracy relative to the source manifest;
+- whether the real-time and model-optimized policies preserve or distort agent interpretation;
+- explicit comprehension of gap slates and held-frame timing;
+- advantage or regression against still-image conditions at comparable task scope;
+- bounded generation time, output size, cancellation, and cleanup; and
+- correct omission of the MCP tool when startup qualification fails.
+
+Video results are model-, host-, encoder-, and policy-specific. They do not establish that video is generally superior to compact still artifacts.
 
 ## Browser-Control Evaluation
 

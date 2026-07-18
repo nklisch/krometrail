@@ -8,7 +8,7 @@ Krometrail gives local coding agents a visual memory of what a browser did over 
 
 Coding agents can operate browsers, inspect pages, and take screenshots, but their observations are usually isolated moments. This works when a defect persists in the final page state. It fails when the visible problem occurs only during a transition and disappears before the next screenshot.
 
-Krometrail continuously records a controlled Chromium renderer session and lets an agent inspect selected intervals as compact visual evidence. The renderer may belong to Chrome, a compatible Chromium browser, or an explicitly debug-enabled Electron application. Krometrail exposes movement, jitter, flicker, transient layout changes, and incorrect intermediate states without requiring the model to consume video.
+Krometrail continuously records a controlled Chromium renderer session and lets an agent inspect selected intervals as compact visual evidence. The renderer may belong to Chrome, a compatible Chromium browser, or an explicitly debug-enabled Electron application. Krometrail exposes movement, jitter, flicker, transient layout changes, and incorrect intermediate states without requiring the model to consume video. When the local environment and agent host support it, the same retained evidence can also be presented as an optional video clip.
 
 ## Problem
 
@@ -36,7 +36,7 @@ Krometrail separates live operation from historical investigation:
 2. The active Chrome-compatible renderer target is continuously recorded while the agent works.
 3. Agent actions and browser activity mark the timeline.
 4. The agent selects a relevant interval after observing a symptom.
-5. Krometrail turns that interval into still visual artifacts.
+5. Krometrail turns that interval into compact visual artifacts.
 6. The agent reasons over the artifacts and requests source frames when more detail is needed.
 
 The system preserves the evidence. The agent performs the diagnosis.
@@ -59,7 +59,7 @@ The agent can expand a region or retrieve additional source frames without loadi
 
 ## Visual Evidence
 
-Krometrail is designed for models that reason over still images better than video.
+Krometrail remains still-first: its default evidence is designed for models that reason over still images better than video. A qualified user-installed encoder can additionally produce a bounded MP4/H.264 presentation for models and hosts that accept video.
 
 Its visual artifacts reorganize recorded frames into forms that make temporal behavior visible:
 
@@ -67,6 +67,7 @@ Its visual artifacts reorganize recorded frames into forms that make temporal be
 - difference maps show where and when pixels changed;
 - region filmstrips expose short-lived local changes;
 - motion-history views compress movement into a single image;
+- optional video clips preserve a familiar time-based presentation without becoming authoritative evidence;
 - source frames remain available behind every derived artifact.
 
 Generated artifacts are lossy views of authoritative source frames. They carry their time range, source references, and transformation parameters. Inferred analysis is labeled separately from direct frame-derived transformations.
@@ -94,7 +95,7 @@ Krometrail is:
 - a browser flight recorder for local coding agents;
 - a practical browser-control environment;
 - a time-indexed visual evidence store;
-- a still-image interface to browser motion and transient state;
+- a still-first interface to browser motion and transient state, with optional derived video;
 - an extensible foundation for optional browser-state evidence.
 
 Krometrail is not:
@@ -117,7 +118,7 @@ Krometrail succeeds when a coding agent can:
 2. receive current visual feedback during ordinary browser actions;
 3. reproduce a defect whose final page state appears correct;
 4. inspect the relevant visual interval after the interaction;
-5. identify the transient behavior from a compact set of still artifacts;
+5. identify the transient behavior from compact visual artifacts appropriate to the agent host;
 6. retrieve the underlying evidence needed to reason about the defect;
 7. modify the application and verify that the visible temporal defect no longer occurs.
 

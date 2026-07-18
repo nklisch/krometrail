@@ -18,6 +18,8 @@ Krometrail supports:
 
 Krometrail does not require the inspected application to install a package or modify its source code for visual capture and ordinary browser control. Electron attachment requires the application to opt into a local Chromium remote-debugging endpoint; Krometrail does not instrument or control the Electron Node main process.
 
+Video export is optional. Krometrail does not download, bundle, or redistribute FFmpeg. At MCP startup it qualifies a user-installed `ffmpeg` executable and an available MP4/H.264 encoding path. When qualification fails, the temporal-video capability and its tools are omitted while browser control, recording, and still-image artifacts continue normally.
+
 ## Browser Lifecycle
 
 Krometrail can:
@@ -247,13 +249,14 @@ Defined capabilities are:
 |---|---:|---|
 | `control` | enabled | Browser lifecycle, structured snapshots, current screenshots, interaction, and waiting |
 | `temporal-vision` | enabled | Continuous visual capture, temporal ranges, visual artifacts, and source-frame retrieval |
+| `temporal-video` | conditional | Bounded MP4/H.264 clips derived from retained source frames through a qualified user-installed encoder |
 | `browser-events` | enabled | Console, exception, network metadata, navigation, and lifecycle evidence |
 | `page-state` | unavailable | Rich DOM, layout, storage, and application-defined state evidence |
 | `framework-state` | unavailable | Framework component, render, and state evidence |
 
 Unavailable capabilities are extension points, not commitments required for the core product.
 
-Tools belonging to a disabled capability are not registered with MCP. The registry is the single source of truth for capability names, dependencies, configuration, and tool membership.
+Tools belonging to a disabled or startup-unavailable capability are not registered with MCP. The registry is the single source of truth for capability names, dependencies, runtime availability, configuration, and tool membership. `temporal-video` depends on `temporal-vision`; its absence is discoverable through local startup diagnostics and shipped agent guidance rather than a nonfunctional placeholder tool. Installing or changing FFmpeg requires an MCP restart before the advertised capability can change.
 
 ## Disk Budget and Retention
 
@@ -303,6 +306,7 @@ The temporal-vision capability supports:
 - generate a temporal storyboard;
 - generate a temporal difference map;
 - generate supported region-focused artifacts;
+- generate a bounded temporal video clip when the conditional capability is registered;
 - list source frames and capture gaps;
 - retrieve selected source frames;
 - pin or unpin a range;
@@ -343,6 +347,8 @@ Every generated visual artifact records:
 - algorithm version;
 - whether the output is source-derived or inferred.
 
+Video artifacts additionally record the presentation policy, presentation timestamps mapped to session time and ordered source frames, visible gap intervals, exact FFmpeg build and selected H.264 encoder, encoding parameters, container/media type, and output hash. A video is a derived presentation, not a replacement for its manifest or source frames. Known capture gaps are rendered explicitly rather than interpolated, and video export contains no audio.
+
 An agent can retrieve the source frames behind any artifact while they remain retained.
 
 ## Errors and Degraded Operation
@@ -365,11 +371,15 @@ Krometrail degrades explicitly:
 - an exhausted disk budget pauses capture when protected data prevents eviction;
 - an unsupported CDP command reports the detected browser and protocol versions.
 
+Missing or unqualified FFmpeg does not prevent MCP startup; Krometrail omits the temporal-video tool surface. If the qualified executable becomes unavailable after startup, a video request fails with a stable encoder-unavailable error, bounded sanitized diagnostics, and a concrete recovery action.
+
 ## Local Data and Telemetry
 
 Captured browser data remains local unless the user or connected agent explicitly reads an artifact through MCP.
 
 Krometrail does not send usage telemetry, session contents, update checks, or derived artifacts to an external service by default.
+
+Krometrail does not upload generated video to a model provider. The MCP host decides whether and how to pass a returned local video resource to a video-capable model.
 
 Session data can be deleted by session identifier. Deletion removes source frames, browser events, generated artifacts, and indexes associated with the session.
 
@@ -394,4 +404,7 @@ The system does not guarantee:
 - framework-state availability;
 - automatic comparison between interactions or sessions;
 - inspection or control of an Electron Node main process;
-- support for non-Chromium browser engines.
+- support for non-Chromium browser engines;
+- bundled video encoding or audio capture;
+- automatic detection that an MCP host or selected model can consume video;
+- byte-identical video output across different FFmpeg builds or H.264 encoders.
