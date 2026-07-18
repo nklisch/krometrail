@@ -306,27 +306,28 @@ impl PageControl {
                 generation,
             )
             .await?;
-            let response = send_cdp(
-                transport,
-                bound,
-                "Runtime.evaluate",
-                json!({"expression":"document.visibilityState","returnByValue":true,"silent":true}),
-                cancel,
-                generation,
-            )
-            .await?;
-            let visible = response
-                .pointer("/result/value")
-                .and_then(Value::as_str)
-                .or_else(|| {
-                    response
-                        .pointer("/result/result/value")
-                        .and_then(Value::as_str)
-                });
-            if visible == Some("visible") {
-                Ok::<(), krometrail_core::KrometrailError>(())
-            } else {
-                Err(target_hidden_error(bound.target_id))
+            loop {
+                let response = send_cdp(
+                    transport,
+                    bound,
+                    "Runtime.evaluate",
+                    json!({"expression":"document.visibilityState","returnByValue":true,"silent":true}),
+                    cancel,
+                    generation,
+                )
+                .await?;
+                let visible = response
+                    .pointer("/result/value")
+                    .and_then(Value::as_str)
+                    .or_else(|| {
+                        response
+                            .pointer("/result/result/value")
+                            .and_then(Value::as_str)
+                    });
+                if visible == Some("visible") {
+                    break Ok::<(), krometrail_core::KrometrailError>(());
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(16)).await;
             }
         };
         match tokio::time::timeout(self.config.evaluation_timeout, activation).await {

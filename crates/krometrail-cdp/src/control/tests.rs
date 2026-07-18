@@ -206,15 +206,41 @@ mod interactions {
         );
         let mut hidden = bound();
         hidden.visibility = krometrail_core::TargetVisibility::Hidden;
-        let error = page_control()
+        let mut control = page_control();
+        control.config.evaluation_timeout = std::time::Duration::from_millis(20);
+        let error = control
             .prepare_pointer_target(&transport, &hidden, &OperationCancellation::default(), 0)
             .await
             .unwrap_err();
         assert_eq!(error.code, ErrorCode::TargetHidden);
         assert_eq!(transport.calls("Target.activateTarget").len(), 1);
         assert_eq!(transport.calls("Page.bringToFront").len(), 1);
-        assert_eq!(transport.calls("Runtime.evaluate").len(), 1);
+        assert!(!transport.calls("Runtime.evaluate").is_empty());
         assert!(transport.calls("Input.dispatchMouseEvent").is_empty());
+    }
+
+    #[tokio::test]
+    async fn hidden_pointer_target_allows_activation_visibility_to_settle() {
+        let transport = RecordingTransport::default();
+        transport.push(
+            "Runtime.evaluate",
+            Ok(json!({"result":{"result":{"value":"hidden"}}})),
+        );
+        transport.push(
+            "Runtime.evaluate",
+            Ok(json!({"result":{"result":{"value":"visible"}}})),
+        );
+        let mut hidden = bound();
+        hidden.visibility = krometrail_core::TargetVisibility::Hidden;
+        let mut control = page_control();
+        control.config.evaluation_timeout = std::time::Duration::from_millis(100);
+        control
+            .prepare_pointer_target(&transport, &hidden, &OperationCancellation::default(), 0)
+            .await
+            .unwrap();
+        assert_eq!(transport.calls("Target.activateTarget").len(), 1);
+        assert_eq!(transport.calls("Page.bringToFront").len(), 1);
+        assert_eq!(transport.calls("Runtime.evaluate").len(), 2);
     }
     fn element() -> ResolvedTarget {
         ResolvedTarget::Element {
