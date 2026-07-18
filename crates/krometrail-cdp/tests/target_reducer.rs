@@ -6,6 +6,7 @@ use krometrail_core::{
     BrowserCompatibility, BrowserProduct, BrowserProductVersion, BrowserSessionEvent,
     BrowserSessionState, BrowserVersion, CapabilitySupport, ErrorCode, NonEmptyText,
     RendererCapability, TargetLifecycle, TargetVisibility, ViewportMetrics,
+    browser::MAX_KNOWN_PAGE_TARGETS,
 };
 
 fn compatibility() -> BrowserCompatibility {
@@ -102,6 +103,119 @@ fn empty_inventory_cursor_is_first_page_wait_safe_and_closed_pages_do_not_rewind
     .unwrap()
     .state;
     assert_eq!(state.page_contexts().unwrap().cursor, high_water);
+}
+
+#[test]
+fn terminal_page_churn_keeps_target_state_bounded_and_cursor_monotonic() {
+    let mut state = SupervisorState::new(compatibility());
+    let mut previous_cursor = state.page_contexts().unwrap().cursor;
+    for index in 0..10_001 {
+        let key = format!("churn-{index}");
+        state = reduce(
+            state,
+            SupervisorInput::TargetCreated(page(&key, &format!("https://{key}.test"))),
+        )
+        .unwrap()
+        .state;
+        let cursor = state.page_contexts().unwrap().cursor;
+        assert!(cursor > previous_cursor);
+        previous_cursor = cursor;
+        state = reduce(state, SupervisorInput::TargetDestroyed { target_key: key })
+            .unwrap()
+            .state;
+        assert!(state.targets_by_key.len() <= MAX_KNOWN_PAGE_TARGETS);
+        assert_eq!(state.page_contexts().unwrap().cursor, previous_cursor);
+    }
+}
+
+#[test]
+fn the_129th_live_page_fails_atomically_with_the_stable_limit_error() {
+    let infos = (0..MAX_KNOWN_PAGE_TARGETS)
+        .map(|index| {
+            let key = format!("live-{index}");
+            page(&key, &format!("https://{key}.test"))
+        })
+        .collect();
+    let state = reduce(
+        SupervisorState::new(compatibility()),
+        SupervisorInput::InitialTargets(infos),
+    )
+    .unwrap()
+    .state;
+    let before = state.clone();
+    let error = reduce(
+        state,
+        SupervisorInput::TargetCreated(page("overflow", "https://overflow.test")),
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::ResourceLimitExceeded);
+    assert_eq!(before.targets_by_key.len(), MAX_KNOWN_PAGE_TARGETS);
+    assert!(!before.targets_by_key.contains_key("overflow"));
+    assert_eq!(
+        before.page_contexts().unwrap().cursor.get(),
+        u64::try_from(MAX_KNOWN_PAGE_TARGETS).unwrap() + 1
+    );
+}
+
+#[test]
+fn pruning_terminal_openers_does_not_rebind_popups_when_a_key_is_reused() {
+    let mut state = reduce(
+        SupervisorState::new(compatibility()),
+        SupervisorInput::InitialTargets(vec![page("opener", "https://old.test")]),
+    )
+    .unwrap()
+    .state;
+    let old_opener_id = state.targets_by_key["opener"].target.target.id();
+    state = reduce(
+        state,
+        SupervisorInput::TargetCreated(popup("popup", "opener")),
+    )
+    .unwrap()
+    .state;
+    state = reduce(
+        state,
+        SupervisorInput::TargetDestroyed {
+            target_key: "opener".into(),
+        },
+    )
+    .unwrap()
+    .state;
+    for index in 0..=MAX_KNOWN_PAGE_TARGETS {
+        let key = format!("prune-{index}");
+        state = reduce(
+            state,
+            SupervisorInput::TargetCreated(page(&key, &format!("https://{key}.test"))),
+        )
+        .unwrap()
+        .state;
+        state = reduce(state, SupervisorInput::TargetDestroyed { target_key: key })
+            .unwrap()
+            .state;
+    }
+    assert!(!state.targets_by_key.contains_key("opener"));
+    let before_reuse = state.page_contexts().unwrap().cursor;
+    state = reduce(
+        state,
+        SupervisorInput::TargetCreated(page("opener", "https://new.test")),
+    )
+    .unwrap()
+    .state;
+
+    assert!(state.page_contexts().unwrap().cursor > before_reuse);
+    assert_ne!(
+        state.targets_by_key["opener"].target.target.id(),
+        old_opener_id
+    );
+    let popup = state
+        .page_contexts()
+        .unwrap()
+        .pages
+        .into_iter()
+        .find(|page| page.page.target.target.browser_target_key() == "popup")
+        .unwrap();
+    assert_eq!(popup.opener_target_id, None);
+    assert!(state.targets_by_key.len() <= MAX_KNOWN_PAGE_TARGETS);
 }
 
 #[test]

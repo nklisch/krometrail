@@ -7,7 +7,7 @@ use std::collections::HashSet;
 
 use krometrail_core::{
     BrowserSessionEvent, BrowserSessionState, ErrorCode, KrometrailError, NonEmptyText, Result,
-    TargetLifecycle, TargetVisibility,
+    TargetLifecycle, TargetVisibility, browser::MAX_KNOWN_PAGE_TARGETS,
 };
 
 use super::model::{
@@ -261,6 +261,7 @@ fn reconcile_initial(
         .iter()
         .map(|info| info.target_key.as_str())
         .collect::<HashSet<_>>();
+    ensure_page_target_count(keys.len())?;
     let old_keys = state.targets_by_key.keys().cloned().collect::<Vec<_>>();
     for key in old_keys {
         if !keys.contains(key.as_str()) {
@@ -302,7 +303,6 @@ fn reconcile_one(
             if !creation_event {
                 return Ok(());
             }
-            state.targets_by_key.remove(&key);
         } else {
             let changed = existing.target.target.url() != info.url
                 || existing.target.target.title() != info.title;
@@ -320,6 +320,7 @@ fn reconcile_one(
             return Ok(());
         }
     }
+    prepare_page_target_slot(state)?;
     let id = allocate_target_id(state, &key);
     let page_sequence = krometrail_core::browser::PageSequence::new(state.next_page_sequence)?;
     state.next_page_sequence = state
@@ -633,8 +634,6 @@ fn reconnect(
     if snapshot.connection_generation <= state.connection_generation {
         return Ok(());
     }
-    state.connection_generation = snapshot.connection_generation;
-    state.compatibility = snapshot.compatibility;
     let recordable = snapshot
         .targets
         .into_iter()
@@ -644,6 +643,9 @@ fn reconnect(
         .iter()
         .map(|target| target.info.target_key.as_str())
         .collect::<HashSet<_>>();
+    ensure_page_target_count(seen.len())?;
+    state.connection_generation = snapshot.connection_generation;
+    state.compatibility = snapshot.compatibility;
     let old_keys = state.targets_by_key.keys().cloned().collect::<Vec<_>>();
     for key in old_keys {
         if !seen.contains(key.as_str()) {
@@ -673,6 +675,7 @@ fn reconcile_restored(
         .and_then(|opener_key| state.targets_by_key.get(opener_key))
         .map(|opener| opener.target.target.id());
     if !state.targets_by_key.contains_key(&key) {
+        prepare_page_target_slot(state)?;
         let id = allocate_target_id(state, &key);
         let page_sequence = krometrail_core::browser::PageSequence::new(state.next_page_sequence)?;
         state.next_page_sequence = state
@@ -1041,6 +1044,43 @@ fn allocate_target_id(state: &mut SupervisorState, key: &str) -> krometrail_core
     krometrail_core::TargetId::from_uuid(uuid::Uuid::from_bytes(bytes))
 }
 
+fn prepare_page_target_slot(state: &mut SupervisorState) -> Result<()> {
+    let live_count = state
+        .targets_by_key
+        .values()
+        .filter(|target| {
+            !matches!(
+                target.target.lifecycle,
+                TargetLifecycle::Closed | TargetLifecycle::Failed
+            )
+        })
+        .count();
+    ensure_page_target_count(live_count.saturating_add(1))?;
+    if state.targets_by_key.len() >= MAX_KNOWN_PAGE_TARGETS {
+        state.targets_by_key.retain(|_, target| {
+            !matches!(
+                target.target.lifecycle,
+                TargetLifecycle::Closed | TargetLifecycle::Failed
+            )
+        });
+        state
+            .target_key_by_session
+            .retain(|_, key| state.targets_by_key.contains_key(key));
+        debug_assert!(state.targets_by_key.len() < MAX_KNOWN_PAGE_TARGETS);
+    }
+    Ok(())
+}
+
+fn ensure_page_target_count(count: usize) -> Result<()> {
+    if count > MAX_KNOWN_PAGE_TARGETS {
+        return Err(KrometrailError::new(
+            ErrorCode::ResourceLimitExceeded,
+            NonEmptyText::new("browser page target limit of 128 was exceeded").unwrap(),
+        ));
+    }
+    Ok(())
+}
+
 fn invalid_state(message: &'static str) -> KrometrailError {
     KrometrailError::new(
         ErrorCode::InvalidLifecycleTransition,
@@ -1098,6 +1138,41 @@ mod tests {
             first.state.targets_by_key["a"].target.target.id(),
             second.state.targets_by_key["a"].target.target.id()
         );
+    }
+
+    #[test]
+    fn page_limit_failure_does_not_mutate_reducer_state_or_effects() {
+        let infos = (0..MAX_KNOWN_PAGE_TARGETS)
+            .map(|index| info(&format!("live-{index}"), "https://live.test"))
+            .collect();
+        let mut state = reduce(
+            SupervisorState::new(compatibility()),
+            SupervisorInput::InitialTargets(infos),
+        )
+        .unwrap()
+        .state;
+        let before = state.clone();
+        let mut effects = Vec::new();
+
+        let error = reconcile_one(
+            &mut state,
+            info("overflow", "https://overflow.test"),
+            true,
+            &mut effects,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, ErrorCode::ResourceLimitExceeded);
+        assert_eq!(state, before);
+        assert!(effects.is_empty());
+
+        let oversized_snapshot = (0..=MAX_KNOWN_PAGE_TARGETS)
+            .map(|index| info(&format!("snapshot-{index}"), "https://snapshot.test"))
+            .collect();
+        let error = reconcile_initial(&mut state, oversized_snapshot, &mut effects).unwrap_err();
+        assert_eq!(error.code, ErrorCode::ResourceLimitExceeded);
+        assert_eq!(state, before);
+        assert!(effects.is_empty());
     }
 
     #[test]
