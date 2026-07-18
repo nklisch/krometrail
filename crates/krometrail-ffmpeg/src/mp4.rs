@@ -538,9 +538,10 @@ fn validate_duration(
     if timescale == 0 || duration == 0 || expected_micros == 0 {
         return Err(failure(AdapterFailureKind::InvalidOutput));
     }
-    let actual = u128::from(duration) * 1_000_000;
+    const MICROS_PER_SECOND: u128 = 1_000_000;
+    let actual = u128::from(duration) * MICROS_PER_SECOND;
     let expected = u128::from(expected_micros) * u128::from(timescale);
-    if actual.abs_diff(expected) > u128::from(timescale) {
+    if actual.abs_diff(expected) > MICROS_PER_SECOND {
         return Err(failure(AdapterFailureKind::InvalidOutput));
     }
     Ok(())
@@ -771,6 +772,12 @@ mod tests {
             validated.output_hash.as_bytes(),
             &<[u8; 32]>::from(Sha256::digest(&bytes))
         );
+    }
+
+    #[test]
+    fn duration_validation_allows_one_tick_of_container_timescale_rounding() {
+        assert!(validate_duration(1_000, 1_435, 1_434_473).is_ok());
+        assert!(validate_duration(1_000, 1_436, 1_434_473).is_err());
     }
 
     #[test]
