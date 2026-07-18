@@ -1,5 +1,30 @@
 # Changelog
 
+## v1.0.6 — 2026-07-17
+
+### Features
+
+- Added a managed-launch `focus` policy: `foreground` preserves existing behavior, while `preserve`
+  keeps Chrome visible for observers without Krometrail activating the window or switching tabs.
+- Made preserve-mode page creation explicitly open background tabs and reject hidden-tab pointer
+  work before input, while retaining logical target selection for non-pointer control and evidence.
+
+### Fixes
+
+- Made explicit batch targets apply to targetless child steps instead of accidentally following a
+  different selected page.
+- Flattened batch-step MCP schemas into concrete operation/request objects that agent hosts can
+  render and construct reliably.
+- Compacted batch child results by removing repeated live observations while retaining per-step
+  outcomes, timing, errors, screenshots, and the final observation.
+- Reapplied and independently verified acknowledged viewport overrides before returning
+  post-navigation evidence, avoiding native-layout screenshots after mobile navigation.
+
+### Agent guidance
+
+- Updated the shipped Krometrail skill with exact focus-preserving launch guidance, visible-tab
+  recording limits, background page creation behavior, and foreground recovery advice.
+
 ## v1.0.5 — 2026-07-17
 
 ### Fixes

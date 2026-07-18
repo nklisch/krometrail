@@ -5,7 +5,7 @@ stage: done
 tags: [browser, agent-ux]
 parent: null
 depends_on: []
-release_binding: null
+release_binding: 1.0.6
 gate_origin: null
 created: 2026-07-17
 updated: 2026-07-17
