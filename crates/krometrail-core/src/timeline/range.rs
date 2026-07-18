@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 use crate::{
     CaptureGap, FrameId, InteractionAnchor, InteractionId, MarkerId, NavigationId, ObservationKind,
     Result, SessionId, SessionRange, SessionTime, TargetId, TimelineObservation,
-    error::{ErrorCode, ErrorContext, KrometrailError, NonEmptyText, invalid, invalid_time},
+    error::{
+        ErrorCode, ErrorContext, KrometrailError, NonEmptyText, RetryAdvice, invalid, invalid_time,
+    },
     validation::deserialize_validated,
 };
 
@@ -1222,7 +1224,12 @@ where
             } else {
                 "requested interval has no captured source frames"
             };
-            return Err(range_not_found(message, &seed, seed.requested_range));
+            return Err(range_not_found(
+                message,
+                &seed,
+                seed.requested_range,
+                availability.retained_bounds,
+            ));
         }
 
         let (resolved_range, retention_warnings) =
@@ -1236,6 +1243,7 @@ where
                 "requested interval source frames were evicted",
                 &seed,
                 resolved_range,
+                None,
             ));
         }
 
@@ -1248,6 +1256,7 @@ where
                 "requested range contains known capture gaps",
                 &seed,
                 resolved_range,
+                None,
             ));
         }
         let observations = self
@@ -1359,6 +1368,7 @@ fn classify_retention(
                 "requested interval extends beyond captured source-frame bounds",
                 seed,
                 seed.requested_range,
+                Some(retained),
             ));
         }
         return Ok((seed.requested_range, Vec::new()));
@@ -1368,6 +1378,7 @@ fn classify_retention(
             "requested range is not completely retained",
             seed,
             seed.requested_range,
+            None,
         ));
     }
 
@@ -1384,6 +1395,7 @@ fn classify_retention(
             "requested range contains an internal eviction hole",
             seed,
             seed.requested_range,
+            None,
         ));
     }
 
@@ -1410,6 +1422,7 @@ fn classify_retention(
             "requested interval source frames were fully evicted",
             seed,
             seed.requested_range,
+            None,
         )
     })?;
     if retained.start() > resolved.start() || retained.end() < resolved.end() {
@@ -1417,6 +1430,7 @@ fn classify_retention(
             "requested interval includes uncaptured evidence beyond an evicted edge",
             seed,
             seed.requested_range,
+            None,
         ));
     }
     if intersecting
@@ -1427,6 +1441,7 @@ fn classify_retention(
             "requested range contains an internal eviction hole",
             seed,
             seed.requested_range,
+            None,
         ));
     }
 
@@ -1463,11 +1478,12 @@ fn intersection(left: SessionRange, right: SessionRange) -> SessionRange {
 }
 
 fn range_not_found(
-    message: &'static str,
+    message: impl Into<String>,
     seed: &RangeSeed,
     range: SessionRange,
+    retained_bounds: Option<SessionRange>,
 ) -> KrometrailError {
-    not_found(
+    let mut error = not_found(
         message,
         ErrorContext {
             session_id: Some(seed.session_id),
@@ -1475,7 +1491,22 @@ fn range_not_found(
             range: Some(range),
             ..ErrorContext::default()
         },
-    )
+    );
+    if let Some(bounds) = retained_bounds
+        && (range.start() < bounds.start() || range.end() > bounds.end())
+    {
+        error = error
+            .with_retry(RetryAdvice::AfterRecovery)
+            .with_recovery(
+                NonEmptyText::new(format!(
+                    "retry with a range contained by captured bounds: start_session_nanos={}, end_session_nanos={}",
+                    bounds.start().as_nanos(),
+                    bounds.end().as_nanos(),
+                ))
+                .expect("captured-bound recovery is non-empty"),
+            );
+    }
+    error
 }
 
 fn required_scope(scope: AnchorScope) -> Result<(SessionId, TargetId)> {

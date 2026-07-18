@@ -530,24 +530,30 @@ async fn wrong_scope_and_retention_truth_are_explicit_and_contiguous_only() {
     );
 
     let never = Fixture::new().await;
-    assert_eq!(
-        never
-            .store
-            .resolve_range(
-                TemporalQueryRequest::new(
-                    TemporalRangeAnchor::SessionTime {
-                        scope: never.scope(),
-                        range: SessionRange::new(at(900), at(1_000)).unwrap(),
-                    },
-                    RetentionPolicy::AllowPartial,
-                    CaptureGapPolicy::Include,
-                )
-                .unwrap(),
+    let requested = SessionRange::new(at(700), at(1_000)).unwrap();
+    let error = never
+        .store
+        .resolve_range(
+            TemporalQueryRequest::new(
+                TemporalRangeAnchor::SessionTime {
+                    scope: never.scope(),
+                    range: requested,
+                },
+                RetentionPolicy::AllowPartial,
+                CaptureGapPolicy::Include,
             )
-            .await
-            .unwrap_err()
-            .code,
-        krometrail_core::ErrorCode::NotFound
+            .unwrap(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, krometrail_core::ErrorCode::NotFound);
+    assert_eq!(error.context.session_id, Some(never.session));
+    assert_eq!(error.context.target_id, Some(never.target));
+    assert_eq!(error.context.range, Some(requested));
+    assert_eq!(error.retry, krometrail_core::RetryAdvice::AfterRecovery);
+    assert_eq!(
+        error.recovery.unwrap().as_str(),
+        "retry with a range contained by captured bounds: start_session_nanos=0, end_session_nanos=800000000"
     );
 }
 
