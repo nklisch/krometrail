@@ -316,7 +316,7 @@ mod interactions {
             error
                 .recovery
                 .as_ref()
-                .is_some_and(|recovery| recovery.as_str().contains("focus: foreground"))
+                .is_some_and(|recovery| recovery.as_str().contains("activate_page"))
         );
         assert!(
             error
@@ -325,6 +325,53 @@ mod interactions {
                 .is_none_or(|recovery| !recovery.as_str().contains("select or foreground"))
         );
         assert!(transport.calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn explicit_activation_preserves_cancellation_disconnect_and_command_errors() {
+        let cancelled = OperationCancellation::default();
+        cancelled.stop();
+        assert_eq!(
+            page_control()
+                .activate_target(&RecordingTransport::default(), &bound(), &cancelled, 0)
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::Cancelled
+        );
+
+        let disconnected = OperationCancellation::default();
+        disconnected.disconnect(0);
+        assert_eq!(
+            page_control()
+                .activate_target(&RecordingTransport::default(), &bound(), &disconnected, 0,)
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::BrowserDisconnected
+        );
+
+        let rejected = RecordingTransport::default();
+        rejected.push("Target.activateTarget", Err(TransportError::CommandFailed));
+        assert_eq!(
+            page_control()
+                .activate_target(&rejected, &bound(), &OperationCancellation::default(), 0)
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::InteractionFailed
+        );
+
+        let closed = RecordingTransport::default();
+        closed.push("Target.activateTarget", Err(TransportError::Closed));
+        assert_eq!(
+            page_control()
+                .activate_target(&closed, &bound(), &OperationCancellation::default(), 0)
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::BrowserDisconnected
+        );
     }
     fn element() -> ResolvedTarget {
         ResolvedTarget::Element {

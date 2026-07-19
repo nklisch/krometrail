@@ -485,6 +485,77 @@ async fn wrong_scope_and_retention_truth_are_explicit_and_contiguous_only() {
         Some(krometrail_core::RetentionWarning::EvictedRanges { .. })
     ));
 
+    let mixed_natural = fixture
+        .store
+        .resolve_range(
+            TemporalQueryRequest::new(
+                TemporalRangeAnchor::Interaction {
+                    scope: fixture.scope(),
+                    interaction_id: fixture.interaction_id,
+                    window: Some(
+                        krometrail_core::InteractionWindow::new(
+                            Duration::from_millis(300),
+                            Duration::from_millis(600),
+                        )
+                        .unwrap(),
+                    ),
+                },
+                RetentionPolicy::AllowPartial,
+                CaptureGapPolicy::Include,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        mixed_natural.requested_range,
+        SessionRange::new(at(0), at(950)).unwrap()
+    );
+    assert_eq!(
+        mixed_natural.resolved_range,
+        SessionRange::new(at(250), at(800)).unwrap()
+    );
+    assert!(
+        mixed_natural
+            .retention_warnings
+            .iter()
+            .any(|warning| matches!(
+                warning,
+                krometrail_core::RetentionWarning::PartiallyEvicted { .. }
+            ))
+    );
+    assert!(
+        mixed_natural
+            .retention_warnings
+            .iter()
+            .any(|warning| matches!(
+                warning,
+                krometrail_core::RetentionWarning::PartiallyCaptured { .. }
+            ))
+    );
+    assert_eq!(
+        fixture
+            .store
+            .resolve_range(
+                TemporalQueryRequest::strict(TemporalRangeAnchor::Interaction {
+                    scope: fixture.scope(),
+                    interaction_id: fixture.interaction_id,
+                    window: Some(
+                        krometrail_core::InteractionWindow::new(
+                            Duration::from_millis(300),
+                            Duration::from_millis(600),
+                        )
+                        .unwrap(),
+                    ),
+                })
+                .unwrap(),
+            )
+            .await
+            .unwrap_err()
+            .code,
+        krometrail_core::ErrorCode::NotFound
+    );
+
     let evicted_only = fixture
         .store
         .resolve_range(

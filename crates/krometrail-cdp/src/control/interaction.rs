@@ -310,7 +310,7 @@ impl PageControl {
                 )
                 .await?
                 .map_err(|error| {
-                    transport_error(error, ErrorCode::TargetHidden, bound.target_id)
+                    transport_error(error, ErrorCode::InteractionFailed, bound.target_id)
                 })?;
             send_cdp(
                 transport,
@@ -346,8 +346,8 @@ impl PageControl {
             }
         };
         match tokio::time::timeout(self.config.evaluation_timeout, activation).await {
-            Ok(Ok(())) => Ok(()),
-            _ => Err(target_hidden_error(
+            Ok(result) => result,
+            Err(_) => Err(target_hidden_error(
                 bound.target_id,
                 krometrail_core::BrowserFocusPolicy::Foreground,
             )),
@@ -902,7 +902,7 @@ fn target_hidden_error(
     let (message, recovery) = match focus {
         krometrail_core::BrowserFocusPolicy::Preserve => (
             "browser page is hidden and preserve focus policy did not activate it",
-            "start the managed browser session with focus: foreground, then retry the pointer operation",
+            "call activate_page for the selected or explicit target, then retry the pointer operation",
         ),
         krometrail_core::BrowserFocusPolicy::Foreground => (
             "browser page remained hidden after bounded foreground activation",

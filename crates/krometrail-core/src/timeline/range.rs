@@ -1367,42 +1367,8 @@ fn classify_retention(
         .map(|range| intersection(range, seed.requested_range))
         .collect();
 
-    if intersecting.is_empty() {
-        if retained.start() > seed.requested_range.start()
-            || retained.end() < seed.requested_range.end()
-        {
-            if let Some(resolved) =
-                clamp_natural_interaction_range(seed, seed.requested_range, retained, options)?
-            {
-                let mut warnings = Vec::new();
-                if resolved.start() > seed.requested_range.start() {
-                    warnings.push(RetentionWarning::RequestedStartBeforeOldestRetained {
-                        requested: seed.requested_range.start(),
-                        oldest_retained: resolved.start(),
-                    });
-                }
-                if resolved.end() < seed.requested_range.end() {
-                    warnings.push(RetentionWarning::RequestedEndAfterNewestRetained {
-                        requested: seed.requested_range.end(),
-                        newest_retained: resolved.end(),
-                    });
-                }
-                warnings.push(RetentionWarning::PartiallyCaptured {
-                    requested: seed.requested_range,
-                    retained: resolved,
-                });
-                return Ok((resolved, warnings));
-            }
-            return Err(range_not_found(
-                "requested interval extends beyond captured source-frame bounds",
-                seed,
-                seed.requested_range,
-                Some(retained),
-            ));
-        }
-        return Ok((seed.requested_range, Vec::new()));
-    }
-    if options.retention == RetentionPolicy::RequireComplete {
+    let has_evictions = !intersecting.is_empty();
+    if has_evictions && options.retention == RetentionPolicy::RequireComplete {
         return Err(range_not_found(
             "requested range is not completely retained",
             seed,
@@ -1428,25 +1394,25 @@ fn classify_retention(
         ));
     }
 
-    let first = frames
-        .first()
-        .expect("non-empty frame metadata")
-        .session_time();
-    let last = frames
-        .last()
-        .expect("non-empty frame metadata")
-        .session_time();
-    let start = if left_evicted {
-        first
-    } else {
-        seed.requested_range.start()
-    };
-    let end = if right_evicted {
-        last
-    } else {
-        seed.requested_range.end()
-    };
-    let resolved = SessionRange::new(start, end).map_err(|_| {
+    let candidate = SessionRange::new(
+        if left_evicted {
+            frames
+                .first()
+                .expect("non-empty frame metadata")
+                .session_time()
+        } else {
+            seed.requested_range.start()
+        },
+        if right_evicted {
+            frames
+                .last()
+                .expect("non-empty frame metadata")
+                .session_time()
+        } else {
+            seed.requested_range.end()
+        },
+    )
+    .map_err(|_| {
         range_not_found(
             "requested interval source frames were fully evicted",
             seed,
@@ -1454,14 +1420,22 @@ fn classify_retention(
             None,
         )
     })?;
-    if retained.start() > resolved.start() || retained.end() < resolved.end() {
-        return Err(range_not_found(
-            "requested interval includes uncaptured evidence beyond an evicted edge",
-            seed,
-            seed.requested_range,
-            None,
-        ));
-    }
+    let resolved = if retained.start() > candidate.start() || retained.end() < candidate.end() {
+        clamp_natural_interaction_range(seed, candidate, retained, options)?.ok_or_else(|| {
+            range_not_found(
+                if has_evictions {
+                    "requested interval includes uncaptured evidence beyond an evicted edge"
+                } else {
+                    "requested interval extends beyond captured source-frame bounds"
+                },
+                seed,
+                seed.requested_range,
+                (!has_evictions).then_some(retained),
+            )
+        })?
+    } else {
+        candidate
+    };
     if intersecting
         .iter()
         .any(|range| ranges_intersect(*range, resolved))
@@ -1475,25 +1449,35 @@ fn classify_retention(
     }
 
     let mut warnings = Vec::new();
-    if left_evicted {
+    if resolved.start() > seed.requested_range.start() {
         warnings.push(RetentionWarning::RequestedStartBeforeOldestRetained {
             requested: seed.requested_range.start(),
             oldest_retained: resolved.start(),
         });
     }
-    if right_evicted {
+    if resolved.end() < seed.requested_range.end() {
         warnings.push(RetentionWarning::RequestedEndAfterNewestRetained {
             requested: seed.requested_range.end(),
             newest_retained: resolved.end(),
         });
     }
-    warnings.push(RetentionWarning::PartiallyEvicted {
-        requested: seed.requested_range,
-        retained: resolved,
-    });
-    warnings.push(RetentionWarning::EvictedRanges {
-        ranges: intersecting,
-    });
+    if has_evictions {
+        warnings.push(RetentionWarning::PartiallyEvicted {
+            requested: seed.requested_range,
+            retained: resolved,
+        });
+    }
+    if resolved != candidate {
+        warnings.push(RetentionWarning::PartiallyCaptured {
+            requested: seed.requested_range,
+            retained: resolved,
+        });
+    }
+    if has_evictions {
+        warnings.push(RetentionWarning::EvictedRanges {
+            ranges: intersecting,
+        });
+    }
     Ok((resolved, warnings))
 }
 
