@@ -6,9 +6,9 @@ use krometrail_core::{
 use std::{
     env,
     fs::{self, Metadata},
-    io::Read,
+    io::{self, Read},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
     time::Duration,
 };
 
@@ -63,6 +63,31 @@ impl VersionProbeOutcome {
             Self::SpawnFailed => "spawn_failed",
             Self::TimedOut => "timed_out",
             Self::Rejected => "rejected",
+        }
+    }
+}
+
+const TRANSIENT_SPAWN_RETRIES: usize = 4;
+
+fn spawn_version_probe(path: &Path) -> io::Result<Child> {
+    let mut retry = 0;
+    loop {
+        let child = Command::new(path)
+            .arg("--version")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn();
+        match child {
+            Ok(child) => return Ok(child),
+            Err(error)
+                if error.kind() == io::ErrorKind::ExecutableFileBusy
+                    && retry < TRANSIENT_SPAWN_RETRIES =>
+            {
+                std::thread::sleep(Duration::from_millis(1 << retry));
+                retry += 1;
+            }
+            Err(error) => return Err(error),
         }
     }
 }
@@ -247,13 +272,7 @@ fn is_regular_executable(metadata: &Metadata) -> bool {
 }
 
 fn probe_version(path: &Path, timeout: Duration, output_limit: u64) -> VersionProbeOutcome {
-    let mut child = match Command::new(path)
-        .arg("--version")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-    {
+    let mut child = match spawn_version_probe(path) {
         Ok(child) => child,
         Err(_) => return VersionProbeOutcome::SpawnFailed,
     };
@@ -334,47 +353,51 @@ mod tests {
 
     fn script_fixture(root: &Path, name: &str, script: &str) -> PathBuf {
         let path = root.join(name);
-        let mut file = OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .open(&path)
+        let mut file = tempfile::Builder::new()
+            .prefix(".krometrail-fixture-")
+            .tempfile_in(root)
             .unwrap();
         writeln!(file, "#!/bin/sh").unwrap();
         writeln!(file, "{script}").unwrap();
-        drop(file);
+        file.as_file().sync_all().unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mut permissions = fs::metadata(&path).unwrap().permissions();
+            let mut permissions = file.as_file().metadata().unwrap().permissions();
             permissions.set_mode(0o755);
-            fs::set_permissions(&path, permissions).unwrap();
+            file.as_file().set_permissions(permissions).unwrap();
         }
+        let (staging_file, staging_path) = file.keep().unwrap();
+        drop(staging_file);
+        fs::rename(staging_path, &path).unwrap();
         path
     }
 
     #[test]
     fn precedence_deduplicates_canonical_paths_and_classifies_versions() {
         let root = tempfile_root();
-        let chrome = fixture(&root, "chrome", "Google Chrome 123.4.5");
-        let chromium = fixture(&root, "chromium", "Chromium 123.4.5");
+        let chrome = fixture(root.path(), "chrome", "Google Chrome 123.4.5");
+        let chromium = fixture(root.path(), "chromium", "Chromium 123.4.5");
         let result = discover_installations_with(DiscoveryInputs {
             explicit: Some(chrome.clone()),
             environment_override: Some(chrome.clone()),
             platform_defaults: vec![chromium.clone()],
             path_names: vec!["chrome".into()],
-            path: Some(root.clone()),
+            path: Some(root.path().to_owned()),
         });
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].source, BrowserInstallationSource::ExplicitRequest);
         assert_eq!(result[1].product, BrowserProduct::Chromium);
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn platform_defaults_use_cold_probe_budget_while_path_stays_short() {
         let root = tempfile_root();
-        let delayed = script_fixture(&root, "delayed", "sleep 0.08\necho 'Google Chrome 123.4.5'");
+        let delayed = script_fixture(
+            root.path(),
+            "delayed",
+            "sleep 0.08\necho 'Google Chrome 123.4.5'",
+        );
         let policy = VersionProbePolicy {
             cold_candidate_timeout: Duration::from_secs(1),
             ordinary_candidate_timeout: Duration::from_millis(20),
@@ -391,21 +414,20 @@ mod tests {
         let path = discover_installations_with_policy(
             DiscoveryInputs {
                 path_names: vec!["delayed".into()],
-                path: Some(root.clone()),
+                path: Some(root.path().to_owned()),
                 ..DiscoveryInputs::default()
             },
             policy,
         );
         assert!(path.is_empty());
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn failing_canonical_candidate_is_probed_once_at_highest_precedence() {
         let root = tempfile_root();
-        let counter = root.join("counter");
+        let counter = root.path().join("counter");
         let candidate = script_fixture(
-            &root,
+            root.path(),
             "failing",
             &format!("echo x >> '{}'\nexit 1", counter.display()),
         );
@@ -419,18 +441,32 @@ mod tests {
         );
         assert!(result.is_empty());
         assert_eq!(fs::read_to_string(counter).unwrap().lines().count(), 1);
-        let _ = fs::remove_dir_all(root);
     }
 
-    fn tempfile_root() -> PathBuf {
-        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let root = env::temp_dir().join(format!(
-            "krometrail-discovery-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn probe_retries_transient_executable_busy() {
+        let root = tempfile_root();
+        let candidate = fixture(root.path(), "busy", "Google Chrome 123.4.5");
+        let writer = OpenOptions::new().write(true).open(&candidate).unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(5));
+            drop(writer);
+        });
+
+        let outcome = probe_version(&candidate, Duration::from_secs(1), 4096);
+
+        release.join().unwrap();
+        assert!(matches!(
+            outcome,
+            VersionProbeOutcome::Found(BrowserProduct::Chrome, _)
         ));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        root
+    }
+
+    fn tempfile_root() -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .prefix("krometrail-discovery-")
+            .tempdir()
+            .unwrap()
     }
 }

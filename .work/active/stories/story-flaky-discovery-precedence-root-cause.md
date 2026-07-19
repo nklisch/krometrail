@@ -50,3 +50,41 @@ Absorbed backlog: `idea-flaky-discovery-precedence-test`.
 - 20 consecutive full `cargo test -p krometrail-cdp --lib` runs pass (the
   observed failure rate makes 20 clean runs strong evidence).
 - No assertion weakened; product fix or test-harness fix justified explicitly.
+
+## Root cause
+
+This was primarily test-harness fragility at the executable-fixture publication
+boundary, compounded by a missing product hardening case. Under full parallel suite
+load, `Command::spawn` intermittently returned Linux `ETXTBSY` (`ExecutableFileBusy`)
+for a fixture such as `/tmp/krometrail-discovery-.../chrome`; the helper wrote the
+shell script directly to its final executable path and then exposed that path to
+discovery. The probe correctly returned `SpawnFailed`, but discovery had no bounded
+retry for this transient OS result, so the precedence test observed one installation
+instead of two, while the failing-candidate test's counter remained absent because its
+script had never run. The unique PID/counter roots were not being deleted by siblings,
+and serial or filtered runs did not reproduce the race.
+
+Evidence: before the fix, host-side full parallel runs reproduced the original
+`left: 1, right: 2`, the alternate platform-default failure, and the missing-counter
+`NotFound`; temporary probe diagnostics identified `Os { code: 26,
+ExecutableFileBusy }`. A serial full run and filtered discovery run passed. Replacing
+the manual root with `tempfile::TempDir` removed unmanaged cleanup/reuse, but the
+failure persisted until fixture files were staged, synced, permissioned, and atomically
+renamed into their final executable paths.
+
+## Completion notes
+
+- Changed the discovery test harness: `tempfile::TempDir` now owns each fixture root,
+  and `script_fixture` publishes a fully written executable via close-then-atomic
+  rename.
+- Hardened production `probe_version` to retry only transient `ExecutableFileBusy`
+  spawn failures with a bounded 1/2/4/8 ms backoff; other spawn failures retain their
+  existing explicit outcome.
+- Added a deterministic regression test that holds a fixture executable busy briefly
+  and verifies the probe recovers; no assertion was weakened, and no test retry or
+  module serialization was added.
+- `cargo fmt --all -- --check`, `cargo check --workspace --all-targets --locked`,
+  `cargo test --workspace --all-targets --locked`, and
+  `cargo clippy --workspace --all-targets --locked -- -D warnings` all passed.
+- Final evidence: 20 consecutive `cargo test -p krometrail-cdp --lib --locked` runs
+  passed, each with 204/204 tests green.
