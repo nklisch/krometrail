@@ -1,7 +1,7 @@
 ---
 id: feature-temporal-range-artifact-economy
 kind: feature
-stage: implementing
+stage: done
 tags: [temporal, agent-ux]
 parent: null
 depends_on: []

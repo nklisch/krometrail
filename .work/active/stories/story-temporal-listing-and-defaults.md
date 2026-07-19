@@ -1,7 +1,7 @@
 ---
 id: story-temporal-listing-and-defaults
 kind: story
-stage: implementing
+stage: done
 tags: [browser]
 parent: feature-temporal-range-artifact-economy
 depends_on: [story-temporal-resolve-range]

@@ -1,7 +1,7 @@
 ---
 id: story-lifecycle-session-reaping
 kind: story
-stage: implementing
+stage: done
 tags: [browser]
 parent: feature-window-lifecycle-integrity
 depends_on: []

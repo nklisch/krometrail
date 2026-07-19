@@ -1,7 +1,7 @@
 ---
 id: story-flaky-discovery-precedence-root-cause
 kind: story
-stage: implementing
+stage: done
 tags: [testing, browser]
 parent: null
 depends_on: []

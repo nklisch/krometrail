@@ -1,7 +1,7 @@
 ---
 id: feature-actionable-failure-surface
 kind: feature
-stage: implementing
+stage: done
 tags: [agent-ux, browser]
 parent: null
 depends_on: [feature-temporal-range-artifact-economy]

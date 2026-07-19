@@ -1,7 +1,7 @@
 ---
 id: story-lifecycle-visibility-fence
 kind: story
-stage: implementing
+stage: done
 tags: [browser]
 parent: feature-window-lifecycle-integrity
 depends_on: []
