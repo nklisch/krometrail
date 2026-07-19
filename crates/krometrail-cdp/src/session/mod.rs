@@ -1978,6 +1978,7 @@ mod tests {
         let origin = SessionOrigin::new(krometrail_core::ObservedTime::from_nanos(0));
         let sink = Arc::new(ShutdownTestSink {
             log: Arc::new(Mutex::new(Vec::new())),
+            flush_error: None,
         });
         let observer = Arc::new(GeometryTestObserver::default());
         let coordinator = Arc::new(
@@ -2402,6 +2403,7 @@ mod tests {
 
     struct ShutdownTestSink {
         log: Arc<Mutex<Vec<String>>>,
+        flush_error: Option<KrometrailError>,
     }
 
     impl RecordingSink for ShutdownTestSink {
@@ -2424,7 +2426,10 @@ mod tests {
                 .lock()
                 .expect("shutdown log lock")
                 .push("flush".into());
-            Box::pin(std::future::ready(Ok(())))
+            Box::pin(std::future::ready(match &self.flush_error {
+                Some(error) => Err(error.clone()),
+                None => Ok(()),
+            }))
         }
     }
 
@@ -2515,6 +2520,7 @@ mod tests {
     async fn run_shutdown_fixture(
         timeout: Duration,
         step: Duration,
+        flush_error: Option<KrometrailError>,
     ) -> (
         Result<shutdown::ShutdownReport>,
         Arc<ConsumingShutdownClock>,
@@ -2527,6 +2533,7 @@ mod tests {
         });
         let sink = Arc::new(ShutdownTestSink {
             log: Arc::clone(&log),
+            flush_error,
         });
         let retention = Arc::clone(&sink) as Arc<dyn krometrail_core::RetentionStore>;
         let coordinator = Arc::new(
@@ -2640,7 +2647,7 @@ mod tests {
     #[tokio::test]
     async fn shutdown_deadline_is_consumed_once_across_capture_and_browser_cleanup() {
         let (result, source, deadline, log) =
-            run_shutdown_fixture(Duration::from_millis(100), Duration::from_millis(10)).await;
+            run_shutdown_fixture(Duration::from_millis(100), Duration::from_millis(10), None).await;
         assert!(result.is_ok(), "shutdown fixture failed: {result:?}");
         let samples = source.samples();
         assert_eq!(
@@ -2699,7 +2706,7 @@ mod tests {
     #[tokio::test]
     async fn shutdown_deadline_exhaustion_uses_process_force_cleanup() {
         let (result, source, deadline, log) =
-            run_shutdown_fixture(Duration::from_millis(100), Duration::from_millis(30)).await;
+            run_shutdown_fixture(Duration::from_millis(100), Duration::from_millis(30), None).await;
         assert_eq!(result.unwrap().quality, ShutdownQuality::Degraded);
         let samples = source.samples();
         assert_eq!(samples[5].0, ShutdownPhase::ProcessTerminate);
@@ -2712,6 +2719,52 @@ mod tests {
             !log.lock()
                 .expect("shutdown log lock")
                 .contains(&"Browser.close".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn rejecting_final_capture_flush_preserves_exact_cause_and_recovery() {
+        let persistence = krometrail_core::PersistenceFailure::new(
+            krometrail_core::PersistenceOperation::SessionFlush,
+            krometrail_core::PersistenceFailureCategory::ResourceBusy,
+            PersistenceRecoverability::WriterTerminal,
+        );
+        let error = KrometrailError::new(
+            ErrorCode::PersistenceFailed,
+            NonEmptyText::new("session flush failed").unwrap(),
+        )
+        .with_persistence(persistence.clone());
+        let (result, _, _, _) = run_shutdown_fixture(
+            Duration::from_millis(100),
+            Duration::from_millis(10),
+            Some(error.clone()),
+        )
+        .await;
+        let report = result.unwrap();
+        assert_eq!(report.quality, ShutdownQuality::Degraded);
+        assert_eq!(
+            report.failed_phase,
+            Some(ShutdownFailurePhase::CaptureStopDrainFlush)
+        );
+        let failure = report
+            .capture_failure
+            .as_ref()
+            .expect("flush cause retained");
+        assert_eq!(
+            failure.stage(),
+            krometrail_core::CaptureFailureStage::FramePersistence
+        );
+        assert_eq!(failure.cause(), &error);
+        assert_eq!(failure.cause().persistence.as_ref(), Some(&persistence));
+
+        let outcome = stop_outcome(&report, BrowserOwnership::Managed);
+        assert_eq!(outcome.capture_failure(), Some(failure));
+        assert!(
+            outcome
+                .recovery()
+                .unwrap()
+                .as_str()
+                .contains("restart the Krometrail MCP process")
         );
     }
 

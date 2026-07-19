@@ -213,6 +213,7 @@ pub(crate) enum CaptureStopReason {
 pub(crate) struct CaptureStopOutcome {
     pub(crate) complete: bool,
     pub(crate) abandoned_accepted_frames: u64,
+    pub(crate) capture_failure: Option<krometrail_core::CaptureFailure>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

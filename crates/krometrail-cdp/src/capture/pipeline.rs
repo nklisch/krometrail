@@ -1225,12 +1225,14 @@ pub(super) async fn stop_target(
         return CaptureStopOutcome {
             complete: true,
             abandoned_accepted_frames: 0,
+            capture_failure: None,
         };
     };
     if runtime.state() == CaptureStreamState::Stopped {
         return CaptureStopOutcome {
             complete: true,
             abandoned_accepted_frames: 0,
+            capture_failure: runtime.status().failure().cloned(),
         };
     }
     runtime.close_acceptance();
@@ -1279,6 +1281,7 @@ pub(super) async fn stop_target(
     } else {
         Transition::Deadline
     });
+    let capture_failure = runtime.status().failure().cloned();
     // Remove only the exact stopped runtime. The StreamKey includes attachment_generation, so a
     // newer replacement has a different key and cannot be erased by this stop.
     {
@@ -1304,6 +1307,7 @@ pub(super) async fn stop_target(
     CaptureStopOutcome {
         complete,
         abandoned_accepted_frames: abandoned,
+        capture_failure,
     }
 }
 
@@ -1367,7 +1371,7 @@ pub(super) async fn shutdown(
     session_id: krometrail_core::SessionId,
     deadline: Instant,
 ) -> super::CaptureShutdownOutcome {
-    let capture_failure = statuses(coordinator)
+    let mut capture_failure = statuses(coordinator)
         .into_iter()
         .find_map(|status| status.failure().cloned());
     let mut targets: Vec<_> = coordinator
@@ -1387,13 +1391,46 @@ pub(super) async fn shutdown(
             deadline,
         )
         .await;
+        if capture_failure.is_none() {
+            capture_failure = outcome.capture_failure;
+        }
         targets_complete &= outcome.complete;
     }
     let flush_attempted = true;
-    let flush_succeeded =
-        time::timeout_at(deadline, coordinator.dependencies.sink.flush(session_id))
-            .await
-            .is_ok_and(|result| result.is_ok());
+    let flush_result =
+        time::timeout_at(deadline, coordinator.dependencies.sink.flush(session_id)).await;
+    let flush_succeeded = matches!(&flush_result, Ok(Ok(())));
+    if capture_failure.is_none() {
+        capture_failure = match flush_result {
+            Ok(Err(error)) => Some(
+                CaptureFailure::new(CaptureFailureStage::FramePersistence, error).unwrap_or_else(
+                    |_| {
+                        CaptureFailure::new(
+                            CaptureFailureStage::FramePersistence,
+                            KrometrailError::new(
+                                ErrorCode::CaptureFailed,
+                                NonEmptyText::new("capture session flush failed")
+                                    .expect("capture failure message is non-empty"),
+                            ),
+                        )
+                        .expect("capture failure cause is valid")
+                    },
+                ),
+            ),
+            Err(_) => Some(
+                CaptureFailure::new(
+                    CaptureFailureStage::FramePersistence,
+                    KrometrailError::new(
+                        ErrorCode::CaptureFailed,
+                        NonEmptyText::new("capture session flush deadline expired")
+                            .expect("capture failure message is non-empty"),
+                    ),
+                )
+                .expect("capture failure cause is valid"),
+            ),
+            Ok(Ok(())) => None,
+        };
+    }
     coordinator.ordinals.clear();
     let complete = flush_succeeded && targets_complete;
     super::CaptureShutdownOutcome {
