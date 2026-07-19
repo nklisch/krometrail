@@ -1,7 +1,7 @@
 ---
 id: agent-visual-response-surface
 kind: feature
-stage: implementing
+stage: review
 tags: [agent-ux, browser, visual]
 parent: null
 depends_on: []
@@ -57,9 +57,9 @@ Build two complete object branches: the canonical-range branch and the range-han
 
 **Acceptance criteria**:
 
-- [ ] Tool schemas expose concrete `range`/`range_handle`, filters, selection, clip, focus times, and response preferences rather than `{unknown}` branches.
-- [ ] Exactly one range authority remains schema- and runtime-enforced.
-- [ ] Default `query_browser_events` contains event rows and next cursor while retaining bounded capture/gap warnings.
+- [x] Tool schemas expose concrete `range`/`range_handle`, filters, selection, clip, focus times, and response preferences rather than `{unknown}` branches.
+- [x] Exactly one range authority remains schema- and runtime-enforced.
+- [x] Default `query_browser_events` contains event rows and next cursor while retaining bounded capture/gap warnings.
 
 ### Unit 2: Compact repeated temporal and URL identity
 
@@ -89,9 +89,9 @@ struct CompactResolvedRange {
 
 **Acceptance criteria**:
 
-- [ ] Sanitized URL path identity serializes as exactly 64 lowercase hexadecimal characters.
-- [ ] Older incompatible stores reject under the bumped current schema with existing recovery guidance.
-- [ ] Concise 29+ frame responses remain bounded and contain counts plus range-handle drill-down, while expanded/full preserve ordered IDs.
+- [x] Sanitized URL path identity serializes as exactly 64 lowercase hexadecimal characters.
+- [x] Older incompatible stores reject under the bumped current schema with existing recovery guidance.
+- [x] Concise 29+ frame responses remain bounded and contain counts plus range-handle drill-down, while expanded/full preserve ordered IDs.
 
 ### Unit 3: Purpose-sensitive image defaults and bounded outcome context
 
@@ -114,11 +114,11 @@ Artifact and filmstrip mapping becomes asynchronous so it can reuse the retained
 
 **Acceptance criteria**:
 
-- [ ] Omitted/false/true matrices match every operation's advertised image behavior; explicit visual tools return actual image content by default.
-- [ ] Artifact and filmstrip `inline_images` is no longer ignored and validates retained identity before publishing bytes.
-- [ ] Structural RootWebArea/document nodes do not displace real controls in concise targets.
-- [ ] Live observations expose bounded current alerts/status/dialog/text context without claiming it changed.
-- [ ] Skill instructions teach defaults, suppression, direct image inspection, and chronological event/range-handle drill-down.
+- [x] Omitted/false/true matrices match every operation's advertised image behavior; explicit visual tools return actual image content by default.
+- [x] Artifact and filmstrip `inline_images` is no longer ignored and validates retained identity before publishing bytes.
+- [x] Structural RootWebArea/document nodes do not displace real controls in concise targets.
+- [x] Live observations expose bounded current alerts/status/dialog/text context without claiming it changed.
+- [x] Skill instructions teach defaults, suppression, direct image inspection, and chronological event/range-handle drill-down.
 
 ## Implementation order
 
@@ -140,6 +140,21 @@ Artifact and filmstrip mapping becomes asynchronous so it can reuse the retained
 - Core/store tests protect current digest serialization and incompatible-store rejection.
 - CDP decoder tests use a real RootWebArea-shaped node plus real controls.
 - Regenerate checked-in public MCP schemas and `docs/public/llms-full.txt` from their authorities.
+
+## Implementation notes
+
+- `6b83e06` completed discoverable range-or-handle schemas and retained bounded chronological event detail.
+- `0d92d6c` made sanitized URL digests canonical, bumped the current store schema, and applied one compact resolved-range projection across concise temporal responses.
+- `67003e0` materialized purpose-sensitive visual defaults, asynchronous validated artifact image reads, structural root exclusion, bounded live semantic outcomes, and current foundation/skill guidance.
+- The existing generated schema authorities remain runtime-derived rather than separate checked-in MCP schema files. `bun run docs:build` regenerated the checked-in public documentation bundle; it remained byte-identical because the curated bundle intentionally excludes foundation and plugin skill sources.
+- Queue inspection deviation: `.work/bin/work-view` is a Linux x86 executable and cannot run on this macOS host, so dependency and stage state were verified directly from the tracked markdown items.
+
+## Integrated verification
+
+- `cargo fmt --all -- --check`
+- `cargo check --workspace --all-targets --locked`
+- `cargo test --workspace --all-targets --locked`
+- `bun run docs:build`
 
 ## Risks
 
