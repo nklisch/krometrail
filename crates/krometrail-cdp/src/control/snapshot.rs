@@ -5,7 +5,8 @@ use krometrail_core::{
     CurrentReferenceGeometryRequest, ErrorCode, ErrorContext, MAX_SEMANTIC_QUERY_TEXT_BYTES,
     NodeReference, NonEmptyText, ObservationContext, PageSnapshot, QueryPageRequest,
     QueryPageResult, ResolvedReferenceGeometry, Result, SemanticMatch, SemanticQuery,
-    SnapshotGeneration, SnapshotNode, SnapshotNodeId, SnapshotPageRequest, TargetId,
+    SnapshotGeneration, SnapshotNode, SnapshotNodeId, SnapshotPageAnchor, SnapshotPageRequest,
+    TargetId,
 };
 use serde_json::{Value, json};
 
@@ -235,19 +236,62 @@ impl PageControl {
         &mut self,
         transport: &dyn CdpTransport,
         bound: &BoundTarget,
-        _request: SnapshotPageRequest,
+        request: SnapshotPageRequest,
         started_at: krometrail_core::SessionTime,
         include_document_geometry: bool,
     ) -> Result<BrowserOperationResult> {
-        self.capture_snapshot(
+        let include_document_geometry =
+            include_document_geometry || request.anchor == SnapshotPageAnchor::Viewport;
+        let snapshot = self
+            .capture_snapshot(
+                transport,
+                bound,
+                started_at,
+                false,
+                include_document_geometry,
+            )
+            .await?;
+        let snapshot = if request.anchor == SnapshotPageAnchor::Viewport {
+            let scope = CommandScope::Session(bound.transport_session.clone());
+            let layout = transport
+                .send_raw(&scope, "Page.getLayoutMetrics", json!({}))
+                .await
+                .map_err(|error| {
+                    transport_error(error, ErrorCode::PageObservationFailed, bound.target_id)
+                })?;
+            let layout_root = layout
+                .get("result")
+                .filter(|value| value.get("cssVisualViewport").is_some())
+                .unwrap_or(&layout);
+            let visual_viewport = super::rect_from_viewport(
+                layout_root.get("cssVisualViewport"),
+                "visual viewport",
+                bound.target_id,
+            )?;
+            snapshot.with_visual_viewport(visual_viewport)
+        } else {
+            snapshot
+        };
+        Ok(BrowserOperationResult::SnapshotPage(Box::new(snapshot)))
+    }
+
+    async fn capture_snapshot(
+        &mut self,
+        transport: &dyn CdpTransport,
+        bound: &BoundTarget,
+        started_at: krometrail_core::SessionTime,
+        include_dom_semantics: bool,
+        include_document_geometry: bool,
+    ) -> Result<PageSnapshot> {
+        self.capture_snapshot_for_frame(
             transport,
             bound,
             started_at,
-            false,
+            include_dom_semantics,
             include_document_geometry,
+            None,
         )
         .await
-        .map(|snapshot| BrowserOperationResult::SnapshotPage(Box::new(snapshot)))
     }
 
     pub(super) async fn query_page(
@@ -275,25 +319,6 @@ impl PageControl {
             .await?;
         let result = self.snapshots.query(bound, &request, &snapshot)?;
         Ok(BrowserOperationResult::QueryPage(Box::new(result)))
-    }
-
-    async fn capture_snapshot(
-        &mut self,
-        transport: &dyn CdpTransport,
-        bound: &BoundTarget,
-        started_at: krometrail_core::SessionTime,
-        include_dom_semantics: bool,
-        include_document_geometry: bool,
-    ) -> Result<PageSnapshot> {
-        self.capture_snapshot_for_frame(
-            transport,
-            bound,
-            started_at,
-            include_dom_semantics,
-            include_document_geometry,
-            None,
-        )
-        .await
     }
 
     async fn capture_snapshot_for_frame(
@@ -355,7 +380,7 @@ impl PageControl {
             &mut next_node_id,
             Some(document.frame_id.as_str()),
         )?;
-        let (semantic, document_rects) = match dom_response {
+        let (semantic, document_rects, geometry_omitted) = match dom_response {
             Some(response) => {
                 let dom_snapshot = decode_dom_snapshot_with_geometry(
                     &response,
@@ -387,9 +412,13 @@ impl PageControl {
                             .map(|node_id| (node_id, metadata))
                     })
                     .collect();
-                (semantic, dom_snapshot.document_rects)
+                (
+                    semantic,
+                    dom_snapshot.document_rects,
+                    dom_snapshot.geometry_omitted,
+                )
             }
-            None => (HashMap::new(), HashMap::new()),
+            None => (HashMap::new(), HashMap::new(), false),
         };
         let mut nodes = nodes;
         if !document_rects.is_empty() {
@@ -415,7 +444,8 @@ impl PageControl {
             started_at,
             completed_at,
         )?;
-        let snapshot = PageSnapshot::new(context, generation, nodes, omitted_node_count)?;
+        let snapshot = PageSnapshot::new(context, generation, nodes, omitted_node_count)?
+            .with_geometry_omitted(geometry_omitted);
         self.snapshots.install(
             bound.target_id,
             ActiveSnapshot {
@@ -794,6 +824,7 @@ struct DecodedDomNode {
 struct DecodedDomSnapshot {
     metadata: HashMap<i64, SemanticNodeMetadata>,
     document_rects: HashMap<i64, CssRect>,
+    geometry_omitted: bool,
 }
 
 #[cfg(test)]
@@ -844,6 +875,13 @@ fn decode_dom_snapshot_with_geometry(
         .ok_or_else(|| malformed(target_id, "DOM snapshot node table is missing"))?;
     let backend_ids = required_array(nodes, "backendNodeId", target_id)?;
     if backend_ids.len() > MAX_SNAPSHOT_NODES {
+        if include_document_geometry {
+            return Ok(DecodedDomSnapshot {
+                metadata: HashMap::new(),
+                document_rects: HashMap::new(),
+                geometry_omitted: true,
+            });
+        }
         return Err(malformed(
             target_id,
             format!(
@@ -1052,6 +1090,7 @@ fn decode_dom_snapshot_with_geometry(
     Ok(DecodedDomSnapshot {
         metadata,
         document_rects,
+        geometry_omitted: false,
     })
 }
 
@@ -2268,6 +2307,94 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn geometry_over_cap_omits_layout_and_keeps_snapshot_available() {
+        let transport = SnapshotTransport::default();
+        transport.push("Page.getFrameTree", frame_tree("main-loader"));
+        transport.push("Accessibility.getFullAXTree", child_ax_tree());
+        transport.push(
+            "DOMSnapshot.captureSnapshot",
+            multi_document_snapshot_with_large_parent(),
+        );
+        transport.push("Page.getFrameTree", frame_tree("main-loader"));
+        let mut control = page_control();
+        let BrowserOperationResult::SnapshotPage(snapshot) = control
+            .snapshot(
+                &transport,
+                &frame_bound(),
+                SnapshotPageRequest::new(target()),
+                krometrail_core::SessionTime::ZERO,
+                true,
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected snapshot result");
+        };
+
+        assert!(snapshot.geometry_omitted);
+        assert!(snapshot.nodes.iter().any(|node| node.actionable));
+        assert!(
+            snapshot
+                .nodes
+                .iter()
+                .all(|node| node.document_rect.is_none())
+        );
+    }
+
+    #[tokio::test]
+    async fn viewport_anchor_captures_visual_viewport_with_snapshot_geometry() {
+        let transport = SnapshotTransport::default();
+        transport.push("Page.getFrameTree", frame_tree("main-loader"));
+        let mut ax = child_ax_tree();
+        ax["nodes"][1]["backendDOMNodeId"] = json!(10);
+        transport.push("Accessibility.getFullAXTree", ax);
+        let mut dom = semantic_dom_snapshot();
+        dom["documents"][0]["layout"] = json!({
+            "nodeIndex": [2],
+            "text": [-1],
+            "bounds": [[0.0, 10.0, 20.0, 20.0]]
+        });
+        transport.push("DOMSnapshot.captureSnapshot", dom);
+        transport.push("Page.getFrameTree", frame_tree("main-loader"));
+        transport.push(
+            "Page.getLayoutMetrics",
+            json!({
+                "cssVisualViewport": {
+                    "pageX": 0.0,
+                    "pageY": 0.0,
+                    "clientWidth": 100.0,
+                    "clientHeight": 100.0
+                }
+            }),
+        );
+
+        let mut control = page_control();
+        let mut request = SnapshotPageRequest::new(target());
+        request.anchor = SnapshotPageAnchor::Viewport;
+        let BrowserOperationResult::SnapshotPage(snapshot) = control
+            .snapshot(
+                &transport,
+                &frame_bound(),
+                request,
+                krometrail_core::SessionTime::ZERO,
+                false,
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected snapshot result");
+        };
+
+        assert_eq!(snapshot.visual_viewport.unwrap().size.width, 100.0);
+        assert!(
+            snapshot
+                .nodes
+                .iter()
+                .any(|node| node.document_rect.is_some())
+        );
+    }
+
+    #[tokio::test]
     async fn dom_query_limits_only_the_selected_frame_document() {
         let transport = SnapshotTransport::default();
         for _ in 0..3 {
@@ -2519,6 +2646,7 @@ mod tests {
             true,
         )
         .unwrap();
+        assert!(!decoded.geometry_omitted);
         assert_eq!(decoded.document_rects[&31].origin.y, 40.0);
         assert_eq!(decoded.document_rects[&31].size.height, 24.0);
     }

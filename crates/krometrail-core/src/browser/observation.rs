@@ -413,13 +413,26 @@ pub struct PageSnapshot {
     pub generation: SnapshotGeneration,
     pub nodes: Vec<SnapshotNode>,
     pub omitted_node_count: u32,
+    #[serde(skip_serializing_if = "is_false")]
+    pub geometry_omitted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visual_viewport: Option<CssRect>,
 }
+
+fn is_false(value: &bool) -> bool {
+    !value
+}
+
 #[derive(Deserialize)]
 struct PageSnapshotWire {
     context: ObservationContext,
     generation: SnapshotGeneration,
     nodes: Vec<SnapshotNode>,
     omitted_node_count: u32,
+    #[serde(default)]
+    geometry_omitted: bool,
+    #[serde(default)]
+    visual_viewport: Option<CssRect>,
 }
 impl PageSnapshot {
     pub fn new(
@@ -484,7 +497,19 @@ impl PageSnapshot {
             generation,
             nodes,
             omitted_node_count,
+            geometry_omitted: false,
+            visual_viewport: None,
         })
+    }
+
+    pub fn with_geometry_omitted(mut self, geometry_omitted: bool) -> Self {
+        self.geometry_omitted = geometry_omitted;
+        self
+    }
+
+    pub fn with_visual_viewport(mut self, visual_viewport: CssRect) -> Self {
+        self.visual_viewport = Some(visual_viewport);
+        self
     }
 }
 impl<'de> Deserialize<'de> for PageSnapshot {
@@ -492,7 +517,11 @@ impl<'de> Deserialize<'de> for PageSnapshot {
         deserializer: D,
     ) -> std::result::Result<Self, D::Error> {
         deserialize_validated(deserializer, |w: PageSnapshotWire| {
-            Self::new(w.context, w.generation, w.nodes, w.omitted_node_count)
+            Self::new(w.context, w.generation, w.nodes, w.omitted_node_count).map(|mut snapshot| {
+                snapshot.geometry_omitted = w.geometry_omitted;
+                snapshot.visual_viewport = w.visual_viewport;
+                snapshot
+            })
         })
     }
 }
@@ -1031,8 +1060,34 @@ macro_rules! page_request {
     };
 }
 page_request!(InspectPageRequest);
-page_request!(SnapshotPageRequest);
 page_request!(LiveObservationRequest);
+
+#[derive(
+    Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum SnapshotPageAnchor {
+    #[default]
+    Document,
+    Viewport,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct SnapshotPageRequest {
+    #[serde(default)]
+    pub target: PageSelection,
+    #[serde(default)]
+    pub anchor: SnapshotPageAnchor,
+}
+
+impl SnapshotPageRequest {
+    pub const fn new(target_id: TargetId) -> Self {
+        Self {
+            target: PageSelection::Target(target_id),
+            anchor: SnapshotPageAnchor::Document,
+        }
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ReadOnlyEvaluationRequest {
@@ -1143,6 +1198,16 @@ mod tests {
         );
         assert!(serde_json::from_str::<CssSize>(r#"{"width":0,"height":1}"#).is_err());
         assert!(serde_json::from_str::<ObservationContext>(&format!(r#"{{"session_id":"{}","target_id":"{}","attachment_generation":1,"started_at":2,"completed_at":1}}"#, session(), target())).is_err());
+    }
+
+    #[test]
+    fn snapshot_page_anchor_defaults_to_document_and_accepts_viewport() {
+        let document: SnapshotPageRequest = serde_json::from_str("{}").unwrap();
+        assert_eq!(document.anchor, SnapshotPageAnchor::Document);
+
+        let viewport: SnapshotPageRequest =
+            serde_json::from_str(r#"{"anchor":"viewport"}"#).unwrap();
+        assert_eq!(viewport.anchor, SnapshotPageAnchor::Viewport);
     }
 
     #[test]

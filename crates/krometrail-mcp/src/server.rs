@@ -3039,16 +3039,24 @@ mod tests {
         }
 
         assert_eq!(execute_calls.load(Ordering::SeqCst), 4);
-        for response in &responses {
+        for (index, response) in responses.iter().enumerate() {
             assert_eq!(response["result"]["isError"], false);
             assert_eq!(
                 response["result"]["structuredContent"]["status"],
                 "succeeded"
             );
-            assert_eq!(
-                response["result"]["structuredContent"]["result"]["record"]["outcome"],
-                "dispatched"
-            );
+            if index == 0 {
+                assert!(
+                    response["result"]["structuredContent"]["result"]
+                        .get("record")
+                        .is_none()
+                );
+            } else {
+                assert_eq!(
+                    response["result"]["structuredContent"]["result"]["record"]["outcome"],
+                    "dispatched"
+                );
+            }
             assert!(response["result"]["content"].as_array().is_some());
             assert!(response["result"]["structuredContent"].is_object());
         }
@@ -3057,11 +3065,13 @@ mod tests {
             .iter()
             .map(|response| &response["result"]["structuredContent"])
             .collect::<Vec<_>>();
-        for projected in structured.iter().skip(1) {
+        for projected in structured.iter().skip(2) {
             assert_eq!(
                 projected["result"]["record"],
-                structured[0]["result"]["record"]
+                structured[1]["result"]["record"]
             );
+        }
+        for projected in structured.iter().skip(1) {
             assert_eq!(projected["interaction"], structured[0]["interaction"]);
             assert_eq!(projected["warnings"], structured[0]["warnings"]);
             assert_eq!(projected["resources"], structured[0]["resources"]);

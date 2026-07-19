@@ -553,6 +553,12 @@ mod tests {
         assert!(encoded.contains("max_matches"));
         assert!(encoded.contains("scope"));
         assert!(encoded.contains("contains"));
+
+        let snapshot_schema =
+            serde_json::to_value(BrowserOperationKind::SnapshotPage.input_schema()).unwrap();
+        let encoded = snapshot_schema.to_string();
+        assert!(encoded.contains("anchor"));
+        assert!(encoded.contains("viewport"));
     }
 
     #[test]

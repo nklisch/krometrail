@@ -991,10 +991,12 @@ fn project_operation(
                 response,
                 novelty,
             )?;
-            let mut projection = Projection::success(json!({
-                "record": value.record,
-                "observation": observation,
-            }));
+            let mut result = json!({"observation": observation});
+            if response.detail != ResponseDetail::Concise {
+                result["record"] =
+                    serde_json::to_value(value.record).map_err(|_| ResponseInvariantError)?;
+            }
+            let mut projection = Projection::success(result);
             projection.interaction = Some(anchor);
             projection.degrade_with(warnings);
             projection.images.extend(image);
@@ -1318,6 +1320,7 @@ struct ExactTarget {
 struct TargetOmissions {
     source_nodes: u32,
     presentation_targets: u32,
+    geometry_omitted: bool,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -1325,6 +1328,7 @@ struct ExpandedSnapshotOmissions {
     source_nodes: u32,
     presentation_targets: u32,
     presentation_context_nodes: u32,
+    geometry_omitted: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1488,6 +1492,7 @@ fn concise_snapshot(
         source_nodes: snapshot.omitted_node_count,
         presentation_targets: u32::try_from(actionable - targets.len())
             .map_err(|_| ResponseInvariantError)?,
+        geometry_omitted: snapshot.geometry_omitted,
     };
     if novelty == SnapshotNovelty::Unchanged {
         return Ok(json!({
@@ -1548,6 +1553,7 @@ fn expanded_snapshot(
                     .map_err(|_| ResponseInvariantError)?,
                 presentation_context_nodes: u32::try_from(context_count - semantic_context.len())
                     .map_err(|_| ResponseInvariantError)?,
+                geometry_omitted: snapshot.geometry_omitted,
             },
         };
         if serde_json::to_vec(&candidate)
@@ -1570,6 +1576,7 @@ fn expanded_snapshot(
                     .map_err(|_| ResponseInvariantError)?,
                 presentation_context_nodes: u32::try_from(context_count - semantic_context.len())
                     .map_err(|_| ResponseInvariantError)?,
+                geometry_omitted: snapshot.geometry_omitted,
             },
         }));
     }
@@ -1582,6 +1589,7 @@ fn expanded_snapshot(
                 .map_err(|_| ResponseInvariantError)?,
             presentation_context_nodes: u32::try_from(context_count - semantic_context.len())
                 .map_err(|_| ResponseInvariantError)?,
+            geometry_omitted: snapshot.geometry_omitted,
         },
         targets,
         semantic_context,
@@ -1633,11 +1641,18 @@ fn project_response(
         projection.images.clear();
     }
     if tool == "snapshot_page" {
+        let visual_viewport = projection
+            .result
+            .get("visual_viewport")
+            .map(|value| {
+                serde_json::from_value::<CssRect>(value.clone()).map_err(|_| ResponseInvariantError)
+            })
+            .transpose()?;
         project_root_snapshot(
             &mut projection.result,
             response.detail,
             SnapshotNovelty::Novel,
-            None,
+            visual_viewport.as_ref(),
         )?;
     } else if tool == "inspect_page" {
         project_root_page_state(&mut projection.result, response.detail)?;
@@ -2555,16 +2570,17 @@ mod tests {
         AccessibleProperty, AccessibleValue, BatchSkipReason, BatchStepResult, BatchStepStatus,
         BrowserOperationKind, CaptureFailureStage, CaptureOrdinal, CaptureStatistics,
         CaptureStreamState, CaptureTimingSummary, CapturedFrame, CssPoint, CssRect, CssSize,
-        DeviceScaleFactor, EveryNthFrame, FrameId, ImageFormat, InteractionId, InteractionTiming,
-        NodeReference, ObservationContext, ObservedTime, PageChange, PageOperationResult,
-        PageSelection, PageSnapshot, PixelDimensions, PresentationRange, PresentationTime,
-        RangeResolutionOptions, ResolvedRange, ScreenshotTarget, SessionId, SessionRange,
-        SessionTime, Sha256Digest, SnapshotGeneration, SnapshotNode, SnapshotNodeId,
-        SourceFrameRead, TargetCaptureStatus, TargetId, TemporalRangeAnchorKind,
-        TemporalVideoGenerationClip, TemporalVideoManifest, VideoArtifactEvidenceHandle,
-        VideoEncodedClip, VideoEncoderIdentity, VideoEncodingProfile, VideoOutputGeometry,
-        VideoPresentationPlan, VideoPresentationSegment, VideoSegmentSource, VideoTimingBasis,
-        VisualEpoch, WaitCondition, WaitProbe, WaitRequest, WaitResult,
+        DeviceScaleFactor, EveryNthFrame, FrameId, ImageFormat, InteractionId, InteractionOutcome,
+        InteractionRecord, InteractionResult, InteractionTiming, LocatorSummary, NodeReference,
+        ObservationContext, ObservedTime, PageChange, PageOperationResult, PageSelection,
+        PageSnapshot, PixelDimensions, PresentationRange, PresentationTime, RangeResolutionOptions,
+        ResolvedRange, SanitizedParameters, ScreenshotTarget, SessionId, SessionRange, SessionTime,
+        Sha256Digest, SnapshotGeneration, SnapshotNode, SnapshotNodeId, SourceFrameRead,
+        TargetCaptureStatus, TargetId, TemporalRangeAnchorKind, TemporalVideoGenerationClip,
+        TemporalVideoManifest, VideoArtifactEvidenceHandle, VideoEncodedClip, VideoEncoderIdentity,
+        VideoEncodingProfile, VideoOutputGeometry, VideoPresentationPlan, VideoPresentationSegment,
+        VideoSegmentSource, VideoTimingBasis, VisualEpoch, WaitCondition, WaitProbe, WaitRequest,
+        WaitResult,
     };
     use std::time::Duration;
 
@@ -3274,6 +3290,23 @@ mod tests {
         assert_eq!(targets[0].reference.node_id, inside);
         let outcomes = semantic_outcomes(&snapshot, Some(&viewport)).unwrap();
         assert_eq!(outcomes[0].name.as_deref(), Some("inside text"));
+
+        let anchored = snapshot.clone().with_visual_viewport(viewport);
+        let mapped = map_operation_result_with_capture(
+            "snapshot_page",
+            BrowserOperationResult::SnapshotPage(Box::new(anchored)),
+            &[],
+            ResponseRequest {
+                inline_images: Some(false),
+                ..ResponseRequest::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(mapped.response.status, ToolResponseStatus::Succeeded);
+        assert_eq!(
+            mapped.response.result["targets"][0]["reference"]["node_id"],
+            serde_json::to_value(inside).unwrap()
+        );
     }
 
     #[test]
@@ -3332,7 +3365,11 @@ mod tests {
                 "value": null,
                 "states": []
             }],
-            "omissions": {"source_nodes": 0, "presentation_targets": 0}
+            "omissions": {
+                "source_nodes": 0,
+                "presentation_targets": 0,
+                "geometry_omitted": false
+            }
         });
         assert_eq!(
             serde_json::to_vec(&concise).unwrap(),
@@ -3363,7 +3400,8 @@ mod tests {
             "omissions": {
                 "source_nodes": 0,
                 "presentation_targets": 0,
-                "presentation_context_nodes": 0
+                "presentation_context_nodes": 0,
+                "geometry_omitted": false
             }
         });
         assert_eq!(
@@ -3533,6 +3571,65 @@ mod tests {
         assert!(concise.response.result.get("nodes").is_none());
         assert!(expanded.response.result.get("semantic_context").is_some());
         assert!(full.response.result.get("nodes").is_some());
+    }
+
+    #[test]
+    fn concise_interactions_omit_record_but_expanded_and_full_retain_it() {
+        let operation = || {
+            let record = InteractionRecord::new(
+                interaction_id(),
+                context(),
+                SessionTime::from_nanos(12),
+                SessionTime::from_nanos(15),
+                BrowserOperationKind::Click,
+                SanitizedParameters::new(json!({"button": "left"})).unwrap(),
+                LocatorSummary::from_locator(None),
+                InteractionOutcome::Dispatched,
+                None,
+            )
+            .unwrap();
+            BrowserOperationResult::Click(Box::new(InteractionResult {
+                record,
+                observation: live_with_snapshot(complex_snapshot()),
+            }))
+        };
+        let concise = map_operation_result_with_capture(
+            "click",
+            operation(),
+            &[],
+            ResponseRequest {
+                inline_images: Some(false),
+                ..ResponseRequest::default()
+            },
+        )
+        .unwrap();
+        let expanded = map_operation_result_with_capture(
+            "click",
+            operation(),
+            &[],
+            ResponseRequest {
+                detail: ResponseDetail::Expanded,
+                inline_images: Some(false),
+            },
+        )
+        .unwrap();
+        let full = map_operation_result_with_capture(
+            "click",
+            operation(),
+            &[],
+            ResponseRequest {
+                detail: ResponseDetail::Full,
+                inline_images: Some(false),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(concise.response.status, expanded.response.status);
+        assert_eq!(expanded.response.status, full.response.status);
+        assert!(concise.response.result.get("observation").is_some());
+        assert!(concise.response.result.get("record").is_none());
+        assert!(expanded.response.result.get("record").is_some());
+        assert!(full.response.result.get("record").is_some());
     }
 
     #[test]

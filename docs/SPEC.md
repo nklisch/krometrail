@@ -122,6 +122,9 @@ default; other routine operations remain pixel-light. `inline_images: false` sup
 requests them where supported. Failed and degraded responses always include privacy-bounded diagnostics; callers cannot suppress the only
 actionable failure evidence. Status requests use the same concise-to-full direction.
 
+Concise interaction results retain the interaction anchor and post-action observation; expanded and full results add
+the sanitized interaction record echo for callers that need parameter and timing provenance.
+
 A batch of actions returns per-step status and timeline anchors. It returns a final live observation and includes per-step screenshot fields only when screenshots were requested.
 
 ## Structured Page Snapshots

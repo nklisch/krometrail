@@ -149,3 +149,27 @@ projection for the omission note)
 ## Risks
 - Removing `record` from concise is a response-shape change; grep tests and
   plugin skill text for reliance on concise `record`.
+
+## Implementation Notes
+
+- Execution capability: inline implementation; the three units were cohesive
+  across the core, CDP, MCP, and specification surfaces. Review weight:
+  standard.
+- Unit 1 delivered in `crates/krometrail-cdp/src/control/snapshot.rs` and the
+  canonical snapshot/response projections: DOMSnapshot tables over the node
+  cap now omit geometry with explicit `geometry_omitted` accounting while
+  retaining the snapshot and successful operation outcome. Added a
+  deterministic over-cap regression using a DOMSnapshot table with more than
+  5,000 nodes.
+- Unit 2 delivered in `crates/krometrail-mcp/src/response.rs` and
+  `docs/SPEC.md`: concise interaction projections retain the interaction and
+  observation but omit `record`; expanded and full retain the sanitized record
+  echo. Added a projection regression covering all three tiers.
+- Unit 3 delivered in the core request type, CDP snapshot control, and MCP
+  projection: `snapshot_page` now accepts `anchor` with document as the
+  default and viewport as the geometry-backed option. Added schema and
+  deterministic viewport-ranking regressions.
+- Verification: `cargo fmt --all -- --check`,
+  `cargo check --workspace --all-targets --locked`,
+  `cargo test --workspace --all-targets --locked`, and
+  `cargo clippy --workspace --all-targets --locked -- -D warnings` all passed.

@@ -71,8 +71,8 @@ pub use observation::{
     ObservationContext, ObservationPart, PageSnapshot, PageState, QueryPageRequest,
     QueryPageResult, ReadOnlyEvaluationRequest, ScreenshotMetadata, ScreenshotRequest,
     ScreenshotTarget, SemanticMatch, SemanticQuery, SemanticQueryOutcome, SemanticTextMatch,
-    SemanticTextMatchMode, SnapshotGeneration, SnapshotNode, SnapshotNodeId, SnapshotPageRequest,
-    ViewportState,
+    SemanticTextMatchMode, SnapshotGeneration, SnapshotNode, SnapshotNodeId, SnapshotPageAnchor,
+    SnapshotPageRequest, ViewportState,
 };
 pub use operation::{
     BROWSER_OPERATION_REGISTRY, BrowserOperationDefinition, BrowserOperationKind,
