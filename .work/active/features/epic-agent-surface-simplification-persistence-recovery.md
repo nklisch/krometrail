@@ -1,7 +1,7 @@
 ---
 id: epic-agent-surface-simplification-persistence-recovery
 kind: feature
-stage: review
+stage: done
 tags: [browser, storage, diagnostics]
 parent: epic-agent-surface-simplification
 depends_on: []
@@ -410,3 +410,7 @@ pub(crate) fn map_lifecycle_result<T: Serialize>(
 - Discrepancies from design: generated schemas are runtime-derived rather than checked-in artifacts; the integration regression is intentionally layered across private fault seams instead of exposing production injectors.
 - Adjacent issues parked: none.
 - Integrated verification: workspace all-target check and strict clippy for all touched crates passed; every focused persistence, capture, shutdown, concise-status, degraded-response, and schema regression passed. A prior broad CDP lib run had 175 passing tests and four sandbox-blocked local-socket tests, with no feature failures.
+
+## Review
+
+The single standard fresh-context pass found one blocker: a persistence failure first raised during target drain or final session flush was reduced to a boolean. Commit `2933fae` preserves the typed cause with precedence from pre-stop status through drain and final flush, and adds a rejecting-flush regression for the exact classification and restart recovery. The blocker was adjudicated and fixed; no second review pass was run.
