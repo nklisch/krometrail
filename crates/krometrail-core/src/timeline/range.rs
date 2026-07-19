@@ -425,6 +425,10 @@ pub enum RetentionWarning {
         requested: SessionRange,
         retained: SessionRange,
     },
+    PartiallyCaptured {
+        requested: SessionRange,
+        retained: SessionRange,
+    },
     EvictedRanges {
         ranges: Vec<SessionRange>,
     },
@@ -1236,7 +1240,7 @@ where
         }
 
         let (resolved_range, retention_warnings) =
-            classify_retention(&seed, &frames, &availability, options.retention)?;
+            classify_retention(&seed, &frames, &availability, options)?;
         let retained_frames: Vec<_> = frames
             .into_iter()
             .filter(|frame| resolved_range.contains(frame.session_time()))
@@ -1350,7 +1354,7 @@ fn classify_retention(
     seed: &RangeSeed,
     frames: &[CapturedFrame],
     availability: &FrameAvailability,
-    policy: RetentionPolicy,
+    options: RangeResolutionOptions,
 ) -> Result<(SessionRange, Vec<RetentionWarning>)> {
     let retained = availability.retained_bounds.ok_or_else(|| {
         persistence_range_error("frame availability omitted bounds for retained metadata")
@@ -1367,6 +1371,28 @@ fn classify_retention(
         if retained.start() > seed.requested_range.start()
             || retained.end() < seed.requested_range.end()
         {
+            if let Some(resolved) =
+                clamp_natural_interaction_range(seed, seed.requested_range, retained, options)?
+            {
+                let mut warnings = Vec::new();
+                if resolved.start() > seed.requested_range.start() {
+                    warnings.push(RetentionWarning::RequestedStartBeforeOldestRetained {
+                        requested: seed.requested_range.start(),
+                        oldest_retained: resolved.start(),
+                    });
+                }
+                if resolved.end() < seed.requested_range.end() {
+                    warnings.push(RetentionWarning::RequestedEndAfterNewestRetained {
+                        requested: seed.requested_range.end(),
+                        newest_retained: resolved.end(),
+                    });
+                }
+                warnings.push(RetentionWarning::PartiallyCaptured {
+                    requested: seed.requested_range,
+                    retained: resolved,
+                });
+                return Ok((resolved, warnings));
+            }
             return Err(range_not_found(
                 "requested interval extends beyond captured source-frame bounds",
                 seed,
@@ -1376,7 +1402,7 @@ fn classify_retention(
         }
         return Ok((seed.requested_range, Vec::new()));
     }
-    if policy == RetentionPolicy::RequireComplete {
+    if options.retention == RetentionPolicy::RequireComplete {
         return Err(range_not_found(
             "requested range is not completely retained",
             seed,
@@ -1469,6 +1495,28 @@ fn classify_retention(
         ranges: intersecting,
     });
     Ok((resolved, warnings))
+}
+
+fn clamp_natural_interaction_range(
+    seed: &RangeSeed,
+    requested: SessionRange,
+    retained: SessionRange,
+    options: RangeResolutionOptions,
+) -> Result<Option<SessionRange>> {
+    if options.retention != RetentionPolicy::AllowPartial
+        || !matches!(
+            seed.anchor_kind,
+            TemporalRangeAnchorKind::Interaction | TemporalRangeAnchorKind::LatestInteraction
+        )
+        || !ranges_intersect(requested, retained)
+    {
+        return Ok(None);
+    }
+    SessionRange::new(
+        requested.start().max(retained.start()),
+        requested.end().min(retained.end()),
+    )
+    .map(Some)
 }
 
 fn ranges_intersect(left: SessionRange, right: SessionRange) -> bool {

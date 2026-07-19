@@ -325,6 +325,126 @@ async fn durable_interaction_anchors_resolve_and_uncaptured_edges_are_not_partia
     assert_eq!(resolved.interaction_ids, vec![interaction_id]);
     assert_eq!(resolved.frame_ids.len(), 2);
 
+    let late_interaction_id = krometrail_core::InteractionId::from_uuid(Uuid::from_u128(41));
+    let late_completion = SessionTime::from_nanos(26_000_010);
+    fixture
+        .store
+        .append_operation_evidence(
+            InteractionAnchor::new(
+                late_interaction_id,
+                fixture.session,
+                fixture.target,
+                BrowserOperationKind::NavigatePage,
+                InteractionTiming::new(
+                    SessionTime::from_nanos(5),
+                    SessionTime::from_nanos(6),
+                    late_completion,
+                    Some(late_completion),
+                )
+                .unwrap(),
+            )
+            .unwrap(),
+            None,
+            ObservedTime::from_nanos(26_000_011),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let latest = TemporalRangeAnchor::LatestInteraction {
+        session_id: fixture.session,
+        target_id: fixture.target,
+        window: Some(
+            krometrail_core::InteractionWindow::new(Duration::from_millis(100), Duration::ZERO)
+                .unwrap(),
+        ),
+    };
+    let mut allow_natural_tail = RangeResolutionOptions::DEFAULT;
+    allow_natural_tail.retention = krometrail_core::RetentionPolicy::AllowPartial;
+    let partial_latest = fixture
+        .resolver()
+        .resolve(latest.clone(), allow_natural_tail)
+        .await
+        .unwrap();
+    assert_eq!(
+        partial_latest.requested_range,
+        SessionRange::new(SessionTime::ZERO, late_completion).unwrap()
+    );
+    assert_eq!(
+        partial_latest.resolved_range,
+        SessionRange::new(SessionTime::from_nanos(1), SessionTime::from_nanos(10)).unwrap()
+    );
+    assert_eq!(
+        partial_latest.resolved_anchor.reference,
+        krometrail_core::ResolvedAnchorReference::Interaction {
+            interaction_id: late_interaction_id
+        }
+    );
+    assert!(
+        partial_latest
+            .retention_warnings
+            .iter()
+            .any(|warning| matches!(
+                warning,
+                krometrail_core::RetentionWarning::PartiallyCaptured { requested, retained }
+                    if *requested == partial_latest.requested_range
+                        && *retained == partial_latest.resolved_range
+            ))
+    );
+
+    assert_eq!(
+        fixture
+            .resolver()
+            .resolve(latest, RangeResolutionOptions::DEFAULT)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::NotFound
+    );
+    let disjoint_interaction_id = krometrail_core::InteractionId::from_uuid(Uuid::from_u128(42));
+    fixture
+        .store
+        .append_operation_evidence(
+            InteractionAnchor::new(
+                disjoint_interaction_id,
+                fixture.session,
+                fixture.target,
+                BrowserOperationKind::NavigatePage,
+                InteractionTiming::new(
+                    late_completion,
+                    late_completion,
+                    late_completion,
+                    Some(late_completion),
+                )
+                .unwrap(),
+            )
+            .unwrap(),
+            None,
+            ObservedTime::from_nanos(26_000_012),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        fixture
+            .resolver()
+            .resolve(
+                TemporalRangeAnchor::LatestInteraction {
+                    session_id: fixture.session,
+                    target_id: fixture.target,
+                    window: Some(
+                        krometrail_core::InteractionWindow::new(Duration::ZERO, Duration::ZERO)
+                            .unwrap(),
+                    ),
+                },
+                allow_natural_tail,
+            )
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::NotFound
+    );
+
     let mut partial = RangeResolutionOptions::DEFAULT;
     partial.retention = krometrail_core::RetentionPolicy::AllowPartial;
     let error = fixture
