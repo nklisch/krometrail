@@ -1,7 +1,7 @@
 ---
 id: epic-agent-surface-simplification-bounded-temporal-bundles
 kind: feature
-stage: implementing
+stage: review
 tags: [agent-ux, visual]
 parent: epic-agent-surface-simplification
 depends_on: [epic-agent-surface-simplification-response-detail]
@@ -180,3 +180,19 @@ fn project_temporal_bundle(
 ## Risks
 
 Filtering after output-limit calculation would preserve the current failure and cost, so ordering is contract-critical. Concise resources must not imply that omitted generated artifacts do not exist; exact counts and expansion guidance prevent that ambiguity.
+
+## Implementation notes
+
+- Execution capability: raised — the integrated change spans validated temporal input, pre-work artifact scheduling, retained-resource projection, and standing agent guidance.
+- Review weight: standard (autopilot caller).
+- Files changed: core bundle/artifact contracts, artifact and bundle application services, MCP response/schema/server, focused fixtures, four foundation/evaluation documents, and Krometrail skill guidance.
+- Tests added/removed: request default/round-trip schema, pre-output-limit anchor selection, original-index and deterministic tie coverage, generic-all behavior through its unchanged default, and progressive concise/expanded resource behavior; removed policy-version freeze coverage.
+- Simplification: deleted bundle policy version machinery and default all-epoch fanout; concise now avoids all non-primary resource links and all default artifact reads while naming exact omissions.
+- Discrepancies from design: generated public docs were verified but byte-identical because their source set excludes the changed foundation and skill files.
+- Adjacent issues parked: none.
+
+## Integrated verification
+
+- `cargo check --workspace --all-targets --locked`
+- focused core request, artifact selection/tie, policy, schema, and MCP end-to-end tests listed in the child story evidence
+- `bun run docs:build`
