@@ -337,9 +337,16 @@ async fn execute_non_local_operation(
     context: OperationExecutionContext,
 ) -> Result<BrowserOperationResult> {
     if request.kind().is_interaction() {
+        let interaction_id = page_control.next_interaction_id();
         let target_id = match request.scope() {
             krometrail_core::BrowserOperationScope::Page(selection) => {
-                crate::control::bind_target(state, selection)?.target_id
+                crate::control::bind_target(state, selection)
+                    .map(|bound| bound.target_id)
+                    .map_err(|mut error| {
+                        error.context.session_id = Some(page_control.session_id());
+                        error.context.interaction_id = Some(interaction_id);
+                        error
+                    })?
             }
             krometrail_core::BrowserOperationScope::Browser => {
                 return Err(stable_error(
@@ -356,6 +363,7 @@ async fn execute_non_local_operation(
                 request,
                 cancellation,
                 context.parent_batch,
+                interaction_id,
             )
             .await?;
         if let Some(visibility) = observed_visibility {

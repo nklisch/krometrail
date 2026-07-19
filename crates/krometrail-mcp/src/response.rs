@@ -3,16 +3,16 @@ use std::{any::Any, sync::Arc, time::Instant};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use krometrail_core::{
     ArtifactCacheDisposition, ArtifactGenerationResult, ArtifactHandle, ArtifactId,
-    ArtifactOutcome, BatchOutcome, BatchResult, BrowserOperationResult, BrowserOwnership,
-    BrowserSessionState, BrowserStatus, BrowserStopOutcome, CaptureFailure, CaptureStreamState,
-    CssRect, EncodedScreenshot, ErrorCode, EveryNthFrame, InteractionAnchor, KrometrailError,
-    LiveObservation, NonEmptyText, ObservationPart, PageOperationOutcome, PageOperationResult,
-    PageSnapshot, ProfileRef, ProgressiveEvidence, ProgressiveEvidenceContext,
-    ProgressiveEvidenceRequest, ProgressiveEvidenceResult, RecordingBudgetState,
-    ResolvedRangeHandleId, RetrieveArtifactRequest, RetryAdvice, ScreenshotMetadata, SessionId,
-    SessionTime, ShutdownQuality, SourceFrameBatch, SourceFrameHandle, TargetId,
-    TemporalDebugBundle, TemporalRangeAnchorKind, TemporalRangeResolution,
-    TemporalVideoGenerationResult, VideoPresentationPolicy, WaitOutcome,
+    ArtifactOutcome, BatchOutcome, BatchResult, BrowserOperationKind, BrowserOperationResult,
+    BrowserOwnership, BrowserSessionState, BrowserStatus, BrowserStopOutcome, CaptureFailure,
+    CaptureStreamState, CssRect, EncodedScreenshot, ErrorCode, EveryNthFrame, InteractionAnchor,
+    InteractionTiming, KrometrailError, LiveObservation, NonEmptyText, ObservationPart,
+    PageOperationOutcome, PageOperationResult, PageSnapshot, ProfileRef, ProgressiveEvidence,
+    ProgressiveEvidenceContext, ProgressiveEvidenceRequest, ProgressiveEvidenceResult,
+    RecordingBudgetState, ResolvedRangeHandleId, RetrieveArtifactRequest, RetryAdvice,
+    ScreenshotMetadata, SessionId, SessionTime, ShutdownQuality, SourceFrameBatch,
+    SourceFrameHandle, TargetId, TemporalDebugBundle, TemporalRangeAnchorKind,
+    TemporalRangeResolution, TemporalVideoGenerationResult, VideoPresentationPolicy, WaitOutcome,
 };
 use rmcp::model::JsonObject;
 use rmcp::model::{CallToolResult, Content, RawResource};
@@ -715,10 +715,31 @@ pub(crate) fn visible_error_with_capture(
     let summary = format!("{tool} failed: {}", error.message);
     let target_id = error.context.target_id;
     let mut projection = Projection::success(json!({}));
+    projection.interaction = failure_interaction_anchor(tool, &error);
     projection.fail_with(error);
     add_capture_warnings(&mut projection, capture_statuses, target_id);
     into_call_tool_result(mapped(tool, projection, summary))
         .expect("stable error envelopes always serialize")
+}
+
+fn failure_interaction_anchor(tool: &str, error: &KrometrailError) -> Option<InteractionAnchor> {
+    let interaction_id = error.context.interaction_id?;
+    let session_id = error.context.session_id?;
+    let target_id = error.context.target_id?;
+    let operation = BrowserOperationKind::from_stable_name(tool)?;
+    if !operation.is_interaction() {
+        return None;
+    }
+    // This is a context anchor for a pre-dispatch failure, not a fabricated record. There is no
+    // observed timing because dispatch never completed.
+    let timing = InteractionTiming::new(
+        SessionTime::ZERO,
+        SessionTime::ZERO,
+        SessionTime::ZERO,
+        None,
+    )
+    .ok()?;
+    InteractionAnchor::new(interaction_id, session_id, target_id, operation, timing).ok()
 }
 
 fn add_capture_warnings(
@@ -2596,17 +2617,17 @@ mod tests {
         AccessibleProperty, AccessibleValue, BatchSkipReason, BatchStepResult, BatchStepStatus,
         BrowserOperationKind, CaptureFailureStage, CaptureOrdinal, CaptureStatistics,
         CaptureStreamState, CaptureTimingSummary, CapturedFrame, CssPoint, CssRect, CssSize,
-        DeviceScaleFactor, EveryNthFrame, FrameId, ImageFormat, InteractionId, InteractionOutcome,
-        InteractionRecord, InteractionResult, InteractionTiming, LocatorSummary, NodeReference,
-        ObservationContext, ObservedTime, PageChange, PageOperationResult, PageSelection,
-        PageSnapshot, PixelDimensions, PresentationRange, PresentationTime, RangeResolutionOptions,
-        ResolvedRange, SanitizedParameters, ScreenshotTarget, SessionId, SessionRange, SessionTime,
-        Sha256Digest, SnapshotGeneration, SnapshotNode, SnapshotNodeId, SourceFrameRead,
-        TargetCaptureStatus, TargetId, TemporalRangeAnchorKind, TemporalVideoGenerationClip,
-        TemporalVideoManifest, VideoArtifactEvidenceHandle, VideoEncodedClip, VideoEncoderIdentity,
-        VideoEncodingProfile, VideoOutputGeometry, VideoPresentationPlan, VideoPresentationSegment,
-        VideoSegmentSource, VideoTimingBasis, VisualEpoch, WaitCondition, WaitProbe, WaitRequest,
-        WaitResult,
+        DeviceScaleFactor, ErrorContext, EveryNthFrame, FrameId, ImageFormat, InteractionId,
+        InteractionOutcome, InteractionRecord, InteractionResult, InteractionTiming,
+        LocatorSummary, NodeReference, ObservationContext, ObservedTime, PageChange,
+        PageOperationResult, PageSelection, PageSnapshot, PixelDimensions, PresentationRange,
+        PresentationTime, RangeResolutionOptions, ResolvedRange, SanitizedParameters,
+        ScreenshotTarget, SessionId, SessionRange, SessionTime, Sha256Digest, SnapshotGeneration,
+        SnapshotNode, SnapshotNodeId, SourceFrameRead, TargetCaptureStatus, TargetId,
+        TemporalRangeAnchorKind, TemporalVideoGenerationClip, TemporalVideoManifest,
+        VideoArtifactEvidenceHandle, VideoEncodedClip, VideoEncoderIdentity, VideoEncodingProfile,
+        VideoOutputGeometry, VideoPresentationPlan, VideoPresentationSegment, VideoSegmentSource,
+        VideoTimingBasis, VisualEpoch, WaitCondition, WaitProbe, WaitRequest, WaitResult,
     };
     use std::time::Duration;
 
@@ -3070,7 +3091,7 @@ mod tests {
             BrowserOperationResult::TakeScreenshot(Box::new(
                 screenshot(ImageFormat::Png).with_warning(error(
                     ErrorCode::ResourceLimitExceeded,
-                    "captured screenshot is too tall; use a bounded viewport capture",
+                    "captured screenshot height: 8193 exceeds limit 8192, try ≤ 8192",
                 )),
             )),
             &[],
@@ -3754,6 +3775,31 @@ mod tests {
             result.structured_content.as_ref().unwrap()["error"]["code"],
             "invalid_input"
         );
+    }
+
+    #[test]
+    fn pre_dispatch_interaction_errors_keep_a_context_anchor_without_a_record() {
+        let result = visible_error(
+            "click",
+            error(ErrorCode::TargetHidden, "page is hidden").with_context(ErrorContext {
+                session_id: Some(session_id()),
+                target_id: Some(target_id()),
+                interaction_id: Some(interaction_id()),
+                range: None,
+            }),
+        );
+        let structured = result.structured_content.unwrap();
+        assert_eq!(structured["status"], "failed");
+        assert_eq!(
+            structured["interaction"]["session_id"],
+            session_id().to_string()
+        );
+        assert_eq!(
+            structured["interaction"]["target_id"],
+            target_id().to_string()
+        );
+        assert_eq!(structured["interaction"]["operation"], "click");
+        assert!(structured["result"].get("record").is_none());
     }
 
     #[test]

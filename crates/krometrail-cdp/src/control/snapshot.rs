@@ -2,11 +2,11 @@ use std::collections::{HashMap, HashSet};
 
 use krometrail_core::{
     AccessibleProperty, AccessibleValue, BrowserOperationResult, CssPoint, CssRect, CssSize,
-    CurrentReferenceGeometryRequest, ErrorCode, ErrorContext, MAX_SEMANTIC_QUERY_TEXT_BYTES,
-    NodeReference, NonEmptyText, ObservationContext, PageSnapshot, QueryPageRequest,
-    QueryPageResult, ResolvedReferenceGeometry, Result, SemanticMatch, SemanticQuery,
-    SnapshotGeneration, SnapshotNode, SnapshotNodeId, SnapshotPageAnchor, SnapshotPageRequest,
-    TargetId,
+    CurrentReferenceGeometryRequest, ErrorCode, ErrorContext, KrometrailError,
+    MAX_SEMANTIC_QUERY_TEXT_BYTES, NodeReference, NonEmptyText, ObservationContext, PageSnapshot,
+    QueryPageRequest, QueryPageResult, ResolvedReferenceGeometry, Result, RetryAdvice,
+    SemanticMatch, SemanticQuery, SnapshotGeneration, SnapshotNode, SnapshotNodeId,
+    SnapshotPageAnchor, SnapshotPageRequest, TargetId,
 };
 use serde_json::{Value, json};
 
@@ -537,14 +537,10 @@ impl SnapshotRegistry {
             ));
         }
         if snapshot.omitted_node_count != 0 {
-            return Err(operation_error(
-                ErrorCode::PageObservationFailed,
-                bound.target_id,
-                format!(
-                    "accessibility acquisition omitted {} nodes after the 5000-node or text-size limit; narrow the query to a smaller document",
-                    snapshot.omitted_node_count
-                ),
-            ));
+            let actual = u64::try_from(snapshot.nodes.len())
+                .unwrap_or(u64::MAX)
+                .saturating_add(u64::from(snapshot.omitted_node_count));
+            return Err(snapshot_node_limit_error(bound.target_id, actual, true));
         }
         if let Some(scope) = request.scope {
             self.active_reference_backend(bound, scope)?;
@@ -836,6 +832,31 @@ fn decode_dom_snapshot(
     Ok(decode_dom_snapshot_with_geometry(response, document, target_id, false)?.metadata)
 }
 
+fn snapshot_node_limit_error(
+    target_id: TargetId,
+    actual: impl std::fmt::Display,
+    query_exists: bool,
+) -> KrometrailError {
+    let recovery = if query_exists {
+        "narrow the semantic query to a smaller document"
+    } else {
+        "request a smaller document snapshot or use viewport-scoped geometry"
+    };
+    KrometrailError::limit_exceeded(
+        ErrorCode::PageObservationFailed,
+        "accessibility nodes",
+        actual,
+        MAX_SNAPSHOT_NODES,
+        None::<usize>,
+    )
+    .with_context(ErrorContext {
+        target_id: Some(target_id),
+        ..ErrorContext::default()
+    })
+    .with_retry(RetryAdvice::Never)
+    .with_recovery(NonEmptyText::new(recovery).expect("snapshot limit recovery is non-empty"))
+}
+
 fn decode_dom_snapshot_with_geometry(
     response: &Value,
     document: &DocumentFingerprint,
@@ -882,12 +903,10 @@ fn decode_dom_snapshot_with_geometry(
                 geometry_omitted: true,
             });
         }
-        return Err(malformed(
+        return Err(snapshot_node_limit_error(
             target_id,
-            format!(
-                "selected DOM semantic acquisition contains {} nodes, exceeding the 5000-node limit; narrow the query to a smaller document",
-                backend_ids.len()
-            ),
+            backend_ids.len(),
+            false,
         ));
     }
     let node_count = backend_ids.len();
@@ -2304,6 +2323,31 @@ mod tests {
                 .iter()
                 .all(|(method, _)| method != "DOMSnapshot.captureSnapshot")
         );
+    }
+
+    #[test]
+    fn node_limit_errors_name_actual_limit_and_scope_specific_recovery() {
+        let query_error = snapshot_node_limit_error(target(), 5_001, true);
+        assert!(query_error.message.as_str().contains("5001"));
+        assert!(query_error.message.as_str().contains("5000"));
+        assert!(
+            query_error
+                .recovery
+                .as_ref()
+                .unwrap()
+                .as_str()
+                .contains("semantic query")
+        );
+        let geometry_error = snapshot_node_limit_error(target(), 5_001, false);
+        assert!(
+            geometry_error
+                .recovery
+                .as_ref()
+                .unwrap()
+                .as_str()
+                .contains("smaller document snapshot")
+        );
+        assert_eq!(geometry_error.retry, RetryAdvice::Never);
     }
 
     #[tokio::test]

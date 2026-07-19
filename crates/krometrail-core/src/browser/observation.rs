@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     browser::PageSelection,
-    error::{KrometrailError, NonEmptyText, Result, invalid},
+    error::{ErrorCode, KrometrailError, NonEmptyText, Result, RetryAdvice, invalid},
     ids::{SessionId, TargetId},
     recording::{DeviceScaleFactor, ImageFormat, PixelDimensions},
     time::SessionTime,
@@ -164,7 +164,20 @@ impl CssSize {
         if width.is_finite() && height.is_finite() && width > 0.0 && height > 0.0 {
             Ok(Self { width, height })
         } else {
-            Err(invalid("CSS size must be finite and positive"))
+            Err(KrometrailError::limit_exceeded(
+                ErrorCode::InvalidInput,
+                "CSS size",
+                format!("{width}×{height}"),
+                "finite and positive width×height",
+                None::<String>,
+            )
+            .with_retry(RetryAdvice::AfterRecovery)
+            .with_recovery(
+                NonEmptyText::new(
+                    "reload or navigate the page; a cross-origin navigation restores observation when a same-origin reload does not",
+                )
+                .expect("CSS size recovery is non-empty"),
+            ))
         }
     }
 }
@@ -1185,7 +1198,11 @@ mod tests {
         assert!(SnapshotGeneration::new(0).is_err());
         assert!(SnapshotNodeId::new(0).is_err());
         assert!(CssPoint::new(f64::NAN, 0.0).is_err());
-        assert!(CssSize::new(0.0, 1.0).is_err());
+        let css_error = CssSize::new(0.0, 1.0).unwrap_err();
+        assert!(css_error.message.as_str().contains("0×1"));
+        assert!(css_error.message.as_str().contains("finite and positive"));
+        assert_eq!(css_error.retry, RetryAdvice::AfterRecovery);
+        assert!(css_error.recovery.is_some());
         assert!(
             ObservationContext::new(
                 session(),

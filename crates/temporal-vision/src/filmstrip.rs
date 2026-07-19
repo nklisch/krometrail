@@ -947,12 +947,12 @@ where
     let tile_dimensions =
         scaled_tile_dimensions(plan.tile_source_dimensions(), parameters.display_scale)?;
     let (crop, _) = intersect_region(effective_region.rect(), source.dimensions())?;
-    let crop = crop.ok_or_else(|| {
-        VisionError::new(
-            ErrorCode::InvalidRegion,
-            "filmstrip region does not intersect the source frame",
-        )
-    })?;
+    let crop = crop.unwrap_or(PixelRect::new(
+        0,
+        0,
+        source.dimensions().width(),
+        source.dimensions().height(),
+    )?);
     let normalized = normalize_sequence(
         source,
         NormalizationParameters::new(

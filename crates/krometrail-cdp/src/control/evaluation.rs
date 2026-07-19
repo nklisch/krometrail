@@ -109,9 +109,12 @@ fn evaluation_exception_error(
         .and_then(|exception| exception.get("description"))
         .and_then(Value::as_str)
         .or_else(|| details.get("description").and_then(Value::as_str));
-    if description
-        .is_some_and(|description| description.to_ascii_lowercase().contains("side effect"))
-    {
+    if description.is_some_and(|description| {
+        description
+            .to_ascii_lowercase()
+            .replace('-', " ")
+            .contains("side effect")
+    }) {
         return operation_error(
             ErrorCode::EvaluationFailed,
             target_id,

@@ -48,6 +48,19 @@ fn evaluation_separates_side_effect_refusal_from_thrown_exceptions() {
 
     let error = decode_evaluation(
         &json!({
+            "exceptionDetails": {
+                "exception": {
+                    "description": "Possible side-effect in debug-evaluate"
+                }
+            }
+        }),
+        target(),
+    )
+    .unwrap_err();
+    assert!(error.message.as_str().contains("refused as side-effecting"));
+
+    let error = decode_evaluation(
+        &json!({
             "result": {
                 "exceptionDetails": {
                     "text": "Uncaught",

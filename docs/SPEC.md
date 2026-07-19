@@ -448,6 +448,16 @@ Boundary failures return structured errors containing:
 - whether retry is safe;
 - a concrete recovery action when one exists.
 
+Deterministic limit failures name the bounded subject together with the actual
+value and runtime limit, and include a fitting `try ≤` suggestion when one is
+computable. Their retry advice is `never`; callers should change the named
+input, selection, scale, crop, or target as directed by the recovery action.
+Recovery labels describe the real state change that can make the operation
+succeed: browser-state failures may be retryable after reload or navigation,
+while a fixed resource ceiling is not made successful by repeating the same
+request. A pre-dispatch interaction failure may retain a context anchor for
+the target and operation, but it does not fabricate an interaction record.
+
 Krometrail degrades explicitly:
 
 - stale page references require a new snapshot;

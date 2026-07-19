@@ -17,9 +17,9 @@ use sha2::{Digest, Sha256};
 use crate::{
     AnalysisScale, ArtifactGenerationContext, ArtifactGenerationRequest, ArtifactGenerationResult,
     ArtifactId, ArtifactLabelsRequest, ArtifactManifest, ArtifactMarker, CancellationSignal,
-    CapturedFrame, CssRect, FrameId, ImageFormat, KrometrailError, NodeReference, NonEmptyText,
-    OutputLimitsRequest, ResolvedRange, Result, RetentionPolicy, RetentionRange, RetentionStatus,
-    SegmentId, SessionId, SessionRange, SessionTime, TargetId, VisualEpoch,
+    CapturedFrame, CssRect, ErrorCode, FrameId, ImageFormat, KrometrailError, NodeReference,
+    NonEmptyText, OutputLimitsRequest, ResolvedRange, Result, RetentionPolicy, RetentionRange,
+    RetentionStatus, SegmentId, SessionId, SessionRange, SessionTime, TargetId, VisualEpoch,
     error::invalid,
     ports::{CurrentReferenceGeometry, PortFuture},
     validation::{delegate_json_schema, deserialize_validated},
@@ -393,11 +393,36 @@ impl SourceReadLimitsRequest {
             .ok_or_else(|| invalid("source item byte limit must be non-zero"))?;
         let max_total_bytes = NonZeroU64::new(max_total_bytes)
             .ok_or_else(|| invalid("source total byte limit must be non-zero"))?;
-        if max_frames.get() > MAX_SOURCE_READ_FRAMES
-            || max_item_bytes.get() > MAX_SOURCE_ITEM_BYTES
-            || max_total_bytes.get() > MAX_SOURCE_TOTAL_BYTES
-        {
-            return Err(invalid("source read limits exceed runtime ceilings"));
+        let mut actual = Vec::new();
+        let mut limits = Vec::new();
+        if max_frames.get() > MAX_SOURCE_READ_FRAMES {
+            actual.push(format!("max_frames={}", max_frames.get()));
+            limits.push(format!("max_frames={MAX_SOURCE_READ_FRAMES}"));
+        }
+        if max_item_bytes.get() > MAX_SOURCE_ITEM_BYTES {
+            actual.push(format!("max_item_bytes={}", max_item_bytes.get()));
+            limits.push(format!("max_item_bytes={MAX_SOURCE_ITEM_BYTES}"));
+        }
+        if max_total_bytes.get() > MAX_SOURCE_TOTAL_BYTES {
+            actual.push(format!("max_total_bytes={}", max_total_bytes.get()));
+            limits.push(format!("max_total_bytes={MAX_SOURCE_TOTAL_BYTES}"));
+        }
+        if !actual.is_empty() {
+            return Err(KrometrailError::limit_exceeded(
+                ErrorCode::InvalidInput,
+                "source read limits",
+                actual.join(", "),
+                limits.join(", "),
+                Some(format!(
+                    "max_frames ≤ {MAX_SOURCE_READ_FRAMES}, max_item_bytes ≤ {MAX_SOURCE_ITEM_BYTES}, max_total_bytes ≤ {MAX_SOURCE_TOTAL_BYTES}"
+                )),
+            )
+            .with_recovery(
+                NonEmptyText::new(
+                    "lower each named source limit to its runtime ceiling, then retry the request",
+                )
+                .expect("source request limit recovery is non-empty"),
+            ));
         }
         if max_item_bytes > max_total_bytes {
             return Err(invalid(
@@ -652,11 +677,23 @@ impl SourceFramesRequest {
     }
 
     pub fn validate_for_fetch(&self) -> Result<()> {
-        if self.offset != 0
-            || self.selection.selected_count(&self.range) > usize::from(self.limits.max_frames())
-        {
+        if self.offset != 0 {
             return Err(invalid(
-                "fetch_source_frames requires a strict bounded selection",
+                "source frame offset is only valid for resolved-order selection",
+            ));
+        }
+        let selected_count = self.selection.selected_count(&self.range);
+        if selected_count > usize::from(self.limits.max_frames()) {
+            return Err(KrometrailError::limit_exceeded(
+                ErrorCode::ResourceLimitExceeded,
+                "selected source frame count",
+                selected_count,
+                self.limits.max_frames(),
+                Some(self.limits.max_frames()),
+            )
+            .with_recovery(
+                NonEmptyText::new("request a source-frame page no larger than the limit")
+                    .expect("source page limit recovery is non-empty"),
             ));
         }
         Ok(())
@@ -1800,6 +1837,39 @@ mod tests {
     }
     fn limits() -> SourceReadLimitsRequest {
         SourceReadLimitsRequest::new(2, 1024, 2048).unwrap()
+    }
+
+    #[test]
+    fn source_limits_name_each_exceeded_value_and_runtime_ceiling() {
+        let error = SourceReadLimitsRequest::new(
+            MAX_SOURCE_READ_FRAMES + 1,
+            MAX_SOURCE_ITEM_BYTES + 1,
+            MAX_SOURCE_TOTAL_BYTES + 1,
+        )
+        .unwrap_err();
+        for name in ["max_frames", "max_item_bytes", "max_total_bytes"] {
+            assert!(error.message.as_str().contains(name));
+        }
+        assert!(error.message.as_str().contains("try ≤"));
+    }
+
+    #[test]
+    fn source_fetch_limit_names_selected_count_and_page_size() {
+        let request = SourceFramesRequest::new(
+            range(),
+            SourceFrameSelection::ResolvedOrder,
+            SourceReadLimitsRequest::new(1, 1024, 2048).unwrap(),
+        )
+        .unwrap();
+        let error = request.validate_for_fetch().unwrap_err();
+        assert!(
+            error
+                .message
+                .as_str()
+                .contains("selected source frame count")
+        );
+        assert!(error.message.as_str().contains("2"));
+        assert!(error.message.as_str().contains("1"));
     }
     fn metadata(id: FrameId, ordinal: u64) -> CapturedFrame {
         CapturedFrame::new(

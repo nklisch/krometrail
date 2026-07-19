@@ -4,8 +4,8 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use krometrail_core::{
     BrowserOperationResult, CoordinateSpace, CssPoint, CssRect, CssSize, DeviceScaleFactor,
     ElementLocator, EncodedScreenshot, ErrorCode, InspectPageRequest, KrometrailError,
-    LiveObservation, LiveObservationRequest, ObservationContext, ObservationPart, Result,
-    ScreenshotMetadata, ScreenshotRequest, ScreenshotTarget, SnapshotPageRequest,
+    LiveObservation, LiveObservationRequest, NonEmptyText, ObservationContext, ObservationPart,
+    Result, ScreenshotMetadata, ScreenshotRequest, ScreenshotTarget, SnapshotPageRequest,
 };
 use serde_json::{Map, Value, json};
 
@@ -387,19 +387,19 @@ impl PageControl {
 }
 
 fn tall_screenshot_guidance(target_id: krometrail_core::TargetId, height: u32) -> KrometrailError {
-    KrometrailError::new(
+    KrometrailError::limit_exceeded(
         ErrorCode::ResourceLimitExceeded,
-        krometrail_core::NonEmptyText::new(format!(
-            "captured screenshot is {height}px tall; use an element or region target, or scroll and capture bounded viewport images for readable evidence"
-        ))
-        .expect("tall screenshot guidance is non-empty"),
+        "captured screenshot height",
+        height,
+        TALL_SCREENSHOT_GUIDANCE_HEIGHT,
+        Some(TALL_SCREENSHOT_GUIDANCE_HEIGHT),
     )
     .with_context(krometrail_core::ErrorContext {
         target_id: Some(target_id),
         ..krometrail_core::ErrorContext::default()
     })
     .with_recovery(
-        krometrail_core::NonEmptyText::new(
+        NonEmptyText::new(
             "request an element or region screenshot, or capture viewport images while scrolling",
         )
         .expect("tall screenshot recovery is non-empty"),
@@ -545,6 +545,8 @@ mod tests {
         let screenshot = capture_height(TALL_SCREENSHOT_GUIDANCE_HEIGHT + 1).await;
         assert_eq!(screenshot.metadata().image.height(), 8_193);
         assert_eq!(screenshot.warnings().len(), 1);
+        assert!(screenshot.warnings()[0].message.as_str().contains("8193"));
+        assert!(screenshot.warnings()[0].message.as_str().contains("8192"));
     }
 
     #[tokio::test]

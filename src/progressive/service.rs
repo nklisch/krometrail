@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Instant};
+use std::{fmt, sync::Arc, time::Instant};
 
 use krometrail_core::{
     ArtifactGeneration, ArtifactRead, ArtifactReadLookup, ArtifactStore, ErrorCode, ErrorContext,
@@ -192,7 +192,9 @@ fn validate_source_fetch_request(request: SourceFramesRequest) -> Result<SourceF
         request.offset,
         request.limits,
     )?;
-    request.validate_for_fetch()?;
+    request
+        .validate_for_fetch()
+        .map_err(|error| error.with_context(source_context(&request)))?;
     Ok(request)
 }
 
@@ -273,16 +275,28 @@ fn validate_source_handles<'a>(
         if handle.encoded_byte_len > request.limits.max_item_bytes() {
             return Err(source_limit_error(
                 request,
-                "source result exceeds the per-item encoded-byte limit",
+                "source item bytes",
+                handle.encoded_byte_len,
+                request.limits.max_item_bytes(),
+                Some(request.limits.max_item_bytes()),
             ));
         }
         total = total.checked_add(handle.encoded_byte_len).ok_or_else(|| {
-            source_limit_error(request, "source result encoded-byte total overflow")
+            source_limit_error(
+                request,
+                "source total encoded bytes",
+                u64::MAX,
+                request.limits.max_total_bytes(),
+                Some(request.limits.max_total_bytes()),
+            )
         })?;
         if total > request.limits.max_total_bytes() {
             return Err(source_limit_error(
                 request,
-                "source result exceeds the total encoded-byte limit",
+                "source total encoded bytes",
+                total,
+                request.limits.max_total_bytes(),
+                Some(request.limits.max_total_bytes()),
             ));
         }
     }
@@ -386,19 +400,32 @@ fn source_contract_error(request: &SourceFramesRequest, message: &'static str) -
     .with_retry(RetryAdvice::Never)
 }
 
-fn source_limit_error(request: &SourceFramesRequest, message: &'static str) -> KrometrailError {
-    KrometrailError::new(
-        ErrorCode::ResourceLimitExceeded,
-        NonEmptyText::new(message).expect("source limit errors are non-empty"),
-    )
-    .with_context(ErrorContext {
+fn source_context(request: &SourceFramesRequest) -> ErrorContext {
+    ErrorContext {
         session_id: Some(request.range.session_id),
         target_id: Some(request.range.target_id),
         interaction_id: None,
         range: Some(request.range.resolved_range),
-    })
+    }
+}
+
+fn source_limit_error(
+    request: &SourceFramesRequest,
+    subject: impl Into<String>,
+    actual: impl fmt::Display,
+    limit: impl fmt::Display,
+    suggestion: Option<impl fmt::Display>,
+) -> KrometrailError {
+    KrometrailError::limit_exceeded(
+        ErrorCode::ResourceLimitExceeded,
+        subject,
+        actual,
+        limit,
+        suggestion,
+    )
+    .with_context(source_context(request))
     .with_recovery(
-        NonEmptyText::new("request fewer source frames or lower encoded-byte limits")
+        NonEmptyText::new("request fewer source frames or raise the encoded-byte limit within its runtime ceiling")
             .expect("source limit recovery is non-empty"),
     )
 }
@@ -1138,7 +1165,15 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert_eq!(error.code, ErrorCode::InvalidInput);
+        assert_eq!(error.code, ErrorCode::ResourceLimitExceeded);
+        assert!(
+            error
+                .message
+                .as_str()
+                .contains("selected source frame count")
+        );
+        assert!(error.message.as_str().contains("2"));
+        assert!(error.message.as_str().contains("1"));
         assert!(store.calls.lock().unwrap().is_empty());
 
         let too_small = SourceFramesRequest::new(

@@ -348,6 +348,21 @@ impl KrometrailError {
         error
     }
 
+    /// Construct a compact, actionable error for a deterministic bounded value.
+    pub fn limit_exceeded(
+        code: ErrorCode,
+        subject: impl Into<String>,
+        actual: impl fmt::Display,
+        limit: impl fmt::Display,
+        suggestion: Option<impl fmt::Display>,
+    ) -> Self {
+        let mut message = format!("{}: {} exceeds limit {}", subject.into(), actual, limit);
+        if let Some(suggestion) = suggestion {
+            message.push_str(&format!(", try ≤ {suggestion}"));
+        }
+        Self::new(code, safe_text(message))
+    }
+
     pub fn with_context(mut self, context: ErrorContext) -> Self {
         self.context = context;
         self
@@ -500,5 +515,22 @@ mod tests {
         assert!(NonEmptyText::new(" \n\t ").is_err());
         assert!(NonEmptyText::new("recover").is_ok());
         assert!(serde_json::from_str::<NonEmptyText>("\"\"").is_err());
+    }
+
+    #[test]
+    fn sized_limit_errors_preserve_actual_limit_and_suggestion() {
+        let error = KrometrailError::limit_exceeded(
+            ErrorCode::ResourceLimitExceeded,
+            "source frames",
+            65,
+            64,
+            Some(64),
+        );
+        assert_eq!(
+            error.message.as_str(),
+            "source frames: 65 exceeds limit 64, try ≤ 64"
+        );
+        assert_eq!(error.retry, RetryAdvice::Never);
+        assert!(error.recovery.is_none());
     }
 }

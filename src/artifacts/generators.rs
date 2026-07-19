@@ -357,8 +357,41 @@ fn fit_scale(
             return Ok(scale);
         }
     }
-    Err(limit_error(
-        "no exact integer analysis scale fits configured limits",
+    let smallest_scale = AnalysisScale::Down(8);
+    let (width, height) = normalized_dimensions(
+        NormalizationRequest {
+            scale: smallest_scale,
+            ..request
+        },
+        epoch.descriptor.image.width(),
+        epoch.descriptor.image.height(),
+    )
+    .or_else(|_| {
+        normalized_dimensions(
+            NormalizationRequest {
+                scale: AnalysisScale::Identity,
+                ..request
+            },
+            epoch.descriptor.image.width(),
+            epoch.descriptor.image.height(),
+        )
+    })
+    .unwrap_or((u32::MAX, u32::MAX));
+    let pixels = u64::from(width).saturating_mul(u64::from(height));
+    let frame_count = u64::try_from(epoch.frames.len()).unwrap_or(u64::MAX);
+    let retained = pixels.saturating_mul(6).saturating_mul(frame_count);
+    Err(KrometrailError::limit_exceeded(
+        ErrorCode::ResourceLimitExceeded,
+        "normalized analysis",
+        format!("{frame_count} frames require {retained} bytes"),
+        format!("{normalized_budget} bytes"),
+        None::<String>,
+    )
+    .with_recovery(
+        NonEmptyText::new(
+            "select fewer source frames, crop the analysis region, or use a larger artifact budget",
+        )
+        .expect("analysis limit recovery is non-empty"),
     ))
 }
 
@@ -541,14 +574,24 @@ fn vision_error(error: temporal_vision::VisionError) -> KrometrailError {
     } else {
         ErrorCode::ArtifactGenerationFailed
     };
-    KrometrailError::new(
+    let error = KrometrailError::new(
         code,
         NonEmptyText::new(format!(
             "temporal visual generation failed: {}",
             error.message
         ))
         .expect("generation errors are non-empty"),
-    )
+    );
+    if code == ErrorCode::ResourceLimitExceeded {
+        error.with_recovery(
+            NonEmptyText::new(
+                "select fewer source frames, crop the analysis region, or use a larger artifact budget",
+            )
+            .expect("visual limit recovery is non-empty"),
+        )
+    } else {
+        error
+    }
 }
 fn generation_error(message: impl Into<String>) -> KrometrailError {
     KrometrailError::new(

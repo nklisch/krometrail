@@ -365,8 +365,19 @@ fn validate_resource_limits(
     restricted_domain: bool,
     limits: ProcessingLimits,
 ) -> Result<()> {
-    if frame_count > limits.max_frames() || output_pixels > limits.max_pixels_per_frame() {
-        return Err(resource_limit_error());
+    if frame_count > limits.max_frames() {
+        return Err(sized_resource_limit_error(
+            "normalized frame count",
+            frame_count,
+            limits.max_frames(),
+        ));
+    }
+    if output_pixels > limits.max_pixels_per_frame() {
+        return Err(sized_resource_limit_error(
+            "normalized pixels per frame",
+            output_pixels,
+            limits.max_pixels_per_frame(),
+        ));
     }
     let values_per_frame = output_pixels
         .checked_mul(3)
@@ -389,7 +400,11 @@ fn validate_resource_limits(
         .checked_add(mask_bytes)
         .ok_or_else(resource_limit_error)?;
     if retained_bytes > limits.max_retained_bytes() {
-        return Err(resource_limit_error());
+        return Err(sized_resource_limit_error(
+            "normalized retained bytes",
+            retained_bytes,
+            limits.max_retained_bytes(),
+        ));
     }
     Ok(())
 }
@@ -397,8 +412,20 @@ fn validate_resource_limits(
 fn resource_limit_error() -> VisionError {
     VisionError::new(
         ErrorCode::ResourceLimitExceeded,
-        "normalization result exceeds configured processing limits",
+        "normalization processing exceeded the supported address space",
     )
+}
+
+fn sized_resource_limit_error(
+    subject: impl std::fmt::Display,
+    actual: impl std::fmt::Display,
+    limit: impl std::fmt::Display,
+) -> VisionError {
+    VisionError {
+        code: ErrorCode::ResourceLimitExceeded,
+        message: format!("{subject}: {actual} exceeds limit {limit}").into(),
+        index: None,
+    }
 }
 
 fn transformed_analysis_mask<F: Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
@@ -1222,5 +1249,18 @@ mod tests {
             .code,
             ErrorCode::ResourceLimitExceeded
         );
+        let error = validate_resource_limits(
+            5,
+            1,
+            false,
+            ProcessingLimits::new(
+                NonZeroUsize::new(4).unwrap(),
+                NonZeroUsize::new(8).unwrap(),
+                NonZeroUsize::new(128).unwrap(),
+            ),
+        )
+        .unwrap_err();
+        assert!(error.message.contains("5"));
+        assert!(error.message.contains("4"));
     }
 }

@@ -19,6 +19,10 @@ impl PageControl {
         InteractionId::from_uuid(*self.ids.next().as_uuid())
     }
 
+    pub(crate) const fn session_id(&self) -> krometrail_core::SessionId {
+        self.session_id
+    }
+
     pub(crate) fn invalidate_target_snapshot(&mut self, target_id: TargetId) {
         self.snapshots.invalidate_target(target_id);
     }

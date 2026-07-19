@@ -71,6 +71,7 @@ struct InteractionPlan {
 }
 
 impl PageControl {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn execute_interaction_request(
         &mut self,
         transport: &dyn CdpTransport,
@@ -79,6 +80,35 @@ impl PageControl {
         request: BrowserOperationRequest,
         cancel: &OperationCancellation,
         parent_batch: Option<InteractionId>,
+        interaction_id: InteractionId,
+    ) -> Result<(BrowserOperationResult, Option<TargetVisibility>)> {
+        self.execute_interaction_request_inner(
+            transport,
+            browser_events,
+            state,
+            request,
+            cancel,
+            parent_batch,
+            interaction_id,
+        )
+        .await
+        .map_err(|mut error| {
+            error.context.session_id = Some(self.session_id);
+            error.context.interaction_id = Some(interaction_id);
+            error
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn execute_interaction_request_inner(
+        &mut self,
+        transport: &dyn CdpTransport,
+        browser_events: &SessionDomainAuthority,
+        state: &SupervisorState,
+        request: BrowserOperationRequest,
+        cancel: &OperationCancellation,
+        parent_batch: Option<InteractionId>,
+        interaction_id: InteractionId,
     ) -> Result<(BrowserOperationResult, Option<TargetVisibility>)> {
         let plan = interaction_plan(&request)?;
         let bound = bind_target(state, plan.target)?;
@@ -95,7 +125,6 @@ impl PageControl {
             None
         };
         let started_at = self.session_time()?;
-        let interaction_id = InteractionId::from_uuid(*self.ids.next().as_uuid());
         let event_binding = EventTargetBinding {
             target_id: bound.target_id,
             connection_generation: generation,

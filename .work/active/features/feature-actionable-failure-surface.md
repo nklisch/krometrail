@@ -181,3 +181,44 @@ errors)
   update tests asserting old strings rather than weakening them.
 - Coordination with the other three features on shared sites (CSS-size,
   node-cap) — this feature runs last in the batch to audit final text.
+
+## Implementation Notes
+
+- Unit 4: normalized evaluation exception descriptions to lowercase and spaces
+  before matching the side-effect refusal needle; added the Chrome 149
+  `Possible side-effect in debug-evaluate` regression alongside the legacy
+  spelling test.
+- Unit 1: added `KrometrailError::limit_exceeded` and adopted it at the seven
+  final live limit sites. Source-frame, artifact, snapshot, screenshot, and
+  CSS-size tests now assert actual/limit text; temporal-vision keeps its
+  browser-independent boundary and emits the same sized wording before the
+  core adapter maps it.
+- Unit 2: audited recovery labels and shipped the deterministic `never`
+  retry decisions, CSS observation `after_recovery` guidance, and the
+  query-only versus snapshot/geometry recovery wording below.
+- Unit 3: interaction execution allocates its identity before preflight and
+  carries session/interaction context through adapter failures. Failed MCP
+  envelopes project a context-only interaction anchor when the operation is
+  known; no interaction record or timing evidence is fabricated, and server
+  diagnostics remain attached by the existing envelope path.
+
+### Recovery audit
+
+| Site | Failure | Retry | Recovery |
+| --- | --- | --- | --- |
+| (a) source request runtime ceilings | `never` | Lower each named limit to its stated runtime ceiling; the message includes all exceeded fields. |
+| (b) selected source frame page size | `never` | Request a page no larger than `max_frames`; pagination remains the caller's state change. |
+| (c) artifact analysis scale/budget | `never` | Select fewer frames, crop the analysis region, or use a larger artifact budget. |
+| (d) temporal normalization frame/pixel/retained bytes | `never` | Select fewer frames, crop the analysis region, or use a larger artifact budget. |
+| (e1) query-time accessibility omission | `never` | Narrow the semantic query to a smaller document. |
+| (e2) semantic snapshot node ceiling | `never` | Request a smaller document snapshot or use viewport-scoped geometry; no query is fabricated. |
+| (f) tall screenshot warning | `never` | Request an element/region screenshot or bounded viewport captures while scrolling. |
+| (g) invalid CSS size | `after_recovery` | Reload or navigate; a cross-origin navigation restores observation when same-origin reload does not. |
+
+Focused verification passed for the modified crates (`temporal-vision`,
+`krometrail-core`, `krometrail-cdp`, and `krometrail-mcp`) after updating the
+stale progressive-service assertion to the new resource-limit code and
+actual/limit contract. The full workspace format check, locked check, locked
+test suite, and warnings-as-errors clippy gate all passed. The full test gate
+also caught and repaired the prior on-disk filmstrip regression that rejected
+fully outside regions despite the existing explicit-padding contract.
