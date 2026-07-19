@@ -11,7 +11,17 @@ created: 2026-07-19
 updated: 2026-07-19
 ---
 
-# Root-cause the flaky discovery precedence test
+# Root-cause the flaky discovery test module
+
+2026-07-19 update (post-scope evidence): the flakiness is broader than the
+precedence test. Across five consecutive `cargo test -p krometrail-cdp --lib`
+runs, three failed, each in a different `launcher::discovery::tests` test:
+`precedence_deduplicates_canonical_paths_and_classifies_versions`,
+`platform_defaults_use_cold_probe_budget_while_path_stays_short`, and
+`failing_canonical_candidate_is_probed_once_at_highest_precedence` (the last
+panicking at `discovery.rs:421` unwrap on `Os { code: 2, NotFound }` from the
+fixture root helper). Treat the whole module's fixture/spawn behavior under
+parallel load as the investigation scope, not one test.
 
 ## Brief
 
