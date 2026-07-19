@@ -1522,6 +1522,63 @@ mod tests {
     }
 
     #[test]
+    fn observed_activation_visibility_restarts_capture_for_a_hidden_ready_target() {
+        let state = reduce(
+            SupervisorState::new(compatibility()),
+            SupervisorInput::InitialTargets(vec![info("a", "https://a")]),
+        )
+        .unwrap()
+        .state;
+        let state = reduce(
+            state,
+            SupervisorInput::Attached {
+                target_key: "a".into(),
+                session: crate::transport::TransportSessionId::new("session-a").unwrap(),
+            },
+        )
+        .unwrap()
+        .state;
+        let state = reduce(
+            state,
+            SupervisorInput::VisibilityChanged {
+                target_key: "a".into(),
+                visibility: TargetVisibility::Hidden,
+            },
+        )
+        .unwrap()
+        .state;
+        let ready = reduce(state, SupervisorInput::InitialReconciliationCompleted).unwrap();
+        assert!(
+            ready
+                .effects
+                .iter()
+                .all(|effect| !matches!(effect, SupervisorEffect::StartCapture { .. }))
+        );
+
+        let activated = reduce(
+            ready.state,
+            SupervisorInput::VisibilityChanged {
+                target_key: "a".into(),
+                visibility: TargetVisibility::Visible,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            activated.state.targets_by_key["a"].target.visibility,
+            TargetVisibility::Visible
+        );
+        assert_eq!(
+            activated.state.targets_by_key["a"].target.lifecycle,
+            TargetLifecycle::Recording
+        );
+        assert!(activated.effects.iter().any(|effect| matches!(
+            effect,
+            SupervisorEffect::StartCapture { context }
+                if context.target_id == activated.state.targets_by_key["a"].target.target.id()
+        )));
+    }
+
+    #[test]
     fn capture_suspends_on_disconnect_and_resumes_exact_key_on_new_generation() {
         let state = reduce(
             SupervisorState::new(compatibility()),

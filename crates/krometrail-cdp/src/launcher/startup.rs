@@ -221,9 +221,7 @@ impl SystemChromeLauncher {
             .arg(format!("--user-data-dir={}", profile.path().display()))
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        if let Some(url) = request.initial_url.as_deref() {
-            command.arg(url);
-        }
+        command.arg(request.initial_url.as_deref().unwrap_or("about:blank"));
         // The process guard and profile lease both exist before the first await below.
         let mut process = match ManagedChromeProcess::spawn(&mut command) {
             Ok(process) => process,

@@ -263,7 +263,7 @@ mod interactions {
         hidden.visibility = krometrail_core::TargetVisibility::Hidden;
         let mut control = page_control();
         control.config.evaluation_timeout = std::time::Duration::from_millis(100);
-        control
+        let observed = control
             .prepare_pointer_target(
                 &transport,
                 &hidden,
@@ -273,6 +273,7 @@ mod interactions {
             )
             .await
             .unwrap();
+        assert_eq!(observed, Some(krometrail_core::TargetVisibility::Visible));
         assert_eq!(transport.calls("Target.activateTarget").len(), 1);
         assert_eq!(transport.calls("Page.bringToFront").len(), 1);
         assert_eq!(transport.calls("Runtime.evaluate").len(), 2);
@@ -285,10 +286,11 @@ mod interactions {
             "Runtime.evaluate",
             Ok(json!({"result":{"result":{"value":"visible"}}})),
         );
-        page_control()
+        let observed = page_control()
             .activate_target(&transport, &bound(), &OperationCancellation::default(), 0)
             .await
             .unwrap();
+        assert_eq!(observed, krometrail_core::TargetVisibility::Visible);
         assert_eq!(transport.calls("Target.activateTarget").len(), 1);
         assert_eq!(transport.calls("Page.bringToFront").len(), 1);
         assert_eq!(transport.calls("Runtime.evaluate").len(), 1);

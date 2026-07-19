@@ -337,7 +337,18 @@ async fn execute_non_local_operation(
     context: OperationExecutionContext,
 ) -> Result<BrowserOperationResult> {
     if request.kind().is_interaction() {
-        return page_control
+        let target_id = match request.scope() {
+            krometrail_core::BrowserOperationScope::Page(selection) => {
+                crate::control::bind_target(state, selection)?.target_id
+            }
+            krometrail_core::BrowserOperationScope::Browser => {
+                return Err(stable_error(
+                    ErrorCode::Unsupported,
+                    "interaction requires a browser page target",
+                ));
+            }
+        };
+        let (result, observed_visibility) = page_control
             .execute_interaction_request(
                 transport.as_ref(),
                 shared.browser_events.as_ref(),
@@ -346,7 +357,18 @@ async fn execute_non_local_operation(
                 cancellation,
                 context.parent_batch,
             )
-            .await;
+            .await?;
+        if let Some(visibility) = observed_visibility {
+            commit_observed_visibility(
+                state,
+                target_id,
+                visibility,
+                Arc::clone(&transport),
+                shared,
+            )
+            .await?;
+        }
+        return Ok(result);
     }
     match request {
         BrowserOperationRequest::CreatePage(request) => {
@@ -551,7 +573,7 @@ async fn execute_non_local_operation(
             let started_at = page_control.session_time()?;
             let interaction_id = page_control.next_interaction_id();
             let dispatched_at = page_control.session_time()?;
-            if let Err(error) = page_control
+            let visibility = match page_control
                 .activate_target(
                     transport.as_ref(),
                     &bound,
@@ -559,6 +581,28 @@ async fn execute_non_local_operation(
                     state.connection_generation,
                 )
                 .await
+            {
+                Ok(visibility) => visibility,
+                Err(error) => {
+                    return page_failure_result(
+                        page_control,
+                        bound.target_id,
+                        krometrail_core::BrowserOperationKind::ActivatePage,
+                        interaction_id,
+                        started_at,
+                        dispatched_at,
+                        error,
+                    );
+                }
+            };
+            if let Err(error) = commit_observed_visibility(
+                state,
+                bound.target_id,
+                visibility,
+                Arc::clone(&transport),
+                shared,
+            )
+            .await
             {
                 return page_failure_result(
                     page_control,
@@ -890,6 +934,37 @@ async fn activate_target_if_foreground(
             .await?;
     }
     Ok(())
+}
+
+async fn commit_observed_visibility(
+    state: &mut SupervisorState,
+    target_id: krometrail_core::TargetId,
+    visibility: krometrail_core::TargetVisibility,
+    transport: Arc<dyn CdpTransport>,
+    shared: &Arc<SessionShared>,
+) -> Result<()> {
+    let target_key = state
+        .targets_by_key
+        .iter()
+        .find(|(_, target)| target.target.target.id() == target_id)
+        .map(|(key, _)| key.clone())
+        .ok_or_else(|| {
+            operation_error(
+                ErrorCode::TargetFailed,
+                target_id,
+                "target is no longer supervised",
+            )
+        })?;
+    commit_supervisor_input(
+        state,
+        SupervisorInput::VisibilityChanged {
+            target_key,
+            visibility,
+        },
+        transport,
+        shared,
+    )
+    .await
 }
 
 fn create_target_params(

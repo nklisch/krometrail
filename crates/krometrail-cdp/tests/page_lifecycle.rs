@@ -17,11 +17,12 @@ use krometrail_cdp::{
 use krometrail_core::{
     ActivatePageRequest, AttachBrowser, BrowserConnectRequest, BrowserConnector,
     BrowserOperationContext, BrowserOperationRequest, BrowserOperationResult, BrowserSessionState,
-    CancellationSignal, ClosePageRequest, CreatePageRequest, ElementLocator, ErrorCode,
-    GoBackRequest, GoForwardRequest, ImageFormat, InspectPageRequest, LaunchBrowser,
-    ListPagesRequest, ManagedProfile, NavigatePageRequest, ObservationPart, PageOperationOutcome,
-    PageSelection, ProfileIdentity, ProfileRef, ReadOnlyEvaluationRequest, ReloadPageRequest,
-    ScreenshotRequest, ScreenshotTarget, SelectPageRequest, SnapshotPageRequest,
+    CancellationSignal, CaptureStreamState, ClickRequest, ClosePageRequest, CreatePageRequest,
+    ElementLocator, ErrorCode, GoBackRequest, GoForwardRequest, ImageFormat, InspectPageRequest,
+    InteractionLocator, LaunchBrowser, ListPagesRequest, ManagedProfile, Modifiers, MouseButton,
+    NavigatePageRequest, NonEmptyText, ObservationPart, PageOperationOutcome, PageSelection,
+    ProfileIdentity, ProfileRef, ReadOnlyEvaluationRequest, ReloadPageRequest, ScreenshotRequest,
+    ScreenshotTarget, SelectPageRequest, SnapshotPageRequest,
 };
 use serde_json::{Value, json};
 use support::scripted_cdp::ScriptedCdp;
@@ -1292,6 +1293,63 @@ async fn opt_in_real_chrome_preserve_focus_creates_a_background_tab() {
             krometrail_core::EvaluationValue::Json(json!(expected))
         );
     }
+
+    let activated = session
+        .execute(
+            BrowserOperationRequest::ActivatePage(ActivatePageRequest {
+                target: Some(created_id),
+            }),
+            BrowserOperationContext::default(),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(activated, BrowserOperationResult::ActivatePage(_)));
+    let activated_status = session.status().await.unwrap();
+    let activated_page = activated_status
+        .pages
+        .iter()
+        .find(|page| page.target.target.id() == created_id)
+        .expect("activated page remains supervised");
+    assert_eq!(
+        activated_page.target.visibility,
+        krometrail_core::TargetVisibility::Visible
+    );
+
+    let clicked = session
+        .execute(
+            BrowserOperationRequest::Click(
+                ClickRequest::new(
+                    PageSelection::Target(created_id),
+                    InteractionLocator::element(ElementLocator::CssSelector(
+                        NonEmptyText::new("#push").unwrap(),
+                    )),
+                    MouseButton::Left,
+                    Modifiers::default(),
+                    1,
+                    false,
+                )
+                .unwrap(),
+            ),
+            BrowserOperationContext::default(),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(clicked, BrowserOperationResult::Click(_)));
+
+    let captured = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let status = session.status().await.unwrap();
+            if status.capture.iter().any(|capture| {
+                capture.target_id() == created_id
+                    && capture.state() == CaptureStreamState::Capturing
+            }) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    assert!(captured.is_ok(), "activated page did not restart capture");
 
     session.stop().await.unwrap();
     assert!(support::chrome::process_references(root_guard.path()).is_empty());

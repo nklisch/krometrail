@@ -180,3 +180,29 @@ rather than keeping an independent stale cache.
   path — no corruption, and status converges to the screencast's live signal.
 - **Double-commit races** (activation write-back vs. near-simultaneous screencast event)
   serialize through the single-writer reducer; last observation wins, both claim Visible.
+
+## Implementation Notes
+
+Implemented by a peeragent Codex job (`gpt-5.6-luna`, job `20260719T073642Z-07e1e7d9`).
+The job's runner died after completing the code (its `.peeragent/` state directory was
+destroyed mid-run), so formatting, gate verification, item bookkeeping, and the commit
+were completed by the host session. Delivered per design:
+
+- `activate_target` returns the observed `TargetVisibility`; interaction execution
+  propagates an `observed_visibility` from pointer preparation.
+- `commit_observed_visibility` in `session/operations.rs` routes
+  `SupervisorInput::VisibilityChanged` through the existing commit channel after explicit
+  `ActivatePage` and implicit foreground activation.
+- Cold start seeds `about:blank` when `initial_url` is omitted
+  (`launcher/startup.rs`).
+- Reducer test `observed_activation_visibility_restarts_capture_for_a_hidden_ready_target`
+  plus a full wedge-sequence integration test in `tests/page_lifecycle.rs`
+  (create hidden → activate → status Visible → click succeeds → capture reaches
+  `Capturing`).
+
+Verification: `cargo fmt --all -- --check`, `cargo check --workspace --all-targets
+--locked`, `cargo test --workspace --all-targets --locked`, `cargo clippy --workspace
+--all-targets --locked -- -D warnings` — all green. One unrelated pre-existing flaky
+test surfaced during verification and was parked as
+`idea-flaky-discovery-precedence-test` (fails ~40% on base too; not caused by this
+change).

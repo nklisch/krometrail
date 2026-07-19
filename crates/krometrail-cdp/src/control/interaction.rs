@@ -3,7 +3,7 @@ use krometrail_core::{
     BrowserOperationKind, BrowserOperationRequest, BrowserOperationResult, CompletionKind,
     CoordinateSpace, CssPoint, ErrorCode, InteractionId, InteractionLocator, InteractionOutcome,
     InteractionRecord, InteractionResult, LiveObservationRequest, LocatorSummary, NonEmptyText,
-    ObservationContext, PageSelection, Result, SanitizedParameters, TargetId,
+    ObservationContext, PageSelection, Result, SanitizedParameters, TargetId, TargetVisibility,
 };
 use serde_json::{Value, json};
 
@@ -79,19 +79,21 @@ impl PageControl {
         request: BrowserOperationRequest,
         cancel: &OperationCancellation,
         parent_batch: Option<InteractionId>,
-    ) -> Result<BrowserOperationResult> {
+    ) -> Result<(BrowserOperationResult, Option<TargetVisibility>)> {
         let plan = interaction_plan(&request)?;
         let bound = bind_target(state, plan.target)?;
         let generation = state.connection_generation;
-        if matches!(
+        let prepared_visibility = if matches!(
             plan.action.category,
             krometrail_core::ActionCategory::Pointer
                 | krometrail_core::ActionCategory::DragDrop
                 | krometrail_core::ActionCategory::Scroll
         ) {
             self.prepare_pointer_target(transport, &bound, self.focus(), cancel, generation)
-                .await?;
-        }
+                .await?
+        } else {
+            None
+        };
         let started_at = self.session_time()?;
         let interaction_id = InteractionId::from_uuid(*self.ids.next().as_uuid());
         let event_binding = EventTargetBinding {
@@ -263,12 +265,15 @@ impl PageControl {
             InteractionOutcome::Dispatched,
             parent_batch,
         )?;
-        Ok(wrap_interaction_result(
-            plan.kind,
-            InteractionResult {
-                record,
-                observation: *observation,
-            },
+        Ok((
+            wrap_interaction_result(
+                plan.kind,
+                InteractionResult {
+                    record,
+                    observation: *observation,
+                },
+            ),
+            prepared_visibility,
         ))
     }
 
@@ -279,15 +284,16 @@ impl PageControl {
         focus: krometrail_core::BrowserFocusPolicy,
         cancel: &OperationCancellation,
         generation: u64,
-    ) -> Result<()> {
+    ) -> Result<Option<TargetVisibility>> {
         if bound.visibility == krometrail_core::TargetVisibility::Visible {
-            return Ok(());
+            return Ok(None);
         }
         if focus == krometrail_core::BrowserFocusPolicy::Preserve {
             return Err(target_hidden_error(bound.target_id, focus));
         }
         self.activate_target(transport, bound, cancel, generation)
             .await
+            .map(Some)
     }
 
     pub(crate) async fn activate_target(
@@ -296,7 +302,7 @@ impl PageControl {
         bound: &BoundTarget,
         cancel: &OperationCancellation,
         generation: u64,
-    ) -> Result<()> {
+    ) -> Result<TargetVisibility> {
         let activation = async {
             cancel
                 .race(
@@ -340,7 +346,9 @@ impl PageControl {
                             .and_then(Value::as_str)
                     });
                 if visible == Some("visible") {
-                    break Ok::<(), krometrail_core::KrometrailError>(());
+                    break Ok::<TargetVisibility, krometrail_core::KrometrailError>(
+                        TargetVisibility::Visible,
+                    );
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(16)).await;
             }
