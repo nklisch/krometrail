@@ -1,7 +1,7 @@
 ---
 id: feature-plugin-connect-window-install
 kind: feature
-stage: review
+stage: done
 tags: [bug, infra, distribution]
 parent: null
 depends_on: []
@@ -184,9 +184,38 @@ child.
   mid-write read can never justify stealing. Reclaim now removes the moved
   stale lock fully instead of leaving `.install-lock.stale.*` litter, and the
   new lock owner sweeps dead `.install-status.*` files.
-- Smoke suite run in review with `KROMETRAIL_PLUGIN_SMOKE=1`-equivalent
-  invocation: passed. Fixture suite passed six consecutive runs after the
-  lock rework (the race reproduced within three runs before it).
-- Residual, accepted: the sibling `../skills` marketplace catalog still pins
-  krometrail 1.0.1 and fails `tests/plugin-static.sh`'s optional sibling
-  check; that catalog lives outside this repository and needs its own bump.
+- Fixture suite passed six consecutive runs after the lock rework (the race
+  reproduced within three runs before it).
+- Residual: the sibling `../skills` marketplace catalog pinned krometrail
+  1.0.1 and fails `tests/plugin-static.sh`'s optional sibling check; the user
+  approved bumping that repository alongside this release.
+
+## Peer-review adjudication (Luna reviewing the review fixes)
+
+Verdict FIX-FIRST; all four findings accepted and fixed:
+
+1. **Reclaim not tied to the observed owner** — two peers observing the same
+   dead owner could race so the slower one stole the faster one's fresh live
+   lock. Fixed: reclaim verifies the stolen lock still records the pid that
+   was observed dead (twice, and the two observations must agree on the same
+   owner); a mismatched steal is restored when no newer lock exists. The
+   residual triple-race window degrades to one duplicate download converging
+   on the same atomically published, identity-verified binary — waste, not
+   corruption.
+2. **Truncating installer handoff** — the owner-pid handoff to the background
+   installer now lands via write-then-atomic-rename, so no peer can read a
+   truncated lock.
+3. **Stale `LOCK_OWNER` deleting a peer's lock** — release now removes the
+   lock only while it still records this launcher's own pid or its
+   installer's; a reclaimed-and-re-owned lock is never deleted from the old
+   owner.
+4. Activation transport failures no longer claim "input command":
+   `transport_error_for_surface` labels `Target.activateTarget` /
+   `Page.bringToFront` / activation polling as activation commands.
+
+Also fixed in this pass (pre-existing test debt, not from this batch): the
+opt-in `tests/plugin-install-smoke.sh` template assertion had drifted — the
+served set gained `managed-download` (local-io feature) and never included the
+qualification-gated video templates. Assertion corrected against both the
+published 1.2.3 binary and the current tree; smoke suite now genuinely runs
+green with `KROMETRAIL_PLUGIN_SMOKE=1`.

@@ -70,19 +70,32 @@ LOCK_OWNER=0
 
 # The lock is one owner-pid file created atomically with noclobber, so there
 # is never a window where the lock exists without its owner recorded.
+# OBSERVED_LOCK_PID carries the content each liveness probe read so stale
+# reclaim can verify it is removing the owner it actually observed dead.
+OBSERVED_LOCK_PID=
 lock_owner_is_alive() {
-  lock_pid=$(cat "$LOCK_FILE" 2>/dev/null) || return 1
-  case "$lock_pid" in
+  OBSERVED_LOCK_PID=$(cat "$LOCK_FILE" 2>/dev/null) || OBSERVED_LOCK_PID=
+  case "$OBSERVED_LOCK_PID" in
     ''|*[!0-9]*) return 1 ;;
   esac
-  kill -0 "$lock_pid" 2>/dev/null
+  kill -0 "$OBSERVED_LOCK_PID" 2>/dev/null
 }
 
 reclaim_stale_lock() {
+  observed_dead_pid="$1"
   stale_lock="$LOCK_FILE.stale.$$"
-  if mv "$LOCK_FILE" "$stale_lock" 2>/dev/null; then
+  mv "$LOCK_FILE" "$stale_lock" 2>/dev/null || return 1
+  stolen_pid=$(cat "$stale_lock" 2>/dev/null) || stolen_pid=
+  if [ "$stolen_pid" = "$observed_dead_pid" ]; then
     rm -rf "$stale_lock"
     return 0
+  fi
+  # The lock changed hands between the dead observation and the steal; give
+  # it back unless a newer lock already exists, then re-enter the wait loop.
+  if [ ! -e "$LOCK_FILE" ]; then
+    mv "$stale_lock" "$LOCK_FILE" 2>/dev/null || rm -rf "$stale_lock"
+  else
+    rm -rf "$stale_lock"
   fi
   return 1
 }
@@ -90,6 +103,7 @@ reclaim_stale_lock() {
 acquire_install_lock() {
   elapsed=0
   not_alive=0
+  last_observed=
   while :; do
     if (set -C; printf '%s\n' "$$" >"$LOCK_FILE") 2>/dev/null; then
       LOCK_OWNER=1
@@ -101,13 +115,20 @@ acquire_install_lock() {
     if lock_owner_is_alive; then
       not_alive=0
     else
-      # Require two spaced observations before reclaiming so a peer that just
-      # created the lock (or a garbled read) is never treated as dead.
-      not_alive=$((not_alive + 1))
+      # Require two spaced observations of the SAME dead owner before
+      # reclaiming so a peer that just created the lock, a garbled read, or a
+      # handoff in flight is never treated as dead.
+      if [ "$OBSERVED_LOCK_PID" = "$last_observed" ]; then
+        not_alive=$((not_alive + 1))
+      else
+        not_alive=1
+      fi
       if [ "$not_alive" -ge 2 ]; then
-        reclaim_stale_lock && continue
+        reclaim_stale_lock "$OBSERVED_LOCK_PID" && continue
+        not_alive=0
       fi
     fi
+    last_observed="$OBSERVED_LOCK_PID"
     if [ "$elapsed" -ge 20 ]; then
       return 1
     fi
@@ -116,9 +137,14 @@ acquire_install_lock() {
   done
 }
 
+# Remove the lock only while it still records a pid this launcher installed
+# there; a lock reclaimed and re-owned by a peer is never deleted from here.
 release_install_lock() {
   if [ "$LOCK_OWNER" -eq 1 ]; then
-    rm -f "$LOCK_FILE"
+    current_owner=$(cat "$LOCK_FILE" 2>/dev/null) || current_owner=
+    case "$current_owner" in
+      "$$"|"${INSTALL_PID:-}") rm -f "$LOCK_FILE" ;;
+    esac
     LOCK_OWNER=0
   fi
 }
@@ -151,8 +177,12 @@ if ! managed_binary_is_current; then
     ) &
     INSTALL_PID=$!
     # Hand lock ownership to the installer so a launcher that exits at the
-    # connect budget leaves waiting peers fenced on the live install.
-    printf '%s\n' "$INSTALL_PID" >"$LOCK_FILE" 2>/dev/null || true
+    # connect budget leaves waiting peers fenced on the live install. The
+    # write lands via atomic rename so no peer can observe a truncated lock.
+    handoff="$LOCK_FILE.handoff.$$"
+    if printf '%s\n' "$INSTALL_PID" >"$handoff" 2>/dev/null; then
+      mv -f "$handoff" "$LOCK_FILE" 2>/dev/null || rm -f "$handoff"
+    fi
     elapsed=0
     while [ ! -f "$INSTALL_STATUS" ]; do
       if [ "$elapsed" -ge 20 ]; then

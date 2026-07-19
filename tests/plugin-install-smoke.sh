@@ -99,6 +99,7 @@ assert "retrieve_source_frame" not in tool_names
 send({"jsonrpc": "2.0", "id": 3, "method": "resources/templates/list", "params": {}})
 templates = {item["name"] for item in receive()["result"]["resourceTemplates"]}
 assert templates == {
+    "managed-download",
     "temporal-artifact",
     "temporal-artifact-manifest",
     "temporal-source-frame",

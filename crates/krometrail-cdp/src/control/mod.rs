@@ -553,6 +553,20 @@ pub(crate) fn transport_error(
     fallback: ErrorCode,
     target_id: TargetId,
 ) -> KrometrailError {
+    let surface = if fallback == ErrorCode::InteractionFailed {
+        "input"
+    } else {
+        "page observation"
+    };
+    transport_error_for_surface(error, fallback, target_id, surface)
+}
+
+pub(crate) fn transport_error_for_surface(
+    error: TransportError,
+    fallback: ErrorCode,
+    target_id: TargetId,
+    surface: &str,
+) -> KrometrailError {
     let code = if matches!(
         error,
         TransportError::Disconnected | TransportError::Closed | TransportError::SubscriptionClosed
@@ -560,11 +574,6 @@ pub(crate) fn transport_error(
         ErrorCode::BrowserDisconnected
     } else {
         fallback
-    };
-    let surface = if fallback == ErrorCode::InteractionFailed {
-        "input"
-    } else {
-        "page observation"
     };
     operation_error(
         code,

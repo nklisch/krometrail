@@ -329,6 +329,14 @@ impl PageControl {
         cancel: &OperationCancellation,
         generation: u64,
     ) -> Result<TargetVisibility> {
+        let activation_error = |error| {
+            super::transport_error_for_surface(
+                error,
+                ErrorCode::InteractionFailed,
+                bound.target_id,
+                "activation",
+            )
+        };
         let activation = async {
             cancel
                 .race(
@@ -341,10 +349,8 @@ impl PageControl {
                     ),
                 )
                 .await?
-                .map_err(|error| {
-                    transport_error(error, ErrorCode::InteractionFailed, bound.target_id)
-                })?;
-            send_cdp(
+                .map_err(activation_error)?;
+            send_cdp_unmapped(
                 transport,
                 bound,
                 "Page.bringToFront",
@@ -352,9 +358,10 @@ impl PageControl {
                 cancel,
                 generation,
             )
-            .await?;
+            .await?
+            .map_err(activation_error)?;
             loop {
-                let response = send_cdp(
+                let response = send_cdp_unmapped(
                     transport,
                     bound,
                     "Runtime.evaluate",
@@ -362,7 +369,8 @@ impl PageControl {
                     cancel,
                     generation,
                 )
-                .await?;
+                .await?
+                .map_err(activation_error)?;
                 let visible = response
                     .pointer("/result/value")
                     .and_then(Value::as_str)

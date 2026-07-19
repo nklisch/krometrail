@@ -1,7 +1,7 @@
 ---
 id: story-opener-click-degraded-observation
 kind: story
-stage: review
+stage: done
 tags: [bug, browser, agent-ux]
 parent: null
 depends_on: []
