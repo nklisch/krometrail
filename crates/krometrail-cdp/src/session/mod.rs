@@ -531,17 +531,15 @@ impl CaptureObserver for SessionCaptureObserver {
         &self,
         target_id: krometrail_core::TargetId,
         visibility: TargetVisibility,
+        observed_at: krometrail_core::SessionTime,
     ) {
         self.browser_events
-            .observe_visibility(target_id, None, visibility);
+            .observe_visibility(target_id, None, Some(observed_at), visibility);
         let _ = self.command_tx.try_send(SupervisorCommand::Input(
             SupervisorInput::CaptureVisibilityChanged {
                 target_id,
                 visibility,
-                observed_at: self
-                    .browser_events
-                    .session_time()
-                    .unwrap_or(krometrail_core::SessionTime::ZERO),
+                observed_at,
             },
         ));
     }

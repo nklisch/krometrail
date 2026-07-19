@@ -518,6 +518,12 @@ impl StreamRuntime {
             .map_or(normalized, |previous| previous.max(normalized))
     }
 
+    fn visibility_session_time(&self) -> krometrail_core::Result<SessionTime> {
+        self.target
+            .session_origin
+            .normalize(self.dependencies.clock.now())
+    }
+
     pub(super) fn record_ack(
         &self,
         latency_nanos: u64,
@@ -1055,23 +1061,32 @@ async fn visibility_reader(runtime: Arc<StreamRuntime>, events: &mut Box<dyn Tra
                 break;
             }
         };
+        let observed_at = match runtime.visibility_session_time() {
+            Ok(observed_at) => observed_at,
+            Err(_) => {
+                tracing::warn!(
+                    event = "capture.visibility.dropped",
+                    target_id = %runtime.target.target_id,
+                    event_name = VISIBILITY_EVENT,
+                    "capture.visibility.dropped"
+                );
+                continue;
+            }
+        };
         let visible = event.params.get("visible").and_then(Value::as_bool);
         match visible {
             Some(false) => {
                 runtime.observer.visibility_changed(
                     runtime.target.target_id,
                     krometrail_core::TargetVisibility::Hidden,
+                    observed_at,
                 );
                 if !runtime.transition(Transition::Hide) {
                     continue;
                 }
-                let at = runtime
-                    .status()
-                    .last_frame_session_time()
-                    .unwrap_or(SessionTime::ZERO);
                 runtime.declare_gap(
                     CaptureGapReason::TargetHidden,
-                    at,
+                    observed_at,
                     None,
                     Some("target hidden"),
                 );
@@ -1080,6 +1095,7 @@ async fn visibility_reader(runtime: Arc<StreamRuntime>, events: &mut Box<dyn Tra
                 runtime.observer.visibility_changed(
                     runtime.target.target_id,
                     krometrail_core::TargetVisibility::Visible,
+                    observed_at,
                 );
                 runtime.transition(Transition::Show);
             }

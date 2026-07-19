@@ -6,7 +6,7 @@ use krometrail_core::{
     ObservedTime, PersistenceFailure, PersistenceFailureCategory, PersistenceOperation,
     PersistenceRecoverability, PinChange, PortFuture, RecordingSink, RetentionRange,
     RetentionStatus, RetentionStore, SegmentId, SessionDeletion, SessionId, SessionOrigin,
-    TargetId,
+    SessionTime, TargetId,
 };
 use std::{
     collections::HashMap,
@@ -240,6 +240,7 @@ struct TestObserver {
     statuses: Mutex<Vec<krometrail_core::TargetCaptureStatus>>,
     gaps: Mutex<Vec<krometrail_core::CaptureGap>>,
     visibility: Mutex<Vec<krometrail_core::TargetVisibility>>,
+    visibility_times: Mutex<Vec<SessionTime>>,
     geometry_refreshes: Mutex<Vec<CaptureGeometryTransition>>,
     defer_geometry_refresh: AtomicBool,
     capture_failures: Mutex<Vec<u64>>,
@@ -265,8 +266,10 @@ impl CaptureObserver for TestObserver {
         &self,
         _target_id: TargetId,
         visibility: krometrail_core::TargetVisibility,
+        observed_at: SessionTime,
     ) {
         self.visibility.lock().unwrap().push(visibility);
+        self.visibility_times.lock().unwrap().push(observed_at);
     }
 
     fn geometry_refresh_requested(&self, transition: CaptureGeometryTransition) -> bool {
@@ -2135,6 +2138,97 @@ async fn visibility_intervals_coalesce_and_actual_visibility_recovers() {
     })
     .await
     .unwrap();
+    coordinator
+        .stop_target(
+            &capture_target,
+            CaptureStopReason::TargetClosed,
+            tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+        )
+        .await;
+}
+
+#[tokio::test]
+async fn visibility_observations_are_stamped_at_reader_dequeue() {
+    let ack_completed = Arc::new(AtomicBool::new(false));
+    let transport = TestTransport::new(ack_completed, Arc::new(Mutex::new(Vec::new())));
+    let sink = Arc::new(TestSink::new(
+        Arc::new(AtomicBool::new(true)),
+        Arc::new(Mutex::new(Vec::new())),
+    ));
+    let observer = Arc::new(TestObserver::default());
+    let coordinator = coordinator(
+        CaptureConfig::default(),
+        Arc::new(TestClock::new()),
+        Arc::new(TestIds::new()),
+        sink,
+        Arc::clone(&observer),
+    );
+    let capture_target = target();
+    coordinator
+        .start_target(
+            capture_target.clone(),
+            Arc::clone(&transport) as Arc<dyn CdpTransport>,
+        )
+        .await
+        .unwrap();
+
+    transport.visibility(false).await;
+    transport.visibility(true).await;
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while observer.visibility_times.lock().unwrap().len() < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+
+    let visibility_times = observer.visibility_times.lock().unwrap().clone();
+    assert_eq!(visibility_times.len(), 2);
+    assert!(visibility_times[0] < visibility_times[1]);
+    coordinator
+        .stop_target(
+            &capture_target,
+            CaptureStopReason::TargetClosed,
+            tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+        )
+        .await;
+}
+
+#[tokio::test]
+async fn visibility_stamp_failure_drops_without_notifying_observer() {
+    let ack_completed = Arc::new(AtomicBool::new(false));
+    let transport = TestTransport::new(ack_completed, Arc::new(Mutex::new(Vec::new())));
+    let sink = Arc::new(TestSink::new(
+        Arc::new(AtomicBool::new(true)),
+        Arc::new(Mutex::new(Vec::new())),
+    ));
+    let observer = Arc::new(TestObserver::default());
+    let coordinator = coordinator(
+        CaptureConfig::default(),
+        Arc::new(TestClock::new()),
+        Arc::new(TestIds::new()),
+        sink,
+        Arc::clone(&observer),
+    );
+    let mut capture_target = target();
+    capture_target.session_origin = SessionOrigin::new(ObservedTime::from_nanos(2));
+    coordinator
+        .start_target(
+            capture_target.clone(),
+            Arc::clone(&transport) as Arc<dyn CdpTransport>,
+        )
+        .await
+        .unwrap();
+
+    transport.visibility(false).await;
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    assert!(observer.visibility.lock().unwrap().is_empty());
+    assert!(observer.visibility_times.lock().unwrap().is_empty());
+    assert_eq!(
+        coordinator.statuses()[0].state(),
+        CaptureStreamState::Capturing
+    );
+
     coordinator
         .stop_target(
             &capture_target,

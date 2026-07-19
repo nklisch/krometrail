@@ -489,6 +489,7 @@ impl SessionDomainAuthority {
         &self,
         target_id: TargetId,
         attachment_generation: Option<u64>,
+        observed_at: Option<krometrail_core::SessionTime>,
         visibility: TargetVisibility,
     ) {
         if !self.pipeline.semantic_enabled() {
@@ -502,9 +503,24 @@ impl SessionDomainAuthority {
         {
             return;
         }
+        let observed = match observed_at {
+            Some(session_time) => {
+                let Some(observed) = self
+                    .session_origin
+                    .observed()
+                    .as_nanos()
+                    .checked_add(session_time.as_nanos())
+                    .map(krometrail_core::ObservedTime::from_nanos)
+                else {
+                    return;
+                };
+                observed
+            }
+            None => self.clock.now(),
+        };
         let _ = runtime.ingress.submit_payload(
             runtime.binding.generation(),
-            self.clock.now(),
+            observed,
             None,
             BrowserEventPayload::TargetVisibility(krometrail_core::TargetVisibilityEvent::new(
                 visibility,

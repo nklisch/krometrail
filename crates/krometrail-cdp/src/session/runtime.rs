@@ -550,6 +550,7 @@ fn observe_supervisor_event(browser_events: &SessionDomainAuthority, event: &Bro
             browser_events.observe_visibility(
                 target.target.id(),
                 Some(target.attachment_generation),
+                None,
                 target.visibility,
             );
         }

@@ -179,6 +179,7 @@ pub(crate) trait CaptureObserver: Send + Sync {
         &self,
         _target_id: TargetId,
         _visibility: krometrail_core::TargetVisibility,
+        _observed_at: krometrail_core::SessionTime,
     ) {
     }
 

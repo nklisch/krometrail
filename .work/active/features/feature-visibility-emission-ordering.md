@@ -1,7 +1,7 @@
 ---
 id: feature-visibility-emission-ordering
 kind: feature
-stage: implementing
+stage: review
 tags: [browser, bug]
 parent: null
 depends_on: []
@@ -97,12 +97,12 @@ received stamp into `SupervisorInput::CaptureVisibilityChanged` and into
 `unwrap_or(SessionTime::ZERO)`.
 
 **Acceptance Criteria**:
-- [ ] Deterministic double: two visibility events queued before the reader
+- [x] Deterministic double: two visibility events queued before the reader
       runs get stamps sampled at their own dequeue, and a supervisor
       write-back stamped between them fences exactly the earlier one.
-- [ ] Stamp-failure double: normalization error → no supervisor input, no
+- [x] Stamp-failure double: normalization error → no supervisor input, no
       ZERO stamp, diagnostic emitted.
-- [ ] No remaining `unwrap_or(SessionTime::ZERO)` on the visibility path.
+- [x] No remaining `unwrap_or(SessionTime::ZERO)` on the visibility path.
 
 ### Unit 2: Remove dequeue-side stamping remnants
 **File**: `crates/krometrail-cdp/src/session/mod.rs`
@@ -115,7 +115,7 @@ signature already accepts an optional time — it does:
 `observe_visibility(target_id, None, visibility)`).
 
 **Acceptance Criteria**:
-- [ ] Browser-event visibility records carry the same stamp the fence saw.
+- [x] Browser-event visibility records carry the same stamp the fence saw.
 
 ## Implementation Order
 1. Unit 1
@@ -131,3 +131,28 @@ signature already accepts an optional time — it does:
   body records it as accepted with the screencast re-emission mitigation. If
   it ever bites in practice, the escalation path is a cdpkit feature request
   for receipt-stamped events.
+
+## Implementation notes
+
+- Execution capability: host implementation, because the capture reader,
+  observer, browser-event authority, and deterministic capture doubles form one
+  cohesive ordering boundary.
+- Review weight: standard, project default.
+- Files changed: `crates/krometrail-cdp/src/capture/mod.rs`,
+  `crates/krometrail-cdp/src/capture/pipeline.rs`,
+  `crates/krometrail-cdp/src/capture/tests.rs`,
+  `crates/krometrail-cdp/src/events/domain.rs`,
+  `crates/krometrail-cdp/src/session/mod.rs`, and
+  `crates/krometrail-cdp/src/session/runtime.rs`.
+- Tests added: dequeue-order stamping and pre-origin stamp-failure doubles;
+  browser-event visibility receives the forwarded session stamp through the
+  existing event authority path.
+- Simplification: removed observer-side clock sampling and the visibility-path
+  ZERO fallback; the same stamped value now feeds the fence and event record.
+- Discrepancies from design: the existing event ingress accepts observed-clock
+  values, so the session stamp is converted back through the session origin at
+  the authority boundary; overflow drops the record rather than resampling.
+- Adjacent issues parked: none.
+- Verification: `cargo fmt --all` and
+  `CARGO_TARGET_DIR=/tmp/krometrail-target cargo test -p krometrail-cdp
+  capture::tests::visibility_ --locked` passed.
