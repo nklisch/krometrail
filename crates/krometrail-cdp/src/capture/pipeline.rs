@@ -8,10 +8,11 @@ use std::{
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use krometrail_core::{
-    CaptureFailureStage, CaptureGap, CaptureGapReason, CaptureOrdinal, CaptureStatistics,
-    CaptureStreamState, CaptureTimingSummary, CaptureWarning, CapturedFrame, DeviceScaleFactor,
-    EncodedFrame, ErrorCode, EveryNthFrame, FrameId, GapId, ImageFormat, PixelDimensions,
-    SessionRange, SessionTime, SourceTime, TargetCaptureStatus,
+    CaptureFailure, CaptureFailureStage, CaptureGap, CaptureGapReason, CaptureOrdinal,
+    CaptureStatistics, CaptureStreamState, CaptureTimingSummary, CaptureWarning, CapturedFrame,
+    DeviceScaleFactor, EncodedFrame, ErrorCode, EveryNthFrame, FrameId, GapId, ImageFormat,
+    KrometrailError, NonEmptyText, PixelDimensions, SessionRange, SessionTime, SourceTime,
+    TargetCaptureStatus,
 };
 use serde_json::{Value, json};
 use tokio::{
@@ -191,7 +192,7 @@ struct RuntimeState {
     ack_latency: Histogram,
     frame_cadence: Histogram,
     gaps: GapLedger,
-    failure_stage: Option<CaptureFailureStage>,
+    failure: Option<CaptureFailure>,
 }
 
 #[derive(Clone, Debug)]
@@ -272,7 +273,7 @@ impl StreamRuntime {
                 ack_latency: Histogram::default(),
                 frame_cadence: Histogram::default(),
                 gaps: GapLedger::new(config.gap_ledger_capacity.get()),
-                failure_stage: None,
+                failure: None,
             }),
             control: Mutex::new(ControlHandles {
                 sender: None,
@@ -683,17 +684,21 @@ impl StreamRuntime {
             .expect("runtime state maintains invariants")
     }
 
-    fn fail(&self, failure_stage: CaptureFailureStage) {
+    fn fail(&self, failure: CaptureFailure) {
         self.accepting.store(false, Ordering::Release);
         let first_failure = {
             let mut state = self.state.lock().expect("capture state lock poisoned");
-            record_first_failure(&mut state.failure_stage, failure_stage)
+            record_first_failure(&mut state.failure, failure.clone())
         };
         if first_failure {
+            let persistence = failure.cause().persistence.as_ref();
             tracing::error!(
                 event = "capture.pipeline.failed",
-                failure_stage = failure_stage.as_str(),
-                error_code = ErrorCode::CaptureFailed.as_str(),
+                failure_stage = failure.stage().as_str(),
+                cause_code = failure.cause().code.as_str(),
+                persistence_operation = persistence.map(|value| value.operation().as_str()).unwrap_or("none"),
+                persistence_category = persistence.map(|value| value.category().as_str()).unwrap_or("none"),
+                persistence_recoverability = persistence.map(|value| value.recoverability().as_str()).unwrap_or("none"),
                 session_id = %self.target.session_id,
                 target_id = %self.target.target_id,
                 attachment_generation = self.target.attachment_generation,
@@ -705,6 +710,21 @@ impl StreamRuntime {
             .lock()
             .expect("capture control lock poisoned")
             .sender = None;
+    }
+
+    fn fail_at(&self, stage: CaptureFailureStage) {
+        self.fail(
+            CaptureFailure::new(
+                stage,
+                KrometrailError::new(
+                    ErrorCode::CaptureFailed,
+                    NonEmptyText::new("capture pipeline stage failed")
+                        .expect("capture failure message is non-empty"),
+                )
+                .with_retry(krometrail_core::RetryAdvice::AfterRecovery),
+            )
+            .expect("capture failure cause is valid"),
+        );
     }
 
     fn fail_acknowledgement(
@@ -741,13 +761,13 @@ impl StreamRuntime {
             "capture.ack.failed"
         );
         drop(state);
-        self.fail(CaptureFailureStage::Acknowledgement);
+        self.fail_at(CaptureFailureStage::Acknowledgement);
     }
 }
 
 pub(super) fn record_first_failure(
-    current: &mut Option<CaptureFailureStage>,
-    candidate: CaptureFailureStage,
+    current: &mut Option<CaptureFailure>,
+    candidate: CaptureFailure,
 ) -> bool {
     if current.is_some() {
         false
@@ -896,7 +916,7 @@ async fn frame_reader(
         let event = match events.next().await {
             Ok(Some(event)) => event,
             Ok(None) | Err(_) => {
-                runtime.fail(CaptureFailureStage::FrameEventStream);
+                runtime.fail_at(CaptureFailureStage::FrameEventStream);
                 runtime
                     .observer
                     .frame_event_stream_closed(runtime.target.connection_generation);
@@ -948,7 +968,7 @@ async fn frame_reader(
             OrdinalAllocation::Allocated(ordinal) => ordinal,
             OrdinalAllocation::StaleGeneration => continue,
             OrdinalAllocation::Exhausted => {
-                runtime.fail(CaptureFailureStage::OrdinalAllocation);
+                runtime.fail_at(CaptureFailureStage::OrdinalAllocation);
                 break;
             }
         };
@@ -983,7 +1003,7 @@ async fn frame_reader(
                     "capture.frame.rejected"
                 );
                 runtime.dropped(CaptureGapReason::FrameRejected, session_time);
-                runtime.fail(CaptureFailureStage::FrameEnvelope);
+                runtime.fail_at(CaptureFailureStage::FrameEnvelope);
                 break;
             }
         };
@@ -996,7 +1016,7 @@ async fn geometry_reader(runtime: Arc<StreamRuntime>, events: &mut Box<dyn Trans
         match events.next().await {
             Ok(Some(_)) => {
                 let Some((transition, _started)) = runtime.begin_geometry_transition() else {
-                    runtime.fail(CaptureFailureStage::FrameEnvelope);
+                    runtime.fail_at(CaptureFailureStage::FrameEnvelope);
                     break;
                 };
                 if !runtime.observer.geometry_refresh_requested(transition) {
@@ -1017,7 +1037,7 @@ async fn geometry_reader(runtime: Arc<StreamRuntime>, events: &mut Box<dyn Trans
                         "capture geometry event stream failed",
                     );
                 }
-                runtime.fail(CaptureFailureStage::FrameEventStream);
+                runtime.fail_at(CaptureFailureStage::FrameEventStream);
                 break;
             }
         }
@@ -1029,7 +1049,7 @@ async fn visibility_reader(runtime: Arc<StreamRuntime>, events: &mut Box<dyn Tra
         let event = match events.next().await {
             Ok(Some(event)) => event,
             Ok(None) | Err(_) => {
-                runtime.fail(CaptureFailureStage::VisibilityEventStream);
+                runtime.fail_at(CaptureFailureStage::VisibilityEventStream);
                 break;
             }
         };
@@ -1062,7 +1082,7 @@ async fn visibility_reader(runtime: Arc<StreamRuntime>, events: &mut Box<dyn Tra
                 runtime.transition(Transition::Show);
             }
             None => {
-                runtime.fail(CaptureFailureStage::VisibilityEventStream);
+                runtime.fail_at(CaptureFailureStage::VisibilityEventStream);
             }
         }
     }
@@ -1071,8 +1091,11 @@ async fn visibility_reader(runtime: Arc<StreamRuntime>, events: &mut Box<dyn Tra
 async fn worker_loop(runtime: Arc<StreamRuntime>, mut receiver: mpsc::Receiver<RawFrame>) {
     while let Some(raw) = receiver.recv().await {
         runtime.begin_processing();
-        if !persist_pending_gaps(&runtime).await {
-            runtime.fail(CaptureFailureStage::GapPersistence);
+        if let Err(error) = persist_pending_gaps(&runtime).await {
+            runtime.fail(
+                CaptureFailure::new(CaptureFailureStage::GapPersistence, error)
+                    .expect("persistence errors are valid capture causes"),
+            );
             break;
         }
         match decode_frame(&runtime, raw.clone()) {
@@ -1093,13 +1116,16 @@ async fn worker_loop(runtime: Arc<StreamRuntime>, mut receiver: mpsc::Receiver<R
                     if !runtime.wait_until_recording_allowed().await {
                         break;
                     }
-                    if !persist_pending_gaps(&runtime).await {
-                        runtime.fail(CaptureFailureStage::GapPersistence);
+                    if let Err(error) = persist_pending_gaps(&runtime).await {
+                        runtime.fail(
+                            CaptureFailure::new(CaptureFailureStage::GapPersistence, error)
+                                .expect("persistence errors are valid capture causes"),
+                        );
                         break;
                     }
                     runtime.transition(runtime.resume_budget_transition());
                 }
-                Err(_) => {
+                Err(error) => {
                     runtime.complete_processing();
                     runtime.declare_gap(
                         CaptureGapReason::PersistenceRejected,
@@ -1107,7 +1133,10 @@ async fn worker_loop(runtime: Arc<StreamRuntime>, mut receiver: mpsc::Receiver<R
                         Some(1),
                         Some("frame persistence rejected"),
                     );
-                    runtime.fail(CaptureFailureStage::FramePersistence);
+                    runtime.fail(
+                        CaptureFailure::new(CaptureFailureStage::FramePersistence, error)
+                            .expect("persistence errors are valid capture causes"),
+                    );
                     break;
                 }
             },
@@ -1120,27 +1149,28 @@ async fn worker_loop(runtime: Arc<StreamRuntime>, mut receiver: mpsc::Receiver<R
                     Some("encoded frame rejected"),
                 ) {
                     if runtime.dependencies.sink.append_gap(gap).await.is_err() {
-                        runtime.fail(CaptureFailureStage::GapPersistence);
+                        runtime.fail_at(CaptureFailureStage::GapPersistence);
                         break;
                     }
                 }
-                runtime.fail(CaptureFailureStage::FrameDecode);
+                runtime.fail_at(CaptureFailureStage::FrameDecode);
                 break;
             }
         }
     }
-    if !persist_pending_gaps(&runtime).await {
-        runtime.fail(CaptureFailureStage::GapPersistence);
+    if let Err(error) = persist_pending_gaps(&runtime).await {
+        runtime.fail(
+            CaptureFailure::new(CaptureFailureStage::GapPersistence, error)
+                .expect("persistence errors are valid capture causes"),
+        );
     }
 }
 
-async fn persist_pending_gaps(runtime: &StreamRuntime) -> bool {
+async fn persist_pending_gaps(runtime: &StreamRuntime) -> krometrail_core::Result<()> {
     for gap in runtime.take_gaps() {
-        if runtime.dependencies.sink.append_gap(gap).await.is_err() {
-            return false;
-        }
+        runtime.dependencies.sink.append_gap(gap).await?;
     }
-    true
+    Ok(())
 }
 
 fn decode_frame(runtime: &StreamRuntime, raw: RawFrame) -> Result<EncodedFrame, ()> {
@@ -1375,7 +1405,7 @@ fn status_from_state(
     state: &RuntimeState,
     every_nth_frame: EveryNthFrame,
 ) -> Result<TargetCaptureStatus, ()> {
-    TargetCaptureStatus::new_with_failure_stage(
+    TargetCaptureStatus::new(
         target.target_id,
         target.attachment_generation,
         state.state,
@@ -1386,7 +1416,7 @@ fn status_from_state(
         state.ack_latency.summary(),
         state.frame_cadence.summary(),
         every_nth_frame,
-        state.failure_stage,
+        state.failure.clone(),
     )
     .map_err(|_| ())
 }

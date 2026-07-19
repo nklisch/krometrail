@@ -1919,7 +1919,7 @@ async fn opt_in_real_chrome_qualifies_frame_actions_staleness_and_bounded_assets
                     .iter()
                     .find(|capture| capture.target_id() == target)
                     && capture.state() == CaptureStreamState::Capturing
-                    && capture.failure_stage().is_none()
+                    && capture.failure().is_none()
                     && capture.statistics().persisted_frames() > capture_before_frame_navigation
                 {
                     break (

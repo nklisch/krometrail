@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     browser::{BrowserVersion, ProfileRef},
     capabilities::{CapabilityId, validate_capability_selection},
-    error::{Result, invalid},
+    error::{KrometrailError, Result, invalid},
     ids::SessionId,
     lifecycle::SessionLifecycle,
     ports::EveryNthFrame,
@@ -212,6 +212,34 @@ define_stable_enum! {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CaptureFailure {
+    stage: CaptureFailureStage,
+    cause: KrometrailError,
+}
+
+impl CaptureFailure {
+    pub fn new(stage: CaptureFailureStage, cause: KrometrailError) -> Result<Self> {
+        if cause.code != crate::ErrorCode::CaptureFailed
+            && cause.code != crate::ErrorCode::PersistenceFailed
+        {
+            return Err(invalid(
+                "capture failure cause must be capture_failed or persistence_failed",
+            ));
+        }
+        Ok(Self { stage, cause })
+    }
+
+    pub const fn stage(&self) -> CaptureFailureStage {
+        self.stage
+    }
+
+    pub const fn cause(&self) -> &KrometrailError {
+        &self.cause
+    }
+}
+
 define_stable_enum! {
     /// Sanitized terminal boundary at which retained visual capture stopped.
     pub enum CaptureFailureStage {
@@ -347,7 +375,7 @@ pub struct TargetCaptureStatus {
     frame_cadence: CaptureTimingSummary,
     every_nth_frame: EveryNthFrame,
     #[serde(skip_serializing_if = "Option::is_none")]
-    failure_stage: Option<CaptureFailureStage>,
+    failure: Option<CaptureFailure>,
 }
 
 #[derive(Deserialize)]
@@ -363,7 +391,7 @@ struct TargetCaptureStatusWire {
     frame_cadence: CaptureTimingSummary,
     every_nth_frame: EveryNthFrame,
     #[serde(default)]
-    failure_stage: Option<CaptureFailureStage>,
+    failure: Option<CaptureFailure>,
 }
 
 impl TargetCaptureStatus {
@@ -379,35 +407,7 @@ impl TargetCaptureStatus {
         ack_latency: CaptureTimingSummary,
         frame_cadence: CaptureTimingSummary,
         every_nth_frame: EveryNthFrame,
-    ) -> Result<Self> {
-        Self::new_with_failure_stage(
-            target_id,
-            attachment_generation,
-            state,
-            statistics,
-            queue_capacity,
-            queue_depth,
-            last_frame_session_time,
-            ack_latency,
-            frame_cadence,
-            every_nth_frame,
-            None,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn new_with_failure_stage(
-        target_id: crate::ids::TargetId,
-        attachment_generation: u64,
-        state: CaptureStreamState,
-        statistics: CaptureStatistics,
-        queue_capacity: usize,
-        queue_depth: usize,
-        last_frame_session_time: Option<crate::time::SessionTime>,
-        ack_latency: CaptureTimingSummary,
-        frame_cadence: CaptureTimingSummary,
-        every_nth_frame: EveryNthFrame,
-        failure_stage: Option<CaptureFailureStage>,
+        failure: Option<CaptureFailure>,
     ) -> Result<Self> {
         if attachment_generation == 0 {
             return Err(invalid("capture attachment generation must be non-zero"));
@@ -423,9 +423,9 @@ impl TargetCaptureStatus {
                 "stopped capture streams cannot retain queued frames",
             ));
         }
-        if matches!(state, CaptureStreamState::Failed) != failure_stage.is_some() {
+        if matches!(state, CaptureStreamState::Failed) != failure.is_some() {
             return Err(invalid(
-                "failed capture streams require exactly one failure stage",
+                "failed capture streams require exactly one failure",
             ));
         }
         if last_frame_session_time.is_some() && statistics.received_frames() == 0 {
@@ -444,7 +444,7 @@ impl TargetCaptureStatus {
             ack_latency,
             frame_cadence,
             every_nth_frame,
-            failure_stage,
+            failure,
         })
     }
 
@@ -488,8 +488,8 @@ impl TargetCaptureStatus {
         self.every_nth_frame
     }
 
-    pub const fn failure_stage(&self) -> Option<CaptureFailureStage> {
-        self.failure_stage
+    pub const fn failure(&self) -> Option<&CaptureFailure> {
+        self.failure.as_ref()
     }
 }
 
@@ -499,7 +499,7 @@ impl<'de> Deserialize<'de> for TargetCaptureStatus {
         D: serde::Deserializer<'de>,
     {
         deserialize_validated(deserializer, |wire: TargetCaptureStatusWire| {
-            Self::new_with_failure_stage(
+            Self::new(
                 wire.target_id,
                 wire.attachment_generation,
                 wire.state,
@@ -510,7 +510,7 @@ impl<'de> Deserialize<'de> for TargetCaptureStatus {
                 wire.ack_latency,
                 wire.frame_cadence,
                 wire.every_nth_frame,
-                wire.failure_stage,
+                wire.failure,
             )
         })
     }
@@ -842,11 +842,12 @@ mod tests {
                 empty.clone(),
                 empty.clone(),
                 EveryNthFrame::default(),
+                None,
             )
             .is_err()
         );
         assert!(
-            TargetCaptureStatus::new_with_failure_stage(
+            TargetCaptureStatus::new(
                 target,
                 1,
                 CaptureStreamState::Failed,
@@ -862,7 +863,7 @@ mod tests {
             .is_err()
         );
         assert!(
-            TargetCaptureStatus::new_with_failure_stage(
+            TargetCaptureStatus::new(
                 target,
                 1,
                 CaptureStreamState::Capturing,
@@ -873,11 +874,28 @@ mod tests {
                 CaptureTimingSummary::empty(),
                 CaptureTimingSummary::empty(),
                 EveryNthFrame::default(),
-                Some(CaptureFailureStage::FramePersistence),
+                Some(
+                    CaptureFailure::new(
+                        CaptureFailureStage::FramePersistence,
+                        KrometrailError::new(
+                            crate::ErrorCode::PersistenceFailed,
+                            crate::NonEmptyText::new("frame persistence failed").unwrap(),
+                        ),
+                    )
+                    .unwrap()
+                ),
             )
             .is_err()
         );
-        let failed = TargetCaptureStatus::new_with_failure_stage(
+        let expected_failure = CaptureFailure::new(
+            CaptureFailureStage::FramePersistence,
+            KrometrailError::new(
+                crate::ErrorCode::PersistenceFailed,
+                crate::NonEmptyText::new("frame persistence failed").unwrap(),
+            ),
+        )
+        .unwrap();
+        let failed = TargetCaptureStatus::new(
             target,
             1,
             CaptureStreamState::Failed,
@@ -888,14 +906,14 @@ mod tests {
             CaptureTimingSummary::empty(),
             CaptureTimingSummary::empty(),
             EveryNthFrame::default(),
-            Some(CaptureFailureStage::FramePersistence),
+            Some(expected_failure.clone()),
         )
         .unwrap();
         assert_eq!(
             serde_json::from_str::<TargetCaptureStatus>(&serde_json::to_string(&failed).unwrap())
                 .unwrap()
-                .failure_stage(),
-            Some(CaptureFailureStage::FramePersistence)
+                .failure(),
+            Some(&expected_failure)
         );
         assert!(
             TargetCaptureStatus::new(
@@ -909,6 +927,7 @@ mod tests {
                 empty.clone(),
                 empty.clone(),
                 EveryNthFrame::default(),
+                None,
             )
             .is_err()
         );
@@ -924,6 +943,7 @@ mod tests {
                 empty.clone(),
                 empty.clone(),
                 EveryNthFrame::default(),
+                None,
             )
             .is_err()
         );
@@ -939,6 +959,7 @@ mod tests {
                 empty.clone(),
                 empty.clone(),
                 EveryNthFrame::default(),
+                None,
             )
             .is_err()
         );
@@ -954,6 +975,7 @@ mod tests {
                 empty.clone(),
                 empty,
                 EveryNthFrame::default(),
+                None,
             )
             .is_err()
         );
@@ -973,6 +995,7 @@ mod tests {
             CaptureTimingSummary::empty(),
             CaptureTimingSummary::empty(),
             EveryNthFrame::new(23).unwrap(),
+            None,
         )
         .unwrap();
         let encoded = serde_json::to_string(&status).unwrap();

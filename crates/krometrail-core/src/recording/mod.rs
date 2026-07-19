@@ -17,6 +17,7 @@ pub use retention::{
     SessionDeletion, StorageUsage,
 };
 pub use session::{
-    CaptureFailureStage, CaptureStatistics, CaptureStreamState, CaptureTimingSummary,
-    DEFAULT_DISK_BUDGET_BYTES, DiskBudgetBytes, RecordingSession, TargetCaptureStatus,
+    CaptureFailure, CaptureFailureStage, CaptureStatistics, CaptureStreamState,
+    CaptureTimingSummary, DEFAULT_DISK_BUDGET_BYTES, DiskBudgetBytes, RecordingSession,
+    TargetCaptureStatus,
 };

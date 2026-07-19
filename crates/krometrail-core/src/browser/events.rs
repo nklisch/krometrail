@@ -2137,6 +2137,7 @@ mod tests {
                     timing.clone(),
                     timing,
                     crate::EveryNthFrame::default(),
+                    None,
                 )
                 .unwrap(),
             ),

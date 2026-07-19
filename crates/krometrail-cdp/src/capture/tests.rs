@@ -3,8 +3,10 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use krometrail_core::{
     ByteOffset, CaptureGapReason, CaptureStreamState, DiskBudgetBytes, EncodedFrame, ErrorCode,
     FrameAddress, IdValue, ImageFormat, KrometrailError, MonotonicClock, NonEmptyText,
-    ObservedTime, PinChange, PortFuture, RecordingSink, RetentionRange, RetentionStatus,
-    RetentionStore, SegmentId, SessionDeletion, SessionId, SessionOrigin, TargetId,
+    ObservedTime, PersistenceFailure, PersistenceFailureCategory, PersistenceOperation,
+    PersistenceRecoverability, PinChange, PortFuture, RecordingSink, RetentionRange,
+    RetentionStatus, RetentionStore, SegmentId, SessionDeletion, SessionId, SessionOrigin,
+    TargetId,
 };
 use std::{
     collections::HashMap,
@@ -117,17 +119,34 @@ fn stable_capture_names_and_gap_reasons_are_registry_backed() {
 
 #[test]
 fn every_capture_boundary_stage_is_stable_and_first_failure_wins() {
-    use krometrail_core::CaptureFailureStage;
+    use krometrail_core::{
+        CaptureFailure, CaptureFailureStage, ErrorCode, KrometrailError, NonEmptyText,
+    };
+
+    let failure = |stage| {
+        CaptureFailure::new(
+            stage,
+            KrometrailError::new(
+                ErrorCode::CaptureFailed,
+                NonEmptyText::new("capture stage failed").unwrap(),
+            ),
+        )
+        .unwrap()
+    };
 
     for stage in CaptureFailureStage::ALL {
         let mut current = None;
-        assert!(pipeline::record_first_failure(&mut current, *stage));
-        assert_eq!(current, Some(*stage));
+        let expected = failure(*stage);
+        assert!(pipeline::record_first_failure(
+            &mut current,
+            expected.clone()
+        ));
+        assert_eq!(current, Some(expected.clone()));
         assert!(!pipeline::record_first_failure(
             &mut current,
-            CaptureFailureStage::GapPersistence
+            failure(CaptureFailureStage::GapPersistence)
         ));
-        assert_eq!(current, Some(*stage));
+        assert_eq!(current, Some(expected));
     }
 
     let source = include_str!("pipeline.rs");
@@ -457,6 +476,110 @@ impl RecordingSink for BudgetSink {
     fn flush(&self, _session_id: SessionId) -> PortFuture<'_, krometrail_core::Result<()>> {
         Box::pin(std::future::ready(Ok(())))
     }
+}
+
+#[derive(Debug)]
+struct RejectingSink {
+    frame_error: KrometrailError,
+    gap_error: Option<KrometrailError>,
+    gaps: Mutex<Vec<krometrail_core::CaptureGap>>,
+}
+
+impl RecordingSink for RejectingSink {
+    fn append_frame(
+        &self,
+        _frame: EncodedFrame,
+    ) -> PortFuture<'_, krometrail_core::Result<FrameAddress>> {
+        Box::pin(std::future::ready(Err(self.frame_error.clone())))
+    }
+
+    fn append_gap(
+        &self,
+        gap: krometrail_core::CaptureGap,
+    ) -> PortFuture<'_, krometrail_core::Result<()>> {
+        self.gaps.lock().unwrap().push(gap);
+        Box::pin(std::future::ready(match &self.gap_error {
+            Some(error) => Err(error.clone()),
+            None => Ok(()),
+        }))
+    }
+
+    fn flush(&self, _session_id: SessionId) -> PortFuture<'_, krometrail_core::Result<()>> {
+        Box::pin(std::future::ready(Ok(())))
+    }
+}
+
+#[tokio::test]
+async fn classified_persistence_rejection_survives_as_first_capture_failure() {
+    let frame_cause = KrometrailError::new(
+        ErrorCode::PersistenceFailed,
+        NonEmptyText::new("sealed segment publication sync failed").unwrap(),
+    )
+    .with_persistence(PersistenceFailure::new(
+        PersistenceOperation::SealedSegmentPublicationSync,
+        PersistenceFailureCategory::PermissionDenied,
+        PersistenceRecoverability::WriterUsable,
+    ));
+    let later_gap_cause = KrometrailError::new(
+        ErrorCode::PersistenceFailed,
+        NonEmptyText::new("gap index failed").unwrap(),
+    )
+    .with_persistence(PersistenceFailure::new(
+        PersistenceOperation::GapIndex,
+        PersistenceFailureCategory::Unavailable,
+        PersistenceRecoverability::WriterTerminal,
+    ));
+    let ack_completed = Arc::new(AtomicBool::new(false));
+    let transport = TestTransport::new(ack_completed, Arc::new(Mutex::new(Vec::new())));
+    let sink = Arc::new(RejectingSink {
+        frame_error: frame_cause.clone(),
+        gap_error: Some(later_gap_cause),
+        gaps: Mutex::new(Vec::new()),
+    });
+    let observer = Arc::new(TestObserver::default());
+    let coordinator = CaptureCoordinator::new(
+        CaptureConfig::default(),
+        krometrail_core::EveryNthFrame::default(),
+        CaptureDependencies {
+            clock: Arc::new(TestClock::new()),
+            ids: Arc::new(TestIds::new()),
+            sink: Arc::clone(&sink) as Arc<dyn RecordingSink>,
+            retention: Arc::new(TestRetention::available()),
+        },
+        Arc::clone(&observer) as Arc<dyn CaptureObserver>,
+    )
+    .unwrap();
+    coordinator
+        .start_target(target(), Arc::clone(&transport) as Arc<dyn CdpTransport>)
+        .await
+        .unwrap();
+    transport.frame(1).await;
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while coordinator.statuses()[0].state() != CaptureStreamState::Failed {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+
+    let status = coordinator.statuses().remove(0);
+    let failure = status.failure().expect("failed capture retains its cause");
+    assert_eq!(
+        failure.stage(),
+        krometrail_core::CaptureFailureStage::FramePersistence
+    );
+    assert_eq!(failure.cause(), &frame_cause);
+    assert_eq!(status.statistics().gap_count(), 1);
+    assert_eq!(sink.gaps.lock().unwrap().len(), 1);
+    assert_eq!(
+        observer.gaps.lock().unwrap()[0].reason(),
+        &CaptureGapReason::PersistenceRejected
+    );
+    let json = serde_json::to_string(&status).unwrap();
+    assert!(json.contains("sealed_segment_publication_sync"));
+    assert!(!json.contains("/private/recordings"));
+    assert!(!json.contains("raw frame"));
+    assert!(!json.contains("page content"));
 }
 
 #[derive(Debug)]
@@ -1008,7 +1131,7 @@ async fn ack_completion_and_histogram_precede_parse_queue_and_sink() {
     let order = order.lock().unwrap().clone();
     assert_eq!(order, vec!["ack", "sink"]);
     let status = coordinator.statuses().pop().unwrap();
-    assert_eq!(status.failure_stage(), None);
+    assert_eq!(status.failure(), None);
     assert_eq!(status.statistics().acknowledged_frames(), 1);
     assert_eq!(status.ack_latency().sample_count(), 1);
     assert_eq!(*transport.ack_tokens.lock().unwrap(), vec![-7]);
@@ -1060,7 +1183,7 @@ async fn default_ack_deadline_accepts_a_frame_delayed_beyond_250_milliseconds() 
     .expect("default acknowledgement deadline exceeds 300 milliseconds");
 
     let status = coordinator.statuses().pop().unwrap();
-    assert_eq!(status.failure_stage(), None);
+    assert_eq!(status.failure(), None);
     assert_eq!(status.statistics().received_frames(), 1);
     assert_eq!(status.statistics().acknowledged_frames(), 1);
     sink.release_first_frame.notify_one();
@@ -1444,7 +1567,7 @@ async fn unresolved_geometry_refresh_keeps_frames_fenced_until_authoritative_rec
 
     let status = coordinator.statuses().pop().unwrap();
     assert_eq!(status.state(), CaptureStreamState::Capturing);
-    assert_eq!(status.failure_stage(), None);
+    assert_eq!(status.failure(), None);
     assert_eq!(status.statistics().acknowledged_frames(), 3);
     assert_eq!(status.statistics().accepted_frames(), 1);
     assert_eq!(status.statistics().dropped_frames(), 2);
@@ -1879,7 +2002,7 @@ async fn failed_ack_never_enters_accepted_or_dropped_accounting() {
     .unwrap();
     let status = coordinator.statuses().pop().unwrap();
     assert_eq!(
-        status.failure_stage(),
+        status.failure().map(krometrail_core::CaptureFailure::stage),
         Some(krometrail_core::CaptureFailureStage::Acknowledgement)
     );
     assert_eq!(status.statistics().received_frames(), 1);
@@ -1942,7 +2065,7 @@ async fn acknowledgement_beyond_an_explicit_short_deadline_fails_once_with_one_g
 
     let status = coordinator.statuses().pop().unwrap();
     assert_eq!(
-        status.failure_stage(),
+        status.failure().map(krometrail_core::CaptureFailure::stage),
         Some(krometrail_core::CaptureFailureStage::Acknowledgement)
     );
     assert_eq!(status.statistics().received_frames(), 1);

@@ -317,6 +317,7 @@ fn capture_events_expose_no_transport_or_page_privacy_fields() {
         CaptureTimingSummary::empty(),
         CaptureTimingSummary::empty(),
         krometrail_core::EveryNthFrame::default(),
+        None,
     )
     .unwrap();
     let gap = CaptureGap::new(

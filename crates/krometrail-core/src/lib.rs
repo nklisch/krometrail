@@ -170,7 +170,7 @@ pub use range_handle::{
     MAX_RESOLVED_RANGE_HANDLE_BUDGET_BYTES, MAX_RESOLVED_RANGE_HANDLES, ResolvedRangeHandles,
 };
 pub use recording::{
-    ByteOffset, CaptureFailureStage, CaptureGap, CaptureGapReason, CaptureOrdinal,
+    ByteOffset, CaptureFailure, CaptureFailureStage, CaptureGap, CaptureGapReason, CaptureOrdinal,
     CaptureStatistics, CaptureStreamState, CaptureTimingSummary, CaptureWarning, CapturedFrame,
     DEFAULT_DISK_BUDGET_BYTES, DeviceScaleFactor, DiskBudgetBytes, EncodedFrame, FrameAddress,
     ImageFormat, PinChange, PixelDimensions, RecordingBudgetState, RecordingSession, RetainedPoint,
