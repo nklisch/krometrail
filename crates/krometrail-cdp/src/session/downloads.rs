@@ -189,6 +189,7 @@ struct State {
 struct Entry {
     public: ManagedDownload,
     verified_size: Option<u64>,
+    media_type: NonEmptyText,
 }
 
 impl ManagedDownloadAuthority {
@@ -413,7 +414,7 @@ impl ManagedDownloadAuthority {
         if request.session_id != self.session_id {
             return Err(resource_not_found(self.session_id));
         }
-        let (guid, expected) = {
+        let (guid, expected, media_type) = {
             let state = self.state.lock().expect("download state lock");
             let (guid, entry) = state
                 .by_guid
@@ -428,6 +429,7 @@ impl ManagedDownloadAuthority {
                 entry
                     .verified_size
                     .ok_or_else(|| resource_not_found(self.session_id))?,
+                entry.media_type.clone(),
             )
         };
         if expected > request.max_bytes || expected > MAX_MANAGED_DOWNLOAD_BYTES {
@@ -447,7 +449,7 @@ impl ManagedDownloadAuthority {
         Ok(ManagedDownloadRead {
             session_id: self.session_id,
             download_id: request.download_id,
-            media_type: NonEmptyText::new("application/octet-stream").unwrap(),
+            media_type,
             bytes,
         })
     }
@@ -555,6 +557,7 @@ impl ManagedDownloadAuthority {
                     Entry {
                         public: public.clone(),
                         verified_size: None,
+                        media_type: download_media_type(params),
                     },
                 );
                 (false, public)
@@ -1113,6 +1116,44 @@ fn sanitize_download_url(params: &Value) -> SanitizedUrl {
     )
     .unwrap_or_else(|_| SanitizedUrl::sanitize("about:blank").expect("fallback URL sanitizes"))
 }
+
+fn download_media_type(params: &Value) -> NonEmptyText {
+    let media_type = params
+        .get("mimeType")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            params
+                .get("suggestedFilename")
+                .and_then(Value::as_str)
+                .and_then(extension_media_type)
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| "application/octet-stream".to_owned());
+    NonEmptyText::new(media_type).expect("download media type is non-empty")
+}
+
+fn extension_media_type(filename: &str) -> Option<&'static str> {
+    let extension = filename.rsplit_once('.')?.1;
+    match extension.to_ascii_lowercase().as_str() {
+        "txt" => Some("text/plain"),
+        "json" => Some("application/json"),
+        "csv" => Some("text/csv"),
+        "md" => Some("text/markdown"),
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        "pdf" => Some("application/pdf"),
+        "zip" => Some("application/zip"),
+        // Keep downloaded HTML inert when an MCP host renders a local resource.
+        "html" | "htm" => Some("text/plain"),
+        _ => None,
+    }
+}
+
 fn next_sequence(state: &mut State) -> DownloadSequence {
     let value = DownloadSequence::new(state.next_sequence).expect("positive sequence");
     state.next_sequence = state.next_sequence.saturating_add(1);
@@ -1333,6 +1374,34 @@ mod tests {
         })
     }
 
+    #[test]
+    fn download_media_type_prefers_browser_value_then_bounded_filename_mapping() {
+        assert_eq!(
+            download_media_type(&json!({"mimeType":"text/plain","suggestedFilename":"file.bin"}))
+                .as_str(),
+            "text/plain"
+        );
+        for (filename, expected) in [
+            ("hello.txt", "text/plain"),
+            ("data.JSON", "application/json"),
+            ("table.csv", "text/csv"),
+            ("notes.md", "text/markdown"),
+            ("image.png", "image/png"),
+            ("photo.jpeg", "image/jpeg"),
+            ("archive.zip", "application/zip"),
+            ("page.html", "text/plain"),
+        ] {
+            assert_eq!(
+                download_media_type(&json!({"suggestedFilename": filename})).as_str(),
+                expected
+            );
+        }
+        assert_eq!(
+            download_media_type(&json!({"suggestedFilename":"payload.bin"})).as_str(),
+            "application/octet-stream"
+        );
+    }
+
     #[tokio::test]
     async fn completion_is_published_only_after_exact_contained_file_and_cleanup_is_scoped() {
         let temp = tempfile::tempdir().unwrap();
@@ -1370,6 +1439,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(read.bytes, b"exact bytes");
+        assert_eq!(read.media_type.as_str(), "text/plain");
         authority.shutdown(Some(&transport)).await.unwrap();
         authority.shutdown(Some(&transport)).await.unwrap();
         assert!(sibling.is_dir());

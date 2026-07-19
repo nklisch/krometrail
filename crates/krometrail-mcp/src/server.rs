@@ -1926,7 +1926,7 @@ mod tests {
                 krometrail_core::ManagedDownloadRead {
                     session_id: request.session_id,
                     download_id: request.download_id,
-                    media_type: NonEmptyText::new("application/octet-stream").unwrap(),
+                    media_type: NonEmptyText::new("text/plain").unwrap(),
                     bytes: b"protocol download bytes".to_vec(),
                 },
             )))
@@ -2923,10 +2923,7 @@ mod tests {
         )
         .await;
         let download = read_json(&mut read).await;
-        assert_eq!(
-            download["result"]["contents"][0]["mimeType"],
-            "application/octet-stream"
-        );
+        assert_eq!(download["result"]["contents"][0]["mimeType"], "text/plain");
         assert_eq!(
             base64::engine::general_purpose::STANDARD
                 .decode(download["result"]["contents"][0]["blob"].as_str().unwrap())

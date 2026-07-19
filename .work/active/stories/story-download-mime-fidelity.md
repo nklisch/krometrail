@@ -28,3 +28,20 @@ fallback. No content sniffing.
 - A completed `.txt`/`.json`/`.png` download's resource read reports the matching media
   type; unknown extensions still report `application/octet-stream`.
 - Covered by a managed-download test at the resource boundary.
+
+## Completion notes
+
+Managed download bookkeeping now captures a nonblank browser-reported `mimeType` when available,
+otherwise derives a bounded media type from `suggested_filename` (`txt`, `json`, `csv`, `md`,
+`png`, `jpg`/`jpeg`, `gif`, `webp`, `pdf`, and `zip`). Unknown extensions retain
+`application/octet-stream`. HTML extensions map to `text/plain` so an MCP host cannot interpret a
+downloaded local resource as active HTML; no content sniffing was added.
+
+- Files changed: `crates/krometrail-cdp/src/session/downloads.rs`,
+  `crates/krometrail-mcp/src/server.rs`.
+- Tests: bounded media-type precedence/fallback coverage, completed-download read coverage, and
+  the MCP managed-download resource boundary assertion.
+- Verification: focused CDP and MCP tests passed; full workspace gates are recorded after the
+  three story commits.
+- Stage intentionally remains `implementing` per the implementation request; no other work item
+  was advanced.

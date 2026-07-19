@@ -35,3 +35,17 @@ defaults.
 - No remaining skill/doc sentence claims a no-inline default for a route whose runtime
   default is image-on (and vice versa).
 - `docs/public/llms-full.txt` regenerated, not hand-edited.
+
+## Completion notes
+
+The sweep found no remaining inline-image default drift. The temporal bundle sections in
+`plugin/skills/krometrail/SKILL.md` and `references/evidence.md` already state that one primary
+image is inline by default, and the current SPEC/foundation wording agrees. The remaining
+no-image wording applies only to routine post-action routes, whose runtime default is image-off.
+No documentation change was needed, so `docs/public/llms-full.txt` was not changed; `bun run
+docs:build` was nevertheless run after the story-1 foundation-doc edits and completed successfully.
+
+- Files changed: this story body only (committed with story 2 because no prose drift remained).
+- Tests: repository-wide prose sweep; no stale claim matched.
+- Stage intentionally remains `implementing` per the implementation request; no other work item
+  was advanced.
