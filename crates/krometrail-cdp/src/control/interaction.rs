@@ -229,6 +229,7 @@ impl PageControl {
                         target: plan.target,
                     },
                     observation_started,
+                    plan.kind == BrowserOperationKind::Scroll,
                     Some((cancel, generation)),
                 )
                 .await;

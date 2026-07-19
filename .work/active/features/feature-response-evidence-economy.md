@@ -184,12 +184,23 @@ second ranking system. Tall-screenshot handling should prefer guidance plus boun
   When geometry is absent, behavior is exactly today's (total fallback).
 
 **Acceptance Criteria**:
-- [ ] After a scroll observation on a fixture where distinct targets sit above/inside the
+- [x] After a scroll observation on a fixture where distinct targets sit above/inside the
       viewport, the concise index leads with in-viewport targets and semantic outcomes
       describe in-viewport text.
-- [ ] Non-scroll operations acquire no `DOMSnapshot` layout pass (command-recording
+- [x] Non-scroll operations acquire no `DOMSnapshot` layout pass (command-recording
       double asserts absence, mirroring the frame-query story's test style).
-- [ ] Geometry-less snapshots project byte-identical to pre-change output.
+- [x] Geometry-less snapshots project byte-identical to pre-change output.
+
+### Unit 3 Implementation Notes
+
+- Unit 3 is complete: scroll and set-viewport post-action observations request one bounded
+  DOMSnapshot layout pass, join valid bounds to AX nodes by backend id, and use visual-viewport
+  intersection to rank concise targets and semantic outcomes. Explicit and non-scroll snapshots
+  keep the prior acquisition path.
+- Geometry remains optional and omitted from serialized nodes when unavailable, preserving the
+  prior geometry-less projection shape and ordering.
+- Unit 3 verification: focused CDP/core/MCP tests passed; the known launcher discovery flake
+  failed once and passed on its required single rerun.
 
 ## Implementation Order
 1. Unit 1 (dedupe + pruning) — self-contained projection change.

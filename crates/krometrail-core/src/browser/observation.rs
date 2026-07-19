@@ -403,6 +403,8 @@ pub struct SnapshotNode {
     pub properties: Vec<AccessibleProperty>,
     pub actionable: bool,
     pub reference: Option<NodeReference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub document_rect: Option<CssRect>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -1160,6 +1162,7 @@ mod tests {
                 properties: vec![],
                 actionable: false,
                 reference: None,
+                document_rect: None,
             },
             SnapshotNode {
                 id: child_id,
@@ -1176,6 +1179,7 @@ mod tests {
                     generation,
                     node_id: child_id,
                 }),
+                document_rect: None,
             },
         ];
         let snapshot = PageSnapshot::new(context(), generation, nodes.clone(), 0).unwrap();

@@ -30,6 +30,18 @@ impl PageControl {
         selection: PageSelection,
         cancel: &OperationCancellation,
     ) -> Result<PostOperationObservation> {
+        self.observe_after_operation_with_geometry(transport, state, selection, cancel, false)
+            .await
+    }
+
+    pub(crate) async fn observe_after_operation_with_geometry(
+        &mut self,
+        transport: &dyn CdpTransport,
+        state: &SupervisorState,
+        selection: PageSelection,
+        cancel: &OperationCancellation,
+        include_document_geometry: bool,
+    ) -> Result<PostOperationObservation> {
         let bound = match bind_target(state, selection) {
             Ok(bound) => bound,
             Err(error) => {
@@ -47,6 +59,7 @@ impl PageControl {
                 &bound,
                 LiveObservationRequest { target: selection },
                 started_at,
+                include_document_geometry,
                 Some((cancel, state.connection_generation)),
             )
             .await

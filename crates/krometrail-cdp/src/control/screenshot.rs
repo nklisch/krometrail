@@ -282,6 +282,7 @@ impl PageControl {
         bound: &BoundTarget,
         _request: LiveObservationRequest,
         started_at: krometrail_core::SessionTime,
+        include_document_geometry: bool,
         cancellation: Option<(&OperationCancellation, u64)>,
     ) -> Result<(
         BrowserOperationResult,
@@ -325,6 +326,7 @@ impl PageControl {
                 bound,
                 SnapshotPageRequest::new(bound.target_id),
                 part_started,
+                include_document_geometry,
             );
             match run_component(cancellation, bound.target_id, snapshot).await {
                 ComponentResult::Completed(Ok(BrowserOperationResult::SnapshotPage(snapshot))) => {

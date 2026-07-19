@@ -5,7 +5,7 @@ use krometrail_core::{
     ArtifactCacheDisposition, ArtifactGenerationResult, ArtifactHandle, ArtifactId,
     ArtifactOutcome, BatchOutcome, BatchResult, BrowserOperationResult, BrowserOwnership,
     BrowserSessionState, BrowserStatus, BrowserStopOutcome, CaptureFailure, CaptureStreamState,
-    EncodedScreenshot, ErrorCode, EveryNthFrame, InteractionAnchor, KrometrailError,
+    CssRect, EncodedScreenshot, ErrorCode, EveryNthFrame, InteractionAnchor, KrometrailError,
     LiveObservation, NonEmptyText, ObservationPart, PageOperationOutcome, PageOperationResult,
     PageSnapshot, ProfileRef, ProgressiveEvidence, ProgressiveEvidenceContext,
     ProgressiveEvidenceRequest, ProgressiveEvidenceResult, RecordingBudgetState,
@@ -1149,14 +1149,25 @@ fn project_live_observation(
     novelty: SnapshotNovelty,
 ) -> Result<(Value, Vec<KrometrailError>, Option<EncodedMcpImage>), ResponseInvariantError> {
     let mut warnings = Vec::new();
+    let visual_viewport = match &value.page {
+        ObservationPart::Available(page) => Some(page.viewport.visual_viewport),
+        ObservationPart::Unavailable(_) => None,
+    };
     let semantic_outcomes = match &value.snapshot {
-        ObservationPart::Available(snapshot) => semantic_outcomes(snapshot)?,
+        ObservationPart::Available(snapshot) => {
+            semantic_outcomes(snapshot, visual_viewport.as_ref())?
+        }
         ObservationPart::Unavailable(_) => Vec::new(),
     };
     let mut page = project_serializable_part(value.page, &mut warnings)?;
     project_page_state_part(&mut page, response.detail)?;
     let mut snapshot = project_serializable_part(value.snapshot, &mut warnings)?;
-    project_snapshot_part(&mut snapshot, response.detail, novelty)?;
+    project_snapshot_part(
+        &mut snapshot,
+        response.detail,
+        novelty,
+        visual_viewport.as_ref(),
+    )?;
     let (screenshot, image) = match value.screenshot {
         ObservationPart::Available(screenshot) => {
             warnings.extend(screenshot.warnings().iter().cloned());
@@ -1197,6 +1208,7 @@ struct SemanticOutcome {
 
 fn semantic_outcomes(
     snapshot: &PageSnapshot,
+    visual_viewport: Option<&CssRect>,
 ) -> Result<Vec<SemanticOutcome>, ResponseInvariantError> {
     const PRIMARY_ROLES: &[&str] = &["alert", "dialog", "status"];
     const TEXT_ROLES: &[&str] = &["statictext", "static_text", "paragraph", "heading"];
@@ -1214,7 +1226,7 @@ fn semantic_outcomes(
                 .as_ref()
                 .is_some_and(|text| !text.trim().is_empty())
     };
-    let candidates = snapshot
+    let mut primary = snapshot
         .nodes
         .iter()
         .filter(|node| {
@@ -1223,19 +1235,23 @@ fn semantic_outcomes(
                 .any(|role| node.role.eq_ignore_ascii_case(role))
         })
         .filter(has_text)
-        .chain(
-            snapshot
-                .nodes
+        .collect::<Vec<_>>();
+    let mut text = snapshot
+        .nodes
+        .iter()
+        .filter(|node| {
+            TEXT_ROLES
                 .iter()
-                .filter(|node| {
-                    TEXT_ROLES
-                        .iter()
-                        .any(|role| node.role.eq_ignore_ascii_case(role))
-                })
-                .filter(has_text),
-        );
+                .any(|role| node.role.eq_ignore_ascii_case(role))
+        })
+        .filter(has_text)
+        .collect::<Vec<_>>();
+    if geometry_available(snapshot, visual_viewport) {
+        primary.sort_by_key(|node| u8::from(!intersects_viewport(node, visual_viewport)));
+        text.sort_by_key(|node| u8::from(!intersects_viewport(node, visual_viewport)));
+    }
     let mut outcomes = Vec::new();
-    for node in candidates {
+    for node in primary.into_iter().chain(text) {
         if outcomes.len() == MAX_SEMANTIC_OUTCOMES {
             break;
         }
@@ -1367,6 +1383,7 @@ fn exact_target(
 fn bounded_targets(
     snapshot: &PageSnapshot,
     concise: bool,
+    visual_viewport: Option<&CssRect>,
 ) -> Result<Vec<ExactTarget>, ResponseInvariantError> {
     let mut actions = snapshot
         .nodes
@@ -1374,7 +1391,17 @@ fn bounded_targets(
         .enumerate()
         .filter(|(_, node)| node.actionable)
         .collect::<Vec<_>>();
-    actions.sort_by_key(|(index, node)| (snapshot_action_rank(node), *index));
+    if geometry_available(snapshot, visual_viewport) {
+        actions.sort_by_key(|(index, node)| {
+            (
+                u8::from(!intersects_viewport(node, visual_viewport)),
+                snapshot_action_rank(node),
+                *index,
+            )
+        });
+    } else {
+        actions.sort_by_key(|(index, node)| (snapshot_action_rank(node), *index));
+    }
     let mut targets = Vec::new();
     let mut bytes = 2usize;
     for (_, node) in actions {
@@ -1398,12 +1425,34 @@ fn bounded_targets(
     Ok(targets)
 }
 
+fn geometry_available(snapshot: &PageSnapshot, visual_viewport: Option<&CssRect>) -> bool {
+    visual_viewport.is_some()
+        && snapshot
+            .nodes
+            .iter()
+            .any(|node| node.document_rect.is_some())
+}
+
+fn intersects_viewport(
+    node: &krometrail_core::SnapshotNode,
+    visual_viewport: Option<&CssRect>,
+) -> bool {
+    let (Some(node_rect), Some(viewport)) = (node.document_rect, visual_viewport) else {
+        return false;
+    };
+    node_rect.origin.x < viewport.right()
+        && node_rect.right() > viewport.origin.x
+        && node_rect.origin.y < viewport.bottom()
+        && node_rect.bottom() > viewport.origin.y
+}
+
 fn concise_snapshot(
     snapshot: &PageSnapshot,
     novelty: SnapshotNovelty,
+    visual_viewport: Option<&CssRect>,
 ) -> Result<Value, ResponseInvariantError> {
     let actionable = snapshot.nodes.iter().filter(|node| node.actionable).count();
-    let targets = bounded_targets(snapshot, true)?;
+    let targets = bounded_targets(snapshot, true, visual_viewport)?;
     let omissions = TargetOmissions {
         source_nodes: snapshot.omitted_node_count,
         presentation_targets: u32::try_from(actionable - targets.len())
@@ -1429,8 +1478,9 @@ fn concise_snapshot(
 fn expanded_snapshot(
     snapshot: &PageSnapshot,
     novelty: SnapshotNovelty,
+    visual_viewport: Option<&CssRect>,
 ) -> Result<Value, ResponseInvariantError> {
-    let targets = bounded_targets(snapshot, false)?;
+    let targets = bounded_targets(snapshot, false, visual_viewport)?;
     let actionable = snapshot.nodes.iter().filter(|node| node.actionable).count();
     let context_count = snapshot.nodes.len() - actionable;
     let mut candidates = snapshot
@@ -1556,6 +1606,7 @@ fn project_response(
             &mut projection.result,
             response.detail,
             SnapshotNovelty::Novel,
+            None,
         )?;
     } else if tool == "inspect_page" {
         project_root_page_state(&mut projection.result, response.detail)?;
@@ -1567,6 +1618,7 @@ fn project_root_snapshot(
     value: &mut Value,
     detail: ResponseDetail,
     novelty: SnapshotNovelty,
+    visual_viewport: Option<&CssRect>,
 ) -> Result<(), ResponseInvariantError> {
     match detail {
         ResponseDetail::Full => {}
@@ -1574,12 +1626,14 @@ fn project_root_snapshot(
             *value = concise_snapshot(
                 &serde_json::from_value(value.clone()).map_err(|_| ResponseInvariantError)?,
                 novelty,
+                visual_viewport,
             )?
         }
         ResponseDetail::Expanded => {
             *value = expanded_snapshot(
                 &serde_json::from_value(value.clone()).map_err(|_| ResponseInvariantError)?,
                 novelty,
+                visual_viewport,
             )?
         }
     }
@@ -1612,11 +1666,12 @@ fn project_snapshot_part(
     part: &mut Value,
     detail: ResponseDetail,
     novelty: SnapshotNovelty,
+    visual_viewport: Option<&CssRect>,
 ) -> Result<(), ResponseInvariantError> {
     let Some(value) = part.get_mut("available") else {
         return Ok(());
     };
-    project_root_snapshot(value, detail, novelty)
+    project_root_snapshot(value, detail, novelty, visual_viewport)
 }
 
 fn concise_page_state(value: &Value) -> Result<Value, ResponseInvariantError> {
@@ -2689,6 +2744,7 @@ mod tests {
             properties: vec![],
             actionable: false,
             reference: None,
+            document_rect: None,
         }];
         for value in 2..=400 {
             nodes.push(SnapshotNode {
@@ -2702,6 +2758,7 @@ mod tests {
                 properties: vec![],
                 actionable: false,
                 reference: None,
+                document_rect: None,
             });
         }
         let group_id = SnapshotNodeId::new(401).unwrap();
@@ -2716,6 +2773,7 @@ mod tests {
             properties: vec![],
             actionable: false,
             reference: None,
+            document_rect: None,
         });
         let action_id = SnapshotNodeId::new(402).unwrap();
         nodes.push(SnapshotNode {
@@ -2733,6 +2791,7 @@ mod tests {
                 generation,
                 node_id: action_id,
             }),
+            document_rect: None,
         });
         nodes.push(SnapshotNode {
             id: SnapshotNodeId::new(403).unwrap(),
@@ -2745,6 +2804,7 @@ mod tests {
             properties: vec![],
             actionable: false,
             reference: None,
+            document_rect: None,
         });
         PageSnapshot::new(context(), generation, nodes, 7).unwrap()
     }
@@ -2765,10 +2825,11 @@ mod tests {
                 properties: vec![],
                 actionable: false,
                 reference: None,
+                document_rect: None,
             });
         }
         let snapshot = PageSnapshot::new(context(), generation, nodes, 0).unwrap();
-        let outcomes = semantic_outcomes(&snapshot).unwrap();
+        let outcomes = semantic_outcomes(&snapshot, None).unwrap();
         assert_eq!(outcomes[0].role, "status");
         assert!(outcomes.len() <= MAX_SEMANTIC_OUTCOMES);
         assert!(serde_json::to_vec(&outcomes).unwrap().len() <= MAX_SEMANTIC_OUTCOME_JSON_BYTES);
@@ -3024,6 +3085,7 @@ mod tests {
             properties: vec![],
             actionable: false,
             reference: None,
+            document_rect: None,
         }];
         for value in 2..=80 {
             let id = SnapshotNodeId::new(value).unwrap();
@@ -3042,6 +3104,7 @@ mod tests {
                     generation,
                     node_id: id,
                 }),
+                document_rect: None,
             });
         }
         let focused_id = SnapshotNodeId::new(81).unwrap();
@@ -3064,9 +3127,10 @@ mod tests {
                 generation,
                 node_id: focused_id,
             }),
+            document_rect: None,
         });
         let snapshot = PageSnapshot::new(context(), generation, nodes, 9).unwrap();
-        let concise = concise_snapshot(&snapshot, SnapshotNovelty::Novel).unwrap();
+        let concise = concise_snapshot(&snapshot, SnapshotNovelty::Novel, None).unwrap();
         assert!(concise["targets"].as_array().unwrap().len() <= MAX_CONCISE_TARGETS);
         assert!(
             serde_json::to_vec(&concise["targets"]).unwrap().len() <= MAX_CONCISE_TARGET_JSON_BYTES
@@ -3087,6 +3151,101 @@ mod tests {
     }
 
     #[test]
+    fn viewport_geometry_prioritizes_intersecting_targets_and_text() {
+        let generation = SnapshotGeneration::new(1).unwrap();
+        let root = SnapshotNodeId::new(1).unwrap();
+        let outside = SnapshotNodeId::new(2).unwrap();
+        let inside = SnapshotNodeId::new(3).unwrap();
+        let outside_text = SnapshotNodeId::new(4).unwrap();
+        let inside_text = SnapshotNodeId::new(5).unwrap();
+        let reference = |node_id| NodeReference {
+            target_id: target_id(),
+            generation,
+            node_id,
+        };
+        let rect = |x, y, width, height| {
+            CssRect::new(
+                krometrail_core::CssPoint::new(x, y).unwrap(),
+                krometrail_core::CssSize::new(width, height).unwrap(),
+            )
+            .unwrap()
+        };
+        let nodes = vec![
+            SnapshotNode {
+                id: root,
+                parent: None,
+                depth: 0,
+                role: "document".into(),
+                name: None,
+                value: None,
+                description: None,
+                properties: vec![],
+                actionable: false,
+                reference: None,
+                document_rect: None,
+            },
+            SnapshotNode {
+                id: outside,
+                parent: Some(root),
+                depth: 1,
+                role: "button".into(),
+                name: Some("outside".into()),
+                value: None,
+                description: None,
+                properties: vec![],
+                actionable: true,
+                reference: Some(reference(outside)),
+                document_rect: Some(rect(0.0, 200.0, 20.0, 20.0)),
+            },
+            SnapshotNode {
+                id: inside,
+                parent: Some(root),
+                depth: 1,
+                role: "button".into(),
+                name: Some("inside".into()),
+                value: None,
+                description: None,
+                properties: vec![],
+                actionable: true,
+                reference: Some(reference(inside)),
+                document_rect: Some(rect(0.0, 10.0, 20.0, 20.0)),
+            },
+            SnapshotNode {
+                id: outside_text,
+                parent: Some(root),
+                depth: 1,
+                role: "paragraph".into(),
+                name: Some("outside text".into()),
+                value: None,
+                description: None,
+                properties: vec![],
+                actionable: false,
+                reference: None,
+                document_rect: Some(rect(0.0, 200.0, 20.0, 20.0)),
+            },
+            SnapshotNode {
+                id: inside_text,
+                parent: Some(root),
+                depth: 1,
+                role: "paragraph".into(),
+                name: Some("inside text".into()),
+                value: None,
+                description: None,
+                properties: vec![],
+                actionable: false,
+                reference: None,
+                document_rect: Some(rect(0.0, 10.0, 20.0, 20.0)),
+            },
+        ];
+        let snapshot = PageSnapshot::new(context(), generation, nodes, 0).unwrap();
+        let viewport = rect(0.0, 0.0, 100.0, 100.0);
+        let targets = bounded_targets(&snapshot, true, Some(&viewport)).unwrap();
+        assert_eq!(targets[0].reference.node_id, inside);
+        let outcomes = semantic_outcomes(&snapshot, Some(&viewport)).unwrap();
+        assert_eq!(outcomes[0].name.as_deref(), Some("inside text"));
+    }
+
+    #[test]
     fn expanded_snapshot_complete_json_stays_within_its_budget() {
         let mut snapshot = complex_snapshot();
         snapshot
@@ -3096,7 +3255,7 @@ mod tests {
             .unwrap()
             .properties
             .push(AccessibleProperty::new("focusable", AccessibleValue::Boolean(true)).unwrap());
-        let expanded = expanded_snapshot(&snapshot, SnapshotNovelty::Novel).unwrap();
+        let expanded = expanded_snapshot(&snapshot, SnapshotNovelty::Novel, None).unwrap();
         let encoded = serde_json::to_vec(&expanded).unwrap();
         assert!(encoded.len() <= MAX_EXPANDED_SNAPSHOT_JSON_BYTES);
         assert!(
@@ -3146,7 +3305,7 @@ mod tests {
             }
         }
         let next = PageSnapshot::new(context(), next_generation, next_nodes, 7).unwrap();
-        let next_projection = concise_snapshot(&next, SnapshotNovelty::Novel).unwrap();
+        let next_projection = concise_snapshot(&next, SnapshotNovelty::Novel, None).unwrap();
         assert!(next_projection["targets"].is_array());
     }
 

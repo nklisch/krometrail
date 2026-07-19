@@ -177,7 +177,7 @@ impl PageControl {
                     .race(
                         state.connection_generation,
                         bound.target_id,
-                        self.snapshot(transport, &bound, request, started_at),
+                        self.snapshot(transport, &bound, request, started_at, false),
                     )
                     .await?
             }
@@ -227,7 +227,7 @@ impl PageControl {
                 .race(
                     state.connection_generation,
                     bound.target_id,
-                    self.observe_live(transport, &bound, request, started_at, None),
+                    self.observe_live(transport, &bound, request, started_at, false, None),
                 )
                 .await?
                 .map(|(result, _)| result),

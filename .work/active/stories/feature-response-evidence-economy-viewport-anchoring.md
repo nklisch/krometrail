@@ -24,3 +24,9 @@ intersection when geometry is present, exact current behavior when absent.
   in-viewport text (fixture with above/inside-viewport targets).
 - Non-scroll operations acquire no DOMSnapshot layout pass (command-recording double).
 - Geometry-less snapshots project byte-identical to pre-change output.
+
+## Completion Note
+
+Implemented and verified: geometry-bearing scroll/set-viewport observations now attach bounded
+DOMSnapshot layout rectangles to AX nodes and viewport-anchor response ranking; ordinary snapshots
+remain geometry-less and avoid the DOMSnapshot layout pass.

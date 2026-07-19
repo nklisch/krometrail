@@ -1861,6 +1861,7 @@ mod tests {
             properties: vec![],
             actionable: false,
             reference: None,
+            document_rect: None,
         }];
         for value in 2..=121 {
             nodes.push(SnapshotNode {
@@ -1874,6 +1875,7 @@ mod tests {
                 properties: vec![],
                 actionable: false,
                 reference: None,
+                document_rect: None,
             });
         }
         let snapshot = PageSnapshot::new(context.clone(), generation, nodes, 0).unwrap();

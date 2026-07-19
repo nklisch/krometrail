@@ -792,7 +792,13 @@ async fn execute_non_local_operation(
             }
             page_control.invalidate_target_snapshot(target_id);
             let observation = page_control
-                .observe_after_operation(transport.as_ref(), state, request.target, cancellation)
+                .observe_after_operation_with_geometry(
+                    transport.as_ref(),
+                    state,
+                    request.target,
+                    cancellation,
+                    true,
+                )
                 .await?;
             let outcome = PageOperationOutcome::Succeeded(PageChange::ViewportConfigured {
                 override_active: requested.is_some(),

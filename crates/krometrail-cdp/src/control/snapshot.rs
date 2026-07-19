@@ -237,10 +237,17 @@ impl PageControl {
         bound: &BoundTarget,
         _request: SnapshotPageRequest,
         started_at: krometrail_core::SessionTime,
+        include_document_geometry: bool,
     ) -> Result<BrowserOperationResult> {
-        self.capture_snapshot(transport, bound, started_at, false)
-            .await
-            .map(|snapshot| BrowserOperationResult::SnapshotPage(Box::new(snapshot)))
+        self.capture_snapshot(
+            transport,
+            bound,
+            started_at,
+            false,
+            include_document_geometry,
+        )
+        .await
+        .map(|snapshot| BrowserOperationResult::SnapshotPage(Box::new(snapshot)))
     }
 
     pub(super) async fn query_page(
@@ -262,6 +269,7 @@ impl PageControl {
                 bound,
                 started_at,
                 request.query.requires_dom_semantics(),
+                false,
                 frame.as_ref(),
             )
             .await?;
@@ -275,9 +283,17 @@ impl PageControl {
         bound: &BoundTarget,
         started_at: krometrail_core::SessionTime,
         include_dom_semantics: bool,
+        include_document_geometry: bool,
     ) -> Result<PageSnapshot> {
-        self.capture_snapshot_for_frame(transport, bound, started_at, include_dom_semantics, None)
-            .await
+        self.capture_snapshot_for_frame(
+            transport,
+            bound,
+            started_at,
+            include_dom_semantics,
+            include_document_geometry,
+            None,
+        )
+        .await
     }
 
     async fn capture_snapshot_for_frame(
@@ -286,6 +302,7 @@ impl PageControl {
         bound: &BoundTarget,
         started_at: krometrail_core::SessionTime,
         include_dom_semantics: bool,
+        include_document_geometry: bool,
         frame: Option<&ResolvedFrameDocument>,
     ) -> Result<PageSnapshot> {
         let scope = CommandScope::Session(bound.transport_session.clone());
@@ -303,7 +320,7 @@ impl PageControl {
             .map_err(|error| {
                 transport_error(error, ErrorCode::PageObservationFailed, bound.target_id)
             })?;
-        let dom_response = if include_dom_semantics {
+        let dom_response = if include_dom_semantics || include_document_geometry {
             Some(
                 transport
                     .send_raw(
@@ -312,7 +329,7 @@ impl PageControl {
                         json!({
                             "computedStyles": [],
                             "includePaintOrder": false,
-                            "includeDOMRects": false,
+                            "includeDOMRects": include_document_geometry,
                             "includeBlendedBackgroundColors": false,
                             "includeTextColorOpacities": false,
                         }),
@@ -338,9 +355,14 @@ impl PageControl {
             &mut next_node_id,
             Some(document.frame_id.as_str()),
         )?;
-        let semantic = match dom_response {
+        let (semantic, document_rects) = match dom_response {
             Some(response) => {
-                let metadata = decode_dom_snapshot(&response, &document, bound.target_id)?;
+                let dom_snapshot = decode_dom_snapshot_with_geometry(
+                    &response,
+                    &document,
+                    bound.target_id,
+                    include_document_geometry,
+                )?;
                 let current = match frame {
                     Some(frame) => {
                         Self::resolve_frame_document(transport, bound, &frame.reference)
@@ -355,7 +377,8 @@ impl PageControl {
                         "document changed while capturing the semantic snapshot",
                     ));
                 }
-                metadata
+                let semantic = dom_snapshot
+                    .metadata
                     .into_iter()
                     .filter_map(|(backend, metadata)| {
                         node_by_backend
@@ -363,10 +386,26 @@ impl PageControl {
                             .copied()
                             .map(|node_id| (node_id, metadata))
                     })
-                    .collect()
+                    .collect();
+                (semantic, dom_snapshot.document_rects)
             }
-            None => HashMap::new(),
+            None => (HashMap::new(), HashMap::new()),
         };
+        let mut nodes = nodes;
+        if !document_rects.is_empty() {
+            let node_indexes = nodes
+                .iter()
+                .enumerate()
+                .map(|(index, node)| (node.id, index))
+                .collect::<HashMap<_, _>>();
+            for (backend, rect) in document_rects {
+                if let Some(node_id) = node_by_backend.get(&backend)
+                    && let Some(index) = node_indexes.get(node_id)
+                {
+                    nodes[*index].document_rect = Some(rect);
+                }
+            }
+        }
         let parent_by_node = nodes.iter().map(|node| (node.id, node.parent)).collect();
         let completed_at = self.session_time()?;
         let context = ObservationContext::new(
@@ -752,11 +791,26 @@ struct DecodedDomNode {
     test_id: Option<String>,
 }
 
+struct DecodedDomSnapshot {
+    metadata: HashMap<i64, SemanticNodeMetadata>,
+    document_rects: HashMap<i64, CssRect>,
+}
+
+#[cfg(test)]
 fn decode_dom_snapshot(
     response: &Value,
     document: &DocumentFingerprint,
     target_id: TargetId,
 ) -> Result<HashMap<i64, SemanticNodeMetadata>> {
+    Ok(decode_dom_snapshot_with_geometry(response, document, target_id, false)?.metadata)
+}
+
+fn decode_dom_snapshot_with_geometry(
+    response: &Value,
+    document: &DocumentFingerprint,
+    target_id: TargetId,
+    include_document_geometry: bool,
+) -> Result<DecodedDomSnapshot> {
     let root = response
         .get("result")
         .filter(|result| result.get("documents").is_some())
@@ -878,6 +932,44 @@ fn decode_dom_snapshot(
         .ok_or_else(|| malformed(target_id, "DOM snapshot layout table is missing"))?;
     let layout_nodes = required_array(layout, "nodeIndex", target_id)?;
     let layout_text = required_parallel_array(layout, "text", layout_nodes.len(), target_id)?;
+    let layout_bounds = include_document_geometry
+        .then(|| required_parallel_array(layout, "bounds", layout_nodes.len(), target_id))
+        .transpose()?;
+    let mut document_rects = HashMap::new();
+    if let Some(bounds) = layout_bounds {
+        for (node_index, bounds) in layout_nodes.iter().zip(bounds) {
+            let Some(node_index) = node_index
+                .as_u64()
+                .and_then(|value| usize::try_from(value).ok())
+                .filter(|value| *value < node_count)
+            else {
+                return Err(malformed(
+                    target_id,
+                    "DOM snapshot layout node index is invalid",
+                ));
+            };
+            let Some(bounds) = bounds.as_array().filter(|values| values.len() == 4) else {
+                return Err(malformed(
+                    target_id,
+                    "DOM snapshot layout bounds are malformed",
+                ));
+            };
+            let values = bounds.iter().map(Value::as_f64).collect::<Option<Vec<_>>>();
+            let Some(values) = values else {
+                return Err(malformed(
+                    target_id,
+                    "DOM snapshot layout bounds are malformed",
+                ));
+            };
+            if values.iter().all(|value| value.is_finite())
+                && let Ok(origin) = CssPoint::new(values[0], values[1])
+                && let Ok(size) = CssSize::new(values[2], values[3])
+                && let Ok(rect) = CssRect::new(origin, size)
+            {
+                document_rects.insert(decoded[node_index].backend_node_id, rect);
+            }
+        }
+    }
     let mut rendered = vec![String::new(); node_count];
     for (node_index, text) in layout_nodes.iter().zip(layout_text) {
         let node_index = node_index
@@ -957,7 +1049,10 @@ fn decode_dom_snapshot(
             push_label(&mut metadata, node.backend_node_id, &composed);
         }
     }
-    Ok(metadata)
+    Ok(DecodedDomSnapshot {
+        metadata,
+        document_rects,
+    })
 }
 
 fn required_array<'a>(
@@ -1540,6 +1635,7 @@ impl<'a> Decoder<'a> {
                     properties,
                     actionable,
                     reference,
+                    document_rect: None,
                 });
                 if let Some(backend_node_id) = backend.filter(|_| actionable) {
                     self.bindings
@@ -1901,6 +1997,7 @@ mod tests {
                 &bound,
                 krometrail_core::SessionTime::ZERO,
                 true,
+                false,
                 Some(&resolved),
             )
             .await
@@ -2008,6 +2105,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ordinary_snapshot_does_not_capture_dom_layout() {
+        let transport = SnapshotTransport::default();
+        transport.push("Page.getFrameTree", frame_tree("main-loader"));
+        transport.push("Accessibility.getFullAXTree", child_ax_tree());
+        let mut control = page_control();
+        control
+            .snapshot(
+                &transport,
+                &frame_bound(),
+                SnapshotPageRequest::new(target()),
+                krometrail_core::SessionTime::ZERO,
+                false,
+            )
+            .await
+            .unwrap();
+        assert!(
+            transport
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(method, _)| method != "DOMSnapshot.captureSnapshot")
+        );
+    }
+
+    #[tokio::test]
     async fn dom_query_limits_only_the_selected_frame_document() {
         let transport = SnapshotTransport::default();
         for _ in 0..3 {
@@ -2081,6 +2204,7 @@ mod tests {
                     &bound,
                     krometrail_core::SessionTime::ZERO,
                     true,
+                    false,
                     Some(&resolved),
                 )
                 .await
@@ -2238,6 +2362,31 @@ mod tests {
     }
 
     #[test]
+    fn dom_snapshot_geometry_joins_layout_bounds_to_backend_nodes() {
+        let mut snapshot = semantic_dom_snapshot();
+        snapshot["documents"][0]["layout"]["bounds"] = Value::Array(vec![
+            json!([0.0, 0.0, 800.0, 600.0]),
+            json!([0.0, 10.0, 120.0, 24.0]),
+            json!([0.0, 40.0, 120.0, 24.0]),
+            json!([0.0, 70.0, 120.0, 24.0]),
+            json!([0.0, 100.0, 120.0, 24.0]),
+            json!([0.0, 130.0, 120.0, 24.0]),
+        ]);
+        let decoded = decode_dom_snapshot_with_geometry(
+            &snapshot,
+            &DocumentFingerprint {
+                frame_id: "main".into(),
+                loader_id: "loader".into(),
+            },
+            target(),
+            true,
+        )
+        .unwrap();
+        assert_eq!(decoded.document_rects[&31].origin.y, 40.0);
+        assert_eq!(decoded.document_rects[&31].size.height, 24.0);
+    }
+
+    #[test]
     fn dom_snapshot_selects_the_qualified_child_document() {
         let mut snapshot = semantic_dom_snapshot();
         let child_index = snapshot["strings"].as_array().unwrap().len();
@@ -2293,6 +2442,7 @@ mod tests {
             properties: vec![],
             actionable,
             reference: actionable.then(|| reference(id)),
+            document_rect: None,
         };
         let snapshot = PageSnapshot::new(
             ObservationContext::new(
@@ -2517,6 +2667,7 @@ mod tests {
             properties: vec![],
             actionable: id != root,
             reference: (id != root).then(|| reference(id)),
+            document_rect: None,
         };
         let nodes = vec![
             node(root, None, 0, ""),
