@@ -1570,6 +1570,53 @@ async fn opt_in_real_chrome_qualifies_viewport_presets_guidance_and_target_isola
     assert_eq!(screenshot.metadata().image.width(), 390);
     assert_eq!(screenshot.metadata().image.height(), 844);
 
+    session
+        .execute(
+            BrowserOperationRequest::NavigatePage(
+                NavigatePageRequest::new(
+                    PageSelection::Target(first),
+                    "https://krometrail.dev/".to_owned(),
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .expect("navigate to public documentation under responsive emulation");
+    let public_docs = session
+        .execute(
+            BrowserOperationRequest::SetViewport(SetViewportRequest {
+                target: PageSelection::Target(first),
+                viewport: ViewportOverride::Preset {
+                    preset: ViewportPreset::ResponsiveSmall,
+                },
+            }),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .expect("acknowledge responsive viewport on overflowing public documentation");
+    let BrowserOperationResult::SetViewport(public_docs) = public_docs else {
+        panic!("public documentation viewport result")
+    };
+    let ObservationPart::Available(public_docs) = public_docs.effective else {
+        panic!("public documentation effective viewport")
+    };
+    assert_eq!(public_docs.layout_css_size.width, 390.0);
+    assert_eq!(public_docs.layout_css_size.height, 844.0);
+    assert!(public_docs.css_size.width < public_docs.layout_css_size.width);
+
+    session
+        .execute(
+            BrowserOperationRequest::NavigatePage(
+                NavigatePageRequest::new(PageSelection::Target(first), fixture_url.clone())
+                    .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .expect("return to no-viewport fixture");
+    await_fixture_ready(&session, first).await;
+
     let configured = session
         .execute(
             BrowserOperationRequest::SetViewport(SetViewportRequest {

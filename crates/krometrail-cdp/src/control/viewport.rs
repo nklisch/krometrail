@@ -110,7 +110,7 @@ pub(crate) async fn observe_effective_viewport(
             &scope,
             "Runtime.evaluate",
             json!({
-                "expression": "({scale:devicePixelRatio,touchPoints:navigator.maxTouchPoints,viewportMetaPresent:document.querySelector('meta[name=\"viewport\"]')!==null})",
+                "expression": "({layoutWidth:window.innerWidth,layoutHeight:window.innerHeight,scale:devicePixelRatio,touchPoints:navigator.maxTouchPoints,viewportMetaPresent:document.querySelector('meta[name=\"viewport\"]')!==null})",
                 "returnByValue": true,
                 "throwOnSideEffect": true,
                 "silent": true,
@@ -174,13 +174,10 @@ fn decode_effective_viewport(
     let visual_viewport = layout
         .get("cssVisualViewport")
         .ok_or_else(|| malformed(target_id))?;
-    let layout_viewport = layout
-        .get("cssLayoutViewport")
-        .ok_or_else(|| malformed(target_id))?;
     let width = number(visual_viewport, "clientWidth")?;
     let height = number(visual_viewport, "clientHeight")?;
-    let layout_width = number(layout_viewport, "clientWidth")?;
-    let layout_height = number(layout_viewport, "clientHeight")?;
+    let layout_width = number(value, "layoutWidth")?;
+    let layout_height = number(value, "layoutHeight")?;
     let scale = number(value, "scale")?;
     let touch_points = value
         .get("touchPoints")
@@ -200,11 +197,28 @@ fn decode_effective_viewport(
         viewport_meta_present,
     };
     if let Some(expected) = declared {
-        let matches = declared_geometry_matches(expected, &effective)
-            && (effective.device_scale_factor.get() - expected.device_scale_factor().get()).abs()
-                <= 0.01
-            && effective.touch == expected.touch();
-        if !matches {
+        let mismatch = viewport_mismatch(expected, &effective);
+        if mismatch.any() {
+            tracing::warn!(
+                event = "viewport.ack.failed",
+                target_id = %target_id,
+                mobile = expected.mobile(),
+                expected_width = expected.width(),
+                expected_height = expected.height(),
+                observed_layout_width = effective.layout_css_size.width,
+                observed_layout_height = effective.layout_css_size.height,
+                observed_visual_width = effective.css_size.width,
+                observed_visual_height = effective.css_size.height,
+                expected_device_scale_factor = expected.device_scale_factor().get(),
+                observed_device_scale_factor = effective.device_scale_factor.get(),
+                expected_touch = expected.touch(),
+                observed_touch = effective.touch,
+                width_mismatch = mismatch.width,
+                height_mismatch = mismatch.height,
+                device_scale_factor_mismatch = mismatch.device_scale_factor,
+                touch_mismatch = mismatch.touch,
+                "viewport.ack.failed"
+            );
             return Err(operation_error(
                 ErrorCode::TargetFailed,
                 target_id,
@@ -221,14 +235,35 @@ fn decode_effective_viewport(
     Ok(effective)
 }
 
-fn declared_geometry_matches(expected: ViewportMetrics, effective: &EffectiveViewport) -> bool {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ViewportMismatch {
+    width: bool,
+    height: bool,
+    device_scale_factor: bool,
+    touch: bool,
+}
+
+impl ViewportMismatch {
+    fn any(self) -> bool {
+        self.width || self.height || self.device_scale_factor || self.touch
+    }
+}
+
+fn viewport_mismatch(expected: ViewportMetrics, effective: &EffectiveViewport) -> ViewportMismatch {
     let observed = if expected.mobile() {
         effective.css_size
     } else {
         effective.layout_css_size
     };
-    (observed.width - f64::from(expected.width())).abs() <= 0.5
-        && (observed.height - f64::from(expected.height())).abs() <= 0.5
+    ViewportMismatch {
+        width: (observed.width - f64::from(expected.width())).abs() > 0.5,
+        height: (observed.height - f64::from(expected.height())).abs() > 0.5,
+        device_scale_factor: (effective.device_scale_factor.get()
+            - expected.device_scale_factor().get())
+        .abs()
+            > 0.01,
+        touch: effective.touch != expected.touch(),
+    }
 }
 
 fn number(value: &Value, field: &str) -> Result<f64> {
@@ -272,7 +307,7 @@ mod tests {
                 "cssVisualViewport":{"clientWidth":390,"clientHeight":844},
                 "cssLayoutViewport":{"clientWidth":980,"clientHeight":2120}
             }}),
-            &json!({"result":{"result":{"value":{"scale":3.0,"touchPoints":1,"viewportMetaPresent":false}}}}),
+            &json!({"result":{"result":{"value":{"layoutWidth":980,"layoutHeight":2120,"scale":3.0,"touchPoints":1,"viewportMetaPresent":false}}}}),
             Some(declared),
             target(),
         )
@@ -291,7 +326,7 @@ mod tests {
                 "cssVisualViewport":{"clientWidth":391,"clientHeight":844},
                 "cssLayoutViewport":{"clientWidth":391,"clientHeight":844}
             }}),
-            &json!({"result":{"result":{"value":{"scale":3.0,"touchPoints":1,"viewportMetaPresent":true}}}}),
+            &json!({"result":{"result":{"value":{"layoutWidth":391,"layoutHeight":844,"scale":3.0,"touchPoints":1,"viewportMetaPresent":true}}}}),
             Some(declared),
             target(),
         )
@@ -303,16 +338,19 @@ mod tests {
         let declared = ViewportMetrics::new(390, 844, 1.0, false, false).unwrap();
         let effective = decode_effective_viewport(
             &json!({"result":{
-                "cssVisualViewport":{"clientWidth":375,"clientHeight":844},
-                "cssLayoutViewport":{"clientWidth":390,"clientHeight":844}
+                "cssVisualViewport":{"clientWidth":384,"clientHeight":844},
+                "cssLayoutViewport":{"clientWidth":384,"clientHeight":844}
             }}),
-            &json!({"result":{"result":{"value":{"scale":1.0,"touchPoints":0,"viewportMetaPresent":true}}}}),
+            &json!({"result":{"result":{"value":{
+                "layoutWidth":390,"layoutHeight":844,"scale":1.0,
+                "touchPoints":0,"viewportMetaPresent":true
+            }}}}),
             Some(declared),
             target(),
         )
-        .expect("desktop emulation acknowledges its layout viewport despite a scrollbar");
+        .expect("desktop emulation acknowledges window layout despite CDP scrollbar reduction");
 
-        assert_eq!(effective.css_size, CssSize::new(375.0, 844.0).unwrap());
+        assert_eq!(effective.css_size, CssSize::new(384.0, 844.0).unwrap());
         assert_eq!(
             effective.layout_css_size,
             CssSize::new(390.0, 844.0).unwrap()
@@ -331,11 +369,35 @@ mod tests {
                 "cssVisualViewport":{"clientWidth":375,"clientHeight":844},
                 "cssLayoutViewport":{"clientWidth":391,"clientHeight":844}
             }}),
-            &json!({"result":{"result":{"value":{"scale":1.0,"touchPoints":0,"viewportMetaPresent":true}}}}),
+            &json!({"result":{"result":{"value":{"layoutWidth":391,"layoutHeight":844,"scale":1.0,"touchPoints":0,"viewportMetaPresent":true}}}}),
             Some(declared),
             target(),
         )
         .is_err());
+    }
+
+    #[test]
+    fn viewport_mismatch_facts_distinguish_geometry_scale_and_touch() {
+        let expected = ViewportMetrics::new(390, 844, 1.0, false, false).unwrap();
+        let effective = EffectiveViewport {
+            css_size: CssSize::new(384.0, 843.0).unwrap(),
+            layout_css_size: CssSize::new(391.0, 843.0).unwrap(),
+            device_scale_factor: DeviceScaleFactor::new(2.0).unwrap(),
+            mobile: false,
+            touch: true,
+            override_active: true,
+            viewport_meta_present: true,
+        };
+
+        assert_eq!(
+            viewport_mismatch(expected, &effective),
+            ViewportMismatch {
+                width: true,
+                height: true,
+                device_scale_factor: true,
+                touch: true,
+            }
+        );
     }
 
     #[test]
@@ -345,7 +407,7 @@ mod tests {
                 "cssVisualViewport":{"clientWidth":1440,"clientHeight":900},
                 "cssLayoutViewport":{"clientWidth":1440,"clientHeight":900}
             }}),
-            &json!({"result":{"result":{"value":{"scale":1.0,"touchPoints":1,"viewportMetaPresent":true}}}}),
+            &json!({"result":{"result":{"value":{"layoutWidth":1440,"layoutHeight":900,"scale":1.0,"touchPoints":1,"viewportMetaPresent":true}}}}),
             None,
             target(),
         )

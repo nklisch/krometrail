@@ -1123,7 +1123,8 @@ mod tests {
                     "cssLayoutViewport":{"clientWidth":390,"clientHeight":844}
                 }),
                 "Runtime.evaluate" => json!({"result":{"value":{
-                    "scale":3.0,"touchPoints":1,"viewportMetaPresent":true
+                    "layoutWidth":390,"layoutHeight":844,"scale":3.0,
+                    "touchPoints":1,"viewportMetaPresent":true
                 }}}),
                 _ => json!({}),
             };

@@ -595,7 +595,8 @@ mod interactions {
         transport.push(
             "Runtime.evaluate",
             Ok(json!({"result":{"result":{"value":{
-                "scale":2.0,"touchPoints":0,"viewportMetaPresent":true
+                "layoutWidth":800,"layoutHeight":600,"scale":2.0,
+                "touchPoints":0,"viewportMetaPresent":true
             }}}})),
         );
         let metrics = ViewportMetrics::new(800, 600, 2.0, false, false).unwrap();

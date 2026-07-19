@@ -1897,6 +1897,8 @@ mod tests {
                 }),
                 "Runtime.evaluate" => serde_json::json!({
                     "result": {"result": {"value": {
+                        "layoutWidth": *self.layout_width.lock().unwrap(),
+                        "layoutHeight": *self.layout_height.lock().unwrap(),
                         "scale": *self.scale.lock().unwrap(),
                         "touchPoints": *self.touch_points.lock().unwrap(),
                         "viewportMetaPresent": self.viewport_meta_present.load(Ordering::Acquire)
