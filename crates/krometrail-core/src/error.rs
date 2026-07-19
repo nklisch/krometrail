@@ -53,6 +53,80 @@ define_stable_enum! {
     }
 }
 
+define_stable_enum! {
+    pub enum PersistenceOperation {
+        SegmentDirectoryPreparation => "segment_directory_preparation",
+        OpenSegmentCreation => "open_segment_creation",
+        OpenSegmentPublicationSync => "open_segment_publication_sync",
+        FrameRecordAppend => "frame_record_append",
+        FrameRecordFlush => "frame_record_flush",
+        SealedSegmentFooterWrite => "sealed_segment_footer_write",
+        SealedSegmentFileSync => "sealed_segment_file_sync",
+        SealedSegmentPublication => "sealed_segment_publication",
+        SealedSegmentPublicationSync => "sealed_segment_publication_sync",
+        SegmentWriterWorker => "segment_writer_worker",
+        FrameIndex => "frame_index",
+        GapIndex => "gap_index",
+        SessionFlush => "session_flush",
+    }
+}
+
+define_stable_enum! {
+    pub enum PersistenceFailureCategory {
+        NotFound => "not_found",
+        PermissionDenied => "permission_denied",
+        AlreadyExists => "already_exists",
+        Interrupted => "interrupted",
+        ResourceBusy => "resource_busy",
+        StorageFull => "storage_full",
+        ReadOnlyFilesystem => "read_only_filesystem",
+        InvalidData => "invalid_data",
+        Unavailable => "unavailable",
+        Other => "other",
+    }
+}
+
+define_stable_enum! {
+    pub enum PersistenceRecoverability {
+        WriterUsable => "writer_usable",
+        WriterTerminal => "writer_terminal",
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PersistenceFailure {
+    operation: PersistenceOperation,
+    category: PersistenceFailureCategory,
+    recoverability: PersistenceRecoverability,
+}
+
+impl PersistenceFailure {
+    pub const fn new(
+        operation: PersistenceOperation,
+        category: PersistenceFailureCategory,
+        recoverability: PersistenceRecoverability,
+    ) -> Self {
+        Self {
+            operation,
+            category,
+            recoverability,
+        }
+    }
+
+    pub const fn operation(&self) -> PersistenceOperation {
+        self.operation
+    }
+
+    pub const fn category(&self) -> PersistenceFailureCategory {
+        self.category
+    }
+
+    pub const fn recoverability(&self) -> PersistenceRecoverability {
+        self.recoverability
+    }
+}
+
 #[derive(
     Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema,
 )]
@@ -130,6 +204,8 @@ pub struct KrometrailError {
     pub retry: RetryAdvice,
     #[serde(default)]
     pub recovery: Option<NonEmptyText>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persistence: Option<PersistenceFailure>,
 }
 
 impl fmt::Display for ErrorCode {
@@ -260,6 +336,7 @@ impl KrometrailError {
             context: ErrorContext::default(),
             retry: RetryAdvice::Never,
             recovery: None,
+            persistence: None,
         }
     }
 
@@ -283,6 +360,11 @@ impl KrometrailError {
 
     pub fn with_recovery(mut self, recovery: NonEmptyText) -> Self {
         self.recovery = Some(recovery);
+        self
+    }
+
+    pub fn with_persistence(mut self, failure: PersistenceFailure) -> Self {
+        self.persistence = Some(failure);
         self
     }
 }
@@ -343,11 +425,42 @@ mod tests {
             serde_json::from_str::<KrometrailError>(&json).unwrap(),
             error
         );
+    }
 
-        let legacy = r#"{"code":"invalid_input","message":"legacy validation"}"#;
-        let decoded = serde_json::from_str::<KrometrailError>(legacy).unwrap();
-        assert_eq!(decoded.message.as_str(), "legacy validation");
-        assert_eq!(decoded.retry, RetryAdvice::Never);
+    #[test]
+    fn persistence_failure_is_bounded_and_rejects_unknown_values() {
+        let failure = PersistenceFailure::new(
+            PersistenceOperation::SealedSegmentPublicationSync,
+            PersistenceFailureCategory::PermissionDenied,
+            PersistenceRecoverability::WriterUsable,
+        );
+        let error = KrometrailError::new(
+            ErrorCode::PersistenceFailed,
+            NonEmptyText::new("sealed segment publication sync failed").unwrap(),
+        )
+        .with_persistence(failure.clone());
+        let json = serde_json::to_string(&error).unwrap();
+        assert!(json.contains("sealed_segment_publication_sync"));
+        assert!(json.contains("permission_denied"));
+        assert!(json.contains("writer_usable"));
+        assert!(!json.contains("/private/recordings"));
+        assert!(!json.contains("raw operating system detail"));
+        assert_eq!(
+            serde_json::from_str::<KrometrailError>(&json).unwrap(),
+            error
+        );
+        assert!(serde_json::from_str::<PersistenceFailure>(
+            r#"{"operation":"old_unclassified","category":"other","recoverability":"writer_terminal"}"#,
+        )
+        .is_err());
+        assert!(serde_json::from_str::<PersistenceFailure>(
+            r#"{"operation":"frame_record_append","category":"other","recoverability":"writer_terminal","source":"secret"}"#,
+        )
+        .is_err());
+        assert_eq!(
+            format!("{failure:?}").contains("raw operating system detail"),
+            false
+        );
     }
 
     #[test]

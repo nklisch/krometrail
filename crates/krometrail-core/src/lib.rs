@@ -124,7 +124,9 @@ pub use debug_bundle::{
     TemporalDebugBundleRequest, TemporalDebugBundles, TemporalDebugHeader,
 };
 pub use error::{
-    EmptyTextError, ErrorCode, ErrorContext, KrometrailError, NonEmptyText, Result, RetryAdvice,
+    EmptyTextError, ErrorCode, ErrorContext, KrometrailError, NonEmptyText, PersistenceFailure,
+    PersistenceFailureCategory, PersistenceOperation, PersistenceRecoverability, Result,
+    RetryAdvice,
 };
 pub use ids::{
     ArtifactId, BrowserEventId, DownloadId, FrameId, GapId, IdValue, InteractionId, MarkerId,

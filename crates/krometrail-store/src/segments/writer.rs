@@ -8,8 +8,9 @@ use std::{
 };
 
 use krometrail_core::{
-    ByteOffset, EncodedFrame, FrameAddress, KrometrailError, ObservedTime, SegmentId, SessionId,
-    SessionTime, TargetId,
+    ByteOffset, EncodedFrame, FrameAddress, KrometrailError, ObservedTime, PersistenceFailure,
+    PersistenceFailureCategory, PersistenceOperation, PersistenceRecoverability, SegmentId,
+    SessionId, SessionTime, TargetId,
 };
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
@@ -177,8 +178,13 @@ impl SegmentWriter {
                 "segment writer queue capacity must be greater than zero",
             ));
         }
-        permissions::ensure_private_directory(&config.directory)
-            .map_err(|error| io_error("create the segment directory", error))?;
+        permissions::ensure_private_directory(&config.directory).map_err(|error| {
+            io_error(
+                PersistenceOperation::SegmentDirectoryPreparation,
+                error,
+                PersistenceRecoverability::WriterTerminal,
+            )
+        })?;
         verify_writable(&config.directory)?;
 
         let (commands, receiver) = mpsc::channel(queue_capacity);
@@ -192,7 +198,13 @@ impl SegmentWriter {
         std::thread::Builder::new()
             .name("krometrail-segment-writer".to_owned())
             .spawn(move || state.run(receiver))
-            .map_err(|error| io_error("start the segment writer worker", error))?;
+            .map_err(|error| {
+                io_error(
+                    PersistenceOperation::SegmentWriterWorker,
+                    error,
+                    PersistenceRecoverability::WriterTerminal,
+                )
+            })?;
         Ok(Self {
             commands,
             rotation_max_size: rotation.max_size(),
@@ -213,10 +225,8 @@ impl SegmentWriter {
         self.commands
             .send(WriterCommand::Append { frame, reply })
             .await
-            .map_err(|_| worker_unavailable("append a frame"))?;
-        response
-            .await
-            .map_err(|_| worker_unavailable("receive the frame append result"))?
+            .map_err(|_| worker_unavailable())?;
+        response.await.map_err(|_| worker_unavailable())?
     }
 
     pub async fn flush_indexable(
@@ -227,10 +237,8 @@ impl SegmentWriter {
         self.commands
             .send(WriterCommand::Flush { session_id, reply })
             .await
-            .map_err(|_| worker_unavailable("flush a recording session"))?;
-        response
-            .await
-            .map_err(|_| worker_unavailable("receive the recording flush result"))?
+            .map_err(|_| worker_unavailable())?;
+        response.await.map_err(|_| worker_unavailable())?
     }
 
     pub async fn flush_all_indexable(&self) -> krometrail_core::Result<Vec<SegmentRegistration>> {
@@ -238,10 +246,8 @@ impl SegmentWriter {
         self.commands
             .send(WriterCommand::FlushAll { reply })
             .await
-            .map_err(|_| worker_unavailable("flush all recording sessions"))?;
-        response
-            .await
-            .map_err(|_| worker_unavailable("receive the complete recording flush result"))?
+            .map_err(|_| worker_unavailable())?;
+        response.await.map_err(|_| worker_unavailable())?
     }
 }
 
@@ -277,11 +283,22 @@ impl WorkerState {
         }
         match operation(self) {
             Ok(value) => Ok(value),
-            Err(error) => {
-                // A partial filesystem operation can invalidate offsets or the
-                // open/sealed state. Refuse later commands instead of guessing
-                // that the worker remains safe to use.
-                self.terminal_error = Some(error.clone());
+            Err(mut error) => {
+                let recoverability = match error.persistence.as_ref() {
+                    Some(failure) => failure.recoverability(),
+                    None => {
+                        error = store_error(
+                            PersistenceOperation::SegmentWriterWorker,
+                            PersistenceFailureCategory::InvalidData,
+                            PersistenceRecoverability::WriterTerminal,
+                            "segment writer returned an unclassified failure",
+                        );
+                        PersistenceRecoverability::WriterTerminal
+                    }
+                };
+                if recoverability == PersistenceRecoverability::WriterTerminal {
+                    self.terminal_error = Some(error.clone());
+                }
                 Err(error)
             }
         }
@@ -394,28 +411,43 @@ impl OpenSegment {
     }
 
     fn append(&mut self, frame: EncodedFrame) -> krometrail_core::Result<FrameAddress> {
-        let record = encode_frame_record(&frame)?;
+        let record = encode_frame_record(&frame).map_err(|_| {
+            store_error(
+                PersistenceOperation::FrameRecordAppend,
+                PersistenceFailureCategory::InvalidData,
+                PersistenceRecoverability::WriterTerminal,
+                "frame record encoding failed",
+            )
+        })?;
         let offset = self.file_len;
-        self.writer
-            .write_all(&record)
-            .map_err(|error| io_error("append a frame record", error))?;
+        self.writer.write_all(&record).map_err(|error| {
+            io_error(
+                PersistenceOperation::FrameRecordAppend,
+                error,
+                PersistenceRecoverability::WriterTerminal,
+            )
+        })?;
         // A returned address always names a complete record in the OS page cache.
         // Power-loss durability is promoted at seal/rotation/session flush.
-        self.writer
-            .flush()
-            .map_err(|error| io_error("flush a frame record", error))?;
+        self.writer.flush().map_err(|error| {
+            io_error(
+                PersistenceOperation::FrameRecordFlush,
+                error,
+                PersistenceRecoverability::WriterTerminal,
+            )
+        })?;
         self.file_len = self
             .file_len
             .checked_add(record.len() as u64)
-            .ok_or_else(|| persistence_error("segment file length overflow"))?;
+            .ok_or_else(|| writer_invalid("segment file length overflow"))?;
         self.record_count = self
             .record_count
             .checked_add(1)
-            .ok_or_else(|| persistence_error("segment record count overflow"))?;
+            .ok_or_else(|| writer_invalid("segment record count overflow"))?;
         self.total_payload = self
             .total_payload
             .checked_add(frame.byte_len().get())
-            .ok_or_else(|| persistence_error("segment payload count overflow"))?;
+            .ok_or_else(|| writer_invalid("segment payload count overflow"))?;
         self.last_session_time = frame.metadata().session_time();
         self.last_observed_time = frame.metadata().observed_time();
         Ok(FrameAddress::new(
@@ -443,19 +475,34 @@ fn open_segment(
         rotation.max_size,
     );
     let mut writer = BufWriter::new(file);
-    writer
-        .write_all(&header.encode())
-        .map_err(|error| io_error("write a segment header", error))?;
-    writer
-        .flush()
-        .map_err(|error| io_error("flush a segment header", error))?;
-    writer
-        .get_ref()
-        .sync_data()
-        .map_err(|error| io_error("sync a segment header", error))?;
-    directory_sync
-        .sync(directory)
-        .map_err(|error| io_error("sync the initial open-segment publication", error))?;
+    writer.write_all(&header.encode()).map_err(|error| {
+        io_error(
+            PersistenceOperation::OpenSegmentCreation,
+            error,
+            PersistenceRecoverability::WriterTerminal,
+        )
+    })?;
+    writer.flush().map_err(|error| {
+        io_error(
+            PersistenceOperation::OpenSegmentCreation,
+            error,
+            PersistenceRecoverability::WriterTerminal,
+        )
+    })?;
+    writer.get_ref().sync_data().map_err(|error| {
+        io_error(
+            PersistenceOperation::OpenSegmentCreation,
+            error,
+            PersistenceRecoverability::WriterTerminal,
+        )
+    })?;
+    directory_sync.sync(directory).map_err(|error| {
+        io_error(
+            PersistenceOperation::OpenSegmentPublicationSync,
+            error,
+            PersistenceRecoverability::WriterTerminal,
+        )
+    })?;
     Ok(OpenSegment {
         header,
         writer,
@@ -477,11 +524,20 @@ fn create_open_file(directory: &Path) -> krometrail_core::Result<(SegmentId, Fil
         match options.open(open_segment_path(directory, segment_id)) {
             Ok(file) => return Ok((segment_id, file)),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(io_error("create an open segment", error)),
+            Err(error) => {
+                return Err(io_error(
+                    PersistenceOperation::OpenSegmentCreation,
+                    error,
+                    PersistenceRecoverability::WriterTerminal,
+                ));
+            }
         }
     }
-    Err(persistence_error(
-        "could not allocate a unique segment identifier",
+    Err(store_error(
+        PersistenceOperation::OpenSegmentCreation,
+        PersistenceFailureCategory::AlreadyExists,
+        PersistenceRecoverability::WriterTerminal,
+        "open segment identifier allocation failed",
     ))
 }
 
@@ -499,30 +555,51 @@ fn seal_segment(
         open.last_observed_time,
     );
     let footer_bytes = footer.encode();
-    open.writer
-        .write_all(&footer_bytes)
-        .map_err(|error| io_error("write a sealed segment footer", error))?;
-    open.writer
-        .flush()
-        .map_err(|error| io_error("flush a sealed segment", error))?;
-    open.writer
-        .get_ref()
-        .sync_data()
-        .map_err(|error| io_error("sync a sealed segment", error))?;
+    open.writer.write_all(&footer_bytes).map_err(|error| {
+        io_error(
+            PersistenceOperation::SealedSegmentFooterWrite,
+            error,
+            PersistenceRecoverability::WriterTerminal,
+        )
+    })?;
+    open.writer.flush().map_err(|error| {
+        io_error(
+            PersistenceOperation::SealedSegmentFooterWrite,
+            error,
+            PersistenceRecoverability::WriterTerminal,
+        )
+    })?;
+    open.writer.get_ref().sync_data().map_err(|error| {
+        io_error(
+            PersistenceOperation::SealedSegmentFileSync,
+            error,
+            PersistenceRecoverability::WriterTerminal,
+        )
+    })?;
     open.file_len = open
         .file_len
         .checked_add(footer_bytes.len() as u64)
-        .ok_or_else(|| persistence_error("sealed segment file length overflow"))?;
+        .ok_or_else(|| writer_invalid("sealed segment file length overflow"))?;
     let registration = open.registration(SegmentState::Sealed);
     drop(open.writer);
     fs::rename(
         open_segment_path(directory, open.header.segment_id),
         sealed_segment_path(directory, open.header.segment_id),
     )
-    .map_err(|error| io_error("publish a sealed segment", error))?;
-    directory_sync
-        .sync(directory)
-        .map_err(|error| io_error("sync the sealed-segment publication", error))?;
+    .map_err(|error| {
+        io_error(
+            PersistenceOperation::SealedSegmentPublication,
+            error,
+            PersistenceRecoverability::WriterTerminal,
+        )
+    })?;
+    directory_sync.sync(directory).map_err(|error| {
+        io_error(
+            PersistenceOperation::SealedSegmentPublicationSync,
+            error,
+            PersistenceRecoverability::WriterUsable,
+        )
+    })?;
     Ok(registration)
 }
 
@@ -539,12 +616,21 @@ fn verify_writable(directory: &Path) -> krometrail_core::Result<()> {
     let mut options = OpenOptions::new();
     options.create_new(true).write(true);
     permissions::configure_private_file(&mut options);
-    let file = options
-        .open(&probe)
-        .map_err(|error| io_error("verify segment-directory writability", error))?;
+    let file = options.open(&probe).map_err(|error| {
+        io_error(
+            PersistenceOperation::SegmentDirectoryPreparation,
+            error,
+            PersistenceRecoverability::WriterTerminal,
+        )
+    })?;
     drop(file);
-    fs::remove_file(probe)
-        .map_err(|error| io_error("remove the segment-directory write probe", error))
+    fs::remove_file(probe).map_err(|error| {
+        io_error(
+            PersistenceOperation::SegmentDirectoryPreparation,
+            error,
+            PersistenceRecoverability::WriterTerminal,
+        )
+    })
 }
 
 #[cfg(unix)]
@@ -561,14 +647,62 @@ fn sync_directory(_directory: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-fn worker_unavailable(action: &str) -> KrometrailError {
-    persistence_error(format!(
-        "could not {action}: the segment writer worker is unavailable"
-    ))
+fn worker_unavailable() -> KrometrailError {
+    store_error(
+        PersistenceOperation::SegmentWriterWorker,
+        PersistenceFailureCategory::Unavailable,
+        PersistenceRecoverability::WriterTerminal,
+        "segment writer worker is unavailable",
+    )
 }
 
-fn io_error(action: &str, error: std::io::Error) -> KrometrailError {
-    persistence_error(format!("could not {action}: {}", error.kind()))
+fn io_error(
+    operation: PersistenceOperation,
+    error: std::io::Error,
+    recoverability: PersistenceRecoverability,
+) -> KrometrailError {
+    let category = match error.kind() {
+        std::io::ErrorKind::NotFound => PersistenceFailureCategory::NotFound,
+        std::io::ErrorKind::PermissionDenied => PersistenceFailureCategory::PermissionDenied,
+        std::io::ErrorKind::AlreadyExists => PersistenceFailureCategory::AlreadyExists,
+        std::io::ErrorKind::Interrupted => PersistenceFailureCategory::Interrupted,
+        std::io::ErrorKind::WouldBlock => PersistenceFailureCategory::ResourceBusy,
+        std::io::ErrorKind::StorageFull => PersistenceFailureCategory::StorageFull,
+        std::io::ErrorKind::ReadOnlyFilesystem => PersistenceFailureCategory::ReadOnlyFilesystem,
+        std::io::ErrorKind::InvalidData | std::io::ErrorKind::InvalidInput => {
+            PersistenceFailureCategory::InvalidData
+        }
+        _ => PersistenceFailureCategory::Other,
+    };
+    store_error(
+        operation,
+        category,
+        recoverability,
+        "segment persistence operation failed",
+    )
+}
+
+fn writer_invalid(message: &'static str) -> KrometrailError {
+    store_error(
+        PersistenceOperation::FrameRecordAppend,
+        PersistenceFailureCategory::InvalidData,
+        PersistenceRecoverability::WriterTerminal,
+        message,
+    )
+}
+
+fn store_error(
+    operation: PersistenceOperation,
+    category: PersistenceFailureCategory,
+    recoverability: PersistenceRecoverability,
+    message: &'static str,
+) -> KrometrailError {
+    KrometrailError::new(
+        krometrail_core::ErrorCode::PersistenceFailed,
+        krometrail_core::NonEmptyText::new(message).expect("store error message is non-empty"),
+    )
+    .with_retry(krometrail_core::RetryAdvice::AfterRecovery)
+    .with_persistence(PersistenceFailure::new(operation, category, recoverability))
 }
 
 #[cfg(test)]
@@ -624,13 +758,17 @@ mod tests {
     struct CountingDirectorySync {
         calls: AtomicUsize,
         fail_on: Option<usize>,
+        failure_kind: Option<std::io::ErrorKind>,
     }
 
     impl DirectorySync for CountingDirectorySync {
         fn sync(&self, _directory: &Path) -> std::io::Result<()> {
             let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
             if self.fail_on == Some(call) {
-                Err(std::io::Error::other("injected directory sync failure"))
+                Err(std::io::Error::new(
+                    self.failure_kind.unwrap_or(std::io::ErrorKind::Other),
+                    "raw failure at /private/recordings/secret.kts",
+                ))
             } else {
                 Ok(())
             }
@@ -657,6 +795,7 @@ mod tests {
             Arc::new(CountingDirectorySync {
                 calls: AtomicUsize::new(0),
                 fail_on: Some(1),
+                failure_kind: Some(std::io::ErrorKind::PermissionDenied),
             }),
         )
         .unwrap();
@@ -664,24 +803,85 @@ mod tests {
             .append_indexable(test_frame(SessionId::from_uuid(Uuid::from_u128(2)), 1))
             .await
             .unwrap_err();
-        assert!(error.message.as_str().contains("initial open-segment"));
+        let persistence = error.persistence.as_ref().unwrap();
+        assert_eq!(
+            persistence.operation(),
+            PersistenceOperation::OpenSegmentPublicationSync
+        );
+        assert_eq!(
+            persistence.category(),
+            PersistenceFailureCategory::PermissionDenied
+        );
+        assert_eq!(
+            persistence.recoverability(),
+            PersistenceRecoverability::WriterTerminal
+        );
+        let first_entries = fs::read_dir(initial_failure.path()).unwrap().count();
+        let replayed = sink
+            .append_indexable(test_frame(SessionId::from_uuid(Uuid::from_u128(2)), 2))
+            .await
+            .unwrap_err();
+        assert_eq!(replayed, error);
+        assert_eq!(
+            fs::read_dir(initial_failure.path()).unwrap().count(),
+            first_entries
+        );
 
         let rename_failure = TempDir::new().unwrap();
-        let sink = SegmentWriter::open_with_worker(
-            config(&rename_failure),
-            4,
-            Arc::new(CountingDirectorySync {
-                calls: AtomicUsize::new(0),
-                fail_on: Some(2),
-            }),
-        )
-        .unwrap();
+        let sync = Arc::new(CountingDirectorySync {
+            calls: AtomicUsize::new(0),
+            fail_on: Some(2),
+            failure_kind: Some(std::io::ErrorKind::PermissionDenied),
+        });
+        let sink =
+            SegmentWriter::open_with_worker(config(&rename_failure), 4, sync.clone()).unwrap();
         let session_id = SessionId::from_uuid(Uuid::from_u128(3));
-        sink.append_indexable(test_frame(session_id, 1))
+        let first = sink
+            .append_indexable(test_frame(session_id, 1))
             .await
-            .unwrap();
+            .unwrap()
+            .address;
         let error = sink.flush_indexable(session_id).await.unwrap_err();
-        assert!(error.message.as_str().contains("sealed-segment"));
+        let persistence = error.persistence.as_ref().unwrap();
+        assert_eq!(
+            persistence.operation(),
+            PersistenceOperation::SealedSegmentPublicationSync
+        );
+        assert_eq!(
+            persistence.category(),
+            PersistenceFailureCategory::PermissionDenied
+        );
+        assert_eq!(
+            persistence.recoverability(),
+            PersistenceRecoverability::WriterUsable
+        );
+        let serialized = serde_json::to_string(&error).unwrap();
+        assert!(!serialized.contains("/private/recordings"));
+        assert!(!serialized.contains("raw failure"));
+
+        let sealed = sealed_segment_path(rename_failure.path(), first.segment_id);
+        let sealed_bytes = fs::read(&sealed).unwrap();
+        assert_eq!(
+            crate::segments::read_frame_at(&sealed_bytes, first).unwrap(),
+            test_frame(session_id, 1)
+        );
+        let second = sink
+            .append_indexable(test_frame(session_id, 2))
+            .await
+            .unwrap()
+            .address;
+        assert_ne!(first.segment_id, second.segment_id);
+        sink.flush_indexable(session_id).await.unwrap();
+        let second_bytes = fs::read(sealed_segment_path(
+            rename_failure.path(),
+            second.segment_id,
+        ))
+        .unwrap();
+        assert_eq!(
+            crate::segments::read_frame_at(&second_bytes, second).unwrap(),
+            test_frame(session_id, 2)
+        );
+        assert_eq!(sync.calls.load(Ordering::SeqCst), 4);
     }
 
     #[cfg(unix)]

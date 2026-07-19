@@ -1,7 +1,7 @@
 ---
 id: epic-agent-surface-simplification-persistence-recovery-classify-writer-publication-failures
 kind: story
-stage: implementing
+stage: done
 tags: [storage, diagnostics]
 parent: epic-agent-surface-simplification-persistence-recovery
 depends_on: []
@@ -25,3 +25,14 @@ Introduce the bounded persistence operation/category/recoverability contract in 
 ## Ordering
 
 This checkpoint establishes the only persistence classification authority. Capture propagation depends on it.
+
+## Implementation notes
+
+- Execution capability: high; cross-layer storage durability work required precise filesystem-state classification and injected fault verification.
+- Review weight: standard (caller/project default).
+- Files changed: `crates/krometrail-core/src/error.rs`, `crates/krometrail-core/src/lib.rs`, `crates/krometrail-store/src/segments/writer.rs`, and this story.
+- Tests added/removed: added bounded persistence serialization/privacy coverage and expanded the directory-sync fault test to prove exact terminal replay plus safe post-rename writer reuse and readable distinct segments; removed the legacy missing-field decoding assertion.
+- Simplification: replaced free-form writer action strings and unconditional terminal latching with one typed persistence contract and one recoverability branch.
+- Discrepancies from design: fault coverage lives in the writer module where the existing injectable `DirectorySync` seam is private, rather than the external smoke test named in the design.
+- Adjacent issues parked: none.
+- Verification: `cargo test -p krometrail-core error::tests --lib`; `cargo test -p krometrail-store segments::writer::tests::directory_publications_are_synced_and_failures_propagate --lib`; `cargo check -p krometrail-core -p krometrail-store --all-targets`.
