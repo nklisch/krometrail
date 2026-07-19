@@ -147,6 +147,7 @@ pub struct SupervisorState {
     /// Flat auto-attach can report a new, not-yet-recordable target before its URL commits. Keep
     /// that session alive until TargetInfoChanged makes the target eligible for supervision.
     pub pending_attached_sessions: std::collections::HashMap<String, TransportSessionId>,
+    pub pending_attached_order: std::collections::VecDeque<String>,
     pub selected_target_key: Option<String>,
     pub next_page_sequence: u64,
 }
@@ -161,6 +162,7 @@ impl SupervisorState {
             targets_by_key: std::collections::HashMap::new(),
             target_key_by_session: std::collections::HashMap::new(),
             pending_attached_sessions: std::collections::HashMap::new(),
+            pending_attached_order: std::collections::VecDeque::new(),
             selected_target_key: None,
             // Sequence 1 is the empty-inventory cursor, so waiting after an initial empty list
             // cannot miss the first discovered page.

@@ -6,13 +6,14 @@ use krometrail_core::{
     ArtifactOutcome, BatchOutcome, BatchResult, BrowserOperationKind, BrowserOperationResult,
     BrowserOwnership, BrowserSessionState, BrowserStatus, BrowserStopOutcome, CaptureFailure,
     CaptureStreamState, CssRect, EncodedScreenshot, ErrorCode, EveryNthFrame, InteractionAnchor,
-    InteractionTiming, KrometrailError, LiveObservation, NonEmptyText, ObservationPart,
-    PageOperationOutcome, PageOperationResult, PageSnapshot, ProfileRef, ProgressiveEvidence,
-    ProgressiveEvidenceContext, ProgressiveEvidenceRequest, ProgressiveEvidenceResult,
-    RecordingBudgetState, ResolvedRangeHandleId, RetrieveArtifactRequest, RetryAdvice,
-    ScreenshotMetadata, SessionId, SessionTime, ShutdownQuality, SourceFrameBatch,
-    SourceFrameHandle, TargetId, TemporalDebugBundle, TemporalRangeAnchorKind,
-    TemporalRangeResolution, TemporalVideoGenerationResult, VideoPresentationPolicy, WaitOutcome,
+    InteractionId, InteractionTiming, KrometrailError, LiveObservation, NonEmptyText,
+    ObservationPart, PageOperationOutcome, PageOperationResult, PageSnapshot, ProfileRef,
+    ProgressiveEvidence, ProgressiveEvidenceContext, ProgressiveEvidenceRequest,
+    ProgressiveEvidenceResult, RecordingBudgetState, ResolvedRangeHandleId,
+    RetrieveArtifactRequest, RetryAdvice, ScreenshotMetadata, SessionId, SessionTime,
+    ShutdownQuality, SourceFrameBatch, SourceFrameHandle, TargetId, TemporalDebugBundle,
+    TemporalRangeAnchorKind, TemporalRangeResolution, TemporalVideoGenerationResult,
+    VideoPresentationPolicy, WaitOutcome,
 };
 use rmcp::model::JsonObject;
 use rmcp::model::{CallToolResult, Content, RawResource};
@@ -295,6 +296,30 @@ pub struct ResponseImage {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, JsonSchema)]
+pub struct ResponseInteractionAnchor {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interaction_id: Option<InteractionId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<SessionId>,
+    pub target_id: Option<TargetId>,
+    pub operation: Option<BrowserOperationKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timing: Option<InteractionTiming>,
+}
+
+impl From<InteractionAnchor> for ResponseInteractionAnchor {
+    fn from(anchor: InteractionAnchor) -> Self {
+        Self {
+            interaction_id: Some(anchor.interaction_id),
+            session_id: Some(anchor.session_id),
+            target_id: Some(anchor.target_id),
+            operation: Some(anchor.operation),
+            timing: Some(anchor.timing),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, JsonSchema)]
 pub struct ResponseDiagnostics {
     pub correlation_id: String,
     pub log_path: Option<String>,
@@ -310,7 +335,7 @@ pub struct ToolResponse {
     pub result: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub range_handle: Option<ResolvedRangeHandleId>,
-    pub interaction: Option<InteractionAnchor>,
+    pub interaction: Option<ResponseInteractionAnchor>,
     pub warnings: Vec<KrometrailError>,
     pub images: Vec<ResponseImage>,
     pub resources: Vec<ResponseResource>,
@@ -376,7 +401,7 @@ pub(crate) struct ResponseInvariantError;
 struct Projection {
     status: ToolResponseStatus,
     result: Value,
-    interaction: Option<InteractionAnchor>,
+    interaction: Option<ResponseInteractionAnchor>,
     warnings: Vec<KrometrailError>,
     images: Vec<EncodedMcpImage>,
     resources: Vec<ResponseResource>,
@@ -722,24 +747,22 @@ pub(crate) fn visible_error_with_capture(
         .expect("stable error envelopes always serialize")
 }
 
-fn failure_interaction_anchor(tool: &str, error: &KrometrailError) -> Option<InteractionAnchor> {
-    let interaction_id = error.context.interaction_id?;
-    let session_id = error.context.session_id?;
+fn failure_interaction_anchor(
+    tool: &str,
+    error: &KrometrailError,
+) -> Option<ResponseInteractionAnchor> {
     let target_id = error.context.target_id?;
     let operation = BrowserOperationKind::from_stable_name(tool)?;
     if !operation.is_interaction() {
         return None;
     }
-    // This is a context anchor for a pre-dispatch failure, not a fabricated record. There is no
-    // observed timing because dispatch never completed.
-    let timing = InteractionTiming::new(
-        SessionTime::ZERO,
-        SessionTime::ZERO,
-        SessionTime::ZERO,
-        None,
-    )
-    .ok()?;
-    InteractionAnchor::new(interaction_id, session_id, target_id, operation, timing).ok()
+    Some(ResponseInteractionAnchor {
+        interaction_id: error.context.interaction_id,
+        session_id: error.context.session_id,
+        target_id: Some(target_id),
+        operation: Some(operation),
+        timing: None,
+    })
 }
 
 fn add_capture_warnings(
@@ -766,7 +789,7 @@ fn projection_target_id(projection: &Projection) -> Option<TargetId> {
     projection
         .interaction
         .as_ref()
-        .map(|interaction| interaction.target_id)
+        .and_then(|interaction| interaction.target_id)
         .or_else(|| {
             ["/context/target_id", "/target_id"]
                 .into_iter()
@@ -1018,7 +1041,7 @@ fn project_operation(
                     serde_json::to_value(value.record).map_err(|_| ResponseInvariantError)?;
             }
             let mut projection = Projection::success(result);
-            projection.interaction = Some(anchor);
+            projection.interaction = Some(anchor.into());
             projection.degrade_with(warnings);
             projection.images.extend(image);
             Ok(projection)
@@ -1071,7 +1094,7 @@ fn project_page_operation(
         "outcome": outcome,
         "observation": observation,
     }));
-    projection.interaction = Some(interaction);
+    projection.interaction = Some(interaction.into());
     projection.degrade_with(warnings);
     projection.images.extend(image);
     if let PageOperationOutcome::Failed(error) = value.outcome {
@@ -2040,16 +2063,8 @@ pub(crate) async fn map_progressive_result(
             projection
         }
         ProgressiveEvidenceResult::ListSourceFrames(list) => {
-            let frames = if response.detail == ResponseDetail::Concise {
-                list.frames
-                    .iter()
-                    .take(MAX_CONCISE_TARGETS)
-                    .cloned()
-                    .collect()
-            } else {
-                list.frames.clone()
-            };
-            let local_omitted_frame_count = list.frames.len().saturating_sub(frames.len());
+            let frames = list.frames.clone();
+            let local_omitted_frame_count = 0;
             let omitted_frame_count = list
                 .omitted_frame_count
                 .saturating_add(u64::try_from(local_omitted_frame_count).unwrap_or(u64::MAX));
@@ -3799,6 +3814,7 @@ mod tests {
             target_id().to_string()
         );
         assert_eq!(structured["interaction"]["operation"], "click");
+        assert!(structured["interaction"].get("timing").is_none());
         assert!(structured["result"].get("record").is_none());
     }
 
@@ -3903,7 +3919,7 @@ mod tests {
             BrowserOperationResult::NavigatePage(Box::new(page)),
         )
         .unwrap();
-        assert_eq!(page.response.interaction, Some(anchor));
+        assert_eq!(page.response.interaction, Some(anchor.into()));
         assert_eq!(page.response.status, ToolResponseStatus::Failed);
 
         let batch_error = error(ErrorCode::InteractionFailed, "step failed");

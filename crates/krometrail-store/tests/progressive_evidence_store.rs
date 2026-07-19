@@ -26,6 +26,10 @@ struct Fixture {
 }
 
 async fn fixture(rotation_size: u64) -> Fixture {
+    fixture_with_count(rotation_size, 3).await
+}
+
+async fn fixture_with_count(rotation_size: u64, count: usize) -> Fixture {
     let directory = TempDir::new().unwrap();
     let segments = directory.path().join("segments");
     let index = Arc::new(
@@ -49,12 +53,12 @@ async fn fixture(rotation_size: u64) -> Fixture {
     let store = Arc::new(RecordingStore::new(writer, index).unwrap());
     let session_id = SessionId::from_uuid(Uuid::from_u128(1));
     let target_id = TargetId::from_uuid(Uuid::from_u128(2));
-    let frame_ids = vec![frame_id(3), frame_id(4), frame_id(5)];
-    let bytes = vec![
-        b"source-frame-a".to_vec(),
-        b"source-frame-bb".to_vec(),
-        b"source-frame-ccc".to_vec(),
-    ];
+    let frame_ids = (0..count)
+        .map(|position| frame_id(3 + position as u128))
+        .collect::<Vec<_>>();
+    let bytes = (0..count)
+        .map(|position| format!("source-frame-{position}").into_bytes())
+        .collect::<Vec<_>>();
     for (position, (id, payload)) in frame_ids.iter().zip(&bytes).enumerate() {
         let ordinal = u64::try_from(position + 1).unwrap();
         store
@@ -237,6 +241,75 @@ async fn coherent_source_lists_and_fetches_preserve_exact_order_hashes_and_bound
             .code,
         krometrail_core::ErrorCode::ResourceLimitExceeded
     );
+}
+
+#[tokio::test]
+async fn source_listing_pagination_reaches_tail_without_advertising_empty_pages() {
+    let fixture = fixture_with_count(1, 367).await;
+    let range = resolved(&fixture, fixture.frame_ids.clone(), 1, 367);
+    let limits = SourceReadLimitsRequest::new(3, 1024, 4096).unwrap();
+    let mut offset = 0;
+    let mut listed_ids = Vec::new();
+    loop {
+        let page = fixture
+            .store
+            .list_source_frames(
+                SourceFramesRequest::new_with_offset(
+                    range.clone(),
+                    SourceFrameSelection::ResolvedOrder,
+                    offset,
+                    limits,
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        listed_ids.extend(page.frames.iter().map(|frame| frame.frame_id));
+        match page.next_offset {
+            Some(next) => {
+                assert_eq!(next, offset + 3);
+                offset = next;
+            }
+            None => {
+                assert_eq!(page.frames.len(), 1);
+                break;
+            }
+        }
+    }
+    assert_eq!(listed_ids, fixture.frame_ids);
+
+    let boundary = fixture_with_count(1, 6).await;
+    let range = resolved(&boundary, boundary.frame_ids.clone(), 1, 6);
+    let first = boundary
+        .store
+        .list_source_frames(
+            SourceFramesRequest::new_with_offset(
+                range.clone(),
+                SourceFrameSelection::ResolvedOrder,
+                0,
+                limits,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.frames.len(), 3);
+    assert_eq!(first.next_offset, Some(3));
+    let last = boundary
+        .store
+        .list_source_frames(
+            SourceFramesRequest::new_with_offset(
+                range,
+                SourceFrameSelection::ResolvedOrder,
+                3,
+                limits,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(last.frames.len(), 3);
+    assert_eq!(last.next_offset, None);
 }
 
 #[tokio::test]

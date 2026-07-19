@@ -679,7 +679,7 @@ impl SourceFramesRequest {
     pub fn validate_for_fetch(&self) -> Result<()> {
         if self.offset != 0 {
             return Err(invalid(
-                "source frame offset is only valid for resolved-order selection",
+                "fetch_source_frames does not support offsets; use list_source_frames pagination to discover the next offset",
             ));
         }
         let selected_count = self.selection.selected_count(&self.range);

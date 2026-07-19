@@ -927,18 +927,22 @@ impl FrameSource for RecordingStore {
     ) -> PortFuture<'_, krometrail_core::Result<SourceFrameList>> {
         Box::pin(async move {
             let range = request.range.clone();
+            let total_selected = request.selection.selected_count(&range);
+            let offset = request.offset;
             let omitted_frame_count = request.omitted_frame_count();
-            let next_offset = (omitted_frame_count > 0).then(|| {
-                request
-                    .offset
-                    .saturating_add(u32::from(request.limits.max_frames()))
-            });
             let frames = self
                 .progressive_source_reads(request)
                 .await?
                 .into_iter()
                 .map(|read| read.handle)
-                .collect();
+                .collect::<Vec<_>>();
+            let returned_page_len = frames.len();
+            let next_offset = (offset as usize)
+                .saturating_add(returned_page_len)
+                .lt(&total_selected)
+                .then(|| {
+                    offset.saturating_add(u32::try_from(returned_page_len).unwrap_or(u32::MAX))
+                });
             Ok(SourceFrameList {
                 range,
                 frames,

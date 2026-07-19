@@ -80,10 +80,6 @@ fn default_analysis_scale() -> AnalysisScale {
     AnalysisScale::Identity
 }
 
-fn default_session_time() -> SessionTime {
-    SessionTime::ZERO
-}
-
 fn default_artifact_tile_limit() -> u8 {
     DEFAULT_ARTIFACT_TILE_LIMIT
 }
@@ -308,10 +304,9 @@ pub enum FrameSelector {
     Frame(FrameId),
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct StoryboardRequest {
-    #[serde(default = "default_session_time")]
     pub anchor: SessionTime,
     #[serde(default = "default_artifact_tile_limit")]
     pub tile_limit: u8,
@@ -326,6 +321,42 @@ pub struct StoryboardRequest {
     #[serde(default = "default_output")]
     pub output: OutputLimitsRequest,
 }
+
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct StoryboardRequestWire {
+    #[serde(default)]
+    anchor: Option<SessionTime>,
+    #[serde(default = "default_artifact_tile_limit")]
+    tile_limit: u8,
+    #[serde(default = "default_artifact_noise_floor")]
+    noise_floor: u16,
+    #[serde(default = "default_normalization")]
+    normalization: NormalizationRequest,
+    #[serde(default = "default_labels")]
+    labels: ArtifactLabelsRequest,
+    #[serde(default = "default_include_orientation")]
+    include_orientation: bool,
+    #[serde(default = "default_output")]
+    output: OutputLimitsRequest,
+}
+
+impl<'de> Deserialize<'de> for StoryboardRequest {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        let wire = StoryboardRequestWire::deserialize(deserializer)?;
+        Ok(Self {
+            anchor: wire.anchor.unwrap_or(SessionTime::ZERO),
+            tile_limit: wire.tile_limit,
+            noise_floor: wire.noise_floor,
+            normalization: wire.normalization,
+            labels: wire.labels,
+            include_orientation: wire.include_orientation,
+            output: wire.output,
+        })
+    }
+}
+
+crate::validation::delegate_json_schema!(StoryboardRequest => StoryboardRequestWire);
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -346,13 +377,13 @@ pub struct DifferenceMapRequest {
     pub output: OutputLimitsRequest,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RegionFilmstripRequest {
     pub region: temporal_vision::RegionDefinition,
     #[serde(default)]
     pub mask: Option<temporal_vision::BinaryMask>,
-    #[serde(default = "default_session_time")]
+    #[serde(default)]
     pub anchor: SessionTime,
     #[serde(default = "default_artifact_tile_limit")]
     pub tile_limit: u8,
@@ -369,6 +400,50 @@ pub struct RegionFilmstripRequest {
     #[serde(default = "default_output")]
     pub output: OutputLimitsRequest,
 }
+
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct RegionFilmstripRequestWire {
+    region: temporal_vision::RegionDefinition,
+    #[serde(default)]
+    mask: Option<temporal_vision::BinaryMask>,
+    #[serde(default)]
+    anchor: Option<SessionTime>,
+    #[serde(default = "default_artifact_tile_limit")]
+    tile_limit: u8,
+    #[serde(default)]
+    locator: Option<FrameId>,
+    #[serde(default = "default_black_background")]
+    background: temporal_vision::Rgb8,
+    #[serde(default = "default_black_background")]
+    padding: temporal_vision::Rgb8,
+    #[serde(default = "default_analysis_scale")]
+    display_scale: AnalysisScale,
+    #[serde(default = "default_labels")]
+    labels: ArtifactLabelsRequest,
+    #[serde(default = "default_output")]
+    output: OutputLimitsRequest,
+}
+
+impl<'de> Deserialize<'de> for RegionFilmstripRequest {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        let wire = RegionFilmstripRequestWire::deserialize(deserializer)?;
+        Ok(Self {
+            region: wire.region,
+            mask: wire.mask,
+            anchor: wire.anchor.unwrap_or(SessionTime::ZERO),
+            tile_limit: wire.tile_limit,
+            locator: wire.locator,
+            background: wire.background,
+            padding: wire.padding,
+            display_scale: wire.display_scale,
+            labels: wire.labels,
+            output: wire.output,
+        })
+    }
+}
+
+crate::validation::delegate_json_schema!(RegionFilmstripRequest => RegionFilmstripRequestWire);
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -513,10 +588,20 @@ pub struct ArtifactGenerationRequest {
 
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[allow(dead_code)]
 struct ArtifactGenerationRequestWire {
     range: ResolvedRange,
     markers: Vec<ArtifactMarker>,
     generators: Vec<ArtifactGeneratorRequest>,
+    failure_policy: ArtifactFailurePolicy,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ArtifactGenerationRequestDeserializeWire {
+    range: ResolvedRange,
+    markers: Vec<ArtifactMarker>,
+    generators: Vec<serde_json::Value>,
     failure_policy: ArtifactFailurePolicy,
 }
 
@@ -586,14 +671,29 @@ impl ArtifactGenerationRequest {
 
 impl<'de> Deserialize<'de> for ArtifactGenerationRequest {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
-        deserialize_validated(deserializer, |wire: ArtifactGenerationRequestWire| {
-            Self::new(
-                wire.range,
-                wire.markers,
-                wire.generators,
-                wire.failure_policy,
-            )
-        })
+        deserialize_validated(
+            deserializer,
+            |wire: ArtifactGenerationRequestDeserializeWire| {
+                let mut generators = Vec::with_capacity(wire.generators.len());
+                for value in wire.generators {
+                    if let Some(generator) = value.get("generator").and_then(|value| value.as_str())
+                        && matches!(generator, "storyboard" | "region_filmstrip")
+                        && let Some(anchor) = value.get("anchor").filter(|value| !value.is_null())
+                    {
+                        let anchor: SessionTime = serde_json::from_value(anchor.clone())
+                            .map_err(|error| invalid(error.to_string()))?;
+                        if !wire.range.resolved_range.contains(anchor) {
+                            return Err(invalid("artifact anchor is outside the resolved range"));
+                        }
+                    }
+                    generators.push(
+                        serde_json::from_value(value)
+                            .map_err(|error| invalid(error.to_string()))?,
+                    );
+                }
+                Self::new(wire.range, wire.markers, generators, wire.failure_policy)
+            },
+        )
     }
 }
 
@@ -790,9 +890,13 @@ mod tests {
             .insert("natural_anchor".into(), serde_json::json!("latest"));
         assert!(serde_json::from_value::<ArtifactGenerationRequest>(value).is_err());
 
-        let mut value = serde_json::to_value(request).unwrap();
+        let mut value = serde_json::to_value(&request).unwrap();
         value["generators"][0]["tile_limit"] = serde_json::json!(99);
         assert!(serde_json::from_value::<ArtifactGenerationRequest>(value).is_err());
+
+        let mut explicit_zero = serde_json::to_value(request).unwrap();
+        explicit_zero["generators"][0]["anchor"] = serde_json::json!(0);
+        assert!(serde_json::from_value::<ArtifactGenerationRequest>(explicit_zero).is_err());
     }
 
     #[test]

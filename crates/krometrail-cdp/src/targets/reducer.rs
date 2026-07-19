@@ -18,6 +18,8 @@ use super::model::{
     target_error,
 };
 
+const MAX_PENDING_ATTACHED_SESSIONS: usize = 16;
+
 /// Apply one serialized input. Callers must execute this function from one task/owner; sharing the
 /// state between multiple writers would invalidate revision ordering and target identity.
 pub fn reduce(mut state: SupervisorState, input: SupervisorInput) -> Result<Reduction> {
@@ -119,13 +121,11 @@ pub fn reduce(mut state: SupervisorState, input: SupervisorInput) -> Result<Redu
             capture_start_failed(&mut state, &target_key, &mut effects)?;
         }
         SupervisorInput::Detached { session, reason: _ } => {
-            state
-                .pending_attached_sessions
-                .retain(|_, pending| pending != &session);
+            remove_pending_session(&mut state, &session);
             detach_failed(&mut state, session, &mut effects)?
         }
         SupervisorInput::TargetDestroyed { target_key } => {
-            if let Some(session) = state.pending_attached_sessions.remove(&target_key) {
+            if let Some(session) = remove_pending_key(&mut state, &target_key) {
                 effects.push(SupervisorEffect::Detach { session });
             }
             destroy(&mut state, &target_key, &mut effects)?
@@ -216,6 +216,7 @@ pub fn reduce(mut state: SupervisorState, input: SupervisorInput) -> Result<Redu
             }
             state.target_key_by_session.clear();
             state.pending_attached_sessions.clear();
+            state.pending_attached_order.clear();
             effects.push(SupervisorEffect::BeginReconnect);
             tracing::debug!(
                 reason = close_reason(&close),
@@ -384,7 +385,7 @@ fn adopt_pending_attachment(
     key: &str,
     effects: &mut Vec<SupervisorEffect>,
 ) -> Result<()> {
-    let Some(session) = state.pending_attached_sessions.remove(key) else {
+    let Some(session) = remove_pending_key(state, key) else {
         return Ok(());
     };
     attach(state, key.to_owned(), session, effects, true)
@@ -401,8 +402,28 @@ fn attach(
         // Chrome can auto-attach a popup before its URL becomes recordable. Keep that flat
         // session alive: detaching it here can cancel the renderer's initial navigation. The
         // later target-info event adopts the exact session once the URL is recordable.
-        if let Some(previous) = state.pending_attached_sessions.insert(key, session.clone()) {
+        if let Some(previous) = state
+            .pending_attached_sessions
+            .insert(key.clone(), session.clone())
+        {
             effects.push(SupervisorEffect::Detach { session: previous });
+        }
+        if !state
+            .pending_attached_order
+            .iter()
+            .any(|pending| pending == &key)
+        {
+            state.pending_attached_order.push_back(key.clone());
+        }
+        while state.pending_attached_sessions.len() > MAX_PENDING_ATTACHED_SESSIONS {
+            let Some(oldest_key) = state.pending_attached_order.pop_front() else {
+                break;
+            };
+            if let Some(oldest_session) = state.pending_attached_sessions.remove(&oldest_key) {
+                effects.push(SupervisorEffect::Detach {
+                    session: oldest_session,
+                });
+            }
         }
         return Ok(());
     };
@@ -458,6 +479,31 @@ fn attach(
         });
     }
     Ok(())
+}
+
+fn remove_pending_key(
+    state: &mut SupervisorState,
+    key: &str,
+) -> Option<crate::transport::TransportSessionId> {
+    state
+        .pending_attached_order
+        .retain(|pending| pending != key);
+    state.pending_attached_sessions.remove(key)
+}
+
+fn remove_pending_session(
+    state: &mut SupervisorState,
+    session: &crate::transport::TransportSessionId,
+) {
+    let keys: Vec<_> = state
+        .pending_attached_sessions
+        .iter()
+        .filter(|(_, pending)| *pending == session)
+        .map(|(key, _)| key.clone())
+        .collect();
+    for key in keys {
+        let _ = remove_pending_key(state, &key);
+    }
 }
 
 fn detach_failed(
@@ -706,6 +752,7 @@ fn reconnect(
     }
     state.target_key_by_session.clear();
     state.pending_attached_sessions.clear();
+    state.pending_attached_order.clear();
     for restored in recordable {
         reconcile_restored(state, restored, effects)?;
     }
@@ -1955,6 +2002,35 @@ mod tests {
             closed.state.targets_by_key["b"].capture_binding,
             CaptureBinding::Active(_)
         ));
+    }
+
+    #[test]
+    fn pending_auto_attached_sessions_evict_the_oldest_with_detach() {
+        let mut state = SupervisorState::new(compatibility());
+        for index in 0..17 {
+            let key = format!("pending-{index}");
+            let session =
+                crate::transport::TransportSessionId::new(format!("session-{index}")).unwrap();
+            let reduction = reduce(
+                state,
+                SupervisorInput::Attached {
+                    target_key: key,
+                    session,
+                },
+            )
+            .unwrap();
+            state = reduction.state;
+            if index == 16 {
+                assert!(reduction.effects.iter().any(|effect| matches!(
+                    effect,
+                    SupervisorEffect::Detach { session }
+                        if session.as_str() == "session-0"
+                )));
+            }
+        }
+        assert_eq!(state.pending_attached_sessions.len(), 16);
+        assert!(!state.pending_attached_sessions.contains_key("pending-0"));
+        assert!(state.pending_attached_sessions.contains_key("pending-16"));
     }
 
     #[test]

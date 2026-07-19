@@ -238,3 +238,15 @@ alongside the bundle/video operations, `docs/SPEC.md`
   resource-limit, progressive-listing, bundle, and registry coverage. Full
   release gates are run before commit with `CARGO_TARGET_DIR` pointed at the
   writable temporary target because the configured default target is read-only.
+
+## Review-fix note (2026-07-19)
+
+Planning failures now honor `AllowPartial` per generator, preserving bounded
+storyboards when exhaustive generators reject oversized ranges. Source listings
+advertise continuation only when returned pages leave selected frames, and the
+concise projection retains every advertised page frame. Storyboard manifests
+record bounded pre-selection provenance, including analyzed source indices;
+source-fetch recovery text now directs callers to listing pagination. Explicit
+zero anchors are distinguished from omitted defaults at the wire boundary,
+fully-outside filmstrips normalize a 1×1 crop, and both artifact planning and
+filmstrip planning use the shared temporal-vision index selector.

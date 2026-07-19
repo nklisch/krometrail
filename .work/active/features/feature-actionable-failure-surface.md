@@ -222,3 +222,11 @@ actual/limit contract. The full workspace format check, locked check, locked
 test suite, and warnings-as-errors clippy gate all passed. The full test gate
 also caught and repaired the prior on-disk filmstrip regression that rejected
 fully outside regions despite the existing explicit-padding contract.
+
+## Review-fix note (2026-07-19)
+
+Failed MCP interaction context anchors now expose only known identity, target,
+and operation, omitting timing when dispatch never occurred. Evaluation refusal
+classification now requires `EvalError` plus the known Chrome refusal prefixes;
+other page-thrown EvalErrors retain the sanitized throw path, with both current
+and legacy refusal spellings covered by tests.

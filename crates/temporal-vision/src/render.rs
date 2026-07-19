@@ -115,6 +115,7 @@ pub struct StoryboardParameters {
     measurement: MeasurementParameters,
     labels: ArtifactLabels,
     limits: RenderLimits,
+    analysis_source_indices: Option<Vec<usize>>,
 }
 
 impl StoryboardParameters {
@@ -131,7 +132,13 @@ impl StoryboardParameters {
             measurement,
             labels,
             limits,
+            analysis_source_indices: None,
         }
+    }
+
+    pub fn with_analysis_source_indices(mut self, indices: Vec<usize>) -> Self {
+        self.analysis_source_indices = Some(indices);
+        self
     }
 
     pub const fn anchor(&self) -> Timestamp {
@@ -148,6 +155,10 @@ impl StoryboardParameters {
     }
     pub const fn limits(&self) -> RenderLimits {
         self.limits
+    }
+
+    pub fn analysis_source_indices(&self) -> Option<&[usize]> {
+        self.analysis_source_indices.as_deref()
     }
     pub const fn preferred_tile_width(&self) -> u32 {
         PREFERRED_TILE_WIDTH
@@ -734,6 +745,7 @@ where
         selection,
         marker_assignments,
         request,
+        source.source_frame_count(),
         raster.tile_width,
         raster.image_height,
         layout_name,
@@ -779,11 +791,13 @@ fn display_conversion_step() -> Result<NormalizationStep> {
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn artifact_parameters<F>(
     kind: ArtifactKind,
     selection: &StoryboardSelection<F>,
     marker_assignments: &[Vec<usize>],
     request: &StoryboardParameters,
+    source_frame_count: usize,
     tile_width: u32,
     image_height: u32,
     layout_name: &'static str,
@@ -950,6 +964,24 @@ where
         ("orientation_roles", roles),
     ] {
         values.insert(key.into(), value);
+    }
+    if let Some(indices) = request.analysis_source_indices() {
+        values.insert(
+            "analysis_sampling".into(),
+            object([
+                ("source_frame_count", unsigned_usize(source_frame_count)?),
+                ("analyzed_frame_count", unsigned_usize(indices.len())?),
+                (
+                    "analyzed_source_indices",
+                    ParameterValue::List(
+                        indices
+                            .iter()
+                            .map(|index| unsigned_usize(*index))
+                            .collect::<Result<Vec<_>>>()?,
+                    ),
+                ),
+            ])?,
+        );
     }
     Parameters::new(values)
 }

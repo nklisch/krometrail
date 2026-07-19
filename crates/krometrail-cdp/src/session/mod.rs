@@ -805,18 +805,18 @@ impl BrowserSessionPort for ProductionSession {
                 .session_state
                 == BrowserSessionState::Ended
             {
-                return BrowserStopOutcome::new(
+                return Ok(BrowserStopOutcome::clean_with_cleanup_note(
                     match shared.ownership {
                         BrowserOwnership::Managed => {
                             krometrail_core::BrowserClosure::ManagedBrowserClosed
                         }
                         BrowserOwnership::Attached => krometrail_core::BrowserClosure::Detached,
                     },
-                    krometrail_core::ShutdownQuality::Degraded,
-                    Some(krometrail_core::ShutdownFailurePhase::DeadlineComplete),
-                    None,
-                    Some(NonEmptyText::new("ended browser session cleanup completed; call start_browser to create a new session").unwrap()),
-                );
+                    NonEmptyText::new(
+                        "ended browser session cleanup completed; call start_browser to create a new session",
+                    )
+                    .unwrap(),
+                ));
             }
             shared.operation_cancellation.stop();
             let (sender, receiver) = oneshot::channel();

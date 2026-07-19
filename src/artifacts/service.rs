@@ -150,7 +150,26 @@ impl TemporalVisionArtifactService {
         let mut ordinal = 0_usize;
         for (epoch_index, plan) in plans.iter().enumerate() {
             for (generator_index, generator) in request.generators().iter().enumerate() {
-                let generator_plan = plan_for_generator(generator, plan, limits)?;
+                let generator_plan = match plan_for_generator(generator, plan, limits) {
+                    Ok(generator_plan) => generator_plan,
+                    Err(error) => {
+                        if request.failure_policy()
+                            == krometrail_core::ArtifactFailurePolicy::RequireAll
+                        {
+                            return Err(error);
+                        }
+                        for kind in generator.output_kinds() {
+                            slot_metadata.push((
+                                plan.descriptor.index,
+                                generator_index as u32,
+                                *kind,
+                            ));
+                            result_slots[ordinal] = Some(Err(error.clone()));
+                            ordinal += 1;
+                        }
+                        continue;
+                    }
+                };
                 match prepare_generator(generator, &generator_plan, limits) {
                     Ok(prepared) => {
                         let prepared = Arc::new(prepared);

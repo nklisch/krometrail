@@ -10,6 +10,7 @@ use krometrail_core::{
     ArtifactMarker, ArtifactMarkerId, ArtifactSourceFingerprint, EncodedFrame, ErrorCode,
     KrometrailError, NonEmptyText, ResolvedRange, Result, VisualEpoch,
 };
+use temporal_vision::select_indices;
 use temporal_vision::{DeclaredGap, Marker, OwnedFrameSequence, TimeRange, Timestamp};
 
 use super::{
@@ -164,25 +165,6 @@ pub(crate) fn bounded_plan(
             .collect(),
         ..plan.clone()
     })
-}
-
-fn select_indices(frame_count: usize, limit: usize) -> Vec<usize> {
-    if frame_count <= limit {
-        return (0..frame_count).collect();
-    }
-    if limit == 1 {
-        return vec![0];
-    }
-    let span = frame_count - 1;
-    let denominator = limit - 1;
-    (0..limit)
-        .map(|slot| {
-            let numerator = (slot as u128) * (span as u128);
-            let quotient = numerator / denominator as u128;
-            let remainder = numerator % denominator as u128;
-            (quotient + u128::from(remainder > denominator as u128 - remainder)) as usize
-        })
-        .collect()
 }
 
 /// Validate exact retained identities and build geometry/annotation plans without decoding.

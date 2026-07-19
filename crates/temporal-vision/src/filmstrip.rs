@@ -575,7 +575,8 @@ fn invalid_scale_error() -> VisionError {
     )
 }
 
-fn select_indices(frame_count: usize, limit: usize) -> Vec<usize> {
+/// Select a deterministic, evenly spaced chronological subset including both endpoints.
+pub fn select_indices(frame_count: usize, limit: usize) -> Vec<usize> {
     if frame_count <= limit {
         return (0..frame_count).collect();
     }
@@ -947,12 +948,9 @@ where
     let tile_dimensions =
         scaled_tile_dimensions(plan.tile_source_dimensions(), parameters.display_scale)?;
     let (crop, _) = intersect_region(effective_region.rect(), source.dimensions())?;
-    let crop = crop.unwrap_or(PixelRect::new(
-        0,
-        0,
-        source.dimensions().width(),
-        source.dimensions().height(),
-    )?);
+    // A fully outside region is rendered entirely as padding. Keep normalization bounded to a
+    // single source pixel because draw_tile never reads normalized data for that tile.
+    let crop = crop.unwrap_or(PixelRect::new(0, 0, 1, 1)?);
     let normalized = normalize_sequence(
         source,
         NormalizationParameters::new(

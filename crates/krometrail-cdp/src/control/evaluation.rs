@@ -109,12 +109,16 @@ fn evaluation_exception_error(
         .and_then(|exception| exception.get("description"))
         .and_then(Value::as_str)
         .or_else(|| details.get("description").and_then(Value::as_str));
-    if description.is_some_and(|description| {
-        description
-            .to_ascii_lowercase()
-            .replace('-', " ")
-            .contains("side effect")
-    }) {
+    let class_name = details
+        .get("exception")
+        .and_then(|exception| exception.get("className"))
+        .and_then(Value::as_str);
+    if class_name == Some("EvalError")
+        && description.is_some_and(|description| {
+            description.starts_with("Possible side-effect in debug-evaluate")
+                || description.starts_with("EvalError: Possible side effect in debug-evaluate")
+        })
+    {
         return operation_error(
             ErrorCode::EvaluationFailed,
             target_id,
@@ -122,10 +126,6 @@ fn evaluation_exception_error(
         );
     }
 
-    let class_name = details
-        .get("exception")
-        .and_then(|exception| exception.get("className"))
-        .and_then(Value::as_str);
     let fallback_text = details.get("text").and_then(Value::as_str);
     let summary_input = match (class_name, description.or(fallback_text)) {
         (Some(class_name), Some(description))

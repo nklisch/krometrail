@@ -232,11 +232,20 @@ fn rig_with_transition(
     scale_transition: bool,
     limits: ArtifactWorkLimits,
 ) -> TestRig {
+    rig_with_transition_and_frame_count(3, viewport_transition, scale_transition, limits)
+}
+
+fn rig_with_transition_and_frame_count(
+    frame_count: usize,
+    viewport_transition: bool,
+    scale_transition: bool,
+    limits: ArtifactWorkLimits,
+) -> TestRig {
     let session = SessionId::from_uuid(Uuid::from_u128(1));
     let target = TargetId::from_uuid(Uuid::from_u128(2));
-    let frames: Vec<_> = (0..3)
+    let frames: Vec<_> = (0..frame_count)
         .map(|position| {
-            let ordinal = position + 1;
+            let ordinal = u64::try_from(position + 1).unwrap();
             EncodedFrame::new(
                 CapturedFrame::new(
                     FrameId::from_uuid(Uuid::from_u128(10 + position as u128)),
@@ -271,7 +280,11 @@ fn rig_with_transition(
             .unwrap()
         })
         .collect();
-    let range = SessionRange::new(SessionTime::from_nanos(1), SessionTime::from_nanos(3)).unwrap();
+    let range = SessionRange::new(
+        SessionTime::from_nanos(1),
+        SessionTime::from_nanos(frame_count as u64),
+    )
+    .unwrap();
     let resolved = ResolvedRange::new(
         session,
         target,
@@ -381,6 +394,71 @@ fn rig_with_transition(
         ids,
         request,
     }
+}
+
+#[tokio::test]
+async fn allow_partial_keeps_bounded_storyboard_when_exhaustive_planning_is_refused() {
+    let mut rig =
+        rig_with_transition_and_frame_count(367, false, false, ArtifactWorkLimits::default());
+    let mut generators = rig.request.generators().to_vec();
+    generators.truncate(2);
+    let ArtifactGeneratorRequest::Storyboard(storyboard) = &mut generators[0] else {
+        panic!("default first generator is storyboard");
+    };
+    storyboard.tile_limit = 8;
+    storyboard.include_orientation = false;
+    rig.request = ArtifactGenerationRequest::new(
+        rig.request.range().clone(),
+        vec![],
+        generators,
+        ArtifactFailurePolicy::AllowPartial,
+    )
+    .unwrap();
+
+    let result = rig
+        .service
+        .generate(rig.request, ArtifactGenerationContext::default())
+        .await
+        .unwrap();
+    assert!(matches!(
+        result.outcomes.first(),
+        Some(ArtifactOutcome::Available { artifact, .. })
+            if artifact.manifest.artifact_kind() == temporal_vision::ArtifactKind::Storyboard
+    ));
+    let ArtifactOutcome::Available { artifact, .. } = &result.outcomes[0] else {
+        panic!("storyboard should be available");
+    };
+    assert!(
+        artifact
+            .manifest
+            .parameters()
+            .get("analysis_sampling")
+            .is_some()
+    );
+
+    let small = rig_with_transition_and_frame_count(3, false, false, ArtifactWorkLimits::default());
+    let small_result = small
+        .service
+        .generate(small.request, ArtifactGenerationContext::default())
+        .await
+        .expect("small range generation should succeed");
+    let ArtifactOutcome::Available { artifact, .. } = &small_result.outcomes[0] else {
+        panic!("small storyboard should be available");
+    };
+    assert!(
+        artifact
+            .manifest
+            .parameters()
+            .get("analysis_sampling")
+            .is_none()
+    );
+
+    assert!(matches!(
+        result.outcomes.get(1),
+        Some(ArtifactOutcome::Unavailable { error, artifact_kind, .. })
+            if *artifact_kind == temporal_vision::ArtifactKind::DifferenceMap
+                && error.message.as_str() == "exhaustive artifact generator exceeds the source-frame limit"
+    ));
 }
 
 #[tokio::test]

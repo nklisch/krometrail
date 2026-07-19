@@ -293,3 +293,10 @@ session/reconnect.rs, session/operations.rs)
 - Verification: `cargo fmt --all -- --check`, workspace check, full workspace
   tests, and workspace Clippy all passed. Focused CDP reducer/MCP suites passed;
   the opt-in popup qualification remains the only unsuccessful check.
+
+## Review-fix note (2026-07-19)
+
+Unsolicited pending auto-attached sessions are now capped at 16 with
+deterministic oldest-first eviction and explicit detach effects. The ended
+session stop fast path reports a clean closure with an advisory cleanup note
+instead of fabricating a deadline failure phase.

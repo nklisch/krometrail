@@ -161,22 +161,29 @@ pub(crate) fn generate(
         ArtifactGeneratorRequest::Storyboard(request) => {
             let normalized = normalized
                 .ok_or_else(|| generation_error("storyboard normalization is missing"))?;
+            let mut storyboard_parameters = StoryboardParameters::new(
+                Timestamp::from_nanos(request.anchor.as_nanos()),
+                StoryboardTileLimit::new(request.tile_limit).map_err(vision_error)?,
+                MeasurementParameters::new(request.noise_floor),
+                ArtifactLabels::new(
+                    request.labels.title.as_str(),
+                    request.labels.source.as_str(),
+                )
+                .map_err(vision_error)?,
+                render_limits(request.output, limits)?,
+            );
+            if epoch.sequence.source_frame_count() > epoch.sequence.frames().len()
+                && let Some(source_indices) = epoch.sequence.source_indices()
+            {
+                storyboard_parameters =
+                    storyboard_parameters.with_analysis_source_indices(source_indices.to_vec());
+            }
             let generated = temporal_vision::generate_storyboard(
                 artifact_ids[0],
                 request.include_orientation.then(|| artifact_ids[1]),
                 &epoch.sequence,
                 normalized,
-                StoryboardParameters::new(
-                    Timestamp::from_nanos(request.anchor.as_nanos()),
-                    StoryboardTileLimit::new(request.tile_limit).map_err(vision_error)?,
-                    MeasurementParameters::new(request.noise_floor),
-                    ArtifactLabels::new(
-                        request.labels.title.as_str(),
-                        request.labels.source.as_str(),
-                    )
-                    .map_err(vision_error)?,
-                    render_limits(request.output, limits)?,
-                ),
+                storyboard_parameters,
             )
             .map_err(vision_error)?;
             let mut outputs = vec![from_generated(generated.storyboard())];

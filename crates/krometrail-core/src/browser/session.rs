@@ -113,6 +113,8 @@ pub struct BrowserStopOutcome {
     capture_failure: Option<crate::CaptureFailure>,
     #[serde(skip_serializing_if = "Option::is_none")]
     recovery: Option<NonEmptyText>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cleanup_note: Option<NonEmptyText>,
 }
 
 impl BrowserStopOutcome {
@@ -144,7 +146,19 @@ impl BrowserStopOutcome {
             failed_phase,
             capture_failure,
             recovery,
+            cleanup_note: None,
         })
+    }
+
+    pub fn clean_with_cleanup_note(closure: BrowserClosure, cleanup_note: NonEmptyText) -> Self {
+        Self {
+            closure,
+            quality: ShutdownQuality::Clean,
+            failed_phase: None,
+            capture_failure: None,
+            recovery: None,
+            cleanup_note: Some(cleanup_note),
+        }
     }
 
     pub const fn closure(&self) -> BrowserClosure {
@@ -157,6 +171,10 @@ impl BrowserStopOutcome {
 
     pub const fn failed_phase(&self) -> Option<ShutdownFailurePhase> {
         self.failed_phase
+    }
+
+    pub fn cleanup_note(&self) -> Option<&NonEmptyText> {
+        self.cleanup_note.as_ref()
     }
 
     pub const fn capture_failure(&self) -> Option<&crate::CaptureFailure> {
@@ -466,6 +484,20 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&clean).unwrap(),
             serde_json::json!({"closure":"detached","quality":"clean"})
+        );
+        let clean_with_note = BrowserStopOutcome::clean_with_cleanup_note(
+            BrowserClosure::Detached,
+            NonEmptyText::new("cleanup completed after the session ended").unwrap(),
+        );
+        assert_eq!(clean_with_note.quality(), ShutdownQuality::Clean);
+        assert_eq!(clean_with_note.failed_phase(), None);
+        assert_eq!(
+            serde_json::to_value(clean_with_note).unwrap(),
+            serde_json::json!({
+                "closure": "detached",
+                "quality": "clean",
+                "cleanup_note": "cleanup completed after the session ended"
+            })
         );
         assert!(
             BrowserStopOutcome::new(

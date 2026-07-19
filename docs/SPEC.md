@@ -123,7 +123,9 @@ requests them where supported. Failed and degraded responses always include priv
 actionable failure evidence. Status requests use the same concise-to-full direction.
 
 Concise interaction results retain the interaction anchor and post-action observation; expanded and full results add
-the sanitized interaction record echo for callers that need parameter and timing provenance.
+the sanitized interaction record echo for callers that need parameter and timing provenance. A pre-dispatch failure
+may retain an interaction context anchor with its known identity, target, and operation, but omits timing fields when
+no dispatch interval was observed; it never uses zero timestamps as a placeholder.
 
 A batch of actions returns per-step status and timeline anchors. It returns a final live observation and includes per-step screenshot fields only when screenshots were requested.
 

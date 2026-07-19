@@ -34,7 +34,8 @@ fn evaluation_separates_side_effect_refusal_from_thrown_exceptions() {
             "exceptionDetails": {
                 "text": "side effect refusal",
                 "exception": {
-                    "description": "Evaluation failed because the function may cause side effects.",
+                    "className": "EvalError",
+                    "description": "EvalError: page code mentioned side effect",
                     "stackTrace": "private stack"
                 }
             }
@@ -43,13 +44,14 @@ fn evaluation_separates_side_effect_refusal_from_thrown_exceptions() {
     )
     .unwrap_err();
     assert_eq!(error.code, ErrorCode::EvaluationFailed);
-    assert!(error.message.as_str().contains("refused as side-effecting"));
-    assert!(!error.message.as_str().contains("side effect refusal"));
+    assert!(error.message.as_str().contains("page evaluation threw"));
+    assert!(!error.message.as_str().contains("refused as side-effecting"));
 
     let error = decode_evaluation(
         &json!({
             "exceptionDetails": {
                 "exception": {
+                    "className": "EvalError",
                     "description": "Possible side-effect in debug-evaluate"
                 }
             }
@@ -58,6 +60,34 @@ fn evaluation_separates_side_effect_refusal_from_thrown_exceptions() {
     )
     .unwrap_err();
     assert!(error.message.as_str().contains("refused as side-effecting"));
+
+    let error = decode_evaluation(
+        &json!({
+            "exceptionDetails": {
+                "exception": {
+                    "className": "EvalError",
+                    "description": "EvalError: Possible side effect in debug-evaluate"
+                }
+            }
+        }),
+        target(),
+    )
+    .unwrap_err();
+    assert!(error.message.as_str().contains("refused as side-effecting"));
+
+    let error = decode_evaluation(
+        &json!({
+            "exceptionDetails": {
+                "exception": {
+                    "className": "EvalError",
+                    "description": "EvalError: page code mentioned side-effect"
+                }
+            }
+        }),
+        target(),
+    )
+    .unwrap_err();
+    assert!(error.message.as_str().contains("page evaluation threw"));
 
     let error = decode_evaluation(
         &json!({
