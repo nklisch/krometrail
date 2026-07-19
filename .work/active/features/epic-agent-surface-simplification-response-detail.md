@@ -1,7 +1,7 @@
 ---
 id: epic-agent-surface-simplification-response-detail
 kind: feature
-stage: review
+stage: done
 tags: [agent-ux, browser]
 parent: epic-agent-surface-simplification
 depends_on: [epic-agent-surface-simplification-current-contract]
@@ -310,3 +310,5 @@ build completed successfully during implementation.
   generation, omission accounting, keys, and framing, rather than only its two arrays.
 - Added focused count-pressure and complete-JSON byte-pressure regressions, and corrected the concise
   temporal inline-image example in the skill.
+
+The single standard fresh-context review otherwise approved the collapsed request schema, target ranking and references, omission accounting, full fidelity, browser status, diagnostics, and current guidance. Its two blockers were fixed in `f2acd5f`; no second review pass was run.
