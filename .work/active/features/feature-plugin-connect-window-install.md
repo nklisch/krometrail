@@ -1,7 +1,7 @@
 ---
 id: feature-plugin-connect-window-install
 kind: feature
-stage: drafting
+stage: implementing
 tags: [bug, infra, distribution]
 parent: null
 depends_on: []
@@ -48,3 +48,100 @@ patterns bind: no `latest` polling, no standalone-install mutation, tests
 shadow curl and release assets.
 
 Origin: `.work/backlog/idea-managed-install-inside-connect-window.md`.
+
+## Architectural choice
+
+Three-part hardening of the POSIX-sh launcher/installer pair, keeping the
+exact-release activation contract intact: (1) make the re-install trigger
+observable (today `verify-existing`'s failure reason is discarded via
+`2>/dev/null`, so the root cause of the observed spurious reinstall is
+unknowable), (2) single-flight installs across concurrent launcher invocations
+(session start + host healthcheck racing one managed root), and (3) bound the
+connect-window install with a fast, explicit failure instead of a silent 30s
+hang that gets the process killed mid-install. There is no plugin healthcheck
+hook of our own — every launcher invocation runs this path — so the launcher
+itself is the only place to fix this. Alternatives rejected: pre-installing
+via a new plugin hook (host-specific, doesn't exist in the codex plugin
+variant); exec-ing a previously installed different version while updating
+(violates exact-release-managed-activation).
+
+## Design decisions
+- **Root-cause posture**: the 2026-07-19 spurious verify failure is
+  unexplained; candidate causes (managed-root env divergence between
+  invocation contexts, transient `--version` exec failure) cannot be
+  distinguished retroactively. Unit 1's diagnostics make the next occurrence
+  attributable; no speculative behavioral fix for the unknown cause.
+- **Install budget**: launcher waits up to 20s for an in-flight install, then
+  exits 1 with a one-line actionable stderr message while the installer child
+  keeps running; the next connect attempt finds it finished (or waits on the
+  lock). Chosen over blocking indefinitely because the host kills at ~30s
+  anyway — better a clear fast failure plus surviving background install than
+  a killed one.
+- **Lock mechanism**: `mkdir` lock directory under the managed root (portable
+  POSIX), containing the owner pid; stale if the pid is dead. Loser polls at
+  1s until winner finishes or budget expires.
+
+## Implementation Units
+
+### Unit 1: Observable verify and launch diagnostics
+**File**: `plugin/bin/krometrail`
+
+- Log one stderr line at start: expected version + resolved managed root
+  (which env source won: KROMETRAIL_MANAGED_ROOT / PLUGIN_DATA /
+  CLAUDE_PLUGIN_DATA / XDG / HOME).
+- `managed_binary_is_current` captures the installer's stderr; on verify
+  failure, forward the reason to launcher stderr prefixed
+  `krometrail plugin: reinstalling because:` before running the install.
+
+**Acceptance Criteria**:
+- [ ] Fixture run with a corrupted managed binary shows the verify failure
+      reason on stderr before reinstall.
+- [ ] Fresh-install fixture still succeeds with the diagnostic present.
+
+### Unit 2: Single-flight install lock
+**Files**: `plugin/bin/krometrail`, `plugin/scripts/install-managed.sh`
+
+Lock dir `"$MANAGED_ROOT/.install-lock"` acquired via `mkdir` in the launcher
+around the install call; pid written inside; stale-lock reclaim when the
+recorded pid is not alive (`kill -0`). While locked by a live peer, poll
+(sleep 1) until the lock clears, then re-run `verify-existing` and exec on
+success. Budget shared with Unit 3.
+
+**Acceptance Criteria**:
+- [ ] Two concurrent fixture launchers: exactly one runs the installer; both
+      exec the same verified binary.
+- [ ] Stale lock (dead pid) is reclaimed and install proceeds.
+
+### Unit 3: Bounded connect-window install
+**File**: `plugin/bin/krometrail`
+
+Run the installer as a background child; poll for completion up to the 20s
+budget; on completion verify + exec as today; on budget expiry print
+`krometrail plugin: managed release install is still running in the
+background; reconnect to retry` to stderr and exit 1 without killing the
+child.
+
+**Acceptance Criteria**:
+- [ ] Fixture with an artificially slow (shadowed-curl sleep) install: launcher
+      exits 1 within budget with the actionable message; the installer child
+      completes; a second launcher invocation execs without reinstalling.
+- [ ] Fast-install fixture behaves exactly as today (single invocation execs).
+
+## Implementation Order
+1. Unit 1
+2. Unit 2
+3. Unit 3
+
+## Testing
+- Extend the hermetic fixtures in `tests/plugin-bootstrap-fixtures.sh` /
+  `tests/plugin-install-smoke.sh` (shadowed curl + temp managed roots per
+  hermetic-release-boundary-fixtures); no network, no user-home mutation.
+- `tests/plugin-static.sh` keeps linting the launcher (shellcheck-style checks
+  if present).
+
+## Risks
+- Host kills by process group would still take the background installer down
+  with the launcher; accepted — no worse than today, and the trap cleanup
+  keeps the version dir consistent (mv is atomic, temp files removed).
+- Poll-loop `sleep 1` granularity adds up to ~1s connect latency in the
+  waiting-peer path; negligible against the 20s budget.

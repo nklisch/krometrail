@@ -1,7 +1,7 @@
 ---
 id: feature-viewport-scoped-geometry
 kind: feature
-stage: drafting
+stage: implementing
 tags: [agent-ux, browser]
 parent: null
 depends_on: []
@@ -41,3 +41,104 @@ should bound an existing pass rather than adding a parallel one.
 
 Origin: `.work/backlog/idea-viewport-anchor-unusable-when-geometry-omitted.md`
 (2026-07-19 third shakedown).
+
+## Architectural choice
+
+Bounded viewport-scoped decode in `krometrail-cdp`'s snapshot path. Key
+observation: the DOMSnapshot response is already fully materialized as a
+`serde_json::Value` before `MAX_SNAPSHOT_NODES` is consulted — the cap bounds
+*retained decoded state*, not wire cost. So when the node table exceeds the cap
+AND the caller anchored to the viewport, we can decode geometry (and semantic
+metadata) for only the layout entries whose bounds intersect the current visual
+viewport — a set that is physically bounded by screen area — instead of bailing
+to `geometry_omitted: true`. Document-anchored over-cap behavior is unchanged.
+Alternatives rejected: raising/making the cap configurable (unbounded retained
+state, pushes the decision to the agent), and a second viewport-only CDP
+capture call (extra round trip, still returns the whole document).
+
+## Design decisions
+- **Viewport rect acquisition order**: `snapshot()` fetches
+  `Page.getLayoutMetrics` *before* `capture_snapshot` when
+  `anchor == Viewport`, passes the visual-viewport `CssRect` (document
+  coordinates, from `cssVisualViewport` pageX/pageY/width/height) down into the
+  decode, and reuses it for `with_visual_viewport` afterward (drop the second
+  fetch) — one fetch instead of two, and the decode gets the rect it needs.
+- **Selection truncation**: if viewport-intersecting layout entries exceed
+  `MAX_SNAPSHOT_NODES`, keep the first cap-many in layout order and set
+  `geometry_omitted: true` (explicit loss signal per bounded-loss-accounting);
+  otherwise `geometry_omitted: false`.
+- **Semantic metadata**: decode node metadata (id/label/test-id attributes) for
+  exactly the selected node indexes, so on-screen nodes regain labels on large
+  pages. The full-document metadata map stays empty beyond the selection —
+  acceptable because the AX tree remains the semantic backbone.
+
+## Implementation Units
+
+### Unit 1: Viewport-scoped DOMSnapshot decode (trickiest)
+**File**: `crates/krometrail-cdp/src/control/snapshot.rs`
+
+```rust
+fn decode_dom_snapshot_with_geometry(
+    response: &Value,
+    document: &DocumentFingerprint,
+    target_id: TargetId,
+    include_document_geometry: bool,
+    viewport_scope: Option<CssRect>,   // NEW: Some(_) when anchor == Viewport
+) -> Result<DecodedDomSnapshot>
+```
+
+Over-cap branch (`backend_ids.len() > MAX_SNAPSHOT_NODES`):
+- `viewport_scope: None` → current behavior (geometry request → omitted;
+  otherwise limit error).
+- `viewport_scope: Some(viewport)` → scan the layout table once; select
+  entries whose bounds rect intersects `viewport`; cap the selection at
+  `MAX_SNAPSHOT_NODES` (set `geometry_omitted` on truncation); build
+  `document_rects` for the selection via `backend_ids[node_index]` (O(1) per
+  entry, no full node decode); decode `SemanticNodeMetadata` for exactly the
+  selected node indexes.
+
+**Implementation Notes**:
+- Bounds are `[x, y, width, height]` document CSS coordinates — same space as
+  the visual viewport rect built from `cssVisualViewport` pageX/pageY.
+- Intersection: standard half-open rect overlap; zero-area entries (hidden
+  layout objects) fail intersection naturally.
+- Under-cap pages: existing full decode path unchanged (viewport_scope unused).
+
+**Acceptance Criteria**:
+- [ ] Deterministic double: 5001+-node DOMSnapshot + viewport rect → snapshot
+      has `geometry_omitted: false`, document_rects only for intersecting
+      nodes, and semantic metadata for those nodes.
+- [ ] Same fixture without viewport scope → `geometry_omitted: true` (existing
+      behavior preserved; existing test keeps passing).
+- [ ] Truncation fixture (> cap intersecting entries) → capped rects and
+      `geometry_omitted: true`.
+
+### Unit 2: Single layout-metrics fetch feeding decode and response
+**File**: `crates/krometrail-cdp/src/control/snapshot.rs` (`snapshot()`,
+`capture_snapshot` signature)
+
+Move the `Page.getLayoutMetrics` fetch ahead of `capture_snapshot` for
+viewport-anchored requests; thread `Option<CssRect>` through
+`capture_snapshot` → `decode_dom_snapshot_with_geometry`; attach
+`with_visual_viewport` from the already-fetched rect.
+
+**Acceptance Criteria**:
+- [ ] Viewport-anchored snapshot issues exactly one `Page.getLayoutMetrics`
+      command (assert on the deterministic transport double's command log).
+- [ ] Visual viewport on the response equals the pre-fetched rect.
+
+## Implementation Order
+1. Unit 1
+2. Unit 2
+
+## Testing
+- Interface tests above on the deterministic doubles (layered-cdp-qualification
+  base tier); no real-chrome tier addition needed — geometry decode is pure.
+- Keep `geometry_over_cap_omits_layout_and_keeps_snapshot_available` as the
+  document-anchor regression.
+
+## Risks
+- Timing: viewport rect is sampled just before DOMSnapshot capture; a scroll
+  between the two samples skews selection. Mitigated by the existing document
+  fingerprint staleness check and by margin-free intersection being best-effort
+  presentation, not interaction authority (clicks re-resolve geometry).
