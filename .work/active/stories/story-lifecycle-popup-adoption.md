@@ -17,3 +17,11 @@ Units 1-2 of the parent design: root-cause and fix the window.open popup initial
 
 Acceptance evidence and file targets are defined in the parent feature's
 implementation unit; this story is the durable checkpoint for that unit.
+
+## Completion Notes
+
+Reducer coverage now retains unsolicited auto-attached popup sessions and
+adopts them when a recordable URL arrives, preserving opener identity. The
+post-dispatch observation path remains degraded-safe. Deterministic coverage
+passes; the opt-in live Chrome test is present but timed out in this environment
+because no persistent popup target was exposed.

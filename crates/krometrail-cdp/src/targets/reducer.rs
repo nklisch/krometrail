@@ -7,7 +7,7 @@ use std::collections::HashSet;
 
 use krometrail_core::{
     BrowserSessionEvent, BrowserSessionState, ErrorCode, KrometrailError, NonEmptyText, Result,
-    TargetLifecycle, TargetVisibility, browser::MAX_KNOWN_PAGE_TARGETS,
+    SessionTime, TargetLifecycle, TargetVisibility, browser::MAX_KNOWN_PAGE_TARGETS,
 };
 
 use super::model::{
@@ -119,21 +119,35 @@ pub fn reduce(mut state: SupervisorState, input: SupervisorInput) -> Result<Redu
             capture_start_failed(&mut state, &target_key, &mut effects)?;
         }
         SupervisorInput::Detached { session, reason: _ } => {
+            state
+                .pending_attached_sessions
+                .retain(|_, pending| pending != &session);
             detach_failed(&mut state, session, &mut effects)?
         }
         SupervisorInput::TargetDestroyed { target_key } => {
+            if let Some(session) = state.pending_attached_sessions.remove(&target_key) {
+                effects.push(SupervisorEffect::Detach { session });
+            }
             destroy(&mut state, &target_key, &mut effects)?
         }
         SupervisorInput::VisibilityChanged {
             target_key,
             visibility,
-        } => visibility_changed(&mut state, &target_key, visibility, &mut effects)?,
+            observed_at,
+        } => visibility_changed(
+            &mut state,
+            &target_key,
+            visibility,
+            observed_at,
+            &mut effects,
+        )?,
         SupervisorInput::InitialVisibilityProbeFailed { target_key } => {
             initial_visibility_probe_failed(&mut state, &target_key, &mut effects)?;
         }
         SupervisorInput::CaptureVisibilityChanged {
             target_id,
             visibility,
+            observed_at,
         } => {
             if let Some(target_key) = state
                 .targets_by_key
@@ -141,7 +155,13 @@ pub fn reduce(mut state: SupervisorState, input: SupervisorInput) -> Result<Redu
                 .find(|(_, target)| target.target.target.id() == target_id)
                 .map(|(key, _)| key.clone())
             {
-                visibility_changed(&mut state, &target_key, visibility, &mut effects)?;
+                visibility_changed(
+                    &mut state,
+                    &target_key,
+                    visibility,
+                    observed_at,
+                    &mut effects,
+                )?;
             }
         }
         SupervisorInput::SelectTarget { target_key } => {
@@ -195,6 +215,7 @@ pub fn reduce(mut state: SupervisorState, input: SupervisorInput) -> Result<Redu
                 target.transport_session = None;
             }
             state.target_key_by_session.clear();
+            state.pending_attached_sessions.clear();
             effects.push(SupervisorEffect::BeginReconnect);
             tracing::debug!(
                 reason = close_reason(&close),
@@ -317,6 +338,7 @@ fn reconcile_one(
                 )?;
                 effects.push(target_changed_event(existing));
             }
+            adopt_pending_attachment(state, &key, effects)?;
             return Ok(());
         }
     }
@@ -343,13 +365,29 @@ fn reconcile_one(
         page_sequence,
         opener_target_key: info.opener_target_key,
         opener_target_id,
+        last_visibility_observed_at: None,
     };
     if creation_event {
         effects.push(target_discovered_event(&target_state));
     }
     state.targets_by_key.insert(key.clone(), target_state);
-    effects.push(SupervisorEffect::Attach { target_key: key });
+    if state.pending_attached_sessions.contains_key(&key) {
+        adopt_pending_attachment(state, &key, effects)?;
+    } else {
+        effects.push(SupervisorEffect::Attach { target_key: key });
+    }
     Ok(())
+}
+
+fn adopt_pending_attachment(
+    state: &mut SupervisorState,
+    key: &str,
+    effects: &mut Vec<SupervisorEffect>,
+) -> Result<()> {
+    let Some(session) = state.pending_attached_sessions.remove(key) else {
+        return Ok(());
+    };
+    attach(state, key.to_owned(), session, effects, true)
 }
 
 fn attach(
@@ -360,6 +398,12 @@ fn attach(
     probe_visibility: bool,
 ) -> Result<()> {
     let Some(target) = state.targets_by_key.get_mut(&key) else {
+        // Chrome can auto-attach a popup before its URL becomes recordable. Keep that flat
+        // session alive: detaching it here can cancel the renderer's initial navigation. The
+        // later target-info event adopts the exact session once the URL is recordable.
+        if let Some(previous) = state.pending_attached_sessions.insert(key, session.clone()) {
+            effects.push(SupervisorEffect::Detach { session: previous });
+        }
         return Ok(());
     };
     if matches!(
@@ -592,6 +636,7 @@ fn visibility_changed(
     state: &mut SupervisorState,
     key: &str,
     visibility: TargetVisibility,
+    observed_at: SessionTime,
     effects: &mut Vec<SupervisorEffect>,
 ) -> Result<()> {
     let Some(target) = state.targets_by_key.get_mut(key) else {
@@ -603,6 +648,13 @@ fn visibility_changed(
     ) {
         return Ok(());
     }
+    if target
+        .last_visibility_observed_at
+        .is_some_and(|last| observed_at < last)
+    {
+        return Ok(());
+    }
+    target.last_visibility_observed_at = Some(observed_at);
     if target.target.visibility == visibility {
         return Ok(());
     }
@@ -653,6 +705,7 @@ fn reconnect(
         }
     }
     state.target_key_by_session.clear();
+    state.pending_attached_sessions.clear();
     for restored in recordable {
         reconcile_restored(state, restored, effects)?;
     }
@@ -700,6 +753,7 @@ fn reconcile_restored(
                 page_sequence,
                 opener_target_key: reconnected.info.opener_target_key.clone(),
                 opener_target_id,
+                last_visibility_observed_at: None,
             },
         );
         if let Some(session) = reconnected.session {
@@ -1167,6 +1221,7 @@ mod tests {
                 SupervisorInput::VisibilityChanged {
                     target_key: "about-blank".into(),
                     visibility: TargetVisibility::Hidden,
+                    observed_at: SessionTime::ZERO,
                 },
             )
             .unwrap()
@@ -1176,6 +1231,7 @@ mod tests {
                 SupervisorInput::VisibilityChanged {
                     target_key: "about-blank".into(),
                     visibility: TargetVisibility::Visible,
+                    observed_at: SessionTime::from_nanos(1),
                 },
             )
             .unwrap()
@@ -1190,6 +1246,94 @@ mod tests {
             assert_eq!(target.target.url(), "about:blank");
             assert_eq!(target.lifecycle, TargetLifecycle::Recording);
         }
+    }
+
+    #[test]
+    fn empty_popup_is_adopted_when_target_info_becomes_recordable() {
+        let opener = TransportTargetInfo::new(
+            "opener",
+            "page",
+            "https://opener.test",
+            "opener",
+            false,
+            None,
+        )
+        .unwrap();
+        let popup = TransportTargetInfo::new("popup", "page", "", "", false, None)
+            .unwrap()
+            .with_opener_target_key(Some("opener".into()));
+        let navigated = TransportTargetInfo::new(
+            "popup",
+            "page",
+            "https://opener.test/detail.html",
+            "detail",
+            false,
+            None,
+        )
+        .unwrap()
+        .with_opener_target_key(Some("opener".into()));
+        let state = reduce(
+            SupervisorState::new(compatibility()),
+            SupervisorInput::InitialTargets(vec![opener]),
+        )
+        .unwrap()
+        .state;
+        let state = reduce(state, SupervisorInput::TargetCreated(popup))
+            .unwrap()
+            .state;
+        assert!(!state.targets_by_key.contains_key("popup"));
+        let adopted = reduce(state, SupervisorInput::TargetInfoChanged(navigated)).unwrap();
+        let target = &adopted.state.targets_by_key["popup"];
+        assert_eq!(
+            target.opener_target_id,
+            Some(adopted.state.targets_by_key["opener"].target.target.id())
+        );
+        assert!(adopted.effects.iter().any(|effect| matches!(
+            effect,
+            SupervisorEffect::Attach { target_key } if target_key == "popup"
+        )));
+    }
+
+    #[test]
+    fn unsolicited_auto_attached_session_is_adopted_after_navigation_commits() {
+        let session = crate::transport::TransportSessionId::new("popup-session").unwrap();
+        let reduction = reduce(
+            SupervisorState::new(compatibility()),
+            SupervisorInput::Attached {
+                target_key: "unrecordable-popup".into(),
+                session: session.clone(),
+            },
+        )
+        .unwrap();
+        assert!(reduction.state.targets_by_key.is_empty());
+        assert_eq!(
+            reduction
+                .state
+                .pending_attached_sessions
+                .get("unrecordable-popup"),
+            Some(&session)
+        );
+        let info = TransportTargetInfo::new(
+            "unrecordable-popup",
+            "page",
+            "https://opener.test/detail.html",
+            "detail",
+            true,
+            None,
+        )
+        .unwrap();
+        let adopted = reduce(reduction.state, SupervisorInput::TargetInfoChanged(info)).unwrap();
+        assert!(
+            !adopted
+                .state
+                .pending_attached_sessions
+                .contains_key("unrecordable-popup")
+        );
+        assert!(adopted.effects.iter().any(|effect| matches!(
+            effect,
+            SupervisorEffect::RestoreSessionDomains { session: attached, .. }
+                if attached == &session
+        )));
     }
 
     #[test]
@@ -1254,6 +1398,7 @@ mod tests {
                 SupervisorInput::VisibilityChanged {
                     target_key: key.into(),
                     visibility: TargetVisibility::Visible,
+                    observed_at: SessionTime::ZERO,
                 },
             )
             .unwrap()
@@ -1552,6 +1697,7 @@ mod tests {
             SupervisorInput::VisibilityChanged {
                 target_key: "a".into(),
                 visibility: TargetVisibility::Visible,
+                observed_at: SessionTime::ZERO,
             },
         )
         .unwrap()
@@ -1595,6 +1741,7 @@ mod tests {
             SupervisorInput::VisibilityChanged {
                 target_key: "a".into(),
                 visibility: TargetVisibility::Hidden,
+                observed_at: SessionTime::from_nanos(1),
             },
         )
         .unwrap()
@@ -1612,6 +1759,7 @@ mod tests {
             SupervisorInput::VisibilityChanged {
                 target_key: "a".into(),
                 visibility: TargetVisibility::Visible,
+                observed_at: SessionTime::from_nanos(2),
             },
         )
         .unwrap();
@@ -1628,6 +1776,65 @@ mod tests {
             SupervisorEffect::StartCapture { context }
                 if context.target_id == activated.state.targets_by_key["a"].target.target.id()
         )));
+    }
+
+    #[test]
+    fn stale_visibility_after_activation_cannot_hide_the_recording_target() {
+        let state = reduce(
+            SupervisorState::new(compatibility()),
+            SupervisorInput::InitialTargets(vec![info("a", "https://a")]),
+        )
+        .unwrap()
+        .state;
+        let state = reduce(
+            state,
+            SupervisorInput::Attached {
+                target_key: "a".into(),
+                session: crate::transport::TransportSessionId::new("session-a").unwrap(),
+            },
+        )
+        .unwrap()
+        .state;
+        let state = reduce(
+            state,
+            SupervisorInput::VisibilityChanged {
+                target_key: "a".into(),
+                visibility: TargetVisibility::Hidden,
+                observed_at: SessionTime::from_nanos(1),
+            },
+        )
+        .unwrap()
+        .state;
+        let ready = reduce(state, SupervisorInput::InitialReconciliationCompleted)
+            .unwrap()
+            .state;
+        let activated = reduce(
+            ready,
+            SupervisorInput::VisibilityChanged {
+                target_key: "a".into(),
+                visibility: TargetVisibility::Visible,
+                observed_at: SessionTime::from_nanos(2),
+            },
+        )
+        .unwrap();
+        let stale = reduce(
+            activated.state,
+            SupervisorInput::VisibilityChanged {
+                target_key: "a".into(),
+                visibility: TargetVisibility::Hidden,
+                observed_at: SessionTime::from_nanos(1),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            stale.state.targets_by_key["a"].target.visibility,
+            TargetVisibility::Visible
+        );
+        assert_eq!(
+            stale.state.targets_by_key["a"].target.lifecycle,
+            TargetLifecycle::Recording
+        );
+        assert!(stale.effects.is_empty());
     }
 
     #[test]
@@ -1652,6 +1859,7 @@ mod tests {
             SupervisorInput::VisibilityChanged {
                 target_key: "a".into(),
                 visibility: TargetVisibility::Visible,
+                observed_at: SessionTime::ZERO,
             },
         )
         .unwrap()
@@ -1724,6 +1932,7 @@ mod tests {
                 SupervisorInput::VisibilityChanged {
                     target_key: key.into(),
                     visibility: TargetVisibility::Visible,
+                    observed_at: SessionTime::ZERO,
                 },
             )
             .unwrap()

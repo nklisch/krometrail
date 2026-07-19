@@ -55,7 +55,7 @@ Each session has:
 
 Krometrail discovers page targets created within the controlled browser. Each target has an independent visual stream and timeline identity.
 
-The session records target creation, closure, navigation, visibility changes, and periods in which Chrome does not provide visual frames. Background or hidden tabs are not represented as continuously visible when Chrome pauses their screencast.
+The session records target creation, closure, navigation, visibility changes, and periods in which Chrome does not provide visual frames. Renderer-created popup targets are adopted when their navigation becomes recordable and retain their opener relationship. Background or hidden tabs are not represented as continuously visible when Chrome pauses their screencast.
 
 ## Continuous Visual Capture
 
@@ -442,7 +442,11 @@ Krometrail degrades explicitly:
 - a hidden target records a visibility gap;
 - a saturated ingestion queue records dropped frames;
 - an exhausted disk budget pauses capture when protected data prevents eviction;
+- a dispatched interaction with unavailable post-action observation returns its interaction record as a degraded non-error result;
+- invalid layout metrics can use the JavaScript-observed viewport size and report the fallback, while recovery-requiring metric failures name reload or navigation and are retryable after recovery;
 - an unsupported CDP command reports the detected browser and protocol versions.
+
+When the browser session has ended, its slot is reaped before a later `start_browser` call proceeds. Stopping an already-ended session reports successful cleanup. Last-page-close and ended-session failures direct the caller to `start_browser` for a new session.
 
 Missing or unqualified FFmpeg does not prevent MCP startup; Krometrail omits the temporal-video tool surface. If the qualified executable becomes unavailable after startup, a video request fails with a stable encoder-unavailable error, bounded sanitized diagnostics, and a concrete recovery action.
 

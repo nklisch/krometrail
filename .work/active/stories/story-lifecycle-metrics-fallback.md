@@ -17,3 +17,9 @@ Unit 3 of the parent design: when Page.getLayoutMetrics yields a non-finite/non-
 
 Acceptance evidence and file targets are defined in the parent feature's
 implementation unit; this story is the durable checkpoint for that unit.
+
+## Completion Notes
+
+Effective viewport decoding falls back to valid JS-observed dimensions,
+publishes a metrics-fallback warning, and names reload/navigation recovery when
+both sources are invalid. Deterministic fallback and recovery tests pass.

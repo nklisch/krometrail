@@ -8,8 +8,8 @@ use std::{
 
 use krometrail_core::{
     BrowserEventClass, BrowserEventGapReason, BrowserEventPayload, BrowserEventSink, IdSource,
-    MonotonicClock, SessionId, SessionOrigin, TargetCaptureStatus, TargetId, TargetLifecycle,
-    TargetVisibility,
+    MonotonicClock, SessionId, SessionOrigin, SessionTime, TargetCaptureStatus, TargetId,
+    TargetLifecycle, TargetVisibility,
 };
 use serde_json::{Value, json};
 use tokio::{sync::broadcast, task::JoinHandle};
@@ -90,6 +90,7 @@ pub(crate) enum PageSignalSetupError {
 pub(crate) struct SessionDomainAuthority {
     config: BrowserEventConfig,
     clock: Arc<dyn MonotonicClock>,
+    session_origin: SessionOrigin,
     pipeline: EventPipeline,
     targets: Mutex<HashMap<EventTargetKey, Arc<TargetEventRuntime>>>,
     current: Mutex<HashMap<TargetId, EventTargetKey>>,
@@ -143,10 +144,15 @@ impl SessionDomainAuthority {
         Ok(Self {
             config: config.clone(),
             clock,
+            session_origin,
             pipeline,
             targets: Mutex::new(HashMap::new()),
             current: Mutex::new(HashMap::new()),
         })
+    }
+
+    pub(crate) fn session_time(&self) -> krometrail_core::Result<SessionTime> {
+        self.session_origin.normalize(self.clock.now())
     }
 
     pub(crate) async fn restore_target(

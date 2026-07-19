@@ -538,6 +538,10 @@ impl CaptureObserver for SessionCaptureObserver {
             SupervisorInput::CaptureVisibilityChanged {
                 target_id,
                 visibility,
+                observed_at: self
+                    .browser_events
+                    .session_time()
+                    .unwrap_or(krometrail_core::SessionTime::ZERO),
             },
         ));
     }
@@ -783,20 +787,8 @@ impl BrowserSessionPort for ProductionSession {
                 },
                 None => send.await,
             }
-            .map_err(|_| {
-                request_operation_error(
-                    ErrorCode::Cancelled,
-                    target_id,
-                    "browser supervision task ended",
-                )
-            })?;
-            receiver.await.map_err(|_| {
-                request_operation_error(
-                    ErrorCode::Cancelled,
-                    target_id,
-                    "browser operation ended without a result",
-                )
-            })?
+            .map_err(|_| ended_session_error(target_id))?;
+            receiver.await.map_err(|_| ended_session_error(target_id))?
         })
     }
 
@@ -806,15 +798,33 @@ impl BrowserSessionPort for ProductionSession {
             if let Some(result) = shared.stop_result.lock().expect("stop result lock").clone() {
                 return result;
             }
+            if shared
+                .state
+                .lock()
+                .expect("session state lock")
+                .session_state
+                == BrowserSessionState::Ended
+            {
+                return BrowserStopOutcome::new(
+                    match shared.ownership {
+                        BrowserOwnership::Managed => {
+                            krometrail_core::BrowserClosure::ManagedBrowserClosed
+                        }
+                        BrowserOwnership::Attached => krometrail_core::BrowserClosure::Detached,
+                    },
+                    krometrail_core::ShutdownQuality::Degraded,
+                    Some(krometrail_core::ShutdownFailurePhase::DeadlineComplete),
+                    None,
+                    Some(NonEmptyText::new("ended browser session cleanup completed; call start_browser to create a new session").unwrap()),
+                );
+            }
             shared.operation_cancellation.stop();
             let (sender, receiver) = oneshot::channel();
             shared
                 .command_tx
                 .send(SupervisorCommand::Stop(sender))
                 .await
-                .map_err(|_| {
-                    stable_error(ErrorCode::Cancelled, "browser supervision task ended")
-                })?;
+                .map_err(|_| ended_session_error(None))?;
             let result = receiver.await.map_err(|_| {
                 stable_error(
                     ErrorCode::ShutdownIncomplete,
@@ -911,6 +921,19 @@ fn request_operation_error(
         || stable_error(code, message),
         |target_id| operation_error(code, target_id, message),
     )
+}
+
+fn ended_session_error(target_id: Option<krometrail_core::TargetId>) -> KrometrailError {
+    let error = request_operation_error(
+        ErrorCode::Cancelled,
+        target_id,
+        "browser supervision task ended",
+    );
+    error
+        .with_retry(krometrail_core::RetryAdvice::AfterRecovery)
+        .with_recovery(
+            NonEmptyText::new("call start_browser to create a new browser session").unwrap(),
+        )
 }
 
 fn stable_error(code: ErrorCode, message: &'static str) -> KrometrailError {
@@ -1302,6 +1325,7 @@ mod tests {
             SupervisorInput::VisibilityChanged {
                 target_key: "restored".into(),
                 visibility: TargetVisibility::Visible,
+                observed_at: krometrail_core::SessionTime::ZERO,
             },
         )
         .unwrap()
@@ -1973,6 +1997,7 @@ mod tests {
             SupervisorInput::VisibilityChanged {
                 target_key: "geometry-target".into(),
                 visibility: TargetVisibility::Visible,
+                observed_at: krometrail_core::SessionTime::ZERO,
             },
         )
         .unwrap()

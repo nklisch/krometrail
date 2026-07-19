@@ -9,9 +9,10 @@ use krometrail_core::{
     LiveObservation, NonEmptyText, ObservationPart, PageOperationOutcome, PageOperationResult,
     PageSnapshot, ProfileRef, ProgressiveEvidence, ProgressiveEvidenceContext,
     ProgressiveEvidenceRequest, ProgressiveEvidenceResult, RecordingBudgetState,
-    ResolvedRangeHandleId, RetrieveArtifactRequest, ScreenshotMetadata, SessionId, SessionTime,
-    ShutdownQuality, SourceFrameBatch, SourceFrameHandle, TargetId, TemporalDebugBundle,
-    TemporalRangeAnchorKind, TemporalVideoGenerationResult, VideoPresentationPolicy, WaitOutcome,
+    ResolvedRangeHandleId, RetrieveArtifactRequest, RetryAdvice, ScreenshotMetadata, SessionId,
+    SessionTime, ShutdownQuality, SourceFrameBatch, SourceFrameHandle, TargetId,
+    TemporalDebugBundle, TemporalRangeAnchorKind, TemporalVideoGenerationResult,
+    VideoPresentationPolicy, WaitOutcome,
 };
 use rmcp::model::JsonObject;
 use rmcp::model::{CallToolResult, Content, RawResource};
@@ -941,6 +942,10 @@ fn project_operation(
         BrowserOperationResult::SetViewport(value) => {
             let mut projection = project_page_operation(value.operation, response, novelty)?;
             let mut warnings = Vec::new();
+            let metrics_fallback = matches!(
+                &value.effective,
+                ObservationPart::Available(effective) if effective.metrics_fallback
+            );
             let effective = project_serializable_part(value.effective, &mut warnings)?;
             let result = projection
                 .result
@@ -955,6 +960,11 @@ fn project_operation(
                 "guidance".to_owned(),
                 serde_json::to_value(value.guidance).map_err(|_| ResponseInvariantError)?,
             );
+            if metrics_fallback {
+                projection.degrade_with(vec![metrics_fallback_warning(projection_target_id(
+                    &projection,
+                ))]);
+            }
             projection.degrade_with(warnings);
             Ok(projection)
         }
@@ -1001,6 +1011,27 @@ fn project_operation(
         }
         BrowserOperationResult::Batch(value) => project_batch(*value, response, novelty),
     }
+}
+
+fn metrics_fallback_warning(target_id: Option<TargetId>) -> KrometrailError {
+    let mut warning = KrometrailError::from_browser_failure(
+        ErrorCode::PageObservationFailed,
+        NonEmptyText::new(
+            "layout metrics were invalid; the observed JavaScript viewport size was used",
+        )
+        .unwrap(),
+    )
+    .with_retry(RetryAdvice::AfterRecovery)
+    .with_recovery(
+        NonEmptyText::new(
+            "reload or navigate the page, then retry after the browser establishes valid layout metrics",
+        )
+        .unwrap(),
+    );
+    if let Some(target_id) = target_id {
+        warning.context.target_id = Some(target_id);
+    }
+    warning
 }
 
 fn project_page_operation(

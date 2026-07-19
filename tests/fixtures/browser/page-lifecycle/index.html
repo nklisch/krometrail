@@ -4,6 +4,7 @@
 <body>
   <h1>Lifecycle first</h1>
   <button id="push" type="button">Push history</button>
+  <button id="open-popup" type="button">Open detail</button>
   <output id="marker">first</output>
   <output id="profile-visits"></output>
   <script>
@@ -13,6 +14,9 @@
     document.querySelector('#push').addEventListener('click', () => {
       history.pushState({ marker: 'pushed' }, '', '#pushed');
       document.querySelector('#marker').textContent = 'pushed';
+    });
+    document.querySelector('#open-popup').addEventListener('click', () => {
+      window.open('detail.html', 'detail', 'width=420,height=300');
     });
     addEventListener('popstate', () => {
       document.querySelector('#marker').textContent = location.hash === '#pushed' ? 'pushed' : 'first';

@@ -310,6 +310,9 @@ pub(super) async fn restore_event_domains_and_visibility(
             SupervisorInput::VisibilityChanged {
                 target_key: target_key.clone(),
                 visibility,
+                observed_at: authority
+                    .session_time()
+                    .unwrap_or(krometrail_core::SessionTime::ZERO),
             },
         )
         .map_err(|_| AttemptFailure::Failed)?;

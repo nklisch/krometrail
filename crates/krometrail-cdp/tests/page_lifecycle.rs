@@ -19,10 +19,11 @@ use krometrail_core::{
     BrowserOperationContext, BrowserOperationRequest, BrowserOperationResult, BrowserSessionState,
     CancellationSignal, CaptureStreamState, ClickRequest, ClosePageRequest, CreatePageRequest,
     ElementLocator, ErrorCode, GoBackRequest, GoForwardRequest, ImageFormat, InspectPageRequest,
-    InteractionLocator, LaunchBrowser, ListPagesRequest, ManagedProfile, Modifiers, MouseButton,
-    NavigatePageRequest, NonEmptyText, ObservationPart, PageOperationOutcome, PageSelection,
-    ProfileIdentity, ProfileRef, ReadOnlyEvaluationRequest, ReloadPageRequest, ScreenshotRequest,
-    ScreenshotTarget, SelectPageRequest, SnapshotPageRequest,
+    InteractionLocator, LaunchBrowser, ListPageContextsRequest, ListPagesRequest, ManagedProfile,
+    Modifiers, MouseButton, NavigatePageRequest, NonEmptyText, ObservationPart,
+    PageOperationOutcome, PageSelection, ProfileIdentity, ProfileRef, ReadOnlyEvaluationRequest,
+    ReloadPageRequest, ScreenshotRequest, ScreenshotTarget, SelectPageRequest, SnapshotPageRequest,
+    WaitForPageRequest,
 };
 use serde_json::{Value, json};
 use support::scripted_cdp::ScriptedCdp;
@@ -1351,6 +1352,136 @@ async fn opt_in_real_chrome_preserve_focus_creates_a_background_tab() {
     .await;
     assert!(captured.is_ok(), "activated page did not restart capture");
 
+    session.stop().await.unwrap();
+    assert!(support::chrome::process_references(root_guard.path()).is_empty());
+}
+
+#[tokio::test]
+async fn opt_in_real_chrome_window_open_popup_commits_and_is_adopted() {
+    if !support::chrome::real_browser_tests_enabled() {
+        eprintln!("skipping popup Chrome test; set KROMETRAIL_REAL_CHROME_TESTS=1");
+        return;
+    }
+    let _browser_lock = support::chrome::real_browser_lock().await;
+    let root_guard = support::chrome::temporary_profile_root("popup-adoption");
+    let connector = ProductionBrowserConnector::new(
+        Arc::new(krometrail_cdp::SystemChromeLauncher::new(
+            krometrail_cdp::LauncherConfig {
+                profile_root: root_guard.path().to_path_buf(),
+                startup_timeout: Duration::from_secs(45),
+                shutdown_timeout: Duration::from_secs(5),
+            },
+        )),
+        Arc::new(
+            krometrail_cdp::transport::CdpkitTransportFactory::new()
+                .with_command_timeout(Duration::from_secs(15)),
+        ),
+    )
+    .with_interaction_evidence(support::evidence_sink());
+    let session = connector
+        .connect(BrowserConnectRequest::Launch(LaunchBrowser {
+            executable: None,
+            profile: ManagedProfile::Temporary,
+            initial_url: Some(support::chrome::page_lifecycle_fixture_url("index.html")),
+            every_nth_frame: krometrail_core::EveryNthFrame::default(),
+            focus: krometrail_core::BrowserFocusPolicy::default(),
+        }))
+        .await
+        .expect("popup lifecycle session");
+    let opener = session.status().await.unwrap().selected_target_id.unwrap();
+    let before = session
+        .execute(
+            BrowserOperationRequest::ListPageContexts(ListPageContextsRequest::default()),
+            BrowserOperationContext::default(),
+        )
+        .await
+        .unwrap();
+    let BrowserOperationResult::ListPageContexts(before) = before else {
+        panic!("page contexts");
+    };
+    for _ in 0..100 {
+        let ready = session
+            .execute(
+                BrowserOperationRequest::EvaluatePage(
+                    ReadOnlyEvaluationRequest::new(
+                        opener,
+                        "document.readyState === 'complete' && document.querySelector('#open-popup') !== null",
+                        false,
+                    )
+                    .unwrap(),
+                ),
+                BrowserOperationContext::default(),
+            )
+            .await;
+        if matches!(
+            ready,
+            Ok(BrowserOperationResult::EvaluatePage(result))
+                if result.value == krometrail_core::EvaluationValue::Json(json!(true))
+        ) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let clicked = session
+        .execute(
+            BrowserOperationRequest::Click(
+                ClickRequest::new(
+                    PageSelection::Target(opener),
+                    InteractionLocator::element(ElementLocator::CssSelector(
+                        NonEmptyText::new("#open-popup").unwrap(),
+                    )),
+                    MouseButton::Left,
+                    Modifiers::default(),
+                    1,
+                    false,
+                )
+                .unwrap(),
+            ),
+            BrowserOperationContext::default(),
+        )
+        .await
+        .expect("popup-opening click dispatch and degraded-safe observation");
+    assert!(matches!(clicked, BrowserOperationResult::Click(_)));
+    let waited = session
+        .execute(
+            BrowserOperationRequest::WaitForPage(WaitForPageRequest {
+                after: before.cursor,
+                opener_target_id: Some(opener),
+                timeout_ms: 5_000,
+            }),
+            BrowserOperationContext::default(),
+        )
+        .await
+        .expect("popup became supervised");
+    let BrowserOperationResult::WaitForPage(waited) = waited else {
+        panic!("wait for popup");
+    };
+    assert_eq!(waited.matched.opener_target_id, Some(opener));
+    assert!(
+        waited
+            .matched
+            .page
+            .target
+            .target
+            .url()
+            .ends_with("detail.html")
+    );
+    let contexts = session
+        .execute(
+            BrowserOperationRequest::ListPageContexts(ListPageContextsRequest::default()),
+            BrowserOperationContext::default(),
+        )
+        .await
+        .unwrap();
+    let BrowserOperationResult::ListPageContexts(contexts) = contexts else {
+        panic!("page contexts after popup");
+    };
+    assert!(
+        contexts
+            .pages
+            .iter()
+            .any(|page| page.opener_target_id == Some(opener))
+    );
     session.stop().await.unwrap();
     assert!(support::chrome::process_references(root_guard.path()).is_empty());
 }

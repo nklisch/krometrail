@@ -353,6 +353,9 @@ pub(super) async fn apply_effects(
 						.map(|visibility| SupervisorInput::VisibilityChanged {
 							target_key: target_key.clone(),
 							visibility,
+							observed_at: browser_events
+								.session_time()
+								.unwrap_or(krometrail_core::SessionTime::ZERO),
 						})
 						.unwrap_or_else(|_| SupervisorInput::InitialVisibilityProbeFailed {
 							target_key: target_key.clone(),

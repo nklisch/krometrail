@@ -286,6 +286,7 @@ pub struct EffectiveViewport {
     pub touch: bool,
     pub override_active: bool,
     pub viewport_meta_present: bool,
+    pub metrics_fallback: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -505,6 +506,7 @@ mod tests {
             touch: false,
             override_active: true,
             viewport_meta_present,
+            metrics_fallback: false,
         }
     }
 
@@ -582,6 +584,7 @@ mod tests {
             touch: false,
             override_active: true,
             viewport_meta_present: true,
+            metrics_fallback: false,
         };
 
         let guidance = viewport_guidance(responsive, &scrollbar_reduced);

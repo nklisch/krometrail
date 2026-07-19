@@ -171,13 +171,13 @@ fn decode_effective_viewport(
         .or_else(|| runtime.get("value"))
         .ok_or_else(|| malformed(target_id))?;
     let layout = layout.get("result").unwrap_or(layout);
-    let visual_viewport = layout
-        .get("cssVisualViewport")
-        .ok_or_else(|| malformed(target_id))?;
-    let width = number(visual_viewport, "clientWidth")?;
-    let height = number(visual_viewport, "clientHeight")?;
-    let layout_width = number(value, "layoutWidth")?;
-    let layout_height = number(value, "layoutHeight")?;
+    let layout_width = positive_number(value, "layoutWidth").ok_or_else(|| malformed(target_id))?;
+    let layout_height =
+        positive_number(value, "layoutHeight").ok_or_else(|| malformed(target_id))?;
+    let visual_viewport = layout.get("cssVisualViewport");
+    let width = visual_viewport.and_then(|value| positive_number(value, "clientWidth"));
+    let height = visual_viewport.and_then(|value| positive_number(value, "clientHeight"));
+    let metrics_fallback = width.is_none() || height.is_none();
     let scale = number(value, "scale")?;
     let touch_points = value
         .get("touchPoints")
@@ -188,13 +188,17 @@ fn decode_effective_viewport(
         .and_then(Value::as_bool)
         .ok_or_else(|| malformed(target_id))?;
     let effective = EffectiveViewport {
-        css_size: CssSize::new(width, height)?,
+        css_size: CssSize::new(
+            width.unwrap_or(layout_width),
+            height.unwrap_or(layout_height),
+        )?,
         layout_css_size: CssSize::new(layout_width, layout_height)?,
         device_scale_factor: DeviceScaleFactor::new(scale)?,
         mobile: declared.is_some_and(ViewportMetrics::mobile),
         touch: touch_points > 0,
         override_active: declared.is_some(),
         viewport_meta_present,
+        metrics_fallback,
     };
     if let Some(expected) = declared {
         let mismatch = viewport_mismatch(expected, &effective);
@@ -282,11 +286,25 @@ fn number(value: &Value, field: &str) -> Result<f64> {
         })
 }
 
+fn positive_number(value: &Value, field: &str) -> Option<f64> {
+    value
+        .get(field)
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite() && *value > 0.0)
+}
+
 fn malformed(target_id: krometrail_core::TargetId) -> krometrail_core::KrometrailError {
     operation_error(
         ErrorCode::PageObservationFailed,
         target_id,
         "browser returned malformed effective viewport metrics",
+    )
+    .with_retry(krometrail_core::RetryAdvice::AfterRecovery)
+    .with_recovery(
+        krometrail_core::NonEmptyText::new(
+            "reload or navigate the page, then retry after the browser establishes valid layout metrics",
+        )
+        .unwrap(),
     )
 }
 
@@ -316,6 +334,49 @@ mod tests {
         assert_eq!(value.layout_css_size, CssSize::new(980.0, 2120.0).unwrap());
         assert!(!value.viewport_meta_present);
         assert!(value.mobile && value.touch && value.override_active);
+        assert!(!value.metrics_fallback);
+    }
+
+    #[test]
+    fn invalid_visual_metrics_fall_back_to_observed_javascript_size() {
+        let effective = decode_effective_viewport(
+            &json!({"result": {
+                "cssVisualViewport": {"clientWidth": 0, "clientHeight": 0},
+                "cssLayoutViewport": {"clientWidth": 800, "clientHeight": 600}
+            }}),
+            &json!({"result":{"result":{"value":{
+                "layoutWidth":800,"layoutHeight":600,"scale":1.0,
+                "touchPoints":0,"viewportMetaPresent":true
+            }}}}),
+            None,
+            target(),
+        )
+        .unwrap();
+        assert_eq!(effective.css_size, CssSize::new(800.0, 600.0).unwrap());
+        assert!(effective.metrics_fallback);
+    }
+
+    #[test]
+    fn invalid_visual_and_javascript_metrics_name_navigation_recovery() {
+        let error = decode_effective_viewport(
+            &json!({"result": {
+                "cssVisualViewport": {"clientWidth": 0, "clientHeight": 0}
+            }}),
+            &json!({"result":{"result":{"value":{
+                "layoutWidth":0,"layoutHeight":0,"scale":1.0,
+                "touchPoints":0,"viewportMetaPresent":true
+            }}}}),
+            None,
+            target(),
+        )
+        .unwrap_err();
+        assert_eq!(error.retry, krometrail_core::RetryAdvice::AfterRecovery);
+        assert!(
+            error
+                .recovery
+                .as_ref()
+                .is_some_and(|recovery| recovery.as_str().contains("reload or navigate"))
+        );
     }
 
     #[test]
@@ -387,6 +448,7 @@ mod tests {
             touch: true,
             override_active: true,
             viewport_meta_present: true,
+            metrics_fallback: false,
         };
 
         assert_eq!(
@@ -424,6 +486,7 @@ mod tests {
             touch: false,
             override_active: false,
             viewport_meta_present: true,
+            metrics_fallback: false,
         })
         .unwrap();
         assert_eq!(geometry.viewport, PixelDimensions::new(600, 500).unwrap());

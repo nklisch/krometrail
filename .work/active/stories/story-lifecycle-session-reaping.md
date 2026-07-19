@@ -17,3 +17,9 @@ Unit 4 of the parent design: start_browser reaps an ended session slot and proce
 
 Acceptance evidence and file targets are defined in the parent feature's
 implementation unit; this story is the durable checkpoint for that unit.
+
+## Completion Notes
+
+Ended sessions are reaped during connect, stop-on-ended reports cleanup
+successfully, and recovery guidance points callers to `start_browser`.
+Deterministic session-owner coverage passes.

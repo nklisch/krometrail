@@ -966,6 +966,10 @@ async fn commit_observed_visibility(
         SupervisorInput::VisibilityChanged {
             target_key,
             visibility,
+            observed_at: shared
+                .browser_events
+                .session_time()
+                .unwrap_or(krometrail_core::SessionTime::ZERO),
         },
         transport,
         shared,

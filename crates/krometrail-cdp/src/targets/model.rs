@@ -6,7 +6,7 @@
 use krometrail_core::{
     BrowserCompatibility, BrowserSessionEvent, BrowserSessionState, ErrorCode, ErrorContext,
     KrometrailError, NonEmptyText, PageSelection, PageStatus, PageTarget, Result, RetryAdvice,
-    SupervisedTarget, TargetId, TargetLifecycle, TargetVisibility, ViewportMetrics,
+    SessionTime, SupervisedTarget, TargetId, TargetLifecycle, TargetVisibility, ViewportMetrics,
     browser::{PageContextInventory, PageContextStatus, PageSequence},
 };
 
@@ -133,6 +133,7 @@ pub struct SupervisorTargetState {
     pub page_sequence: PageSequence,
     pub opener_target_key: Option<String>,
     pub opener_target_id: Option<TargetId>,
+    pub last_visibility_observed_at: Option<SessionTime>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -143,6 +144,9 @@ pub struct SupervisorState {
     pub compatibility: BrowserCompatibility,
     pub targets_by_key: std::collections::HashMap<String, SupervisorTargetState>,
     pub target_key_by_session: std::collections::HashMap<TransportSessionId, String>,
+    /// Flat auto-attach can report a new, not-yet-recordable target before its URL commits. Keep
+    /// that session alive until TargetInfoChanged makes the target eligible for supervision.
+    pub pending_attached_sessions: std::collections::HashMap<String, TransportSessionId>,
     pub selected_target_key: Option<String>,
     pub next_page_sequence: u64,
 }
@@ -156,6 +160,7 @@ impl SupervisorState {
             compatibility,
             targets_by_key: std::collections::HashMap::new(),
             target_key_by_session: std::collections::HashMap::new(),
+            pending_attached_sessions: std::collections::HashMap::new(),
             selected_target_key: None,
             // Sequence 1 is the empty-inventory cursor, so waiting after an initial empty list
             // cannot miss the first discovered page.
@@ -309,6 +314,7 @@ pub enum SupervisorInput {
     VisibilityChanged {
         target_key: String,
         visibility: TargetVisibility,
+        observed_at: SessionTime,
     },
     InitialVisibilityProbeFailed {
         target_key: String,
@@ -316,6 +322,7 @@ pub enum SupervisorInput {
     CaptureVisibilityChanged {
         target_id: TargetId,
         visibility: TargetVisibility,
+        observed_at: SessionTime,
     },
     SelectTarget {
         target_key: String,
@@ -474,12 +481,24 @@ pub(crate) fn process_error() -> krometrail_core::KrometrailError {
         krometrail_core::ErrorCode::BrowserProcessTerminated,
         krometrail_core::NonEmptyText::new("the managed browser process terminated").unwrap(),
     )
+    .with_recovery(
+        krometrail_core::NonEmptyText::new(
+            "call start_browser to create a new browser session before continuing",
+        )
+        .unwrap(),
+    )
 }
 
 pub(crate) fn reconnect_error() -> krometrail_core::KrometrailError {
     krometrail_core::KrometrailError::from_browser_failure(
         krometrail_core::ErrorCode::ReconnectExhausted,
         krometrail_core::NonEmptyText::new("browser reconnection attempts were exhausted").unwrap(),
+    )
+    .with_recovery(
+        krometrail_core::NonEmptyText::new(
+            "call start_browser to create a new browser session before continuing",
+        )
+        .unwrap(),
     )
 }
 

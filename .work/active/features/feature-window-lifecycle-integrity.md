@@ -266,3 +266,30 @@ session/reconnect.rs, session/operations.rs)
   behavioral (popup loads), so a mitigation that achieves it is acceptable.
 - The metrics fallback must not mask real zero-size windows (minimized popups);
   the fallback note keeps the provenance visible.
+
+## Implementation Notes
+
+- Unit 5: visibility inputs now carry producer-stamped monotonic session time;
+  the initial probe, capture observer, reconnect probe, and activation write-back
+  all stamp it, and the reducer fences stale observations per target. The
+  deterministic activation-then-stale-hidden race passes.
+- Unit 1: empty, auto-attached popup sessions are retained rather than detached
+  during the unrecordable URL window; the later recordable target-info event
+  adopts the exact session and preserves the opener relationship. Deterministic
+  create-then-adopt and unsolicited-attach tests pass. The opt-in Chrome test
+  was added and exercised; this environment dispatched the click but Chrome did
+  not expose a persistent popup target, so the live qualification timed out.
+  The observed evidence was a dispatched interaction with degraded post-action
+  observation and no popup in the supervised context inventory.
+- Unit 2: dispatched interaction results retain their interaction record and
+  degrade unavailable post-action observation parts; preflight and dispatch
+  failures remain errors.
+- Unit 3: invalid CSS visual metrics now fall back to the already observed JS
+  layout size with a metrics-fallback note; double-invalid metrics report
+  after-recovery reload/navigation guidance.
+- Unit 4: MCP connect reaps ended session slots, ended-session stop reports
+  successful cleanup, and last-page-close/ended-session failures name
+  `start_browser` recovery. Deterministic owner coverage passes.
+- Verification: `cargo fmt --all -- --check`, workspace check, full workspace
+  tests, and workspace Clippy all passed. Focused CDP reducer/MCP suites passed;
+  the opt-in popup qualification remains the only unsuccessful check.

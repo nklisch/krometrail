@@ -60,6 +60,7 @@ fn attached_visible_state() -> SupervisorState {
         SupervisorInput::VisibilityChanged {
             target_key: "page-a".into(),
             visibility: TargetVisibility::Visible,
+            observed_at: krometrail_core::SessionTime::ZERO,
         },
     )
     .unwrap()
@@ -149,6 +150,7 @@ fn stream_cap_start_failure_detaches_only_the_surplus_flat_session() {
         SupervisorInput::VisibilityChanged {
             target_key: "page-a".into(),
             visibility: TargetVisibility::Visible,
+            observed_at: krometrail_core::SessionTime::ZERO,
         },
     )
     .unwrap()
@@ -158,6 +160,7 @@ fn stream_cap_start_failure_detaches_only_the_surplus_flat_session() {
         SupervisorInput::VisibilityChanged {
             target_key: "page-b".into(),
             visibility: TargetVisibility::Visible,
+            observed_at: krometrail_core::SessionTime::ZERO,
         },
     )
     .unwrap()
@@ -212,6 +215,7 @@ fn visibility_and_target_failure_are_local_reducer_inputs() {
         SupervisorInput::CaptureVisibilityChanged {
             target_id,
             visibility: TargetVisibility::Hidden,
+            observed_at: krometrail_core::SessionTime::from_nanos(1),
         },
     )
     .unwrap();

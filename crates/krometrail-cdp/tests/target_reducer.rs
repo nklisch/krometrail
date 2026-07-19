@@ -462,6 +462,7 @@ fn exact_target_reconnect_restores_viewport_before_capture_resume() {
         SupervisorInput::VisibilityChanged {
             target_key: "one".into(),
             visibility: TargetVisibility::Visible,
+            observed_at: krometrail_core::SessionTime::ZERO,
         },
     )
     .unwrap()

@@ -96,11 +96,20 @@ impl BrowserSessionOwner {
         // Keep the slot locked until the candidate proves it can report status. This prevents two
         // concurrent lifecycle calls from creating competing browser owners.
         let mut active = self.active.lock().await;
-        if active.is_some() {
-            return Err(lifecycle_error(
-                "a browser session is already active",
-                "stop the active browser session before starting or attaching another",
-            ));
+        if let Some(session) = active.as_ref() {
+            match session.status().await {
+                Ok(status) if status.state == krometrail_core::BrowserSessionState::Ended => {
+                    // The supervisor has already completed its terminal cleanup. Dropping the
+                    // ended owner releases the singleton slot so the next start can proceed.
+                    active.take();
+                }
+                Ok(_) | Err(_) => {
+                    return Err(lifecycle_error(
+                        "a browser session is already active",
+                        "stop the active browser session before starting or attaching another",
+                    ));
+                }
+            }
         }
         let session = self.connector.connect(request).await?;
         let status = session.status().await?;
@@ -403,6 +412,12 @@ mod tests {
         .unwrap()
     }
 
+    fn ended_status() -> BrowserStatus {
+        let mut status = status();
+        status.state = krometrail_core::BrowserSessionState::Ended;
+        status
+    }
+
     #[tokio::test]
     async fn owner_serializes_lifecycle_dispatches_once_and_removes_before_stop() {
         let session = Arc::new(FakeSession {
@@ -454,6 +469,23 @@ mod tests {
         );
         owner.shutdown().await.unwrap();
         assert_eq!(session.stop_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn owner_reaps_ended_session_before_starting_a_new_one() {
+        let session = Arc::new(FakeSession {
+            status: ended_status(),
+            execute_calls: AtomicUsize::new(0),
+            stop_calls: AtomicUsize::new(0),
+        });
+        let connector = Arc::new(FakeConnector {
+            session: Arc::clone(&session),
+            connect_calls: AtomicUsize::new(0),
+        });
+        let owner = BrowserSessionOwner::new(connector.clone());
+        owner.start(LaunchBrowser::default()).await.unwrap();
+        owner.start(LaunchBrowser::default()).await.unwrap();
+        assert_eq!(connector.connect_calls.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
