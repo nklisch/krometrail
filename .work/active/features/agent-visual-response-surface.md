@@ -1,7 +1,7 @@
 ---
 id: agent-visual-response-surface
 kind: feature
-stage: review
+stage: done
 tags: [agent-ux, browser, visual]
 parent: null
 depends_on: []
@@ -159,3 +159,14 @@ Artifact and filmstrip mapping becomes asynchronous so it can reuse the retained
 ## Risks
 
 Default image reads add bounded I/O to explicit visual tools and may degrade when retained bytes become unavailable; the structured result and canonical resource must remain successful with a warning. Concrete schema unions must remain acceptable to MCP clients while no longer collapsing to opaque branches. A current-store bump intentionally rejects existing local evidence, so the recovery message and installer/plugin docs must remain clear.
+
+## Review (2026-07-19)
+
+**Verdict**: Approve
+
+**Blockers**: Both accepted findings are resolved. `ea6bc1a` updates the SQLite integration contract to current schema v7 and future schema v8. `443e890` preserves the omitted `fetch_source_frames` preference so its default publishes exactly one primary image, while explicit `true` retains the bounded four-image expansion and explicit `false` suppresses pixels.
+**Important**: none
+**Nits**: none
+**Rejected**: none
+
+**Notes**: Substrate feature review used the effective `standard` weight with exactly one balanced same-harness Sol pass. The pass covered correctness, tests, design alignment, public schema behavior, current-store compatibility, async artifact reads, privacy/security boundaries, foundation assertions, and integrated agent UX. Receiver adjudication accepted the two material blockers above; both were fixed and verified without commissioning a second independent pass, as required by the standard closure policy. Focused closure evidence: `cargo test -p krometrail-store --test sqlite_schema --locked` (3 passed), `cargo test -p krometrail-mcp --lib --locked` (66 passed), `cargo check -p krometrail-mcp --all-targets --locked`, and `cargo fmt --all -- --check`.
