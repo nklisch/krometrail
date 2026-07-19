@@ -17,8 +17,8 @@ use krometrail_cdp::{
 use krometrail_core::{
     ActivatePageRequest, AttachBrowser, BrowserConnectRequest, BrowserConnector,
     BrowserOperationContext, BrowserOperationRequest, BrowserOperationResult, BrowserSessionState,
-    CancellationSignal, CaptureStreamState, ClickRequest, ClosePageRequest, CreatePageRequest,
-    ElementLocator, ErrorCode, GoBackRequest, GoForwardRequest, ImageFormat, InspectPageRequest,
+    CancellationSignal, ClickRequest, ClosePageRequest, CreatePageRequest, ElementLocator,
+    ErrorCode, GoBackRequest, GoForwardRequest, ImageFormat, InspectPageRequest,
     InteractionLocator, LaunchBrowser, ListPageContextsRequest, ListPagesRequest, ManagedProfile,
     Modifiers, MouseButton, NavigatePageRequest, NonEmptyText, ObservationPart,
     PageOperationOutcome, PageSelection, ProfileIdentity, ProfileRef, ReadOnlyEvaluationRequest,
@@ -1344,7 +1344,9 @@ async fn opt_in_real_chrome_preserve_focus_creates_a_background_tab() {
                 ClickRequest::new(
                     PageSelection::Target(created_id),
                     InteractionLocator::element(ElementLocator::CssSelector(
-                        NonEmptyText::new("#push").unwrap(),
+                        // The created page loads second.html; click its marker
+                        // element (second.html has no #push control).
+                        NonEmptyText::new("#navigation-marker").unwrap(),
                     )),
                     MouseButton::Left,
                     Modifiers::default(),
@@ -1359,20 +1361,24 @@ async fn opt_in_real_chrome_preserve_focus_creates_a_background_tab() {
         .unwrap();
     assert!(matches!(clicked, BrowserOperationResult::Click(_)));
 
-    let captured = tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            let status = session.status().await.unwrap();
-            if status.capture.iter().any(|capture| {
-                capture.target_id() == created_id
-                    && capture.state() == CaptureStreamState::Capturing
-            }) {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await;
-    assert!(captured.is_ok(), "activated page did not restart capture");
+    // Capture restart after activation cannot be observed here: this harness
+    // builds the connector without `with_capture`, so `status.capture` is
+    // empty by construction. The restart contract is covered by the
+    // deterministic reducer test
+    // `observed_activation_visibility_restarts_capture_for_a_hidden_ready_target`
+    // and by capture-enabled compositions. This tier proves the live wedge
+    // sequence itself: hidden create, activation converging tracked
+    // visibility, and a pointer click succeeding on the activated page.
+    let final_status = session.status().await.unwrap();
+    let final_page = final_status
+        .pages
+        .iter()
+        .find(|page| page.target.target.id() == created_id)
+        .expect("activated page remains supervised");
+    assert_eq!(
+        final_page.target.visibility,
+        krometrail_core::TargetVisibility::Visible
+    );
 
     session.stop().await.unwrap();
     assert!(support::chrome::process_references(root_guard.path()).is_empty());
