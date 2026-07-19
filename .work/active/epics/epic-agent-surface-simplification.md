@@ -1,7 +1,7 @@
 ---
 id: epic-agent-surface-simplification
 kind: epic
-stage: implementing
+stage: review
 tags: [agent-ux, browser, storage, visual]
 parent: null
 depends_on: []
@@ -76,3 +76,9 @@ Split by authoritative capability boundary. Current-contract cleanup establishes
 ## Release intent
 
 Ship as the next minor release after integrated review and focused real-browser validation. Release binding remains late-bound until implementation and review are complete.
+
+## Implementation result
+
+All five child features are implemented, independently reviewed, and done. Krometrail now exposes one implicit concise response with explicit expanded/full growth and orthogonal inline images; batch screenshot absence is truthful; temporal bundles default to pre-work anchor-epoch selection; capture publication failures retain classified causes through structured shutdown; and unsupported schema, installer, transport, response, and policy compatibility machinery is deleted. Foundation documents, generated public docs, and plugin skill guidance describe only the current surface.
+
+Focused feature verification and workspace compilation are green. The epic is ready for integrated review before the release-bound final verification.
