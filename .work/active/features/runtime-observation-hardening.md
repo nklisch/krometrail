@@ -1,7 +1,7 @@
 ---
 id: runtime-observation-hardening
 kind: feature
-stage: implementing
+stage: review
 tags: [browser, agent-ux]
 parent: null
 depends_on: []
@@ -55,9 +55,9 @@ fn decode_effective_viewport(
 The existing runtime projection gains layout width/height. Desktop acknowledgement compares declared metrics with those values; mobile continues to validate the visual viewport. A structured failure event records privacy-safe expected/observed facts and individual mismatch flags before returning the stable `target_failed` error.
 
 **Acceptance criteria**:
-- [ ] An overflowing 390px desktop page with a 384px visual content area succeeds and reports layout 390 / visual 384.
-- [ ] A true layout, DPR, or touch mismatch still fails and logs the exact bounded mismatch facts.
-- [ ] The public-site reproduction against `https://krometrail.dev/` succeeds in real Chrome.
+- [x] An overflowing 390px desktop page with a 384px visual content area succeeds and reports layout 390 / visual 384.
+- [x] A true layout, DPR, or touch mismatch still fails and logs the exact bounded mismatch facts.
+- [x] The public-site reproduction against `https://krometrail.dev/` succeeds in real Chrome.
 
 ### Unit 2: Frame-heavy acknowledgement resilience
 
@@ -74,9 +74,9 @@ impl Default for CaptureConfig {
 The frame reader remains synchronous and immediate, but the fatal deadline aligns with the qualified transport envelope. Failure logging adds reason, elapsed/deadline, lifecycle identity, and bounded pipeline counters without raw transport output.
 
 **Acceptance criteria**:
-- [ ] A deterministic acknowledgement delayed beyond 250 ms but below 1 second succeeds before handoff.
-- [ ] A configured acknowledgement exceeding its deadline remains a terminal acknowledgement failure with one explicit gap.
-- [ ] Frame-heavy/nested-frame real-Chrome navigation remains capturing with received and acknowledged counts equal for the observed interval.
+- [x] A deterministic acknowledgement delayed beyond 250 ms but below 1 second succeeds before handoff.
+- [x] A configured acknowledgement exceeding its deadline remains a terminal acknowledgement failure with one explicit gap.
+- [x] Frame-heavy/nested-frame real-Chrome navigation remains capturing with received and acknowledged counts equal for the observed interval.
 
 ### Unit 3: Action-centric and interaction-only snapshot projection
 
@@ -96,9 +96,9 @@ fn project_snapshot(
 `page_state` retains the existing detail enum. The shared projector ranks actionable nodes, atomically admits their missing ancestor closure within the 48-node / 12-KiB budgets, emits canonical preorder, and optionally fills compact mode with contextual preorder nodes. Interaction-only never fills unrelated static content.
 
 **Acceptance criteria**:
-- [ ] Early informational links cannot displace a later editable textbox in compact mode.
-- [ ] Interaction-only returns actions plus complete ancestry, exact references, and correct omission counts.
-- [ ] Full, legacy, compact, interaction-only, omit, node/byte budgets, and invalid page-state projection are covered at the stable MCP boundary.
+- [x] Early informational links cannot displace a later editable textbox in compact mode.
+- [x] Interaction-only returns actions plus complete ancestry, exact references, and correct omission counts.
+- [x] Full, legacy, compact, interaction-only, omit, node/byte budgets, and invalid page-state projection are covered at the stable MCP boundary.
 
 ## Implementation order
 
@@ -123,3 +123,17 @@ fn project_snapshot(
 - Runtime and CDP geometry could diverge for page zoom or mobile emulation; desktop-only authority selection and existing mobile validation bound that risk.
 - A longer acknowledgement deadline must not hide transport failure; it remains finite, terminal, and aligned with the already-qualified maximum.
 - Ranking can starve contextual text; compact retains a context-fill phase, while interaction-only is explicitly opt-in.
+
+## Implementation notes
+
+- Execution capability: inline implementation; all three cohesive stories were implemented and committed independently before the integrated feature verification.
+- Review weight: standard (project default).
+- Story commits: `19f33e2` corrects desktop viewport authority and bounded diagnostics; `a3fa149` hardens capture acknowledgement timing and terminal failure accounting; `159483b` adds the shared action-ranked snapshot projector and snapshot-only `interaction_only` detail.
+- Root causes resolved: desktop acknowledgement had trusted Chrome's scrollbar-reduced CDP layout metric instead of `window.innerWidth`; the production acknowledgement deadline was below cdpkit's qualified one-second transport envelope; and compact snapshots admitted priority nodes in raw preorder while sharing a response-detail enum with page-state.
+- Integrated behavior: desktop overrides now distinguish requested layout geometry from visual content area, capture retains one-shot ack-before-handoff behavior with a one-second default and one explicit terminal gap, and both bounded snapshot projections derive from canonical acquisition with atomic ancestor closure and exact omission accounting.
+- Real-browser evidence: the 390x844 preset succeeds against `https://krometrail.dev/` while reporting layout width 390 and scrollbar-reduced visual width; the nested-frame qualification remained live with persisted frames increasing from 3 to 5 and `received == acknowledged == 11` over the observed interval.
+- Integrated verification: `cargo fmt --all -- --check`; `cargo test -p krometrail-cdp -p krometrail-mcp --all-targets --locked` (CDP library 178 passed, MCP library 66 passed, and all relevant integration targets passed); `cargo clippy -p krometrail-cdp -p krometrail-mcp --all-targets --locked -- -D warnings`; `bash tests/plugin-static.sh`; and `bun run docs:build` all passed.
+- Documentation: `docs/SPEC.md`, `docs/ARCHITECTURE.md`, and `plugin/skills/krometrail/SKILL.md` describe the additive snapshot projection and shared selector. The derived public documentation aggregate was regenerated and remained byte-identical; the VitePress build passed.
+- Simplification: removed CDP layout metrics as a competing desktop authority, centralized acknowledgement terminal failure handling, and replaced the preorder-priority compactor with one ranked closure selector. No retries, alternate capture tasks, second acquisition model, or compatibility shim were added.
+- Discrepancies from design: none.
+- Adjacent issues parked: none.
