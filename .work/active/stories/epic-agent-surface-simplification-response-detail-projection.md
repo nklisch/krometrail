@@ -1,7 +1,7 @@
 ---
 id: epic-agent-surface-simplification-response-detail-projection
 kind: story
-stage: implementing
+stage: done
 tags: [agent-ux, browser]
 parent: epic-agent-surface-simplification-response-detail
 depends_on: [epic-agent-surface-simplification-response-detail-wire-contract]
@@ -29,3 +29,11 @@ Expanded adds bounded flattened semantic entries with original parent/depth hint
 ## Ordering
 
 Depends on `epic-agent-surface-simplification-response-detail-wire-contract` so implementation targets one final request vocabulary.
+
+## Implementation evidence
+
+- Concise snapshots now emit bounded ranked `targets` with complete reusable node references and separate source/presentation omission counts.
+- Expanded snapshots add bounded flattened semantic context; full retains the complete canonical snapshot and temporal bundle.
+- Progressive frame/artifact responses keep bounded drill-down handles in concise mode and preserve acquired structures at higher detail.
+- Inline pixels are fetched and emitted only on explicit opt-in, independently from structured detail and resource links.
+- Replaced ancestor-closure and projection-matrix coverage with ranking, byte-bound, progression, protocol, and inline-transport tests.

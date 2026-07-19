@@ -3115,7 +3115,7 @@ mod tests {
         );
         assert_eq!(generic.response.resources.len(), 1);
         let mut arguments = serde_json::to_value(bundle_request()).unwrap();
-        arguments["response"] = json!({"detail":"full", "inline_images":true});
+        arguments["response"] = json!({"detail":"expanded", "inline_images":true});
         let dependencies = McpDependencies {
             browser: Arc::new(UnusedConnector),
             temporal_debug_bundles: Arc::clone(&spy) as Arc<dyn TemporalDebugBundles>,

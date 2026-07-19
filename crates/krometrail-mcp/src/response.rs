@@ -1511,7 +1511,13 @@ pub(crate) async fn map_temporal_bundle_result(
     response: ResponseRequest,
 ) -> Result<MappedResult, ResponseInvariantError> {
     let scope = artifact_scope(&bundle.range)?;
-    let mut projection = Projection::success(compact_bundle_value(&bundle, scope)?);
+    let result = match response.detail {
+        ResponseDetail::Full => {
+            serde_json::to_value(&bundle).map_err(|_| ResponseInvariantError)?
+        }
+        ResponseDetail::Concise | ResponseDetail::Expanded => compact_bundle_value(&bundle, scope)?,
+    };
+    let mut projection = Projection::success(result);
     let mut candidate: Option<(u8, u32, u32, ArtifactHandle)> = None;
     if let krometrail_core::BundleArtifactEvidence::Available(generation) = &bundle.artifacts {
         add_artifact_generation_resources(&mut projection, generation, scope, true)?;
@@ -1623,9 +1629,20 @@ pub(crate) fn map_progressive_result(
             projection
         }
         ProgressiveEvidenceResult::ListSourceFrames(list) => {
+            let frames = if response.detail == ResponseDetail::Concise {
+                list.frames
+                    .iter()
+                    .take(MAX_CONCISE_TARGETS)
+                    .cloned()
+                    .collect()
+            } else {
+                list.frames.clone()
+            };
+            let omitted_frame_count = list.frames.len().saturating_sub(frames.len());
             let mut projection = Projection::success(json!({
                 "range": list.range,
-                "frames": list.frames,
+                "frames": frames,
+                "omitted_frame_count": omitted_frame_count,
             }));
             for frame in &list.frames {
                 add_source_frame_resource(&mut projection, frame)?;
@@ -1636,7 +1653,11 @@ pub(crate) fn map_progressive_result(
         ProgressiveEvidenceResult::GenerateArtifacts(generation) => {
             let generation = *generation;
             let scope = artifact_scope(&generation.range)?;
-            let mut projection = serializable(generation.clone())?;
+            let mut projection = if response.detail == ResponseDetail::Concise {
+                Projection::success(compact_generation_value(&generation, scope)?)
+            } else {
+                serializable(generation.clone())?
+            };
             add_artifact_generation_resources(&mut projection, &generation, scope, false)?;
             projection
         }
@@ -1646,9 +1667,14 @@ pub(crate) fn map_progressive_result(
             let generation = evidence.generation;
             let scope = artifact_scope(&generation.range)?;
             let generation_for_links = generation.clone();
+            let generation_value = if response.detail == ResponseDetail::Concise {
+                compact_generation_value(&generation, scope)?
+            } else {
+                serde_json::to_value(&generation).map_err(|_| ResponseInvariantError)?
+            };
             let mut projection = Projection::success(json!({
                 "region": region,
-                "generation": generation,
+                "generation": generation_value,
             }));
             add_artifact_generation_resources(
                 &mut projection,
@@ -1662,7 +1688,6 @@ pub(crate) fn map_progressive_result(
         | ProgressiveEvidenceResult::UnpinResolvedRange(change) => serializable(*change)?,
         ProgressiveEvidenceResult::QueryPinState(state) => serializable(*state)?,
     };
-    project_temporal_value(&mut projection.result, response.detail)?;
     project_response(tool, &mut projection, response)?;
     Ok(mapped(tool, projection, format!("{tool} succeeded")))
 }
@@ -1719,6 +1744,46 @@ fn compact_bundle_value(
             .map_err(|_| ResponseInvariantError)?;
     }
     Ok(value)
+}
+
+fn compact_generation_value(
+    generation: &ArtifactGenerationResult,
+    scope: krometrail_core::EvidenceScope,
+) -> Result<Value, ResponseInvariantError> {
+    let outcomes = generation
+        .outcomes
+        .iter()
+        .map(|outcome| match outcome {
+            ArtifactOutcome::Available {
+                epoch_index,
+                generator_index,
+                artifact,
+            } => Ok(json!({
+                "available": {
+                    "epoch_index": epoch_index,
+                    "generator_index": generator_index,
+                    "artifact": compact_artifact_handle(scope, artifact)?,
+                }
+            })),
+            ArtifactOutcome::Unavailable {
+                epoch_index,
+                generator_index,
+                artifact_kind,
+                error,
+            } => Ok(json!({
+                "unavailable": {
+                    "epoch_index": epoch_index,
+                    "generator_index": generator_index,
+                    "artifact_kind": artifact_kind,
+                    "error": error,
+                }
+            })),
+        })
+        .collect::<Result<Vec<_>, ResponseInvariantError>>()?;
+    Ok(json!({
+        "range": generation.range,
+        "outcomes": outcomes,
+    }))
 }
 
 fn compact_artifact_handle(
