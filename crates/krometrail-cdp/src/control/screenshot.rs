@@ -3,9 +3,9 @@ use std::future::Future;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use krometrail_core::{
     BrowserOperationResult, CoordinateSpace, CssPoint, CssRect, CssSize, DeviceScaleFactor,
-    ElementLocator, EncodedScreenshot, ErrorCode, InspectPageRequest, LiveObservation,
-    LiveObservationRequest, ObservationContext, ObservationPart, Result, ScreenshotMetadata,
-    ScreenshotRequest, ScreenshotTarget, SnapshotPageRequest,
+    ElementLocator, EncodedScreenshot, ErrorCode, InspectPageRequest, KrometrailError,
+    LiveObservation, LiveObservationRequest, ObservationContext, ObservationPart, Result,
+    ScreenshotMetadata, ScreenshotRequest, ScreenshotTarget, SnapshotPageRequest,
 };
 use serde_json::{Map, Value, json};
 
@@ -23,6 +23,7 @@ use crate::{
 
 const MAX_SCREENSHOT_BASE64_BYTES: usize = 24 * 1024 * 1024;
 const MAX_SCREENSHOT_DECODED_BYTES: usize = 16 * 1024 * 1024;
+const TALL_SCREENSHOT_GUIDANCE_HEIGHT: u32 = 8_192;
 
 impl PageControl {
     pub(super) async fn screenshot(
@@ -257,7 +258,7 @@ impl PageControl {
             completed_at,
         )?;
         let resolved_document_rect = clip.unwrap_or(viewport);
-        EncodedScreenshot::new(
+        let screenshot = EncodedScreenshot::new(
             ScreenshotMetadata::new(
                 context,
                 requested_target,
@@ -266,7 +267,13 @@ impl PageControl {
                 device_scale_factor,
             )?,
             bytes,
-        )
+        )?;
+        if image.height() > TALL_SCREENSHOT_GUIDANCE_HEIGHT {
+            return Ok(
+                screenshot.with_warning(tall_screenshot_guidance(bound.target_id, image.height()))
+            );
+        }
+        Ok(screenshot)
     }
 
     pub(super) async fn observe_live(
@@ -375,6 +382,26 @@ impl PageControl {
             interruption,
         ))
     }
+}
+
+fn tall_screenshot_guidance(target_id: krometrail_core::TargetId, height: u32) -> KrometrailError {
+    KrometrailError::new(
+        ErrorCode::ResourceLimitExceeded,
+        krometrail_core::NonEmptyText::new(format!(
+            "captured screenshot is {height}px tall; use an element or region target, or scroll and capture bounded viewport images for readable evidence"
+        ))
+        .expect("tall screenshot guidance is non-empty"),
+    )
+    .with_context(krometrail_core::ErrorContext {
+        target_id: Some(target_id),
+        ..krometrail_core::ErrorContext::default()
+    })
+    .with_recovery(
+        krometrail_core::NonEmptyText::new(
+            "request an element or region screenshot, or capture viewport images while scrolling",
+        )
+        .expect("tall screenshot recovery is non-empty"),
+    )
 }
 
 enum ComponentResult<T> {

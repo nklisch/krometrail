@@ -897,6 +897,7 @@ fn project_operation(
         BrowserOperationResult::QueryPage(value) => serializable(*value),
         BrowserOperationResult::TakeScreenshot(value) => {
             let mut projection = serializable(value.metadata().clone())?;
+            projection.degrade_with(value.warnings().to_vec());
             projection.images.push(EncodedMcpImage::Screenshot {
                 role: ImageRole::RequestedScreenshot,
                 step_index: None,
@@ -1031,6 +1032,7 @@ fn project_batch(
     novelty: SnapshotNovelty,
 ) -> Result<Projection, ResponseInvariantError> {
     let mut images = Vec::new();
+    let mut screenshot_warnings = Vec::new();
     let mut step_values = Vec::with_capacity(value.steps.len());
     let mut first_step_error = None;
     let mut step_failure_seen = false;
@@ -1049,6 +1051,7 @@ fn project_batch(
         let screenshot = step.screenshot.map(|screenshot| match screenshot {
             ObservationPart::Available(screenshot) => {
                 let metadata = screenshot.metadata().clone();
+                screenshot_warnings.extend(screenshot.warnings().iter().cloned());
                 images.push(EncodedMcpImage::Screenshot {
                     role: ImageRole::BatchStep,
                     step_index: Some(step.index),
@@ -1094,6 +1097,7 @@ fn project_batch(
         "final_observation": final_observation,
     }));
     projection.images = images;
+    projection.degrade_with(screenshot_warnings);
     projection.degrade_with(final_warnings);
     match outcome {
         BatchOutcome::Completed => {}
@@ -1154,10 +1158,13 @@ fn project_live_observation(
     let mut snapshot = project_serializable_part(value.snapshot, &mut warnings)?;
     project_snapshot_part(&mut snapshot, response.detail, novelty)?;
     let (screenshot, image) = match value.screenshot {
-        ObservationPart::Available(screenshot) => (
-            json!({"available": screenshot.metadata()}),
-            Some(screenshot),
-        ),
+        ObservationPart::Available(screenshot) => {
+            warnings.extend(screenshot.warnings().iter().cloned());
+            (
+                json!({"available": screenshot.metadata()}),
+                Some(screenshot),
+            )
+        }
         ObservationPart::Unavailable(error) => {
             warnings.push(error.clone());
             (json!({"unavailable": error}), None)
@@ -2920,6 +2927,32 @@ mod tests {
                 .contains("start a new browser session")
         );
         assert!(mapped.response.error.is_none());
+    }
+
+    #[test]
+    fn tall_screenshot_guidance_is_projected_as_one_warning() {
+        let mapped = map_operation_result_with_capture(
+            "take_screenshot",
+            BrowserOperationResult::TakeScreenshot(Box::new(
+                screenshot(ImageFormat::Png).with_warning(error(
+                    ErrorCode::ResourceLimitExceeded,
+                    "captured screenshot is too tall; use a bounded viewport capture",
+                )),
+            )),
+            &[],
+            ResponseRequest {
+                inline_images: Some(true),
+                ..ResponseRequest::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(mapped.response.status, ToolResponseStatus::Degraded);
+        assert_eq!(mapped.response.warnings.len(), 1);
+        assert_eq!(
+            mapped.response.warnings[0].code,
+            ErrorCode::ResourceLimitExceeded
+        );
+        assert_eq!(mapped.response.images.len(), 1);
     }
 
     #[test]

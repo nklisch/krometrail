@@ -156,11 +156,14 @@ second ranking system. Tall-screenshot handling should prefer guidance plus boun
   the already-shipped drift).
 
 **Acceptance Criteria**:
-- [ ] `image_defaults_follow_operation_purpose_and_preserve_overrides` (registry.rs:1022)
+- [x] `image_defaults_follow_operation_purpose_and_preserve_overrides` (registry.rs:1022)
       extended: scroll/set_viewport/activate_page default on; explicit false suppresses.
-- [ ] Full-page capture of a >8192px document succeeds and carries exactly one guidance
+- [x] Full-page capture of a >8192px document succeeds and carries exactly one guidance
       warning; shorter documents carry none.
-- [ ] SPEC.md and skill text state the staleness exception.
+- [x] SPEC.md and skill text state the staleness exception.
+
+- Unit 2 is complete: scroll, viewport-change, and page-activation operations default to one bounded inline image while explicit overrides remain authoritative. Decoded screenshots taller than 8192 pixels carry one bounded `ResourceLimitExceeded` guidance warning recommending element/region or scrolling viewport captures; the warning is projected through direct, live, and batch response paths.
+- The current SPEC and plugin evidence instructions describe the staleness exception, and `docs/public/llms-full.txt` was regenerated with `bun run docs:build`.
 
 ### Unit 3: Viewport-anchored post-scroll evidence
 **Story**: `feature-response-evidence-economy-viewport-anchoring`

@@ -18,7 +18,9 @@ Check retained capture health before making a temporal claim. A capture warning 
 successful browser action; it limits history without undoing the action.
 
 Responses default to concise structured evidence. Explicit visual tools include one bounded requested or primary
-image; routine actions remain pixel-light. Screenshot availability, warnings, interaction identity, retained
+image. Scroll, viewport-change, and page-activation observations also include one bounded viewport image by default
+because their structured projection can be stale after the action; other routine actions remain pixel-light. Screenshot
+availability, warnings, interaction identity, retained
 evidence, and canonical resource links remain visible. Use `inline_images: false` to suppress a visual default or
 `inline_images: true` to request pixels where supported. Request `detail: "expanded"`
 for broader bounded semantic/page context or `detail: "full"` for the complete acquired structures.

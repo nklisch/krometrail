@@ -982,6 +982,7 @@ impl<'de> Deserialize<'de> for ScreenshotMetadata {
 pub struct EncodedScreenshot {
     metadata: ScreenshotMetadata,
     bytes: Arc<[u8]>,
+    warnings: Vec<KrometrailError>,
 }
 impl EncodedScreenshot {
     pub fn new(metadata: ScreenshotMetadata, bytes: impl Into<Arc<[u8]>>) -> Result<Self> {
@@ -989,13 +990,24 @@ impl EncodedScreenshot {
         if bytes.is_empty() {
             return Err(invalid("encoded screenshot payload must not be empty"));
         }
-        Ok(Self { metadata, bytes })
+        Ok(Self {
+            metadata,
+            bytes,
+            warnings: Vec::new(),
+        })
     }
     pub fn metadata(&self) -> &ScreenshotMetadata {
         &self.metadata
     }
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
+    }
+    pub fn warnings(&self) -> &[KrometrailError] {
+        &self.warnings
+    }
+    pub fn with_warning(mut self, warning: KrometrailError) -> Self {
+        self.warnings.push(warning);
+        self
     }
 }
 

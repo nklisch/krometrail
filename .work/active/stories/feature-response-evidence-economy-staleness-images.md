@@ -20,8 +20,12 @@ scrolling; SPEC.md "Routine operations remain pixel-light" sentence and skill te
 the staleness exception.
 
 ## Acceptance
-- Registry default test extended: the three operations default on; explicit
+- [x] Registry default test extended: the three operations default on; explicit
   `inline_images: false` suppresses.
-- >8192px full-page capture succeeds with exactly one guidance warning; shorter carries
+- [x] >8192px full-page capture succeeds with exactly one guidance warning; shorter carries
   none.
-- SPEC.md + skill text updated; `docs/public/llms-full.txt` regenerated.
+- [x] SPEC.md + skill text updated; `docs/public/llms-full.txt` regenerated.
+
+## Completion Note
+
+Implemented and verified Unit 2. Purpose-sensitive defaults now include staleness-prone scroll, viewport, and activation observations; tall decoded screenshots emit one bounded recovery warning without changing capture limits; SPEC, plugin skill text, and generated full documentation are current.

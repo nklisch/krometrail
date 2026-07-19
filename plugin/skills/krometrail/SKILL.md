@@ -20,7 +20,9 @@ Krometrail defaults to concise, action-centric structured responses. Omit `respo
 and interaction. The returned flat `targets` are ranked for immediate action and each contains one complete,
 copyable generation-scoped reference. Explicit visual tools (`take_screenshot`, `observe_live`,
 `temporal_debug_bundle`, `fetch_source_frames`, `generate_artifacts`, and `generate_region_filmstrip`) include
-one bounded requested or primary image by default; routine actions remain pixel-light.
+one bounded requested or primary image by default. Scroll, viewport changes, and page activation also include one
+bounded viewport image by default because their structured projection can be stale after the action; other routine
+actions remain pixel-light.
 
 Request broader bounded semantic/page context only when concise output cannot answer the question:
 
@@ -48,7 +50,8 @@ omissions from presentation omissions; neither projection pretends to be a compl
 1. Trust the live evidence returned by a successful state-changing operation for immediate
    confirmation. Its default concise response retains screenshot availability metadata and bounded current
    semantic outcomes without embedding image bytes. Request an inline image on the original action only when pixels are needed; do not take a
-   redundant screenshot after every click, fill, key press, navigation, scroll, or viewport change.
+   redundant screenshot after every click, fill, key press, or navigation. Scroll and viewport-change responses already
+   include one bounded viewport image by default when pixels are useful.
 2. Use `observe_live` when an explicit fresh current-state observation is needed, or a narrower
    `inspect_page`, `snapshot_page`, or `take_screenshot` when only one part is needed.
 3. Use `temporal_debug_bundle` or retained source evidence only for history, transient behavior,

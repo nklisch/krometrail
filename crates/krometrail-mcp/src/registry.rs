@@ -381,7 +381,11 @@ fn resolve_progressive_response(
 const fn browser_inline_image_default(kind: BrowserOperationKind) -> bool {
     matches!(
         kind,
-        BrowserOperationKind::TakeScreenshot | BrowserOperationKind::ObserveLive
+        BrowserOperationKind::TakeScreenshot
+            | BrowserOperationKind::ObserveLive
+            | BrowserOperationKind::Scroll
+            | BrowserOperationKind::SetViewport
+            | BrowserOperationKind::ActivatePage
     )
 }
 
@@ -1084,8 +1088,28 @@ mod tests {
                 browser_inline_image_default(*kind),
                 matches!(
                     kind,
-                    BrowserOperationKind::TakeScreenshot | BrowserOperationKind::ObserveLive
+                    BrowserOperationKind::TakeScreenshot
+                        | BrowserOperationKind::ObserveLive
+                        | BrowserOperationKind::Scroll
+                        | BrowserOperationKind::SetViewport
+                        | BrowserOperationKind::ActivatePage
                 )
+            );
+        }
+        for kind in [
+            BrowserOperationKind::Scroll,
+            BrowserOperationKind::SetViewport,
+            BrowserOperationKind::ActivatePage,
+        ] {
+            assert!(browser_inline_image_default(kind));
+            assert_eq!(
+                ResponseRequest {
+                    inline_images: Some(false),
+                    ..ResponseRequest::default()
+                }
+                .with_inline_default(browser_inline_image_default(kind))
+                .inline_images,
+                Some(false)
             );
         }
         assert_eq!(

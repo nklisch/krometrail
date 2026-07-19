@@ -116,9 +116,10 @@ page identity, navigation/focus changes, and a flattened generation-scoped targe
 tree. Expanded responses add bounded semantic and page context. Full responses expose the complete acquired
 structures. Image transport remains independent from structured detail. Explicit visual operations (`take_screenshot`,
 `observe_live`, `temporal_debug_bundle`, `fetch_source_frames`, `generate_artifacts`, and
-`generate_region_filmstrip`) include one bounded requested or primary image when `inline_images` is omitted. Routine
-operations remain pixel-light. `inline_images: false` suppresses pixels and `inline_images: true` requests them where
-supported. Failed and degraded responses always include privacy-bounded diagnostics; callers cannot suppress the only
+`generate_region_filmstrip`) include one bounded requested or primary image when `inline_images` is omitted. Stale-prone
+post-action observations for `scroll`, `set_viewport`, and `activate_page` include one bounded viewport image by
+default; other routine operations remain pixel-light. `inline_images: false` suppresses pixels and `inline_images: true`
+requests them where supported. Failed and degraded responses always include privacy-bounded diagnostics; callers cannot suppress the only
 actionable failure evidence. Status requests use the same concise-to-full direction.
 
 A batch of actions returns per-step status and timeline anchors. It returns a final live observation and includes per-step screenshot fields only when screenshots were requested.
@@ -134,7 +135,10 @@ canonical preorder to break ties. It emits a flattened bounded target index with
 reference and the role, name, value, and states required for interaction; structural ancestors are not repeated.
 Structural web-area and document roots do not become interaction targets from generic focusable or clickable signals.
 Expanded presentation adds bounded semantic structure and context. Full presentation returns the complete acquired
-snapshot. Every bounded projection reports exact presentation omissions.
+snapshot. Every bounded projection reports exact presentation omissions. When an automatic post-action observation
+reuses the current snapshot generation, concise and expanded responses emit an unchanged-generation marker containing
+the generation, `unchanged: true`, target count, and omission counts; explicit inspection remains the drill-down
+authority.
 
 Automatic live observations also include a small bounded `semantic_outcomes` list prioritizing current alerts,
 dialogs, status messages, and named text. It describes current post-action state and does not claim a pre/post change.
