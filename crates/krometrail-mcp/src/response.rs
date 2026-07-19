@@ -11,7 +11,7 @@ use krometrail_core::{
     ProgressiveEvidenceRequest, ProgressiveEvidenceResult, RecordingBudgetState,
     ResolvedRangeHandleId, RetrieveArtifactRequest, ScreenshotMetadata, SessionId, SessionTime,
     ShutdownQuality, SourceFrameBatch, SourceFrameHandle, TargetId, TemporalDebugBundle,
-    TemporalVideoGenerationResult, VideoPresentationPolicy, WaitOutcome,
+    TemporalRangeAnchorKind, TemporalVideoGenerationResult, VideoPresentationPolicy, WaitOutcome,
 };
 use rmcp::model::JsonObject;
 use rmcp::model::{CallToolResult, Content, RawResource};
@@ -1118,6 +1118,42 @@ struct ExpandedSnapshot {
     omissions: ExpandedSnapshotOmissions,
 }
 
+#[derive(Clone, Debug, Serialize)]
+struct CompactResolvedRange {
+    session_id: SessionId,
+    target_id: TargetId,
+    anchor_kind: TemporalRangeAnchorKind,
+    requested_range: krometrail_core::SessionRange,
+    resolved_range: krometrail_core::SessionRange,
+    frame_count: u32,
+    interaction_count: u32,
+    navigation_count: u32,
+    marker_count: u32,
+    gap_count: u32,
+    retention_warning_count: u32,
+    options: krometrail_core::RangeResolutionOptions,
+}
+
+fn compact_resolved_range(
+    range: &krometrail_core::ResolvedRange,
+) -> Result<CompactResolvedRange, ResponseInvariantError> {
+    let count = |length: usize| u32::try_from(length).map_err(|_| ResponseInvariantError);
+    Ok(CompactResolvedRange {
+        session_id: range.session_id,
+        target_id: range.target_id,
+        anchor_kind: range.anchor_kind,
+        requested_range: range.requested_range,
+        resolved_range: range.resolved_range,
+        frame_count: count(range.frame_ids.len())?,
+        interaction_count: count(range.interaction_ids.len())?,
+        navigation_count: count(range.navigation_ids.len())?,
+        marker_count: count(range.marker_ids.len())?,
+        gap_count: count(range.gaps.len())?,
+        retention_warning_count: count(range.retention_warnings.len())?,
+        options: range.options,
+    })
+}
+
 fn exact_target(
     node: &krometrail_core::SnapshotNode,
 ) -> Result<ExactTarget, ResponseInvariantError> {
@@ -1469,8 +1505,10 @@ fn compact_temporal_context_value(value: &Value) -> Result<Value, ResponseInvari
     wrapped.insert("status".into(), Value::String("available".into()));
     let summary =
         compact_temporal_context(Some(&Value::Object(wrapped))).ok_or(ResponseInvariantError)?;
+    let range = serde_json::from_value(object.get("range").cloned().ok_or(ResponseInvariantError)?)
+        .map_err(|_| ResponseInvariantError)?;
     Ok(json!({
-        "range": object.get("range"),
+        "range": compact_resolved_range(&range)?,
         "capture_quality": summary.get("capture_quality"),
         "browser_events": summary.get("browser_events"),
     }))
@@ -1636,8 +1674,14 @@ pub(crate) fn map_progressive_result(
                 list.frames.clone()
             };
             let omitted_frame_count = list.frames.len().saturating_sub(frames.len());
+            let range = if response.detail == ResponseDetail::Concise {
+                serde_json::to_value(compact_resolved_range(&list.range)?)
+                    .map_err(|_| ResponseInvariantError)?
+            } else {
+                serde_json::to_value(&list.range).map_err(|_| ResponseInvariantError)?
+            };
             let mut projection = Projection::success(json!({
-                "range": list.range,
+                "range": range,
                 "frames": frames,
                 "omitted_frame_count": omitted_frame_count,
             }));
@@ -1647,7 +1691,7 @@ pub(crate) fn map_progressive_result(
             projection
         }
         ProgressiveEvidenceResult::FetchSourceFrames(batch) => {
-            project_source_frame_batch(*batch, response.inline_images)?
+            project_source_frame_batch(*batch, response)?
         }
         ProgressiveEvidenceResult::GenerateArtifacts(generation) => {
             let generation = *generation;
@@ -1785,7 +1829,7 @@ fn concise_bundle_value(
         ),
     };
     Ok(json!({
-        "range": bundle.range,
+        "range": compact_resolved_range(&bundle.range)?,
         "header": bundle.header,
         "effective": {
             "artifact_anchor": bundle.effective.artifact_anchor,
@@ -1882,7 +1926,7 @@ fn compact_generation_value(
         })
         .collect::<Result<Vec<_>, ResponseInvariantError>>()?;
     Ok(json!({
-        "range": generation.range,
+        "range": compact_resolved_range(&generation.range)?,
         "outcomes": outcomes,
     }))
 }
@@ -1933,16 +1977,22 @@ fn add_source_frame_resource(
 
 fn project_source_frame_batch(
     batch: SourceFrameBatch,
-    inline_images: bool,
+    response: ResponseRequest,
 ) -> Result<Projection, ResponseInvariantError> {
+    let range = if response.detail == ResponseDetail::Concise {
+        serde_json::to_value(compact_resolved_range(&batch.range)?)
+            .map_err(|_| ResponseInvariantError)?
+    } else {
+        serde_json::to_value(&batch.range).map_err(|_| ResponseInvariantError)?
+    };
     let mut projection = Projection::success(json!({
-        "range": batch.range,
+        "range": range,
         "frames": batch.frames.iter().map(|frame| &frame.handle).collect::<Vec<_>>(),
     }));
     let mut inline_bytes = 0_u64;
     for (index, frame) in batch.frames.into_iter().enumerate() {
         add_source_frame_resource(&mut projection, &frame.handle)?;
-        if !inline_images {
+        if !response.inline_images {
             continue;
         }
         let frame_bytes = frame.encoded_bytes();
@@ -2766,20 +2816,54 @@ mod tests {
 
     #[test]
     fn temporal_detail_defaults_to_concise_and_full_preserves_rows() {
+        let range = video_result().range;
         let value = json!({
-            "range": {"scope": "fixture"},
+            "range": range,
             "capture_quality": {"status": "available", "cadence": {}, "gap_summary": {}, "retention_warnings": [], "warnings": []},
             "browser_events": {"status": "available", "effective_range": {}, "matched_count": 50, "returned_count": 2, "events": [{}, {}], "collection_gaps": [], "unavailable_ranges": [], "warnings": []}
         });
         let mut concise = value.clone();
         project_temporal_value(&mut concise, ResponseDetail::Concise).unwrap();
         assert_eq!(concise["browser_events"]["events"], json!([{}, {}]));
+        assert_eq!(concise["range"]["frame_count"], 2);
+        assert!(concise["range"].get("frame_ids").is_none());
         let mut expanded = value.clone();
         project_temporal_value(&mut expanded, ResponseDetail::Expanded).unwrap();
         assert_eq!(expanded, value);
         let mut full = value.clone();
         project_temporal_value(&mut full, ResponseDetail::Full).unwrap();
         assert_eq!(full, value);
+    }
+
+    #[test]
+    fn compact_resolved_range_is_bounded_while_full_keeps_ordered_frame_ids() {
+        let frame_ids = (1..=29)
+            .map(|value| FrameId::from_uuid(uuid::Uuid::from_u128(value)))
+            .collect::<Vec<_>>();
+        let interval = SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(100)).unwrap();
+        let range = krometrail_core::ResolvedRange::new(
+            session_id(),
+            target_id(),
+            TemporalRangeAnchorKind::SessionTime,
+            interval,
+            interval,
+            frame_ids.clone(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            RangeResolutionOptions::DEFAULT,
+        )
+        .unwrap();
+
+        let concise = serde_json::to_value(compact_resolved_range(&range).unwrap()).unwrap();
+        assert_eq!(concise["frame_count"], 29);
+        assert!(concise.get("frame_ids").is_none());
+        assert!(serde_json::to_vec(&concise).unwrap().len() < 1_000);
+
+        let full = serde_json::to_value(range).unwrap();
+        assert_eq!(full["frame_ids"], serde_json::to_value(frame_ids).unwrap());
     }
 
     #[test]

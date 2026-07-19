@@ -4,13 +4,12 @@
 //! redacted data. The types deliberately expose no raw URL path, basename, query,
 //! fragment, credentials, or local filesystem path.
 
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-
 use crate::{
+    Sha256Digest,
     error::{Result, invalid},
     validation::deserialize_validated,
 };
+use serde::{Deserialize, Serialize};
 
 pub const MAX_REDACTED_TEXT_BYTES: usize = 2_048;
 pub const MAX_REDACTED_NAME_BYTES: usize = 64;
@@ -294,7 +293,7 @@ pub struct SanitizedUrl {
     scheme: SanitizedUrlScheme,
     origin: Option<String>,
     non_default_port: Option<u16>,
-    path_sha256: Option<[u8; 32]>,
+    path_sha256: Option<Sha256Digest>,
     path_segment_count: u16,
     extension: Option<String>,
     had_credentials: bool,
@@ -309,7 +308,7 @@ struct SanitizedUrlWire {
     scheme: SanitizedUrlScheme,
     origin: Option<String>,
     non_default_port: Option<u16>,
-    path_sha256: Option<[u8; 32]>,
+    path_sha256: Option<Sha256Digest>,
     path_segment_count: u16,
     extension: Option<String>,
     had_credentials: bool,
@@ -458,7 +457,7 @@ impl SanitizedUrl {
         scheme: SanitizedUrlScheme,
         origin: Option<String>,
         non_default_port: Option<u16>,
-        path_sha256: Option<[u8; 32]>,
+        path_sha256: Option<Sha256Digest>,
         path_segment_count: u16,
         extension: Option<String>,
         had_credentials: bool,
@@ -546,7 +545,7 @@ impl SanitizedUrl {
         self.non_default_port
     }
 
-    pub const fn path_sha256(&self) -> Option<[u8; 32]> {
+    pub const fn path_sha256(&self) -> Option<Sha256Digest> {
         self.path_sha256
     }
 
@@ -668,8 +667,8 @@ fn split_host_port(authority: &str) -> Result<(&str, Option<u16>)> {
     }
 }
 
-fn path_hash(path: &str) -> [u8; 32] {
-    Sha256::digest(path.as_bytes()).into()
+fn path_hash(path: &str) -> Sha256Digest {
+    Sha256Digest::digest(path.as_bytes())
 }
 
 fn path_segment_count(path: &str) -> u16 {
@@ -796,6 +795,14 @@ mod tests {
         assert!(network.had_query());
         assert!(network.had_fragment());
         assert!(!network.fully_redacted());
+        let encoded = serde_json::to_value(&network).unwrap();
+        let digest = encoded["path_sha256"].as_str().unwrap();
+        assert_eq!(digest.len(), 64);
+        assert!(
+            digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        );
     }
 
     #[test]

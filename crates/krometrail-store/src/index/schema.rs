@@ -2,7 +2,7 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use crate::persistence_error;
 
-pub(crate) const CURRENT_SCHEMA_VERSION: u32 = 6;
+pub(crate) const CURRENT_SCHEMA_VERSION: u32 = 7;
 
 pub(crate) const CURRENT_SCHEMA_SQL: &str = r#"
 CREATE TABLE sessions (
@@ -503,7 +503,7 @@ mod tests {
 
     #[test]
     fn incompatible_versions_are_rejected_without_mutation() {
-        for version in [1, 2, 3, 4, 5, 7, u32::MAX] {
+        for version in [1, 2, 3, 4, 5, 6, 8, u32::MAX] {
             let mut connection = Connection::open_in_memory().unwrap();
             connection
                 .execute("CREATE TABLE retained(value TEXT) STRICT", [])
