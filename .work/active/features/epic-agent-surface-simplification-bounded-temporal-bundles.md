@@ -1,7 +1,7 @@
 ---
 id: epic-agent-surface-simplification-bounded-temporal-bundles
 kind: feature
-stage: review
+stage: done
 tags: [agent-ux, visual]
 parent: epic-agent-surface-simplification
 depends_on: [epic-agent-surface-simplification-response-detail]
@@ -180,6 +180,10 @@ fn project_temporal_bundle(
 ## Risks
 
 Filtering after output-limit calculation would preserve the current failure and cost, so ordering is contract-critical. Concise resources must not imply that omitted generated artifacts do not exist; exact counts and expansion guidance prevent that ambiguity.
+
+## Review
+
+Approved in the single standard fresh-context pass with no blockers. The reviewer verified pre-work anchor selection and deterministic ties, original epoch indices, explicit and generic all-epoch behavior, full range/gap provenance, concise/expanded/full resource authority and counts, zero default inline reads, policy-version cruft removal, current schemas/guidance, and focused regressions.
 
 ## Implementation notes
 
