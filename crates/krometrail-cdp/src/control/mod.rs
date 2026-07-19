@@ -572,5 +572,23 @@ pub(crate) fn transport_error(
     )
 }
 
+pub(crate) fn post_action_observation_error(
+    error: KrometrailError,
+    target_id: TargetId,
+) -> KrometrailError {
+    if matches!(
+        error.code,
+        ErrorCode::PageObservationFailed | ErrorCode::BrowserDisconnected
+    ) {
+        error
+    } else {
+        operation_error(
+            ErrorCode::PageObservationFailed,
+            target_id,
+            "interaction was dispatched but post-action observation is unavailable",
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests;

@@ -297,6 +297,54 @@ async fn production_port_rejects_empty_coordinate_hits_and_returns_anchored_live
 }
 
 #[tokio::test]
+async fn dispatched_click_degrades_when_post_action_observation_command_fails() {
+    let transport = ScriptedCdp::chrome();
+    startup_script(&transport);
+    transport.push_response("Page.getLayoutMetrics", layout());
+    transport.push_response(
+        "Runtime.evaluate",
+        json!({"result":{"value":{"tagName":"BUTTON","x":0,"y":0,"width":20,"height":20}}}),
+    );
+    transport.push_failure("Page.getNavigationHistory", TransportError::CommandFailed);
+    observation_script(&transport);
+    let session = scripted_session(transport).await;
+    let target = session.status().await.unwrap().pages[0].target.target.id();
+    let request = ClickRequest::new(
+        PageSelection::Target(target),
+        InteractionLocator::coordinate(
+            CssPoint::new(20.0, 30.0).unwrap(),
+            CoordinateSpace::ViewportCss,
+        )
+        .unwrap(),
+        MouseButton::Left,
+        Modifiers::default(),
+        1,
+        false,
+    )
+    .unwrap();
+
+    let result = session
+        .execute(
+            BrowserOperationRequest::Click(request),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .expect("a dispatched click keeps its interaction record");
+    let BrowserOperationResult::Click(result) = result else {
+        panic!("click result")
+    };
+    assert_eq!(result.record.outcome, InteractionOutcome::Dispatched);
+    match result.observation.page {
+        ObservationPart::Unavailable(error) => {
+            assert_eq!(error.code, ErrorCode::PageObservationFailed);
+            assert!(error.message.as_str().contains("observation command"));
+        }
+        ObservationPart::Available(_) => panic!("failed page inspection was reported as available"),
+    }
+    session.stop().await.unwrap();
+}
+
+#[tokio::test]
 async fn element_click_uses_box_model_viewport_coordinates_after_nonzero_scroll() {
     let transport = ScriptedCdp::chrome();
     startup_script(&transport);

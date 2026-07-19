@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use super::{
     BoundTarget, PageControl, bind_target,
     navigation::OperationCancellation,
-    operation_error,
+    operation_error, post_action_observation_error,
     snapshot::{ReferenceRequirement, ResolvedNode, quad_bounds},
     transport_error,
 };
@@ -265,14 +265,10 @@ impl PageControl {
             match observed {
                 Ok((BrowserOperationResult::ObserveLive(observation), _)) => observation,
                 Ok(_) => unreachable!("live observation returns its associated result"),
-                Err(_) => Box::new(self.unavailable_observation(
+                Err(error) => Box::new(self.unavailable_observation(
                     &bound,
                     started_at,
-                    operation_error(
-                        ErrorCode::PageObservationFailed,
-                        bound.target_id,
-                        "interaction was dispatched but post-action observation is unavailable",
-                    ),
+                    post_action_observation_error(error, bound.target_id),
                 )?),
             }
         };
