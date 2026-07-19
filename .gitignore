@@ -38,3 +38,6 @@ docs/.vitepress/dist/
 # Environment
 .env
 .env.local
+
+# peeragent runtime job state
+.peeragent/
