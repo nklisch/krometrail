@@ -84,16 +84,20 @@ or use `{"focus":"foreground"}` when the user wants automatic tab switching.
   `stop_browser`, `list_pages`, `list_page_contexts`, `wait_for_page`, `create_page`, `select_page`,
   `activate_page`, `close_page`
 - Current state: `inspect_page`, `query_page`, `snapshot_page`, `take_screenshot`, `observe_live`, `evaluate_page`
-
-In read-only `evaluate_page` expressions, prefer `querySelector`/`querySelectorAll` for DOM reads:
-some DOM getters such as `document.getElementById` sit outside V8's side-effect-free allowlist, so
-an expression containing them is refused as side-effecting even when it only reads.
 - Context detail: `list_frames`, `list_page_assets`
 - Navigation: `navigate_page`, `reload_page`, `go_back`, `go_forward`
 - Interaction: `click`, `fill`, `press_keys`, `select_option`, `hover`, `drag`, `scroll`,
   `upload_files`, `handle_dialog`, `wait`, `batch`
 - Responsive state: `set_viewport` applies ergonomic presets or custom target-scoped metrics, or restores browser defaults
 - Explicit local I/O: `read_clipboard`, `write_clipboard`, `list_downloads`, `wait_for_download`, `cancel_download`
+
+In read-only `evaluate_page` expressions, prefer `querySelector`/`querySelectorAll` for DOM reads:
+some DOM getters such as `document.getElementById` sit outside V8's side-effect-free allowlist, so
+an expression containing them is refused as side-effecting even when it only reads.
+
+After scrolling, `snapshot_page {"anchor":"viewport"}` ranks the targets currently on screen first;
+the default `document` anchor keeps the whole-document ranking. On very large documents the
+viewport-geometry pass may report an explicit geometry omission and fall back to document ranking.
 
 Clipboard calls are explicit, managed-session only, bounded text operations. Krometrail preserves
 focus and Chrome permission policy: it does not activate a page or grant clipboard permission. If a
@@ -225,9 +229,12 @@ as steps.
   than reconstructing ordered frame identifiers.
 - Retention: `pin_resolved_range`, `query_pin_state`, `unpin_resolved_range`
 
-Keep the `range_handle` returned by `temporal_debug_bundle`. For follow-up artifact, region,
-source-frame, browser-event, pin-state, and advertised video tools, pass that handle instead of
-copying the full resolved range:
+Use `resolve_temporal_range` to turn a natural anchor (session-time range, interaction,
+navigation, marker, wall clock, or source-frame pair) into a `range_handle` plus capture-quality
+facts without generating artifacts or reading events — the cheap entry point when the question is
+not yet visual. `temporal_debug_bundle` also returns a handle alongside its artifact and event
+context. For follow-up artifact, region, source-frame, browser-event, pin-state, and advertised
+video tools, pass the handle instead of copying the full resolved range:
 
 ```json
 {"range_handle":"<returned-range-handle>"}
@@ -237,7 +244,11 @@ Those tools require exactly one of `range_handle` or `range`; keep every other a
 the tool schema. A handle is an immutable process-local convenience for the exact validated range.
 It survives `stop_browser` while its retained frames remain available, but it does not survive a
 plugin/MCP restart or session-data deletion. On `evidence_invalidated`, run
-`temporal_debug_bundle` again and use the new handle. Copy the full `range` only when crossing MCP
+`resolve_temporal_range` (or `temporal_debug_bundle`) again and use the new handle.
+
+`list_source_frames` pages long ranges: pass `selection: {"selection":"resolved_order","offset":N}`
+and follow the returned continuation offset until it is absent; omitted counts state exactly what a
+page left out. `fetch_source_frames` stays exact — select specific frame ids discovered by listing. Copy the full `range` only when crossing MCP
 process boundaries or preserving an exact external record. The handle never replaces artifact/video
 manifest provenance, ordered frame IDs, gap checks, or canonical evidence resource links.
 
