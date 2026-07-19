@@ -18,7 +18,6 @@ use crate::{
     validation::deserialize_validated,
 };
 
-pub const TEMPORAL_DEBUG_BUNDLE_POLICY_VERSION: &str = "temporal-debug-bundle-v1";
 pub const MAX_BUNDLE_CALLER_MARKERS: usize = 64;
 pub const MAX_BUNDLE_ARTIFACT_MARKERS: usize = 256;
 pub const MAX_BUNDLE_TIMELINE_ROWS: u16 = 1_024;
@@ -34,6 +33,16 @@ pub enum OrientationPolicy {
     Omit,
 }
 
+#[derive(
+    Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum BundleEpochScope {
+    #[default]
+    Anchor,
+    All,
+}
+
 /// The sole bundle request. Natural anchors are resolved by the bundle service
 /// exactly once; no sibling request accepts an already-resolved range.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -42,6 +51,7 @@ pub struct TemporalDebugBundleRequest {
     query: TemporalQueryRequest,
     caller_markers: Vec<ArtifactMarker>,
     orientation: OrientationPolicy,
+    epochs: BundleEpochScope,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -50,6 +60,8 @@ struct TemporalDebugBundleRequestWire {
     query: TemporalQueryRequest,
     caller_markers: Vec<ArtifactMarker>,
     orientation: OrientationPolicy,
+    #[serde(default)]
+    epochs: BundleEpochScope,
 }
 
 impl TemporalDebugBundleRequest {
@@ -57,6 +69,7 @@ impl TemporalDebugBundleRequest {
         query: TemporalQueryRequest,
         caller_markers: Vec<ArtifactMarker>,
         orientation: OrientationPolicy,
+        epochs: BundleEpochScope,
     ) -> Result<Self> {
         // Public fields on the nested request support ergonomic construction;
         // rebuild it here so this boundary cannot inherit an unchecked value.
@@ -66,11 +79,17 @@ impl TemporalDebugBundleRequest {
             query,
             caller_markers,
             orientation,
+            epochs,
         })
     }
 
     pub fn default_policy(query: TemporalQueryRequest) -> Result<Self> {
-        Self::new(query, Vec::new(), OrientationPolicy::Include)
+        Self::new(
+            query,
+            Vec::new(),
+            OrientationPolicy::Include,
+            BundleEpochScope::Anchor,
+        )
     }
 
     pub const fn query(&self) -> &TemporalQueryRequest {
@@ -85,15 +104,36 @@ impl TemporalDebugBundleRequest {
         self.orientation
     }
 
-    pub fn into_parts(self) -> (TemporalQueryRequest, Vec<ArtifactMarker>, OrientationPolicy) {
-        (self.query, self.caller_markers, self.orientation)
+    pub const fn epochs(&self) -> BundleEpochScope {
+        self.epochs
+    }
+
+    pub fn into_parts(
+        self,
+    ) -> (
+        TemporalQueryRequest,
+        Vec<ArtifactMarker>,
+        OrientationPolicy,
+        BundleEpochScope,
+    ) {
+        (
+            self.query,
+            self.caller_markers,
+            self.orientation,
+            self.epochs,
+        )
     }
 }
 
 impl<'de> Deserialize<'de> for TemporalDebugBundleRequest {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
         deserialize_validated(deserializer, |wire: TemporalDebugBundleRequestWire| {
-            Self::new(wire.query, wire.caller_markers, wire.orientation)
+            Self::new(
+                wire.query,
+                wire.caller_markers,
+                wire.orientation,
+                wire.epochs,
+            )
         })
     }
 }
@@ -165,8 +205,8 @@ impl TemporalDebugBundleContext {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct EffectiveBundlePolicy {
-    pub version: NonEmptyText,
     pub artifact_anchor: SessionTime,
+    pub epoch_scope: BundleEpochScope,
     pub artifact_generators: Vec<ArtifactGeneratorRequest>,
     pub artifact_failure_policy: ArtifactFailurePolicy,
     pub event_filter: BrowserEventFilter,
@@ -177,8 +217,8 @@ pub struct EffectiveBundlePolicy {
 impl EffectiveBundlePolicy {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        version: NonEmptyText,
         artifact_anchor: SessionTime,
+        epoch_scope: BundleEpochScope,
         artifact_generators: Vec<ArtifactGeneratorRequest>,
         artifact_failure_policy: ArtifactFailurePolicy,
         event_filter: BrowserEventFilter,
@@ -198,8 +238,8 @@ impl EffectiveBundlePolicy {
             ));
         }
         Ok(Self {
-            version,
             artifact_anchor,
+            epoch_scope,
             artifact_generators,
             artifact_failure_policy,
             event_filter,
@@ -214,8 +254,8 @@ impl<'de> Deserialize<'de> for EffectiveBundlePolicy {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Wire {
-            version: NonEmptyText,
             artifact_anchor: SessionTime,
+            epoch_scope: BundleEpochScope,
             artifact_generators: Vec<ArtifactGeneratorRequest>,
             artifact_failure_policy: ArtifactFailurePolicy,
             event_filter: BrowserEventFilter,
@@ -224,8 +264,8 @@ impl<'de> Deserialize<'de> for EffectiveBundlePolicy {
         }
         deserialize_validated(deserializer, |wire: Wire| {
             Self::new(
-                wire.version,
                 wire.artifact_anchor,
+                wire.epoch_scope,
                 wire.artifact_generators,
                 wire.artifact_failure_policy,
                 wire.event_filter,
@@ -383,8 +423,8 @@ impl TemporalDebugBundle {
             requested_query.capture_gaps,
         )?;
         let effective = EffectiveBundlePolicy::new(
-            effective.version,
             effective.artifact_anchor,
+            effective.epoch_scope,
             effective.artifact_generators,
             effective.artifact_failure_policy,
             effective.event_filter,
@@ -658,6 +698,7 @@ mod tests {
                 "exact caller label",
             )],
             OrientationPolicy::Omit,
+            BundleEpochScope::All,
         )
         .unwrap();
         let encoded = serde_json::to_string(&request).unwrap();
@@ -680,6 +721,7 @@ mod tests {
                 query(),
                 vec![duplicate.clone(), duplicate],
                 OrientationPolicy::Include,
+                BundleEpochScope::Anchor,
             )
             .is_err()
         );
@@ -692,6 +734,7 @@ mod tests {
                     "label",
                 )],
                 OrientationPolicy::Include,
+                BundleEpochScope::Anchor,
             )
             .is_err()
         );
@@ -704,6 +747,7 @@ mod tests {
                     "label",
                 )],
                 OrientationPolicy::Include,
+                BundleEpochScope::Anchor,
             )
             .is_err()
         );
@@ -712,6 +756,15 @@ mod tests {
     #[test]
     fn request_deserialization_revalidates_nested_query_and_rejects_unknown_fields() {
         let request = TemporalDebugBundleRequest::default_policy(query()).unwrap();
+        assert_eq!(request.epochs(), BundleEpochScope::Anchor);
+        let mut defaulted = serde_json::to_value(&request).unwrap();
+        defaulted.as_object_mut().unwrap().remove("epochs");
+        assert_eq!(
+            serde_json::from_value::<TemporalDebugBundleRequest>(defaulted)
+                .unwrap()
+                .epochs(),
+            BundleEpochScope::Anchor
+        );
         let mut value = serde_json::to_value(request).unwrap();
         value["query"]["anchor"]["scope"]["target_id"] = serde_json::Value::Null;
         assert!(serde_json::from_value::<TemporalDebugBundleRequest>(value).is_err());

@@ -10,16 +10,16 @@ use std::{
 
 use image::ImageEncoder as _;
 use krometrail_core::{
-    AnalysisScale, ArtifactCacheKey, ArtifactFailurePolicy, ArtifactGeneration,
-    ArtifactGenerationContext, ArtifactGenerationRequest, ArtifactGeneratorRequest,
-    ArtifactLabelsRequest, ArtifactLookup, ArtifactManifest, ArtifactOutcome, ArtifactPublication,
-    ArtifactPublish, ArtifactSourceFingerprint, ArtifactStore, CaptureOrdinal, CapturedFrame,
-    DeviceScaleFactor, DifferenceMapRequest, EncodedFrame, FrameAvailability, FrameId,
-    FrameSelector, FrameSource, IdSource, IdValue, ImageFormat, MotionHistoryRequest, NonEmptyText,
-    NormalizationRequest, ObservedTime, OrientationPolicy, OutputLimitsRequest, PixelDimensions,
-    PortFuture, RangeResolutionOptions, RegionFilmstripRequest, ResolvedRange, SessionId,
-    SessionRange, SessionTime, StoredArtifact, StoryboardRequest, TargetId,
-    TemporalRangeAnchorKind,
+    AnalysisScale, ArtifactCacheKey, ArtifactEpochSelection, ArtifactFailurePolicy,
+    ArtifactGeneration, ArtifactGenerationContext, ArtifactGenerationRequest,
+    ArtifactGeneratorRequest, ArtifactLabelsRequest, ArtifactLookup, ArtifactManifest,
+    ArtifactOutcome, ArtifactPublication, ArtifactPublish, ArtifactSourceFingerprint,
+    ArtifactStore, CaptureOrdinal, CapturedFrame, DeviceScaleFactor, DifferenceMapRequest,
+    EncodedFrame, FrameAvailability, FrameId, FrameSelector, FrameSource, IdSource, IdValue,
+    ImageFormat, MotionHistoryRequest, NonEmptyText, NormalizationRequest, ObservedTime,
+    OrientationPolicy, OutputLimitsRequest, PixelDimensions, PortFuture, RangeResolutionOptions,
+    RegionFilmstripRequest, ResolvedRange, SessionId, SessionRange, SessionTime, StoredArtifact,
+    StoryboardRequest, TargetId, TemporalRangeAnchorKind,
 };
 use temporal_vision::{FrequencyMode, RegionDefinition, Rgb8, SignedPixelRect};
 use uuid::Uuid;
@@ -29,6 +29,7 @@ use super::{
     epoch::{WorkCancellation, validate_and_plan},
     generators::{estimated_normalized_bytes, prepare_generator, reserved_output_bytes},
     scheduler::ArtifactWorkLimits,
+    service::select_epoch_plans,
 };
 
 const PNG: &[u8] = include_bytes!("../../tests/fixtures/artifacts/chrome-rgba.png");
@@ -414,6 +415,71 @@ async fn device_scale_transition_starts_a_new_visual_epoch_without_normalizing_s
 }
 
 #[tokio::test]
+async fn anchor_epoch_is_selected_before_output_limits_and_keeps_original_index() {
+    let mut limits = ArtifactWorkLimits::default();
+    limits.max_outputs = NonZeroUsize::new(2).unwrap();
+    let mut rig = rig(true, limits);
+    rig.request = ArtifactGenerationRequest::new(
+        rig.request.range().clone(),
+        vec![],
+        vec![rig.request.generators()[0].clone()],
+        ArtifactFailurePolicy::RequireAll,
+    )
+    .unwrap();
+
+    let all_error = rig
+        .service
+        .generate(rig.request.clone(), ArtifactGenerationContext::default())
+        .await
+        .unwrap_err();
+    assert_eq!(
+        all_error.code,
+        krometrail_core::ErrorCode::ResourceLimitExceeded
+    );
+
+    let selected = rig
+        .service
+        .generate(
+            rig.request,
+            ArtifactGenerationContext {
+                epoch_selection: ArtifactEpochSelection::Anchor(SessionTime::from_nanos(3)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(selected.epochs.len(), 1);
+    assert_eq!(selected.epochs[0].index, 1);
+    assert!(selected.outcomes.iter().all(|outcome| match outcome {
+        ArtifactOutcome::Available { epoch_index, .. }
+        | ArtifactOutcome::Unavailable { epoch_index, .. } => *epoch_index == 1,
+    }));
+}
+
+#[test]
+fn anchor_epoch_ties_choose_the_earlier_original_epoch() {
+    let rig = rig(true, ArtifactWorkLimits::default());
+    let cancellation = WorkCancellation::default();
+    let mut plans = validate_and_plan(
+        rig.request.range(),
+        rig.frames.frames.clone(),
+        rig.request.markers(),
+        ArtifactWorkLimits::default().adaptation(),
+        &cancellation,
+    )
+    .unwrap();
+    let shared_boundary = plans[1].frames[0].clone();
+    plans[0].frames.push(shared_boundary);
+
+    let selected = select_epoch_plans(
+        plans,
+        ArtifactEpochSelection::Anchor(SessionTime::from_nanos(3)),
+    )
+    .unwrap();
+    assert_eq!(selected[0].descriptor.index, 0);
+}
+
+#[tokio::test]
 async fn all_generator_families_are_ordered_deterministic_and_cached() {
     let rig = rig(false, ArtifactWorkLimits::default());
     let first = rig
@@ -583,6 +649,7 @@ async fn deadlines_cancellation_and_partial_epoch_reference_fail_explicitly() {
             ArtifactGenerationContext {
                 deadline: Some(Instant::now()),
                 cancellation: None,
+                ..Default::default()
             },
         )
         .await
@@ -601,6 +668,7 @@ async fn deadlines_cancellation_and_partial_epoch_reference_fail_explicitly() {
             ArtifactGenerationContext {
                 deadline: None,
                 cancellation: Some(Arc::new(cancellation)),
+                ..Default::default()
             },
         )
         .await

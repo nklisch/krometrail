@@ -1,8 +1,6 @@
-//! The exact `temporal-debug-bundle-v1` default artifact policy.
+//! The temporal debug bundle's concrete default artifact policy.
 //!
-//! Every value the bundle materializes is versioned and observable through the
-//! effective policy. Future policy changes bump the version rather than silently
-//! changing an agent's evidence. This module produces only the existing
+//! This module produces only the existing
 //! storyboard + difference-map generator requests; it adds no generator family,
 //! parameter, or output limit.
 
@@ -10,7 +8,7 @@ use krometrail_core::{
     AnalysisScale, ArtifactFailurePolicy, ArtifactGenerationRequest, ArtifactGeneratorRequest,
     ArtifactLabelsRequest, ArtifactMarker, DifferenceMapRequest, FrameSelector, NonEmptyText,
     NormalizationRequest, OrientationPolicy, OutputLimitsRequest, ResolvedRange, Result,
-    StoryboardRequest, TEMPORAL_DEBUG_BUNDLE_POLICY_VERSION,
+    StoryboardRequest,
 };
 use temporal_vision::{FrequencyMode, Rgb8};
 
@@ -38,13 +36,7 @@ const STORYBOARD_SOURCE: &str = "KROMETRAIL RETAINED SOURCE FRAMES";
 /// Declared black RGB background shared by storyboard and difference-map normalization.
 const BLACK_BACKGROUND: Rgb8 = Rgb8::new(0, 0, 0);
 
-/// Returns the versioned policy identifier carried by every effective bundle policy.
-pub(crate) fn policy_version() -> NonEmptyText {
-    NonEmptyText::new(TEMPORAL_DEBUG_BUNDLE_POLICY_VERSION)
-        .expect("temporal debug bundle policy version is non-empty")
-}
-
-/// Materializes the exact two-generator request for the v1 default policy.
+/// Materializes the exact two-generator request for the default policy.
 ///
 /// The storyboard uses the resolved effective anchor, eight tiles, the default
 /// noise floor, `FitLimits` normalization with no crop and a black background,
@@ -263,7 +255,7 @@ mod tests {
     }
 
     #[test]
-    fn default_generator_values_match_the_designed_v1_policy() {
+    fn default_generator_values_match_the_designed_policy() {
         let range = interaction_anchor();
         let generators = default_generators(&range, OrientationPolicy::Include);
         let ArtifactGeneratorRequest::Storyboard(storyboard) = &generators[0] else {
@@ -302,10 +294,5 @@ mod tests {
         assert_eq!(difference_map.output.max_width(), 8192);
         assert_eq!(difference_map.output.max_height(), 8192);
         assert_eq!(difference_map.output.max_encoded_bytes(), 64 * 1024 * 1024);
-    }
-
-    #[test]
-    fn policy_version_is_the_designed_v1_string() {
-        assert_eq!(policy_version().as_str(), "temporal-debug-bundle-v1");
     }
 }

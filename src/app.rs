@@ -1054,6 +1054,7 @@ mod tests {
             .unwrap(),
             vec![],
             OrientationPolicy::Include,
+            krometrail_core::BundleEpochScope::Anchor,
         )
         .unwrap();
 

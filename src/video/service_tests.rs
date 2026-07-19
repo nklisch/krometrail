@@ -804,6 +804,7 @@ async fn cancellation_during_encode_stops_work_before_publication() {
                     ArtifactGenerationContext {
                         deadline: None,
                         cancellation: Some(cancellation),
+                        ..Default::default()
                     },
                 )
                 .await
@@ -835,6 +836,7 @@ async fn caller_cancellation_signals_publication_and_awaits_store_cleanup() {
                     ArtifactGenerationContext {
                         deadline: None,
                         cancellation: Some(cancellation),
+                        ..Default::default()
                     },
                 )
                 .await
@@ -867,6 +869,7 @@ async fn caller_deadline_signals_publication_and_awaits_store_cleanup() {
             ArtifactGenerationContext {
                 deadline: Some(std::time::Instant::now() + Duration::from_millis(25)),
                 cancellation: None,
+                ..Default::default()
             },
         )
         .await
@@ -896,6 +899,7 @@ async fn cancellation_and_deadline_are_checked_before_source_load() {
             ArtifactGenerationContext {
                 deadline: None,
                 cancellation: Some(cancellation),
+                ..Default::default()
             },
         )
         .await
@@ -911,6 +915,7 @@ async fn cancellation_and_deadline_are_checked_before_source_load() {
             ArtifactGenerationContext {
                 deadline: Some(std::time::Instant::now()),
                 cancellation: None,
+                ..Default::default()
             },
         )
         .await

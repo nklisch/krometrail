@@ -413,6 +413,7 @@ async fn call_temporal_video(
             ArtifactGenerationContext {
                 deadline: Some(budget.deadline),
                 cancellation: Some(cancellation),
+                ..Default::default()
             },
         )
         .await;

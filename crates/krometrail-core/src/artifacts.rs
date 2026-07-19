@@ -504,6 +504,14 @@ pub struct ArtifactGenerationResult {
 pub struct ArtifactGenerationContext {
     pub deadline: Option<Instant>,
     pub cancellation: Option<Arc<dyn CancellationSignal>>,
+    pub epoch_selection: ArtifactEpochSelection,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ArtifactEpochSelection {
+    #[default]
+    All,
+    Anchor(SessionTime),
 }
 
 impl ArtifactGenerationContext {

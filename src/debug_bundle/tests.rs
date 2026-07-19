@@ -17,7 +17,7 @@ use krometrail_core::{
     ArtifactCacheDisposition, ArtifactGeneration, ArtifactGenerationContext,
     ArtifactGenerationRequest, ArtifactGenerationResult, ArtifactHandle, ArtifactId,
     ArtifactMarkerId, ArtifactOutcome, BundleArtifactEvidence, BundleContextEvidence,
-    BundleDegradation, CancellationSignal, DeviceScaleFactor, ErrorCode, FrameId,
+    BundleDegradation, BundleEpochScope, CancellationSignal, DeviceScaleFactor, ErrorCode, FrameId,
     InteractionAnchor, InteractionAnchorSource, InteractionId, InteractionRecordSource,
     NonEmptyText, PortFuture, RangeResolutionOptions, ResolvedRange, SessionId, SessionRange,
     SessionTime, TargetId, TemporalContext, TemporalContextQuery, TemporalContextRequest,
@@ -1287,10 +1287,9 @@ mod policy_tests {
         OrientationPolicy, TemporalDebugEvidenceStore, build_effective_policy,
     };
     use krometrail_core::{
-        CaptureGapPolicy, InteractionId, RangeResolutionOptions, ResolvedAnchor,
-        ResolvedAnchorReference, RetentionPolicy, SessionId, SessionRange, SessionTime,
-        TEMPORAL_DEBUG_BUNDLE_POLICY_VERSION, TargetId, TemporalQueryRequest, TemporalRangeAnchor,
-        TemporalRangeAnchorKind,
+        BundleEpochScope, CaptureGapPolicy, InteractionId, RangeResolutionOptions, ResolvedAnchor,
+        ResolvedAnchorReference, RetentionPolicy, SessionId, SessionRange, SessionTime, TargetId,
+        TemporalQueryRequest, TemporalRangeAnchor, TemporalRangeAnchorKind,
     };
 
     fn session() -> SessionId {
@@ -1334,7 +1333,7 @@ mod policy_tests {
     }
 
     #[test]
-    fn build_effective_policy_carries_exact_v1_values() {
+    fn build_effective_policy_carries_exact_values_and_epoch_scope() {
         let interaction_id = InteractionId::from_uuid(Uuid::from_u128(7));
         let range = interaction_range(interaction_id, 500);
         let request = TemporalDebugBundleRequest::default_policy(
@@ -1346,11 +1345,10 @@ mod policy_tests {
             .unwrap(),
         )
         .unwrap();
-        let effective = build_effective_policy(&range, request.orientation(), vec![]).unwrap();
-        assert_eq!(
-            effective.version.as_str(),
-            TEMPORAL_DEBUG_BUNDLE_POLICY_VERSION
-        );
+        let effective =
+            build_effective_policy(&range, request.orientation(), request.epochs(), vec![])
+                .unwrap();
+        assert_eq!(effective.epoch_scope, BundleEpochScope::Anchor);
         assert_eq!(
             effective.artifact_anchor,
             range.resolved_anchor.effective_time
@@ -1372,6 +1370,7 @@ mod policy_tests {
             build_effective_policy(
                 &range,
                 OrientationPolicy::Include,
+                BundleEpochScope::Anchor,
                 vec![SessionTime::from_nanos(400), SessionTime::from_nanos(400)]
             )
             .is_err()
@@ -1380,6 +1379,7 @@ mod policy_tests {
             build_effective_policy(
                 &range,
                 OrientationPolicy::Include,
+                BundleEpochScope::Anchor,
                 vec![SessionTime::from_nanos(600), SessionTime::from_nanos(400)]
             )
             .is_err()
@@ -1388,6 +1388,7 @@ mod policy_tests {
             build_effective_policy(
                 &range,
                 OrientationPolicy::Include,
+                BundleEpochScope::All,
                 vec![SessionTime::from_nanos(400), SessionTime::from_nanos(600)]
             )
             .is_ok()
@@ -1677,11 +1678,8 @@ mod qualification {
         assert_eq!(bundle.range.session_id, rig.session);
         assert_eq!(bundle.range.target_id, rig.target);
         assert!(!bundle.range.frame_ids.is_empty());
-        // The effective policy carries the v1 version and two generators.
-        assert_eq!(
-            bundle.effective.version.as_str(),
-            "temporal-debug-bundle-v1"
-        );
+        // The effective policy carries the selected scope and two generators.
+        assert_eq!(bundle.effective.epoch_scope, BundleEpochScope::Anchor);
         assert_eq!(bundle.effective.artifact_generators.len(), 2);
         // Artifact evidence is available with real outcomes.
         assert!(matches!(
@@ -1842,6 +1840,7 @@ mod qualification {
             .unwrap(),
             vec![],
             OrientationPolicy::Include,
+            krometrail_core::BundleEpochScope::Anchor,
         )
         .unwrap();
         let req_omit = TemporalDebugBundleRequest::new(
@@ -1860,6 +1859,7 @@ mod qualification {
             .unwrap(),
             vec![],
             OrientationPolicy::Omit,
+            krometrail_core::BundleEpochScope::Anchor,
         )
         .unwrap();
         let b1 = svc_include
@@ -1917,10 +1917,15 @@ mod qualification {
     #[test]
     fn golden_effective_policy_is_byte_stable() {
         let range = resolved_range();
-        let effective = build_effective_policy(&range, OrientationPolicy::Include, vec![]).unwrap();
+        let effective = build_effective_policy(
+            &range,
+            OrientationPolicy::Include,
+            BundleEpochScope::Anchor,
+            vec![],
+        )
+        .unwrap();
         let json = serde_json::to_string(&effective).unwrap();
-        // The versioned policy identifier is always present.
-        assert!(json.contains("\"temporal-debug-bundle-v1\""));
+        assert!(json.contains("\"epoch_scope\":\"anchor\""));
         // The artifact anchor matches the resolved anchor's effective time (midpoint of [0, 1000000]).
         assert!(json.contains("\"artifact_anchor\":500000"));
         // Two generators: storyboard and difference_map.

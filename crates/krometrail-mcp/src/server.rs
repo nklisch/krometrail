@@ -352,8 +352,8 @@ mod tests {
         BrowserOperationRequest, BrowserOperationResult, BrowserOwnership, BrowserProduct,
         BrowserProductVersion, BrowserSessionEvent, BrowserSessionEvents, BrowserSessionPort,
         BrowserSessionState, BrowserStatus, BrowserStopOutcome, BrowserVersion,
-        BundleArtifactEvidence, BundleContextEvidence, BundleDegradation, CapabilityId,
-        CapabilitySnapshot, CapabilitySupport, CaptureStatistics, CaptureStreamState,
+        BundleArtifactEvidence, BundleContextEvidence, BundleDegradation, BundleEpochScope,
+        CapabilityId, CapabilitySnapshot, CapabilitySupport, CaptureStatistics, CaptureStreamState,
         CaptureTimingSummary, ClickRequest, CoordinateSpace, CssPoint, CssRect, CssSize,
         DeviceScaleFactor, DocumentReadiness, EffectiveBundlePolicy, EncodedScreenshot,
         EveryNthFrame, EvidenceScope, FrameId, GenerateArtifactsRequest, InteractionId,
@@ -368,10 +368,10 @@ mod tests {
         ScreenshotMetadata, ScreenshotTarget, SessionId, SessionOrigin, SessionRange, SessionTime,
         Sha256Digest, SnapshotGeneration, SnapshotNode, SnapshotNodeId, SourceFrameList,
         SourceFrameSelection, SourceFramesRequest, SourceReadLimitsRequest, StoryboardRequest,
-        TEMPORAL_DEBUG_BUNDLE_POLICY_VERSION, TargetCaptureStatus, TargetId, TemporalContext,
-        TemporalContextQuery, TemporalContextRequest, TemporalDebugBundle,
-        TemporalDebugBundleContext, TemporalDebugBundleRequest, TemporalDebugBundles,
-        TemporalDebugHeader, TemporalQueryRequest, TemporalRangeAnchor, TemporalRangeAnchorKind,
+        TargetCaptureStatus, TargetId, TemporalContext, TemporalContextQuery,
+        TemporalContextRequest, TemporalDebugBundle, TemporalDebugBundleContext,
+        TemporalDebugBundleRequest, TemporalDebugBundles, TemporalDebugHeader,
+        TemporalQueryRequest, TemporalRangeAnchor, TemporalRangeAnchorKind,
         TemporalVideoGeneration, TemporalVideoGenerationRequest, TemporalVideoGenerationResult,
         VideoArtifactRead, ViewportState,
     };
@@ -1189,10 +1189,10 @@ mod tests {
             include_orientation: false,
             output: OutputLimitsRequest::new(64, 64, 1024).unwrap(),
         });
-        let (requested_query, _, _) = bundle_request().into_parts();
+        let (requested_query, _, _, _) = bundle_request().into_parts();
         let effective = EffectiveBundlePolicy::new(
-            NonEmptyText::new(TEMPORAL_DEBUG_BUNDLE_POLICY_VERSION).unwrap(),
             range.resolved_anchor.effective_time,
+            BundleEpochScope::Anchor,
             vec![generator],
             ArtifactFailurePolicy::AllowPartial,
             BrowserEventFilter::default(),

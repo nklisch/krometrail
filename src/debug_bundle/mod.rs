@@ -2,7 +2,7 @@
 //!
 //! The wired [`TemporalDebugBundleService`] composes the existing temporal-query,
 //! artifact-generation, context, and timeline ports. This module keeps the
-//! versioned policy plus its pure marker and visual-focus helpers alongside that
+//! concrete policy plus its pure marker and visual-focus helpers alongside that
 //! service; it performs no browser or storage I/O itself.
 
 mod error;
@@ -16,11 +16,10 @@ mod service;
 mod tests;
 
 use krometrail_core::{
-    ArtifactFailurePolicy, BrowserEventFilter, BrowserEventSelection, EffectiveBundlePolicy,
-    InteractionAnchorSource, InteractionRecordSource, OrientationPolicy, ResolvedRange, Result,
-    SessionTime, TimelineStore,
+    ArtifactFailurePolicy, BrowserEventFilter, BrowserEventSelection, BundleEpochScope,
+    EffectiveBundlePolicy, InteractionAnchorSource, InteractionRecordSource, OrientationPolicy,
+    ResolvedRange, Result, SessionTime, TimelineStore,
 };
-use policy::policy_version;
 
 // Keep the service and its pure policy helpers together as the bundle composition boundary.
 pub(crate) use error::controlled;
@@ -47,19 +46,20 @@ impl<T> TemporalDebugEvidenceStore for T where
 /// Builds the effective bundle policy from the resolved range, caller
 /// orientation choice, and extracted focus times.
 ///
-/// The effective policy carries the versioned identifier, the exact resolved
-/// anchor time, the two v1 generator requests, `AllowPartial` failure policy,
+/// The effective policy carries the exact resolved anchor time and epoch scope,
+/// the two generator requests, `AllowPartial` failure policy,
 /// the default all-class/debug event filter, the default compact event
 /// selection (limit 24), and the focus times. It is the observable contract
 /// between the bundle request and the artifact/context services.
 pub(crate) fn build_effective_policy(
     range: &ResolvedRange,
     orientation: OrientationPolicy,
+    epoch_scope: BundleEpochScope,
     focus_times: Vec<SessionTime>,
 ) -> Result<EffectiveBundlePolicy> {
     EffectiveBundlePolicy::new(
-        policy_version(),
         range.resolved_anchor.effective_time,
+        epoch_scope,
         default_generators(range, orientation),
         ArtifactFailurePolicy::AllowPartial,
         BrowserEventFilter::default(),

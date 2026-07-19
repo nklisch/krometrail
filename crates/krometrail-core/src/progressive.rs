@@ -1700,6 +1700,7 @@ impl ProgressiveEvidenceContext {
         ArtifactGenerationContext {
             deadline: self.deadline,
             cancellation: self.cancellation.clone(),
+            epoch_selection: crate::ArtifactEpochSelection::All,
         }
     }
 }

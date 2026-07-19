@@ -47,12 +47,12 @@ pub mod video;
 mod validation;
 
 pub use artifacts::{
-    AnalysisScale, ArtifactCacheDisposition, ArtifactFailurePolicy, ArtifactGeneration,
-    ArtifactGenerationContext, ArtifactGenerationRequest, ArtifactGenerationResult,
-    ArtifactGeneratorRequest, ArtifactHandle, ArtifactLabelsRequest, ArtifactManifest,
-    ArtifactMarker, ArtifactMarkerId, ArtifactOutcome, DifferenceMapRequest, FrameSelector,
-    MotionHistoryRequest, NormalizationRequest, OutputLimitsRequest, RegionFilmstripRequest,
-    StoryboardRequest, VisualEpoch,
+    AnalysisScale, ArtifactCacheDisposition, ArtifactEpochSelection, ArtifactFailurePolicy,
+    ArtifactGeneration, ArtifactGenerationContext, ArtifactGenerationRequest,
+    ArtifactGenerationResult, ArtifactGeneratorRequest, ArtifactHandle, ArtifactLabelsRequest,
+    ArtifactManifest, ArtifactMarker, ArtifactMarkerId, ArtifactOutcome, DifferenceMapRequest,
+    FrameSelector, MotionHistoryRequest, NormalizationRequest, OutputLimitsRequest,
+    RegionFilmstripRequest, StoryboardRequest, VisualEpoch,
 };
 pub use browser::{
     AcceptedLocator, AccessibleProperty, AccessibleValue, ActionCategory, ActionDefinition,
@@ -117,10 +117,10 @@ pub use capabilities::{
     CapabilityState, RecordingSubsystem, capability, validate_capability_selection,
 };
 pub use debug_bundle::{
-    BundleArtifactEvidence, BundleContextEvidence, BundleDegradation, BundleEpochVisualSummary,
-    BundleWarning, EffectiveBundlePolicy, EvidencePosture, MAX_BUNDLE_ARTIFACT_MARKERS,
-    MAX_BUNDLE_CALLER_MARKERS, MAX_BUNDLE_HEADER_BYTES, MAX_BUNDLE_TIMELINE_ROWS,
-    OrientationPolicy, TEMPORAL_DEBUG_BUNDLE_OPERATION, TEMPORAL_DEBUG_BUNDLE_POLICY_VERSION,
+    BundleArtifactEvidence, BundleContextEvidence, BundleDegradation, BundleEpochScope,
+    BundleEpochVisualSummary, BundleWarning, EffectiveBundlePolicy, EvidencePosture,
+    MAX_BUNDLE_ARTIFACT_MARKERS, MAX_BUNDLE_CALLER_MARKERS, MAX_BUNDLE_HEADER_BYTES,
+    MAX_BUNDLE_TIMELINE_ROWS, OrientationPolicy, TEMPORAL_DEBUG_BUNDLE_OPERATION,
     TemporalDebugBundle, TemporalDebugBundleContext, TemporalDebugBundleOperationDefinition,
     TemporalDebugBundleRequest, TemporalDebugBundles, TemporalDebugHeader,
 };

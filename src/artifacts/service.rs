@@ -5,9 +5,9 @@ use std::{
 };
 
 use krometrail_core::{
-    ArtifactCacheDisposition, ArtifactGeneration, ArtifactGenerationContext,
-    ArtifactGenerationRequest, ArtifactGenerationResult, ArtifactHandle, ArtifactId,
-    ArtifactLookup, ArtifactOutcome, ArtifactPublication, ArtifactPublish,
+    ArtifactCacheDisposition, ArtifactEpochSelection, ArtifactGeneration,
+    ArtifactGenerationContext, ArtifactGenerationRequest, ArtifactGenerationResult, ArtifactHandle,
+    ArtifactId, ArtifactLookup, ArtifactOutcome, ArtifactPublication, ArtifactPublish,
     ArtifactSourceFingerprint, ArtifactStore, ErrorCode, FrameSource, IdSource, KrometrailError,
     NonEmptyText, PortFuture, Result,
 };
@@ -123,6 +123,7 @@ impl TemporalVisionArtifactService {
             context.cancellation.as_ref(),
         )
         .await??;
+        let plans = select_epoch_plans(plans, context.epoch_selection)?;
         let plans = Arc::new(plans);
 
         let potential_outputs = plans
@@ -560,6 +561,49 @@ impl TemporalVisionArtifactService {
         }
         Ok(result)
     }
+}
+
+pub(crate) fn select_epoch_plans(
+    plans: Vec<EpochPlan>,
+    selection: ArtifactEpochSelection,
+) -> Result<Vec<EpochPlan>> {
+    let ArtifactEpochSelection::Anchor(anchor) = selection else {
+        return Ok(plans);
+    };
+    let anchor = anchor.as_nanos();
+    let selected = plans
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, plan)| {
+            let start = plan
+                .frames
+                .first()
+                .expect("validated epoch plan is non-empty")
+                .metadata()
+                .session_time()
+                .as_nanos();
+            let end = plan
+                .frames
+                .last()
+                .expect("validated epoch plan is non-empty")
+                .metadata()
+                .session_time()
+                .as_nanos();
+            let distance = if anchor < start {
+                start - anchor
+            } else {
+                anchor.saturating_sub(end)
+            };
+            (distance, plan.descriptor.index)
+        })
+        .map(|(index, _)| index)
+        .ok_or_else(|| generation_error("artifact planning produced no visual epochs"))?;
+    Ok(vec![
+        plans
+            .into_iter()
+            .nth(selected)
+            .expect("selected epoch plan exists"),
+    ])
 }
 
 impl ArtifactGeneration for TemporalVisionArtifactService {

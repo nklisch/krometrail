@@ -16,12 +16,13 @@ use std::{
 };
 
 use krometrail_core::{
-    ArtifactGeneration, ArtifactGenerationContext, ArtifactOutcome, BundleArtifactEvidence,
-    BundleContextEvidence, BundleDegradation, BundleWarning, InteractionAnchor,
-    InteractionAnchorSource, InteractionId, ObservationKind, ObservationPayloadRef, PortFuture,
-    ResolvedAnchorReference, ResolvedRange, Result, TemporalContextQuery, TemporalContextRequest,
-    TemporalDebugBundle, TemporalDebugBundleContext, TemporalDebugBundleRequest,
-    TemporalDebugBundles, TemporalQuery, TimelineRangeQuery, TimelineRangeSlice, TimelineStore,
+    ArtifactEpochSelection, ArtifactGeneration, ArtifactGenerationContext, ArtifactOutcome,
+    BundleArtifactEvidence, BundleContextEvidence, BundleDegradation, BundleEpochScope,
+    BundleWarning, InteractionAnchor, InteractionAnchorSource, InteractionId, ObservationKind,
+    ObservationPayloadRef, PortFuture, ResolvedAnchorReference, ResolvedRange, Result,
+    TemporalContextQuery, TemporalContextRequest, TemporalDebugBundle, TemporalDebugBundleContext,
+    TemporalDebugBundleRequest, TemporalDebugBundles, TemporalQuery, TimelineRangeQuery,
+    TimelineRangeSlice, TimelineStore,
 };
 use std::num::NonZeroU16;
 use tokio::sync::Semaphore;
@@ -115,7 +116,7 @@ impl TemporalDebugBundleService {
         // Step 2: resolve the range exactly once. Range failure is whole-request
         // failure; the owned query is cloned so the original can be returned in
         // the bundle's requested_query field.
-        let (query, caller_markers, orientation) = request.into_parts();
+        let (query, caller_markers, orientation, epoch_scope) = request.into_parts();
         let range = controlled(
             self.queries.resolve_range(query.clone()),
             bundle_deadline,
@@ -157,13 +158,19 @@ impl TemporalDebugBundleService {
             }
         };
 
-        // Step 4: materialize the exact v1 artifact request and generate at most
+        // Step 4: materialize the artifact request and generate at most
         // once. The artifact service receives the same absolute deadline and
         // cancellation through ArtifactGenerationContext.
         let artifact_request = default_artifact_request(&range, &markers, orientation)?;
         let artifact_context = ArtifactGenerationContext {
             deadline: Some(bundle_deadline),
             cancellation: context.cancellation.clone(),
+            epoch_selection: match epoch_scope {
+                BundleEpochScope::Anchor => {
+                    ArtifactEpochSelection::Anchor(range.resolved_anchor.effective_time)
+                }
+                BundleEpochScope::All => ArtifactEpochSelection::All,
+            },
         };
         let artifact_result = controlled(
             self.artifacts.generate(artifact_request, artifact_context),
@@ -204,7 +211,7 @@ impl TemporalDebugBundleService {
         // Step 6: construct the compact context request with the same resolved
         // range, default all-class/debug filter, compact limit 24, and the focus
         // times. Query context exactly once.
-        let effective = build_effective_policy(&range, orientation, focus_times)?;
+        let effective = build_effective_policy(&range, orientation, epoch_scope, focus_times)?;
         let context_request = TemporalContextRequest::new(
             range.clone(),
             None,
