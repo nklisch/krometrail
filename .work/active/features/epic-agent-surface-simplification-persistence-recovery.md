@@ -1,7 +1,7 @@
 ---
 id: epic-agent-surface-simplification-persistence-recovery
 kind: feature
-stage: implementing
+stage: review
 tags: [browser, storage, diagnostics]
 parent: epic-agent-surface-simplification
 depends_on: []
@@ -399,3 +399,14 @@ pub(crate) fn map_lifecycle_result<T: Serialize>(
 - **Cause drift**: Gap persistence during teardown could overwrite the initiating frame-persistence cause. First-failure storage in `RuntimeState` and shutdown's read-only capture snapshot prevent replacement.
 - **False clean shutdown**: Process/profile release can succeed while frame flush fails. Quality and closure are orthogonal fields, and MCP maps degraded quality to a degraded tool envelope even though stop itself completed.
 - **Schema breadth**: Adding persistence details to every error would increase healthy output if projected unconditionally. The optional field appears only on classified failures, and concise healthy status is unchanged.
+
+## Implementation notes
+
+- Execution capability: high; durability and recovery semantics cross the filesystem writer, capture concurrency, shutdown authority, MCP diagnostics, and public documentation.
+- Review weight: standard (caller/project default); feature is intentionally left at `stage: review` for the independent pass.
+- Files changed: bounded persistence errors and capture/stop contracts in core; segment writer and recording sink classification in store; first-cause capture and structured shutdown in CDP; concise status, degraded stop, warnings, and schemas in MCP; current foundation docs; three child stories.
+- Tests added/removed: fault injection proves post-rename writer reuse and terminal replay; typed cause/status/privacy tests; structured closure/recovery tests; MCP projection and schema tests. Obsolete stage-only and scalar outcome assertions were removed.
+- Simplification: one typed inward error path now replaces generic error discards, unconditional writer poisoning, stage-only capture state, duplicate shutdown vocabulary, scalar degraded outcomes, and response-side cause reconstruction.
+- Discrepancies from design: generated schemas are runtime-derived rather than checked-in artifacts; the integration regression is intentionally layered across private fault seams instead of exposing production injectors.
+- Adjacent issues parked: none.
+- Integrated verification: workspace all-target check and strict clippy for all touched crates passed; every focused persistence, capture, shutdown, concise-status, degraded-response, and schema regression passed. A prior broad CDP lib run had 175 passing tests and four sandbox-blocked local-socket tests, with no feature failures.
