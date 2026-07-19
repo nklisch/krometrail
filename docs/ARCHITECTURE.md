@@ -259,6 +259,11 @@ to `foreground`; `preserve` suppresses Krometrail-owned `Target.activateTarget` 
 `background` flag so Chrome does not foreground the new tab implicitly. The session supervisor
 retains the launch value as the sole policy authority. Page creation and selection still reduce
 logical selected-target state, while the control adapter consults the same policy before preparing hidden pointer targets.
+The registry-declared `activate_page` operation deliberately invokes the control adapter's same
+bounded target-activation authority regardless of that policy, but neither mutates the stored policy
+nor reduces selected-target state. Both explicit activation and automatic foreground preparation
+send `Target.activateTarget`, send `Page.bringToFront`, and require visible document state before
+publishing live evidence or allowing pointer dispatch.
 Attached sessions retain foreground behavior and do not acquire a second focus configuration source.
 
 At connection composition time, the CDP adapter copies the validated value into the immutable capture assembly used by every target stream and every reconnect generation in that session. Each `Page.startScreencast` command receives the value as `everyNthFrame`; no target, reconnect path, or status observer can select a replacement. A different value requires a new browser connection/session rather than an unrecorded mid-stream restart.

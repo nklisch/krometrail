@@ -286,6 +286,17 @@ impl PageControl {
         if focus == krometrail_core::BrowserFocusPolicy::Preserve {
             return Err(target_hidden_error(bound.target_id, focus));
         }
+        self.activate_target(transport, bound, cancel, generation)
+            .await
+    }
+
+    pub(crate) async fn activate_target(
+        &self,
+        transport: &dyn CdpTransport,
+        bound: &BoundTarget,
+        cancel: &OperationCancellation,
+        generation: u64,
+    ) -> Result<()> {
         let activation = async {
             cancel
                 .race(
@@ -336,7 +347,10 @@ impl PageControl {
         };
         match tokio::time::timeout(self.config.evaluation_timeout, activation).await {
             Ok(Ok(())) => Ok(()),
-            _ => Err(target_hidden_error(bound.target_id, focus)),
+            _ => Err(target_hidden_error(
+                bound.target_id,
+                krometrail_core::BrowserFocusPolicy::Foreground,
+            )),
         }
     }
 

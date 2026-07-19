@@ -29,10 +29,10 @@ pub use contexts::{
     WaitForPageResult,
 };
 pub use control::{
-    BrowserStatus, ClosePageRequest, CreatePageRequest, DEFAULT_MANAGED_PROFILE_NAME,
-    GoBackRequest, GoForwardRequest, InteractionAnchor, InteractionTiming, ListPagesRequest,
-    NavigatePageRequest, PageChange, PageOperationOutcome, PageOperationResult, PageSelection,
-    PageStatus, ReloadPageRequest, SelectPageRequest,
+    ActivatePageRequest, BrowserStatus, ClosePageRequest, CreatePageRequest,
+    DEFAULT_MANAGED_PROFILE_NAME, GoBackRequest, GoForwardRequest, InteractionAnchor,
+    InteractionTiming, ListPagesRequest, NavigatePageRequest, PageChange, PageOperationOutcome,
+    PageOperationResult, PageSelection, PageStatus, ReloadPageRequest, SelectPageRequest,
 };
 pub use events::{
     BROWSER_EVENT_REGISTRY, BrowserDialogType, BrowserEvent, BrowserEventBatch, BrowserEventClass,

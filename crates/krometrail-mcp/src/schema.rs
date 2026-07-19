@@ -599,6 +599,19 @@ mod tests {
     }
 
     #[test]
+    fn activate_page_schema_keeps_the_target_optional() {
+        let config = McpConfig::default();
+        let schema = operation_input_schema(BrowserOperationKind::ActivatePage, &config).unwrap();
+        let schema = Value::Object(schema.as_ref().clone());
+        assert!(schema["properties"].get("target").is_some());
+        assert!(
+            schema["required"]
+                .as_array()
+                .is_none_or(|required| !required.iter().any(|field| field == "target"))
+        );
+    }
+
+    #[test]
     fn published_viewport_schema_matches_runtime_bounds() {
         let config = McpConfig::default();
         let schema = operation_input_schema(BrowserOperationKind::SetViewport, &config).unwrap();

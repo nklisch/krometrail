@@ -392,6 +392,7 @@ fn result_failure(result: &BrowserOperationResult, target_id: TargetId) -> Optio
     match result {
         BrowserOperationResult::CreatePage(value)
         | BrowserOperationResult::SelectPage(value)
+        | BrowserOperationResult::ActivatePage(value)
         | BrowserOperationResult::ClosePage(value)
         | BrowserOperationResult::NavigatePage(value)
         | BrowserOperationResult::ReloadPage(value)
@@ -417,6 +418,7 @@ fn result_anchor(result: &BrowserOperationResult) -> Result<Option<InteractionAn
     let anchor = match result {
         BrowserOperationResult::CreatePage(value)
         | BrowserOperationResult::SelectPage(value)
+        | BrowserOperationResult::ActivatePage(value)
         | BrowserOperationResult::ClosePage(value)
         | BrowserOperationResult::NavigatePage(value)
         | BrowserOperationResult::ReloadPage(value)
@@ -446,6 +448,7 @@ fn existing_screenshot(
         }
         BrowserOperationResult::CreatePage(value)
         | BrowserOperationResult::SelectPage(value)
+        | BrowserOperationResult::ActivatePage(value)
         | BrowserOperationResult::ClosePage(value)
         | BrowserOperationResult::NavigatePage(value)
         | BrowserOperationResult::ReloadPage(value)

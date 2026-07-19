@@ -155,6 +155,12 @@ pub struct SelectPageRequest {
     pub target_id: TargetId,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, Default, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ActivatePageRequest {
+    pub target: Option<TargetId>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ClosePageRequest {
     #[serde(default)]
@@ -311,6 +317,9 @@ pub enum PageChange {
         previous: Option<TargetId>,
         selected: TargetId,
     },
+    Activated {
+        target_id: TargetId,
+    },
     Closed {
         closed: TargetId,
         selected: Option<TargetId>,
@@ -330,6 +339,7 @@ impl PageChange {
         match *self {
             Self::Created { target_id } => target_id,
             Self::Selected { selected, .. } => selected,
+            Self::Activated { target_id } => target_id,
             Self::Closed { closed, .. } => closed,
             Self::Navigated
             | Self::Reloaded

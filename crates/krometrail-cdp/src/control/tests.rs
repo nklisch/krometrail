@@ -279,6 +279,23 @@ mod interactions {
     }
 
     #[tokio::test]
+    async fn explicit_activation_always_foregrounds_and_waits_for_visible_state() {
+        let transport = RecordingTransport::default();
+        transport.push(
+            "Runtime.evaluate",
+            Ok(json!({"result":{"result":{"value":"visible"}}})),
+        );
+        page_control()
+            .activate_target(&transport, &bound(), &OperationCancellation::default(), 0)
+            .await
+            .unwrap();
+        assert_eq!(transport.calls("Target.activateTarget").len(), 1);
+        assert_eq!(transport.calls("Page.bringToFront").len(), 1);
+        assert_eq!(transport.calls("Runtime.evaluate").len(), 1);
+        assert!(transport.calls("Input.dispatchMouseEvent").is_empty());
+    }
+
+    #[tokio::test]
     async fn hidden_pointer_target_in_preserve_mode_fails_without_foreground_or_input() {
         let transport = RecordingTransport::default();
         let mut hidden = bound();

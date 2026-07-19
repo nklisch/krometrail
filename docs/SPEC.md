@@ -227,11 +227,16 @@ launch in the background. Under `foreground`, pointer, drag, and scroll operatio
 hidden page through the managed CDP target authority before resolving or dispatching input. Under
 `preserve`, Krometrail sends neither `Target.activateTarget` nor `Page.bringToFront`: current visible
 page actions continue normally, while hidden-page pointer work fails as `target_hidden` before any
-pointer event is dispatched.
+pointer event is dispatched. `activate_page` is the deliberate one-shot exception: it foregrounds
+the selected or explicitly named target, waits boundedly for visible document state, and returns
+live evidence without changing the immutable session policy. A failed activation remains
+`target_hidden` and dispatches no pointer input.
 
 Creating or selecting a page always updates Krometrail's logical selected target. In `foreground`
 mode it also activates the Chrome target. In `preserve` mode newly created targets are explicitly
 created in the background and neither creation nor selection switches Chrome's visible tab.
+Activation does not change Krometrail's logical selected target; omit its target only to activate
+the current selection.
 Attachment retains foreground behavior because the attached browser remains externally owned.
 
 Browser discovery probes explicit, environment, and platform-default installations with a bounded

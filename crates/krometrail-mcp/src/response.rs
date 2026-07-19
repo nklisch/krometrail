@@ -837,6 +837,7 @@ fn project_operation(
         BrowserOperationResult::CancelDownload(value) => serializable(*value),
         BrowserOperationResult::CreatePage(value)
         | BrowserOperationResult::SelectPage(value)
+        | BrowserOperationResult::ActivatePage(value)
         | BrowserOperationResult::ClosePage(value)
         | BrowserOperationResult::NavigatePage(value)
         | BrowserOperationResult::ReloadPage(value)

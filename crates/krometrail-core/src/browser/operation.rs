@@ -3,17 +3,18 @@ use serde::{Deserialize, Serialize};
 use crate::{CapabilityId, TargetId};
 
 use super::{
-    AcceptedLocator, ActionCategory, ActionDefinition, ActionabilityRequirement, BatchRequest,
-    BatchResult, CancelDownloadRequest, CancelDownloadResult, ClickRequest, ClipboardRead,
-    ClipboardWriteResult, ClosePageRequest, CompletionKind, CreatePageRequest, DownloadInventory,
-    DragRequest, EncodedScreenshot, EvaluationResult, FillRequest, GoBackRequest, GoForwardRequest,
-    HandleDialogRequest, HoverRequest, InspectPageRequest, InteractionResult, ListDownloadsRequest,
-    ListFramesRequest, ListPageAssetsRequest, ListPageContextsRequest, ListPagesRequest,
-    LiveObservation, LiveObservationRequest, NavigatePageRequest, PageAssetInventory,
-    PageContextInventory, PageFrameInventory, PageOperationResult, PageSelection, PageSnapshot,
-    PageState, PageStatus, PressKeysRequest, QueryPageRequest, QueryPageResult,
-    ReadClipboardRequest, ReadOnlyEvaluationRequest, ReloadPageRequest, ScreenshotRequest,
-    ScrollRequest, SelectOptionRequest, SelectPageRequest, SetViewportRequest, SnapshotPageRequest,
+    AcceptedLocator, ActionCategory, ActionDefinition, ActionabilityRequirement,
+    ActivatePageRequest, BatchRequest, BatchResult, CancelDownloadRequest, CancelDownloadResult,
+    ClickRequest, ClipboardRead, ClipboardWriteResult, ClosePageRequest, CompletionKind,
+    CreatePageRequest, DownloadInventory, DragRequest, EncodedScreenshot, EvaluationResult,
+    FillRequest, GoBackRequest, GoForwardRequest, HandleDialogRequest, HoverRequest,
+    InspectPageRequest, InteractionResult, ListDownloadsRequest, ListFramesRequest,
+    ListPageAssetsRequest, ListPageContextsRequest, ListPagesRequest, LiveObservation,
+    LiveObservationRequest, NavigatePageRequest, PageAssetInventory, PageContextInventory,
+    PageFrameInventory, PageOperationResult, PageSelection, PageSnapshot, PageState, PageStatus,
+    PressKeysRequest, QueryPageRequest, QueryPageResult, ReadClipboardRequest,
+    ReadOnlyEvaluationRequest, ReloadPageRequest, ScreenshotRequest, ScrollRequest,
+    SelectOptionRequest, SelectPageRequest, SetViewportRequest, SnapshotPageRequest,
     UploadFilesRequest, ViewportOperationResult, WaitForDownloadRequest, WaitForPageRequest,
     WaitForPageResult, WaitRequest, WaitResult, WriteClipboardRequest,
 };
@@ -335,6 +336,9 @@ define_browser_operations! {
     SelectPage(SelectPageRequest) => PageOperationResult {
         stable_name: "select_page", description: "Select a supervised browser page.", mutability: StateChanging, evidence: LiveObservation, scope: Browser, batchable: false, action: None,
     },
+    ActivatePage(ActivatePageRequest) => PageOperationResult {
+        stable_name: "activate_page", description: "Explicitly foreground one supervised page without changing the session focus policy.", mutability: StateChanging, evidence: LiveObservation, scope: Browser, batchable: false, action: None,
+    },
     ClosePage(ClosePageRequest) => PageOperationResult {
         stable_name: "close_page", description: "Close a supervised browser page.", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: false, action: None,
     },
@@ -446,6 +450,7 @@ mod tests {
                         | BrowserOperationKind::ListPageAssets
                         | BrowserOperationKind::CreatePage
                         | BrowserOperationKind::SelectPage
+                        | BrowserOperationKind::ActivatePage
                         | BrowserOperationKind::ClosePage
                         | BrowserOperationKind::ReadClipboard
                         | BrowserOperationKind::WriteClipboard
@@ -469,6 +474,7 @@ mod tests {
                         | BrowserOperationKind::ListPageAssets
                         | BrowserOperationKind::CreatePage
                         | BrowserOperationKind::SelectPage
+                        | BrowserOperationKind::ActivatePage
                         | BrowserOperationKind::ClosePage
                         | BrowserOperationKind::ReadClipboard
                         | BrowserOperationKind::WriteClipboard

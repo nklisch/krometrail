@@ -15,13 +15,13 @@ use krometrail_cdp::{
     CdpTransport, CdpTransportFactory, ProductionBrowserConnector, TransportError, TransportFuture,
 };
 use krometrail_core::{
-    AttachBrowser, BrowserConnectRequest, BrowserConnector, BrowserOperationContext,
-    BrowserOperationRequest, BrowserOperationResult, BrowserSessionState, CancellationSignal,
-    ClosePageRequest, CreatePageRequest, ElementLocator, ErrorCode, GoBackRequest,
-    GoForwardRequest, ImageFormat, InspectPageRequest, LaunchBrowser, ListPagesRequest,
-    ManagedProfile, NavigatePageRequest, ObservationPart, PageOperationOutcome, PageSelection,
-    ProfileIdentity, ProfileRef, ReadOnlyEvaluationRequest, ReloadPageRequest, ScreenshotRequest,
-    ScreenshotTarget, SelectPageRequest, SnapshotPageRequest,
+    ActivatePageRequest, AttachBrowser, BrowserConnectRequest, BrowserConnector,
+    BrowserOperationContext, BrowserOperationRequest, BrowserOperationResult, BrowserSessionState,
+    CancellationSignal, ClosePageRequest, CreatePageRequest, ElementLocator, ErrorCode,
+    GoBackRequest, GoForwardRequest, ImageFormat, InspectPageRequest, LaunchBrowser,
+    ListPagesRequest, ManagedProfile, NavigatePageRequest, ObservationPart, PageOperationOutcome,
+    PageSelection, ProfileIdentity, ProfileRef, ReadOnlyEvaluationRequest, ReloadPageRequest,
+    ScreenshotRequest, ScreenshotTarget, SelectPageRequest, SnapshotPageRequest,
 };
 use serde_json::{Value, json};
 use support::scripted_cdp::ScriptedCdp;
@@ -185,6 +185,48 @@ async fn status_and_page_mutations_share_exact_selected_target_state() {
     );
     assert_eq!(initial.profile, ProfileRef::External);
     let initial_id = initial.selected_target_id.unwrap();
+
+    transport.push_response(
+        "Runtime.evaluate",
+        json!({"result":{"type":"string","value":"visible"}}),
+    );
+    script_live(
+        &transport,
+        "http://fixture/",
+        "fixture",
+        "loader-a",
+        0,
+        &["http://fixture/"],
+    );
+    let activated = session
+        .execute(
+            BrowserOperationRequest::ActivatePage(ActivatePageRequest::default()),
+            BrowserOperationContext::default(),
+        )
+        .await
+        .unwrap();
+    let BrowserOperationResult::ActivatePage(activated) = activated else {
+        panic!("activate")
+    };
+    assert_successful_observation(&activated);
+    assert!(matches!(
+        activated.outcome,
+        PageOperationOutcome::Succeeded(krometrail_core::PageChange::Activated { target_id })
+            if target_id == initial_id
+    ));
+    assert_eq!(
+        session.status().await.unwrap().selected_target_id,
+        Some(initial_id)
+    );
+    assert!(transport.command_calls().iter().any(|call| {
+        call.method == "Target.activateTarget" && call.params["targetId"] == "target-a"
+    }));
+    assert!(
+        transport
+            .command_calls()
+            .iter()
+            .any(|call| call.method == "Page.bringToFront")
+    );
 
     let listed = session
         .execute(

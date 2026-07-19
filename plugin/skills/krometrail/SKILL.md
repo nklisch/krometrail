@@ -70,12 +70,14 @@ The initial OS process launch may still surface Chrome. After launch, stay on on
 when possible: visible-page interactions do not activate the browser, while pointer work on a hidden
 tab fails as `target_hidden` without stealing focus. `create_page` creates a background tab. Both it
 and `select_page` change Krometrail's logical selection without switching Chrome's visible tab in
-preserve mode. Omit `focus`
+preserve mode. Use `activate_page {}` for a deliberate one-shot foreground of the logical selection,
+or pass its optional `target` to foreground one named page. It waits for visible state and returns
+live evidence, but does not change either the selected page or the immutable focus policy. Omit `focus`
 or use `{"focus":"foreground"}` when the user wants automatic tab switching.
 
 - Lifecycle/pages: `list_managed_profiles`, `start_browser`, `attach_browser`, `browser_status`,
   `stop_browser`, `list_pages`, `list_page_contexts`, `wait_for_page`, `create_page`, `select_page`,
-  `close_page`
+  `activate_page`, `close_page`
 - Current state: `inspect_page`, `query_page`, `snapshot_page`, `take_screenshot`, `observe_live`, `evaluate_page`
 - Context detail: `list_frames`, `list_page_assets`
 - Navigation: `navigate_page`, `reload_page`, `go_back`, `go_forward`
@@ -142,7 +144,9 @@ Valid locator shapes include:
 
 Copy all reference fields from one returned snapshot node; never invent or mix them. Krometrail
 scrolls element targets into view before pointer dispatch. If a hidden/background page cannot be
-activated, select or foreground it and follow the returned recovery guidance.
+activated automatically, call `activate_page` only when foregrounding is intended, then retry with a
+fresh reference if the document changed. A `target_hidden` activation failure authorizes no input;
+follow its returned recovery guidance.
 
 `fill` defaults to replace mode. Use `Meta` for Command shortcuts and `Control` for Control shortcuts;
 Krometrail dispatches modifier chords without inserting their printable character. Use named keys such

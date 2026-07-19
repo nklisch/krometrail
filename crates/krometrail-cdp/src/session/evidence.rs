@@ -43,6 +43,7 @@ fn project_result(
     let page = match result {
         BrowserOperationResult::CreatePage(value)
         | BrowserOperationResult::SelectPage(value)
+        | BrowserOperationResult::ActivatePage(value)
         | BrowserOperationResult::ClosePage(value)
         | BrowserOperationResult::NavigatePage(value)
         | BrowserOperationResult::ReloadPage(value)
@@ -159,6 +160,7 @@ fn project_result(
         | BrowserOperationResult::Batch(_) => None,
         BrowserOperationResult::CreatePage(_)
         | BrowserOperationResult::SelectPage(_)
+        | BrowserOperationResult::ActivatePage(_)
         | BrowserOperationResult::ClosePage(_)
         | BrowserOperationResult::NavigatePage(_)
         | BrowserOperationResult::ReloadPage(_)

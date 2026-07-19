@@ -542,6 +542,52 @@ async fn execute_non_local_operation(
             .await
             .map(|result| BrowserOperationResult::SelectPage(Box::new(result)))
         }
+        BrowserOperationRequest::ActivatePage(request) => {
+            let selection = request
+                .target
+                .map_or(PageSelection::Selected, PageSelection::Target);
+            let bound = crate::control::bind_target(state, selection)?;
+            cancellation.check(state.connection_generation, bound.target_id)?;
+            let started_at = page_control.session_time()?;
+            let interaction_id = page_control.next_interaction_id();
+            let dispatched_at = page_control.session_time()?;
+            if let Err(error) = page_control
+                .activate_target(
+                    transport.as_ref(),
+                    &bound,
+                    cancellation,
+                    state.connection_generation,
+                )
+                .await
+            {
+                return page_failure_result(
+                    page_control,
+                    bound.target_id,
+                    krometrail_core::BrowserOperationKind::ActivatePage,
+                    interaction_id,
+                    started_at,
+                    dispatched_at,
+                    error,
+                );
+            }
+            page_success_result(
+                page_control,
+                transport.as_ref(),
+                state,
+                bound.target_id,
+                krometrail_core::BrowserOperationKind::ActivatePage,
+                interaction_id,
+                started_at,
+                dispatched_at,
+                PageChange::Activated {
+                    target_id: bound.target_id,
+                },
+                selection,
+                cancellation,
+            )
+            .await
+            .map(|result| BrowserOperationResult::ActivatePage(Box::new(result)))
+        }
         BrowserOperationRequest::NavigatePage(request) => {
             page_control
                 .navigate(transport.as_ref(), state, request, cancellation)
@@ -1023,6 +1069,9 @@ fn page_failure_result(
         }
         krometrail_core::BrowserOperationKind::SelectPage => {
             BrowserOperationResult::SelectPage(Box::new(result))
+        }
+        krometrail_core::BrowserOperationKind::ActivatePage => {
+            BrowserOperationResult::ActivatePage(Box::new(result))
         }
         krometrail_core::BrowserOperationKind::ClosePage => {
             BrowserOperationResult::ClosePage(Box::new(result))

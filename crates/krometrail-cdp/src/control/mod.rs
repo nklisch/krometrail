@@ -250,6 +250,7 @@ impl PageControl {
             | BrowserOperationRequest::CancelDownload(_)
             | BrowserOperationRequest::CreatePage(_)
             | BrowserOperationRequest::SelectPage(_)
+            | BrowserOperationRequest::ActivatePage(_)
             | BrowserOperationRequest::ClosePage(_)
             | BrowserOperationRequest::NavigatePage(_)
             | BrowserOperationRequest::ReloadPage(_)
