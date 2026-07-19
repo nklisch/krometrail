@@ -57,6 +57,10 @@ impl ResponseRequest {
     fn includes_images(self) -> bool {
         self.inline_images.unwrap_or(false)
     }
+
+    fn includes_images_for(self, tool: &str) -> bool {
+        self.inline_images.unwrap_or(tool == "fetch_source_frames")
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1406,7 +1410,7 @@ fn project_response(
     projection: &mut Projection,
     response: ResponseRequest,
 ) -> Result<(), ResponseInvariantError> {
-    if !response.includes_images() {
+    if !response.includes_images_for(tool) {
         projection.images.clear();
     }
     if tool == "snapshot_page" {
@@ -2084,18 +2088,26 @@ fn project_source_frame_batch(
         "range": range,
         "frames": batch.frames.iter().map(|frame| &frame.handle).collect::<Vec<_>>(),
     }));
+    let inline_image_limit = match response.inline_images {
+        None => 1,
+        Some(true) => 4,
+        Some(false) => 0,
+    };
     let mut inline_bytes = 0_u64;
     for (index, frame) in batch.frames.into_iter().enumerate() {
         add_source_frame_resource(&mut projection, &frame.handle)?;
-        if !response.includes_images() {
+        if inline_image_limit == 0 {
             continue;
         }
         let frame_bytes = frame.encoded_bytes();
         let length = frame_bytes.len() as u64;
-        if index >= 4
-            || length > 4 * 1024 * 1024
-            || inline_bytes.saturating_add(length) > 16 * 1024 * 1024
-        {
+        if index >= inline_image_limit {
+            if response.inline_images == Some(true) && index == inline_image_limit {
+                projection.degrade_with(vec![inline_limit_warning()]);
+            }
+            continue;
+        }
+        if length > 4 * 1024 * 1024 || inline_bytes.saturating_add(length) > 16 * 1024 * 1024 {
             projection.degrade_with(vec![inline_limit_warning()]);
             continue;
         }
@@ -2900,8 +2912,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn source_frame_inline_limits_apply_only_when_pixels_are_requested() {
-        let without = map_progressive_result(
+    async fn source_frame_image_defaults_distinguish_omitted_true_and_false() {
+        let defaulted = map_progressive_result(
             "fetch_source_frames",
             ProgressiveEvidenceResult::FetchSourceFrames(Box::new(source_frame_batch(5))),
             &UnusedProgressive,
@@ -2911,10 +2923,10 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(without.response.status, ToolResponseStatus::Succeeded);
-        assert!(without.response.warnings.is_empty());
-        assert!(without.images.is_empty());
-        assert_eq!(without.response.resources.len(), 5);
+        assert_eq!(defaulted.response.status, ToolResponseStatus::Succeeded);
+        assert!(defaulted.response.warnings.is_empty());
+        assert_eq!(defaulted.images.len(), 1);
+        assert_eq!(defaulted.response.resources.len(), 5);
 
         let with = map_progressive_result(
             "fetch_source_frames",
@@ -2936,6 +2948,24 @@ mod tests {
         );
         assert_eq!(with.images.len(), 4);
         assert_eq!(with.response.resources.len(), 5);
+
+        let suppressed = map_progressive_result(
+            "fetch_source_frames",
+            ProgressiveEvidenceResult::FetchSourceFrames(Box::new(source_frame_batch(5))),
+            &UnusedProgressive,
+            Instant::now() + Duration::from_secs(1),
+            test_cancellation(),
+            ResponseRequest {
+                inline_images: Some(false),
+                ..ResponseRequest::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(suppressed.response.status, ToolResponseStatus::Succeeded);
+        assert!(suppressed.response.warnings.is_empty());
+        assert!(suppressed.images.is_empty());
+        assert_eq!(suppressed.response.resources.len(), 5);
     }
 
     #[test]

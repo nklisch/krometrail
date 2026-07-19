@@ -28,7 +28,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     config::{McpConfig, McpDependencies},
     response::{
-        into_call_tool_result, map_browser_status, map_lifecycle_result,
+        ResponseRequest, into_call_tool_result, map_browser_status, map_lifecycle_result,
         map_operation_result_with_capture, map_progressive_result, map_temporal_bundle_result,
         map_temporal_context_result, map_temporal_video_result, split_response_request,
         visible_error, visible_error_with_capture,
@@ -367,6 +367,17 @@ const fn progressive_inline_image_default(kind: ProgressiveEvidenceOperationKind
     )
 }
 
+fn resolve_progressive_response(
+    preference: ResponseRequest,
+    kind: ProgressiveEvidenceOperationKind,
+) -> ResponseRequest {
+    if kind == ProgressiveEvidenceOperationKind::FetchSourceFrames {
+        preference
+    } else {
+        preference.with_inline_default(progressive_inline_image_default(kind))
+    }
+}
+
 const fn browser_inline_image_default(kind: BrowserOperationKind) -> bool {
     matches!(
         kind,
@@ -537,10 +548,9 @@ async fn call_progressive(
     }
     let (arguments, preference) =
         match split_response_request(context.arguments.unwrap_or_default()) {
-            Ok((arguments, preference)) => (
-                arguments,
-                preference.with_inline_default(progressive_inline_image_default(kind)),
-            ),
+            Ok((arguments, preference)) => {
+                (arguments, resolve_progressive_response(preference, kind))
+            }
             Err(error) => return Ok(call_error_result(name, error)),
         };
     let (arguments, supplied_handle) = match budget
@@ -1044,6 +1054,14 @@ mod tests {
             .with_inline_default(true)
             .inline_images,
             Some(false)
+        );
+        assert_eq!(
+            resolve_progressive_response(
+                ResponseRequest::default(),
+                ProgressiveEvidenceOperationKind::FetchSourceFrames,
+            )
+            .inline_images,
+            None
         );
     }
 
