@@ -1,7 +1,7 @@
 ---
 id: feature-plugin-connect-window-install
 kind: feature
-stage: implementing
+stage: review
 tags: [bug, infra, distribution]
 parent: null
 depends_on: []
@@ -94,9 +94,9 @@ variant); exec-ing a previously installed different version while updating
   `krometrail plugin: reinstalling because:` before running the install.
 
 **Acceptance Criteria**:
-- [ ] Fixture run with a corrupted managed binary shows the verify failure
+- [x] Fixture run with a corrupted managed binary shows the verify failure
       reason on stderr before reinstall.
-- [ ] Fresh-install fixture still succeeds with the diagnostic present.
+- [x] Fresh-install fixture still succeeds with the diagnostic present.
 
 ### Unit 2: Single-flight install lock
 **Files**: `plugin/bin/krometrail`, `plugin/scripts/install-managed.sh`
@@ -108,9 +108,9 @@ recorded pid is not alive (`kill -0`). While locked by a live peer, poll
 success. Budget shared with Unit 3.
 
 **Acceptance Criteria**:
-- [ ] Two concurrent fixture launchers: exactly one runs the installer; both
+- [x] Two concurrent fixture launchers: exactly one runs the installer; both
       exec the same verified binary.
-- [ ] Stale lock (dead pid) is reclaimed and install proceeds.
+- [x] Stale lock (dead pid) is reclaimed and install proceeds.
 
 ### Unit 3: Bounded connect-window install
 **File**: `plugin/bin/krometrail`
@@ -122,10 +122,10 @@ background; reconnect to retry` to stderr and exit 1 without killing the
 child.
 
 **Acceptance Criteria**:
-- [ ] Fixture with an artificially slow (shadowed-curl sleep) install: launcher
+- [x] Fixture with an artificially slow (shadowed-curl sleep) install: launcher
       exits 1 within budget with the actionable message; the installer child
       completes; a second launcher invocation execs without reinstalling.
-- [ ] Fast-install fixture behaves exactly as today (single invocation execs).
+- [x] Fast-install fixture behaves exactly as today (single invocation execs).
 
 ## Implementation Order
 1. Unit 1
@@ -145,3 +145,28 @@ child.
   keeps the version dir consistent (mv is atomic, temp files removed).
 - Poll-loop `sleep 1` granularity adds up to ~1s connect latency in the
   waiting-peer path; negligible against the 20s budget.
+
+## Implementation notes
+
+- Execution capability: host implementation, because the POSIX launcher and
+  hermetic release-boundary fixture form one cohesive activation path.
+- Review weight: standard, project default.
+- Files changed: plugin/bin/krometrail and
+  tests/plugin-bootstrap-fixtures.sh. The installer remains the authoritative
+  exact-release verifier and atomic publisher; lock ownership is intentionally
+  in the launcher so independent launcher processes share one gate.
+- Tests added: observable corrupt-binary verify failure, exact single-flight
+  network count, stale PID reclaim, and a shadowed-curl slow-install reconnect
+  fixture.
+- Simplification: the launcher uses one lock/status path for both the
+  connect-window budget and concurrent waiters; no alternate-version fallback
+  or compatibility installer path was added.
+- Discrepancies from design: none.
+- Adjacent issues parked: none.
+- Verification: sh -n plugin/bin/krometrail plugin/scripts/install-managed.sh,
+  bash -n tests/plugin-bootstrap-fixtures.sh, and
+  bash tests/plugin-bootstrap-fixtures.sh passed. bash tests/plugin-static.sh
+  is blocked by the pre-existing sibling ../skills catalog having a stale
+  Krometrail pointer, outside this repository; the repository-local checks
+  pass when that optional sibling is absent. bash tests/plugin-install-smoke.sh
+  skipped because KROMETRAIL_PLUGIN_SMOKE=1 was not set.

@@ -21,15 +21,20 @@ printf '%s\n' "$EXPECTED_VERSION" | awk '
 
 if [ -n "${KROMETRAIL_MANAGED_ROOT:-}" ]; then
   MANAGED_ROOT=$KROMETRAIL_MANAGED_ROOT
+  MANAGED_ROOT_SOURCE=KROMETRAIL_MANAGED_ROOT
 elif [ -n "${PLUGIN_DATA:-}" ]; then
   MANAGED_ROOT=$PLUGIN_DATA
+  MANAGED_ROOT_SOURCE=PLUGIN_DATA
 elif [ -n "${CLAUDE_PLUGIN_DATA:-}" ]; then
   MANAGED_ROOT=$CLAUDE_PLUGIN_DATA
+  MANAGED_ROOT_SOURCE=CLAUDE_PLUGIN_DATA
 elif [ -n "${XDG_DATA_HOME:-}" ]; then
   MANAGED_ROOT=$XDG_DATA_HOME/krometrail/plugin
+  MANAGED_ROOT_SOURCE=XDG_DATA_HOME
 else
   : "${HOME:?HOME is required when no plugin data directory is available}"
   MANAGED_ROOT=$HOME/.local/share/krometrail/plugin
+  MANAGED_ROOT_SOURCE=HOME
 fi
 
 case "$MANAGED_ROOT" in
@@ -40,6 +45,9 @@ case "$MANAGED_ROOT" in
     ;;
 esac
 
+printf 'krometrail plugin: expected v%s; managed root %s (source: %s)\n' \
+  "$EXPECTED_VERSION" "$MANAGED_ROOT" "$MANAGED_ROOT_SOURCE" >&2
+
 MANAGED_BINARY="$MANAGED_ROOT/versions/$EXPECTED_VERSION/krometrail"
 
 [ -x "$INSTALLER" ] || {
@@ -47,17 +55,113 @@ MANAGED_BINARY="$MANAGED_ROOT/versions/$EXPECTED_VERSION/krometrail"
   exit 1
 }
 
+VERIFY_FAILURE_REASON=
 managed_binary_is_current() {
-  "$INSTALLER" "$EXPECTED_VERSION" "$MANAGED_ROOT" verify-existing 2>/dev/null
+  VERIFY_FAILURE_REASON=$(
+    "$INSTALLER" "$EXPECTED_VERSION" "$MANAGED_ROOT" verify-existing 2>&1 >/dev/null
+  ) && return 0
+  [ -n "$VERIFY_FAILURE_REASON" ] || VERIFY_FAILURE_REASON="verify-existing failed without a diagnostic"
+  return 1
+}
+
+LOCK_DIR="$MANAGED_ROOT/.install-lock"
+INSTALL_STATUS="$MANAGED_ROOT/.install-status.$$"
+LOCK_OWNER=0
+
+lock_owner_is_alive() {
+  [ -f "$LOCK_DIR/pid" ] || return 1
+  lock_pid=$(cat "$LOCK_DIR/pid" 2>/dev/null || true)
+  case "$lock_pid" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  kill -0 "$lock_pid" 2>/dev/null
+}
+
+reclaim_stale_lock() {
+  stale_lock="$LOCK_DIR.stale.$$"
+  if mv "$LOCK_DIR" "$stale_lock" 2>/dev/null; then
+    rmdir "$stale_lock" 2>/dev/null || true
+    return 0
+  fi
+  return 1
+}
+
+acquire_install_lock() {
+  elapsed=0
+  while :; do
+    if mkdir "$LOCK_DIR" 2>/dev/null; then
+      printf '%s\n' "$$" >"$LOCK_DIR/pid"
+      LOCK_OWNER=1
+      return 0
+    fi
+    if ! lock_owner_is_alive; then
+      reclaim_stale_lock && continue
+    fi
+    if [ "$elapsed" -ge 20 ]; then
+      return 1
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+}
+
+release_install_lock() {
+  if [ "$LOCK_OWNER" -eq 1 ]; then
+    rm -f "$LOCK_DIR/pid"
+    rmdir "$LOCK_DIR" 2>/dev/null || true
+    LOCK_OWNER=0
+  fi
 }
 
 if ! managed_binary_is_current; then
+  printf 'krometrail plugin: reinstalling because: %s\n' "$VERIFY_FAILURE_REASON" >&2
   printf 'krometrail plugin: installing managed release v%s\n' "$EXPECTED_VERSION" >&2
-  "$INSTALLER" "$EXPECTED_VERSION" "$MANAGED_ROOT"
+
+  # The installer performs the authoritative path validation. This creates only
+  # the expected root needed for the portable mkdir lock; an unsafe root remains
+  # rejected by the installer before any binary can be executed.
+  mkdir -p "$MANAGED_ROOT" 2>/dev/null || true
+  if [ -L "$MANAGED_ROOT" ]; then
+    LOCK_OWNER=0
+  elif ! acquire_install_lock; then
+    printf 'krometrail plugin: managed release install is still running in the background; reconnect to retry\n' >&2
+    exit 1
+  fi
+
+  if [ "$LOCK_OWNER" -eq 1 ] && managed_binary_is_current; then
+    release_install_lock
+  elif [ "$LOCK_OWNER" -eq 1 ]; then
+    rm -f "$INSTALL_STATUS"
+    (
+      set +e
+      "$INSTALLER" "$EXPECTED_VERSION" "$MANAGED_ROOT"
+      install_status=$?
+      printf '%s\n' "$install_status" >"$INSTALL_STATUS"
+      exit "$install_status"
+    ) &
+    INSTALL_PID=$!
+    printf '%s\n' "$INSTALL_PID" >"$LOCK_DIR/pid"
+    elapsed=0
+    while [ ! -f "$INSTALL_STATUS" ]; do
+      if [ "$elapsed" -ge 20 ]; then
+        printf '%s\n' "$INSTALL_PID" >"$LOCK_DIR/pid"
+        printf 'krometrail plugin: managed release install is still running in the background; reconnect to retry\n' >&2
+        exit 1
+      fi
+      sleep 1
+      elapsed=$((elapsed + 1))
+    done
+    install_status=$(cat "$INSTALL_STATUS")
+    wait "$INSTALL_PID" 2>/dev/null || true
+    rm -f "$INSTALL_STATUS"
+    release_install_lock
+    [ "$install_status" -eq 0 ] || exit 1
+  fi
 fi
 
 managed_binary_is_current || {
-  printf 'krometrail plugin error: managed release v%s is unavailable after installation\n' "$EXPECTED_VERSION" >&2
+  printf 'krometrail plugin error: managed release v%s is unavailable after installation: %s\n' \
+    "$EXPECTED_VERSION" "$VERIFY_FAILURE_REASON" >&2
   exit 1
 }
 

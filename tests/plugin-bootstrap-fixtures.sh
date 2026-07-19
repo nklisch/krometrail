@@ -72,6 +72,9 @@ printf '%s\n' "$url" >>"$NETWORK_LOG"
 if [ "${FAKE_CURL_MODE:-success}" = "fail" ]; then
   exit 22
 fi
+if [ -n "${FAKE_CURL_SLEEP:-}" ]; then
+  sleep "$FAKE_CURL_SLEEP"
+fi
 if [ "${FAKE_CURL_MODE:-success}" = "untrusted-redirect" ]; then
   printf '302\nhttps://evil.example.invalid/payload\n'
   exit 0
@@ -131,7 +134,17 @@ cp "$STATE/network.log" "$STATE/network.before"
 FAKE_CURL_MODE=fail warm_stdout=$(run_launcher "$STATE/plugin-100" "$managed" probe 2>"$STATE/warm.stderr")
 [[ "$warm_stdout" == 'managed-1.0.0:probe' ]] || fail "warm offline start failed"
 cmp -s "$STATE/network.log" "$STATE/network.before" || fail "warm start performed network work"
-[[ ! -s "$STATE/warm.stderr" ]] || fail "warm start emitted bootstrap diagnostics"
+grep -Fq 'expected v1.0.0' "$STATE/warm.stderr" || fail "warm start omitted launch diagnostics"
+
+# A corrupt existing binary exposes the verify-existing reason before repair.
+sed 's/krometrail 1.0.0/krometrail 9.9.9/' \
+  "$managed/versions/1.0.0/krometrail" >"$managed/versions/1.0.0/corrupt"
+mv "$managed/versions/1.0.0/corrupt" "$managed/versions/1.0.0/krometrail"
+chmod 700 "$managed/versions/1.0.0/krometrail"
+repaired_stdout=$(run_launcher "$STATE/plugin-100" "$managed" repaired 2>"$STATE/repaired.stderr")
+[[ "$repaired_stdout" == 'managed-1.0.0:repaired' ]] || fail "corrupt binary was not repaired"
+grep -Fq 'reinstalling because:' "$STATE/repaired.stderr" || fail "verify failure reason was not observable"
+grep -Fq 'identity does not match' "$STATE/repaired.stderr" || fail "corrupt binary reason was not forwarded"
 
 # Every supported host partition selects its exact stable release asset.
 while read -r host_os host_arch expected_asset; do
@@ -174,6 +187,7 @@ update_stdout=$(run_launcher "$STATE/plugin-101" "$managed" mcp 2>"$STATE/update
 
 # Concurrent cold starts can only converge on the same verified artifact.
 concurrent="$STATE/concurrent-managed"
+: >"$STATE/network.log"
 run_launcher "$STATE/plugin-101" "$concurrent" one >"$STATE/concurrent.one" 2>"$STATE/concurrent.one.err" &
 pid_one=$!
 run_launcher "$STATE/plugin-101" "$concurrent" two >"$STATE/concurrent.two" 2>"$STATE/concurrent.two.err" &
@@ -183,6 +197,29 @@ wait "$pid_two"
 [[ "$(cat "$STATE/concurrent.one")" == 'managed-1.0.1:one' ]] || fail "first concurrent launcher failed"
 [[ "$(cat "$STATE/concurrent.two")" == 'managed-1.0.1:two' ]] || fail "second concurrent launcher failed"
 [[ "$("$concurrent/versions/1.0.1/krometrail" --version)" == 'krometrail 1.0.1' ]] || fail "concurrent publication produced the wrong identity"
+[[ "$(wc -l <"$STATE/network.log" | tr -d ' ')" -eq 2 ]] || fail "concurrent launchers did not single-flight the install"
+
+# A dead owner pid is reclaimed before the cold install proceeds.
+stale="$STATE/stale-managed"
+mkdir -p "$stale/.install-lock"
+printf '999999\n' >"$stale/.install-lock/pid"
+stale_stdout=$(run_launcher "$STATE/plugin-100" "$stale" stale 2>"$STATE/stale.stderr")
+[[ "$stale_stdout" == 'managed-1.0.0:stale' ]] || fail "stale lock was not reclaimed"
+[[ ! -e "$stale/.install-lock" ]] || fail "stale lock was not released"
+
+# A slow install outlives the connect window and is reused by the next launch.
+slow="$STATE/slow-managed"
+: >"$STATE/network.log"
+set +e
+FAKE_CURL_SLEEP=11 run_launcher "$STATE/plugin-100" "$slow" slow >"$STATE/slow.stdout" 2>"$STATE/slow.stderr"
+slow_status=$?
+set -e
+[[ "$slow_status" -eq 1 ]] || fail "slow install did not fail within the connect window"
+grep -Fq 'managed release install is still running in the background; reconnect to retry' \
+  "$STATE/slow.stderr" || fail "slow install did not report the reconnect action"
+FAKE_CURL_MODE=fail run_launcher "$STATE/plugin-100" "$slow" resumed >"$STATE/resumed.stdout" 2>"$STATE/resumed.stderr"
+[[ "$(cat "$STATE/resumed.stdout")" == 'managed-1.0.0:resumed' ]] || fail "background install did not complete for reconnect"
+[[ "$(wc -l <"$STATE/network.log" | tr -d ' ')" -eq 2 ]] || fail "reconnect redownloaded a completed release"
 
 # A failed update preserves the already installed version and publishes no candidate.
 failed="$STATE/failed-managed"
