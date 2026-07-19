@@ -1,7 +1,7 @@
 ---
 id: story-skill-evaluate-read-guidance
 kind: story
-stage: implementing
+stage: done
 tags: [prose, agent-ux]
 parent: null
 depends_on: []
@@ -32,3 +32,12 @@ Absorbed backlog: `idea-evaluate-dom-read-guidance`.
 - Skill text carries the querySelector-over-getElementById guidance in the
   evaluate_page context, one or two sentences, no new section.
 - No generated docs edited by hand.
+
+## Completion notes
+
+Added a two-sentence guidance block after the current-state tool list in
+`plugin/skills/krometrail/SKILL.md` (the only evaluate-usage teaching surface).
+`docs/SPEC.md` only names the evaluation capability and carries no expression
+guidance, and `docs/public/llms-full.txt` derives from `docs/` — no regeneration
+needed. Implemented inline as prose per the prose lane; verified by reading the
+edited section.

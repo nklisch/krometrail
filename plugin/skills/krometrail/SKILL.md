@@ -84,6 +84,10 @@ or use `{"focus":"foreground"}` when the user wants automatic tab switching.
   `stop_browser`, `list_pages`, `list_page_contexts`, `wait_for_page`, `create_page`, `select_page`,
   `activate_page`, `close_page`
 - Current state: `inspect_page`, `query_page`, `snapshot_page`, `take_screenshot`, `observe_live`, `evaluate_page`
+
+In read-only `evaluate_page` expressions, prefer `querySelector`/`querySelectorAll` for DOM reads:
+some DOM getters such as `document.getElementById` sit outside V8's side-effect-free allowlist, so
+an expression containing them is refused as side-effecting even when it only reads.
 - Context detail: `list_frames`, `list_page_assets`
 - Navigation: `navigate_page`, `reload_page`, `go_back`, `go_forward`
 - Interaction: `click`, `fill`, `press_keys`, `select_option`, `hover`, `drag`, `scroll`,
