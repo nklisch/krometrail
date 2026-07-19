@@ -1,7 +1,7 @@
 ---
 id: feature-fix-preserve-visibility-wedge
 kind: feature
-stage: drafting
+stage: implementing
 tags: [bug, browser, agent-ux]
 parent: null
 depends_on: []
@@ -51,3 +51,132 @@ pattern): pointer preflight, `browser_status` projection, and capture supervisio
 read the same revalidated state instead of three views that can disagree. If activation
 success already proves visibility, the preflight gate can trust and update that authority
 rather than keeping an independent stale cache.
+
+## Root cause (explorer-verified, file:line)
+
+- Tracked authority: `SupervisedTarget { lifecycle, visibility, .. }`
+  (`crates/krometrail-core/src/browser/session.rs:311`), mutated only by the reducer's
+  `visibility_changed` (`crates/krometrail-cdp/src/targets/reducer.rs:591-621`).
+- Its only inputs: one-shot initial-attach probe
+  (`crates/krometrail-cdp/src/session/runtime.rs:340-369`), reconnect probe
+  (`session/reconnect.rs:295-314`), and the live screencast
+  `Page.screencastVisibilityChanged` reader (`capture/pipeline.rs:1049-1091`).
+- `activate_page` (`session/operations.rs:545-590`) calls
+  `PageControl::activate_target` (`control/interaction.rs:293-355`), which fronts the tab
+  and polls `document.visibilityState` until `"visible"` — then **discards** that result.
+  No `SupervisorInput::VisibilityChanged` is ever committed, so tracked state stays
+  `Hidden` forever.
+- Pointer preflight `prepare_pointer_target` (`control/interaction.rs:275-291`) reads
+  `bound.visibility` copied from tracked state at `control/mod.rs:378`; its preserve-mode
+  error recovery text says "call activate_page … then retry" — a dead-end loop today.
+- Capture eligibility (`targets/reducer.rs:762-871`) requires `visibility == Visible`;
+  the only live source that could flip a background tab Visible is the screencast reader,
+  which never starts because capture never becomes eligible — circular. Hence
+  `capture: []`.
+- Cold start: launching without `initial_url` adds no URL arg
+  (`launcher/startup.rs:215-226`); Chrome's `chrome://newtab` tab is rejected by
+  `is_recordable()`/`is_internal_url` (`targets/model.rs:65-85`) → zero supervised pages,
+  no selection; preserve-mode `create_page` then opens `background: true` → hidden.
+
+## Design decisions
+
+- **Write-back mechanism**: reuse the existing `SupervisorInput::VisibilityChanged` rather
+  than adding an "activation-proven-visible" variant — activation's visible-document poll
+  is the same evidence class as the initial/reconnect probes, and the reducer already
+  flips `Hidden → Recording` and re-runs `reconcile_capture_bindings` on it (code
+  economy; single writer preserved).
+- **Where the commit happens**: in the session operations layer after any successful
+  `activate_target` (explicit `activate_page` and implicit foreground activation), via one
+  shared helper — the control layer stays reducer-agnostic.
+- **Capture restart on activation**: in scope and automatic — once tracked visibility is
+  Visible, existing `reconcile_capture_bindings` starts capture. A tab the user actually
+  foregrounded is visible; preserve policy governs focus stealing, not capture of
+  genuinely visible tabs.
+- **Cold start**: launch with an explicit `about:blank` URL when `initial_url` is omitted,
+  so the initial tab is recordable, supervised, selected, and visible. Chosen over
+  auto-creating a page post-ready (racier, two code paths) and over leaving zero pages
+  (violates least surprise; the navigate error fix in feature-failure-surface-clarity is
+  a complement, not a substitute).
+- **Attach path**: out of scope — preserve policy does not apply to attached browsers
+  (per feature-preserve-browser-focus).
+
+## Implementation Units
+
+### Unit 1: Activation visibility write-back
+**Files**: `crates/krometrail-cdp/src/control/interaction.rs`,
+`crates/krometrail-cdp/src/session/operations.rs`
+
+- Change `PageControl::activate_target` to return the observed final visibility
+  (`TargetVisibility::Visible` on success; it already errors on timeout), signature:
+  `pub(crate) async fn activate_target(..) -> Result<TargetVisibility>`.
+- In `session/operations.rs`, add a helper
+  `async fn commit_observed_visibility(&self, target_id: TargetId, visibility: TargetVisibility)`
+  that sends `SupervisorInput::VisibilityChanged` through the existing commit channel
+  (mirror `commit_supervisor_input(.. SelectTarget ..)` at `operations.rs:990-1016`).
+- Call it after successful `activate_target` in the `ActivatePage` handler, and after any
+  implicit foreground activation performed during pointer preparation
+  (`prepare_pointer_target` foreground branch) — the operation handlers for pointer ops
+  know when preparation activated.
+
+**Acceptance Criteria**:
+- [ ] After a successful `activate_page` on a previously hidden target,
+      `browser_status` reports that target `visibility: "visible"`, lifecycle
+      `attached`/`recording` (not `hidden`), within the same operation turn.
+- [ ] A pointer click on that target immediately after activation succeeds without a
+      second manual activation (preserve mode: `activate_page` then `click` works; the
+      recovery text's advice is now truthful).
+- [ ] `reconcile_capture_bindings` starts capture for the activated target
+      (deterministic double asserts a `StartCapture` effect follows the write-back).
+
+### Unit 2: Recordable cold-start page
+**File**: `crates/krometrail-cdp/src/launcher/startup.rs`
+
+- When `request.initial_url` is `None`, append `about:blank` as the URL argument (the
+  same literal `create_page` uses at `operations.rs:903`), so the initial tab passes
+  `is_recordable()` and initial reconciliation supervises and selects it.
+
+**Acceptance Criteria**:
+- [ ] `start_browser` without `initial_url` yields `pages.len() == 1` with a selected
+      `about:blank` target in both focus modes (deterministic launcher/reconcile test).
+- [ ] Existing initial-visibility Ready gate still holds (probe resolves for the seeded
+      tab).
+
+### Unit 3: Regression qualification
+**Files**: `crates/krometrail-cdp/src/control/tests.rs`,
+`crates/krometrail-cdp/tests/page_lifecycle.rs`
+
+- Deterministic: extend the activation double tests (`control/tests.rs:212-355` area) to
+  assert the returned visibility and the reducer write-back → capture-start effect chain;
+  today none assert write-back.
+- Real-chrome opt-in tier: extend
+  `opt_in_real_chrome_preserve_focus_creates_a_background_tab`
+  (`tests/page_lifecycle.rs:1225`) with the recovery sequence: create hidden →
+  `activate_page` → tracked visibility visible → pointer click succeeds → capture
+  status non-empty.
+
+**Acceptance Criteria**:
+- [ ] Both tiers cover the wedge sequence; the deterministic tier fails against the
+      pre-fix code (true regression test).
+
+## Implementation Order
+1. Unit 1 (write-back) — the load-bearing fix.
+2. Unit 3 deterministic tests alongside Unit 1 (test-first where practical).
+3. Unit 2 (cold start) — independent, small.
+4. Unit 3 real-chrome tier last.
+
+## Testing
+- Interface: activation → status projection convergence (protects the browser_status
+  contract agents rely on).
+- Regression: the wedge sequence itself (preserve create → activate → click), failing
+  pre-fix.
+- No new test for `about:blank` literal beyond the launcher/reconcile assertion; avoid
+  duplicating `is_recordable` unit coverage.
+
+## Risks
+- **Wayland may refuse to actually raise the window** while `document.visibilityState`
+  still reports visible; the write-back would mark Visible and start capture on a tab the
+  compositor occludes. Bounded: screencast delivery then reports its own visibility/gap
+  state (`CaptureGapReason::TargetHidden`), which is the existing truthful degradation
+  path — no corruption, and status converges to the screencast's live signal.
+- **Double-commit races** (activation write-back vs. near-simultaneous screencast event)
+  serialize through the single-writer reducer; last observation wins, both claim Visible.
