@@ -301,3 +301,12 @@ evidence instructions now teach the current surface only.
 
 Verification: MCP unit tests (59 passed), workspace compile check, formatting check, and documentation
 build completed successfully during implementation.
+
+## Review fixes
+
+- Inline source-frame construction and presentation limits now run only when `inline_images` is true;
+  default resource-only reads remain successful even when the same batch would exceed inline limits.
+- Expanded snapshot admission now budgets the complete serialized projection, including context,
+  generation, omission accounting, keys, and framing, rather than only its two arrays.
+- Added focused count-pressure and complete-JSON byte-pressure regressions, and corrected the concise
+  temporal inline-image example in the skill.

@@ -225,7 +225,7 @@ process boundaries or preserving an exact external record. The handle never repl
 manifest provenance, ordered frame IDs, gap checks, or canonical evidence resource links.
 
 The default temporal bundle is a concise resource-and-provenance index without inline image bytes. Add
-`"response":{"inline_images":true}` when the primary orientation/storyboard image should be embedded
+`{"response":{"inline_images":true}}` when the primary orientation/storyboard image should be embedded
 immediately, use `expanded` for the complete bounded bundle context, or use `full` when the complete acquired
 generator, frame, and provenance structures are genuinely needed in the tool result. Otherwise follow the
 returned canonical resource links for the exact artifact needed.

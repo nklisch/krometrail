@@ -1175,6 +1175,7 @@ fn concise_snapshot(snapshot: &PageSnapshot) -> Result<ExactTargetIndex, Respons
 fn expanded_snapshot(snapshot: &PageSnapshot) -> Result<ExpandedSnapshot, ResponseInvariantError> {
     let targets = bounded_targets(snapshot)?;
     let actionable = snapshot.nodes.iter().filter(|node| node.actionable).count();
+    let context_count = snapshot.nodes.len() - actionable;
     let mut candidates = snapshot
         .nodes
         .iter()
@@ -1183,10 +1184,6 @@ fn expanded_snapshot(snapshot: &PageSnapshot) -> Result<ExpandedSnapshot, Respon
         .collect::<Vec<_>>();
     candidates.sort_by_key(|(index, node)| (semantic_rank(node), *index));
     let mut semantic_context = Vec::new();
-    let mut bytes = serde_json::to_vec(&targets)
-        .map_err(|_| ResponseInvariantError)?
-        .len()
-        + 2;
     for (_, node) in candidates {
         if semantic_context.len() == MAX_EXPANDED_CONTEXT_NODES {
             break;
@@ -1201,20 +1198,29 @@ fn expanded_snapshot(snapshot: &PageSnapshot) -> Result<ExpandedSnapshot, Respon
             description: node.description.clone(),
             states: node.properties.clone(),
         };
-        let entry_bytes = serde_json::to_vec(&entry)
+        semantic_context.push(entry);
+        let candidate = ExpandedSnapshot {
+            context: snapshot.context.clone(),
+            generation: snapshot.generation,
+            targets: targets.clone(),
+            semantic_context: semantic_context.clone(),
+            omissions: ExpandedSnapshotOmissions {
+                source_nodes: snapshot.omitted_node_count,
+                presentation_targets: u32::try_from(actionable - targets.len())
+                    .map_err(|_| ResponseInvariantError)?,
+                presentation_context_nodes: u32::try_from(context_count - semantic_context.len())
+                    .map_err(|_| ResponseInvariantError)?,
+            },
+        };
+        if serde_json::to_vec(&candidate)
             .map_err(|_| ResponseInvariantError)?
-            .len();
-        let next = bytes
-            .checked_add(usize::from(!semantic_context.is_empty()))
-            .and_then(|value| value.checked_add(entry_bytes))
-            .ok_or(ResponseInvariantError)?;
-        if next > MAX_EXPANDED_SNAPSHOT_JSON_BYTES {
+            .len()
+            > MAX_EXPANDED_SNAPSHOT_JSON_BYTES
+        {
+            semantic_context.pop();
             continue;
         }
-        bytes = next;
-        semantic_context.push(entry);
     }
-    let context_count = snapshot.nodes.len() - actionable;
     Ok(ExpandedSnapshot {
         context: snapshot.context.clone(),
         generation: snapshot.generation,
@@ -1649,7 +1655,9 @@ pub(crate) fn map_progressive_result(
             }
             projection
         }
-        ProgressiveEvidenceResult::FetchSourceFrames(batch) => project_source_frame_batch(*batch)?,
+        ProgressiveEvidenceResult::FetchSourceFrames(batch) => {
+            project_source_frame_batch(*batch, response.inline_images)?
+        }
         ProgressiveEvidenceResult::GenerateArtifacts(generation) => {
             let generation = *generation;
             let scope = artifact_scope(&generation.range)?;
@@ -1832,6 +1840,7 @@ fn add_source_frame_resource(
 
 fn project_source_frame_batch(
     batch: SourceFrameBatch,
+    inline_images: bool,
 ) -> Result<Projection, ResponseInvariantError> {
     let mut projection = Projection::success(json!({
         "range": batch.range,
@@ -1840,6 +1849,9 @@ fn project_source_frame_batch(
     let mut inline_bytes = 0_u64;
     for (index, frame) in batch.frames.into_iter().enumerate() {
         add_source_frame_resource(&mut projection, &frame.handle)?;
+        if !inline_images {
+            continue;
+        }
         let frame_bytes = frame.encoded_bytes();
         let length = frame_bytes.len() as u64;
         if index >= 4
@@ -2016,13 +2028,14 @@ mod tests {
     use super::*;
     use krometrail_core::{
         AccessibleProperty, AccessibleValue, BatchSkipReason, BatchStepResult, BatchStepStatus,
-        BrowserOperationKind, CaptureFailureStage, CaptureStatistics, CaptureStreamState,
-        CaptureTimingSummary, CssPoint, CssRect, CssSize, DeviceScaleFactor, EveryNthFrame,
-        FrameId, ImageFormat, InteractionId, InteractionTiming, NodeReference, ObservationContext,
-        PageChange, PageOperationResult, PageSelection, PageSnapshot, PixelDimensions,
-        PresentationRange, PresentationTime, RangeResolutionOptions, ResolvedRange,
-        ScreenshotTarget, SessionId, SessionRange, SessionTime, Sha256Digest, SnapshotGeneration,
-        SnapshotNode, SnapshotNodeId, TargetCaptureStatus, TargetId, TemporalRangeAnchorKind,
+        BrowserOperationKind, CaptureFailureStage, CaptureOrdinal, CaptureStatistics,
+        CaptureStreamState, CaptureTimingSummary, CapturedFrame, CssPoint, CssRect, CssSize,
+        DeviceScaleFactor, EveryNthFrame, FrameId, ImageFormat, InteractionId, InteractionTiming,
+        NodeReference, ObservationContext, ObservedTime, PageChange, PageOperationResult,
+        PageSelection, PageSnapshot, PixelDimensions, PresentationRange, PresentationTime,
+        RangeResolutionOptions, ResolvedRange, ScreenshotTarget, SessionId, SessionRange,
+        SessionTime, Sha256Digest, SnapshotGeneration, SnapshotNode, SnapshotNodeId,
+        SourceFrameRead, TargetCaptureStatus, TargetId, TemporalRangeAnchorKind,
         TemporalVideoGenerationClip, TemporalVideoManifest, VideoArtifactEvidenceHandle,
         VideoEncodedClip, VideoEncoderIdentity, VideoEncodingProfile, VideoOutputGeometry,
         VideoPresentationPlan, VideoPresentationSegment, VideoSegmentSource, VideoTimingBasis,
@@ -2288,6 +2301,45 @@ mod tests {
         }
     }
 
+    fn source_frame_batch(frame_count: u32) -> SourceFrameBatch {
+        let range = video_result().range;
+        let scope = krometrail_core::EvidenceScope::from_range(&range).unwrap();
+        let frames = (0..frame_count)
+            .map(|index| {
+                let bytes: Arc<[u8]> = Arc::from(b"\x89PNG\r\n\x1a\nfixture".as_slice());
+                let frame_id = FrameId::from_uuid(uuid::Uuid::from_u128(100 + u128::from(index)));
+                let provenance = CapturedFrame::new(
+                    frame_id,
+                    session_id(),
+                    target_id(),
+                    CaptureOrdinal::new(u64::from(index) + 1).unwrap(),
+                    None,
+                    ObservedTime::from_nanos(u64::from(index) + 1),
+                    SessionTime::from_nanos(u64::from(index) + 1),
+                    ImageFormat::Png,
+                    PixelDimensions::new(1, 1).unwrap(),
+                    PixelDimensions::new(1, 1).unwrap(),
+                    DeviceScaleFactor::new(1.0).unwrap(),
+                    Vec::new(),
+                )
+                .unwrap();
+                let handle = SourceFrameHandle::new(
+                    frame_id,
+                    scope,
+                    index,
+                    index,
+                    NonEmptyText::new("image/png").unwrap(),
+                    Sha256Digest::digest(&bytes),
+                    bytes.len() as u64,
+                    provenance,
+                )
+                .unwrap();
+                SourceFrameRead::new(handle, bytes).unwrap()
+            })
+            .collect();
+        SourceFrameBatch { range, frames }
+    }
+
     fn failed_capture_for(target_id: TargetId) -> TargetCaptureStatus {
         let cause = KrometrailError::new(
             ErrorCode::PersistenceFailed,
@@ -2510,6 +2562,45 @@ mod tests {
         assert_eq!(concise.targets[0].reference.node_id, focused_id);
         assert_eq!(concise.omissions.source_nodes, 9);
         assert_eq!(concise.omissions.presentation_targets, 32);
+    }
+
+    #[test]
+    fn expanded_snapshot_complete_json_stays_within_its_budget() {
+        let expanded = expanded_snapshot(&complex_snapshot()).unwrap();
+        let encoded = serde_json::to_vec(&expanded).unwrap();
+        assert!(encoded.len() <= MAX_EXPANDED_SNAPSHOT_JSON_BYTES);
+        assert!(expanded.omissions.presentation_context_nodes > 0);
+    }
+
+    #[test]
+    fn source_frame_inline_limits_apply_only_when_pixels_are_requested() {
+        let without = map_progressive_result(
+            "fetch_source_frames",
+            ProgressiveEvidenceResult::FetchSourceFrames(Box::new(source_frame_batch(5))),
+            ResponseRequest::default(),
+        )
+        .unwrap();
+        assert_eq!(without.response.status, ToolResponseStatus::Succeeded);
+        assert!(without.response.warnings.is_empty());
+        assert!(without.images.is_empty());
+        assert_eq!(without.response.resources.len(), 5);
+
+        let with = map_progressive_result(
+            "fetch_source_frames",
+            ProgressiveEvidenceResult::FetchSourceFrames(Box::new(source_frame_batch(5))),
+            ResponseRequest {
+                inline_images: true,
+                ..ResponseRequest::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(with.response.status, ToolResponseStatus::Degraded);
+        assert_eq!(
+            with.response.warnings[0].code,
+            ErrorCode::ResourceLimitExceeded
+        );
+        assert_eq!(with.images.len(), 4);
+        assert_eq!(with.response.resources.len(), 5);
     }
 
     #[test]
