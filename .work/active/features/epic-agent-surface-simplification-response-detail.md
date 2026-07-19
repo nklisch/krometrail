@@ -1,7 +1,7 @@
 ---
 id: epic-agent-surface-simplification-response-detail
 kind: feature
-stage: implementing
+stage: review
 tags: [agent-ux, browser]
 parent: epic-agent-surface-simplification
 depends_on: [epic-agent-surface-simplification-current-contract]
@@ -285,3 +285,19 @@ fn project_response(
 - **Response growth migrates elsewhere**: flattening snapshots alone could leave progressive frame/artifact lists unbounded under concise. Mitigation: apply the one detail progression to every response-enabled growing collection while leaving already-small results direct.
 - **Inline image ambiguity**: a screenshot-specific tool called without `inline_images` returns structured metadata but not pixels. Mitigation: make the schema/skill explicit and test both paths; do not silently override the global opt-in based on tool name.
 - **Concurrent current-contract cleanup**: the dependency may remove `BrowserStatus.compatibility` and related tests before this feature lands. Mitigation: design status DTOs against the post-dependency current contract and avoid retaining those fields in projections.
+
+## Implementation result
+
+The MCP surface now has one strict response request: implicit concise, explicit expanded/full, and an
+orthogonal boolean inline-image opt-in. Concise snapshots are flat ranked exact-target indexes;
+expanded adds bounded semantic context; full preserves canonical acquired structures. Browser status,
+live observations, actions, batch final evidence, temporal bundles, and growing progressive evidence use
+the same progression. Failed/degraded diagnostics are unconditional.
+
+The implementation deleted the old selector matrix, legacy constructors, status-only request,
+diagnostic suppression, projected-route registry, ancestor closure/pruned-tree reconstruction,
+omission markers, wrapper entry points, and obsolete combination tests. Agent guidance and visual
+evidence instructions now teach the current surface only.
+
+Verification: MCP unit tests (59 passed), workspace compile check, formatting check, and documentation
+build completed successfully during implementation.

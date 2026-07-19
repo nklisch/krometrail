@@ -16,27 +16,35 @@ release binary. Do not install a separate binary merely because this skill loade
 
 ## Use the cheapest sufficient evidence
 
-Krometrail defaults tool responses to compact structured observations without inline image bytes.
-Omit `response` for routine work. Expand only the part needed:
+Krometrail defaults to concise, action-centric structured responses without inline image bytes. Omit
+`response` for normal navigation and interaction. The returned flat `targets` are ranked for immediate
+action and each contains one complete, copyable generation-scoped reference.
+
+Request broader bounded semantic/page context only when concise output cannot answer the question:
 
 ```json
-{"response":{"inline_images":"inline","snapshot":"full","page_state":"full","temporal":"full"}}
+{"response":{"detail":"expanded"}}
 ```
 
-Use `"legacy"` only when reproducing the earlier automatic-presentation shape. Temporal detail supports
-`"compact"` (default) or `"full"`; it is independent of snapshot and page-state detail. `"omit"` replaces an
-available structured part with an explicit projection marker; it does not mean acquisition failed.
-Projection never changes action outcome, interaction identity, warnings, retained capture, or canonical
-resource identities.
+Request the complete acquired structures only when their full rows or provenance are genuinely needed:
 
-Snapshot detail also supports `"interaction_only"`. Use it when the task needs the smallest exact targeting
-surface: it returns focused/editable/other actions/links in that priority order together with each selected
-action's complete ancestor path. It preserves returned references and omission accounting but excludes unrelated
-static context. `page_state` does not accept `"interaction_only"`; use `"compact"`, `"full"`, `"legacy"`, or
-`"omit"` there.
+```json
+{"response":{"detail":"full"}}
+```
+
+Pixels are independent of structured detail. Add `"inline_images":true` at any level only when the
+current image is needed in the immediate response:
+
+```json
+{"response":{"detail":"expanded","inline_images":true}}
+```
+
+Detail never changes action outcome, interaction identity, warnings, retained capture, range handles,
+or canonical resource identities. Concise and expanded snapshot omission counts distinguish source
+omissions from presentation omissions; neither projection pretends to be a complete snapshot tree.
 
 1. Trust the live evidence returned by a successful state-changing operation for immediate
-   confirmation. Its default compact response retains screenshot availability metadata without embedding
+   confirmation. Its default concise response retains screenshot availability metadata without embedding
    image bytes. Request an inline image on the original action only when pixels are needed; do not take a
    redundant screenshot after every click, fill, key press, navigation, scroll, or viewport change.
 2. Use `observe_live` when an explicit fresh current-state observation is needed, or a narrower
@@ -89,9 +97,8 @@ download through its returned `krometrail://local/...` resource URI. These bound
 and exist only while the managed browser session is active; `stop_browser`, session loss, or MCP
 restart invalidates the link. Attached browser sessions do not expose clipboard or download authority.
 
-`browser_status {}` returns capture health, loss, retention pressure, cadence, selection, and page count
-without compatibility matrices or timing distributions. Use `{"detail":"full"}` only when those deeper
-diagnostics are needed.
+`browser_status {}` returns capture health, loss, retention pressure, cadence, selection, and page count.
+Use `{"response":{"detail":"expanded"}}` to add page entries or `full` only for the complete acquired status.
 
 Page-scoped requests default to the selected page unless their schema requires an explicit target.
 Prefer `query_page` for routine targeting by accessible role/name, label text, rendered text, or
@@ -117,9 +124,9 @@ profile, opens popups, enters frames, or diagnoses resource loading.
 
 `query_page` returns exact generation-scoped references rather than persistent locators. Copy the
 unique reference into an existing mutation tool; the action does not reevaluate the semantic query.
-Prefer a full actionable reference returned by `snapshot_page` when examining page structure or when
-semantic matching is insufficient. Request `{"response":{"snapshot":"interaction_only"}}` when only
-actionable references and their structural ancestry are needed. Same-document snapshots preserve stable
+Prefer an actionable reference returned by the default concise `snapshot_page` response when examining
+page structure or when semantic matching is insufficient. Request expanded context when surrounding
+semantics matter, or full only for the complete acquired snapshot. Same-document snapshots preserve stable
 node identities when possible; navigation, document replacement, target reattachment, or node removal
 can make a reference stale. On `stale_reference`, request a fresh snapshot and retry once.
 
@@ -178,7 +185,7 @@ uses the same arguments advertised by that standalone operation. For example:
 {"steps":[{"operation":"fill","request":{"locator":{"kind":"element","value":{"kind":"css_selector","value":"#query"}},"value":"krometrail"}},{"operation":"press_keys","request":{"locator":{"kind":"element","value":{"kind":"css_selector","value":"#query"}},"keys":["Enter"],"wait_for_navigation":true}}],"timeout":5000}
 ```
 
-The outer page target applies by default. Response projection is also outer-batch only: nested step
+The outer page target applies by default. Response detail is also outer-batch only: nested step
 `request` objects cannot contain `response`. Do not nest `batch` or include browser-lifecycle operations
 as steps.
 
@@ -217,11 +224,11 @@ plugin/MCP restart or session-data deletion. On `evidence_invalidated`, run
 process boundaries or preserving an exact external record. The handle never replaces artifact/video
 manifest provenance, ordered frame IDs, gap checks, or canonical evidence resource links.
 
-The default temporal bundle is a compact resource-and-provenance index without inline image bytes. Add
-`"response":{"inline_images":"inline"}` when the primary orientation/storyboard image should be embedded
-immediately, or `"response":{"temporal":"full"}` when repeated full generator, frame, and provenance
-structures are genuinely needed in the tool result; otherwise follow the returned canonical resource links
-for the exact artifact needed. Snapshot and page-state projection choices never expand temporal detail.
+The default temporal bundle is a concise resource-and-provenance index without inline image bytes. Add
+`"response":{"inline_images":true}` when the primary orientation/storyboard image should be embedded
+immediately, use `expanded` for the complete bounded bundle context, or use `full` when the complete acquired
+generator, frame, and provenance structures are genuinely needed in the tool result. Otherwise follow the
+returned canonical resource links for the exact artifact needed.
 
 Video and manifest resources stay local by default. Reading them through Krometrail or handing a
 returned local resource to the active model host is normal tool use; do not upload or forward them
@@ -242,7 +249,8 @@ artifact or an interval with capture gaps.
 
 ## Collect targeted diagnostics
 
-Failed or degraded responses can include `diagnostics.correlation_id` and `diagnostics.log_path`.
+Failed or degraded responses always include `diagnostics.correlation_id`; `diagnostics.log_path` is present
+when logging was configured.
 Use that exact private path from any working directory. Search only for the correlation identifier,
 with a few surrounding lines if required; never read, paste, or attach the whole log.
 

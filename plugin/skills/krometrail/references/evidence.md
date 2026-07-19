@@ -17,17 +17,18 @@ browser evidence; it does not diagnose defects or infer causes.
 Check retained capture health before making a temporal claim. A capture warning can coexist with a
 successful browser action; it limits history without undoing the action.
 
-Responses default to compact structured evidence without inline image bytes. Screenshot availability,
+Responses default to concise structured evidence without inline image bytes. Screenshot availability,
 warnings, interaction identity, retained evidence, and canonical resource links remain visible. Request
-`inline_images: "inline"` only when pixels are needed in the immediate response, and request `full`
-snapshot/page-state detail only when the compact projection cannot answer the question. Temporal bundles
-have their own independent `temporal: "full"` opt-in; changing snapshot or page-state detail does not expand
-them.
+`inline_images: true` only when pixels are needed in the immediate response. Request `detail: "expanded"`
+for broader bounded semantic/page context or `detail: "full"` for the complete acquired structures.
+Failed and degraded responses always carry privacy-bounded diagnostic correlation data.
 
 ### Current live evidence
 
 - **Page state** reports URL, title, viewport, selection, navigation, and related status.
-- **Structured snapshot** exposes an accessibility-oriented tree with actionable references. It is
+- **Structured snapshot** is acquired as an accessibility-oriented tree with actionable references. Concise
+  responses expose a ranked flat exact-target index; expanded responses add bounded flattened semantic context.
+  Full responses expose the complete acquired tree. It is
   useful for targeting and semantics, but it is not a pixel record and does not represent every
   canvas, video, WebGL, or custom-rendered detail.
 - **Screenshot** records the requested current viewport, page, element, or region.

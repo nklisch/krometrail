@@ -2426,19 +2426,24 @@ mod tests {
         let (_, defaulted) = split_response_request(JsonObject::new()).unwrap();
         assert_eq!(defaulted, ResponseRequest::default());
 
-        for removed in [
-            json!({"snapshot": "compact"}),
-            json!({"page_state": "omit"}),
-            json!({"diagnostics": "omit"}),
-            json!({"temporal": "full"}),
-            json!({"inline_images": "inline"}),
-        ] {
-            let error =
-                split_response_request(json!({"response": removed}).as_object().unwrap().clone())
-                    .unwrap_err();
-            assert_eq!(error.code, ErrorCode::InvalidInput);
-            assert!(!error.message.as_str().contains("compact"));
-        }
+        let error = split_response_request(
+            json!({"response": {"extra": true}})
+                .as_object()
+                .unwrap()
+                .clone(),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidInput);
+        assert!(!error.message.as_str().contains("true"));
+
+        let error = split_response_request(
+            json!({"response": {"inline_images": "yes"}})
+                .as_object()
+                .unwrap()
+                .clone(),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidInput);
     }
 
     #[test]

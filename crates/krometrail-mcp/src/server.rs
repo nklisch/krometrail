@@ -445,13 +445,13 @@ mod tests {
             ErrorCode::InvalidInput,
             NonEmptyText::new("invalid fixture request").unwrap(),
         );
-        let mut omitted = crate::response::visible_error("browser_click", error);
+        let mut failed_again = crate::response::visible_error("browser_click", error);
         assert_eq!(
-            attach_diagnostics(&mut omitted, "correlation-3", &context),
+            attach_diagnostics(&mut failed_again, "correlation-3", &context),
             "failed"
         );
         assert_eq!(
-            omitted.structured_content.unwrap()["diagnostics"]["correlation_id"],
+            failed_again.structured_content.unwrap()["diagnostics"]["correlation_id"],
             "correlation-3"
         );
     }
@@ -1664,7 +1664,7 @@ mod tests {
                 ),
                 (
                     "navigate_page",
-                    json!({"url":"", "response":{"snapshot":"compact"}}),
+                    json!({"url":"", "response":{"extra":true}}),
                 ),
                 ("browser_status", json!({"response":{"detail":"expanded"}})),
             ],

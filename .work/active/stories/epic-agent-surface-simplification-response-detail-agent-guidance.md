@@ -1,7 +1,7 @@
 ---
 id: epic-agent-surface-simplification-response-detail-agent-guidance
 kind: story
-stage: implementing
+stage: done
 tags: [agent-ux, browser]
 parent: epic-agent-surface-simplification-response-detail
 depends_on: [epic-agent-surface-simplification-response-detail-projection]
@@ -28,3 +28,10 @@ Rewrite the Krometrail skill and visual-evidence reference so routine calls omit
 ## Ordering
 
 Depends on `epic-agent-surface-simplification-response-detail-projection` so examples and tests describe the implemented final structure.
+
+## Implementation evidence
+
+- Rewrote the Krometrail skill and evidence reference around implicit concise, deliberate expanded/full, and boolean inline pixels.
+- Removed all agent guidance for the superseded selector matrix, ancestor-closure view, omission markers, and diagnostic suppression.
+- Replaced matrix tests with focused closed-schema, ranked-target, progression, temporal-resource, inline-image, and always-on diagnostic coverage.
+- Verified foundation assertions against the delivered contract and regenerated the public documentation successfully.
