@@ -612,11 +612,13 @@ Tool handlers do not contain CDP commands, SQL, image processing, or retention l
 
 The MCP response projector owns one agent-facing detail progression: concise by default, then expanded and full.
 It maps already-acquired structures into an action-centric summary or broader context without changing domain
-acquisition or retention. Inline image transport remains an orthogonal explicit opt-in. Errors, warnings,
+acquisition or retention. Inline image transport remains orthogonal to detail. The registry resolves an omitted
+image preference from operation purpose: explicit visual operations request one bounded image, routine operations
+remain pixel-light, and an explicit boolean overrides either default. Errors, warnings,
 interaction anchors, resource identities, and privacy-bounded diagnostics on failed or degraded results are never
 projected away. Concise status is a projection of the same `BrowserStatus`, not a second status model.
 
-For a temporal bundle, concise projection selects one primary retained artifact and reports exact outcome/resource omissions; expanded publishes compact handles for all generated outcomes; full preserves the canonical structures. Artifact bytes are not read merely to construct a structured response.
+For a temporal bundle, concise projection selects one primary retained artifact and reports exact outcome/resource omissions; expanded publishes compact handles for all generated outcomes; full preserves the canonical structures. Visual artifact and filmstrip mappings asynchronously reuse the retained-artifact read boundary, validate identity, media type, length, and hash, and inline at most the selected primary image. Read failure degrades the response without discarding its structured result or canonical resource.
 
 Target supervision remains the authority for pages, frames, and popup relationships. CDP adapters expose
 privacy-bounded page assets, clipboard operations, and download lifecycle through core ports; completed

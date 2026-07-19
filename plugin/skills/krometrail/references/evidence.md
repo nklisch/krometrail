@@ -17,9 +17,10 @@ browser evidence; it does not diagnose defects or infer causes.
 Check retained capture health before making a temporal claim. A capture warning can coexist with a
 successful browser action; it limits history without undoing the action.
 
-Responses default to concise structured evidence without inline image bytes. Screenshot availability,
-warnings, interaction identity, retained evidence, and canonical resource links remain visible. Request
-`inline_images: true` only when pixels are needed in the immediate response. Request `detail: "expanded"`
+Responses default to concise structured evidence. Explicit visual tools include one bounded requested or primary
+image; routine actions remain pixel-light. Screenshot availability, warnings, interaction identity, retained
+evidence, and canonical resource links remain visible. Use `inline_images: false` to suppress a visual default or
+`inline_images: true` to request pixels where supported. Request `detail: "expanded"`
 for broader bounded semantic/page context or `detail: "full"` for the complete acquired structures.
 Failed and degraded responses always carry privacy-bounded diagnostic correlation data.
 
@@ -32,7 +33,8 @@ Failed and degraded responses always carry privacy-bounded diagnostic correlatio
   useful for targeting and semantics, but it is not a pixel record and does not represent every
   canvas, video, WebGL, or custom-rendered detail.
 - **Screenshot** records the requested current viewport, page, element, or region.
-- **Live observation** combines current page state, snapshot, and screenshot at one observation point.
+- **Live observation** combines current page state, snapshot, screenshot, and bounded current semantic outcomes at
+  one observation point. Outcomes prioritize alerts, dialogs, status messages, and named text; they are not a diff.
 
 A final live observation can conceal a state that appeared and disappeared before observation. Use
 temporal evidence only when the question concerns the interval.
@@ -80,13 +82,14 @@ Bundle artifact work defaults to the visual epoch containing the effective ancho
 deterministic selection between spans. The full resolved range and gaps remain authoritative. Request
 `epochs: "all"` when investigating a geometry transition; direct artifact generation already uses all epochs.
 
-The bundle favors context-sized evidence and omits inline image bytes by default. Concise publishes one primary
+The bundle favors context-sized evidence and includes one primary inline image by default. Concise publishes one primary
 compact handle/resource plus exact selected-epoch and omitted outcome/resource counts. Expanded publishes compact
 handles/resources for every generated outcome; full preserves complete structures. Compact artifact handles summarize identity, type,
 geometry, hash, and frame counts. Read a handle's `manifest_uri` resource for the exact full manifest
 when a claim depends on ordered source and selected frame IDs, omissions, gaps, normalization, or
 generator parameters. Full-resolution images and exact source frames remain behind their adjacent MCP
-resource links. If a claim depends on fine text or an exact intermediate state, retrieve that linked
+resource links. Inspect the returned primary image directly. Use `inline_images: false` when only the structured
+index and resources are needed. If a claim depends on fine text or an exact intermediate state, retrieve that linked
 artifact or source frame rather than relying on the inline preview.
 
 The common response envelope also publishes a `range_handle` for the bundle's exact resolved range.

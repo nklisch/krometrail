@@ -358,6 +358,22 @@ const fn progressive_accepts_range_handle(kind: ProgressiveEvidenceOperationKind
     )
 }
 
+const fn progressive_inline_image_default(kind: ProgressiveEvidenceOperationKind) -> bool {
+    matches!(
+        kind,
+        ProgressiveEvidenceOperationKind::FetchSourceFrames
+            | ProgressiveEvidenceOperationKind::GenerateArtifacts
+            | ProgressiveEvidenceOperationKind::GenerateRegionFilmstrip
+    )
+}
+
+const fn browser_inline_image_default(kind: BrowserOperationKind) -> bool {
+    matches!(
+        kind,
+        BrowserOperationKind::TakeScreenshot | BrowserOperationKind::ObserveLive
+    )
+}
+
 async fn call_temporal_video(
     context: ToolCallContext<'_, KrometrailMcpServer>,
     dependencies: Arc<McpDependencies>,
@@ -412,7 +428,7 @@ async fn call_temporal_video(
             request,
             ArtifactGenerationContext {
                 deadline: Some(budget.deadline),
-                cancellation: Some(cancellation),
+                cancellation: Some(Arc::clone(&cancellation)),
                 ..Default::default()
             },
         )
@@ -463,7 +479,7 @@ async fn call_bundle(
     }
     let (arguments, preference) =
         match split_response_request(context.arguments.unwrap_or_default()) {
-            Ok(value) => value,
+            Ok((arguments, preference)) => (arguments, preference.with_inline_default(true)),
             Err(error) => return Ok(call_error_result(name, error)),
         };
     let request = match parse_arguments::<TemporalDebugBundleRequest>(arguments) {
@@ -521,7 +537,10 @@ async fn call_progressive(
     }
     let (arguments, preference) =
         match split_response_request(context.arguments.unwrap_or_default()) {
-            Ok(value) => value,
+            Ok((arguments, preference)) => (
+                arguments,
+                preference.with_inline_default(progressive_inline_image_default(kind)),
+            ),
             Err(error) => return Ok(call_error_result(name, error)),
         };
     let (arguments, supplied_handle) = match budget
@@ -567,18 +586,24 @@ async fn call_progressive(
             request,
             ProgressiveEvidenceContext {
                 deadline: Some(budget.deadline),
-                cancellation: Some(cancellation),
+                cancellation: Some(Arc::clone(&cancellation)),
                 current_reference_geometry: Some(current_geometry),
             },
         ))
         .await;
     match result {
-        Ok(result) => map_progressive_result(name, result, preference)
-            .map(|mapped| mapped.with_range_handle(handle))
-            .map_err(|_| {
-                rmcp::ErrorData::internal_error("progressive response mapping failed", None)
-            })
-            .and_then(into_call_tool_result),
+        Ok(result) => map_progressive_result(
+            name,
+            result,
+            dependencies.progressive_evidence.as_ref(),
+            budget.deadline,
+            cancellation,
+            preference,
+        )
+        .await
+        .map(|mapped| mapped.with_range_handle(handle))
+        .map_err(|_| rmcp::ErrorData::internal_error("progressive response mapping failed", None))
+        .and_then(into_call_tool_result),
         Err(error) => Ok(call_error_result(name, error)),
     }
 }
@@ -595,7 +620,7 @@ async fn call_context(
     }
     let (arguments, preference) =
         match split_response_request(context.arguments.unwrap_or_default()) {
-            Ok(value) => value,
+            Ok((arguments, preference)) => (arguments, preference.with_inline_default(false)),
             Err(error) => return Ok(call_error_result(name, error)),
         };
     let (arguments, supplied_handle) = match budget
@@ -774,7 +799,10 @@ async fn call_operation(
 ) -> std::result::Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
     let (arguments, preference) =
         match split_response_request(context.arguments.unwrap_or_default()) {
-            Ok(value) => value,
+            Ok((arguments, preference)) => (
+                arguments,
+                preference.with_inline_default(browser_inline_image_default(kind)),
+            ),
             Err(error) => return Ok(visible_error(name, error)),
         };
     let request = match tagged_request(name, Some(arguments)) {
@@ -843,7 +871,9 @@ async fn call_lifecycle(
         },
         LifecycleKind::Status => {
             let response = match split_response_request(arguments) {
-                Ok((arguments, response)) if arguments.is_empty() => response,
+                Ok((arguments, response)) if arguments.is_empty() => {
+                    response.with_inline_default(false)
+                }
                 Ok(_) => {
                     return Ok(visible_error(
                         tool.name,
@@ -967,6 +997,7 @@ pub(crate) fn lifecycle_tool_names() -> impl Iterator<Item = &'static str> {
 mod tests {
     use super::*;
     use crate::config::McpConfig;
+    use crate::response::ResponseRequest;
 
     #[test]
     fn route_registry_and_schema_validation_fail_closed() {
@@ -975,6 +1006,45 @@ mod tests {
         register_route_name(&mut names, "duplicate", "first").unwrap();
         assert!(register_route_name(&mut names, "duplicate", "second").is_err());
         assert!(generated_input_schema(schemars::schema_for!(String)).is_err());
+    }
+
+    #[test]
+    fn image_defaults_follow_operation_purpose_and_preserve_overrides() {
+        for kind in ProgressiveEvidenceOperationKind::ALL {
+            assert_eq!(
+                progressive_inline_image_default(*kind),
+                matches!(
+                    kind,
+                    ProgressiveEvidenceOperationKind::FetchSourceFrames
+                        | ProgressiveEvidenceOperationKind::GenerateArtifacts
+                        | ProgressiveEvidenceOperationKind::GenerateRegionFilmstrip
+                )
+            );
+        }
+        for kind in BrowserOperationKind::ALL {
+            assert_eq!(
+                browser_inline_image_default(*kind),
+                matches!(
+                    kind,
+                    BrowserOperationKind::TakeScreenshot | BrowserOperationKind::ObserveLive
+                )
+            );
+        }
+        assert_eq!(
+            ResponseRequest::default()
+                .with_inline_default(true)
+                .inline_images,
+            Some(true)
+        );
+        assert_eq!(
+            ResponseRequest {
+                inline_images: Some(false),
+                ..ResponseRequest::default()
+            }
+            .with_inline_default(true)
+            .inline_images,
+            Some(false)
+        );
     }
 
     #[tokio::test]

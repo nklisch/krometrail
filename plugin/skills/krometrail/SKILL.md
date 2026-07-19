@@ -16,9 +16,11 @@ release binary. Do not install a separate binary merely because this skill loade
 
 ## Use the cheapest sufficient evidence
 
-Krometrail defaults to concise, action-centric structured responses without inline image bytes. Omit
-`response` for normal navigation and interaction. The returned flat `targets` are ranked for immediate
-action and each contains one complete, copyable generation-scoped reference.
+Krometrail defaults to concise, action-centric structured responses. Omit `response` for normal navigation
+and interaction. The returned flat `targets` are ranked for immediate action and each contains one complete,
+copyable generation-scoped reference. Explicit visual tools (`take_screenshot`, `observe_live`,
+`temporal_debug_bundle`, `fetch_source_frames`, `generate_artifacts`, and `generate_region_filmstrip`) include
+one bounded requested or primary image by default; routine actions remain pixel-light.
 
 Request broader bounded semantic/page context only when concise output cannot answer the question:
 
@@ -32,8 +34,8 @@ Request the complete acquired structures only when their full rows or provenance
 {"response":{"detail":"full"}}
 ```
 
-Pixels are independent of structured detail. Add `"inline_images":true` at any level only when the
-current image is needed in the immediate response:
+Pixels are independent of structured detail. Use `"inline_images":false` to suppress a visual tool's default
+image, or `"inline_images":true` to request pixels from a routine operation that supports them:
 
 ```json
 {"response":{"detail":"expanded","inline_images":true}}
@@ -44,8 +46,8 @@ or canonical resource identities. Concise and expanded snapshot omission counts 
 omissions from presentation omissions; neither projection pretends to be a complete snapshot tree.
 
 1. Trust the live evidence returned by a successful state-changing operation for immediate
-   confirmation. Its default concise response retains screenshot availability metadata without embedding
-   image bytes. Request an inline image on the original action only when pixels are needed; do not take a
+   confirmation. Its default concise response retains screenshot availability metadata and bounded current
+   semantic outcomes without embedding image bytes. Request an inline image on the original action only when pixels are needed; do not take a
    redundant screenshot after every click, fill, key press, navigation, scroll, or viewport change.
 2. Use `observe_live` when an explicit fresh current-state observation is needed, or a narrower
    `inspect_page`, `snapshot_page`, or `take_screenshot` when only one part is needed.
@@ -209,7 +211,9 @@ as steps.
   normalization provenance; read the adjacent artifact URI when the rendered image is needed. Video
   results return local MP4 and manifest resource links. Read the MP4 when the host supports video input;
   read the manifest when exact presentation provenance matters.
-- Browser context: `query_browser_events`
+- Browser context: `query_browser_events`. Its concise response retains bounded chronological event rows,
+  `next_cursor`, gaps, and availability facts; page with the cursor or reuse the bundle `range_handle` rather
+  than reconstructing ordered frame identifiers.
 - Retention: `pin_resolved_range`, `query_pin_state`, `unpin_resolved_range`
 
 Keep the `range_handle` returned by `temporal_debug_bundle`. For follow-up artifact, region,
@@ -232,9 +236,9 @@ The temporal bundle defaults artifact work to the visual epoch containing its ef
 the complete resolved range and gaps. Use `{"epochs":"all"}` only when the investigation depends on a viewport,
 orientation, or device-scale transition; direct `generate_artifacts` requests remain all-epoch. The default
 response is a concise resource-and-provenance index with one primary compact handle/resource, exact
-epoch/outcome/resource omission counts, and no inline image bytes. Add
-`{"response":{"inline_images":true}}` when the primary orientation/storyboard image should be embedded
-immediately, use `expanded` for compact handles/resources for every generated outcome, or use `full` when the
+epoch/outcome/resource omission counts, and one primary inline image. Inspect that returned image directly;
+use `{"response":{"inline_images":false}}` when only structured/resource evidence is needed. Use `expanded`
+for compact handles/resources for every generated outcome, or use `full` when the
 complete acquired generator, frame, and provenance structures are genuinely needed in the tool result. Otherwise follow the
 returned canonical resource links for the exact artifact needed.
 

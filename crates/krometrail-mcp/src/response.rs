@@ -26,6 +26,8 @@ const MAX_CONCISE_TARGETS: usize = 48;
 const MAX_CONCISE_TARGET_JSON_BYTES: usize = 12 * 1024;
 const MAX_EXPANDED_CONTEXT_NODES: usize = 96;
 const MAX_EXPANDED_SNAPSHOT_JSON_BYTES: usize = 32 * 1024;
+const MAX_SEMANTIC_OUTCOMES: usize = 8;
+const MAX_SEMANTIC_OUTCOME_JSON_BYTES: usize = 4 * 1024;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -42,7 +44,19 @@ pub(crate) struct ResponseRequest {
     #[serde(default)]
     pub detail: ResponseDetail,
     #[serde(default)]
-    pub inline_images: bool,
+    #[schemars(with = "bool")]
+    pub inline_images: Option<bool>,
+}
+
+impl ResponseRequest {
+    pub(crate) fn with_inline_default(mut self, default: bool) -> Self {
+        self.inline_images = Some(self.inline_images.unwrap_or(default));
+        self
+    }
+
+    fn includes_images(self) -> bool {
+        self.inline_images.unwrap_or(false)
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1037,6 +1051,10 @@ fn project_live_observation(
     response: ResponseRequest,
 ) -> Result<(Value, Vec<KrometrailError>, Option<EncodedMcpImage>), ResponseInvariantError> {
     let mut warnings = Vec::new();
+    let semantic_outcomes = match &value.snapshot {
+        ObservationPart::Available(snapshot) => semantic_outcomes(snapshot)?,
+        ObservationPart::Unavailable(_) => Vec::new(),
+    };
     let mut page = project_serializable_part(value.page, &mut warnings)?;
     project_page_state_part(&mut page, response.detail)?;
     let mut snapshot = project_serializable_part(value.snapshot, &mut warnings)?;
@@ -1057,6 +1075,7 @@ fn project_live_observation(
             "page": page,
             "snapshot": snapshot,
             "screenshot": screenshot,
+            "semantic_outcomes": semantic_outcomes,
         }),
         warnings,
         image.map(|screenshot| EncodedMcpImage::Screenshot {
@@ -1065,6 +1084,77 @@ fn project_live_observation(
             screenshot,
         }),
     ))
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct SemanticOutcome {
+    role: String,
+    name: Option<String>,
+    value: Option<String>,
+    description: Option<String>,
+}
+
+fn semantic_outcomes(
+    snapshot: &PageSnapshot,
+) -> Result<Vec<SemanticOutcome>, ResponseInvariantError> {
+    const PRIMARY_ROLES: &[&str] = &["alert", "dialog", "status"];
+    const TEXT_ROLES: &[&str] = &["statictext", "static_text", "paragraph", "heading"];
+
+    let has_text = |node: &&krometrail_core::SnapshotNode| {
+        node.name
+            .as_ref()
+            .is_some_and(|text| !text.trim().is_empty())
+            || node
+                .value
+                .as_ref()
+                .is_some_and(|text| !text.trim().is_empty())
+            || node
+                .description
+                .as_ref()
+                .is_some_and(|text| !text.trim().is_empty())
+    };
+    let candidates = snapshot
+        .nodes
+        .iter()
+        .filter(|node| {
+            PRIMARY_ROLES
+                .iter()
+                .any(|role| node.role.eq_ignore_ascii_case(role))
+        })
+        .filter(has_text)
+        .chain(
+            snapshot
+                .nodes
+                .iter()
+                .filter(|node| {
+                    TEXT_ROLES
+                        .iter()
+                        .any(|role| node.role.eq_ignore_ascii_case(role))
+                })
+                .filter(has_text),
+        );
+    let mut outcomes = Vec::new();
+    for node in candidates {
+        if outcomes.len() == MAX_SEMANTIC_OUTCOMES {
+            break;
+        }
+        let outcome = SemanticOutcome {
+            role: node.role.clone(),
+            name: node.name.clone(),
+            value: node.value.clone(),
+            description: node.description.clone(),
+        };
+        outcomes.push(outcome);
+        if serde_json::to_vec(&outcomes)
+            .map_err(|_| ResponseInvariantError)?
+            .len()
+            > MAX_SEMANTIC_OUTCOME_JSON_BYTES
+        {
+            outcomes.pop();
+            break;
+        }
+    }
+    Ok(outcomes)
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1316,7 +1406,7 @@ fn project_response(
     projection: &mut Projection,
     response: ResponseRequest,
 ) -> Result<(), ResponseInvariantError> {
-    if !response.inline_images {
+    if !response.includes_images() {
         projection.images.clear();
     }
     if tool == "snapshot_page" {
@@ -1585,53 +1675,47 @@ pub(crate) async fn map_temporal_bundle_result(
             }
         }
     }
-    if response.inline_images
+    if response.includes_images()
         && let Some((_, _, artifact)) = candidate
     {
-        match read_inline_artifact(
+        add_inline_artifact(
+            &mut projection,
             scope,
-            artifact.artifact_id,
+            artifact,
             progressive,
             deadline,
             &cancellation,
         )
-        .await
-        {
-            Ok(bytes) => {
-                if bytes.handle.artifact_id != artifact.artifact_id
-                    || bytes.handle.scope != scope
-                    || bytes.encoded_bytes.len() as u64 != artifact.encoded_byte_len
-                    || bytes.handle.media_type != artifact.media_type
-                    || bytes.handle.content_sha256.as_bytes()
-                        != artifact.manifest.output_hash().as_bytes()
-                {
-                    return Err(ResponseInvariantError);
-                }
-                let dimensions = artifact.manifest.output_dimensions();
-                projection.images.push(EncodedMcpImage::Artifact {
-                    role: ImageRole::TemporalPrimary,
-                    step_index: None,
-                    artifact_id: artifact.artifact_id,
-                    media_type: artifact.media_type.as_str().to_owned(),
-                    encoded_byte_len: artifact.encoded_byte_len,
-                    width: dimensions.width(),
-                    height: dimensions.height(),
-                    bytes: bytes.encoded_bytes,
-                });
-            }
-            Err(error) if error.code == ErrorCode::Cancelled => projection.fail_with(error),
-            Err(error) => projection.degrade_with(vec![error]),
-        }
+        .await?;
     }
     project_response(tool, &mut projection, response)?;
     Ok(mapped(tool, projection, format!("{tool} succeeded")))
 }
 
-pub(crate) fn map_progressive_result(
+pub(crate) async fn map_progressive_result(
     tool: &str,
     result: ProgressiveEvidenceResult,
+    progressive: &dyn ProgressiveEvidence,
+    deadline: Instant,
+    cancellation: Arc<dyn krometrail_core::CancellationSignal>,
     response: ResponseRequest,
 ) -> Result<MappedResult, ResponseInvariantError> {
+    let inline_artifact = if response.includes_images() {
+        match &result {
+            ProgressiveEvidenceResult::GenerateArtifacts(generation) => {
+                let scope = artifact_scope(&generation.range)?;
+                primary_artifact(generation).map(|(_, _, artifact)| (scope, artifact.clone()))
+            }
+            ProgressiveEvidenceResult::GenerateRegionFilmstrip(evidence) => {
+                let scope = artifact_scope(&evidence.generation.range)?;
+                primary_artifact(&evidence.generation)
+                    .map(|(_, _, artifact)| (scope, artifact.clone()))
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
     let mut projection = match result {
         ProgressiveEvidenceResult::RetrieveArtifact(read) => {
             // Resource-only operations never become tools, but retain a safe
@@ -1731,6 +1815,17 @@ pub(crate) fn map_progressive_result(
         | ProgressiveEvidenceResult::UnpinResolvedRange(change) => serializable(*change)?,
         ProgressiveEvidenceResult::QueryPinState(state) => serializable(*state)?,
     };
+    if let Some((scope, artifact)) = inline_artifact {
+        add_inline_artifact(
+            &mut projection,
+            scope,
+            &artifact,
+            progressive,
+            deadline,
+            &cancellation,
+        )
+        .await?;
+    }
     project_response(tool, &mut projection, response)?;
     Ok(mapped(tool, projection, format!("{tool} succeeded")))
 }
@@ -1992,7 +2087,7 @@ fn project_source_frame_batch(
     let mut inline_bytes = 0_u64;
     for (index, frame) in batch.frames.into_iter().enumerate() {
         add_source_frame_resource(&mut projection, &frame.handle)?;
-        if !response.inline_images {
+        if !response.includes_images() {
             continue;
         }
         let frame_bytes = frame.encoded_bytes();
@@ -2051,6 +2146,51 @@ async fn read_inline_artifact(
         }
         _ => Err(internal_mapping_error()),
     }
+}
+
+async fn add_inline_artifact(
+    projection: &mut Projection,
+    scope: krometrail_core::EvidenceScope,
+    artifact: &ArtifactHandle,
+    progressive: &dyn ProgressiveEvidence,
+    deadline: Instant,
+    cancellation: &Arc<dyn krometrail_core::CancellationSignal>,
+) -> Result<(), ResponseInvariantError> {
+    match read_inline_artifact(
+        scope,
+        artifact.artifact_id,
+        progressive,
+        deadline,
+        cancellation,
+    )
+    .await
+    {
+        Ok(bytes) => {
+            if bytes.handle.artifact_id != artifact.artifact_id
+                || bytes.handle.scope != scope
+                || bytes.encoded_bytes.len() as u64 != artifact.encoded_byte_len
+                || bytes.handle.media_type != artifact.media_type
+                || bytes.handle.content_sha256.as_bytes()
+                    != artifact.manifest.output_hash().as_bytes()
+            {
+                return Err(ResponseInvariantError);
+            }
+            let dimensions = artifact.manifest.output_dimensions();
+            projection.images.push(EncodedMcpImage::Artifact {
+                role: ImageRole::TemporalPrimary,
+                step_index: None,
+                artifact_id: artifact.artifact_id,
+                media_type: artifact.media_type.as_str().to_owned(),
+                encoded_byte_len: artifact.encoded_byte_len,
+                width: dimensions.width(),
+                height: dimensions.height(),
+                bytes: bytes.encoded_bytes,
+            });
+        }
+        Err(error) if error.code == ErrorCode::Cancelled => projection.fail_with(error),
+        Err(error) => projection.degrade_with(vec![error]),
+    }
+    Ok(())
 }
 
 struct InlineArtifact {
@@ -2185,6 +2325,25 @@ mod tests {
         VisualEpoch, WaitCondition, WaitProbe, WaitRequest, WaitResult,
     };
     use std::time::Duration;
+
+    struct UnusedProgressive;
+
+    impl ProgressiveEvidence for UnusedProgressive {
+        fn execute(
+            &self,
+            _request: ProgressiveEvidenceRequest,
+            _context: ProgressiveEvidenceContext,
+        ) -> krometrail_core::PortFuture<'_, krometrail_core::Result<ProgressiveEvidenceResult>>
+        {
+            panic!("inline artifact reads are not expected in this test")
+        }
+    }
+
+    fn test_cancellation() -> Arc<dyn krometrail_core::CancellationSignal> {
+        Arc::new(crate::registry::McpCancellation::new(
+            tokio_util::sync::CancellationToken::new(),
+        ))
+    }
 
     fn session_id() -> SessionId {
         "00000000-0000-0000-0000-000000000001".parse().unwrap()
@@ -2434,6 +2593,31 @@ mod tests {
         PageSnapshot::new(context(), generation, nodes, 7).unwrap()
     }
 
+    #[test]
+    fn semantic_outcomes_prioritize_current_status_and_stay_bounded() {
+        let generation = SnapshotGeneration::new(1).unwrap();
+        let mut nodes = Vec::new();
+        for index in 1..=12 {
+            nodes.push(SnapshotNode {
+                id: SnapshotNodeId::new(index).unwrap(),
+                parent: None,
+                depth: 0,
+                role: if index == 12 { "status" } else { "paragraph" }.into(),
+                name: Some(format!("outcome {index}")),
+                value: None,
+                description: None,
+                properties: vec![],
+                actionable: false,
+                reference: None,
+            });
+        }
+        let snapshot = PageSnapshot::new(context(), generation, nodes, 0).unwrap();
+        let outcomes = semantic_outcomes(&snapshot).unwrap();
+        assert_eq!(outcomes[0].role, "status");
+        assert!(outcomes.len() <= MAX_SEMANTIC_OUTCOMES);
+        assert!(serde_json::to_vec(&outcomes).unwrap().len() <= MAX_SEMANTIC_OUTCOME_JSON_BYTES);
+    }
+
     fn live_with_snapshot(snapshot: PageSnapshot) -> LiveObservation {
         let unavailable = error(ErrorCode::PageObservationFailed, "component unavailable");
         LiveObservation {
@@ -2557,7 +2741,7 @@ mod tests {
             BrowserOperationResult::TakeScreenshot(Box::new(screenshot(ImageFormat::Png))),
             &[failed_capture(), failed_capture()],
             ResponseRequest {
-                inline_images: true,
+                inline_images: Some(true),
                 ..ResponseRequest::default()
             },
         )
@@ -2616,7 +2800,7 @@ mod tests {
         .unwrap();
         assert!(remaining.contains_key("target_id"));
         assert_eq!(response.detail, ResponseDetail::Expanded);
-        assert!(response.inline_images);
+        assert_eq!(response.inline_images, Some(true));
 
         let (_, defaulted) = split_response_request(JsonObject::new()).unwrap();
         assert_eq!(defaulted, ResponseRequest::default());
@@ -2715,13 +2899,17 @@ mod tests {
         assert!(expanded.omissions.presentation_context_nodes > 0);
     }
 
-    #[test]
-    fn source_frame_inline_limits_apply_only_when_pixels_are_requested() {
+    #[tokio::test]
+    async fn source_frame_inline_limits_apply_only_when_pixels_are_requested() {
         let without = map_progressive_result(
             "fetch_source_frames",
             ProgressiveEvidenceResult::FetchSourceFrames(Box::new(source_frame_batch(5))),
+            &UnusedProgressive,
+            Instant::now() + Duration::from_secs(1),
+            test_cancellation(),
             ResponseRequest::default(),
         )
+        .await
         .unwrap();
         assert_eq!(without.response.status, ToolResponseStatus::Succeeded);
         assert!(without.response.warnings.is_empty());
@@ -2731,11 +2919,15 @@ mod tests {
         let with = map_progressive_result(
             "fetch_source_frames",
             ProgressiveEvidenceResult::FetchSourceFrames(Box::new(source_frame_batch(5))),
+            &UnusedProgressive,
+            Instant::now() + Duration::from_secs(1),
+            test_cancellation(),
             ResponseRequest {
-                inline_images: true,
+                inline_images: Some(true),
                 ..ResponseRequest::default()
             },
         )
+        .await
         .unwrap();
         assert_eq!(with.response.status, ToolResponseStatus::Degraded);
         assert_eq!(
@@ -2763,7 +2955,7 @@ mod tests {
             &[],
             ResponseRequest {
                 detail: ResponseDetail::Expanded,
-                inline_images: false,
+                inline_images: Some(false),
             },
         )
         .unwrap();
@@ -2773,7 +2965,7 @@ mod tests {
             &[],
             ResponseRequest {
                 detail: ResponseDetail::Full,
-                inline_images: false,
+                inline_images: Some(false),
             },
         )
         .unwrap();
@@ -2805,7 +2997,7 @@ mod tests {
             &[],
             ResponseRequest {
                 detail: ResponseDetail::Concise,
-                inline_images: true,
+                inline_images: Some(true),
             },
         )
         .unwrap();
@@ -2897,7 +3089,7 @@ mod tests {
                 BrowserOperationResult::TakeScreenshot(Box::new(screenshot(format))),
                 &[],
                 ResponseRequest {
-                    inline_images: true,
+                    inline_images: Some(true),
                     ..ResponseRequest::default()
                 },
             )
@@ -3094,6 +3286,11 @@ mod tests {
         let step_result = &compact.response.result["steps"][0]["result"];
         assert!(step_result.get("observation").is_none());
         assert!(compact.response.result["final_observation"]["available"].is_object());
+        assert!(
+            compact.response.result["final_observation"]["available"]["semantic_outcomes"]
+                .as_array()
+                .is_some_and(|outcomes| !outcomes.is_empty())
+        );
 
         let satisfied_wait = WaitResult::new(
             context(),

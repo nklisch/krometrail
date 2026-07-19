@@ -55,6 +55,7 @@ const ACTIONABLE_ROLES: &[&str] = &[
     "treeitem",
 ];
 const ACTIONABLE_SIGNALS: &[&str] = &["focusable", "editable", "clickable"];
+const STRUCTURAL_WEB_AREA_ROLES: &[&str] = &["rootwebarea", "webarea", "document"];
 const LOCAL_CONTAINER_ROLES: &[&str] = &[
     "listitem",
     "row",
@@ -1516,10 +1517,13 @@ impl<'a> Decoder<'a> {
                     })?;
                     SnapshotNodeId::new(*self.next_node_id)?
                 };
+                let structural_web_area = STRUCTURAL_WEB_AREA_ROLES
+                    .iter()
+                    .any(|candidate| role.eq_ignore_ascii_case(candidate));
                 let actionable = backend.is_some()
                     && !disabled
                     && !hidden
-                    && (ACTIONABLE_ROLES.contains(&role) || signal);
+                    && (ACTIONABLE_ROLES.contains(&role) || (signal && !structural_web_area));
                 let reference = actionable.then_some(NodeReference {
                     target_id: self.target_id,
                     generation: self.generation,
@@ -1835,6 +1839,22 @@ mod tests {
         assert_eq!(bindings.len(), 1);
         assert_eq!(omitted, 0);
         assert_eq!(nodes[1].properties.len(), 1);
+    }
+
+    #[test]
+    fn structural_web_area_is_not_actionable_from_a_generic_focusable_signal() {
+        let generation = SnapshotGeneration::new(1).unwrap();
+        let response = json!({"nodes":[
+            {"nodeId":"root","ignored":false,"role":{"value":"RootWebArea"},"name":{"value":"Example"},"backendDOMNodeId":1,"childIds":["button"],"properties":[{"name":"focusable","value":{"value":true}}]},
+            {"nodeId":"button","ignored":false,"role":{"value":"button"},"name":{"value":"Save"},"backendDOMNodeId":7,"properties":[{"name":"focusable","value":{"value":true}}]}
+        ]});
+        let (nodes, bindings, omitted) = decode_ax_tree(&response, target(), generation).unwrap();
+        assert_eq!(omitted, 0);
+        assert_eq!(nodes.len(), 2);
+        assert!(!nodes[0].actionable);
+        assert!(nodes[0].reference.is_none());
+        assert!(nodes[1].actionable);
+        assert_eq!(bindings.len(), 1);
     }
 
     #[test]

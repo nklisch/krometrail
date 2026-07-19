@@ -536,7 +536,7 @@ mod tests {
             status,
             crate::response::ResponseRequest {
                 detail: crate::response::ResponseDetail::Full,
-                inline_images: false,
+                inline_images: Some(false),
             },
         )
         .unwrap();
@@ -3168,11 +3168,17 @@ mod tests {
         let generic = crate::response::map_progressive_result(
             "generate_artifacts",
             ProgressiveEvidenceResult::GenerateArtifacts(Box::new(generation.clone())),
+            spy.as_ref(),
+            std::time::Instant::now() + std::time::Duration::from_secs(1),
+            Arc::new(McpCancellation::new(
+                tokio_util::sync::CancellationToken::new(),
+            )),
             crate::response::ResponseRequest {
                 detail: crate::response::ResponseDetail::Full,
-                inline_images: false,
+                inline_images: Some(false),
             },
         )
+        .await
         .unwrap();
         assert_eq!(
             generic.response.result["outcomes"][0]["artifact"]["manifest"],
@@ -3180,8 +3186,31 @@ mod tests {
             "generic artifact generation must retain the complete manifest"
         );
         assert_eq!(generic.response.resources.len(), 1);
+        let generic_with_image = crate::response::map_progressive_result(
+            "generate_artifacts",
+            ProgressiveEvidenceResult::GenerateArtifacts(Box::new(generation.clone())),
+            spy.as_ref(),
+            std::time::Instant::now() + std::time::Duration::from_secs(1),
+            Arc::new(McpCancellation::new(
+                tokio_util::sync::CancellationToken::new(),
+            )),
+            crate::response::ResponseRequest::default().with_inline_default(true),
+        )
+        .await
+        .unwrap();
+        assert_eq!(generic_with_image.response.images.len(), 1);
+        let generic_content = crate::response::into_call_tool_result(generic_with_image).unwrap();
+        assert_eq!(
+            generic_content
+                .content
+                .iter()
+                .filter(|content| serde_json::to_value(content).unwrap()["type"] == "image")
+                .count(),
+            1
+        );
+        spy.progressive_calls.store(0, Ordering::SeqCst);
         let mut arguments = serde_json::to_value(bundle_request()).unwrap();
-        arguments["response"] = json!({"detail":"expanded", "inline_images":true});
+        arguments["response"] = json!({"detail":"expanded"});
         let dependencies = McpDependencies {
             browser: Arc::new(UnusedConnector),
             temporal_debug_bundles: Arc::clone(&spy) as Arc<dyn TemporalDebugBundles>,

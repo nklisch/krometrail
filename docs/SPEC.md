@@ -114,8 +114,11 @@ MCP responses use one detail progression: `concise`, `expanded`, and `full`. Omi
 and canonical resource identities remain authoritative and available. Concise action responses contain the current
 page identity, navigation/focus changes, and a flattened generation-scoped target index rather than a pruned page
 tree. Expanded responses add bounded semantic and page context. Full responses expose the complete acquired
-structures. Inline pixels remain a separate explicit opt-in because image transport is independent from structured
-detail. Failed and degraded responses always include privacy-bounded diagnostics; callers cannot suppress the only
+structures. Image transport remains independent from structured detail. Explicit visual operations (`take_screenshot`,
+`observe_live`, `temporal_debug_bundle`, `fetch_source_frames`, `generate_artifacts`, and
+`generate_region_filmstrip`) include one bounded requested or primary image when `inline_images` is omitted. Routine
+operations remain pixel-light. `inline_images: false` suppresses pixels and `inline_images: true` requests them where
+supported. Failed and degraded responses always include privacy-bounded diagnostics; callers cannot suppress the only
 actionable failure evidence. Status requests use the same concise-to-full direction.
 
 A batch of actions returns per-step status and timeline anchors. It returns a final live observation and includes per-step screenshot fields only when screenshots were requested.
@@ -129,8 +132,12 @@ The snapshot includes relevant accessible content, roles, names, values, states,
 Concise snapshot presentation ranks focused targets, editable targets, other non-link targets, and links, using
 canonical preorder to break ties. It emits a flattened bounded target index with each exact generation-scoped
 reference and the role, name, value, and states required for interaction; structural ancestors are not repeated.
+Structural web-area and document roots do not become interaction targets from generic focusable or clickable signals.
 Expanded presentation adds bounded semantic structure and context. Full presentation returns the complete acquired
 snapshot. Every bounded projection reports exact presentation omissions.
+
+Automatic live observations also include a small bounded `semantic_outcomes` list prioritizing current alerts,
+dialogs, status messages, and named text. It describes current post-action state and does not claim a pre/post change.
 
 Element references are scoped to the target attachment and document generation that produced them.
 A later snapshot of the same attached document preserves a reference while its backing DOM node
@@ -369,7 +376,7 @@ The temporal-vision capability supports:
 
 A temporal debug bundle is the primary investigation entry point. Its artifact work defaults to the visual epoch containing the effective anchor while preserving the complete resolved range, gaps, and original epoch identity. `epochs: "all"` explicitly expands acquisition across geometry transitions; direct artifact generation remains all-epoch by default. The bundle contains a concise text summary, artifact references, source-frame references, provenance, resolved timing, capture-quality warnings, and a compact deterministic selection of errors, failed requests, navigation, and browser events nearest major visual changes. Focused tools provide source frames, region artifacts, individual artifact variants, verbose events, and pin controls for progressive detail.
 
-Concise bundle responses publish one primary compact artifact handle/resource and exact selected-epoch, available/unavailable outcome, and omitted outcome/resource counts. Expanded responses publish compact handles and resources for every generated outcome. Full responses retain complete generator, frame, and provenance structures. Inline artifact bytes are read only when `inline_images` is explicitly enabled.
+Concise bundle responses publish one primary compact artifact handle/resource and exact selected-epoch, available/unavailable outcome, and omitted outcome/resource counts. Expanded responses publish compact handles and resources for every generated outcome. Full responses retain complete generator, frame, and provenance structures. The primary artifact is inlined by default; `inline_images: false` retains the structured result and resource without reading pixels.
 
 Large images and raw frame collections are returned by file or MCP resource reference. The response may include a context-sized primary image for immediate model inspection. Request and response bodies are drill-down evidence rather than default bundle content.
 
