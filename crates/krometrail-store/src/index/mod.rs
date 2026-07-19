@@ -7,16 +7,10 @@ pub(crate) mod frames;
 mod gaps;
 pub(crate) mod interactions;
 pub(crate) mod maintenance;
-mod migrations;
 mod range;
 pub(crate) mod reconcile;
 pub(crate) mod retention;
-mod schema_v1;
-mod schema_v2;
-mod schema_v3;
-mod schema_v4;
-mod schema_v5;
-mod schema_v6;
+mod schema;
 pub(crate) mod segments;
 mod timeline;
 
@@ -83,6 +77,7 @@ impl SqliteIndex {
         connection
             .pragma_update(None, "foreign_keys", true)
             .map_err(|_| persistence_error("could not enable metadata foreign keys"))?;
+        schema::initialize_or_validate(&mut connection)?;
         let journal: String = connection
             .query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))
             .map_err(|_| persistence_error("could not enable metadata write-ahead logging"))?;
@@ -105,7 +100,6 @@ impl SqliteIndex {
                 "metadata database safety settings were not retained",
             ));
         }
-        migrations::migrate(&mut connection)?;
         for suffix in ["-wal", "-shm", "-journal"] {
             let sidecar = config.database_path.with_file_name(format!(
                 "{}{}",
@@ -241,7 +235,7 @@ mod tests {
         assert_eq!(foreign_keys, 1);
         assert_eq!(synchronous, 2);
         assert_eq!(timeout, 321);
-        assert_eq!(version, migrations::LATEST_SCHEMA_VERSION);
+        assert_eq!(version, schema::CURRENT_SCHEMA_VERSION);
         assert_eq!(
             index.segments_directory(),
             directory.path().join("segments")
