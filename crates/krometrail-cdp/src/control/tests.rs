@@ -66,7 +66,7 @@ fn evaluation_separates_side_effect_refusal_from_thrown_exceptions() {
             "exceptionDetails": {
                 "exception": {
                     "className": "EvalError",
-                    "description": "EvalError: Possible side effect in debug-evaluate"
+                    "description": "EvalError: Possible side-effect in debug-evaluate"
                 }
             }
         }),

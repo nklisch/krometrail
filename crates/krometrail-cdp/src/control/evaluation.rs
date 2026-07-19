@@ -115,8 +115,11 @@ fn evaluation_exception_error(
         .and_then(Value::as_str);
     if class_name == Some("EvalError")
         && description.is_some_and(|description| {
-            description.starts_with("Possible side-effect in debug-evaluate")
-                || description.starts_with("EvalError: Possible side effect in debug-evaluate")
+            description
+                .strip_prefix("EvalError: ")
+                .unwrap_or(description)
+                .replace('-', " ")
+                .starts_with("Possible side effect in debug evaluate")
         })
     {
         return operation_error(
