@@ -1,7 +1,7 @@
 use serde_json::json;
 
 use super::evaluation::decode_evaluation;
-use krometrail_core::{ErrorCode, EvaluationValue, TargetId};
+use krometrail_core::{ErrorCode, EvaluationValue, MAX_REDACTED_TEXT_BYTES, TargetId};
 
 const UUID: &str = "123e4567-e89b-12d3-a456-426614174000";
 fn target() -> TargetId {
@@ -28,14 +28,72 @@ fn evaluation_distinguishes_undefined_null_and_refuses_remote_values() {
 }
 
 #[test]
-fn evaluation_refuses_exceptions_and_oversized_values() {
+fn evaluation_separates_side_effect_refusal_from_thrown_exceptions() {
     let error = decode_evaluation(
-        &json!({"exceptionDetails":{"text":"private stack"}}),
+        &json!({
+            "exceptionDetails": {
+                "text": "side effect refusal",
+                "exception": {
+                    "description": "Evaluation failed because the function may cause side effects.",
+                    "stackTrace": "private stack"
+                }
+            }
+        }),
         target(),
     )
     .unwrap_err();
     assert_eq!(error.code, ErrorCode::EvaluationFailed);
+    assert!(error.message.as_str().contains("refused as side-effecting"));
+    assert!(!error.message.as_str().contains("side effect refusal"));
+
+    let error = decode_evaluation(
+        &json!({
+            "result": {
+                "exceptionDetails": {
+                    "text": "Uncaught",
+                    "exception": {
+                        "className": "Error",
+                        "description": "Error: boom",
+                        "stackTrace": "private stack"
+                    }
+                }
+            }
+        }),
+        target(),
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .message
+            .as_str()
+            .contains("page evaluation threw: Error: boom"),
+        "{}",
+        error.message.as_str()
+    );
     assert!(!error.message.as_str().contains("private stack"));
+    assert!(
+        error
+            .recovery
+            .as_ref()
+            .unwrap()
+            .as_str()
+            .contains("handle the thrown error")
+    );
+
+    let oversized = "x".repeat(MAX_REDACTED_TEXT_BYTES + 1_024);
+    let error = decode_evaluation(
+        &json!({
+            "exceptionDetails": {
+                "exception": {"description": oversized}
+            }
+        }),
+        target(),
+    )
+    .unwrap_err();
+    assert!(
+        error.message.as_str().len() <= "page evaluation threw: ".len() + MAX_REDACTED_TEXT_BYTES
+    );
+
     let oversized = "x".repeat((1 << 20) + 1);
     let error = decode_evaluation(
         &json!({"result":{"type":"string","value":oversized}}),

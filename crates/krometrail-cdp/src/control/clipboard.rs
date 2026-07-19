@@ -6,7 +6,7 @@ use krometrail_core::{
 use serde_json::json;
 
 use super::{BoundTarget, PageControl, operation_error, transport_error};
-use crate::transport::{CdpTransport, CommandScope};
+use crate::transport::{CdpTransport, CommandScope, TransportError};
 
 const READ_CLIPBOARD: &str = "async function(){if(!globalThis.isSecureContext)throw new Error('secure_context_required');if(document.visibilityState!=='visible'||!document.hasFocus())throw new Error('focus_required');if(!navigator.clipboard)throw new Error('clipboard_unavailable');return await navigator.clipboard.readText();}";
 const WRITE_CLIPBOARD: &str = "async function(value){if(!globalThis.isSecureContext)throw new Error('secure_context_required');if(document.visibilityState!=='visible'||!document.hasFocus())throw new Error('focus_required');if(!navigator.clipboard)throw new Error('clipboard_unavailable');await navigator.clipboard.writeText(value);return true;}";
@@ -176,10 +176,8 @@ fn clipboard_transport_error(
     }
 }
 
-fn clipboard_dispatch_error(
-    error: crate::transport::TransportError,
-    bound: &BoundTarget,
-) -> KrometrailError {
+fn clipboard_dispatch_error(error: TransportError, bound: &BoundTarget) -> KrometrailError {
+    let transport_class = transport_error_class(&error);
     let error = transport_error(error, ErrorCode::InteractionFailed, bound.target_id);
     if error.code == ErrorCode::BrowserDisconnected {
         error
@@ -187,9 +185,23 @@ fn clipboard_dispatch_error(
         clipboard_failure(
             ErrorCode::InteractionFailed,
             bound,
-            "browser denied or did not complete the clipboard request",
+            format!(
+                "clipboard script dispatch failed before the page could respond (transport error: {transport_class})"
+            ),
             "focus the visible page, allow clipboard access if prompted, and retry",
         )
+    }
+}
+
+fn transport_error_class(error: &TransportError) -> &'static str {
+    match error {
+        TransportError::InvalidInput => "invalid_input",
+        TransportError::ConnectFailed => "connect_failed",
+        TransportError::CommandFailed => "command_failed",
+        TransportError::Protocol => "protocol",
+        TransportError::Disconnected => "disconnected",
+        TransportError::SubscriptionClosed => "subscription_closed",
+        TransportError::Closed => "closed",
     }
 }
 
@@ -247,7 +259,7 @@ fn clipboard_response_error(bound: &BoundTarget, response: &serde_json::Value) -
 fn clipboard_failure(
     code: ErrorCode,
     bound: &BoundTarget,
-    message: &'static str,
+    message: impl Into<String>,
     recovery: &'static str,
 ) -> KrometrailError {
     KrometrailError::new(code, NonEmptyText::new(message).unwrap())
@@ -427,6 +439,9 @@ mod tests {
         }
         let error = clipboard_dispatch_error(TransportError::CommandFailed, &bound);
         assert_eq!(error.code, ErrorCode::InteractionFailed);
+        assert!(error.message.as_str().contains("script dispatch"));
+        assert!(error.message.as_str().contains("command_failed"));
+        assert!(!error.message.as_str().contains("denied"));
         assert!(error.recovery.is_some());
         let error = clipboard_dispatch_error(TransportError::Disconnected, &bound);
         assert_eq!(error.code, ErrorCode::BrowserDisconnected);

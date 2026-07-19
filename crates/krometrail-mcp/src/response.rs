@@ -108,11 +108,12 @@ pub(crate) fn split_response_request(
 }
 
 fn decode_response_request(value: Value) -> krometrail_core::Result<ResponseRequest> {
-    let encoded = serde_json::to_vec(&value).map_err(|_| invalid_projection("response"))?;
+    let encoded = serde_json::to_vec(&value).map_err(|_| invalid_projection("response", None))?;
     let mut deserializer = serde_json::Deserializer::from_slice(&encoded);
     serde_path_to_error::deserialize(&mut deserializer).map_err(|error| {
         let nested = normalize_projection_path(&error.path().to_string());
-        invalid_projection(&format!("response.{nested}"))
+        let description = bounded_serde_description(&error);
+        invalid_projection(&format!("response.{nested}"), Some(&description))
     })
 }
 
@@ -131,14 +132,54 @@ fn normalize_projection_path(path: &str) -> String {
     }
 }
 
-fn invalid_projection(path: &str) -> KrometrailError {
+fn invalid_projection(path: &str, description: Option<&str>) -> KrometrailError {
+    let message = match description {
+        Some(description) => {
+            format!(
+                "tool arguments do not match the advertised input schema at {path}: {description}"
+            )
+        }
+        None => format!("tool arguments do not match the advertised input schema at {path}"),
+    };
     KrometrailError::new(
         ErrorCode::InvalidInput,
-        NonEmptyText::new(format!(
-            "tool arguments do not match the advertised input schema at {path}"
-        ))
-        .expect("projection validation message is non-empty"),
+        NonEmptyText::new(message).expect("projection validation message is non-empty"),
     )
+}
+
+fn bounded_serde_description(error: impl std::fmt::Display) -> String {
+    const MAX_SCHEMA_ERROR_BYTES: usize = 512;
+    let description = error.to_string();
+    let mut safe = String::with_capacity(description.len());
+    let mut characters = description.chars().peekable();
+    while let Some(character) = characters.next() {
+        if character != '"' {
+            safe.push(character);
+            continue;
+        }
+        safe.push('"');
+        safe.push_str("[redacted]");
+        let mut escaped = false;
+        for character in characters.by_ref() {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                break;
+            }
+        }
+        safe.push('"');
+    }
+    let mut description = safe;
+    if description.len() > MAX_SCHEMA_ERROR_BYTES {
+        let mut end = MAX_SCHEMA_ERROR_BYTES;
+        while !description.is_char_boundary(end) {
+            end -= 1;
+        }
+        description.truncate(end);
+    }
+    description
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, JsonSchema)]
@@ -2844,6 +2885,8 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.code, ErrorCode::InvalidInput);
+        assert!(error.message.as_str().contains("response.inline_images"));
+        assert!(error.message.as_str().contains("invalid type"));
     }
 
     #[test]

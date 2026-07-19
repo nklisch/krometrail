@@ -713,8 +713,8 @@ async fn resolve_range_argument(
             arguments.insert("range".into(), serializable(range)?);
             Ok((arguments, Some(handle_argument.range_handle)))
         }
-        (true, true) => Err(invalid_arguments("range_handle")),
-        (false, false) => Err(invalid_arguments("range")),
+        (true, true) => Err(invalid_arguments("range_handle", None)),
+        (false, false) => Err(invalid_arguments("range", None)),
     }
 }
 
@@ -887,7 +887,7 @@ async fn call_lifecycle(
                 Ok(_) => {
                     return Ok(visible_error(
                         tool.name,
-                        invalid_arguments("browser_status"),
+                        invalid_arguments("browser_status", None),
                     ));
                 }
                 Err(error) => return Ok(visible_error(tool.name, error)),
@@ -942,11 +942,12 @@ fn parse_arguments<T: DeserializeOwned>(arguments: rmcp::model::JsonObject) -> R
 }
 
 fn decode_value<T: DeserializeOwned>(value: Value) -> Result<T> {
-    let encoded = serde_json::to_vec(&value).map_err(|_| invalid_arguments("$"))?;
+    let encoded = serde_json::to_vec(&value).map_err(|_| invalid_arguments("$", None))?;
     let mut deserializer = serde_json::Deserializer::from_slice(&encoded);
     serde_path_to_error::deserialize(&mut deserializer).map_err(|error| {
         let path = normalize_argument_path(&error.path().to_string());
-        invalid_arguments(&path)
+        let description = bounded_serde_description(&error);
+        invalid_arguments(&path, Some(&description))
     })
 }
 
@@ -959,19 +960,56 @@ fn serializable<T: serde::Serialize>(value: T) -> Result<Value> {
     })
 }
 
-fn invalid_arguments(path: &str) -> KrometrailError {
+fn invalid_arguments(path: &str, description: Option<&str>) -> KrometrailError {
     let path = path
         .strip_prefix("request.")
         .or_else(|| path.strip_prefix("request"))
         .filter(|path| !path.is_empty())
         .unwrap_or(path);
-    KrometrailError::new(
-        ErrorCode::InvalidInput,
-        NonEmptyText::new(format!(
-            "tool arguments do not match the advertised input schema at {path}"
-        ))
-        .unwrap(),
-    )
+    let message = match description {
+        Some(description) => {
+            format!(
+                "tool arguments do not match the advertised input schema at {path}: {description}"
+            )
+        }
+        None => format!("tool arguments do not match the advertised input schema at {path}"),
+    };
+    KrometrailError::new(ErrorCode::InvalidInput, NonEmptyText::new(message).unwrap())
+}
+
+fn bounded_serde_description(error: impl std::fmt::Display) -> String {
+    const MAX_SCHEMA_ERROR_BYTES: usize = 512;
+    let description = error.to_string();
+    let mut safe = String::with_capacity(description.len());
+    let mut characters = description.chars().peekable();
+    while let Some(character) = characters.next() {
+        if character != '"' {
+            safe.push(character);
+            continue;
+        }
+        safe.push('"');
+        safe.push_str("[redacted]");
+        let mut escaped = false;
+        for character in characters.by_ref() {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                break;
+            }
+        }
+        safe.push('"');
+    }
+    let mut description = safe;
+    if description.len() > MAX_SCHEMA_ERROR_BYTES {
+        let mut end = MAX_SCHEMA_ERROR_BYTES;
+        while !description.is_char_boundary(end) {
+            end -= 1;
+        }
+        description.truncate(end);
+    }
+    description
 }
 
 fn normalize_argument_path(path: &str) -> String {
@@ -1114,6 +1152,10 @@ mod tests {
         let error = parse_arguments::<Arguments>(arguments).unwrap_err();
         assert_eq!(error.code, ErrorCode::InvalidInput);
         assert!(error.message.as_str().contains("locator.reference"));
+        assert!(error.message.as_str().contains("invalid type"));
         assert!(!error.message.as_str().contains("sensitive-browser-content"));
+
+        let error = parse_arguments::<Arguments>(serde_json::Map::new()).unwrap_err();
+        assert!(error.message.as_str().contains("missing field `locator`"));
     }
 }

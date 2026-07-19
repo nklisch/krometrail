@@ -1,8 +1,8 @@
 use serde_json::{Value, json};
 
 use krometrail_core::{
-    BrowserOperationResult, ErrorCode, EvaluationResult, EvaluationValue, ObservationContext,
-    ReadOnlyEvaluationRequest, Result,
+    BrowserOperationResult, ErrorCode, EvaluationResult, EvaluationValue, EventRedactor,
+    NonEmptyText, ObservationContext, ReadOnlyEvaluationRequest, Result,
 };
 
 use super::{BoundTarget, PageControl, operation_error, transport_error};
@@ -54,20 +54,12 @@ pub(super) fn decode_evaluation(
     response: &Value,
     target_id: krometrail_core::TargetId,
 ) -> Result<EvaluationValue> {
-    if response.get("exceptionDetails").is_some() {
-        return Err(operation_error(
-            ErrorCode::EvaluationFailed,
-            target_id,
-            "page evaluation raised an exception or was refused as side-effecting",
-        ));
-    }
     let result = response.get("result").unwrap_or(response);
-    if result.get("exceptionDetails").is_some() {
-        return Err(operation_error(
-            ErrorCode::EvaluationFailed,
-            target_id,
-            "page evaluation raised an exception or was refused as side-effecting",
-        ));
+    if let Some(details) = response
+        .get("exceptionDetails")
+        .or_else(|| result.get("exceptionDetails"))
+    {
+        return Err(evaluation_exception_error(details, target_id));
     }
     let result = result
         .get("result")
@@ -106,4 +98,55 @@ pub(super) fn decode_evaluation(
         ));
     }
     Ok(EvaluationValue::Json(value))
+}
+
+fn evaluation_exception_error(
+    details: &Value,
+    target_id: krometrail_core::TargetId,
+) -> krometrail_core::KrometrailError {
+    let description = details
+        .get("exception")
+        .and_then(|exception| exception.get("description"))
+        .and_then(Value::as_str)
+        .or_else(|| details.get("description").and_then(Value::as_str));
+    if description
+        .is_some_and(|description| description.to_ascii_lowercase().contains("side effect"))
+    {
+        return operation_error(
+            ErrorCode::EvaluationFailed,
+            target_id,
+            "page evaluation was refused as side-effecting",
+        );
+    }
+
+    let class_name = details
+        .get("exception")
+        .and_then(|exception| exception.get("className"))
+        .and_then(Value::as_str);
+    let fallback_text = details.get("text").and_then(Value::as_str);
+    let summary_input = match (class_name, description.or(fallback_text)) {
+        (Some(class_name), Some(description))
+            if description
+                .strip_prefix(class_name)
+                .is_some_and(|suffix| suffix.starts_with(':')) =>
+        {
+            description.to_owned()
+        }
+        (Some(class_name), Some(description)) => format!("{class_name}: {description}"),
+        (Some(class_name), None) => class_name.to_owned(),
+        (None, Some(description)) => description.to_owned(),
+        (None, None) => "exception details were not provided".to_owned(),
+    };
+    let summary = EventRedactor.text(&summary_input);
+    operation_error(
+        ErrorCode::EvaluationFailed,
+        target_id,
+        format!("page evaluation threw: {}", summary.text()),
+    )
+    .with_recovery(
+        NonEmptyText::new(
+            "fix the expression or handle the thrown error; the summary is bounded and sanitized",
+        )
+        .expect("evaluation recovery is non-empty"),
+    )
 }

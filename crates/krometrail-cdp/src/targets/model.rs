@@ -4,9 +4,9 @@
 //! information. The reducer below is the sole owner of target identity and lifecycle state.
 
 use krometrail_core::{
-    BrowserCompatibility, BrowserSessionEvent, BrowserSessionState, ErrorCode, KrometrailError,
-    NonEmptyText, PageSelection, PageStatus, PageTarget, Result, SupervisedTarget, TargetId,
-    TargetLifecycle, TargetVisibility, ViewportMetrics,
+    BrowserCompatibility, BrowserSessionEvent, BrowserSessionState, ErrorCode, ErrorContext,
+    KrometrailError, NonEmptyText, PageSelection, PageStatus, PageTarget, Result, RetryAdvice,
+    SupervisedTarget, TargetId, TargetLifecycle, TargetVisibility, ViewportMetrics,
     browser::{PageContextInventory, PageContextStatus, PageSequence},
 };
 
@@ -232,6 +232,13 @@ impl SupervisorState {
     }
 
     pub fn resolve_selection(&self, selection: PageSelection) -> Result<&SupervisorTargetState> {
+        let context = match &selection {
+            PageSelection::Selected => ErrorContext::default(),
+            PageSelection::Target(target_id) => ErrorContext {
+                target_id: Some(*target_id),
+                ..ErrorContext::default()
+            },
+        };
         let target = match selection {
             PageSelection::Selected => self.selected_target(),
             PageSelection::Target(id) => self
@@ -244,6 +251,14 @@ impl SupervisorState {
                 ErrorCode::NotFound,
                 NonEmptyText::new("selected browser page was not found").unwrap(),
             )
+            .with_context(context)
+            .with_recovery(
+                NonEmptyText::new(
+                    "create a page with create_page, or select an existing page with select_page",
+                )
+                .unwrap(),
+            )
+            .with_retry(RetryAdvice::AfterRecovery)
         })?;
         if target.transport_session.is_none()
             || matches!(
@@ -479,4 +494,45 @@ pub(crate) fn close_reason(_close: &TransportClose) -> &'static str {
     // The reason is deliberately not propagated into public errors or info-level tracing. It is
     // only an input that distinguishes transport closure from managed-process death.
     "transport connection lost"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use krometrail_core::{
+        BrowserProduct, BrowserProductVersion, CapabilitySupport, RendererCapability,
+    };
+
+    fn compatibility() -> BrowserCompatibility {
+        BrowserCompatibility::new(
+            krometrail_core::BrowserVersion::new(
+                BrowserProduct::Chrome,
+                BrowserProductVersion::new("128").unwrap(),
+                "revision",
+                "1.3",
+                "user-agent",
+                "js",
+            )
+            .unwrap(),
+            RendererCapability::ALL
+                .iter()
+                .map(|capability| CapabilitySupport::new(*capability, true, true, None).unwrap())
+                .collect(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn missing_selected_page_explains_how_to_recover() {
+        let state = SupervisorState::new(compatibility());
+        let error = state
+            .resolve_selection(PageSelection::Selected)
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::NotFound);
+        assert_eq!(error.retry, RetryAdvice::AfterRecovery);
+        assert_eq!(
+            error.recovery.as_ref().unwrap().as_str(),
+            "create a page with create_page, or select an existing page with select_page"
+        );
+    }
 }

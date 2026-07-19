@@ -118,11 +118,11 @@ bounded length, never page content).
 - Redact via `RedactedText::redact(description, MAX_REDACTED_TEXT_BYTES)`.
 
 **Acceptance Criteria**:
-- [ ] A double returning a thrown `Error('boom')` yields a message containing a bounded
+- [x] A double returning a thrown `Error('boom')` yields a message containing a bounded
       "boom" summary and no raw stack.
-- [ ] A double returning the side-effect refusal yields the refusal message with the
+- [x] A double returning the side-effect refusal yields the refusal message with the
       side-effect recovery and no exception echo.
-- [ ] Oversized exception text is truncated per `RedactedText` accounting.
+- [x] Oversized exception text is truncated per `RedactedText` accounting.
 
 ### Unit 2: focus_times default + named-field schema errors
 **Files**: `crates/krometrail-core/src/timeline/context.rs`,
@@ -136,10 +136,10 @@ bounded length, never page content).
   missing field `focus_times`".
 
 **Acceptance Criteria**:
-- [ ] `query_browser_events` with `range_handle` + `filter` + `selection` and NO
+- [x] `query_browser_events` with `range_handle` + `filter` + `selection` and NO
       `focus_times` deserializes (empty vec).
-- [ ] Schema artifacts no longer list `focus_times` as required; digest check passes.
-- [ ] A deliberately malformed request's error names the offending field when serde
+- [x] Schema artifacts no longer list `focus_times` as required; digest check passes.
+- [x] A deliberately malformed request's error names the offending field when serde
       reports one.
 
 ### Unit 3: no-page recovery enrichment
@@ -150,7 +150,7 @@ bounded length, never page content).
   `.with_retry(RetryAdvice::AfterRecovery)`, and session context.
 
 **Acceptance Criteria**:
-- [ ] `navigate_page` in a zero-page session returns the recovery action and
+- [x] `navigate_page` in a zero-page session returns the recovery action and
       retry-after-recovery advice (existing envelope tests extended).
 
 ### Unit 4: clipboard dispatch-stage message
@@ -161,7 +161,7 @@ bounded length, never page content).
   `InteractionFailed`, `AfterRecovery`, and the visible-focused-page recovery.
 
 **Acceptance Criteria**:
-- [ ] Dispatch-failure double asserts the new stage-naming message; the four
+- [x] Dispatch-failure double asserts the new stage-naming message; the four
       response-path classes (`clipboard.rs:411` test) are byte-unchanged.
 
 ## Implementation Order
@@ -183,3 +183,24 @@ Unit 3, Unit 4.
 - **Schema regeneration ripples**: making `focus_times` optional changes generated
   artifacts consumed by digest tests; the unit explicitly includes regeneration so a
   stale-artifact CI failure is impossible to miss.
+
+## Implementation Notes
+
+- Evaluation decoding now recognizes the CDP side-effect marker, preserves the stable
+  `EvaluationFailed` code, and emits a bounded `EventRedactor`/`RedactedText` exception
+  summary without stack data. Tests cover refusal, thrown `Error('boom')`, and oversized
+  exception text.
+- All three `focus_times` wire fields now default to an empty collection. MCP schema
+  generation derives the optional field from those wire types; there are no checked-in
+  MCP schema files to regenerate, so the source-driven schema tests verify the result.
+- MCP argument/projection errors append a bounded serde description after the normalized
+  path. Quoted values in serde diagnostics are redacted after a focused test showed that
+  serde can echo invalid input values.
+- Empty page selection now carries the requested create/select recovery and
+  `AfterRecovery` retry advice. Explicit target selections retain target context; the
+  selected-page case retains the structured error context block and the MCP boundary's
+  existing session diagnostics correlation.
+- Clipboard dispatch failures identify the dispatch stage and stable transport error
+  class while preserving the existing recovery, code, and response-path discrimination.
+- Focused checks passed with `CARGO_TARGET_DIR=/tmp/krometrail-cargo-target`; the full
+  repository verification gates are the remaining completion check.

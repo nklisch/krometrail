@@ -260,6 +260,7 @@ impl<'de> Deserialize<'de> for EffectiveBundlePolicy {
             artifact_failure_policy: ArtifactFailurePolicy,
             event_filter: BrowserEventFilter,
             event_selection: BrowserEventSelection,
+            #[serde(default)]
             focus_times: Vec<SessionTime>,
         }
         deserialize_validated(deserializer, |wire: Wire| {

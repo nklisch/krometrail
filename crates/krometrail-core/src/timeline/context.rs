@@ -186,6 +186,7 @@ struct TemporalContextRequestWire {
     clip: Option<SessionRange>,
     filter: BrowserEventFilter,
     selection: BrowserEventSelection,
+    #[serde(default)]
     focus_times: Vec<SessionTime>,
 }
 
@@ -210,6 +211,7 @@ struct BrowserEventDetailRequestWire {
     clip: Option<SessionRange>,
     filter: BrowserEventFilter,
     selection: BrowserEventDetailSelectionWire,
+    #[serde(default)]
     focus_times: Vec<SessionTime>,
 }
 
@@ -1328,6 +1330,14 @@ mod tests {
             serde_json::from_str::<TemporalContextRequest>(&encoded).unwrap(),
             request
         );
+        let mut omitted_focus_times = serde_json::to_value(&request).unwrap();
+        omitted_focus_times
+            .as_object_mut()
+            .unwrap()
+            .remove("focus_times");
+        let defaulted =
+            serde_json::from_value::<TemporalContextRequest>(omitted_focus_times).unwrap();
+        assert!(defaulted.focus_times().is_empty());
         assert!(EventCompactLimit::new(0).is_err());
         assert!(EventCompactLimit::new(MAX_COMPACT_EVENT_LIMIT + 1).is_err());
     }
@@ -1344,12 +1354,16 @@ mod tests {
             vec![SessionTime::from_nanos(50)],
         )
         .unwrap();
-        let encoded = serde_json::to_value(&request).unwrap();
+        let mut encoded = serde_json::to_value(&request).unwrap();
         assert_eq!(encoded["selection"]["mode"], "chronological");
         assert_eq!(
             serde_json::from_value::<BrowserEventDetailRequest>(encoded.clone()).unwrap(),
             request
         );
+        encoded.as_object_mut().unwrap().remove("focus_times");
+        let defaulted =
+            serde_json::from_value::<BrowserEventDetailRequest>(encoded.clone()).unwrap();
+        assert!(defaulted.context_request().focus_times().is_empty());
         assert_eq!(
             TEMPORAL_CONTEXT_OPERATION_REGISTRY,
             &[TemporalContextOperationDefinition {
