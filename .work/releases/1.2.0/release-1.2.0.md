@@ -1,7 +1,7 @@
 ---
 id: release-1.2.0
 kind: release
-stage: release-ready
+stage: released
 tags: []
 parent: null
 depends_on: []
@@ -37,4 +37,16 @@ The `v1.2.0` entry covers the complete selected minor-release scope, including a
 - Store artifact/schema integration suites after deleting the obsolete v5 migration fixture — passed.
 - Response schema closure, target ranking/bounds, no-inline limits, diagnostics, batch omission, temporal anchor selection/resources, zero default artifact reads, and persistence shutdown recovery regressions — passed.
 - Generated public documentation build and workspace all-target compilation — passed.
-- Locked workspace formatting, check, all-target tests, and warning-denied Clippy — pending release helper.
+- Locked workspace formatting, check, all-target tests, and warning-denied Clippy — passed in the release helper and GitHub CI.
+
+## Shipment
+
+- **Date shipped:** 2026-07-18
+- **Release tag:** `v1.2.0` at `228af13d865a3e5f7bc76514ffed059325696d32`
+- **GitHub release:** https://github.com/nklisch/krometrail/releases/tag/v1.2.0
+- **Release workflow:** https://github.com/nklisch/krometrail/actions/runs/29672760698
+- **Rust CI:** https://github.com/nklisch/krometrail/actions/runs/29672760628
+- **Documentation deployment:** https://github.com/nklisch/krometrail/actions/runs/29672760627
+- **Published files:** five platform executables plus `checksums.txt`; all builds, matching-architecture smoke tests, attestations, and publication checks passed.
+- **Plugin projection:** native Claude and Codex manifests, catalogs, and the exact managed binary version marker were atomically advanced to 1.2.0 by the release helper.
+- **Total bound non-release items shipped:** 16.
