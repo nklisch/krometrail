@@ -1420,6 +1420,35 @@ struct CompactResolvedRange {
     options: krometrail_core::RangeResolutionOptions,
 }
 
+#[derive(Clone, Debug, Serialize)]
+struct CompactSourceFrameRow {
+    frame_id: krometrail_core::FrameId,
+    resolved_position: u32,
+    session_time: SessionTime,
+    media_type: NonEmptyText,
+    encoded_byte_len: u64,
+    #[serde(skip_serializing_if = "is_zero")]
+    warning_count: u32,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
+}
+
+fn compact_source_frame_row(
+    handle: &SourceFrameHandle,
+) -> Result<CompactSourceFrameRow, ResponseInvariantError> {
+    Ok(CompactSourceFrameRow {
+        frame_id: handle.frame_id,
+        resolved_position: handle.resolved_position,
+        session_time: handle.provenance.session_time(),
+        media_type: handle.media_type.clone(),
+        encoded_byte_len: handle.encoded_byte_len,
+        warning_count: u32::try_from(handle.provenance.warnings().len())
+            .map_err(|_| ResponseInvariantError)?,
+    })
+}
+
 fn compact_resolved_range(
     range: &krometrail_core::ResolvedRange,
 ) -> Result<CompactResolvedRange, ResponseInvariantError> {
@@ -2063,7 +2092,6 @@ pub(crate) async fn map_progressive_result(
             projection
         }
         ProgressiveEvidenceResult::ListSourceFrames(list) => {
-            let frames = list.frames.clone();
             let local_omitted_frame_count = 0;
             let omitted_frame_count = list
                 .omitted_frame_count
@@ -2073,6 +2101,17 @@ pub(crate) async fn map_progressive_result(
                     .map_err(|_| ResponseInvariantError)?
             } else {
                 serde_json::to_value(&list.range).map_err(|_| ResponseInvariantError)?
+            };
+            let frames = if response.detail == ResponseDetail::Concise {
+                serde_json::to_value(
+                    list.frames
+                        .iter()
+                        .map(compact_source_frame_row)
+                        .collect::<Result<Vec<_>, _>>()?,
+                )
+                .map_err(|_| ResponseInvariantError)?
+            } else {
+                serde_json::to_value(&list.frames).map_err(|_| ResponseInvariantError)?
             };
             let mut projection = Projection::success(json!({
                 "range": range,
@@ -2993,6 +3032,16 @@ mod tests {
         SourceFrameBatch { range, frames }
     }
 
+    fn source_frame_list(frame_count: u32) -> krometrail_core::SourceFrameList {
+        let batch = source_frame_batch(frame_count);
+        krometrail_core::SourceFrameList {
+            range: batch.range,
+            frames: batch.frames.into_iter().map(|frame| frame.handle).collect(),
+            omitted_frame_count: 0,
+            next_offset: None,
+        }
+    }
+
     fn failed_capture_for(target_id: TargetId) -> TargetCaptureStatus {
         let cause = KrometrailError::new(
             ErrorCode::PersistenceFailed,
@@ -3739,6 +3788,57 @@ mod tests {
         let mut full = value.clone();
         project_temporal_value(&mut full, ResponseDetail::Full).unwrap();
         assert_eq!(full, value);
+    }
+
+    #[tokio::test]
+    async fn concise_source_frame_listing_is_small_and_keeps_only_drilldown_fields() {
+        let list = source_frame_list(64);
+        let mapped = map_progressive_result(
+            "list_source_frames",
+            ProgressiveEvidenceResult::ListSourceFrames(Box::new(list.clone())),
+            &UnusedProgressive,
+            Instant::now() + Duration::from_secs(1),
+            test_cancellation(),
+            ResponseRequest::default(),
+        )
+        .await
+        .expect("projection succeeds");
+        let resource_count = mapped.response.resources.len();
+        let concise = mapped.response.result;
+        assert!(serde_json::to_vec(&concise).unwrap().len() < 16 * 1024);
+        let row = &concise["frames"][0];
+        assert_eq!(
+            row.as_object().unwrap().keys().collect::<Vec<_>>(),
+            vec![
+                "encoded_byte_len",
+                "frame_id",
+                "media_type",
+                "resolved_position",
+                "session_time",
+            ]
+        );
+        assert!(row.get("provenance").is_none());
+        assert!(row.get("content_sha256").is_none());
+        assert!(row.get("request_position").is_none());
+        assert_eq!(resource_count, 64);
+
+        let expanded = map_progressive_result(
+            "list_source_frames",
+            ProgressiveEvidenceResult::ListSourceFrames(Box::new(list)),
+            &UnusedProgressive,
+            Instant::now() + Duration::from_secs(1),
+            test_cancellation(),
+            ResponseRequest {
+                detail: ResponseDetail::Expanded,
+                ..ResponseRequest::default()
+            },
+        )
+        .await
+        .expect("expanded projection succeeds")
+        .response
+        .result;
+        assert!(expanded["frames"][0].get("provenance").is_some());
+        assert!(expanded["frames"][0].get("content_sha256").is_some());
     }
 
     #[test]

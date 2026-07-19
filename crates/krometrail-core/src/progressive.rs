@@ -1719,7 +1719,7 @@ define_progressive_evidence_operations! {
     },
     ListSourceFrames(SourceFramesRequest) => SourceFrameList {
         stable_name: "list_source_frames",
-        description: "List retained source-frame metadata for a resolved range.",
+        description: "List concise retained source-frame rows for a resolved range; request expanded detail for full provenance.",
         capability: crate::CapabilityId::TemporalVision,
         mutability: crate::OperationMutability::ReadOnly,
         exposure: OperationExposure::Tool,

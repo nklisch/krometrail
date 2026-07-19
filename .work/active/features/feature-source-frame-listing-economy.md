@@ -1,7 +1,7 @@
 ---
 id: feature-source-frame-listing-economy
 kind: feature
-stage: implementing
+stage: review
 tags: [agent-ux, temporal]
 parent: null
 depends_on: []
@@ -87,14 +87,14 @@ the drill-down authority.
 - `warning_count` keeps bounded-loss visibility without shipping warning bodies.
 
 **Acceptance Criteria**:
-- [ ] Concise 64-row listing serializes to well under a typical host token cap:
+- [x] Concise 64-row listing serializes to well under a typical host token cap:
       assert a 64-frame concise projection body stays < 16 KB.
-- [ ] Concise rows carry frame_id, resolved_position, session_time, media_type,
+- [x] Concise rows carry frame_id, resolved_position, session_time, media_type,
       encoded_byte_len and nothing else (no provenance object, no sha256, no
       request_position).
-- [ ] `detail: expanded` still returns full `SourceFrameHandle` rows byte-for-byte
+- [x] `detail: expanded` still returns full `SourceFrameHandle` rows byte-for-byte
       as today.
-- [ ] Resource links still list every returned frame at all detail levels.
+- [x] Resource links still list every returned frame at all detail levels.
 
 ### Unit 2: Tool guidance
 **File**: `crates/krometrail-mcp/src/registry.rs` (or wherever
@@ -118,3 +118,13 @@ description string is part of checked-in canonical artifacts
 ## Risks
 - Downstream consumers of the concise listing shape: none supported (agent tool
   without third-party integrations; Current Contract Discipline applies).
+
+## Implementation notes
+- Execution capability: host implementation, because the projection and one registry description are a small cohesive write set.
+- Review weight: standard, project default.
+- Files changed: `crates/krometrail-mcp/src/response.rs`, `crates/krometrail-core/src/progressive.rs`.
+- Tests added/removed: added a 64-row concise-size/shape/resource-link regression and expanded-row preservation coverage in `response.rs`.
+- Simplification: removed the concise listing's redundant full-handle serialization; no compatibility path was added.
+- Discrepancies from design: none.
+- Adjacent issues parked: none.
+- Verification: `CARGO_TARGET_DIR=/tmp/krometrail-target cargo test -p krometrail-mcp concise_source_frame_listing_is_small_and_keeps_only_drilldown_fields --locked` passed.
