@@ -1,7 +1,7 @@
 ---
 id: feature-visibility-emission-ordering
 kind: feature
-stage: review
+stage: done
 tags: [browser, bug]
 parent: null
 depends_on: []
@@ -156,3 +156,8 @@ signature already accepts an optional time — it does:
 - Verification: `cargo fmt --all` and
   `CARGO_TARGET_DIR=/tmp/krometrail-target cargo test -p krometrail-cdp
   capture::tests::visibility_ --locked` passed.
+
+## Review findings (cross-model, Fable reviewing Luna)
+
+No blocking findings; implementation matches the design, acceptance criteria
+verified against the committed tests, full workspace gate re-run independently.

@@ -1,7 +1,7 @@
 ---
 id: feature-viewport-scoped-geometry
 kind: feature
-stage: review
+stage: done
 tags: [agent-ux, browser]
 parent: null
 depends_on: []
@@ -152,3 +152,8 @@ viewport-anchored requests; thread `Option<CssRect>` through
 - Discrepancies from design: none.
 - Adjacent issues parked: none.
 - Verification: `CARGO_TARGET_DIR=/tmp/krometrail-target cargo test -p krometrail-cdp control::snapshot::tests:: --locked` passed (27 tests).
+
+## Review findings (cross-model, Fable reviewing Luna)
+
+No blocking findings; implementation matches the design, acceptance criteria
+verified against the committed tests, full workspace gate re-run independently.

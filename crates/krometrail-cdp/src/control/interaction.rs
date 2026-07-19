@@ -886,6 +886,22 @@ pub(super) async fn send_cdp(
     cancel: &OperationCancellation,
     generation: u64,
 ) -> Result<Value> {
+    send_cdp_unmapped(transport, bound, method, params, cancel, generation)
+        .await?
+        .map_err(|error| transport_error(error, ErrorCode::InteractionFailed, bound.target_id))
+}
+
+/// Like [`send_cdp`], but preserves the raw transport outcome so gesture
+/// dispatch can distinguish a lost command acknowledgement from a rejected
+/// command. Cancellation and stale-generation failures stay hard errors.
+pub(super) async fn send_cdp_unmapped(
+    transport: &dyn CdpTransport,
+    bound: &BoundTarget,
+    method: &str,
+    params: Value,
+    cancel: &OperationCancellation,
+    generation: u64,
+) -> Result<std::result::Result<Value, crate::transport::TransportError>> {
     cancel
         .race(
             generation,
@@ -896,8 +912,7 @@ pub(super) async fn send_cdp(
                 params,
             ),
         )
-        .await?
-        .map_err(|error| transport_error(error, ErrorCode::InteractionFailed, bound.target_id))
+        .await
 }
 
 fn protocol_number(value: &Value, field: &str, target_id: TargetId) -> Result<f64> {

@@ -170,3 +170,23 @@ child.
   Krometrail pointer, outside this repository; the repository-local checks
   pass when that optional sibling is absent. bash tests/plugin-install-smoke.sh
   skipped because KROMETRAIL_PLUGIN_SMOKE=1 was not set.
+
+## Review findings (cross-model, Fable reviewing Luna)
+
+- **Confirmed race, fixed in review**: the mkdir-based lock recorded its
+  owner pid in a second step, so a peer probing between `mkdir` and the pid
+  write judged the fresh lock stale, stole it, and both launchers installed —
+  the loser then crashed writing into the vanished lock directory
+  (reproduced live on the concurrent fixture; the launcher's `set -eu` turned
+  the failed redirect into a nonzero exit). Replaced with an atomic
+  noclobber-created lock *file* whose creation and owner record are one step,
+  plus a two-observation rule before any stale reclaim so a garbled or
+  mid-write read can never justify stealing. Reclaim now removes the moved
+  stale lock fully instead of leaving `.install-lock.stale.*` litter, and the
+  new lock owner sweeps dead `.install-status.*` files.
+- Smoke suite run in review with `KROMETRAIL_PLUGIN_SMOKE=1`-equivalent
+  invocation: passed. Fixture suite passed six consecutive runs after the
+  lock rework (the race reproduced within three runs before it).
+- Residual, accepted: the sibling `../skills` marketplace catalog still pins
+  krometrail 1.0.1 and fails `tests/plugin-static.sh`'s optional sibling
+  check; that catalog lives outside this repository and needs its own bump.

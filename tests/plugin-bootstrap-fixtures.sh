@@ -201,8 +201,8 @@ wait "$pid_two"
 
 # A dead owner pid is reclaimed before the cold install proceeds.
 stale="$STATE/stale-managed"
-mkdir -p "$stale/.install-lock"
-printf '999999\n' >"$stale/.install-lock/pid"
+mkdir -p "$stale"
+printf '999999\n' >"$stale/.install-lock"
 stale_stdout=$(run_launcher "$STATE/plugin-100" "$stale" stale 2>"$STATE/stale.stderr")
 [[ "$stale_stdout" == 'managed-1.0.0:stale' ]] || fail "stale lock was not reclaimed"
 [[ ! -e "$stale/.install-lock" ]] || fail "stale lock was not released"

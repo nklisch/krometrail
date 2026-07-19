@@ -64,13 +64,14 @@ managed_binary_is_current() {
   return 1
 }
 
-LOCK_DIR="$MANAGED_ROOT/.install-lock"
+LOCK_FILE="$MANAGED_ROOT/.install-lock"
 INSTALL_STATUS="$MANAGED_ROOT/.install-status.$$"
 LOCK_OWNER=0
 
+# The lock is one owner-pid file created atomically with noclobber, so there
+# is never a window where the lock exists without its owner recorded.
 lock_owner_is_alive() {
-  [ -f "$LOCK_DIR/pid" ] || return 1
-  lock_pid=$(cat "$LOCK_DIR/pid" 2>/dev/null || true)
+  lock_pid=$(cat "$LOCK_FILE" 2>/dev/null) || return 1
   case "$lock_pid" in
     ''|*[!0-9]*) return 1 ;;
   esac
@@ -78,9 +79,9 @@ lock_owner_is_alive() {
 }
 
 reclaim_stale_lock() {
-  stale_lock="$LOCK_DIR.stale.$$"
-  if mv "$LOCK_DIR" "$stale_lock" 2>/dev/null; then
-    rmdir "$stale_lock" 2>/dev/null || true
+  stale_lock="$LOCK_FILE.stale.$$"
+  if mv "$LOCK_FILE" "$stale_lock" 2>/dev/null; then
+    rm -rf "$stale_lock"
     return 0
   fi
   return 1
@@ -88,14 +89,24 @@ reclaim_stale_lock() {
 
 acquire_install_lock() {
   elapsed=0
+  not_alive=0
   while :; do
-    if mkdir "$LOCK_DIR" 2>/dev/null; then
-      printf '%s\n' "$$" >"$LOCK_DIR/pid"
+    if (set -C; printf '%s\n' "$$" >"$LOCK_FILE") 2>/dev/null; then
       LOCK_OWNER=1
+      # Only dead owners can leave status files behind; the live installer's
+      # own status path is created after this point.
+      rm -f "$MANAGED_ROOT"/.install-status.* 2>/dev/null || true
       return 0
     fi
-    if ! lock_owner_is_alive; then
-      reclaim_stale_lock && continue
+    if lock_owner_is_alive; then
+      not_alive=0
+    else
+      # Require two spaced observations before reclaiming so a peer that just
+      # created the lock (or a garbled read) is never treated as dead.
+      not_alive=$((not_alive + 1))
+      if [ "$not_alive" -ge 2 ]; then
+        reclaim_stale_lock && continue
+      fi
     fi
     if [ "$elapsed" -ge 20 ]; then
       return 1
@@ -107,8 +118,7 @@ acquire_install_lock() {
 
 release_install_lock() {
   if [ "$LOCK_OWNER" -eq 1 ]; then
-    rm -f "$LOCK_DIR/pid"
-    rmdir "$LOCK_DIR" 2>/dev/null || true
+    rm -f "$LOCK_FILE"
     LOCK_OWNER=0
   fi
 }
@@ -118,7 +128,7 @@ if ! managed_binary_is_current; then
   printf 'krometrail plugin: installing managed release v%s\n' "$EXPECTED_VERSION" >&2
 
   # The installer performs the authoritative path validation. This creates only
-  # the expected root needed for the portable mkdir lock; an unsafe root remains
+  # the expected root needed for the portable lock file; an unsafe root remains
   # rejected by the installer before any binary can be executed.
   mkdir -p "$MANAGED_ROOT" 2>/dev/null || true
   if [ -L "$MANAGED_ROOT" ]; then
@@ -140,11 +150,12 @@ if ! managed_binary_is_current; then
       exit "$install_status"
     ) &
     INSTALL_PID=$!
-    printf '%s\n' "$INSTALL_PID" >"$LOCK_DIR/pid"
+    # Hand lock ownership to the installer so a launcher that exits at the
+    # connect budget leaves waiting peers fenced on the live install.
+    printf '%s\n' "$INSTALL_PID" >"$LOCK_FILE" 2>/dev/null || true
     elapsed=0
     while [ ! -f "$INSTALL_STATUS" ]; do
       if [ "$elapsed" -ge 20 ]; then
-        printf '%s\n' "$INSTALL_PID" >"$LOCK_DIR/pid"
         printf 'krometrail plugin: managed release install is still running in the background; reconnect to retry\n' >&2
         exit 1
       fi

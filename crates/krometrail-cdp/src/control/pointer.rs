@@ -6,10 +6,12 @@ use serde_json::{Map, Value, json};
 
 use super::{
     BoundTarget,
-    interaction::{ResolvedTarget, interaction_error, send_cdp},
+    interaction::{ResolvedTarget, interaction_error, send_cdp, send_cdp_unmapped},
     navigation::OperationCancellation,
+    transport_error,
 };
-use crate::transport::CdpTransport;
+use crate::transport::{CdpTransport, TransportError};
+use krometrail_core::ErrorCode;
 
 const DRAG_STEPS: usize = 5;
 
@@ -41,7 +43,7 @@ pub(super) async fn click(
     // stateful press/release pair together so cancellation can happen before the press or after the
     // release has been queued, but never leave Chrome with only half of the gesture dispatched.
     let results = futures_util::future::join_all([
-        mouse_event(
+        gesture_mouse_event(
             transport,
             bound,
             "mousePressed",
@@ -50,11 +52,10 @@ pub(super) async fn click(
             buttons,
             request.modifiers,
             request.click_count,
-            None,
             cancel,
             generation,
         ),
-        mouse_event(
+        gesture_mouse_event(
             transport,
             bound,
             "mouseReleased",
@@ -63,7 +64,6 @@ pub(super) async fn click(
             0,
             request.modifiers,
             request.click_count,
-            None,
             cancel,
             generation,
         ),
@@ -282,6 +282,96 @@ async fn mouse_event(
     cancel: &OperationCancellation,
     generation: u64,
 ) -> Result<()> {
+    let params = mouse_event_params(
+        bound,
+        event_type,
+        point,
+        button,
+        buttons,
+        modifiers,
+        click_count,
+        wheel,
+    )?;
+    send_cdp(
+        transport,
+        bound,
+        "Input.dispatchMouseEvent",
+        params,
+        cancel,
+        generation,
+    )
+    .await?;
+    Ok(())
+}
+
+/// Dispatch one half of a stateful pointer gesture. A lost command
+/// acknowledgement (`TransportError::CommandFailed`) after the command was
+/// accepted for sending is not a dispatch failure: Chrome queues the input
+/// before acknowledging it, and the response is routinely lost when the
+/// gesture itself suspends the page (for example a click handler opening a
+/// popup that steals focus). The post-action observation reports whatever
+/// evidence remains reachable. Every other failure stays hard.
+#[allow(clippy::too_many_arguments)]
+async fn gesture_mouse_event(
+    transport: &dyn CdpTransport,
+    bound: &BoundTarget,
+    event_type: &str,
+    point: CssPoint,
+    button: Option<MouseButton>,
+    buttons: u8,
+    modifiers: Modifiers,
+    click_count: u8,
+    cancel: &OperationCancellation,
+    generation: u64,
+) -> Result<()> {
+    let params = mouse_event_params(
+        bound,
+        event_type,
+        point,
+        button,
+        buttons,
+        modifiers,
+        click_count,
+        None,
+    )?;
+    match send_cdp_unmapped(
+        transport,
+        bound,
+        "Input.dispatchMouseEvent",
+        params,
+        cancel,
+        generation,
+    )
+    .await?
+    {
+        Ok(_) => Ok(()),
+        Err(TransportError::CommandFailed) => {
+            tracing::debug!(
+                target_id = %bound.target_id,
+                event_type,
+                "pointer gesture acknowledgement was lost; treating the input as dispatched"
+            );
+            Ok(())
+        }
+        Err(error) => Err(transport_error(
+            error,
+            ErrorCode::InteractionFailed,
+            bound.target_id,
+        )),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn mouse_event_params(
+    bound: &BoundTarget,
+    event_type: &str,
+    point: CssPoint,
+    button: Option<MouseButton>,
+    buttons: u8,
+    modifiers: Modifiers,
+    click_count: u8,
+    wheel: Option<(f64, f64)>,
+) -> Result<Value> {
     if !point.x.is_finite() || !point.y.is_finite() {
         return Err(interaction_error(
             bound.target_id,
@@ -304,16 +394,7 @@ async fn mouse_event(
         params.insert("deltaX".into(), json!(dx));
         params.insert("deltaY".into(), json!(dy));
     }
-    send_cdp(
-        transport,
-        bound,
-        "Input.dispatchMouseEvent",
-        Value::Object(params),
-        cancel,
-        generation,
-    )
-    .await?;
-    Ok(())
+    Ok(Value::Object(params))
 }
 
 fn button_name(button: MouseButton) -> &'static str {

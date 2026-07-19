@@ -344,6 +344,89 @@ async fn dispatched_click_degrades_when_post_action_observation_command_fails() 
     session.stop().await.unwrap();
 }
 
+fn coordinate_click(target: krometrail_core::TargetId) -> ClickRequest {
+    ClickRequest::new(
+        PageSelection::Target(target),
+        InteractionLocator::coordinate(
+            CssPoint::new(20.0, 30.0).unwrap(),
+            CoordinateSpace::ViewportCss,
+        )
+        .unwrap(),
+        MouseButton::Left,
+        Modifiers::default(),
+        1,
+        false,
+    )
+    .unwrap()
+}
+
+/// The live popup repro: a click handler opens a window that suspends the
+/// opener before Chrome acknowledges the gesture commands, so the
+/// press/release responses are lost while the input itself was queued. The
+/// click must stay a dispatched interaction, not a hard error.
+#[tokio::test]
+async fn dispatched_click_survives_lost_gesture_acknowledgement() {
+    let transport = ScriptedCdp::chrome();
+    startup_script(&transport);
+    transport.push_response("Page.getLayoutMetrics", layout());
+    transport.push_response(
+        "Runtime.evaluate",
+        json!({"result":{"value":{"tagName":"BUTTON","x":0,"y":0,"width":20,"height":20}}}),
+    );
+    // Both pointer moves (target preparation and gesture) are acknowledged;
+    // the press/release pair loses both responses.
+    transport.push_response("Input.dispatchMouseEvent", json!({}));
+    transport.push_response("Input.dispatchMouseEvent", json!({}));
+    transport.push_failure("Input.dispatchMouseEvent", TransportError::CommandFailed);
+    transport.push_failure("Input.dispatchMouseEvent", TransportError::CommandFailed);
+    observation_script(&transport);
+    let session = scripted_session(transport).await;
+    let target = session.status().await.unwrap().pages[0].target.target.id();
+
+    let result = session
+        .execute(
+            BrowserOperationRequest::Click(coordinate_click(target)),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .expect("a queued gesture with lost acknowledgements stays dispatched");
+    let BrowserOperationResult::Click(result) = result else {
+        panic!("click result")
+    };
+    assert_eq!(result.record.outcome, InteractionOutcome::Dispatched);
+    session.stop().await.unwrap();
+}
+
+/// A rejected gesture command (protocol-level refusal, not a lost response)
+/// remains a hard dispatch failure.
+#[tokio::test]
+async fn rejected_click_gesture_command_stays_a_hard_error() {
+    let transport = ScriptedCdp::chrome();
+    startup_script(&transport);
+    transport.push_response("Page.getLayoutMetrics", layout());
+    transport.push_response(
+        "Runtime.evaluate",
+        json!({"result":{"value":{"tagName":"BUTTON","x":0,"y":0,"width":20,"height":20}}}),
+    );
+    transport.push_response("Input.dispatchMouseEvent", json!({}));
+    transport.push_response("Input.dispatchMouseEvent", json!({}));
+    transport.push_response("Input.dispatchMouseEvent", json!({}));
+    transport.push_failure("Input.dispatchMouseEvent", TransportError::Protocol);
+    let session = scripted_session(transport).await;
+    let target = session.status().await.unwrap().pages[0].target.target.id();
+
+    let error = session
+        .execute(
+            BrowserOperationRequest::Click(coordinate_click(target)),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::InteractionFailed);
+    assert!(error.message.as_str().contains("input command"));
+    session.stop().await.unwrap();
+}
+
 #[tokio::test]
 async fn element_click_uses_box_model_viewport_coordinates_after_nonzero_scroll() {
     let transport = ScriptedCdp::chrome();

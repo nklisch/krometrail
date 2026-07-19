@@ -69,3 +69,31 @@ Origin: `.work/backlog/idea-popup-opener-click-hard-error-residual.md`.
   `CARGO_TARGET_DIR=/tmp/krometrail-target cargo test -p krometrail-cdp
   --test verified_interactions --features cdpkit-transport --locked` passed
   (14 tests; opt-in real-Chrome tests were not enabled).
+
+## Review findings (cross-model, Fable reviewing Luna)
+
+- **Confirmed gap, fixed in review**: the implemented change refined the
+  diagnostic on the `observe_live` error branch, but that branch was already
+  degraded-with-record before this story — it could not have produced the live
+  hard error. Root cause of the live repro sat one phase earlier: `send_cdp`
+  maps every transport failure during *input dispatch* through
+  `transport_error`, whose message was hardcoded to "browser rejected or could
+  not complete the page observation command" for every fallback code — the
+  message that misled the original park into blaming the post-action
+  observation. The failing command was the click's own
+  `Input.dispatchMouseEvent` press/release acknowledgement, lost when the
+  popup suspends the opener after Chrome has already queued the input;
+  `dispatch_action → ?` made that a hard error.
+- Review fix: `gesture_mouse_event` in `control/pointer.rs` — the click
+  press/release pair treats a lost acknowledgement
+  (`TransportError::CommandFailed` after the command was accepted for sending)
+  as dispatched input with a debug diagnostic; protocol rejections,
+  invalid-input, disconnects, and cancellation stay hard.
+  `transport_error` now names the failing surface ("input" vs "page
+  observation") per its fallback code. Two new deterministic doubles:
+  `dispatched_click_survives_lost_gesture_acknowledgement` (the popup repro
+  shape — press+release acks lost, click stays a dispatched interaction) and
+  `rejected_click_gesture_command_stays_a_hard_error`.
+- Scope note: the drag gesture keeps hard-error semantics for its
+  press/move/release chain; no live evidence of ack loss there, and a drag
+  rarely detaches its own page. Revisit only on evidence.

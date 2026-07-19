@@ -561,13 +561,18 @@ pub(crate) fn transport_error(
     } else {
         fallback
     };
+    let surface = if fallback == ErrorCode::InteractionFailed {
+        "input"
+    } else {
+        "page observation"
+    };
     operation_error(
         code,
         target_id,
         if code == ErrorCode::BrowserDisconnected {
-            "browser transport disconnected during page observation"
+            format!("browser transport disconnected during the {surface} command")
         } else {
-            "browser rejected or could not complete the page observation command"
+            format!("browser rejected or could not complete the {surface} command")
         },
     )
 }

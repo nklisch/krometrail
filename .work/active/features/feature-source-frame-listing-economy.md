@@ -1,7 +1,7 @@
 ---
 id: feature-source-frame-listing-economy
 kind: feature
-stage: review
+stage: done
 tags: [agent-ux, temporal]
 parent: null
 depends_on: []
@@ -128,3 +128,8 @@ description string is part of checked-in canonical artifacts
 - Discrepancies from design: none.
 - Adjacent issues parked: none.
 - Verification: `CARGO_TARGET_DIR=/tmp/krometrail-target cargo test -p krometrail-mcp concise_source_frame_listing_is_small_and_keeps_only_drilldown_fields --locked` passed.
+
+## Review findings (cross-model, Fable reviewing Luna)
+
+No blocking findings; implementation matches the design, acceptance criteria
+verified against the committed tests, full workspace gate re-run independently.
