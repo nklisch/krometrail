@@ -5,7 +5,7 @@ stage: done
 tags: [browser, agent-ux, diagnostics]
 parent: epic-agent-surface-simplification-persistence-recovery
 depends_on: [epic-agent-surface-simplification-persistence-recovery-propagate-capture-failure-cause]
-release_binding: null
+release_binding: 1.2.0
 gate_origin: null
 created: 2026-07-18
 updated: 2026-07-18

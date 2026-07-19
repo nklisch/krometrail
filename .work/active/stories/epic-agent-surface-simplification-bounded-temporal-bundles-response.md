@@ -5,7 +5,7 @@ stage: done
 tags: [agent-ux, visual]
 parent: epic-agent-surface-simplification-bounded-temporal-bundles
 depends_on: [epic-agent-surface-simplification-bounded-temporal-bundles-anchor-scope]
-release_binding: null
+release_binding: 1.2.0
 gate_origin: null
 created: 2026-07-18
 updated: 2026-07-18

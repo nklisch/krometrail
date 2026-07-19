@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.2.0 — 2026-07-18
+
+### Agent response surface
+
+- Replaced the response-projection matrix with one omission-first contract: implicit `concise`, explicit `expanded` and `full`, plus an orthogonal `inline_images` opt-in.
+- Made concise snapshots action-centric with bounded, deterministically ranked, directly reusable exact targets; expanded adds bounded semantic context and full preserves complete acquired structures.
+- Made failed and degraded results always include privacy-bounded diagnostics, and updated the shipped skill and evidence guidance to teach deliberate expansion.
+
+### Reliability and evidence economy
+
+- Recovered segment writers after the one proven-safe post-rename directory-sync failure while keeping ambiguous persistence failures terminal, and carried the first classified cause through capture status and structured shutdown recovery.
+- Made unrequested batch step screenshots genuinely absent, eliminating fabricated unsupported outcomes and unnecessary screenshot acquisition.
+- Defaulted temporal debug bundles to the effective anchor epoch before output limits and generation, retained explicit all-epoch investigation, and avoided default inline artifact reads.
+
+### Current contract and cleanup
+
+- Replaced the historical SQLite migration chain with one declarative current schema that opens exact-current data and rejects incompatible stores before mutation with clear recovery guidance.
+- Removed compatibility-only transport aliases, trait defaults, installer cutoffs, policy-version machinery, response aliases, ancestor-closure projection, diagnostic suppression, and obsolete fixtures/tests.
+- Rolled `AGENTS.md`, foundation documents, generated public docs, project patterns, and plugin instructions forward to the current no-shim contract.
+
 ## v1.1.0 — 2026-07-18
 
 ### Agent ergonomics
