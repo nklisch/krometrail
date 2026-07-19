@@ -416,8 +416,10 @@ async fn device_scale_transition_starts_a_new_visual_epoch_without_normalizing_s
 
 #[tokio::test]
 async fn anchor_epoch_is_selected_before_output_limits_and_keeps_original_index() {
-    let mut limits = ArtifactWorkLimits::default();
-    limits.max_outputs = NonZeroUsize::new(2).unwrap();
+    let limits = ArtifactWorkLimits {
+        max_outputs: NonZeroUsize::new(2).unwrap(),
+        ..ArtifactWorkLimits::default()
+    };
     let mut rig = rig(true, limits);
     rig.request = ArtifactGenerationRequest::new(
         rig.request.range().clone(),
