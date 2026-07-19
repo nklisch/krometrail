@@ -1,7 +1,7 @@
 ---
 id: story-fix-mcp-boolean-result-schema
 kind: story
-stage: review
+stage: done
 tags: [bug]
 parent: null
 depends_on: []
