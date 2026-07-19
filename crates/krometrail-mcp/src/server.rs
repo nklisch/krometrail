@@ -517,22 +517,37 @@ mod tests {
     #[test]
     fn concise_status_retains_capture_failure_and_retention_pressure() {
         let mut status = protocol_status();
-        status.capture = vec![
-            TargetCaptureStatus::new_with_failure_stage(
-                target_id(),
-                1,
-                CaptureStreamState::Failed,
-                CaptureStatistics::default(),
-                1,
-                0,
-                None,
-                CaptureTimingSummary::empty(),
-                CaptureTimingSummary::empty(),
-                EveryNthFrame::default(),
-                Some(krometrail_core::CaptureFailureStage::FramePersistence),
-            )
-            .unwrap(),
-        ];
+        status.capture =
+            vec![
+                TargetCaptureStatus::new(
+                    target_id(),
+                    1,
+                    CaptureStreamState::Failed,
+                    CaptureStatistics::default(),
+                    1,
+                    0,
+                    None,
+                    CaptureTimingSummary::empty(),
+                    CaptureTimingSummary::empty(),
+                    EveryNthFrame::default(),
+                    Some(
+                        krometrail_core::CaptureFailure::new(
+                            krometrail_core::CaptureFailureStage::FramePersistence,
+                            KrometrailError::new(
+                                ErrorCode::PersistenceFailed,
+                                NonEmptyText::new("frame persistence failed").unwrap(),
+                            )
+                            .with_persistence(krometrail_core::PersistenceFailure::new(
+                                krometrail_core::PersistenceOperation::SealedSegmentPublicationSync,
+                                krometrail_core::PersistenceFailureCategory::PermissionDenied,
+                                krometrail_core::PersistenceRecoverability::WriterUsable,
+                            )),
+                        )
+                        .unwrap(),
+                    ),
+                )
+                .unwrap(),
+            ];
         let budget = krometrail_core::DiskBudgetBytes::new(10).unwrap();
         status.retention = RetentionStatus::new(
             budget,
@@ -557,8 +572,12 @@ mod tests {
         .unwrap();
         assert_eq!(concise.response.result["capture"][0]["state"], "failed");
         assert_eq!(
-            concise.response.result["capture"][0]["failure_stage"],
+            concise.response.result["capture"][0]["failure"]["stage"],
             "frame_persistence"
+        );
+        assert_eq!(
+            concise.response.result["capture"][0]["failure"]["cause"]["persistence"]["operation"],
+            "sealed_segment_publication_sync"
         );
         assert_eq!(
             concise.response.result["retention"]["budget_state"],
@@ -1974,7 +1993,14 @@ mod tests {
         }
         fn stop(&self) -> PortFuture<'_, krometrail_core::Result<BrowserStopOutcome>> {
             self.stop_calls.fetch_add(1, Ordering::SeqCst);
-            Box::pin(std::future::ready(Ok(BrowserStopOutcome::Detached)))
+            Box::pin(std::future::ready(Ok(BrowserStopOutcome::new(
+                krometrail_core::BrowserClosure::Detached,
+                krometrail_core::ShutdownQuality::Clean,
+                None,
+                None,
+                None,
+            )
+            .unwrap())))
         }
     }
 
@@ -2054,7 +2080,14 @@ mod tests {
         }
 
         fn stop(&self) -> PortFuture<'_, krometrail_core::Result<BrowserStopOutcome>> {
-            Box::pin(std::future::ready(Ok(BrowserStopOutcome::Detached)))
+            Box::pin(std::future::ready(Ok(BrowserStopOutcome::new(
+                krometrail_core::BrowserClosure::Detached,
+                krometrail_core::ShutdownQuality::Clean,
+                None,
+                None,
+                None,
+            )
+            .unwrap())))
         }
     }
 
@@ -2134,6 +2167,7 @@ mod tests {
                 CaptureTimingSummary::empty(),
                 CaptureTimingSummary::empty(),
                 stride,
+                None,
             )
             .unwrap(),
         }

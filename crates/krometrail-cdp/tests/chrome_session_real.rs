@@ -8,9 +8,7 @@ use krometrail_cdp::{
     CdpTransport, CdpTransportFactory, CommandScope, LauncherConfig, ProductionBrowserConnector,
     SystemChromeLauncher,
 };
-use krometrail_core::{
-    BrowserConnectRequest, BrowserConnector, BrowserStopOutcome, LaunchBrowser, ManagedProfile,
-};
+use krometrail_core::{BrowserConnectRequest, BrowserConnector, LaunchBrowser, ManagedProfile};
 
 #[tokio::test]
 async fn opt_in_managed_session_stops_without_retaining_temporary_profile() {
@@ -49,7 +47,11 @@ async fn opt_in_managed_session_stops_without_retaining_temporary_profile() {
         krometrail_core::BrowserOwnership::Managed
     );
     let outcome = session.stop().await.expect("managed stop");
-    assert_eq!(outcome, BrowserStopOutcome::ManagedBrowserClosed);
+    assert_eq!(
+        outcome.closure(),
+        krometrail_core::BrowserClosure::ManagedBrowserClosed
+    );
+    assert_eq!(outcome.quality(), krometrail_core::ShutdownQuality::Clean);
     let references = support::chrome::process_references(&root);
     assert!(
         references.is_empty(),
@@ -128,10 +130,9 @@ async fn opt_in_managed_launch_attach_targets_and_external_survival() {
         let _ = tokio::time::timeout(Duration::from_millis(25), events.next()).await;
     }
     assert!(observed, "target creation was not reconciled");
-    assert!(matches!(
-        session.stop().await.unwrap(),
-        BrowserStopOutcome::Detached
-    ));
+    let outcome = session.stop().await.unwrap();
+    assert_eq!(outcome.closure(), krometrail_core::BrowserClosure::Detached);
+    assert_eq!(outcome.quality(), krometrail_core::ShutdownQuality::Clean);
     raw.send_raw(
         &CommandScope::Browser,
         "Browser.getVersion",
@@ -223,7 +224,9 @@ async fn opt_in_electron_renderer_endpoint_uses_capability_probe() {
     );
     assert_eq!(status.profile, krometrail_core::ProfileRef::External);
     assert!(status.selected_target_id.is_some());
-    assert_eq!(session.stop().await.unwrap(), BrowserStopOutcome::Detached);
+    let outcome = session.stop().await.unwrap();
+    assert_eq!(outcome.closure(), krometrail_core::BrowserClosure::Detached);
+    assert_eq!(outcome.quality(), krometrail_core::ShutdownQuality::Clean);
 }
 
 #[tokio::test]
@@ -240,5 +243,7 @@ async fn opt_in_attach_stop_does_not_close_external_browser() {
         ))
         .await
         .expect("explicit external endpoint should be compatible");
-    assert_eq!(session.stop().await.unwrap(), BrowserStopOutcome::Detached);
+    let outcome = session.stop().await.unwrap();
+    assert_eq!(outcome.closure(), krometrail_core::BrowserClosure::Detached);
+    assert_eq!(outcome.quality(), krometrail_core::ShutdownQuality::Clean);
 }

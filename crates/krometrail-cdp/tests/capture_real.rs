@@ -22,10 +22,10 @@ use krometrail_cdp::{
 };
 use krometrail_core::{
     AttachBrowser, BrowserConnectRequest, BrowserConnector, BrowserProduct, BrowserSessionEvent,
-    BrowserSessionEvents, BrowserSessionPort, BrowserSessionState, BrowserStopOutcome, ByteOffset,
-    CaptureGapReason, CaptureStreamState, EncodedFrame, ErrorCode, FrameAddress, IdSource, IdValue,
-    ImageFormat, LaunchBrowser, ManagedProfile, MonotonicClock, ObservedTime, PortFuture,
-    RecordingSink, SegmentId, SessionId, TargetCaptureStatus, TargetId,
+    BrowserSessionEvents, BrowserSessionPort, BrowserSessionState, ByteOffset, CaptureGapReason,
+    CaptureStreamState, EncodedFrame, ErrorCode, FrameAddress, IdSource, IdValue, ImageFormat,
+    LaunchBrowser, ManagedProfile, MonotonicClock, ObservedTime, PortFuture, RecordingSink,
+    SegmentId, SessionId, TargetCaptureStatus, TargetId,
 };
 use support::chrome::ChromeWrapperVariant;
 use uuid::Uuid;
@@ -110,7 +110,11 @@ async fn opt_in_real_chrome_capture_records_fidelity_and_managed_cleanup() {
         .await
         .expect("managed capture stop must be bounded")
         .expect("managed capture stop");
-    assert_eq!(outcome, BrowserStopOutcome::ManagedBrowserClosed);
+    assert_eq!(
+        outcome.closure(),
+        krometrail_core::BrowserClosure::ManagedBrowserClosed
+    );
+    assert_eq!(outcome.quality(), krometrail_core::ShutdownQuality::Clean);
     assert_eq!(sink.flush_count(), 1);
     assert!(sink.gaps().iter().all(|gap| gap.session_id() == session_id));
 
@@ -324,7 +328,8 @@ async fn opt_in_real_chrome_capture_isolates_two_targets_and_records_visibility_
         .await
         .expect("attached capture stop must be bounded")
         .expect("attached capture stop");
-    assert_eq!(outcome, BrowserStopOutcome::Detached);
+    assert_eq!(outcome.closure(), krometrail_core::BrowserClosure::Detached);
+    assert_eq!(outcome.quality(), krometrail_core::ShutdownQuality::Clean);
 
     let probe = factory
         .connect(launched.endpoint.browser_websocket_url().as_str())
@@ -399,7 +404,14 @@ async fn opt_in_real_chrome_capture_bounds_saturation_and_reports_incomplete_blo
         .await
         .expect("drained capture stop must be bounded")
         .expect("drained capture stop");
-    assert_eq!(release_outcome, BrowserStopOutcome::ManagedBrowserClosed);
+    assert_eq!(
+        release_outcome.closure(),
+        krometrail_core::BrowserClosure::ManagedBrowserClosed
+    );
+    assert_eq!(
+        release_outcome.quality(),
+        krometrail_core::ShutdownQuality::Clean
+    );
     assert_eq!(release_sink.flush_count(), 1);
     drop(release_session);
     assert_profile_unreferenced(release_root.path());
@@ -605,7 +617,8 @@ async fn opt_in_real_chrome_capture_fences_one_disconnect_and_resets_generation_
         .await
         .expect("reconnected capture stop must be bounded")
         .expect("reconnected capture stop");
-    assert_eq!(outcome, BrowserStopOutcome::Detached);
+    assert_eq!(outcome.closure(), krometrail_core::BrowserClosure::Detached);
+    assert_eq!(outcome.quality(), krometrail_core::ShutdownQuality::Clean);
     drop(session);
     let mut proxy = proxy;
     proxy.shutdown().await;

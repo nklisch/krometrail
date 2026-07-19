@@ -15,9 +15,9 @@ use krometrail_cdp::{
 };
 use krometrail_core::{
     AttachBrowser, BrowserConnectRequest, BrowserConnector, BrowserSessionEvent,
-    BrowserSessionState, BrowserStopOutcome, ByteOffset, CaptureGapReason, EncodedFrame,
-    EveryNthFrame, FrameAddress, IdSource, IdValue, ImageFormat, MonotonicClock, ObservedTime,
-    PortFuture, RecordingSink, SegmentId, SessionId, TargetLifecycle,
+    BrowserSessionState, ByteOffset, CaptureGapReason, EncodedFrame, EveryNthFrame, FrameAddress,
+    IdSource, IdValue, ImageFormat, MonotonicClock, ObservedTime, PortFuture, RecordingSink,
+    SegmentId, SessionId, TargetLifecycle,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -176,7 +176,9 @@ async fn closed_capture_frame_stream_reconnects_and_restores_capture_generation(
         status.capture[0].state(),
         krometrail_core::CaptureStreamState::Capturing
     );
-    assert_eq!(session.stop().await.unwrap(), BrowserStopOutcome::Detached);
+    let outcome = session.stop().await.unwrap();
+    assert_eq!(outcome.closure(), krometrail_core::BrowserClosure::Detached);
+    assert_eq!(outcome.quality(), krometrail_core::ShutdownQuality::Clean);
 }
 
 #[tokio::test]
@@ -343,7 +345,9 @@ async fn scripted_capture_preserves_stride_for_jpeg_png_dynamic_and_reconnect_ge
         .expect("capture status and disconnect gap events are scripted");
         assert!(saw_capture_status);
         assert!(saw_disconnect_gap);
-        assert_eq!(session.stop().await.unwrap(), BrowserStopOutcome::Detached);
+        let outcome = session.stop().await.unwrap();
+        assert_eq!(outcome.closure(), krometrail_core::BrowserClosure::Detached);
+        assert_eq!(outcome.quality(), krometrail_core::ShutdownQuality::Clean);
     }
 }
 
@@ -469,7 +473,9 @@ async fn production_supervisor_rebuilds_after_a_transport_event_stream_closes() 
     assert!(saw_ready, "reconnect did not publish Ready");
     assert_eq!(session.status().await.unwrap().pages.len(), 1);
     assert_eq!(session.status().await.unwrap().every_nth_frame, stride);
-    assert_eq!(session.stop().await.unwrap(), BrowserStopOutcome::Detached);
+    let outcome = session.stop().await.unwrap();
+    assert_eq!(outcome.closure(), krometrail_core::BrowserClosure::Detached);
+    assert_eq!(outcome.quality(), krometrail_core::ShutdownQuality::Clean);
 
     let terminal_count = tokio::time::timeout(Duration::from_secs(1), async {
         let mut terminal_count = 0;
@@ -784,7 +790,9 @@ async fn opt_in_real_chrome_reconnects_through_a_new_physical_proxy_connection()
 
     drop(created_events);
     drop(post_rebuild);
-    assert_eq!(session.stop().await.unwrap(), BrowserStopOutcome::Detached);
+    let outcome = session.stop().await.unwrap();
+    assert_eq!(outcome.closure(), krometrail_core::BrowserClosure::Detached);
+    assert_eq!(outcome.quality(), krometrail_core::ShutdownQuality::Clean);
     assert!(
         launched.process.is_alive(),
         "attached stop must leave externally owned Chrome alive"

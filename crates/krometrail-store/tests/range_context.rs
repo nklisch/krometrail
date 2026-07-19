@@ -202,6 +202,7 @@ fn status_event(
         CaptureTimingSummary::empty(),
         CaptureTimingSummary::empty(),
         krometrail_core::EveryNthFrame::default(),
+        None,
     )
     .unwrap();
     BrowserEvent::new(

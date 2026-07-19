@@ -226,8 +226,22 @@ mod tests {
                 ))
             } else {
                 Ok(match self.profile {
-                    ProfileRef::Managed(_) => BrowserStopOutcome::ManagedBrowserClosed,
-                    ProfileRef::External => BrowserStopOutcome::Detached,
+                    ProfileRef::Managed(_) => BrowserStopOutcome::new(
+                        crate::BrowserClosure::ManagedBrowserClosed,
+                        crate::ShutdownQuality::Clean,
+                        None,
+                        None,
+                        None,
+                    )
+                    .unwrap(),
+                    ProfileRef::External => BrowserStopOutcome::new(
+                        crate::BrowserClosure::Detached,
+                        crate::ShutdownQuality::Clean,
+                        None,
+                        None,
+                        None,
+                    )
+                    .unwrap(),
                 })
             };
             Box::pin(std::future::ready(result))
@@ -663,7 +677,14 @@ mod tests {
         assert_eq!(geometry_error.code, ErrorCode::InvalidLifecycleTransition);
         assert_eq!(
             block_on(session.stop()).unwrap(),
-            BrowserStopOutcome::ManagedBrowserClosed
+            BrowserStopOutcome::new(
+                crate::BrowserClosure::ManagedBrowserClosed,
+                crate::ShutdownQuality::Clean,
+                None,
+                None,
+                None,
+            )
+            .unwrap()
         );
 
         let external = ProfileRef::External;
@@ -677,7 +698,14 @@ mod tests {
         .unwrap();
         assert_eq!(
             block_on(session.stop()).unwrap(),
-            BrowserStopOutcome::Detached
+            BrowserStopOutcome::new(
+                crate::BrowserClosure::Detached,
+                crate::ShutdownQuality::Clean,
+                None,
+                None,
+                None,
+            )
+            .unwrap()
         );
 
         let failing: Arc<dyn BrowserConnector> = Arc::new(FakeBrowserConnector {

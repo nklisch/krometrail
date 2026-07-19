@@ -77,27 +77,94 @@ impl TargetVisibility {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BrowserStopOutcome {
-    ManagedBrowserClosed,
-    ManagedBrowserClosedDegraded,
-    Detached,
+define_stable_enum! {
+    pub enum BrowserClosure {
+        ManagedBrowserClosed => "managed_browser_closed",
+        Detached => "detached",
+    }
+}
+
+define_stable_enum! {
+    pub enum ShutdownQuality {
+        Clean => "clean",
+        Degraded => "degraded",
+    }
+}
+
+define_stable_enum! {
+    pub enum ShutdownFailurePhase {
+        CaptureStopDrainFlush => "capture_stop_drain_flush",
+        BrowserEventDrainFlush => "browser_event_drain_flush",
+        TargetDetach => "target_detach",
+        BrowserClose => "browser_close",
+        ProcessTerminate => "process_terminate",
+        DeadlineComplete => "deadline_complete",
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserStopOutcome {
+    closure: BrowserClosure,
+    quality: ShutdownQuality,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    failed_phase: Option<ShutdownFailurePhase>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    capture_failure: Option<crate::CaptureFailure>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recovery: Option<NonEmptyText>,
 }
 
 impl BrowserStopOutcome {
-    pub const ALL: &'static [Self] = &[
-        Self::ManagedBrowserClosed,
-        Self::ManagedBrowserClosedDegraded,
-        Self::Detached,
-    ];
-
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::ManagedBrowserClosed => "managed_browser_closed",
-            Self::ManagedBrowserClosedDegraded => "managed_browser_closed_degraded",
-            Self::Detached => "detached",
+    pub fn new(
+        closure: BrowserClosure,
+        quality: ShutdownQuality,
+        failed_phase: Option<ShutdownFailurePhase>,
+        capture_failure: Option<crate::CaptureFailure>,
+        recovery: Option<NonEmptyText>,
+    ) -> Result<Self> {
+        match quality {
+            ShutdownQuality::Clean
+                if failed_phase.is_some() || capture_failure.is_some() || recovery.is_some() =>
+            {
+                return Err(invalid(
+                    "clean browser stop cannot contain degradation details",
+                ));
+            }
+            ShutdownQuality::Degraded if failed_phase.is_none() || recovery.is_none() => {
+                return Err(invalid(
+                    "degraded browser stop requires a failed phase and recovery",
+                ));
+            }
+            _ => {}
         }
+        Ok(Self {
+            closure,
+            quality,
+            failed_phase,
+            capture_failure,
+            recovery,
+        })
+    }
+
+    pub const fn closure(&self) -> BrowserClosure {
+        self.closure
+    }
+
+    pub const fn quality(&self) -> ShutdownQuality {
+        self.quality
+    }
+
+    pub const fn failed_phase(&self) -> Option<ShutdownFailurePhase> {
+        self.failed_phase
+    }
+
+    pub const fn capture_failure(&self) -> Option<&crate::CaptureFailure> {
+        self.capture_failure.as_ref()
+    }
+
+    pub const fn recovery(&self) -> Option<&NonEmptyText> {
+        self.recovery.as_ref()
     }
 }
 
@@ -384,5 +451,60 @@ mod tests {
             event
         );
         let _ = ProfileRef::managed(ProfileIdentity::new("managed").unwrap());
+    }
+
+    #[test]
+    fn browser_stop_outcome_separates_closure_quality_and_recovery() {
+        let clean = BrowserStopOutcome::new(
+            BrowserClosure::Detached,
+            ShutdownQuality::Clean,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(&clean).unwrap(),
+            serde_json::json!({"closure":"detached","quality":"clean"})
+        );
+        assert!(
+            BrowserStopOutcome::new(
+                BrowserClosure::ManagedBrowserClosed,
+                ShutdownQuality::Degraded,
+                None,
+                None,
+                None,
+            )
+            .is_err()
+        );
+
+        let cause = crate::KrometrailError::new(
+            crate::ErrorCode::PersistenceFailed,
+            NonEmptyText::new("frame persistence failed").unwrap(),
+        )
+        .with_persistence(crate::PersistenceFailure::new(
+            crate::PersistenceOperation::SealedSegmentPublicationSync,
+            crate::PersistenceFailureCategory::PermissionDenied,
+            crate::PersistenceRecoverability::WriterUsable,
+        ));
+        let failure =
+            crate::CaptureFailure::new(crate::CaptureFailureStage::FramePersistence, cause)
+                .unwrap();
+        let degraded = BrowserStopOutcome::new(
+            BrowserClosure::ManagedBrowserClosed,
+            ShutdownQuality::Degraded,
+            Some(ShutdownFailurePhase::CaptureStopDrainFlush),
+            Some(failure.clone()),
+            Some(NonEmptyText::new("start a new browser session").unwrap()),
+        )
+        .unwrap();
+        let round_trip: BrowserStopOutcome =
+            serde_json::from_str(&serde_json::to_string(&degraded).unwrap()).unwrap();
+        assert_eq!(round_trip, degraded);
+        assert_eq!(round_trip.capture_failure(), Some(&failure));
+        assert_eq!(
+            round_trip.failed_phase(),
+            Some(ShutdownFailurePhase::CaptureStopDrainFlush)
+        );
     }
 }

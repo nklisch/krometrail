@@ -1367,6 +1367,9 @@ pub(super) async fn shutdown(
     session_id: krometrail_core::SessionId,
     deadline: Instant,
 ) -> super::CaptureShutdownOutcome {
+    let capture_failure = statuses(coordinator)
+        .into_iter()
+        .find_map(|status| status.failure().cloned());
     let mut targets: Vec<_> = coordinator
         .streams
         .lock()
@@ -1397,6 +1400,7 @@ pub(super) async fn shutdown(
         flush_attempted,
         flush_succeeded,
         complete,
+        capture_failure,
     }
 }
 

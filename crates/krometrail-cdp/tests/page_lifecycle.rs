@@ -563,7 +563,8 @@ async fn stop_interrupts_each_post_operation_observation_transport_phase() {
             .await
             .expect("stop must not wait for transport timeout")
             .unwrap();
-        assert_eq!(stopped, krometrail_core::BrowserStopOutcome::Detached);
+        assert_eq!(stopped.closure(), krometrail_core::BrowserClosure::Detached);
+        assert_eq!(stopped.quality(), krometrail_core::ShutdownQuality::Clean);
         let result = operation.await.unwrap().unwrap();
         assert_interrupted_observation(result, ErrorCode::Cancelled, held);
     }
@@ -872,7 +873,8 @@ async fn navigation_reload_history_and_stop_cancellation_are_anchored() {
     };
     transport.wait_for_command_count("Page.navigate", 2).await;
     let stopped = session.stop().await.unwrap();
-    assert_eq!(stopped, krometrail_core::BrowserStopOutcome::Detached);
+    assert_eq!(stopped.closure(), krometrail_core::BrowserClosure::Detached);
+    assert_eq!(stopped.quality(), krometrail_core::ShutdownQuality::Clean);
     let result = operation.await.unwrap().unwrap();
     let BrowserOperationResult::NavigatePage(result) = result else {
         panic!("cancelled navigate")
@@ -1161,10 +1163,12 @@ async fn opt_in_real_chrome_runs_complete_managed_page_lifecycle() {
     ));
     assert_eq!(session.status().await.unwrap().selected_target_id, None);
 
+    let outcome = session.stop().await.unwrap();
     assert_eq!(
-        session.stop().await.unwrap(),
-        krometrail_core::BrowserStopOutcome::ManagedBrowserClosed
+        outcome.closure(),
+        krometrail_core::BrowserClosure::ManagedBrowserClosed
     );
+    assert_eq!(outcome.quality(), krometrail_core::ShutdownQuality::Clean);
     assert!(support::chrome::process_references(&root).is_empty());
     assert!(
         !root.join("tmp").exists()

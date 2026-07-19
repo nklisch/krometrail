@@ -217,7 +217,14 @@ mod tests {
 
         fn stop(&self) -> PortFuture<'_, Result<BrowserStopOutcome>> {
             self.stop_calls.fetch_add(1, Ordering::SeqCst);
-            Box::pin(std::future::ready(Ok(BrowserStopOutcome::Detached)))
+            Box::pin(std::future::ready(Ok(BrowserStopOutcome::new(
+                krometrail_core::BrowserClosure::Detached,
+                krometrail_core::ShutdownQuality::Clean,
+                None,
+                None,
+                None,
+            )
+            .unwrap())))
         }
     }
 
@@ -321,7 +328,9 @@ mod tests {
         assert_eq!(error.code, ErrorCode::Unsupported);
         assert_eq!(session.execute_calls.load(Ordering::SeqCst), 1);
 
-        assert_eq!(owner.stop().await.unwrap(), BrowserStopOutcome::Detached);
+        let outcome = owner.stop().await.unwrap();
+        assert_eq!(outcome.closure(), krometrail_core::BrowserClosure::Detached);
+        assert_eq!(outcome.quality(), krometrail_core::ShutdownQuality::Clean);
         assert_eq!(session.stop_calls.load(Ordering::SeqCst), 1);
         assert_eq!(
             owner.status().await.unwrap_err().code,

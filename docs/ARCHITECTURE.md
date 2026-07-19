@@ -410,6 +410,13 @@ Only the current segment is mutable. Sealed segments are immutable.
 
 Segment rotation is based on bounded duration and size. This makes retention deletion, pinning, recovery, and range reads operate on manageable units.
 
+The segment writer classifies each failure at the filesystem boundary by a closed operation,
+bounded I/O category, and writer recoverability. Partial record/footer writes, file sync, initial
+publication, and rename latch the first terminal writer error. Directory sync after a successful
+sealed-file rename is the sole in-process recoverable publication failure: the open segment has
+already left writer state and the sealed namespace entry is authoritative, so a later append can
+create a new segment without reusing ambiguous offsets. The rejected frame is not retried.
+
 ### Crash Recovery
 
 An open segment is written in a recoverable record format.
@@ -638,16 +645,18 @@ Failures remain inside the narrowest responsible boundary:
 - a tool validation failure does not reach the domain;
 - a stale reference fails one action;
 - a target closure ends one target stream;
-- a terminal capture failure preserves its first sanitized failure stage and degrades later tool responses without disabling current-state control;
+- a terminal capture failure preserves its first sanitized stage and cause, including bounded persistence operation/category/recoverability, and degrades later tool responses without disabling current-state control;
 - an artifact failure does not interrupt capture;
 - a video encoder probe or encode failure does not disable still-image artifacts or interrupt capture;
 - an SQLite failure stops persistence before accepting unsupported writes;
 - an unrecoverable browser connection ends the session after flushing accepted data.
 
 All long-running tasks participate in structured cancellation. Process shutdown uses one aggregate
-deadline for bounded flushing and cleanup. Capture, event, detach, or close-command degradation is
-reported separately once process and profile authority are released; `shutdown_incomplete` means a
-concrete managed process or profile authority still remains.
+deadline for bounded flushing and cleanup. Its structured result separates closure (`managed_browser_closed`
+or `detached`) from evidence quality, the first failed phase, the first capture cause, and concrete
+recovery. Capture, event, detach, or close-command degradation is reported after process and profile
+authority are released; `shutdown_incomplete` is reserved for a concrete managed process or profile
+authority that still remains.
 
 ## Observability
 

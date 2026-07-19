@@ -220,6 +220,7 @@ pub(crate) struct CaptureShutdownOutcome {
     pub(crate) flush_attempted: bool,
     pub(crate) flush_succeeded: bool,
     pub(crate) complete: bool,
+    pub(crate) capture_failure: Option<krometrail_core::CaptureFailure>,
 }
 
 impl CaptureCoordinator {

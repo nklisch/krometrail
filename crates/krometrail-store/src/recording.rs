@@ -14,17 +14,17 @@ use krometrail_core::{
     DiskBudgetBytes, EncodedFrame, ErrorCode, ErrorContext, EventCandidateLimit, EventPageLimit,
     EvidenceScope, FrameAddress, FrameId, FrameSource, InteractionAnchor, InteractionAnchorSource,
     InteractionEvidenceSink, InteractionId, InteractionRecord, InteractionRecordSource,
-    KrometrailError, NavigationId, NonEmptyText, ObservedTime, PinChange, PinProtectionScope,
-    PinState, PortFuture, ProgressivePinChange, ProtectedSegment, RecordingBudgetState,
-    RecordingSink, ResolvedRange, RetentionPinRequest, RetentionRange, RetentionStatus,
-    RetentionStore, RetrieveArtifactRequest, RetrieveSourceFrameRequest, RetryAdvice,
-    SessionDeletion, SessionId, SessionRange, SessionTime, Sha256Digest, SourceFrameBatch,
-    SourceFrameHandle, SourceFrameList, SourceFrameRead, SourceFrameSelection, SourceFramesRequest,
-    StorageUsage, StoredArtifact, StoredVideoArtifact, TargetId, TemporalContext,
-    TemporalContextQuery, TemporalContextRequest, TemporalContextService, TemporalQuery,
-    TemporalQueryRequest, TemporalQueryService, TemporalRangeResolver, TimelineObservation,
-    TimelineStore, VideoArtifactEvidenceHandle, VideoArtifactLookup, VideoArtifactPublication,
-    VideoArtifactPublish, VideoArtifactRead, VideoArtifactReadLookup,
+    KrometrailError, NavigationId, NonEmptyText, ObservedTime, PersistenceOperation, PinChange,
+    PinProtectionScope, PinState, PortFuture, ProgressivePinChange, ProtectedSegment,
+    RecordingBudgetState, RecordingSink, ResolvedRange, RetentionPinRequest, RetentionRange,
+    RetentionStatus, RetentionStore, RetrieveArtifactRequest, RetrieveSourceFrameRequest,
+    RetryAdvice, SessionDeletion, SessionId, SessionRange, SessionTime, Sha256Digest,
+    SourceFrameBatch, SourceFrameHandle, SourceFrameList, SourceFrameRead, SourceFrameSelection,
+    SourceFramesRequest, StorageUsage, StoredArtifact, StoredVideoArtifact, TargetId,
+    TemporalContext, TemporalContextQuery, TemporalContextRequest, TemporalContextService,
+    TemporalQuery, TemporalQueryRequest, TemporalQueryService, TemporalRangeResolver,
+    TimelineObservation, TimelineStore, VideoArtifactEvidenceHandle, VideoArtifactLookup,
+    VideoArtifactPublication, VideoArtifactPublish, VideoArtifactRead, VideoArtifactReadLookup,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, watch};
@@ -1701,15 +1701,25 @@ impl RecordingSink for RecordingStore {
             let _mutation = self.mutations.lock().await;
             self.reject_deleted(frame.metadata().session_id())?;
             self.ensure_append_capacity(&frame).await?;
-            let commit = self.segments.append_indexable(frame.clone()).await?;
-            let mut connection = self.index.connection()?;
+            let commit = self
+                .segments
+                .append_indexable(frame.clone())
+                .await
+                .map_err(|error| classify_sink_failure(PersistenceOperation::FrameIndex, error))?;
+            let mut connection = self
+                .index
+                .connection()
+                .map_err(|error| classify_sink_failure(PersistenceOperation::FrameIndex, error))?;
             let transaction = connection
                 .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-                .map_err(|_| persistence_error("could not begin indexed frame persistence"))?;
-            index_frame_tx(&transaction, &frame, &commit)?;
+                .map_err(|_| persistence_error("could not begin indexed frame persistence"))
+                .map_err(|error| classify_sink_failure(PersistenceOperation::FrameIndex, error))?;
+            index_frame_tx(&transaction, &frame, &commit)
+                .map_err(|error| classify_sink_failure(PersistenceOperation::FrameIndex, error))?;
             transaction
                 .commit()
-                .map_err(|_| persistence_error("could not commit indexed frame metadata"))?;
+                .map_err(|_| persistence_error("could not commit indexed frame metadata"))
+                .map_err(|error| classify_sink_failure(PersistenceOperation::FrameIndex, error))?;
             Ok(commit.address)
         })
     }
@@ -1718,7 +1728,9 @@ impl RecordingSink for RecordingStore {
         Box::pin(async move {
             let _mutation = self.mutations.lock().await;
             self.reject_deleted(gap.session_id())?;
-            CaptureGapStore::append_gap(self.index.as_ref(), gap).await
+            CaptureGapStore::append_gap(self.index.as_ref(), gap)
+                .await
+                .map_err(|error| classify_sink_failure(PersistenceOperation::GapIndex, error))
         })
     }
 
@@ -1726,10 +1738,29 @@ impl RecordingSink for RecordingStore {
         Box::pin(async move {
             let _mutation = self.mutations.lock().await;
             self.reject_deleted(session_id)?;
-            self.flush_session(session_id).await?;
-            self.enforce_locked().await.map(|_| ())
+            self.flush_session(session_id).await.map_err(|error| {
+                classify_sink_failure(PersistenceOperation::SessionFlush, error)
+            })?;
+            self.enforce_locked()
+                .await
+                .map(|_| ())
+                .map_err(|error| classify_sink_failure(PersistenceOperation::SessionFlush, error))
         })
     }
+}
+
+fn classify_sink_failure(
+    operation: krometrail_core::PersistenceOperation,
+    error: KrometrailError,
+) -> KrometrailError {
+    if error.code != ErrorCode::PersistenceFailed || error.persistence.is_some() {
+        return error;
+    }
+    error.with_persistence(krometrail_core::PersistenceFailure::new(
+        operation,
+        krometrail_core::PersistenceFailureCategory::Other,
+        krometrail_core::PersistenceRecoverability::WriterTerminal,
+    ))
 }
 
 impl InteractionEvidenceSink for RecordingStore {

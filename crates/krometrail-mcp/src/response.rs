@@ -1,17 +1,17 @@
-use std::{collections::HashMap, sync::Arc, time::Instant};
+use std::{any::Any, collections::HashMap, sync::Arc, time::Instant};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use krometrail_core::{
     ArtifactCacheDisposition, ArtifactGenerationResult, ArtifactHandle, ArtifactId,
     ArtifactOutcome, BatchOutcome, BatchResult, BrowserOperationResult, BrowserOwnership,
-    BrowserSessionState, BrowserStatus, CaptureFailureStage, CaptureStreamState, EncodedScreenshot,
-    ErrorCode, EveryNthFrame, InteractionAnchor, KrometrailError, LiveObservation, NonEmptyText,
-    ObservationPart, PageOperationOutcome, PageOperationResult, PageSnapshot, ProfileRef,
-    ProgressiveEvidence, ProgressiveEvidenceContext, ProgressiveEvidenceRequest,
-    ProgressiveEvidenceResult, RecordingBudgetState, ResolvedRangeHandleId,
-    RetrieveArtifactRequest, ScreenshotMetadata, SessionId, SessionTime, SourceFrameBatch,
-    SourceFrameHandle, TargetId, TemporalDebugBundle, TemporalVideoGenerationResult,
-    VideoPresentationPolicy, WaitOutcome,
+    BrowserSessionState, BrowserStatus, BrowserStopOutcome, CaptureFailure, CaptureStreamState,
+    EncodedScreenshot, ErrorCode, EveryNthFrame, InteractionAnchor, KrometrailError,
+    LiveObservation, NonEmptyText, ObservationPart, PageOperationOutcome, PageOperationResult,
+    PageSnapshot, ProfileRef, ProgressiveEvidence, ProgressiveEvidenceContext,
+    ProgressiveEvidenceRequest, ProgressiveEvidenceResult, RecordingBudgetState,
+    ResolvedRangeHandleId, RetrieveArtifactRequest, ScreenshotMetadata, SessionId, SessionTime,
+    ShutdownQuality, SourceFrameBatch, SourceFrameHandle, TargetId, TemporalDebugBundle,
+    TemporalVideoGenerationResult, VideoPresentationPolicy, WaitOutcome,
 };
 use rmcp::model::JsonObject;
 use rmcp::model::{CallToolResult, Content, RawResource};
@@ -122,7 +122,7 @@ pub(crate) struct ConciseCaptureStatus {
     pub dropped_frames: u64,
     pub known_gap_count: u64,
     pub last_frame_session_time: Option<SessionTime>,
-    pub failure_stage: Option<CaptureFailureStage>,
+    pub failure: Option<CaptureFailure>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -475,36 +475,89 @@ pub(crate) fn map_operation_result_with_capture_projected(
 }
 
 fn capture_failed_warning(status: &krometrail_core::TargetCaptureStatus) -> KrometrailError {
-    let stage = status
-        .failure_stage()
-        .expect("failed capture status is validated with a failure stage");
-    KrometrailError::from_browser_failure(
+    let failure = status
+        .failure()
+        .expect("failed capture status is validated with a failure");
+    let mut warning = KrometrailError::from_browser_failure(
         krometrail_core::ErrorCode::CaptureFailed,
         krometrail_core::NonEmptyText::new(format!(
             "current-state control may have succeeded, but retained temporal frames are unavailable after {}",
-            stage.as_str()
+            failure.stage().as_str()
         ))
         .expect("capture failure warning is non-empty"),
     )
     .with_context(krometrail_core::ErrorContext {
         target_id: Some(status.target_id()),
         ..krometrail_core::ErrorContext::default()
-    })
+    });
+    if let Some(persistence) = failure.cause().persistence.clone() {
+        warning = warning
+            .with_persistence(persistence.clone())
+            .with_recovery(capture_recovery(persistence.recoverability()));
+    }
+    warning
 }
 
-pub(crate) fn map_lifecycle_result<T: Serialize>(
+fn capture_recovery(recoverability: krometrail_core::PersistenceRecoverability) -> NonEmptyText {
+    NonEmptyText::new(match recoverability {
+        krometrail_core::PersistenceRecoverability::WriterUsable => {
+            "start a new browser session before relying on temporal history"
+        }
+        krometrail_core::PersistenceRecoverability::WriterTerminal => {
+            "restart the Krometrail MCP process, then start a new browser session"
+        }
+    })
+    .expect("capture recovery is non-empty")
+}
+
+fn stop_warning(outcome: &BrowserStopOutcome) -> KrometrailError {
+    let mut warning = KrometrailError::from_browser_failure(
+        ErrorCode::CaptureFailed,
+        NonEmptyText::new("browser authority was released with degraded evidence closure")
+            .expect("stop warning is non-empty"),
+    );
+    if let Some(recovery) = outcome.recovery().cloned() {
+        warning = warning.with_recovery(recovery);
+    }
+    if let Some(persistence) = outcome
+        .capture_failure()
+        .and_then(|failure| failure.cause().persistence.clone())
+    {
+        warning = warning.with_persistence(persistence);
+    }
+    warning
+}
+
+pub(crate) fn map_lifecycle_result<T: Serialize + 'static>(
     tool: &str,
     value: T,
 ) -> Result<MappedResult, ResponseInvariantError> {
+    let stop_outcome = (&value as &dyn Any)
+        .downcast_ref::<BrowserStopOutcome>()
+        .cloned();
     let value = serde_json::to_value(value).map_err(|_| ResponseInvariantError)?;
+    let mut projection = Projection::success(value);
+    if let Some(outcome) = stop_outcome
+        .as_ref()
+        .filter(|value| value.quality() == ShutdownQuality::Degraded)
+    {
+        let phase = outcome
+            .failed_phase()
+            .expect("degraded stop outcome has a failed phase");
+        projection.degrade_with_stage(vec![stop_warning(outcome)], phase.as_str());
+    }
     Ok(mapped(
         tool,
-        Projection::success(value),
-        format!("{tool} succeeded"),
+        projection,
+        if stop_outcome.is_some_and(|value| value.quality() == ShutdownQuality::Degraded) {
+            format!("{tool} succeeded with degraded evidence closure")
+        } else {
+            format!("{tool} succeeded")
+        },
     ))
 }
 
-pub(crate) fn map_temporal_context_result<T: Serialize>(
+pub(crate) fn map_temporal_context_result<T: Serialize + 'static>(
     tool: &str,
     value: T,
     preference: ResponseProjectionRequest,
@@ -533,7 +586,7 @@ pub(crate) fn map_browser_status(
                     dropped_frames: capture.statistics().dropped_frames(),
                     known_gap_count: capture.statistics().gap_count(),
                     last_frame_session_time: capture.last_frame_session_time(),
-                    failure_stage: capture.failure_stage(),
+                    failure: capture.failure().cloned(),
                 })
                 .collect();
             let retention = ConciseRetentionStatus {
@@ -658,10 +711,13 @@ fn add_capture_warnings(
         .filter(|status| status.state() == krometrail_core::CaptureStreamState::Failed)
         .filter(|status| target_id.is_none_or(|target_id| status.target_id() == target_id))
     {
-        let stage = status
-            .failure_stage()
-            .expect("failed capture status is validated with a failure stage");
-        projection.degrade_with_stage(vec![capture_failed_warning(status)], stage.as_str());
+        let failure = status
+            .failure()
+            .expect("failed capture status is validated with a failure");
+        projection.degrade_with_stage(
+            vec![capture_failed_warning(status)],
+            failure.stage().as_str(),
+        );
     }
 }
 
@@ -2306,7 +2362,16 @@ mod tests {
     }
 
     fn failed_capture_for(target_id: TargetId) -> TargetCaptureStatus {
-        TargetCaptureStatus::new_with_failure_stage(
+        let cause = KrometrailError::new(
+            ErrorCode::PersistenceFailed,
+            NonEmptyText::new("frame persistence failed").unwrap(),
+        )
+        .with_persistence(krometrail_core::PersistenceFailure::new(
+            krometrail_core::PersistenceOperation::SealedSegmentPublicationSync,
+            krometrail_core::PersistenceFailureCategory::PermissionDenied,
+            krometrail_core::PersistenceRecoverability::WriterUsable,
+        ));
+        TargetCaptureStatus::new(
             target_id,
             1,
             CaptureStreamState::Failed,
@@ -2317,13 +2382,50 @@ mod tests {
             CaptureTimingSummary::empty(),
             CaptureTimingSummary::empty(),
             EveryNthFrame::default(),
-            Some(CaptureFailureStage::FramePersistence),
+            Some(CaptureFailure::new(CaptureFailureStage::FramePersistence, cause).unwrap()),
         )
         .unwrap()
     }
 
     fn failed_capture() -> TargetCaptureStatus {
         failed_capture_for(target_id())
+    }
+
+    #[test]
+    fn degraded_stop_is_a_success_with_typed_warning_and_recovery() {
+        let capture_failure = failed_capture().failure().expect("fixture failure").clone();
+        let outcome = BrowserStopOutcome::new(
+            krometrail_core::BrowserClosure::ManagedBrowserClosed,
+            ShutdownQuality::Degraded,
+            Some(krometrail_core::ShutdownFailurePhase::CaptureStopDrainFlush),
+            Some(capture_failure),
+            Some(
+                NonEmptyText::new("start a new browser session before relying on temporal history")
+                    .unwrap(),
+            ),
+        )
+        .unwrap();
+        let mapped = map_lifecycle_result("stop_browser", outcome).unwrap();
+        assert_eq!(mapped.response.status, ToolResponseStatus::Degraded);
+        assert!(!mapped.is_error);
+        assert_eq!(mapped.response.result["closure"], "managed_browser_closed");
+        assert_eq!(mapped.response.result["quality"], "degraded");
+        assert_eq!(
+            mapped.response.warnings[0]
+                .persistence
+                .as_ref()
+                .unwrap()
+                .operation(),
+            krometrail_core::PersistenceOperation::SealedSegmentPublicationSync
+        );
+        assert!(
+            mapped.response.warnings[0]
+                .recovery
+                .as_ref()
+                .unwrap()
+                .as_str()
+                .contains("start a new browser session")
+        );
     }
 
     #[test]
@@ -2341,6 +2443,22 @@ mod tests {
         assert_eq!(
             mapped.response.warnings[0].context.target_id,
             Some(target_id())
+        );
+        assert_eq!(
+            mapped.response.warnings[0]
+                .persistence
+                .as_ref()
+                .unwrap()
+                .recoverability(),
+            krometrail_core::PersistenceRecoverability::WriterUsable
+        );
+        assert!(
+            mapped.response.warnings[0]
+                .recovery
+                .as_ref()
+                .unwrap()
+                .as_str()
+                .contains("start a new browser session")
         );
         assert!(mapped.response.error.is_none());
     }

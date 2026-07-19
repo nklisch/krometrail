@@ -17,15 +17,16 @@ use std::{
 use futures_util::{StreamExt, stream::FuturesUnordered};
 
 use krometrail_core::{
-    AttachBrowser, BrowserCompatibility, BrowserConnectRequest, BrowserConnector, BrowserEventSink,
-    BrowserInstallation, BrowserOperationContext, BrowserOperationRequest, BrowserOperationResult,
-    BrowserOperationScope, BrowserOwnership, BrowserSessionEvent, BrowserSessionEvents,
-    BrowserSessionPort, BrowserSessionState, BrowserStatus, BrowserStopOutcome, CancellationSignal,
-    CurrentReferenceGeometryRequest, ErrorCode, EveryNthFrame, IdSource, IdValue,
-    InteractionAnchor, InteractionTiming, KrometrailError, MonotonicClock, NonEmptyText,
-    ObservationPart, PageChange, PageOperationOutcome, PageOperationResult, PageSelection,
-    PageStatus, PortFuture, ProfileRef, ResolvedReferenceGeometry, Result, SessionId,
-    SessionOrigin, TargetCaptureStatus, TargetVisibility, ViewportOperationResult,
+    AttachBrowser, BrowserClosure, BrowserCompatibility, BrowserConnectRequest, BrowserConnector,
+    BrowserEventSink, BrowserInstallation, BrowserOperationContext, BrowserOperationRequest,
+    BrowserOperationResult, BrowserOperationScope, BrowserOwnership, BrowserSessionEvent,
+    BrowserSessionEvents, BrowserSessionPort, BrowserSessionState, BrowserStatus,
+    BrowserStopOutcome, CancellationSignal, CurrentReferenceGeometryRequest, ErrorCode,
+    EveryNthFrame, IdSource, IdValue, InteractionAnchor, InteractionTiming, KrometrailError,
+    MonotonicClock, NonEmptyText, ObservationPart, PageChange, PageOperationOutcome,
+    PageOperationResult, PageSelection, PageStatus, PersistenceRecoverability, PortFuture,
+    ProfileRef, ResolvedReferenceGeometry, Result, SessionId, SessionOrigin, ShutdownFailurePhase,
+    ShutdownQuality, TargetCaptureStatus, TargetVisibility, ViewportOperationResult,
 };
 use serde_json::Value;
 use tokio::{
@@ -2699,7 +2700,7 @@ mod tests {
     async fn shutdown_deadline_exhaustion_uses_process_force_cleanup() {
         let (result, source, deadline, log) =
             run_shutdown_fixture(Duration::from_millis(100), Duration::from_millis(30)).await;
-        assert_eq!(result.unwrap().quality, shutdown::ShutdownQuality::Degraded);
+        assert_eq!(result.unwrap().quality, ShutdownQuality::Degraded);
         let samples = source.samples();
         assert_eq!(samples[5].0, ShutdownPhase::ProcessTerminate);
         assert_eq!(
@@ -2711,6 +2712,57 @@ mod tests {
             !log.lock()
                 .expect("shutdown log lock")
                 .contains(&"Browser.close".into())
+        );
+    }
+
+    #[test]
+    fn stop_recovery_distinguishes_reusable_and_terminal_writers() {
+        let outcome_for = |recoverability| {
+            let cause = KrometrailError::new(
+                ErrorCode::PersistenceFailed,
+                NonEmptyText::new("frame persistence failed").unwrap(),
+            )
+            .with_persistence(krometrail_core::PersistenceFailure::new(
+                krometrail_core::PersistenceOperation::SealedSegmentPublicationSync,
+                krometrail_core::PersistenceFailureCategory::PermissionDenied,
+                recoverability,
+            ));
+            stop_outcome(
+                &shutdown::ShutdownReport {
+                    quality: ShutdownQuality::Degraded,
+                    failed_phase: Some(ShutdownFailurePhase::CaptureStopDrainFlush),
+                    capture_failure: Some(
+                        krometrail_core::CaptureFailure::new(
+                            krometrail_core::CaptureFailureStage::FramePersistence,
+                            cause,
+                        )
+                        .unwrap(),
+                    ),
+                    remaining: Vec::new(),
+                },
+                BrowserOwnership::Managed,
+            )
+        };
+
+        let reusable = outcome_for(PersistenceRecoverability::WriterUsable);
+        assert_eq!(reusable.closure(), BrowserClosure::ManagedBrowserClosed);
+        assert_eq!(reusable.quality(), ShutdownQuality::Degraded);
+        assert!(
+            reusable
+                .recovery()
+                .unwrap()
+                .as_str()
+                .contains("start a new browser session")
+        );
+        assert!(!reusable.recovery().unwrap().as_str().contains("restart"));
+
+        let terminal = outcome_for(PersistenceRecoverability::WriterTerminal);
+        assert!(
+            terminal
+                .recovery()
+                .unwrap()
+                .as_str()
+                .contains("restart the Krometrail MCP process")
         );
     }
 }

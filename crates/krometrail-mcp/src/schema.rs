@@ -403,6 +403,19 @@ mod tests {
     }
 
     #[test]
+    fn stop_and_capture_failure_schemas_are_structured_and_current() {
+        let stop = serde_json::to_value(schemars::schema_for!(krometrail_core::BrowserStopOutcome))
+            .unwrap();
+        let encoded = serde_json::to_string(&stop).unwrap();
+        assert!(encoded.contains("managed_browser_closed"));
+        assert!(encoded.contains("capture_stop_drain_flush"));
+        assert!(encoded.contains("sealed_segment_publication_sync"));
+        assert!(encoded.contains("writer_usable"));
+        assert!(!encoded.contains("managed_browser_closed_degraded"));
+        assert!(!encoded.contains("failure_stage"));
+    }
+
+    #[test]
     fn projected_schema_is_additive_closed_and_does_not_change_required_fields() {
         let base =
             operation_input_schema(BrowserOperationKind::NavigatePage, &McpConfig::default())

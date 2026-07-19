@@ -23,11 +23,10 @@ use krometrail_cdp::{
 };
 use krometrail_core::{
     BrowserConnectRequest, BrowserConnector, BrowserInstallation, BrowserProduct,
-    BrowserSessionEvent, BrowserSessionEvents, BrowserSessionPort, BrowserSessionState,
-    BrowserStopOutcome, ByteOffset, CaptureGap, CaptureGapReason, CaptureTimingSummary,
-    EncodedFrame, FrameAddress, IdSource, IdValue, ImageFormat, LaunchBrowser, ManagedProfile,
-    MonotonicClock, ObservedTime, PortFuture, RecordingSink, SegmentId, SessionId,
-    TargetCaptureStatus, TargetId,
+    BrowserSessionEvent, BrowserSessionEvents, BrowserSessionPort, BrowserSessionState, ByteOffset,
+    CaptureGap, CaptureGapReason, CaptureTimingSummary, EncodedFrame, FrameAddress, IdSource,
+    IdValue, ImageFormat, LaunchBrowser, ManagedProfile, MonotonicClock, ObservedTime, PortFuture,
+    RecordingSink, SegmentId, SessionId, TargetCaptureStatus, TargetId,
 };
 use uuid::Uuid;
 
@@ -476,7 +475,11 @@ async fn run_fidelity_session(
         .await
         .expect("fidelity stop must be bounded")
         .expect("fidelity managed stop");
-    assert_eq!(outcome, BrowserStopOutcome::ManagedBrowserClosed);
+    assert_eq!(
+        outcome.closure(),
+        krometrail_core::BrowserClosure::ManagedBrowserClosed
+    );
+    assert_eq!(outcome.quality(), krometrail_core::ShutdownQuality::Clean);
     assert_eq!(sink.flush_count(), 1);
     drop(session);
     assert_no_profile_references(root.path());
@@ -574,7 +577,11 @@ async fn run_loss_session(
         .await
         .expect("loss stop must be bounded")
         .expect("loss managed stop");
-    assert_eq!(outcome, BrowserStopOutcome::ManagedBrowserClosed);
+    assert_eq!(
+        outcome.closure(),
+        krometrail_core::BrowserClosure::ManagedBrowserClosed
+    );
+    assert_eq!(outcome.quality(), krometrail_core::ShutdownQuality::Clean);
     assert_eq!(sink.flush_count(), 1);
     drop(session);
     assert_no_profile_references(root.path());

@@ -105,7 +105,7 @@ State-changing actions include navigation, history movement, reload, click, text
 
 Krometrail chooses an action-appropriate observation point after dispatching the action. Automatic post-action screenshots wait for two renderer animation-frame callbacks under a bounded 250 millisecond cap; a missing signal degrades evidence but does not erase a proven dispatch or mutation. It does not wait for complete network idleness unless the requested action requires it. The temporal recorder continues capturing intermediate states while the action completes.
 
-Action dispatch or mutation, current-state observation, and retained temporal capture are independent outcomes. A failed retained-capture stream reports `capture_failed` with a bounded `failure_stage` on later operations while current-state control remains available. Observation failure after a proven action produces a degraded non-error response and must not imply that replay is safe.
+Action dispatch or mutation, current-state observation, and retained temporal capture are independent outcomes. A failed retained-capture stream reports its first bounded failure stage and sanitized cause on later operations while current-state control remains available. Persistence causes identify a closed operation, category, and writer recoverability without paths, raw operating-system messages, frame data, or page content. Observation failure after a proven action produces a degraded non-error response and must not imply that replay is safe.
 
 Read-only inspection operations do not generate additional screenshots unless requested.
 
@@ -297,6 +297,13 @@ Tools belonging to a disabled or startup-unavailable capability are not register
 The Krometrail data directory uses one configurable global disk budget across active sessions, retained sessions, indexes, browser events, and generated artifacts. The default budget is 10 GB.
 
 Recorded data is stored in time-based immutable segments. Session metadata and artifact indexes are stored separately from frame payloads. Stopping a session leaves its retained ranges queryable under the global budget.
+
+Segment publication treats writes, flushes, file sync, and rename as terminal when their resulting offsets or namespace state are ambiguous. A directory-sync failure after a completed sealed-file rename rejects the triggering append but leaves the writer usable for a later session: the sealed path is already authoritative and the next append creates a distinct segment. Capture status and stop results preserve that distinction. A writer-usable cause directs the agent to start a new browser session; a writer-terminal cause requires restarting the Krometrail MCP process first.
+
+Krometrail supports one current metadata-index format. It initializes an empty store directly to
+that format and opens exact current-format data without rewriting it. An unversioned non-empty,
+older, or newer index is rejected before schema mutation with a clear action to archive or remove
+the data directory and restart; the runtime does not migrate unsupported historical formats.
 
 When total stored data exceeds the budget, Krometrail removes the oldest unpinned segments across all sessions until usage returns below the limit.
 

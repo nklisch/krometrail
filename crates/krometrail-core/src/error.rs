@@ -457,10 +457,7 @@ mod tests {
             r#"{"operation":"frame_record_append","category":"other","recoverability":"writer_terminal","source":"secret"}"#,
         )
         .is_err());
-        assert_eq!(
-            format!("{failure:?}").contains("raw operating system detail"),
-            false
-        );
+        assert!(!format!("{failure:?}").contains("raw operating system detail"));
     }
 
     #[test]

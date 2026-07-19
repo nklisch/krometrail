@@ -375,7 +375,7 @@ pub struct TargetCaptureStatus {
     frame_cadence: CaptureTimingSummary,
     every_nth_frame: EveryNthFrame,
     #[serde(skip_serializing_if = "Option::is_none")]
-    failure: Option<CaptureFailure>,
+    failure: Option<Box<CaptureFailure>>,
 }
 
 #[derive(Deserialize)]
@@ -444,7 +444,7 @@ impl TargetCaptureStatus {
             ack_latency,
             frame_cadence,
             every_nth_frame,
-            failure,
+            failure: failure.map(Box::new),
         })
     }
 
@@ -488,8 +488,8 @@ impl TargetCaptureStatus {
         self.every_nth_frame
     }
 
-    pub const fn failure(&self) -> Option<&CaptureFailure> {
-        self.failure.as_ref()
+    pub fn failure(&self) -> Option<&CaptureFailure> {
+        self.failure.as_deref()
     }
 }
 

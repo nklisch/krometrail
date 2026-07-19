@@ -64,12 +64,6 @@ pub(super) struct ShutdownPlan {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum ShutdownQuality {
-    Clean,
-    Degraded,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum RemainingResource {
     ManagedProcess,
     ManagedProfile,
@@ -78,6 +72,8 @@ pub(super) enum RemainingResource {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct ShutdownReport {
     pub(super) quality: ShutdownQuality,
+    pub(super) failed_phase: Option<ShutdownFailurePhase>,
+    pub(super) capture_failure: Option<krometrail_core::CaptureFailure>,
     pub(super) remaining: Vec<RemainingResource>,
 }
 
@@ -85,13 +81,38 @@ pub(super) fn stop_outcome(
     report: &ShutdownReport,
     ownership: BrowserOwnership,
 ) -> BrowserStopOutcome {
-    match ownership {
-        BrowserOwnership::Attached => BrowserStopOutcome::Detached,
-        BrowserOwnership::Managed if report.quality == ShutdownQuality::Degraded => {
-            BrowserStopOutcome::ManagedBrowserClosedDegraded
-        }
-        BrowserOwnership::Managed => BrowserStopOutcome::ManagedBrowserClosed,
-    }
+    let closure = match ownership {
+        BrowserOwnership::Attached => BrowserClosure::Detached,
+        BrowserOwnership::Managed => BrowserClosure::ManagedBrowserClosed,
+    };
+    let recovery = (report.quality == ShutdownQuality::Degraded).then(|| {
+        let guidance = match report
+            .capture_failure
+            .as_ref()
+            .and_then(|failure| failure.cause().persistence.as_ref())
+            .map(|failure| failure.recoverability())
+        {
+            Some(PersistenceRecoverability::WriterUsable) => {
+                "start a new browser session before relying on temporal history"
+            }
+            Some(PersistenceRecoverability::WriterTerminal) => {
+                "restart the Krometrail MCP process, then start a new browser session"
+            }
+            None if report.capture_failure.is_some() => {
+                "inspect browser status and diagnostics, then start a new browser session"
+            }
+            None => "inspect shutdown diagnostics before starting a new browser session",
+        };
+        NonEmptyText::new(guidance).expect("shutdown recovery is non-empty")
+    });
+    BrowserStopOutcome::new(
+        closure,
+        report.quality,
+        report.failed_phase,
+        report.capture_failure.clone(),
+        recovery,
+    )
+    .expect("shutdown report maintains stop outcome invariants")
 }
 
 pub(super) async fn perform_shutdown(
@@ -104,7 +125,8 @@ pub(super) async fn perform_shutdown(
     let started = std::time::Instant::now();
     let deadline = plan.deadline.instant();
     let mut failed = false;
-    let mut failed_phase = None;
+    let mut failed_phase: Option<ShutdownFailurePhase> = None;
+    let mut capture_failure = None;
 
     // Capture closes acceptance and drains before transport resources are detached. The same
     // absolute deadline is passed to every phase; the source samples only expose the budget at
@@ -120,13 +142,18 @@ pub(super) async fn perform_shutdown(
                     .coordinator
                     .shutdown(capture.session_id, deadline)
                     .await;
+                capture_failure = outcome.capture_failure;
+                if capture_failure.is_some() {
+                    failed = true;
+                    failed_phase.get_or_insert(ShutdownFailurePhase::CaptureStopDrainFlush);
+                }
                 failed |= !outcome.complete;
                 if !outcome.complete {
-                    failed_phase.get_or_insert("capture_stop_drain_flush");
+                    failed_phase.get_or_insert(ShutdownFailurePhase::CaptureStopDrainFlush);
                 }
             } else {
                 failed = true;
-                failed_phase.get_or_insert("capture_stop_drain_flush");
+                failed_phase.get_or_insert(ShutdownFailurePhase::CaptureStopDrainFlush);
             }
         }
     }
@@ -138,11 +165,11 @@ pub(super) async fn perform_shutdown(
     {
         if !plan.browser_events.shutdown(deadline).await {
             failed = true;
-            failed_phase.get_or_insert("browser_event_drain_flush");
+            failed_phase.get_or_insert(ShutdownFailurePhase::BrowserEventDrainFlush);
         }
     } else {
         failed = true;
-        failed_phase.get_or_insert("browser_event_drain_flush");
+        failed_phase.get_or_insert(ShutdownFailurePhase::BrowserEventDrainFlush);
     }
 
     if let Some(connection) = connection.as_mut() {
@@ -160,7 +187,7 @@ pub(super) async fn perform_shutdown(
                 .is_zero()
             {
                 failed = true;
-                failed_phase.get_or_insert("target_detach");
+                failed_phase.get_or_insert(ShutdownFailurePhase::TargetDetach);
                 break;
             }
             let result = tokio::time::timeout_at(
@@ -174,7 +201,7 @@ pub(super) async fn perform_shutdown(
             .await;
             if !result.is_ok_and(|result| result.is_ok()) {
                 failed = true;
-                failed_phase.get_or_insert("target_detach");
+                failed_phase.get_or_insert(ShutdownFailurePhase::TargetDetach);
             }
         }
         if plan.ownership == BrowserOwnership::Managed
@@ -201,11 +228,11 @@ pub(super) async fn perform_shutdown(
             .await;
             if !result.is_ok_and(|result| result.is_ok()) {
                 failed = true;
-                failed_phase.get_or_insert("browser_close");
+                failed_phase.get_or_insert(ShutdownFailurePhase::BrowserClose);
             }
         } else if plan.ownership == BrowserOwnership::Managed {
             failed = true;
-            failed_phase.get_or_insert("browser_close");
+            failed_phase.get_or_insert(ShutdownFailurePhase::BrowserClose);
         }
     }
 
@@ -219,7 +246,7 @@ pub(super) async fn perform_shutdown(
                     Ok(Ok(_)) => {}
                     Ok(Err(_)) | Err(_) => {
                         failed = true;
-                        failed_phase.get_or_insert("process_terminate");
+                        failed_phase.get_or_insert(ShutdownFailurePhase::ProcessTerminate);
                         if !owned.force_kill_now() {
                             process_remains = true;
                             *process.lock().expect("process lock") = Some(owned);
@@ -228,7 +255,7 @@ pub(super) async fn perform_shutdown(
                 }
             } else {
                 failed = true;
-                failed_phase.get_or_insert("process_terminate");
+                failed_phase.get_or_insert(ShutdownFailurePhase::ProcessTerminate);
                 if !owned.force_kill_now() {
                     process_remains = true;
                     *process.lock().expect("process lock") = Some(owned);
@@ -254,10 +281,10 @@ pub(super) async fn perform_shutdown(
         remaining.push(RemainingResource::ManagedProfile);
     }
     if !remaining.is_empty() {
-        let failure_stage = failed_phase.unwrap_or("deadline_complete");
+        let failure_stage = failed_phase.unwrap_or(ShutdownFailurePhase::DeadlineComplete);
         tracing::warn!(
             event = "browser.shutdown.incomplete",
-            failure_stage,
+            failure_stage = failure_stage.as_str(),
             error_code = "shutdown_incomplete",
             elapsed_ms = started.elapsed().as_millis() as u64,
             forced_termination = true,
@@ -285,6 +312,12 @@ pub(super) async fn perform_shutdown(
             } else {
                 ShutdownQuality::Clean
             },
+            failed_phase: if failed || exhausted {
+                Some(failed_phase.unwrap_or(ShutdownFailurePhase::DeadlineComplete))
+            } else {
+                None
+            },
+            capture_failure,
             remaining,
         })
     }
