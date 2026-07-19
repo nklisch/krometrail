@@ -268,6 +268,41 @@ impl<F> StoryboardSelection<F> {
     pub const fn visual_summary(&self) -> &StoryboardVisualSummary<F> {
         &self.visual_summary
     }
+
+    pub(crate) fn remap_source_indices(mut self, indices: &[usize]) -> Result<Self> {
+        let remap = |index: usize| {
+            indices.get(index).copied().ok_or_else(|| {
+                VisionError::new(
+                    ErrorCode::InvalidManifest,
+                    "bounded storyboard index has no source provenance",
+                )
+            })
+        };
+        for selected in &mut self.selected_frames {
+            selected.frame_index = remap(selected.frame_index)?;
+        }
+        for anchor in &mut self.omitted_anchors {
+            anchor.frame_index = remap(anchor.frame_index)?;
+        }
+        self.before_index = remap(self.before_index)?;
+        self.during_index = remap(self.during_index)?;
+        self.after_index = remap(self.after_index)?;
+        for moment in [
+            self.visual_summary.first_change.as_mut(),
+            self.visual_summary.peak_baseline_change.as_mut(),
+            self.visual_summary.peak_adjacent_changed_area.as_mut(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            moment.frame_index = remap(moment.frame_index)?;
+            moment.comparison = moment.comparison.clone().remap_indices(
+                remap(moment.comparison.earlier_frame_index())?,
+                remap(moment.comparison.later_frame_index())?,
+            );
+        }
+        Ok(self)
+    }
 }
 
 impl<F: Eq> StoryboardSelection<F> {

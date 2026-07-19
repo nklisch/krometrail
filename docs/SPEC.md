@@ -352,6 +352,8 @@ Stopping a session flushes accepted frames and metadata before reporting complet
 
 ## Temporal Ranges
 
+A `SessionTime` is a session-relative monotonic nanosecond value.
+
 A temporal range can be specified by:
 
 - explicit session-relative time;
@@ -369,6 +371,10 @@ pinning, and video requests accept either the complete resolved range or that ha
 same immutable range payload for the lifetime of the MCP process and fails explicitly after restart,
 invalidation, or session deletion; it is a convenience reference, not an independent evidence authority.
 
+The `resolve_temporal_range` operation performs only natural-anchor resolution and capture-quality assembly. It
+returns the resolved range, a new range handle, and capture-quality evidence; it does not generate artifacts or
+query browser events. The handle is accepted anywhere a temporal request accepts a resolved range.
+
 Queries fail clearly when part or all of the requested range has been evicted, was never captured, belongs to a different target, or contains known capture gaps.
 
 ## Temporal Queries
@@ -376,6 +382,7 @@ Queries fail clearly when part or all of the requested range has been evicted, w
 The temporal-vision capability supports:
 
 - inspect a range;
+- resolve a natural temporal anchor into a range handle and capture-quality summary;
 - inspect a window around an interaction;
 - generate a temporal storyboard;
 - generate a temporal difference map;
@@ -392,6 +399,10 @@ A temporal debug bundle is the primary investigation entry point. Its artifact w
 Concise bundle responses publish one primary compact artifact handle/resource and exact selected-epoch, available/unavailable outcome, and omitted outcome/resource counts. Expanded responses publish compact handles and resources for every generated outcome. Full responses retain complete generator, frame, and provenance structures. The primary artifact is inlined by default; `inline_images: false` retains the structured result and resource without reading pixels.
 
 Large images and raw frame collections are returned by file or MCP resource reference. The response may include a context-sized primary image for immediate model inspection. Request and response bodies are drill-down evidence rather than default bundle content.
+
+Resolved-order source-frame listings are paginated with an optional `offset`. Each page is truncated to its
+`max_frames` limit and reports `omitted_frame_count` plus `next_offset` when another page is available. Explicit
+frame selections and `fetch_source_frames` remain strict and cannot use pagination to bypass their limits.
 
 ## Regions of Interest
 

@@ -17,3 +17,9 @@ Unit 2 of the parent design: storyboard fit budgeting and decode bounded by tile
 
 Acceptance evidence and file targets are defined in the parent feature's
 implementation unit; this story is the durable checkpoint for that unit.
+
+## Completion Notes
+
+Implemented selection-bounded storyboard and region-filmstrip planning with
+full source provenance, per-generator refusal boundaries, and cropped-region
+normalization plus a one-frame full locator normalization.

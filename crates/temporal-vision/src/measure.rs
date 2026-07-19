@@ -178,6 +178,12 @@ impl FrameComparison {
     pub const fn outcome(&self) -> &ComparisonOutcome {
         &self.outcome
     }
+
+    pub(crate) fn remap_indices(mut self, earlier: usize, later: usize) -> Self {
+        self.earlier_frame_index = earlier;
+        self.later_frame_index = later;
+        self
+    }
 }
 
 /// Measure one ordered pair of normalized frames.

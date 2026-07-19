@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    CaptureGapPolicy, CaptureGapStore, FrameSource, InteractionAnchorSource, PortFuture,
-    RangeResolutionOptions, RecordingCatalog, ResolvedRange, Result, RetentionPolicy,
-    TemporalRangeAnchor, TemporalRangeResolver, TimelineAnchorSource, TimelineStore,
-    validation::deserialize_validated,
+    CapabilityId, CaptureGapPolicy, CaptureGapStore, CaptureQuality, FrameSource,
+    InteractionAnchorSource, OperationMutability, PortFuture, RangeResolutionOptions,
+    RecordingCatalog, ResolvedRange, Result, RetentionPolicy, TemporalRangeAnchor,
+    TemporalRangeResolver, TimelineAnchorSource, TimelineStore, validation::deserialize_validated,
 };
 
 /// The single application-facing request for resolving temporal evidence.
@@ -71,6 +71,30 @@ pub trait TemporalQuery: Send + Sync {
     fn resolve_range(&self, request: TemporalQueryRequest)
     -> PortFuture<'_, Result<ResolvedRange>>;
 }
+
+/// The lightweight result returned by the natural-anchor range resolver.
+/// Artifact generation and browser-event correlation remain separate operations.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TemporalRangeResolution {
+    pub range: ResolvedRange,
+    pub capture_quality: CaptureQuality,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TemporalRangeResolutionOperationDefinition {
+    pub stable_name: &'static str,
+    pub description: &'static str,
+    pub capability: CapabilityId,
+    pub mutability: OperationMutability,
+}
+
+pub const TEMPORAL_RANGE_RESOLUTION_OPERATION: TemporalRangeResolutionOperationDefinition =
+    TemporalRangeResolutionOperationDefinition {
+        stable_name: "resolve_temporal_range",
+        description: "Resolve a natural temporal anchor into a range handle and capture quality.",
+        capability: CapabilityId::TemporalVision,
+        mutability: OperationMutability::ReadOnly,
+    };
 
 /// Thin application service that preserves the resolver as the sole range authority.
 pub struct TemporalQueryService<C, F, G, T, I> {

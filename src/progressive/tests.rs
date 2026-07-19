@@ -515,16 +515,13 @@ async fn real_schema_v5_service_qualifies_source_regions_cache_and_corruption_li
     assert_eq!(fetched.frames[0].encoded_bytes(), fixture.frame_bytes[2]);
     assert_eq!(fetched.frames[1].encoded_bytes(), fixture.frame_bytes[0]);
 
-    assert_eq!(
-        SourceFramesRequest::new(
-            fixture.range.clone(),
-            SourceFrameSelection::ResolvedOrder,
-            SourceReadLimitsRequest::new(2, max_item, total_bytes).unwrap(),
-        )
-        .unwrap_err()
-        .code,
-        ErrorCode::InvalidInput
-    );
+    let paged = SourceFramesRequest::new(
+        fixture.range.clone(),
+        SourceFrameSelection::ResolvedOrder,
+        SourceReadLimitsRequest::new(2, max_item, total_bytes).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(paged.selected_frame_ids().len(), 2);
     let largest = fixture
         .frame_bytes
         .iter()

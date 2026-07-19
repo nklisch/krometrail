@@ -11,8 +11,8 @@ use krometrail_core::{
     ProgressiveEvidenceRequest, ProgressiveEvidenceResult, RecordingBudgetState,
     ResolvedRangeHandleId, RetrieveArtifactRequest, RetryAdvice, ScreenshotMetadata, SessionId,
     SessionTime, ShutdownQuality, SourceFrameBatch, SourceFrameHandle, TargetId,
-    TemporalDebugBundle, TemporalRangeAnchorKind, TemporalVideoGenerationResult,
-    VideoPresentationPolicy, WaitOutcome,
+    TemporalDebugBundle, TemporalRangeAnchorKind, TemporalRangeResolution,
+    TemporalVideoGenerationResult, VideoPresentationPolicy, WaitOutcome,
 };
 use rmcp::model::JsonObject;
 use rmcp::model::{CallToolResult, Content, RawResource};
@@ -1941,6 +1941,28 @@ pub(crate) async fn map_temporal_bundle_result(
     Ok(mapped(tool, projection, format!("{tool} succeeded")))
 }
 
+pub(crate) fn map_temporal_range_resolution_result(
+    tool: &str,
+    resolution: TemporalRangeResolution,
+    response: ResponseRequest,
+) -> Result<MappedResult, ResponseInvariantError> {
+    let range = match response.detail {
+        ResponseDetail::Concise => serde_json::to_value(compact_resolved_range(&resolution.range)?)
+            .map_err(|_| ResponseInvariantError)?,
+        ResponseDetail::Expanded | ResponseDetail::Full => {
+            serde_json::to_value(&resolution.range).map_err(|_| ResponseInvariantError)?
+        }
+    };
+    let mut projection = Projection::success(json!({
+        "range": range,
+        "capture_quality": resolution.capture_quality,
+        "artifacts": {"status": "not_requested"},
+        "browser_events": {"status": "not_requested"},
+    }));
+    project_response(tool, &mut projection, response)?;
+    Ok(mapped(tool, projection, format!("{tool} succeeded")))
+}
+
 pub(crate) async fn map_progressive_result(
     tool: &str,
     result: ProgressiveEvidenceResult,
@@ -2006,7 +2028,10 @@ pub(crate) async fn map_progressive_result(
             } else {
                 list.frames.clone()
             };
-            let omitted_frame_count = list.frames.len().saturating_sub(frames.len());
+            let local_omitted_frame_count = list.frames.len().saturating_sub(frames.len());
+            let omitted_frame_count = list
+                .omitted_frame_count
+                .saturating_add(u64::try_from(local_omitted_frame_count).unwrap_or(u64::MAX));
             let range = if response.detail == ResponseDetail::Concise {
                 serde_json::to_value(compact_resolved_range(&list.range)?)
                     .map_err(|_| ResponseInvariantError)?
@@ -2017,6 +2042,7 @@ pub(crate) async fn map_progressive_result(
                 "range": range,
                 "frames": frames,
                 "omitted_frame_count": omitted_frame_count,
+                "next_offset": list.next_offset,
             }));
             for frame in &list.frames {
                 add_source_frame_resource(&mut projection, frame)?;

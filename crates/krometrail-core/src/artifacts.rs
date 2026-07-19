@@ -19,6 +19,103 @@ use crate::{
     ResolvedRange, Result, SessionTime, error::invalid, validation::deserialize_validated,
 };
 
+/// Shared defaults for direct artifact generation and the temporal bundle policy.
+pub const DEFAULT_ARTIFACT_TILE_LIMIT: u8 = 8;
+pub const DEFAULT_ARTIFACT_NOISE_FLOOR: u16 = 512;
+pub const DEFAULT_STORYBOARD_MAX_WIDTH: u32 = 1920;
+pub const DEFAULT_STORYBOARD_MAX_HEIGHT: u32 = 2048;
+pub const DEFAULT_STORYBOARD_MAX_BYTES: u64 = 16 * 1024 * 1024;
+pub const DEFAULT_DIFFERENCE_MAP_MAX_WIDTH: u32 = 8192;
+pub const DEFAULT_DIFFERENCE_MAP_MAX_HEIGHT: u32 = 8192;
+pub const DEFAULT_DIFFERENCE_MAP_MAX_BYTES: u64 = 64 * 1024 * 1024;
+pub const DEFAULT_ARTIFACT_BLACK_BACKGROUND: temporal_vision::Rgb8 =
+    temporal_vision::Rgb8::new(0, 0, 0);
+
+const DEFAULT_STORYBOARD_TITLE: &str = "TEMPORAL STORYBOARD";
+const DEFAULT_STORYBOARD_SOURCE: &str = "KROMETRAIL RETAINED SOURCE FRAMES";
+
+fn default_labels() -> ArtifactLabelsRequest {
+    ArtifactLabelsRequest::new(
+        NonEmptyText::new(DEFAULT_STORYBOARD_TITLE).expect("default title is non-empty"),
+        NonEmptyText::new(DEFAULT_STORYBOARD_SOURCE).expect("default source is non-empty"),
+    )
+}
+
+fn default_normalization() -> NormalizationRequest {
+    NormalizationRequest::new(
+        None,
+        DEFAULT_ARTIFACT_BLACK_BACKGROUND,
+        AnalysisScale::FitLimits,
+    )
+    .expect("default artifact normalization is valid")
+}
+
+fn default_output() -> OutputLimitsRequest {
+    OutputLimitsRequest::new(
+        DEFAULT_STORYBOARD_MAX_WIDTH,
+        DEFAULT_STORYBOARD_MAX_HEIGHT,
+        DEFAULT_STORYBOARD_MAX_BYTES,
+    )
+    .expect("default artifact output is valid")
+}
+
+fn default_difference_output() -> OutputLimitsRequest {
+    OutputLimitsRequest::new(
+        DEFAULT_DIFFERENCE_MAP_MAX_WIDTH,
+        DEFAULT_DIFFERENCE_MAP_MAX_HEIGHT,
+        DEFAULT_DIFFERENCE_MAP_MAX_BYTES,
+    )
+    .expect("default difference-map output is valid")
+}
+
+fn default_frequency_mode() -> temporal_vision::FrequencyMode {
+    temporal_vision::FrequencyMode::NormalizedFrequency
+}
+
+fn default_frame_selector() -> FrameSelector {
+    FrameSelector::First
+}
+
+fn default_analysis_scale() -> AnalysisScale {
+    AnalysisScale::Identity
+}
+
+fn default_session_time() -> SessionTime {
+    SessionTime::ZERO
+}
+
+fn default_artifact_tile_limit() -> u8 {
+    DEFAULT_ARTIFACT_TILE_LIMIT
+}
+
+fn default_artifact_noise_floor() -> u16 {
+    DEFAULT_ARTIFACT_NOISE_FLOOR
+}
+
+fn default_black_background() -> temporal_vision::Rgb8 {
+    DEFAULT_ARTIFACT_BLACK_BACKGROUND
+}
+
+fn default_include_orientation() -> bool {
+    true
+}
+
+fn default_motion_decay_peak() -> u16 {
+    u16::MAX
+}
+
+fn default_motion_decay_half_life() -> u8 {
+    1
+}
+
+fn default_motion_reference_strength() -> u8 {
+    u8::MAX
+}
+
+fn default_accent() -> temporal_vision::Rgb8 {
+    temporal_vision::Rgb8::new(255, 128, 0)
+}
+
 /// Exact browser-agnostic provenance carried across every application/store boundary.
 pub type ArtifactManifest =
     temporal_vision::ArtifactManifest<ArtifactId, FrameId, ArtifactMarkerId, GapId>;
@@ -214,24 +311,38 @@ pub enum FrameSelector {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct StoryboardRequest {
+    #[serde(default = "default_session_time")]
     pub anchor: SessionTime,
+    #[serde(default = "default_artifact_tile_limit")]
     pub tile_limit: u8,
+    #[serde(default = "default_artifact_noise_floor")]
     pub noise_floor: u16,
+    #[serde(default = "default_normalization")]
     pub normalization: NormalizationRequest,
+    #[serde(default = "default_labels")]
     pub labels: ArtifactLabelsRequest,
+    #[serde(default = "default_include_orientation")]
     pub include_orientation: bool,
+    #[serde(default = "default_output")]
     pub output: OutputLimitsRequest,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DifferenceMapRequest {
+    #[serde(default = "default_frame_selector")]
     pub reference: FrameSelector,
+    #[serde(default = "default_frequency_mode")]
     pub frequency_mode: temporal_vision::FrequencyMode,
+    #[serde(default)]
     pub repeated_change_separation_nanos: Option<u64>,
+    #[serde(default = "default_artifact_noise_floor")]
     pub noise_floor: u16,
+    #[serde(default = "default_normalization")]
     pub normalization: NormalizationRequest,
+    #[serde(default = "default_black_background")]
     pub canvas_background: temporal_vision::Rgb8,
+    #[serde(default = "default_difference_output")]
     pub output: OutputLimitsRequest,
 }
 
@@ -239,29 +350,48 @@ pub struct DifferenceMapRequest {
 #[serde(deny_unknown_fields)]
 pub struct RegionFilmstripRequest {
     pub region: temporal_vision::RegionDefinition,
+    #[serde(default)]
     pub mask: Option<temporal_vision::BinaryMask>,
+    #[serde(default = "default_session_time")]
     pub anchor: SessionTime,
+    #[serde(default = "default_artifact_tile_limit")]
     pub tile_limit: u8,
+    #[serde(default)]
     pub locator: Option<FrameId>,
+    #[serde(default = "default_black_background")]
     pub background: temporal_vision::Rgb8,
+    #[serde(default = "default_black_background")]
     pub padding: temporal_vision::Rgb8,
+    #[serde(default = "default_analysis_scale")]
     pub display_scale: AnalysisScale,
+    #[serde(default = "default_labels")]
     pub labels: ArtifactLabelsRequest,
+    #[serde(default = "default_output")]
     pub output: OutputLimitsRequest,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MotionHistoryRequest {
+    #[serde(default = "default_frame_selector")]
     pub reference: FrameSelector,
+    #[serde(default = "default_artifact_noise_floor")]
     pub noise_floor: u16,
+    #[serde(default = "default_normalization")]
     pub normalization: NormalizationRequest,
+    #[serde(default = "default_motion_decay_peak")]
     pub decay_peak: u16,
+    #[serde(default = "default_motion_decay_half_life")]
     pub decay_half_life_ranks: u8,
+    #[serde(default = "default_motion_reference_strength")]
     pub reference_strength: u8,
+    #[serde(default = "default_accent")]
     pub accent: temporal_vision::Rgb8,
+    #[serde(default = "default_black_background")]
     pub outline: temporal_vision::Rgb8,
+    #[serde(default = "default_labels")]
     pub labels: ArtifactLabelsRequest,
+    #[serde(default = "default_output")]
     pub output: OutputLimitsRequest,
 }
 
@@ -409,6 +539,24 @@ impl ArtifactGenerationRequest {
             }
             if !range.resolved_range.contains(marker.session_time) {
                 return Err(invalid("artifact marker is outside the resolved range"));
+            }
+        }
+        let mut generators = generators;
+        for generator in &mut generators {
+            match generator {
+                ArtifactGeneratorRequest::Storyboard(request)
+                    if !range.resolved_range.contains(request.anchor)
+                        && request.anchor == SessionTime::ZERO =>
+                {
+                    request.anchor = range.resolved_anchor.effective_time;
+                }
+                ArtifactGeneratorRequest::RegionFilmstrip(request)
+                    if !range.resolved_range.contains(request.anchor)
+                        && request.anchor == SessionTime::ZERO =>
+                {
+                    request.anchor = range.resolved_anchor.effective_time;
+                }
+                _ => {}
             }
         }
         for generator in &generators {
@@ -645,6 +793,36 @@ mod tests {
         let mut value = serde_json::to_value(request).unwrap();
         value["generators"][0]["tile_limit"] = serde_json::json!(99);
         assert!(serde_json::from_value::<ArtifactGenerationRequest>(value).is_err());
+    }
+
+    #[test]
+    fn direct_generator_defaults_match_the_bundle_policy() {
+        let value = serde_json::json!({
+            "range": range(),
+            "markers": [],
+            "generators": [{ "generator": "storyboard" }],
+            "failure_policy": "allow_partial"
+        });
+        let request: ArtifactGenerationRequest = serde_json::from_value(value).unwrap();
+        let ArtifactGeneratorRequest::Storyboard(storyboard) = &request.generators()[0] else {
+            panic!("expected the storyboard generator");
+        };
+        assert_eq!(
+            storyboard.anchor,
+            request.range().resolved_anchor.effective_time
+        );
+        assert_eq!(storyboard.tile_limit, DEFAULT_ARTIFACT_TILE_LIMIT);
+        assert_eq!(storyboard.noise_floor, DEFAULT_ARTIFACT_NOISE_FLOOR);
+        assert_eq!(storyboard.normalization.scale, AnalysisScale::FitLimits);
+        assert_eq!(storyboard.output.max_width(), DEFAULT_STORYBOARD_MAX_WIDTH);
+        assert_eq!(
+            storyboard.output.max_height(),
+            DEFAULT_STORYBOARD_MAX_HEIGHT
+        );
+        assert_eq!(
+            storyboard.output.max_encoded_bytes(),
+            DEFAULT_STORYBOARD_MAX_BYTES
+        );
     }
 
     #[test]

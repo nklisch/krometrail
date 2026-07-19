@@ -13,8 +13,9 @@ use krometrail_core::{
     KrometrailError, LaunchBrowser, NonEmptyText, OperationExposure, OperationMutability,
     PortFuture, ProgressiveEvidenceContext, ProgressiveEvidenceOperationKind,
     ProgressiveEvidenceRequest, ResolvedRange, ResolvedRangeHandleId, Result, RetryAdvice,
-    TEMPORAL_CONTEXT_OPERATION_REGISTRY, TEMPORAL_DEBUG_BUNDLE_OPERATION, TEMPORAL_VIDEO_OPERATION,
-    TemporalContextOperationKind, TemporalDebugBundleContext, TemporalDebugBundleRequest,
+    TEMPORAL_CONTEXT_OPERATION_REGISTRY, TEMPORAL_DEBUG_BUNDLE_OPERATION,
+    TEMPORAL_RANGE_RESOLUTION_OPERATION, TEMPORAL_VIDEO_OPERATION, TemporalContextOperationKind,
+    TemporalDebugBundleContext, TemporalDebugBundleRequest, TemporalQueryRequest,
     TemporalVideoGenerationRequest,
 };
 use rmcp::{
@@ -30,8 +31,9 @@ use crate::{
     response::{
         ResponseRequest, into_call_tool_result, map_browser_status, map_lifecycle_result,
         map_operation_result_with_capture_and_novelty, map_progressive_result,
-        map_temporal_bundle_result, map_temporal_context_result, map_temporal_video_result,
-        split_response_request, visible_error, visible_error_with_capture,
+        map_temporal_bundle_result, map_temporal_context_result,
+        map_temporal_range_resolution_result, map_temporal_video_result, split_response_request,
+        visible_error, visible_error_with_capture,
     },
     schema::{
         ResolvedRangeHandleArgument, generated_input_schema, operation_input_schema,
@@ -186,6 +188,23 @@ pub(crate) fn build_router(
         }));
     }
 
+    if config.is_enabled(TEMPORAL_RANGE_RESOLUTION_OPERATION.capability) {
+        let definition = &TEMPORAL_RANGE_RESOLUTION_OPERATION;
+        let name = definition.stable_name;
+        let mut tool = Tool::new(
+            name,
+            definition.description,
+            projected_input_schema(type_input_schema::<TemporalQueryRequest>()?)?,
+        )
+        .annotate(temporal_annotations(definition.mutability, false));
+        tool.output_schema = Some(tool_response_schema(false)?);
+        let dependencies = Arc::clone(&dependencies);
+        router.add_route(ToolRoute::new_dyn(tool, move |context| {
+            let dependencies = Arc::clone(&dependencies);
+            async move { call_resolve_temporal_range(context, dependencies, name).await }.boxed()
+        }));
+    }
+
     if config.is_enabled(TEMPORAL_VIDEO_OPERATION.capability) {
         let definition = &TEMPORAL_VIDEO_OPERATION;
         let name = definition.stable_name;
@@ -301,6 +320,12 @@ fn validate_route_registry(config: &McpConfig) -> Result<()> {
         TEMPORAL_DEBUG_BUNDLE_OPERATION.description,
     )?;
     let _ = projected_input_schema(type_input_schema::<TemporalDebugBundleRequest>()?)?;
+    register_route_name(
+        &mut names,
+        TEMPORAL_RANGE_RESOLUTION_OPERATION.stable_name,
+        TEMPORAL_RANGE_RESOLUTION_OPERATION.description,
+    )?;
+    let _ = projected_input_schema(type_input_schema::<TemporalQueryRequest>()?)?;
     register_route_name(
         &mut names,
         TEMPORAL_VIDEO_OPERATION.stable_name,
@@ -534,6 +559,53 @@ async fn call_bundle(
                 rmcp::ErrorData::internal_error("temporal bundle response mapping failed", None)
             })
             .and_then(into_call_tool_result)
+        }
+        Err(error) => Ok(call_error_result(name, error)),
+    }
+}
+
+async fn call_resolve_temporal_range(
+    context: ToolCallContext<'_, KrometrailMcpServer>,
+    dependencies: Arc<McpDependencies>,
+    name: &'static str,
+) -> std::result::Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
+    let budget = RequestBudget::new(context.request_context.ct.clone());
+    if let Err(error) = budget.check() {
+        return Ok(call_error_result(name, error));
+    }
+    let (arguments, preference) =
+        match split_response_request(context.arguments.unwrap_or_default()) {
+            Ok((arguments, preference)) => (arguments, preference.with_inline_default(false)),
+            Err(error) => return Ok(call_error_result(name, error)),
+        };
+    let request = match parse_arguments::<TemporalQueryRequest>(arguments) {
+        Ok(request) => request,
+        Err(error) => return Ok(call_error_result(name, error)),
+    };
+    let result = budget
+        .run(dependencies.temporal_debug_bundles.resolve(
+            request,
+            TemporalDebugBundleContext {
+                deadline: Some(budget.deadline),
+                cancellation: Some(budget.cancellation.clone()),
+            },
+        ))
+        .await;
+    match result {
+        Ok(result) => {
+            let handle = match budget
+                .run(dependencies.range_handles.register(result.range.clone()))
+                .await
+            {
+                Ok(handle) => handle,
+                Err(error) => return Ok(call_error_result(name, error)),
+            };
+            map_temporal_range_resolution_result(name, result, preference)
+                .map(|mapped| mapped.with_range_handle(handle))
+                .map_err(|_| {
+                    rmcp::ErrorData::internal_error("temporal range response mapping failed", None)
+                })
+                .and_then(into_call_tool_result)
         }
         Err(error) => Ok(call_error_result(name, error)),
     }

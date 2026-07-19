@@ -6,35 +6,38 @@
 
 use krometrail_core::{
     AnalysisScale, ArtifactFailurePolicy, ArtifactGenerationRequest, ArtifactGeneratorRequest,
-    ArtifactLabelsRequest, ArtifactMarker, DifferenceMapRequest, FrameSelector, NonEmptyText,
-    NormalizationRequest, OrientationPolicy, OutputLimitsRequest, ResolvedRange, Result,
-    StoryboardRequest,
+    ArtifactLabelsRequest, ArtifactMarker, DEFAULT_ARTIFACT_BLACK_BACKGROUND,
+    DEFAULT_ARTIFACT_NOISE_FLOOR, DEFAULT_ARTIFACT_TILE_LIMIT, DEFAULT_DIFFERENCE_MAP_MAX_BYTES,
+    DEFAULT_DIFFERENCE_MAP_MAX_HEIGHT, DEFAULT_DIFFERENCE_MAP_MAX_WIDTH,
+    DEFAULT_STORYBOARD_MAX_BYTES, DEFAULT_STORYBOARD_MAX_HEIGHT, DEFAULT_STORYBOARD_MAX_WIDTH,
+    DifferenceMapRequest, FrameSelector, NonEmptyText, NormalizationRequest, OrientationPolicy,
+    OutputLimitsRequest, ResolvedRange, Result, StoryboardRequest,
 };
 use temporal_vision::{FrequencyMode, Rgb8};
 
 /// Storyboard tile budget for the default evidence policy.
-pub(crate) const STORYBOARD_TILE_LIMIT: u8 = 8;
+pub(crate) const STORYBOARD_TILE_LIMIT: u8 = DEFAULT_ARTIFACT_TILE_LIMIT;
 
 /// Noise floor shared by storyboard and difference-map generators.
 /// Matches `temporal_vision::MeasurementParameters::DEFAULT_NOISE_FLOOR` (512)
 /// without importing the measurement API into the bundle policy.
-pub(crate) const DEFAULT_NOISE_FLOOR: u16 = 512;
+pub(crate) const DEFAULT_NOISE_FLOOR: u16 = DEFAULT_ARTIFACT_NOISE_FLOOR;
 
 /// Storyboard output ceiling: `1920 × 2048`, `16 MiB`.
-const STORYBOARD_MAX_WIDTH: u32 = 1920;
-const STORYBOARD_MAX_HEIGHT: u32 = 2048;
-const STORYBOARD_MAX_BYTES: u64 = 16 * 1024 * 1024;
+const STORYBOARD_MAX_WIDTH: u32 = DEFAULT_STORYBOARD_MAX_WIDTH;
+const STORYBOARD_MAX_HEIGHT: u32 = DEFAULT_STORYBOARD_MAX_HEIGHT;
+const STORYBOARD_MAX_BYTES: u64 = DEFAULT_STORYBOARD_MAX_BYTES;
 
 /// Difference-map output ceiling: `8192 × 8192`, `64 MiB`.
-const DIFFERENCE_MAP_MAX_WIDTH: u32 = 8192;
-const DIFFERENCE_MAP_MAX_HEIGHT: u32 = 8192;
-const DIFFERENCE_MAP_MAX_BYTES: u64 = 64 * 1024 * 1024;
+const DIFFERENCE_MAP_MAX_WIDTH: u32 = DEFAULT_DIFFERENCE_MAP_MAX_WIDTH;
+const DIFFERENCE_MAP_MAX_HEIGHT: u32 = DEFAULT_DIFFERENCE_MAP_MAX_HEIGHT;
+const DIFFERENCE_MAP_MAX_BYTES: u64 = DEFAULT_DIFFERENCE_MAP_MAX_BYTES;
 
 const STORYBOARD_TITLE: &str = "TEMPORAL STORYBOARD";
 const STORYBOARD_SOURCE: &str = "KROMETRAIL RETAINED SOURCE FRAMES";
 
 /// Declared black RGB background shared by storyboard and difference-map normalization.
-const BLACK_BACKGROUND: Rgb8 = Rgb8::new(0, 0, 0);
+const BLACK_BACKGROUND: Rgb8 = DEFAULT_ARTIFACT_BLACK_BACKGROUND;
 
 /// Materializes the exact two-generator request for the default policy.
 ///

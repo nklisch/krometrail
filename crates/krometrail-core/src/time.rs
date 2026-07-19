@@ -27,6 +27,7 @@ impl ObservedTime {
     Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize, schemars::JsonSchema,
 )]
 #[serde(transparent)]
+#[schemars(description = "session-relative monotonic nanoseconds")]
 pub struct SessionTime(u64);
 
 impl SessionTime {

@@ -8,10 +8,11 @@ use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    AlgorithmDescriptor, ArtifactKind, ArtifactManifest, BinaryMask, EncodedImage, ErrorCode,
-    EvidenceClass, FrameRegion, FrameSequence, GeneratedArtifact, IntegerScale, NormalizationKind,
-    NormalizationParameters, NormalizationStep, ParameterValue, Parameters, PixelDimensions,
-    PixelRect, ProcessingLimits, Result, Rgb8, Timestamp, VisionError, generator_descriptor,
+    AlgorithmDescriptor, ArtifactKind, ArtifactManifest, BinaryMask, DeclaredGap, EncodedImage,
+    ErrorCode, EvidenceClass, FrameRegion, FrameSequence, GeneratedArtifact, IntegerScale, Marker,
+    NormalizationKind, NormalizationParameters, NormalizationStep, ParameterValue, Parameters,
+    PixelDimensions, PixelRect, ProcessingLimits, Result, Rgb8, Timestamp, VisionError,
+    generator_descriptor,
     normalize::make_parameters,
     normalize_sequence,
     render::{
@@ -492,12 +493,13 @@ pub fn plan_region_filmstrip<F: Clone + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
         });
     }
 
-    let omitted_frame_count = u64::try_from(source.frames().len() - tiles.len()).map_err(|_| {
-        VisionError::new(
-            ErrorCode::ResourceLimitExceeded,
-            "filmstrip frame count exceeds the manifest representation",
-        )
-    })?;
+    let omitted_frame_count =
+        u64::try_from(source.source_frame_count() - tiles.len()).map_err(|_| {
+            VisionError::new(
+                ErrorCode::ResourceLimitExceeded,
+                "filmstrip frame count exceeds the manifest representation",
+            )
+        })?;
     Ok(RegionFilmstripPlan {
         tiles: tiles.into_boxed_slice(),
         locator_frame_index,
@@ -944,8 +946,31 @@ where
     )?;
     let tile_dimensions =
         scaled_tile_dimensions(plan.tile_source_dimensions(), parameters.display_scale)?;
+    let (crop, _) = intersect_region(effective_region.rect(), source.dimensions())?;
+    let crop = crop.ok_or_else(|| {
+        VisionError::new(
+            ErrorCode::InvalidRegion,
+            "filmstrip region does not intersect the source frame",
+        )
+    })?;
     let normalized = normalize_sequence(
         source,
+        NormalizationParameters::new(
+            parameters.background,
+            Some(crop),
+            IntegerScale::IDENTITY,
+            parameters.limits.processing_limits(),
+        ),
+    )?;
+    let locator_source = FrameSequence::new(
+        vec![source.frames()[plan.locator_frame_index()].to_owned()],
+        Vec::<Marker<M>>::new(),
+        Vec::<DeclaredGap<G>>::new(),
+        None,
+        None,
+    )?;
+    let locator_normalized = normalize_sequence(
+        &locator_source,
         NormalizationParameters::new(
             parameters.background,
             None,
@@ -959,7 +984,15 @@ where
         BLACK,
         parameters.limits.max_canvas_bytes(),
     )?;
-    render_filmstrip(&mut canvas, layout, source, &normalized, &plan, &parameters)?;
+    render_filmstrip(
+        &mut canvas,
+        layout,
+        source,
+        &normalized,
+        &locator_normalized,
+        &plan,
+        &parameters,
+    )?;
     let (bytes, hash) = crate::encode::encode_png(
         layout.dimensions,
         canvas.pixels(),
@@ -1008,7 +1041,7 @@ where
         filmstrip_parameters(
             &plan,
             &artifact_source_indices,
-            source.frames().len(),
+            source.source_frame_count(),
             &parameters,
             layout,
             tile_dimensions,
@@ -1190,6 +1223,7 @@ fn render_filmstrip<F: Display + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
     layout: FilmstripLayout,
     source: &FrameSequence<F, M, G, P>,
     normalized: &crate::NormalizedSequence<F>,
+    locator_normalized: &crate::NormalizedSequence<F>,
     plan: &RegionFilmstripPlan<F>,
     parameters: &RegionFilmstripParameters,
 ) -> Result<()> {
@@ -1197,7 +1231,7 @@ fn render_filmstrip<F: Display + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
     draw_locator(
         canvas,
         layout,
-        &normalized.frames()[plan.locator_frame_index()],
+        &locator_normalized.frames()[0],
         source.dimensions(),
         plan,
     )?;
@@ -1208,6 +1242,7 @@ fn render_filmstrip<F: Display + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
             index,
             tile,
             &normalized.frames()[tile.frame_index()],
+            normalized.source_crop(),
             parameters,
         )?;
     }
@@ -1397,6 +1432,7 @@ fn draw_tile<F: Display>(
     index: usize,
     tile: &FilmstripTilePlan<F>,
     frame: &crate::NormalizedFrame<F>,
+    crop: PixelRect,
     parameters: &RegionFilmstripParameters,
 ) -> Result<()> {
     let slot = layout.tile_slot(index)?;
@@ -1410,6 +1446,7 @@ fn draw_tile<F: Display>(
                 parameters.mask.as_ref(),
                 parameters.padding_color.channels(),
                 parameters.display_scale,
+                crop,
                 x,
                 y,
             )?;
@@ -1507,12 +1544,14 @@ fn draw_tile<F: Display>(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn scaled_region_pixel<F>(
     frame: &crate::NormalizedFrame<F>,
     tile: &FilmstripTilePlan<F>,
     mask: Option<&BinaryMask>,
     padding_color: [u8; 3],
     scale: IntegerScale,
+    crop: PixelRect,
     output_x: u32,
     output_y: u32,
 ) -> Result<([u8; 3], bool)> {
@@ -1528,7 +1567,7 @@ fn scaled_region_pixel<F>(
         } else {
             output_y
         };
-        return region_pixel(frame, tile, mask, padding_color, source_x, source_y);
+        return region_pixel(frame, tile, mask, padding_color, crop, source_x, source_y);
     }
 
     let mut sums = [0_u64; 3];
@@ -1540,6 +1579,7 @@ fn scaled_region_pixel<F>(
                 tile,
                 mask,
                 padding_color,
+                crop,
                 output_x * factor + dx,
                 output_y * factor + dy,
             )?;
@@ -1561,6 +1601,7 @@ fn region_pixel<F>(
     tile: &FilmstripTilePlan<F>,
     mask: Option<&BinaryMask>,
     padding_color: [u8; 3],
+    crop: PixelRect,
     x: u32,
     y: u32,
 ) -> Result<([u8; 3], bool)> {
@@ -1580,10 +1621,10 @@ fn region_pixel<F>(
     if mask.is_some_and(|mask| mask.includes(source_x, source_y) != Some(true)) {
         return Ok((padding_color, true));
     }
-    let index = usize::try_from(source_y)
+    let index = usize::try_from(source_y.saturating_sub(crop.y()))
         .ok()
         .and_then(|row| row.checked_mul(usize::try_from(frame.dimensions().width()).ok()?))
-        .and_then(|row| row.checked_add(usize::try_from(source_x).ok()?))
+        .and_then(|row| row.checked_add(usize::try_from(source_x.saturating_sub(crop.x())).ok()?))
         .and_then(|pixel| pixel.checked_mul(3))
         .ok_or_else(canvas_limit_error)?;
     let linear = &frame.linear_rgb16()[index..index + 3];

@@ -99,7 +99,7 @@ impl ProgressiveEvidenceService {
                 )))
             }
             ProgressiveEvidenceRequest::FetchSourceFrames(request) => {
-                let request = validate_source_request(request)?;
+                let request = validate_source_fetch_request(request)?;
                 let result = self.store.fetch_source_frames(request.clone()).await?;
                 check_context(&context)?;
                 validate_source_batch(&request, &result)?;
@@ -177,7 +177,23 @@ impl ProgressiveEvidence for ProgressiveEvidenceService {
 }
 
 fn validate_source_request(request: SourceFramesRequest) -> Result<SourceFramesRequest> {
-    SourceFramesRequest::new(request.range, request.selection, request.limits)
+    SourceFramesRequest::new_with_offset(
+        request.range,
+        request.selection,
+        request.offset,
+        request.limits,
+    )
+}
+
+fn validate_source_fetch_request(request: SourceFramesRequest) -> Result<SourceFramesRequest> {
+    let request = SourceFramesRequest::new_with_offset(
+        request.range,
+        request.selection,
+        request.offset,
+        request.limits,
+    )?;
+    request.validate_for_fetch()?;
+    Ok(request)
 }
 
 fn validate_source_list(request: &SourceFramesRequest, result: &SourceFrameList) -> Result<()> {
@@ -214,10 +230,7 @@ fn validate_source_handles<'a>(
             "source result changed the resolved range",
         ));
     }
-    let selected = match &request.selection {
-        SourceFrameSelection::ResolvedOrder => request.range.frame_ids.as_slice(),
-        SourceFrameSelection::Ids(ids) => ids.as_slice(),
-    };
+    let selected = request.selected_frame_ids();
     let handles = handles.into_iter().collect::<Vec<_>>();
     if handles.len() != selected.len() {
         return Err(source_contract_error(
@@ -667,10 +680,7 @@ mod tests {
             &self,
             request: &SourceFramesRequest,
         ) -> Vec<(CapturedFrame, Arc<[u8]>, usize)> {
-            let ids = match &request.selection {
-                SourceFrameSelection::ResolvedOrder => request.range.frame_ids.clone(),
-                SourceFrameSelection::Ids(ids) => ids.clone(),
-            };
+            let ids = request.selected_frame_ids();
             ids.into_iter()
                 .map(|id| {
                     let resolved = request
@@ -721,7 +731,12 @@ mod tests {
                 .into_iter()
                 .map(|read| read.handle)
                 .collect();
-            Box::pin(std::future::ready(Ok(SourceFrameList { range, frames })))
+            Box::pin(std::future::ready(Ok(SourceFrameList {
+                range,
+                omitted_frame_count: 0,
+                next_offset: None,
+                frames,
+            })))
         }
         fn fetch_source_frames(
             &self,
@@ -1113,11 +1128,12 @@ mod tests {
         let bypassed = SourceFramesRequest {
             range: range(),
             selection: SourceFrameSelection::ResolvedOrder,
+            offset: 0,
             limits: SourceReadLimitsRequest::new(1, 16, 16).unwrap(),
         };
         let error = service
             .execute(
-                ProgressiveEvidenceRequest::ListSourceFrames(bypassed),
+                ProgressiveEvidenceRequest::FetchSourceFrames(bypassed),
                 ProgressiveEvidenceContext::default(),
             )
             .await

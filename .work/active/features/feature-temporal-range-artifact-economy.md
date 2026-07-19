@@ -214,3 +214,27 @@ alongside the bundle/video operations, `docs/SPEC.md`
   reveal a second budget site; Unit 2's reproduce-first ordering contains it.
 - Moving default constants must not change bundle behavior byte-for-byte
   (existing bundle tests are the guard).
+
+## Implementation Notes
+
+- Unit 1 delivered inline with the standard implementation capability: added the
+  registry-declared `resolve_temporal_range` operation, reused range resolution
+  and capture-quality assembly, minted a range handle, and deliberately skipped
+  artifact and browser-event work. Existing range-handle routing remains the
+  authority for follow-up tools.
+- Unit 2 delivered: storyboard and region-filmstrip plans are bounded before
+  fit budgeting, normalization, decode, and generation; manifests retain full
+  source-frame provenance and omitted counts; exhaustive generators retain
+  their own source/decode limits. Reproducing the region-filmstrip discrepancy
+  showed the full-frame charge came from `generate_region_filmstrip` passing no
+  crop to `normalize_sequence`; the fix normalizes the visible crop and
+  separately normalizes only the one full locator frame.
+- Unit 3 delivered: resolved-order listing uses offset pages with explicit
+  omission and continuation metadata, fetch remains strict, direct generator
+  fields have serde defaults sourced from shared artifact constants, and
+  `SessionTime` documents session-relative monotonic nanoseconds in schema and
+  SPEC.
+- Verification completed with workspace tests and the targeted high-DPI,
+  resource-limit, progressive-listing, bundle, and registry coverage. Full
+  release gates are run before commit with `CARGO_TARGET_DIR` pointed at the
+  writable temporary target because the configured default target is read-only.

@@ -50,9 +50,13 @@ pub use artifacts::{
     AnalysisScale, ArtifactCacheDisposition, ArtifactEpochSelection, ArtifactFailurePolicy,
     ArtifactGeneration, ArtifactGenerationContext, ArtifactGenerationRequest,
     ArtifactGenerationResult, ArtifactGeneratorRequest, ArtifactHandle, ArtifactLabelsRequest,
-    ArtifactManifest, ArtifactMarker, ArtifactMarkerId, ArtifactOutcome, DifferenceMapRequest,
-    FrameSelector, MotionHistoryRequest, NormalizationRequest, OutputLimitsRequest,
-    RegionFilmstripRequest, StoryboardRequest, VisualEpoch,
+    ArtifactManifest, ArtifactMarker, ArtifactMarkerId, ArtifactOutcome,
+    DEFAULT_ARTIFACT_BLACK_BACKGROUND, DEFAULT_ARTIFACT_NOISE_FLOOR, DEFAULT_ARTIFACT_TILE_LIMIT,
+    DEFAULT_DIFFERENCE_MAP_MAX_BYTES, DEFAULT_DIFFERENCE_MAP_MAX_HEIGHT,
+    DEFAULT_DIFFERENCE_MAP_MAX_WIDTH, DEFAULT_STORYBOARD_MAX_BYTES, DEFAULT_STORYBOARD_MAX_HEIGHT,
+    DEFAULT_STORYBOARD_MAX_WIDTH, DifferenceMapRequest, FrameSelector, MotionHistoryRequest,
+    NormalizationRequest, OutputLimitsRequest, RegionFilmstripRequest, StoryboardRequest,
+    VisualEpoch,
 };
 pub use browser::{
     AcceptedLocator, AccessibleProperty, AccessibleValue, ActionCategory, ActionDefinition,
@@ -188,10 +192,11 @@ pub use timeline::{
     MAX_FOCUS_TIMES, MAX_NATURAL_ANCHOR_WINDOW, ObservationKind, ObservationPayloadRef,
     RangeResolutionOptions, ResolvedAnchor, ResolvedAnchorReference, ResolvedRange,
     RetentionPolicy, RetentionWarning, SelectedBrowserEvent, TEMPORAL_CONTEXT_OPERATION_REGISTRY,
-    TemporalContext, TemporalContextOperationDefinition, TemporalContextOperationKind,
-    TemporalContextQuery, TemporalContextRequest, TemporalContextService, TemporalQuery,
-    TemporalQueryRequest, TemporalQueryService, TemporalRangeAnchor, TemporalRangeAnchorKind,
-    TemporalRangeResolver, TimelineObservation,
+    TEMPORAL_RANGE_RESOLUTION_OPERATION, TemporalContext, TemporalContextOperationDefinition,
+    TemporalContextOperationKind, TemporalContextQuery, TemporalContextRequest,
+    TemporalContextService, TemporalQuery, TemporalQueryRequest, TemporalQueryService,
+    TemporalRangeAnchor, TemporalRangeAnchorKind, TemporalRangeResolution,
+    TemporalRangeResolutionOperationDefinition, TemporalRangeResolver, TimelineObservation,
 };
 pub use video::{
     MAX_VIDEO_ENCODED_INPUT_BYTES, MAX_VIDEO_ENCODED_OUTPUT_BYTES, MAX_VIDEO_HEIGHT,

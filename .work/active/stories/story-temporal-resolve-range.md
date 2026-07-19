@@ -17,3 +17,9 @@ Unit 1 of the parent design: new registry-declared tool taking the bundle's natu
 
 Acceptance evidence and file targets are defined in the parent feature's
 implementation unit; this story is the durable checkpoint for that unit.
+
+## Completion Notes
+
+Implemented the resolver operation and capture-quality-only service seam,
+registered it with route/schema validation, and wired range-handle output into
+the existing handle-capable request path.

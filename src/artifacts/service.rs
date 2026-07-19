@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap},
     sync::Arc,
     time::Instant,
 };
@@ -17,7 +17,7 @@ use super::{
     cache::{CacheIdentityInput, cache_metadata},
     decode::DECODER_PROFILE,
     epoch::{
-        ADAPTER_VERSION, EpochInput, EpochPlan, WorkCancellation, decode_plan, validate_and_plan,
+        ADAPTER_VERSION, EpochPlan, WorkCancellation, bounded_plan, decode_plan, validate_and_plan,
     },
     generators::{
         PreparedGenerator, estimated_normalized_bytes, generate, normalization_identity, normalize,
@@ -47,6 +47,7 @@ struct Slot {
     cache: krometrail_core::ArtifactCacheMetadata,
     sources: Vec<ArtifactSourceFingerprint>,
     prepared: Arc<PreparedGenerator>,
+    plan: EpochPlan,
 }
 
 #[derive(Clone)]
@@ -149,7 +150,8 @@ impl TemporalVisionArtifactService {
         let mut ordinal = 0_usize;
         for (epoch_index, plan) in plans.iter().enumerate() {
             for (generator_index, generator) in request.generators().iter().enumerate() {
-                match prepare_generator(generator, plan, limits) {
+                let generator_plan = plan_for_generator(generator, plan, limits)?;
+                match prepare_generator(generator, &generator_plan, limits) {
                     Ok(prepared) => {
                         let prepared = Arc::new(prepared);
                         for (kind, canonical_parameters) in &prepared.canonical_parameters {
@@ -177,6 +179,7 @@ impl TemporalVisionArtifactService {
                                     cache,
                                     sources: plan.source_fingerprints.clone(),
                                     prepared: Arc::clone(&prepared),
+                                    plan: generator_plan.clone(),
                                 },
                             ));
                             ordinal += 1;
@@ -336,51 +339,6 @@ impl TemporalVisionArtifactService {
             return Ok(result);
         }
 
-        let mut normalized_estimates = HashSet::new();
-        let mut normalized_bytes = 0_usize;
-        let mut epoch_indices = HashSet::new();
-        let mut output_reservation = 0_usize;
-        for slot in &pending_slots {
-            epoch_indices.insert(slot.0.epoch_index);
-            if let Some(identity) = normalization_identity(&slot.0.prepared)? {
-                if normalized_estimates.insert((slot.0.epoch_index, identity.to_vec())) {
-                    normalized_bytes = normalized_bytes
-                        .checked_add(estimated_normalized_bytes(
-                            &slot.0.prepared,
-                            &plans[slot.0.epoch_index],
-                        )?)
-                        .ok_or_else(|| limit_error("normalized memory estimate overflows"))?;
-                }
-            }
-            output_reservation = output_reservation.max(reserved_output_bytes(
-                &slot.0.prepared,
-                self.scheduler.limits(),
-            )?);
-        }
-        if normalized_bytes > self.scheduler.limits().max_normalized_bytes.get() {
-            return Err(limit_error(
-                "artifact flight exceeds normalized or output memory limits",
-            ));
-        }
-        let decoded_bytes = epoch_indices
-            .into_iter()
-            .try_fold(0_usize, |total, index| {
-                total
-                    .checked_add(plans[index].decoded_bytes)
-                    .ok_or_else(|| limit_error("decoded memory estimate overflows"))
-            })?;
-        let reservation = decoded_bytes
-            .checked_add(normalized_bytes)
-            .and_then(|value| value.checked_add(output_reservation))
-            .ok_or_else(|| limit_error("combined artifact memory estimate overflows"))?;
-        let _memory = self
-            .scheduler
-            .acquire_memory(reservation, deadline, &cancellation)
-            .await?;
-        let generator_semaphore = self.scheduler.generator_semaphore();
-
-        let mut decoded: HashMap<usize, Arc<EpochInput>> = HashMap::new();
-        let mut normalized = HashMap::new();
         let mut groups: BTreeMap<(usize, usize), Vec<WorkSlot>> = BTreeMap::new();
         for slot in pending_slots {
             groups
@@ -388,71 +346,101 @@ impl TemporalVisionArtifactService {
                 .or_default()
                 .push(slot);
         }
+
+        let generator_semaphore = self.scheduler.generator_semaphore();
+
         let mut total_output_bytes = 0_usize;
 
-        for ((epoch_index, _), group) in groups {
+        for ((_epoch_index, _generator_index), group) in groups {
             cancellation.check()?;
-            let epoch = match decoded.get(&epoch_index) {
-                Some(epoch) => Arc::clone(epoch),
-                None => {
-                    let plan = plans[epoch_index].clone();
-                    let adaptation = self.scheduler.limits().adaptation();
-                    let token = cancellation.clone();
-                    let input = self
-                        .scheduler
-                        .run_blocking(deadline, &cancellation, move || {
-                            decode_plan(plan, adaptation, &token)
-                        })
-                        .await
-                        .map(Arc::new);
-                    match input {
-                        Ok(input) => {
-                            decoded.insert(epoch_index, Arc::clone(&input));
-                            input
-                        }
-                        Err(error) => {
-                            if is_fatal(&error) {
-                                return Err(error);
-                            }
-                            for slot in group {
-                                result.insert(slot.0.cache.cache_key, Err(error.clone()));
-                            }
-                            continue;
-                        }
+            let plan = &group[0].0.plan;
+            let mut normalized_bytes = 0_usize;
+            for slot in &group {
+                if normalization_identity(&slot.0.prepared)?.is_some() {
+                    normalized_bytes = estimated_normalized_bytes(&slot.0.prepared, plan)?;
+                    break;
+                }
+            }
+            let output_reservation = group.iter().try_fold(0_usize, |current, slot| {
+                Ok::<_, KrometrailError>(current.max(reserved_output_bytes(
+                    &slot.0.prepared,
+                    self.scheduler.limits(),
+                )?))
+            })?;
+            let reservation = plan
+                .decoded_bytes
+                .checked_add(normalized_bytes)
+                .and_then(|value| value.checked_add(output_reservation))
+                .ok_or_else(|| limit_error("combined artifact memory estimate overflows"))?;
+            if normalized_bytes > self.scheduler.limits().max_normalized_bytes.get()
+                || reservation > self.scheduler.limits().max_combined_request_bytes.get()
+            {
+                let error = limit_error("artifact generator exceeds memory limits");
+                for slot in group {
+                    result.insert(slot.0.cache.cache_key, Err(error.clone()));
+                }
+                continue;
+            }
+            let memory = match self
+                .scheduler
+                .acquire_memory(reservation, deadline, &cancellation)
+                .await
+            {
+                Ok(memory) => memory,
+                Err(error) if !is_fatal(&error) => {
+                    for slot in group {
+                        result.insert(slot.0.cache.cache_key, Err(error.clone()));
                     }
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            let plan_for_decode = plan.clone();
+            let adaptation = self.scheduler.limits().adaptation();
+            let token = cancellation.clone();
+            let epoch = match self
+                .scheduler
+                .run_blocking(deadline, &cancellation, move || {
+                    decode_plan(plan_for_decode, adaptation, &token)
+                })
+                .await
+                .map(Arc::new)
+            {
+                Ok(input) => input,
+                Err(error) => {
+                    drop(memory);
+                    if is_fatal(&error) {
+                        return Err(error);
+                    }
+                    for slot in group {
+                        result.insert(slot.0.cache.cache_key, Err(error.clone()));
+                    }
+                    continue;
                 }
             };
             let prepared = Arc::clone(&group[0].0.prepared);
-            let normalized_sequence = if let Some(identity) = normalization_identity(&prepared)? {
-                let key = (epoch_index, identity.to_vec());
-                match normalized.get(&key) {
-                    Some(value) => Some(Arc::clone(value)),
-                    None => {
-                        let epoch_for_normalize = Arc::clone(&epoch);
-                        let prepared_for_normalize = Arc::clone(&prepared);
-                        let limits = self.scheduler.limits();
-                        match self
-                            .scheduler
-                            .run_blocking(deadline, &cancellation, move || {
-                                normalize(&epoch_for_normalize, &prepared_for_normalize, limits)
-                            })
-                            .await
-                        {
-                            Ok(Some(value)) => {
-                                normalized.insert(key, Arc::clone(&value));
-                                Some(value)
-                            }
-                            Ok(None) => None,
-                            Err(error) => {
-                                if is_fatal(&error) {
-                                    return Err(error);
-                                }
-                                for slot in group {
-                                    result.insert(slot.0.cache.cache_key, Err(error.clone()));
-                                }
-                                continue;
-                            }
+            let normalized_sequence = if normalization_identity(&prepared)?.is_some() {
+                let epoch_for_normalize = Arc::clone(&epoch);
+                let prepared_for_normalize = Arc::clone(&prepared);
+                let limits = self.scheduler.limits();
+                match self
+                    .scheduler
+                    .run_blocking(deadline, &cancellation, move || {
+                        normalize(&epoch_for_normalize, &prepared_for_normalize, limits)
+                    })
+                    .await
+                {
+                    Ok(Some(value)) => Some(value),
+                    Ok(None) => None,
+                    Err(error) => {
+                        drop(memory);
+                        if is_fatal(&error) {
+                            return Err(error);
                         }
+                        for slot in group {
+                            result.insert(slot.0.cache.cache_key, Err(error.clone()));
+                        }
+                        continue;
                     }
                 }
             } else {
@@ -497,6 +485,7 @@ impl TemporalVisionArtifactService {
                     continue;
                 }
             };
+            drop(memory);
             let by_kind: HashMap<_, _> = outputs
                 .into_iter()
                 .map(|output| (output.kind, output))
@@ -604,6 +593,37 @@ pub(crate) fn select_epoch_plans(
             .nth(selected)
             .expect("selected epoch plan exists"),
     ])
+}
+
+fn plan_for_generator(
+    generator: &krometrail_core::ArtifactGeneratorRequest,
+    plan: &EpochPlan,
+    limits: ArtifactWorkLimits,
+) -> Result<EpochPlan> {
+    let generator_plan = match generator {
+        krometrail_core::ArtifactGeneratorRequest::Storyboard(request) => {
+            bounded_plan(plan, usize::from(request.tile_limit), None)
+        }
+        krometrail_core::ArtifactGeneratorRequest::RegionFilmstrip(request) => {
+            bounded_plan(plan, usize::from(request.tile_limit), request.locator)
+        }
+        krometrail_core::ArtifactGeneratorRequest::DifferenceMap(_)
+        | krometrail_core::ArtifactGeneratorRequest::MotionHistory(_) => {
+            if plan.frames.len() > limits.max_source_frames.get() {
+                Err(limit_error(
+                    "exhaustive artifact generator exceeds the source-frame limit",
+                ))
+            } else {
+                Ok(plan.clone())
+            }
+        }
+    }?;
+    if generator_plan.decoded_bytes > limits.max_decoded_bytes.get() {
+        return Err(limit_error(
+            "artifact generator exceeds the decoded-byte limit",
+        ));
+    }
+    Ok(generator_plan)
 }
 
 impl ArtifactGeneration for TemporalVisionArtifactService {

@@ -21,8 +21,8 @@ use krometrail_core::{
     BundleWarning, InteractionAnchor, InteractionAnchorSource, InteractionId, ObservationKind,
     ObservationPayloadRef, PortFuture, ResolvedAnchorReference, ResolvedRange, Result,
     TemporalContextQuery, TemporalContextRequest, TemporalDebugBundle, TemporalDebugBundleContext,
-    TemporalDebugBundleRequest, TemporalDebugBundles, TemporalQuery, TimelineRangeQuery,
-    TimelineRangeSlice, TimelineStore,
+    TemporalDebugBundleRequest, TemporalDebugBundles, TemporalQuery, TemporalQueryRequest,
+    TemporalRangeResolution, TimelineRangeQuery, TimelineRangeSlice, TimelineStore,
 };
 use std::num::NonZeroU16;
 use tokio::sync::Semaphore;
@@ -375,6 +375,50 @@ impl TemporalDebugBundleService {
             interactions,
         })
     }
+
+    async fn resolve_inner(
+        &self,
+        request: TemporalQueryRequest,
+        context: TemporalDebugBundleContext,
+    ) -> Result<TemporalRangeResolution> {
+        let now = Instant::now();
+        let wall_deadline = now + self.limits.max_wall_time;
+        let deadline = context
+            .deadline
+            .map(|caller| caller.min(wall_deadline))
+            .unwrap_or(wall_deadline);
+        if deadline <= now || context.is_cancelled() {
+            return Err(cancelled_error());
+        }
+        let permit = controlled(
+            self.permits.acquire(),
+            deadline,
+            context.cancellation.as_ref(),
+        )
+        .await;
+        let _permit = match permit {
+            Ok(Ok(acquired)) => acquired,
+            Ok(Err(_)) => return Err(permit_error()),
+            Err(error) => return Err(error),
+        };
+
+        let range = controlled(
+            self.queries.resolve_range(request),
+            deadline,
+            context.cancellation.as_ref(),
+        )
+        .await??;
+        let capture_quality = controlled(
+            self.context.capture_quality(range.clone()),
+            deadline,
+            context.cancellation.as_ref(),
+        )
+        .await??;
+        Ok(TemporalRangeResolution {
+            range,
+            capture_quality,
+        })
+    }
 }
 
 struct MarkerLoad {
@@ -436,6 +480,14 @@ impl TemporalDebugBundles for TemporalDebugBundleService {
     ) -> PortFuture<'_, Result<TemporalDebugBundle>> {
         let service = self.clone();
         Box::pin(async move { service.bundle_inner(request, context).await })
+    }
+
+    fn resolve(
+        &self,
+        request: TemporalQueryRequest,
+        context: TemporalDebugBundleContext,
+    ) -> PortFuture<'_, Result<TemporalRangeResolution>> {
+        Box::pin(self.resolve_inner(request, context))
     }
 }
 

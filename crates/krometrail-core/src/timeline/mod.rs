@@ -16,7 +16,10 @@ pub use context::{
     TemporalContextRequest, TemporalContextService,
 };
 pub use observation::{ObservationKind, ObservationPayloadRef, TimelineObservation};
-pub use query::{TemporalQuery, TemporalQueryRequest, TemporalQueryService};
+pub use query::{
+    TEMPORAL_RANGE_RESOLUTION_OPERATION, TemporalQuery, TemporalQueryRequest, TemporalQueryService,
+    TemporalRangeResolution, TemporalRangeResolutionOperationDefinition,
+};
 pub use range::{
     AnchorScope, CaptureGapPolicy, FrameAvailability, InteractionWindow, MAX_NATURAL_ANCHOR_WINDOW,
     RangeResolutionOptions, ResolvedAnchor, ResolvedAnchorReference, ResolvedRange,

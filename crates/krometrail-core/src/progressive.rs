@@ -607,6 +607,7 @@ delegate_json_schema!(SourceFrameSelection => SourceFrameSelectionWire);
 pub struct SourceFramesRequest {
     pub range: ResolvedRange,
     pub selection: SourceFrameSelection,
+    pub offset: u32,
     pub limits: SourceReadLimitsRequest,
 }
 
@@ -615,6 +616,8 @@ pub struct SourceFramesRequest {
 struct SourceFramesRequestWire {
     range: ResolvedRange,
     selection: SourceFrameSelection,
+    #[serde(default)]
+    offset: u32,
     limits: SourceReadLimitsRequest,
 }
 
@@ -624,25 +627,69 @@ impl SourceFramesRequest {
         selection: SourceFrameSelection,
         limits: SourceReadLimitsRequest,
     ) -> Result<Self> {
+        Self::new_with_offset(range, selection, 0, limits)
+    }
+
+    pub fn new_with_offset(
+        range: ResolvedRange,
+        selection: SourceFrameSelection,
+        offset: u32,
+        limits: SourceReadLimitsRequest,
+    ) -> Result<Self> {
         validate_resolved_range(&range)?;
         selection.validate(&range)?;
-        if selection.selected_count(&range) > usize::from(limits.max_frames()) {
+        if matches!(selection, SourceFrameSelection::Ids(_)) && offset != 0 {
             return Err(invalid(
-                "selected source frame count exceeds the request limit",
+                "source frame offset is only valid for resolved-order selection",
             ));
         }
         Ok(Self {
             range,
             selection,
+            offset,
             limits,
         })
+    }
+
+    pub fn validate_for_fetch(&self) -> Result<()> {
+        if self.offset != 0
+            || self.selection.selected_count(&self.range) > usize::from(self.limits.max_frames())
+        {
+            return Err(invalid(
+                "fetch_source_frames requires a strict bounded selection",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn selected_frame_ids(&self) -> Vec<FrameId> {
+        match &self.selection {
+            SourceFrameSelection::ResolvedOrder => {
+                let start = usize::try_from(self.offset).unwrap_or(usize::MAX);
+                let start = start.min(self.range.frame_ids.len());
+                let end = start
+                    .saturating_add(usize::from(self.limits.max_frames()))
+                    .min(self.range.frame_ids.len());
+                self.range.frame_ids[start..end].to_vec()
+            }
+            SourceFrameSelection::Ids(ids) => ids.clone(),
+        }
+    }
+
+    pub fn omitted_frame_count(&self) -> u64 {
+        u64::try_from(
+            self.selection
+                .selected_count(&self.range)
+                .saturating_sub(self.selected_frame_ids().len()),
+        )
+        .unwrap_or(u64::MAX)
     }
 }
 
 impl<'de> Deserialize<'de> for SourceFramesRequest {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
         deserialize_validated(deserializer, |wire: SourceFramesRequestWire| {
-            Self::new(wire.range, wire.selection, wire.limits)
+            Self::new_with_offset(wire.range, wire.selection, wire.offset, wire.limits)
         })
     }
 }
@@ -696,6 +743,8 @@ impl schemars::JsonSchema for GenerateArtifactsRequest {
 pub struct SourceFrameList {
     pub range: ResolvedRange,
     pub frames: Vec<SourceFrameHandle>,
+    pub omitted_frame_count: u64,
+    pub next_offset: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

@@ -652,10 +652,7 @@ impl RecordingStore {
         &self,
         request: SourceFramesRequest,
     ) -> krometrail_core::Result<Vec<SourceFrameRead>> {
-        let selected_ids = match &request.selection {
-            SourceFrameSelection::ResolvedOrder => request.range.frame_ids.clone(),
-            SourceFrameSelection::Ids(ids) => ids.clone(),
-        };
+        let selected_ids = request.selected_frame_ids();
         let snapshots = {
             let _mutation = self.mutations.lock().await;
             self.reject_deleted(request.range.session_id)?;
@@ -930,13 +927,24 @@ impl FrameSource for RecordingStore {
     ) -> PortFuture<'_, krometrail_core::Result<SourceFrameList>> {
         Box::pin(async move {
             let range = request.range.clone();
+            let omitted_frame_count = request.omitted_frame_count();
+            let next_offset = (omitted_frame_count > 0).then(|| {
+                request
+                    .offset
+                    .saturating_add(u32::from(request.limits.max_frames()))
+            });
             let frames = self
                 .progressive_source_reads(request)
                 .await?
                 .into_iter()
                 .map(|read| read.handle)
                 .collect();
-            Ok(SourceFrameList { range, frames })
+            Ok(SourceFrameList {
+                range,
+                frames,
+                omitted_frame_count,
+                next_offset,
+            })
         })
     }
 

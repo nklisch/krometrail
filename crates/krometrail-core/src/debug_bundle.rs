@@ -14,7 +14,7 @@ use crate::{
     BrowserEventSelection, CancellationSignal, CapabilityId, FrameId, KrometrailError,
     NonEmptyText, OperationMutability, PortFuture, ResolvedAnchorReference, ResolvedRange, Result,
     SessionTime, TemporalContext, TemporalContextRequest, TemporalQueryRequest,
-    TemporalRangeAnchor, error::invalid, timeline::MAX_FOCUS_TIMES,
+    TemporalRangeAnchor, TemporalRangeResolution, error::invalid, timeline::MAX_FOCUS_TIMES,
     validation::deserialize_validated,
 };
 
@@ -652,6 +652,18 @@ pub trait TemporalDebugBundles: Send + Sync {
         request: TemporalDebugBundleRequest,
         context: TemporalDebugBundleContext,
     ) -> PortFuture<'_, Result<TemporalDebugBundle>>;
+
+    fn resolve(
+        &self,
+        _request: TemporalQueryRequest,
+        _context: TemporalDebugBundleContext,
+    ) -> PortFuture<'_, Result<TemporalRangeResolution>> {
+        Box::pin(std::future::ready(Err(KrometrailError::new(
+            crate::ErrorCode::Unsupported,
+            NonEmptyText::new("temporal range resolution is unavailable")
+                .expect("static unsupported message is non-empty"),
+        ))))
+    }
 }
 
 #[cfg(test)]

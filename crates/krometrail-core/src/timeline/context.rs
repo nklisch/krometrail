@@ -568,6 +568,15 @@ pub struct TemporalContext {
 
 pub trait TemporalContextQuery: Send + Sync {
     fn context(&self, request: TemporalContextRequest) -> PortFuture<'_, Result<TemporalContext>>;
+
+    /// Read only capture quality without loading browser-event rows.
+    fn capture_quality(&self, _range: ResolvedRange) -> PortFuture<'_, Result<CaptureQuality>> {
+        Box::pin(std::future::ready(Err(KrometrailError::new(
+            ErrorCode::Unsupported,
+            NonEmptyText::new("capture-quality-only queries are unavailable")
+                .expect("static unsupported message is non-empty"),
+        ))))
+    }
 }
 
 pub struct TemporalContextService<F, E> {
@@ -650,6 +659,54 @@ where
                 capture_quality,
                 browser_events,
             })
+        })
+    }
+
+    fn capture_quality(&self, range: ResolvedRange) -> PortFuture<'_, Result<CaptureQuality>> {
+        Box::pin(async move {
+            let metadata = self
+                .frames
+                .frame_metadata_by_id(range.frame_ids.clone())
+                .await
+                .map_err(|error| {
+                    map_source_error(error, "resolved frame metadata could not be read", &range)
+                })?;
+            validate_frame_metadata(&range, &metadata)?;
+            let unavailable_ranges = self
+                .events
+                .unavailable_ranges(
+                    range.session_id,
+                    range.target_id,
+                    range.resolved_range,
+                    crate::MAX_EVENT_UNAVAILABLE_RANGES,
+                )
+                .await
+                .map_err(|error| {
+                    map_source_error(
+                        error,
+                        "capture quality availability could not be read",
+                        &range,
+                    )
+                })?;
+            let status_samples = self
+                .events
+                .capture_status_samples(
+                    range.session_id,
+                    range.target_id,
+                    range.resolved_range,
+                    crate::MAX_CAPTURE_STATUS_SAMPLES,
+                )
+                .await
+                .map_err(|error| {
+                    map_source_error(error, "capture status evidence could not be read", &range)
+                })?;
+            let (capture_status, capture_warnings) = capture_status_evidence(
+                &range,
+                range.resolved_range,
+                status_samples,
+                &unavailable_ranges,
+            )?;
+            capture_quality(&range, &metadata, capture_status, capture_warnings)
         })
     }
 }

@@ -17,3 +17,9 @@ Unit 3 of the parent design: resolved_order listing gains offset paging with exp
 
 Acceptance evidence and file targets are defined in the parent feature's
 implementation unit; this story is the durable checkpoint for that unit.
+
+## Completion Notes
+
+Implemented resolved-order offset pagination, explicit listing continuation
+metadata, strict fetch validation, shared artifact defaults, and the
+session-relative monotonic nanosecond schema description.

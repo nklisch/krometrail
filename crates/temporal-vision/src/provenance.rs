@@ -524,11 +524,7 @@ impl<A, F: Clone + Eq, M: Clone + Eq, G: Clone + Eq> ArtifactManifest<A, F, M, G
         output_dimensions: PixelDimensions,
         output_hash: OutputHash,
     ) -> Result<Self> {
-        let source_frame_ids: Box<[F]> = sequence
-            .frames()
-            .iter()
-            .map(|frame| frame.id().clone())
-            .collect();
+        let source_frame_ids: Box<[F]> = sequence.source_frame_ids().to_vec().into_boxed_slice();
         let source_frame_count = u64::try_from(source_frame_ids.len()).map_err(|_| {
             VisionError::new(
                 ErrorCode::InvalidManifest,
@@ -551,6 +547,16 @@ impl<A, F: Clone + Eq, M: Clone + Eq, G: Clone + Eq> ArtifactManifest<A, F, M, G
                     )
                 })?;
 
+        let storyboard_selection = storyboard_selection
+            .map(|selection| {
+                let selection = *selection;
+                sequence
+                    .source_indices()
+                    .map_or(Ok(Box::new(selection.clone())), |indices| {
+                        selection.remap_source_indices(indices).map(Box::new)
+                    })
+            })
+            .transpose()?;
         let manifest = Self {
             artifact_id,
             artifact_kind,

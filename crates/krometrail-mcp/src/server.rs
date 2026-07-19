@@ -807,6 +807,8 @@ mod tests {
                 ProgressiveEvidenceRequest::ListSourceFrames(request) => Ok(
                     ProgressiveEvidenceResult::ListSourceFrames(Box::new(SourceFrameList {
                         range: request.range,
+                        omitted_frame_count: 0,
+                        next_offset: None,
                         frames: Vec::new(),
                     })),
                 ),
@@ -1718,6 +1720,7 @@ mod tests {
         .unwrap();
         let mut expected = vec![
             krometrail_core::TEMPORAL_DEBUG_BUNDLE_OPERATION.stable_name,
+            krometrail_core::TEMPORAL_RANGE_RESOLUTION_OPERATION.stable_name,
             krometrail_core::TEMPORAL_CONTEXT_OPERATION_REGISTRY[0].stable_name,
         ];
         expected.extend(

@@ -100,12 +100,89 @@ pub(crate) struct EpochPlan {
     pub markers: Vec<Marker<ArtifactMarkerId>>,
     pub gaps: Vec<DeclaredGap<krometrail_core::GapId>>,
     pub decoded_bytes: usize,
+    pub source_frame_ids: Vec<krometrail_core::FrameId>,
+    pub source_indices: Vec<usize>,
+    pub source_range: temporal_vision::TimeRange,
 }
 
 #[derive(Debug)]
 pub(crate) struct EpochInput {
     pub sequence:
         OwnedFrameSequence<krometrail_core::FrameId, ArtifactMarkerId, krometrail_core::GapId>,
+}
+
+pub(crate) fn bounded_plan(
+    plan: &EpochPlan,
+    max_frames: usize,
+    include_frame_id: Option<krometrail_core::FrameId>,
+) -> Result<EpochPlan> {
+    if plan.frames.len() <= max_frames {
+        return Ok(plan.clone());
+    }
+    let mut indices = select_indices(plan.frames.len(), max_frames);
+    if let Some(frame_id) = include_frame_id
+        && let Some(index) = plan
+            .frames
+            .iter()
+            .position(|frame| frame.metadata().id() == frame_id)
+        && !indices.contains(&index)
+    {
+        let replace = indices
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, candidate)| **candidate)
+            .map(|(position, _)| position)
+            .ok_or_else(|| limit_error("bounded artifact selection is empty"))?;
+        indices[replace] = index;
+        indices.sort_unstable();
+    }
+    let frames: Vec<EncodedFrame> = indices
+        .iter()
+        .map(|index| plan.frames[*index].clone())
+        .collect();
+    let source_fingerprints = indices
+        .iter()
+        .map(|index| plan.source_fingerprints[*index].clone())
+        .collect();
+    let cache_sources = indices
+        .iter()
+        .map(|index| plan.cache_sources[*index].clone())
+        .collect();
+    let decoded_bytes = frames.iter().try_fold(0_usize, |total, frame| {
+        total
+            .checked_add(decoded_len(frame)?)
+            .ok_or_else(|| limit_error("bounded decoded bytes overflow"))
+    })?;
+    Ok(EpochPlan {
+        frames,
+        source_fingerprints,
+        cache_sources,
+        decoded_bytes,
+        source_indices: indices
+            .iter()
+            .map(|index| plan.source_indices[*index])
+            .collect(),
+        ..plan.clone()
+    })
+}
+
+fn select_indices(frame_count: usize, limit: usize) -> Vec<usize> {
+    if frame_count <= limit {
+        return (0..frame_count).collect();
+    }
+    if limit == 1 {
+        return vec![0];
+    }
+    let span = frame_count - 1;
+    let denominator = limit - 1;
+    (0..limit)
+        .map(|slot| {
+            let numerator = (slot as u128) * (span as u128);
+            let quotient = numerator / denominator as u128;
+            let remainder = numerator % denominator as u128;
+            (quotient + u128::from(remainder > denominator as u128 - remainder)) as usize
+        })
+        .collect()
 }
 
 /// Validate exact retained identities and build geometry/annotation plans without decoding.
@@ -123,9 +200,6 @@ pub(crate) fn validate_and_plan(
             "frame source did not return the exact resolved frame set",
         ));
     }
-    if frames.len() > limits.max_source_frames {
-        return Err(limit_error("resolved range exceeds the source-frame limit"));
-    }
     if markers.len() > limits.max_markers {
         return Err(limit_error(
             "artifact marker count exceeds the configured limit",
@@ -142,7 +216,6 @@ pub(crate) fn validate_and_plan(
         ));
     }
 
-    let mut decoded_total = 0_usize;
     for (position, (expected_id, frame)) in range.frame_ids.iter().zip(&frames).enumerate() {
         let metadata = frame.metadata();
         if metadata.id() != *expected_id
@@ -157,14 +230,7 @@ pub(crate) fn validate_and_plan(
                 "frame source order, scope, or metadata contradicts the resolved range",
             ));
         }
-        decoded_total = decoded_total
-            .checked_add(decoded_len(frame)?)
-            .ok_or_else(|| limit_error("decoded sequence byte count overflows"))?;
-    }
-    if decoded_total > limits.max_decoded_bytes {
-        return Err(limit_error(
-            "decoded sequence bytes exceed the configured limit",
-        ));
+        let _ = decoded_len(frame)?;
     }
 
     let mut spans = Vec::new();
@@ -195,6 +261,12 @@ pub(crate) fn decode_plan(
     }
     let sequence =
         temporal_vision::FrameSequence::new(decoded, plan.markers, plan.gaps, None, None)
+            .map_err(vision_error)?
+            .with_source_provenance(
+                plan.source_frame_ids,
+                plan.source_indices,
+                plan.source_range,
+            )
             .map_err(vision_error)?;
     Ok(EpochInput { sequence })
 }
@@ -240,6 +312,11 @@ fn plan_epoch(
             .checked_add(decoded_len(frame)?)
             .ok_or_else(|| limit_error("epoch decoded bytes overflow"))
     })?;
+    let source_frame_ids = epoch_frames
+        .iter()
+        .map(|frame| frame.metadata().id())
+        .collect();
+    let source_frame_count = epoch_frames.len();
     Ok(EpochPlan {
         descriptor: VisualEpoch {
             index: u32::try_from(epoch_index)
@@ -261,6 +338,13 @@ fn plan_epoch(
         markers: clipped_markers(markers, start_time.as_nanos(), end_time.as_nanos())?,
         gaps: clipped_gaps(range, start_time.as_nanos(), end_time.as_nanos())?,
         decoded_bytes,
+        source_frame_ids,
+        source_indices: (0..source_frame_count).collect(),
+        source_range: temporal_vision::TimeRange::new(
+            temporal_vision::Timestamp::from_nanos(start_time.as_nanos()),
+            temporal_vision::Timestamp::from_nanos(end_time.as_nanos()),
+        )
+        .map_err(vision_error)?,
     })
 }
 

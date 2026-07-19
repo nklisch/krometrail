@@ -217,6 +217,12 @@ pub struct FrameSequence<FrameId, MarkerId, GapId, Pixels> {
     gaps: Box<[DeclaredGap<GapId>]>,
     region: Option<FrameRegion>,
     mask: Option<BinaryMask>,
+    #[serde(skip)]
+    source_frame_ids: Box<[FrameId]>,
+    #[serde(skip)]
+    source_indices: Option<Box<[usize]>>,
+    #[serde(skip)]
+    source_range: Option<TimeRange>,
 }
 
 pub type OwnedFrameSequence<F, M, G> = FrameSequence<F, M, G, Box<[u8]>>;
@@ -229,7 +235,10 @@ impl<F: Eq, M: Eq, G: Eq, P: AsRef<[u8]>> FrameSequence<F, M, G, P> {
         gaps: Vec<DeclaredGap<G>>,
         region: Option<FrameRegion>,
         mask: Option<BinaryMask>,
-    ) -> Result<Self> {
+    ) -> Result<Self>
+    where
+        F: Clone,
+    {
         let Some(first) = frames.first() else {
             return Err(VisionError::new(
                 ErrorCode::EmptySequence,
@@ -282,13 +291,51 @@ impl<F: Eq, M: Eq, G: Eq, P: AsRef<[u8]>> FrameSequence<F, M, G, P> {
             ));
         }
 
+        let source_frame_ids = frames.iter().map(|frame| frame.id().clone()).collect();
         Ok(Self {
             frames: frames.into_boxed_slice(),
             markers: markers.into_boxed_slice(),
             gaps: gaps.into_boxed_slice(),
             region,
             mask,
+            source_frame_ids,
+            source_indices: None,
+            source_range: None,
         })
+    }
+
+    /// Attach the full retained source identity to a bounded decoded subset.
+    /// Rendering and measurement continue to use the decoded frames, while
+    /// manifests retain the complete source-frame and time-range provenance.
+    pub fn with_source_provenance(
+        mut self,
+        source_frame_ids: Vec<F>,
+        source_indices: Vec<usize>,
+        source_range: TimeRange,
+    ) -> Result<Self> {
+        if source_frame_ids.len() < self.frames.len()
+            || source_indices.len() != self.frames.len()
+            || source_indices.windows(2).any(|pair| pair[0] >= pair[1])
+            || self
+                .frames
+                .iter()
+                .zip(&source_indices)
+                .any(|(frame, index)| {
+                    *index >= source_frame_ids.len() || source_frame_ids[*index] != *frame.id()
+                })
+            || source_frame_ids.windows(2).any(|pair| pair[0] == pair[1])
+            || !source_range.contains(self.frames[0].timestamp())
+            || !source_range.contains(self.frames[self.frames.len() - 1].timestamp())
+        {
+            return Err(VisionError::new(
+                ErrorCode::InvalidParameter,
+                "source provenance does not match the bounded frame sequence",
+            ));
+        }
+        self.source_frame_ids = source_frame_ids.into_boxed_slice();
+        self.source_indices = Some(source_indices.into_boxed_slice());
+        self.source_range = Some(source_range);
+        Ok(self)
     }
 
     pub fn frames(&self) -> &[Frame<F, P>] {
@@ -311,11 +358,23 @@ impl<F: Eq, M: Eq, G: Eq, P: AsRef<[u8]>> FrameSequence<F, M, G, P> {
         self.mask.as_ref()
     }
 
+    pub fn source_frame_ids(&self) -> &[F] {
+        &self.source_frame_ids
+    }
+
+    pub fn source_indices(&self) -> Option<&[usize]> {
+        self.source_indices.as_deref()
+    }
+
+    pub fn source_frame_count(&self) -> usize {
+        self.source_frame_ids.len()
+    }
+
     pub fn range(&self) -> TimeRange {
-        TimeRange {
+        self.source_range.unwrap_or(TimeRange {
             start: self.frames[0].timestamp(),
             end: self.frames[self.frames.len() - 1].timestamp(),
-        }
+        })
     }
 
     pub fn dimensions(&self) -> PixelDimensions {
@@ -344,13 +403,16 @@ impl<F: Clone + Eq, M: Clone + Eq, G: Clone + Eq, P: AsRef<[u8]>> FrameSequence<
             gaps: self.gaps.clone(),
             region: self.region,
             mask: self.mask.clone(),
+            source_frame_ids: self.source_frame_ids.clone(),
+            source_indices: self.source_indices.clone(),
+            source_range: self.source_range,
         }
     }
 }
 
 impl<'de, F, M, G, P> Deserialize<'de> for FrameSequence<F, M, G, P>
 where
-    F: Deserialize<'de> + Eq,
+    F: Deserialize<'de> + Clone + Eq,
     M: Deserialize<'de> + Eq,
     G: Deserialize<'de> + Eq,
     P: Deserialize<'de> + AsRef<[u8]>,
