@@ -1,7 +1,7 @@
 ---
 id: feature-window-lifecycle-integrity
 kind: feature
-stage: implementing
+stage: done
 tags: [bug, browser]
 parent: null
 depends_on: []
@@ -310,3 +310,22 @@ Unsolicited pending auto-attached sessions are now capped at 16 with
 deterministic oldest-first eviction and explicit detach effects. The ended
 session stop fast path reports a clean closure with an advisory cleanup note
 instead of fabricating a deadline failure phase.
+
+## Live qualification (2026-07-19, host session)
+
+- Popup root cause confirmed by a three-case controlled raw-CDP experiment on
+  scratch Chrome 149: browser-level `Target.setAutoAttach` suspends a
+  `window.open` popup's initial navigation even with
+  `waitForDebuggerOnStart:false` (Chrome reports `waitingForDebugger:false`
+  untruthfully); `Runtime.runIfWaitingForDebugger` on the auto-attached session
+  releases it immediately. Fixed by the reducer-emitted release effect
+  (`1a210bfa`); `opt_in_real_chrome_window_open_popup_commits_and_is_adopted`
+  passes on the host.
+- Capture restart after activation verified live over MCP on the host desktop:
+  preserve create → activate → status `visible`/`recording`, capture
+  `capturing` with persisted frames.
+- The preserve-focus real-chrome test was born broken (clicked a selector
+  absent from its fixture page and asserted capture state in a harness built
+  without `with_capture`); repaired to assert what the tier can truthfully
+  observe, with capture-restart coverage delegated to the deterministic
+  reducer effect test.

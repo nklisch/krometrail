@@ -1,7 +1,7 @@
 ---
 id: story-lifecycle-popup-adoption
 kind: story
-stage: implementing
+stage: done
 tags: [browser]
 parent: feature-window-lifecycle-integrity
 depends_on: []
