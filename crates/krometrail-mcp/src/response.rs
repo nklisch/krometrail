@@ -21,6 +21,7 @@ use serde_json::{Value, json};
 use temporal_vision::{ArtifactKind, EvidenceClass, PixelDimensions};
 
 use crate::resources::{ResourceKind, ResourceProjection};
+use crate::session::SnapshotNovelty;
 
 const MAX_CONCISE_TARGETS: usize = 48;
 const MAX_CONCISE_TARGET_JSON_BYTES: usize = 12 * 1024;
@@ -436,13 +437,30 @@ pub(crate) fn map_operation_result(
     map_operation_result_with_capture(tool, result, &[], ResponseRequest::default())
 }
 
+#[cfg(test)]
 pub(crate) fn map_operation_result_with_capture(
     tool: &str,
     result: BrowserOperationResult,
     capture_statuses: &[krometrail_core::TargetCaptureStatus],
     response: ResponseRequest,
 ) -> Result<MappedResult, ResponseInvariantError> {
-    let mut projection = project_operation(result, response)?;
+    map_operation_result_with_capture_and_novelty(
+        tool,
+        result,
+        capture_statuses,
+        response,
+        SnapshotNovelty::Novel,
+    )
+}
+
+pub(crate) fn map_operation_result_with_capture_and_novelty(
+    tool: &str,
+    result: BrowserOperationResult,
+    capture_statuses: &[krometrail_core::TargetCaptureStatus],
+    response: ResponseRequest,
+    novelty: SnapshotNovelty,
+) -> Result<MappedResult, ResponseInvariantError> {
+    let mut projection = project_operation(result, response, novelty)?;
     let target_id = projection_target_id(&projection);
     add_capture_warnings(&mut projection, capture_statuses, target_id);
     project_response(tool, &mut projection, response)?;
@@ -871,6 +889,7 @@ fn mapped(tool: &str, projection: Projection, summary: String) -> MappedResult {
 fn project_operation(
     result: BrowserOperationResult,
     response: ResponseRequest,
+    novelty: SnapshotNovelty,
 ) -> Result<Projection, ResponseInvariantError> {
     match result {
         BrowserOperationResult::InspectPage(value) => serializable(*value),
@@ -887,8 +906,13 @@ fn project_operation(
         }
         BrowserOperationResult::EvaluatePage(value) => serializable(*value),
         BrowserOperationResult::ObserveLive(value) => {
-            let (result, warnings, image) =
-                project_live_observation(*value, ImageRole::LiveObservation, None, response)?;
+            let (result, warnings, image) = project_live_observation(
+                *value,
+                ImageRole::LiveObservation,
+                None,
+                response,
+                SnapshotNovelty::Novel,
+            )?;
             let mut projection = Projection::success(result);
             projection.degrade_with(warnings);
             projection.images.extend(image);
@@ -910,9 +934,11 @@ fn project_operation(
         | BrowserOperationResult::NavigatePage(value)
         | BrowserOperationResult::ReloadPage(value)
         | BrowserOperationResult::GoBack(value)
-        | BrowserOperationResult::GoForward(value) => project_page_operation(*value, response),
+        | BrowserOperationResult::GoForward(value) => {
+            project_page_operation(*value, response, novelty)
+        }
         BrowserOperationResult::SetViewport(value) => {
-            let mut projection = project_page_operation(value.operation, response)?;
+            let mut projection = project_page_operation(value.operation, response, novelty)?;
             let mut warnings = Vec::new();
             let effective = project_serializable_part(value.effective, &mut warnings)?;
             let result = projection
@@ -933,7 +959,7 @@ fn project_operation(
         }
         BrowserOperationResult::WriteClipboard(value) => {
             let bytes = value.utf8_bytes;
-            let mut projection = project_page_operation(value.operation, response)?;
+            let mut projection = project_page_operation(value.operation, response, novelty)?;
             projection.result["utf8_bytes"] = serde_json::json!(bytes);
             Ok(projection)
         }
@@ -947,8 +973,13 @@ fn project_operation(
         | BrowserOperationResult::UploadFiles(value)
         | BrowserOperationResult::HandleDialog(value) => {
             let anchor = value.anchor().map_err(|_| ResponseInvariantError)?;
-            let (observation, warnings, image) =
-                project_live_observation(value.observation, ImageRole::PostAction, None, response)?;
+            let (observation, warnings, image) = project_live_observation(
+                value.observation,
+                ImageRole::PostAction,
+                None,
+                response,
+                novelty,
+            )?;
             let mut projection = Projection::success(json!({
                 "record": value.record,
                 "observation": observation,
@@ -967,17 +998,18 @@ fn project_operation(
             }
             Ok(projection)
         }
-        BrowserOperationResult::Batch(value) => project_batch(*value, response),
+        BrowserOperationResult::Batch(value) => project_batch(*value, response, novelty),
     }
 }
 
 fn project_page_operation(
     value: PageOperationResult,
     response: ResponseRequest,
+    novelty: SnapshotNovelty,
 ) -> Result<Projection, ResponseInvariantError> {
     let interaction = value.interaction.clone();
     let (observation, warnings, image) =
-        project_live_observation_part(value.observation, ImageRole::PostAction, response)?;
+        project_live_observation_part(value.observation, ImageRole::PostAction, response, novelty)?;
     let outcome = serde_json::to_value(&value.outcome).map_err(|_| ResponseInvariantError)?;
     let mut projection = Projection::success(json!({
         "interaction": interaction,
@@ -996,6 +1028,7 @@ fn project_page_operation(
 fn project_batch(
     value: BatchResult,
     response: ResponseRequest,
+    novelty: SnapshotNovelty,
 ) -> Result<Projection, ResponseInvariantError> {
     let mut images = Vec::new();
     let mut step_values = Vec::with_capacity(value.steps.len());
@@ -1004,7 +1037,7 @@ fn project_batch(
     for step in value.steps {
         let result = step
             .result
-            .map(|result| project_batch_step(result, response))
+            .map(|result| project_batch_step(result, response, SnapshotNovelty::Novel))
             .transpose()?
             .flatten();
         if step.status != krometrail_core::BatchStepStatus::Succeeded {
@@ -1043,8 +1076,12 @@ fn project_batch(
         step_values.push(step_value);
     }
 
-    let (final_observation, final_warnings, final_image) =
-        project_live_observation_part(value.final_observation, ImageRole::BatchFinal, response)?;
+    let (final_observation, final_warnings, final_image) = project_live_observation_part(
+        value.final_observation,
+        ImageRole::BatchFinal,
+        response,
+        novelty,
+    )?;
     images.extend(final_image);
     let outcome = value.outcome;
     let mut projection = Projection::success(json!({
@@ -1072,8 +1109,9 @@ fn project_batch(
 fn project_batch_step(
     result: BrowserOperationResult,
     response: ResponseRequest,
+    novelty: SnapshotNovelty,
 ) -> Result<Option<Value>, ResponseInvariantError> {
-    let mut value = project_operation(result, response)?.result;
+    let mut value = project_operation(result, response, novelty)?.result;
     let Some(object) = value.as_object_mut() else {
         return Ok(Some(value));
     };
@@ -1085,11 +1123,12 @@ fn project_live_observation_part(
     value: ObservationPart<LiveObservation>,
     role: ImageRole,
     response: ResponseRequest,
+    novelty: SnapshotNovelty,
 ) -> Result<(Value, Vec<KrometrailError>, Option<EncodedMcpImage>), ResponseInvariantError> {
     match value {
         ObservationPart::Available(observation) => {
             let (value, warnings, image) =
-                project_live_observation(observation, role, None, response)?;
+                project_live_observation(observation, role, None, response, novelty)?;
             Ok((json!({"available": value}), warnings, image))
         }
         ObservationPart::Unavailable(error) => {
@@ -1103,6 +1142,7 @@ fn project_live_observation(
     role: ImageRole,
     step_index: Option<u32>,
     response: ResponseRequest,
+    novelty: SnapshotNovelty,
 ) -> Result<(Value, Vec<KrometrailError>, Option<EncodedMcpImage>), ResponseInvariantError> {
     let mut warnings = Vec::new();
     let semantic_outcomes = match &value.snapshot {
@@ -1112,7 +1152,7 @@ fn project_live_observation(
     let mut page = project_serializable_part(value.page, &mut warnings)?;
     project_page_state_part(&mut page, response.detail)?;
     let mut snapshot = project_serializable_part(value.snapshot, &mut warnings)?;
-    project_snapshot_part(&mut snapshot, response.detail)?;
+    project_snapshot_part(&mut snapshot, response.detail, novelty)?;
     let (screenshot, image) = match value.screenshot {
         ObservationPart::Available(screenshot) => (
             json!({"available": screenshot.metadata()}),
@@ -1300,17 +1340,27 @@ fn compact_resolved_range(
 
 fn exact_target(
     node: &krometrail_core::SnapshotNode,
+    concise: bool,
 ) -> Result<ExactTarget, ResponseInvariantError> {
+    let states = node
+        .properties
+        .iter()
+        .filter(|property| !(concise && property.name == "focusable"))
+        .cloned()
+        .collect();
     Ok(ExactTarget {
         reference: node.reference.ok_or(ResponseInvariantError)?,
         role: node.role.clone(),
         name: node.name.clone(),
         value: node.value.clone(),
-        states: node.properties.clone(),
+        states,
     })
 }
 
-fn bounded_targets(snapshot: &PageSnapshot) -> Result<Vec<ExactTarget>, ResponseInvariantError> {
+fn bounded_targets(
+    snapshot: &PageSnapshot,
+    concise: bool,
+) -> Result<Vec<ExactTarget>, ResponseInvariantError> {
     let mut actions = snapshot
         .nodes
         .iter()
@@ -1324,7 +1374,7 @@ fn bounded_targets(snapshot: &PageSnapshot) -> Result<Vec<ExactTarget>, Response
         if targets.len() == MAX_CONCISE_TARGETS {
             break;
         }
-        let target = exact_target(node)?;
+        let target = exact_target(node, concise)?;
         let entry_bytes = serde_json::to_vec(&target)
             .map_err(|_| ResponseInvariantError)?
             .len();
@@ -1341,23 +1391,39 @@ fn bounded_targets(snapshot: &PageSnapshot) -> Result<Vec<ExactTarget>, Response
     Ok(targets)
 }
 
-fn concise_snapshot(snapshot: &PageSnapshot) -> Result<ExactTargetIndex, ResponseInvariantError> {
+fn concise_snapshot(
+    snapshot: &PageSnapshot,
+    novelty: SnapshotNovelty,
+) -> Result<Value, ResponseInvariantError> {
     let actionable = snapshot.nodes.iter().filter(|node| node.actionable).count();
-    let targets = bounded_targets(snapshot)?;
-    Ok(ExactTargetIndex {
+    let targets = bounded_targets(snapshot, true)?;
+    let omissions = TargetOmissions {
+        source_nodes: snapshot.omitted_node_count,
+        presentation_targets: u32::try_from(actionable - targets.len())
+            .map_err(|_| ResponseInvariantError)?,
+    };
+    if novelty == SnapshotNovelty::Unchanged {
+        return Ok(json!({
+            "generation": snapshot.generation,
+            "unchanged": true,
+            "target_count": actionable,
+            "omissions": omissions,
+        }));
+    }
+    serde_json::to_value(ExactTargetIndex {
         context: snapshot.context.clone(),
         generation: snapshot.generation,
-        omissions: TargetOmissions {
-            source_nodes: snapshot.omitted_node_count,
-            presentation_targets: u32::try_from(actionable - targets.len())
-                .map_err(|_| ResponseInvariantError)?,
-        },
+        omissions,
         targets,
     })
+    .map_err(|_| ResponseInvariantError)
 }
 
-fn expanded_snapshot(snapshot: &PageSnapshot) -> Result<ExpandedSnapshot, ResponseInvariantError> {
-    let targets = bounded_targets(snapshot)?;
+fn expanded_snapshot(
+    snapshot: &PageSnapshot,
+    novelty: SnapshotNovelty,
+) -> Result<Value, ResponseInvariantError> {
+    let targets = bounded_targets(snapshot, false)?;
     let actionable = snapshot.nodes.iter().filter(|node| node.actionable).count();
     let context_count = snapshot.nodes.len() - actionable;
     let mut candidates = snapshot
@@ -1405,7 +1471,21 @@ fn expanded_snapshot(snapshot: &PageSnapshot) -> Result<ExpandedSnapshot, Respon
             continue;
         }
     }
-    Ok(ExpandedSnapshot {
+    if novelty == SnapshotNovelty::Unchanged {
+        return Ok(json!({
+            "generation": snapshot.generation,
+            "unchanged": true,
+            "target_count": actionable,
+            "omissions": ExpandedSnapshotOmissions {
+                source_nodes: snapshot.omitted_node_count,
+                presentation_targets: u32::try_from(actionable - targets.len())
+                    .map_err(|_| ResponseInvariantError)?,
+                presentation_context_nodes: u32::try_from(context_count - semantic_context.len())
+                    .map_err(|_| ResponseInvariantError)?,
+            },
+        }));
+    }
+    serde_json::to_value(ExpandedSnapshot {
         context: snapshot.context.clone(),
         generation: snapshot.generation,
         omissions: ExpandedSnapshotOmissions {
@@ -1418,6 +1498,7 @@ fn expanded_snapshot(snapshot: &PageSnapshot) -> Result<ExpandedSnapshot, Respon
         targets,
         semantic_context,
     })
+    .map_err(|_| ResponseInvariantError)
 }
 
 fn snapshot_action_rank(node: &krometrail_core::SnapshotNode) -> u8 {
@@ -1464,7 +1545,11 @@ fn project_response(
         projection.images.clear();
     }
     if tool == "snapshot_page" {
-        project_root_snapshot(&mut projection.result, response.detail)?;
+        project_root_snapshot(
+            &mut projection.result,
+            response.detail,
+            SnapshotNovelty::Novel,
+        )?;
     } else if tool == "inspect_page" {
         project_root_page_state(&mut projection.result, response.detail)?;
     }
@@ -1474,20 +1559,21 @@ fn project_response(
 fn project_root_snapshot(
     value: &mut Value,
     detail: ResponseDetail,
+    novelty: SnapshotNovelty,
 ) -> Result<(), ResponseInvariantError> {
     match detail {
         ResponseDetail::Full => {}
         ResponseDetail::Concise => {
-            *value = serde_json::to_value(concise_snapshot(
+            *value = concise_snapshot(
                 &serde_json::from_value(value.clone()).map_err(|_| ResponseInvariantError)?,
-            )?)
-            .map_err(|_| ResponseInvariantError)?
+                novelty,
+            )?
         }
         ResponseDetail::Expanded => {
-            *value = serde_json::to_value(expanded_snapshot(
+            *value = expanded_snapshot(
                 &serde_json::from_value(value.clone()).map_err(|_| ResponseInvariantError)?,
-            )?)
-            .map_err(|_| ResponseInvariantError)?
+                novelty,
+            )?
         }
     }
     Ok(())
@@ -1518,11 +1604,12 @@ fn project_page_state_part(
 fn project_snapshot_part(
     part: &mut Value,
     detail: ResponseDetail,
+    novelty: SnapshotNovelty,
 ) -> Result<(), ResponseInvariantError> {
     let Some(value) = part.get_mut("available") else {
         return Ok(());
     };
-    project_root_snapshot(value, detail)
+    project_root_snapshot(value, detail, novelty)
 }
 
 fn concise_page_state(value: &Value) -> Result<Value, ResponseInvariantError> {
@@ -2936,6 +3023,7 @@ mod tests {
             properties: vec![
                 AccessibleProperty::new("focused", AccessibleValue::Boolean(true)).unwrap(),
                 AccessibleProperty::new("editable", AccessibleValue::Boolean(true)).unwrap(),
+                AccessibleProperty::new("focusable", AccessibleValue::Boolean(true)).unwrap(),
             ],
             actionable: true,
             reference: Some(NodeReference {
@@ -2945,22 +3033,88 @@ mod tests {
             }),
         });
         let snapshot = PageSnapshot::new(context(), generation, nodes, 9).unwrap();
-        let concise = concise_snapshot(&snapshot).unwrap();
-        assert!(concise.targets.len() <= MAX_CONCISE_TARGETS);
+        let concise = concise_snapshot(&snapshot, SnapshotNovelty::Novel).unwrap();
+        assert!(concise["targets"].as_array().unwrap().len() <= MAX_CONCISE_TARGETS);
         assert!(
-            serde_json::to_vec(&concise.targets).unwrap().len() <= MAX_CONCISE_TARGET_JSON_BYTES
+            serde_json::to_vec(&concise["targets"]).unwrap().len() <= MAX_CONCISE_TARGET_JSON_BYTES
         );
-        assert_eq!(concise.targets[0].reference.node_id, focused_id);
-        assert_eq!(concise.omissions.source_nodes, 9);
-        assert_eq!(concise.omissions.presentation_targets, 32);
+        assert_eq!(
+            concise["targets"][0]["reference"]["node_id"],
+            serde_json::to_value(focused_id).unwrap()
+        );
+        assert_eq!(concise["omissions"]["source_nodes"], 9);
+        assert_eq!(concise["omissions"]["presentation_targets"], 32);
+        assert!(
+            !concise["targets"][0]["states"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|state| state["name"] == "focusable")
+        );
     }
 
     #[test]
     fn expanded_snapshot_complete_json_stays_within_its_budget() {
-        let expanded = expanded_snapshot(&complex_snapshot()).unwrap();
+        let mut snapshot = complex_snapshot();
+        snapshot
+            .nodes
+            .iter_mut()
+            .find(|node| node.actionable)
+            .unwrap()
+            .properties
+            .push(AccessibleProperty::new("focusable", AccessibleValue::Boolean(true)).unwrap());
+        let expanded = expanded_snapshot(&snapshot, SnapshotNovelty::Novel).unwrap();
         let encoded = serde_json::to_vec(&expanded).unwrap();
         assert!(encoded.len() <= MAX_EXPANDED_SNAPSHOT_JSON_BYTES);
-        assert!(expanded.omissions.presentation_context_nodes > 0);
+        assert!(
+            expanded["omissions"]["presentation_context_nodes"]
+                .as_u64()
+                .unwrap()
+                > 0
+        );
+        assert!(
+            expanded["targets"][0]["states"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|state| state["name"] == "focusable")
+        );
+    }
+
+    #[test]
+    fn automatic_live_projection_dedupes_unchanged_generation() {
+        let snapshot = complex_snapshot();
+        let (first, _, _) = project_live_observation(
+            live_with_snapshot(snapshot.clone()),
+            ImageRole::PostAction,
+            None,
+            ResponseRequest::default(),
+            SnapshotNovelty::Novel,
+        )
+        .unwrap();
+        let (second, _, _) = project_live_observation(
+            live_with_snapshot(snapshot),
+            ImageRole::PostAction,
+            None,
+            ResponseRequest::default(),
+            SnapshotNovelty::Unchanged,
+        )
+        .unwrap();
+        assert!(first["snapshot"]["available"]["targets"].is_array());
+        assert_eq!(second["snapshot"]["available"]["unchanged"], true);
+        assert_eq!(second["snapshot"]["available"]["target_count"], 1);
+        assert!(second["snapshot"]["available"]["targets"].is_null());
+
+        let next_generation = SnapshotGeneration::new(2).unwrap();
+        let mut next_nodes = complex_snapshot().nodes;
+        for node in &mut next_nodes {
+            if let Some(reference) = &mut node.reference {
+                reference.generation = next_generation;
+            }
+        }
+        let next = PageSnapshot::new(context(), next_generation, next_nodes, 7).unwrap();
+        let next_projection = concise_snapshot(&next, SnapshotNovelty::Novel).unwrap();
+        assert!(next_projection["targets"].is_array());
     }
 
     #[tokio::test]

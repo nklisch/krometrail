@@ -3074,7 +3074,8 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(snapshots[0].get("targets").is_some());
         assert!(snapshots[0].get("nodes").is_none());
-        assert!(snapshots[1].get("semantic_context").is_some());
+        assert_eq!(snapshots[1]["unchanged"], true);
+        assert!(snapshots[1].get("semantic_context").is_none());
         assert_eq!(snapshots[2]["nodes"].as_array().unwrap().len(), 121);
         assert_eq!(snapshots[3]["nodes"].as_array().unwrap().len(), 121);
         for projected in &structured {

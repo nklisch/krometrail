@@ -1,11 +1,11 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use krometrail_core::{
     AttachBrowser, BrowserConnectRequest, BrowserConnector, BrowserOperationContext,
     BrowserOperationRequest, BrowserOperationResult, BrowserSessionPort, BrowserStatus,
     BrowserStopOutcome, CurrentReferenceGeometry, CurrentReferenceGeometryRequest, ErrorCode,
     KrometrailError, LaunchBrowser, NonEmptyText, PortFuture, ResolvedReferenceGeometry, Result,
-    RetryAdvice, TargetCaptureStatus,
+    RetryAdvice, SnapshotGeneration, TargetCaptureStatus, TargetId,
 };
 use tokio::sync::Mutex;
 
@@ -13,6 +13,39 @@ use tokio::sync::Mutex;
 pub struct BrowserSessionOwner {
     connector: Arc<dyn BrowserConnector>,
     active: Arc<Mutex<Option<Arc<dyn BrowserSessionPort>>>>,
+    projected_snapshots: Arc<Mutex<ProjectedSnapshotMemory>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SnapshotNovelty {
+    Novel,
+    Unchanged,
+}
+
+#[derive(Default)]
+pub(crate) struct ProjectedSnapshotMemory {
+    entries: HashMap<TargetId, (u64, SnapshotGeneration)>,
+}
+
+impl ProjectedSnapshotMemory {
+    pub(crate) fn observe(
+        &mut self,
+        target: TargetId,
+        attachment_generation: u64,
+        generation: SnapshotGeneration,
+    ) -> SnapshotNovelty {
+        let novelty = match self.entries.get(&target) {
+            Some((attachment, previous))
+                if *attachment == attachment_generation && *previous == generation =>
+            {
+                SnapshotNovelty::Unchanged
+            }
+            _ => SnapshotNovelty::Novel,
+        };
+        self.entries
+            .insert(target, (attachment_generation, generation));
+        novelty
+    }
 }
 
 #[derive(Debug)]
@@ -26,7 +59,25 @@ impl BrowserSessionOwner {
         Self {
             connector,
             active: Arc::new(Mutex::new(None)),
+            projected_snapshots: Arc::new(Mutex::new(ProjectedSnapshotMemory::default())),
         }
+    }
+
+    pub(crate) async fn observe_post_action(
+        &self,
+        result: &BrowserOperationResult,
+    ) -> SnapshotNovelty {
+        let Some(snapshot) = post_action_snapshot(result) else {
+            return SnapshotNovelty::Novel;
+        };
+        let krometrail_core::ObservationPart::Available(snapshot) = &snapshot.snapshot else {
+            return SnapshotNovelty::Novel;
+        };
+        self.projected_snapshots.lock().await.observe(
+            snapshot.context.target_id,
+            snapshot.context.attachment_generation,
+            snapshot.generation,
+        )
     }
 
     pub async fn start(&self, request: LaunchBrowser) -> Result<BrowserStatus> {
@@ -122,6 +173,48 @@ impl BrowserSessionOwner {
     }
 }
 
+fn post_action_snapshot(
+    result: &BrowserOperationResult,
+) -> Option<&krometrail_core::LiveObservation> {
+    use krometrail_core::{BrowserOperationResult, ObservationPart};
+
+    match result {
+        BrowserOperationResult::CreatePage(value)
+        | BrowserOperationResult::SelectPage(value)
+        | BrowserOperationResult::ActivatePage(value)
+        | BrowserOperationResult::ClosePage(value)
+        | BrowserOperationResult::NavigatePage(value)
+        | BrowserOperationResult::ReloadPage(value)
+        | BrowserOperationResult::GoBack(value)
+        | BrowserOperationResult::GoForward(value) => match &value.observation {
+            ObservationPart::Available(observation) => Some(observation),
+            ObservationPart::Unavailable(_) => None,
+        },
+        BrowserOperationResult::SetViewport(value) => match &value.operation.observation {
+            ObservationPart::Available(observation) => Some(observation),
+            ObservationPart::Unavailable(_) => None,
+        },
+        BrowserOperationResult::WriteClipboard(value) => match &value.operation.observation {
+            ObservationPart::Available(observation) => Some(observation),
+            ObservationPart::Unavailable(_) => None,
+        },
+        BrowserOperationResult::Click(value)
+        | BrowserOperationResult::Fill(value)
+        | BrowserOperationResult::PressKeys(value)
+        | BrowserOperationResult::SelectOption(value)
+        | BrowserOperationResult::Hover(value)
+        | BrowserOperationResult::Drag(value)
+        | BrowserOperationResult::Scroll(value)
+        | BrowserOperationResult::UploadFiles(value)
+        | BrowserOperationResult::HandleDialog(value) => Some(&value.observation),
+        BrowserOperationResult::Batch(value) => match &value.final_observation {
+            ObservationPart::Available(observation) => Some(observation),
+            ObservationPart::Unavailable(_) => None,
+        },
+        _ => None,
+    }
+}
+
 impl CurrentReferenceGeometry for BrowserSessionOwner {
     fn current_reference_geometry(
         &self,
@@ -155,6 +248,29 @@ mod tests {
         SnapshotNodeId, TargetId,
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn projected_snapshot_memory_requires_current_attachment_and_generation() {
+        let mut memory = ProjectedSnapshotMemory::default();
+        let target = TargetId::from_uuid(uuid::Uuid::from_u128(1));
+        let generation = SnapshotGeneration::new(1).unwrap();
+        assert_eq!(
+            memory.observe(target, 1, generation),
+            SnapshotNovelty::Novel
+        );
+        assert_eq!(
+            memory.observe(target, 1, generation),
+            SnapshotNovelty::Unchanged
+        );
+        assert_eq!(
+            memory.observe(target, 2, generation),
+            SnapshotNovelty::Novel
+        );
+        assert_eq!(
+            memory.observe(target, 2, SnapshotGeneration::new(2).unwrap()),
+            SnapshotNovelty::Novel
+        );
+    }
 
     struct ClosedEvents;
     impl BrowserSessionEvents for ClosedEvents {

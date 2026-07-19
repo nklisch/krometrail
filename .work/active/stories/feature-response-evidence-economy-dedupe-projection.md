@@ -21,7 +21,11 @@ post-action concise/expanded projections only, and `focusable` filtered from con
 never deduped.
 
 ## Acceptance
-- Two consecutive actions on an unchanged document project the full index once, then the
+- [x] Two consecutive actions on an unchanged document project the full index once, then the
   marker; navigation re-emits the full index.
-- `snapshot_page` output never deduped.
-- Concise `states` carry no `focusable`; expanded unchanged.
+- [x] `snapshot_page` output never deduped.
+- [x] Concise `states` carry no `focusable`; expanded unchanged.
+
+## Completion Note
+
+Implemented and verified Unit 1. Session-owned projection memory keys observations by target and attachment generation; automatic post-action projections dedupe unchanged generations, explicit inspection remains novel, and concise state output prunes only `focusable`.

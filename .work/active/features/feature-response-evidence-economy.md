@@ -129,11 +129,17 @@ second ranking system. Tall-screenshot handling should prefer guidance plus boun
 - In `exact_target`, filter `focusable` from the cloned properties (concise arm only).
 
 **Acceptance Criteria**:
-- [ ] Two consecutive actions on an unchanged document project the full index once, then
+- [x] Two consecutive actions on an unchanged document project the full index once, then
       the unchanged marker (projection test with `complex_snapshot()` fixture).
-- [ ] A navigation (new generation) re-emits the full index.
-- [ ] `snapshot_page` output is never deduped.
-- [ ] Concise `states` contain no `focusable` entries; expanded still do.
+- [x] A navigation (new generation) re-emits the full index.
+- [x] `snapshot_page` output is never deduped.
+- [x] Concise `states` contain no `focusable` entries; expanded still do.
+
+## Implementation Notes
+
+- Unit 1 is complete: `BrowserSessionOwner` now tracks projected snapshot generations per target and attachment, while automatic post-action concise and expanded projections emit an unchanged-generation marker. Explicit snapshot inspection remains unconditionally novel.
+- Concise target states omit redundant `focusable`; expanded and full projections retain it.
+- Unit 1 verification: `cargo fmt --all -- --check`, `cargo check -p krometrail-mcp --all-targets --locked`, and `cargo test -p krometrail-mcp --all-targets --locked` passed after repairing the existing server projection assertion for the new marker.
 
 ### Unit 2: Staleness auto-image defaults + tall-page guidance
 **Story**: `feature-response-evidence-economy-staleness-images`

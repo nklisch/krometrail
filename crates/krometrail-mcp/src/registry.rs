@@ -29,9 +29,9 @@ use crate::{
     config::{McpConfig, McpDependencies},
     response::{
         ResponseRequest, into_call_tool_result, map_browser_status, map_lifecycle_result,
-        map_operation_result_with_capture, map_progressive_result, map_temporal_bundle_result,
-        map_temporal_context_result, map_temporal_video_result, split_response_request,
-        visible_error, visible_error_with_capture,
+        map_operation_result_with_capture_and_novelty, map_progressive_result,
+        map_temporal_bundle_result, map_temporal_context_result, map_temporal_video_result,
+        split_response_request, visible_error, visible_error_with_capture,
     },
     schema::{
         ResolvedRangeHandleArgument, generated_input_schema, operation_input_schema,
@@ -835,14 +835,24 @@ async fn call_operation(
         )
         .await
     {
-        Ok(executed) => map_operation_result_with_capture(
-            name,
-            executed.result,
-            &executed.capture_statuses,
-            preference,
-        )
-        .map_err(|_| rmcp::ErrorData::internal_error("browser tool response mapping failed", None))
-        .and_then(into_call_tool_result),
+        Ok(executed) => {
+            let novelty = context
+                .service
+                .sessions()
+                .observe_post_action(&executed.result)
+                .await;
+            map_operation_result_with_capture_and_novelty(
+                name,
+                executed.result,
+                &executed.capture_statuses,
+                preference,
+                novelty,
+            )
+            .map_err(|_| {
+                rmcp::ErrorData::internal_error("browser tool response mapping failed", None)
+            })
+            .and_then(into_call_tool_result)
+        }
         Err(error) => {
             let capture_statuses = context
                 .service
