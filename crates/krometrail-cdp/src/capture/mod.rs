@@ -54,7 +54,7 @@ impl Default for CaptureConfig {
                 .expect("default payload size is non-zero"),
             gap_ledger_capacity: NonZeroUsize::new(64)
                 .expect("default gap ledger size is non-zero"),
-            ack_timeout: Duration::from_millis(250),
+            ack_timeout: Duration::from_secs(1),
             shutdown_timeout: Duration::from_secs(5),
         }
     }

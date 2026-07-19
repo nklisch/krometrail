@@ -15,7 +15,7 @@
       "product": "chrome"
     },
     "capture_config": {
-      "ack_timeout_ms": 250,
+      "ack_timeout_ms": 1000,
       "format": "jpeg",
       "gap_ledger_capacity": 64,
       "jpeg_quality": 80,
@@ -63,7 +63,7 @@
         "samples": 30
       },
       "capture_config": {
-        "ack_timeout_ms": 250,
+        "ack_timeout_ms": 1000,
         "format": "jpeg",
         "gap_ledger_capacity": 64,
         "jpeg_quality": 80,
@@ -110,7 +110,7 @@
         "samples": 12
       },
       "capture_config": {
-        "ack_timeout_ms": 250,
+        "ack_timeout_ms": 1000,
         "format": "jpeg",
         "gap_ledger_capacity": 64,
         "jpeg_quality": 80,

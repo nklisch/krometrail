@@ -416,8 +416,8 @@ impl CrossPlatformSmokeEvidence {
         if config.gap_ledger_capacity != 64 {
             return Err("capture_config.gap_ledger_capacity must be 64".into());
         }
-        if config.ack_timeout_ms != 250 {
-            return Err("capture_config.ack_timeout_ms must be 250".into());
+        if !matches!(config.ack_timeout_ms, 250 | 1_000) {
+            return Err("capture_config.ack_timeout_ms must be 250 or 1000".into());
         }
         if config.shutdown_timeout_ms != 5_000 {
             return Err("capture_config.shutdown_timeout_ms must be 5000".into());

@@ -1922,15 +1922,21 @@ async fn opt_in_real_chrome_qualifies_frame_actions_staleness_and_bounded_assets
                     && capture.failure_stage().is_none()
                     && capture.statistics().persisted_frames() > capture_before_frame_navigation
                 {
-                    break capture.statistics().persisted_frames();
+                    break (
+                        capture.statistics().persisted_frames(),
+                        capture.statistics().received_frames(),
+                        capture.statistics().acknowledged_frames(),
+                    );
                 }
                 tokio::task::yield_now().await;
             }
         })
         .await
         .expect("capture remains healthy and persists after child-frame navigation");
+    let (persisted_after, received_after, acknowledged_after) = capture_after_frame_navigation;
+    assert_eq!(received_after, acknowledged_after);
     eprintln!(
-        "nested-frame capture qualification: persisted_before={capture_before_frame_navigation} persisted_after={capture_after_frame_navigation} state=capturing failure_stage=none"
+        "nested-frame capture qualification: persisted_before={capture_before_frame_navigation} persisted_after={persisted_after} received={received_after} acknowledged={acknowledged_after} state=capturing failure_stage=none"
     );
     let stale = session
         .execute(

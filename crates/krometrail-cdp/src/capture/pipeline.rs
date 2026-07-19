@@ -706,6 +706,43 @@ impl StreamRuntime {
             .expect("capture control lock poisoned")
             .sender = None;
     }
+
+    fn fail_acknowledgement(
+        &self,
+        reason: &'static str,
+        observed: krometrail_core::ObservedTime,
+        failed_at: krometrail_core::ObservedTime,
+        detail: &'static str,
+    ) {
+        self.declare_gap(
+            CaptureGapReason::AcknowledgementFailed,
+            self.session_time_for(observed),
+            Some(1),
+            Some(detail),
+        );
+        let state = self.state.lock().expect("capture state lock poisoned");
+        tracing::error!(
+            event = "capture.ack.failed",
+            reason,
+            error_code = ErrorCode::CaptureFailed.as_str(),
+            session_id = %self.target.session_id,
+            target_id = %self.target.target_id,
+            attachment_generation = self.target.attachment_generation,
+            deadline_nanos = u64::try_from(self.config.ack_timeout.as_nanos()).unwrap_or(u64::MAX),
+            elapsed_nanos = failed_at.as_nanos().saturating_sub(observed.as_nanos()),
+            received_frames = state.statistics.received_frames(),
+            acknowledged_frames = state.statistics.acknowledged_frames(),
+            accepted_frames = state.statistics.accepted_frames(),
+            dropped_frames = state.statistics.dropped_frames(),
+            persisted_frames = state.statistics.persisted_frames(),
+            gap_count = state.statistics.gap_count(),
+            queue_depth = state.queue_depth,
+            in_flight = state.in_flight,
+            "capture.ack.failed"
+        );
+        drop(state);
+        self.fail(CaptureFailureStage::Acknowledgement);
+    }
 }
 
 pub(super) fn record_first_failure(
@@ -873,13 +910,12 @@ async fn frame_reader(
         let geometry_fence = runtime.geometry_fence();
         runtime.record_received();
         let Some(ack_token) = event.params.get("sessionId").and_then(Value::as_i64) else {
-            runtime.declare_gap(
-                CaptureGapReason::AcknowledgementFailed,
-                runtime.session_time_for(observed),
-                Some(1),
-                Some("screencast frame acknowledgement token was invalid"),
+            runtime.fail_acknowledgement(
+                "invalid_token",
+                observed,
+                runtime.dependencies.clock.now(),
+                "screencast frame acknowledgement token was invalid",
             );
-            runtime.fail(CaptureFailureStage::Acknowledgement);
             break;
         };
         let ack = time::timeout(
@@ -894,19 +930,16 @@ async fn frame_reader(
         )
         .await;
         let ack_completed = runtime.dependencies.clock.now();
-        let ack_failure_detail = match ack {
+        let ack_failure = match ack {
             Ok(Ok(_)) => None,
-            Ok(Err(_)) => Some("screencast frame acknowledgement failed"),
-            Err(_) => Some("screencast frame acknowledgement timed out"),
+            Ok(Err(_)) => Some(("transport_error", "screencast frame acknowledgement failed")),
+            Err(_) => Some((
+                "deadline_exceeded",
+                "screencast frame acknowledgement timed out",
+            )),
         };
-        if let Some(detail) = ack_failure_detail {
-            runtime.declare_gap(
-                CaptureGapReason::AcknowledgementFailed,
-                runtime.session_time_for(observed),
-                Some(1),
-                Some(detail),
-            );
-            runtime.fail(CaptureFailureStage::Acknowledgement);
+        if let Some((reason, detail)) = ack_failure {
+            runtime.fail_acknowledgement(reason, observed, ack_completed, detail);
             break;
         }
         let latency = ack_completed.as_nanos().saturating_sub(observed.as_nanos());

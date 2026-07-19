@@ -28,6 +28,7 @@ fn default_configuration_matches_bounded_capture_contract() {
     assert_eq!(config.max_active_streams.get(), 8);
     assert_eq!(config.queue_capacity.get(), 4);
     assert_eq!(config.max_base64_payload_bytes.get(), 8 * 1024 * 1024);
+    assert_eq!(config.ack_timeout, std::time::Duration::from_secs(1));
     assert_eq!(CaptureConfig::max_queued_payload_bytes(), 256 * 1024 * 1024);
 }
 
@@ -1022,6 +1023,57 @@ async fn ack_completion_and_histogram_precede_parse_queue_and_sink() {
 }
 
 #[tokio::test]
+async fn default_ack_deadline_accepts_a_frame_delayed_beyond_250_milliseconds() {
+    let ack_completed = Arc::new(AtomicBool::new(false));
+    let transport =
+        TestTransport::new(Arc::clone(&ack_completed), Arc::new(Mutex::new(Vec::new())));
+    transport.hold_ack();
+    let sink = Arc::new(TestSink::new(
+        ack_completed,
+        Arc::new(Mutex::new(Vec::new())),
+    ));
+    let coordinator = coordinator(
+        CaptureConfig::default(),
+        Arc::new(TestClock::new()),
+        Arc::new(TestIds::new()),
+        Arc::clone(&sink),
+        Arc::new(TestObserver::default()),
+    );
+    let capture_target = target();
+    coordinator
+        .start_target(
+            capture_target.clone(),
+            Arc::clone(&transport) as Arc<dyn CdpTransport>,
+        )
+        .await
+        .unwrap();
+
+    transport.frame(1).await;
+    transport.wait_for_ack_start().await;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    transport.release_ack();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        transport.wait_for_acks(1),
+    )
+    .await
+    .expect("default acknowledgement deadline exceeds 300 milliseconds");
+
+    let status = coordinator.statuses().pop().unwrap();
+    assert_eq!(status.failure_stage(), None);
+    assert_eq!(status.statistics().received_frames(), 1);
+    assert_eq!(status.statistics().acknowledged_frames(), 1);
+    sink.release_first_frame.notify_one();
+    coordinator
+        .stop_target(
+            &capture_target,
+            CaptureStopReason::TargetClosed,
+            tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+        )
+        .await;
+}
+
+#[tokio::test]
 async fn constant_ack_tokens_produce_local_ordinals_without_discontinuity_gaps() {
     let ack_completed = Arc::new(AtomicBool::new(false));
     let transport =
@@ -1849,6 +1901,59 @@ async fn failed_ack_never_enters_accepted_or_dropped_accounting() {
 }
 
 #[tokio::test]
+async fn acknowledgement_beyond_an_explicit_short_deadline_fails_once_with_one_gap() {
+    let ack_completed = Arc::new(AtomicBool::new(false));
+    let transport =
+        TestTransport::new(Arc::clone(&ack_completed), Arc::new(Mutex::new(Vec::new())));
+    transport.hold_ack();
+    let sink = Arc::new(TestSink::new(
+        ack_completed,
+        Arc::new(Mutex::new(Vec::new())),
+    ));
+    let observer = Arc::new(TestObserver::default());
+    let coordinator = coordinator(
+        CaptureConfig {
+            ack_timeout: std::time::Duration::from_millis(20),
+            ..CaptureConfig::default()
+        },
+        Arc::new(TestClock::new()),
+        Arc::new(TestIds::new()),
+        sink,
+        Arc::clone(&observer),
+    );
+    let capture_target = target();
+    coordinator
+        .start_target(
+            capture_target,
+            Arc::clone(&transport) as Arc<dyn CdpTransport>,
+        )
+        .await
+        .unwrap();
+
+    transport.frame(7).await;
+    transport.wait_for_ack_start().await;
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while coordinator.statuses()[0].state() != CaptureStreamState::Failed {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("short acknowledgement deadline is terminal");
+
+    let status = coordinator.statuses().pop().unwrap();
+    assert_eq!(
+        status.failure_stage(),
+        Some(krometrail_core::CaptureFailureStage::Acknowledgement)
+    );
+    assert_eq!(status.statistics().received_frames(), 1);
+    assert_eq!(status.statistics().acknowledged_frames(), 0);
+    assert_eq!(*transport.ack_tokens.lock().unwrap(), vec![7]);
+    let gaps = observer.gaps.lock().unwrap();
+    assert_eq!(gaps.len(), 1);
+    assert_eq!(gaps[0].reason(), &CaptureGapReason::AcknowledgementFailed);
+}
+
+#[tokio::test]
 async fn visibility_intervals_coalesce_and_actual_visibility_recovers() {
     let ack_completed = Arc::new(AtomicBool::new(false));
     let transport =
@@ -2029,6 +2134,11 @@ fn status_and_gap_serialization_are_privacy_safe() {
     assert!(!source.contains("tracing::warn!(error"));
     assert!(source.contains("failure_stage"));
     assert!(source.contains("error_code"));
+    assert!(source.contains("capture.ack.failed"));
+    assert!(source.contains("deadline_nanos"));
+    assert!(source.contains("elapsed_nanos"));
+    assert!(source.contains("received_frames"));
+    assert!(source.contains("acknowledged_frames"));
     let status = serde_json::to_string(&CaptureStreamState::Capturing).unwrap();
     assert_eq!(status, "\"capturing\"");
 }

@@ -186,14 +186,15 @@ fn deterministic_configurations_match_platform() {
 }
 
 #[test]
-fn deterministic_canonical_bytes_match_committed_sample() {
+fn deterministic_canonical_content_matches_committed_sample() {
     let expected = fs::read(sample_path()).expect("committed sample.json exists");
+    let expected = expected.strip_suffix(b"\n").unwrap_or(&expected);
     let actual = CrossPlatformSmokeEvidence::sample()
         .to_canonical_bytes()
         .expect("sample serializes");
     assert_eq!(
         expected, actual,
-        "committed sample.json must match the serializer's canonical bytes"
+        "committed sample.json must match the serializer's canonical content"
     );
 }
 

@@ -181,7 +181,10 @@
             },
             "ack_timeout_ms": {
               "type": "integer",
-              "const": 250
+              "enum": [
+                250,
+                1000
+              ]
             },
             "shutdown_timeout_ms": {
               "type": "integer",
@@ -285,7 +288,10 @@
               },
               "ack_timeout_ms": {
                 "type": "integer",
-                "const": 250
+                "enum": [
+                  250,
+                  1000
+                ]
               },
               "shutdown_timeout_ms": {
                 "type": "integer",
