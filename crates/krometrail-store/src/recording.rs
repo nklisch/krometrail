@@ -1891,6 +1891,20 @@ impl TemporalContextQuery for RecordingStore {
                 .await
         })
     }
+
+    fn capture_quality(
+        &self,
+        range: ResolvedRange,
+    ) -> PortFuture<'_, krometrail_core::Result<krometrail_core::CaptureQuality>> {
+        Box::pin(async move {
+            let _mutation = self.mutations.lock().await;
+            self.reject_deleted(range.session_id)
+                .map_err(|_| context_query_not_found(&range))?;
+            TemporalContextService::new(Arc::clone(&self.index), Arc::clone(&self.index))
+                .capture_quality(range)
+                .await
+        })
+    }
 }
 
 impl RetentionStore for RecordingStore {

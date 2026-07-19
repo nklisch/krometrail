@@ -797,3 +797,17 @@ async fn concurrent_session_deletion_cannot_return_partially_invalid_context() {
     assert!(deleted_error.context.range.is_some());
     assert!(deleted_error.recovery.is_some());
 }
+
+#[tokio::test]
+async fn store_serves_capture_quality_without_loading_browser_events() {
+    let fixture = Fixture::new(&[0, 10, 30]).await;
+    let range = fixture.resolved(vec![]);
+    let quality = fixture
+        .store
+        .capture_quality(range.clone())
+        .await
+        .expect("production store must serve capture-quality-only queries");
+    assert_eq!(quality.requested_range, range.requested_range);
+    assert_eq!(quality.retained_range, range.resolved_range);
+    assert_eq!(quality.frame_count, 3);
+}
