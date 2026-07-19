@@ -64,7 +64,7 @@ pub(crate) fn default_artifact_request(
     )
 }
 
-/// Returns the exact generator list for the v1 default policy.
+/// Returns the exact generator list for the current default policy.
 ///
 /// Exposed separately so the effective policy can carry the same generator
 /// values the artifact service receives, without duplicating the request body.

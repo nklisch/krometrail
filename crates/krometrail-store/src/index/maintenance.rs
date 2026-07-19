@@ -53,12 +53,6 @@ impl SqliteIndex {
             .map_err(|_| persistence_error("could not begin index usage refresh"))?;
         transaction
             .execute(
-                "DELETE FROM usage WHERE class='index' AND object_key!=?1",
-                params![b"live-pages".as_slice()],
-            )
-            .map_err(|_| persistence_error("could not remove legacy index usage"))?;
-        transaction
-            .execute(
                 "INSERT INTO usage(class, object_key, session_id, byte_len_be) \
                  VALUES ('index', ?1, NULL, ?2) \
                  ON CONFLICT(class, object_key) DO UPDATE SET byte_len_be=excluded.byte_len_be \

@@ -14,7 +14,7 @@ fn config(directory: &TempDir) -> IndexStoreConfig {
 }
 
 #[test]
-fn schema_migrates_reopens_and_has_the_declared_inventory() {
+fn current_schema_reopens_and_has_the_declared_inventory() {
     let directory = TempDir::new().unwrap();
     let config = config(&directory);
     drop(SqliteIndex::open(config.clone()).unwrap());

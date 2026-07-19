@@ -1,7 +1,7 @@
 ---
 id: epic-agent-surface-simplification
 kind: epic
-stage: review
+stage: done
 tags: [agent-ux, browser, storage, visual]
 parent: null
 depends_on: []
@@ -82,3 +82,7 @@ Ship as the next minor release after integrated review and focused real-browser 
 All five child features are implemented, independently reviewed, and done. Krometrail now exposes one implicit concise response with explicit expanded/full growth and orthogonal inline images; batch screenshot absence is truthful; temporal bundles default to pre-work anchor-epoch selection; capture publication failures retain classified causes through structured shutdown; and unsupported schema, installer, transport, response, and policy compatibility machinery is deleted. Foundation documents, generated public docs, and plugin skill guidance describe only the current surface.
 
 Focused feature verification and workspace compilation are green. The epic is ready for integrated review before the release-bound final verification.
+
+## Integrated review
+
+Approved in the single standard fresh-context pass with no material blockers. The review verified cross-feature response, batch, temporal, persistence, shutdown, schema, installer, documentation, skill, privacy, and code-economy seams. Its cleanup scan identified stale migration-era labels and an obsolete v5 artifact migration fixture; those were removed before closure, and the complete current artifact-store/schema integration suites plus workspace check passed.

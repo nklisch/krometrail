@@ -359,7 +359,7 @@ fn open_storage_with_budget(
     budget: DiskBudgetBytes,
 ) -> Result<StorageDependencies> {
     let segments_directory = data_directory.join("segments");
-    // Open and migrate metadata before capture infrastructure can accept writes.
+    // Open and validate metadata before capture infrastructure can accept writes.
     let index = Arc::new(SqliteIndex::open(IndexStoreConfig {
         database_path: data_directory.join("index.sqlite3"),
         segments_directory: segments_directory.clone(),
