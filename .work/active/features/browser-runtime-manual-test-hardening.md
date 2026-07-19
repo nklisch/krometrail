@@ -1,7 +1,7 @@
 ---
 id: browser-runtime-manual-test-hardening
 kind: feature
-stage: review
+stage: done
 tags: [browser, agent-ux, testing]
 parent: null
 depends_on: []
@@ -180,3 +180,17 @@ The acknowledgement failure may reflect a congested shared transport; reconnect 
 - `.work/bin/work-view` is a Linux executable and cannot run on this macOS host, so item/dependency state was inspected directly from the Markdown substrate.
 - The first sandboxed full test run denied four loopback socket binds with `EPERM`; the authoritative approved rerun outside that restriction passed.
 - Story commits: `c915567`, `c14ad33`, `6c4d61e`, `0a9a3d7`.
+
+## Review (2026-07-18)
+
+**Verdict**: Approve
+
+**Blockers**: none — obsolete preserve-focus recovery and mixed eviction/capture-tail clamping were resolved in `d619e78`
+
+**Important**: none — activation lifecycle and transport error propagation were resolved in `d619e78`
+
+**Nits**: none
+
+**Rejected**: none
+
+**Notes**: Substrate feature review at effective weight `standard`; exactly one same-harness fresh-context GPT-5.6 Sol balanced pass. The receiver adjudicated two blockers and one important finding as current-cycle work, fixed them, and verified focused regressions plus full workspace fmt/check/test/clippy. Closure used fix verification only; no second independent pass. Limitations: same-harness rather than cross-model; opt-in real-Chrome qualification was not rerun; deterministic, scripted, and integration lanes were used; concurrent unrelated MCP response edits were excluded from the reviewer’s scope.
