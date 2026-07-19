@@ -1847,10 +1847,27 @@ mod tests {
     }
 
     fn frame_tree(loader_id: &str) -> Value {
+        frame_tree_with_urls(
+            loader_id,
+            "https://example.test/",
+            "https://example.test/child",
+        )
+    }
+
+    fn frame_tree_with_urls(loader_id: &str, root_url: &str, child_url: &str) -> Value {
         json!({"frameTree": {
-            "frame": {"id":"main","loaderId":"main-loader","url":"https://example.test/"},
+            "frame": {"id":"main","loaderId":"main-loader","url":root_url},
             "childFrames": [{
-                "frame": {"id":"child","loaderId":loader_id,"url":"https://example.test/child"}
+                "frame": {"id":"child","loaderId":loader_id,"url":child_url}
+            }]
+        }})
+    }
+
+    fn opaque_frame_tree(loader_id: &str) -> Value {
+        json!({"frameTree": {
+            "frame": {"id":"main","loaderId":"main-loader","url":"data:text/html,root"},
+            "childFrames": [{
+                "frame": {"id":"child","loaderId":loader_id,"url":"about:srcdoc"}
             }]
         }})
     }
@@ -1917,6 +1934,14 @@ mod tests {
         }
         transport.push("Accessibility.getFullAXTree", child_ax_tree());
         transport.push("DOMSnapshot.captureSnapshot", multi_document_snapshot());
+    }
+
+    fn script_opaque_frame_query(transport: &SnapshotTransport) {
+        transport.push("Page.getFrameTree", opaque_frame_tree("child-loader"));
+        transport.push("Target.getTargets", json!({"targetInfos": []}));
+        transport.push("Page.getFrameTree", opaque_frame_tree("child-loader"));
+        transport.push("Target.getTargets", json!({"targetInfos": []}));
+        transport.push("Accessibility.getFullAXTree", child_ax_tree());
     }
 
     #[test]
@@ -2039,6 +2064,118 @@ mod tests {
                     method == "Accessibility.getFullAXTree" && params["frameId"] == "child"
                 })
         );
+    }
+
+    #[tokio::test]
+    async fn opaque_same_process_frame_query_matches_its_inventory_access_label() {
+        let transport = SnapshotTransport::default();
+        script_opaque_frame_query(&transport);
+        let mut control = page_control();
+        let bound = frame_bound();
+        let frames = control.list_frames(&transport, &bound).await.unwrap();
+        let child = &frames.frames[1];
+        assert_eq!(
+            child.access,
+            krometrail_core::FrameAccess::SameOriginSameProcess
+        );
+
+        let mut request = QueryPageRequest::new(
+            krometrail_core::PageSelection::Target(target()),
+            SemanticQuery::role(
+                "heading",
+                Some(
+                    krometrail_core::SemanticTextMatch::new(
+                        "Nested heading",
+                        krometrail_core::SemanticTextMatchMode::Exact,
+                        false,
+                    )
+                    .unwrap(),
+                ),
+            )
+            .unwrap(),
+            None,
+            10,
+        )
+        .unwrap();
+        request.document = krometrail_core::SemanticDocumentScope::Frame(child.reference.clone());
+
+        let BrowserOperationResult::QueryPage(result) = control
+            .query_page(
+                &transport,
+                &bound,
+                request,
+                krometrail_core::SessionTime::ZERO,
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected query result");
+        };
+        assert_eq!(
+            result.outcome,
+            krometrail_core::SemanticQueryOutcome::Unique
+        );
+    }
+
+    #[tokio::test]
+    async fn cross_origin_and_oopif_frame_labels_match_query_rejection() {
+        let transport = SnapshotTransport::default();
+        for (root_url, child_url, targets) in [
+            (
+                "https://example.test/",
+                "https://other.test/child",
+                json!({"targetInfos": []}),
+            ),
+            (
+                "https://example.test/",
+                "https://example.test/child-oopif",
+                json!({"targetInfos": [{"type":"iframe","targetId":"child"}]}),
+            ),
+        ] {
+            transport.push(
+                "Page.getFrameTree",
+                frame_tree_with_urls("child-loader", root_url, child_url),
+            );
+            transport.push("Target.getTargets", targets.clone());
+            transport.push(
+                "Page.getFrameTree",
+                frame_tree_with_urls("child-loader", root_url, child_url),
+            );
+            transport.push("Target.getTargets", targets);
+        }
+
+        let mut control = page_control();
+        let bound = frame_bound();
+        for expected_access in [
+            krometrail_core::FrameAccess::CrossOrigin,
+            krometrail_core::FrameAccess::OutOfProcess,
+        ] {
+            let child = control
+                .list_frames(&transport, &bound)
+                .await
+                .unwrap()
+                .frames[1]
+                .clone();
+            assert_eq!(child.access, expected_access);
+            let mut request = QueryPageRequest::new(
+                krometrail_core::PageSelection::Target(target()),
+                SemanticQuery::role("heading", None).unwrap(),
+                None,
+                10,
+            )
+            .unwrap();
+            request.document = krometrail_core::SemanticDocumentScope::Frame(child.reference);
+            let error = control
+                .query_page(
+                    &transport,
+                    &bound,
+                    request,
+                    krometrail_core::SessionTime::ZERO,
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, ErrorCode::Unsupported);
+        }
     }
 
     #[tokio::test]

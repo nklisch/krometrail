@@ -31,3 +31,29 @@ unsound for genuinely cross-process frames.
   (srcdoc/data) frame, cross-origin out-of-process frame, stale frame reference.
 - `list_frames` labels match what a subsequent frame-scoped query actually does.
 - Docs/skill text state the final contract.
+
+## Completion notes
+
+The frame-scope resolver is authoritative: it revalidates the live frame tree and process
+inventory, rejects detected out-of-process and cross-origin frames, and permits a same-process
+frame when its effective origin equals the root. That equality intentionally includes two opaque
+origins (`None`), which covers a `data:` document with an inherited `srcdoc` frame. `list_frames`
+now uses the same equality, so those genuinely qualified frames report
+`same_origin_same_process`; unavailable process qualification remains `indeterminate` and fails
+closed.
+
+- Files changed: `crates/krometrail-cdp/src/control/contexts.rs`,
+  `crates/krometrail-cdp/src/control/snapshot.rs`,
+  `crates/krometrail-cdp/tests/verified_interactions.rs`,
+  `crates/krometrail-cdp/src/qualification_support/static_fixture.rs`,
+  `tests/fixtures/browser/browser-contexts/index.html`,
+  `tests/fixtures/browser/browser-contexts/cross-origin.html`, `docs/SPEC.md`,
+  `docs/ARCHITECTURE.md`, `plugin/skills/krometrail/SKILL.md`, and
+  `plugin/skills/krometrail/references/browser-contexts.md`.
+- Tests: scripted frame tests cover opaque-origin success, cross-origin and OOPIF rejection;
+  the opt-in browser fixture covers same-origin success, opaque/cross-origin rejection, and the
+  existing stale-reference rejection after child navigation.
+- Verification: focused CDP tests passed; full workspace gates are recorded after the three
+  story commits.
+- Stage intentionally remains `implementing` per the implementation request; no other work item
+  was advanced.

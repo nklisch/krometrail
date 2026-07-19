@@ -114,7 +114,8 @@ matches; request `contains`, case sensitivity, or a larger bounded limit only wh
 the explicit `outcome`: proceed only with `unique`, narrow `ambiguous` or `truncated` queries, and
 revise `no_match` queries. A descendant `scope` must be an exact current reference and excludes the
 scope node itself. The default document is the current main document. When `list_frames` reports a
-qualified same-origin/same-process frame, pass its complete frame reference as the `document` scope.
+qualified same-origin/same-process frame, including a same-process frame with an inherited opaque
+origin, pass its complete frame reference as the `document` scope.
 Refresh after frame navigation. Cross-origin, out-of-process, stale, or indeterminate frame scope
 fails explicitly; never retry it against main-document coordinates.
 

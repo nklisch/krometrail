@@ -1751,7 +1751,13 @@ async fn opt_in_real_chrome_qualifies_frame_actions_staleness_and_bounded_assets
     }
     let _lock = support::chrome::real_browser_lock().await;
     let mut fixture = support::static_fixture::FixtureServer::start().expect("context fixture");
-    let fixture_url = format!("{}#context-frame", fixture.browser_contexts_url());
+    let mut cross_origin_fixture =
+        support::static_fixture::FixtureServer::start().expect("cross-origin context fixture");
+    let fixture_url = format!(
+        "{}?cross_origin_port={}#context-frame",
+        fixture.browser_contexts_url(),
+        cross_origin_fixture.address().port()
+    );
     let root = support::chrome::temporary_profile_root("verified-browser-contexts");
     let connector = ProductionBrowserConnector::new(
         Arc::new(krometrail_cdp::SystemChromeLauncher::new(
@@ -1828,6 +1834,48 @@ async fn opt_in_real_chrome_qualifies_frame_actions_staleness_and_bounded_assets
             last_frames.lock().unwrap()
         )
     });
+
+    let frames = session
+        .execute(
+            BrowserOperationRequest::ListFrames(ListFramesRequest {
+                target: PageSelection::Target(target),
+            }),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .expect("frame inventory with unsupported children");
+    let BrowserOperationResult::ListFrames(frames) = frames else {
+        panic!("frame inventory result")
+    };
+    let opaque = frames
+        .frames
+        .iter()
+        .find(|frame| frame.access == FrameAccess::Indeterminate)
+        .unwrap_or_else(|| panic!("opaque child frame: {frames:#?}"));
+    let cross_origin = frames
+        .frames
+        .iter()
+        .find(|frame| frame.access == FrameAccess::OutOfProcess)
+        .unwrap_or_else(|| panic!("cross-origin OOPIF child frame: {frames:#?}"));
+    for frame in [opaque, cross_origin] {
+        let mut query = QueryPageRequest::new(
+            PageSelection::Target(target),
+            SemanticQuery::role("button", None).unwrap(),
+            None,
+            10,
+        )
+        .unwrap();
+        query.document = SemanticDocumentScope::Frame(frame.reference.clone());
+        let error = session
+            .execute(
+                BrowserOperationRequest::QueryPage(query),
+                krometrail_core::BrowserOperationContext::default(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unsupported);
+    }
+
     let capture_before_frame_navigation =
         tokio::time::timeout(std::time::Duration::from_secs(15), async {
             loop {
@@ -1991,5 +2039,6 @@ async fn opt_in_real_chrome_qualifies_frame_actions_staleness_and_bounded_assets
     assert!(!projected.contains(fixture.url().as_str()));
 
     session.stop().await.unwrap();
+    cross_origin_fixture.shutdown();
     fixture.shutdown();
 }

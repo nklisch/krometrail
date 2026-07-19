@@ -11,7 +11,13 @@
     <h1>Browser context qualification</h1>
     <div class="spacer">Root scroll spacer</div>
     <iframe id="context-frame" title="Context child" srcdoc="<a id='frame-action' href='/browser-contexts/child-next.html?token=child-secret#child-fragment'>Navigate child</a>"></iframe>
+    <iframe id="opaque-context-frame" title="Opaque child" src="data:text/html,%3Cbutton%20id%3D%27opaque-action%27%3EOpaque%20action%3C%2Fbutton%3E"></iframe>
+    <iframe id="cross-context-frame" title="Cross-origin child"></iframe>
     <script>
+      const crossOriginPort = new URLSearchParams(location.search).get('cross_origin_port');
+      if (crossOriginPort) {
+        document.querySelector('#cross-context-frame').src = `http://127.0.0.1:${crossOriginPort}/browser-contexts/cross-origin.html`;
+      }
       window.scrollTo(0, 900);
       setTimeout(() => {
         for (let index = 0; index < 300; index += 1) {

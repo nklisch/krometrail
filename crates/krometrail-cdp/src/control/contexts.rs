@@ -277,7 +277,10 @@ fn collect_frames(
         FrameAccess::Indeterminate
     } else if raw_frame_id.is_some_and(|id| oopif_ids.is_some_and(|ids| ids.contains(id))) {
         FrameAccess::OutOfProcess
-    } else if root_origin.is_some() && frame_origin.as_deref() == root_origin {
+    // `None` is the effective opaque origin used for data documents and inherited srcdoc
+    // documents. The resolver applies the same equality check, so two such frames are
+    // inspectable when process qualification confirms the child is not an OOPIF.
+    } else if frame_origin.as_deref() == root_origin {
         FrameAccess::SameOriginSameProcess
     } else if frame_origin.is_some() {
         FrameAccess::CrossOrigin
@@ -561,5 +564,35 @@ mod tests {
         assert_eq!(frames[3].access, FrameAccess::OutOfProcess);
         assert_eq!(frames[4].access, FrameAccess::SameOriginSameProcess);
         assert_eq!(frames[5].access, FrameAccess::Indeterminate);
+    }
+
+    #[test]
+    fn frame_inventory_qualifies_same_process_opaque_origins() {
+        let tree = json!({
+            "frame":{"id":"root","loaderId":"root-loader","url":"data:text/html,root"},
+            "childFrames":[
+                {"frame":{"id":"srcdoc","loaderId":"srcdoc-loader","url":"about:srcdoc"}},
+                {"frame":{"id":"data","loaderId":"data-loader","url":"data:text/html,child"}}
+            ]
+        });
+        let oopif = HashSet::new();
+        let mut frames = Vec::new();
+        let mut omitted = 0;
+        collect_frames(
+            &tree,
+            &bound(),
+            None,
+            0,
+            None,
+            None,
+            Some(&oopif),
+            &mut frames,
+            &mut omitted,
+        )
+        .unwrap();
+
+        assert_eq!(frames[0].access, FrameAccess::MainDocument);
+        assert_eq!(frames[1].access, FrameAccess::SameOriginSameProcess);
+        assert_eq!(frames[2].access, FrameAccess::SameOriginSameProcess);
     }
 }

@@ -24,6 +24,8 @@ pub const BROWSER_CONTEXTS_INDEX: &str =
     include_str!("../../../../tests/fixtures/browser/browser-contexts/index.html");
 pub const BROWSER_CONTEXTS_CHILD_NEXT: &str =
     include_str!("../../../../tests/fixtures/browser/browser-contexts/child-next.html");
+pub const BROWSER_CONTEXTS_CROSS_ORIGIN: &str =
+    include_str!("../../../../tests/fixtures/browser/browser-contexts/cross-origin.html");
 pub const BROWSER_CONTEXTS_STYLE: &str =
     include_str!("../../../../tests/fixtures/browser/browser-contexts/style.css");
 
@@ -158,6 +160,11 @@ fn serve_fixture(mut stream: TcpStream) {
             "200 OK",
             "text/html; charset=utf-8",
             BROWSER_CONTEXTS_CHILD_NEXT.as_bytes(),
+        ),
+        "/browser-contexts/cross-origin.html" => (
+            "200 OK",
+            "text/html; charset=utf-8",
+            BROWSER_CONTEXTS_CROSS_ORIGIN.as_bytes(),
         ),
         "/browser-contexts/style.css" => (
             "200 OK",
