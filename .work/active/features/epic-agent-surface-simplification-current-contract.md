@@ -1,7 +1,7 @@
 ---
 id: epic-agent-surface-simplification-current-contract
 kind: feature
-stage: review
+stage: done
 tags: [infra, storage]
 parent: epic-agent-surface-simplification
 depends_on: []
@@ -163,6 +163,10 @@ fn validate_release_version(candidate: &str) -> bool;
 ## Risks
 
 The single schema can accidentally omit a trigger or index even while tables compile; exact schema-shape comparison is required before deleting migration sources. An empty database with user-created tables must not be mistaken for a fresh Krometrail store.
+
+## Review
+
+Approved in the single standard fresh-context review pass. The reviewer independently reconstructed the former v1-to-v6 SQLite schema and found all 40 catalog objects identical to the declarative current schema. Focused schema and installer fixtures passed; no blockers, important findings, or retained compatibility-only paths were found.
 
 ## Implementation notes
 
