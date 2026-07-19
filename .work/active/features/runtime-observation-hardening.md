@@ -1,7 +1,7 @@
 ---
 id: runtime-observation-hardening
 kind: feature
-stage: review
+stage: done
 tags: [browser, agent-ux]
 parent: null
 depends_on: []
@@ -137,3 +137,11 @@ fn project_snapshot(
 - Simplification: removed CDP layout metrics as a competing desktop authority, centralized acknowledgement terminal failure handling, and replaced the preorder-priority compactor with one ranked closure selector. No retries, alternate capture tasks, second acquisition model, or compatibility shim were added.
 - Discrepancies from design: none.
 - Adjacent issues parked: none.
+
+## Review (2026-07-18)
+
+**Verdict**: approve.
+
+The standard one-pass fresh-context review found no material correctness, compatibility, privacy, lifecycle, documentation, or test-integrity issue. It confirmed the desktop/mobile viewport authority split, the one-shot acknowledgement-before-handoff capture lifecycle, the additive snapshot-only `interaction_only` wire contract, and the shared projection's ancestry, reference, preorder, omission, and budget invariants.
+
+Formatting, strict clippy for both changed crates, MCP and CDP focused all-target suites, plugin static validation, and diff hygiene passed. A combined test run encountered the unchanged `profile_ownership::reusable_profiles_are_exclusive_and_retained` temporary-root race; the test passed in isolation and neither that test nor its implementation is in this feature's change range. The previously recorded opt-in real-Chrome public-site and nested-frame qualifications remain the browser-dependent acceptance evidence.
