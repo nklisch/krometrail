@@ -261,6 +261,9 @@ pub struct ResponseDiagnostics {
 pub struct ToolResponse {
     pub tool: String,
     pub status: ToolResponseStatus,
+    // Strict MCP clients reject boolean subschemas, so the free-form result
+    // payload must advertise an object-form permissive schema.
+    #[schemars(schema_with = "tool_result_subschema")]
     pub result: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub range_handle: Option<ResolvedRangeHandleId>,
@@ -271,6 +274,12 @@ pub struct ToolResponse {
     pub error: Option<KrometrailError>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diagnostics: Option<ResponseDiagnostics>,
+}
+
+fn tool_result_subschema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "description": "Tool-specific result payload; its shape varies by tool and response detail."
+    })
 }
 
 #[derive(Clone, Debug)]

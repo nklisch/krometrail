@@ -585,6 +585,67 @@ mod tests {
     }
 
     #[test]
+    fn response_schema_subschemas_are_object_form() {
+        for include_video_roles in [false, true] {
+            let schema = tool_response_schema(include_video_roles).unwrap();
+            let schema = Value::Object(schema.as_ref().clone());
+            assert!(
+                schema["properties"]["result"].is_object(),
+                "result subschema must be an object, got {}",
+                schema["properties"]["result"]
+            );
+            assert_object_form_subschemas(&schema, "#");
+        }
+    }
+
+    fn assert_object_form_subschemas(value: &Value, path: &str) {
+        let Value::Object(object) = value else {
+            return;
+        };
+        for (key, child) in object {
+            let child_path = format!("{path}/{key}");
+            match key.as_str() {
+                "properties" | "$defs" | "definitions" => {
+                    if let Value::Object(entries) = child {
+                        for (name, subschema) in entries {
+                            assert!(
+                                subschema.is_object(),
+                                "{child_path}/{name} must be an object-form schema, got {subschema}"
+                            );
+                            assert_object_form_subschemas(
+                                subschema,
+                                &format!("{child_path}/{name}"),
+                            );
+                        }
+                    }
+                }
+                "oneOf" | "anyOf" | "allOf" | "prefixItems" => {
+                    if let Value::Array(branches) = child {
+                        for (index, subschema) in branches.iter().enumerate() {
+                            assert!(
+                                subschema.is_object(),
+                                "{child_path}[{index}] must be an object-form schema, got {subschema}"
+                            );
+                            assert_object_form_subschemas(
+                                subschema,
+                                &format!("{child_path}[{index}]"),
+                            );
+                        }
+                    }
+                }
+                "items" | "not" | "contains" | "propertyNames" => {
+                    assert!(
+                        child.is_object(),
+                        "{child_path} must be an object-form schema, got {child}"
+                    );
+                    assert_object_form_subschemas(child, &child_path);
+                }
+                _ => assert_object_form_subschemas(child, &child_path),
+            }
+        }
+    }
+
+    #[test]
     fn response_schema_publishes_optional_range_handle() {
         let schema = tool_response_schema(true).unwrap();
         assert_eq!(
