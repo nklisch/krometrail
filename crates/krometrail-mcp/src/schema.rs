@@ -418,7 +418,7 @@ mod tests {
         assert_eq!(response["additionalProperties"], false);
         assert_eq!(
             response["properties"]["snapshot"]["enum"],
-            serde_json::json!(["legacy", "full", "compact", "omit"])
+            serde_json::json!(["legacy", "full", "compact", "interaction_only", "omit"])
         );
         assert_eq!(
             response["properties"]["temporal"]["enum"],

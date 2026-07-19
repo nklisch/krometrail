@@ -29,6 +29,12 @@ available structured part with an explicit projection marker; it does not mean a
 Projection never changes action outcome, interaction identity, warnings, retained capture, or canonical
 resource identities.
 
+Snapshot detail also supports `"interaction_only"`. Use it when the task needs the smallest exact targeting
+surface: it returns focused/editable/other actions/links in that priority order together with each selected
+action's complete ancestor path. It preserves returned references and omission accounting but excludes unrelated
+static context. `page_state` does not accept `"interaction_only"`; use `"compact"`, `"full"`, `"legacy"`, or
+`"omit"` there.
+
 1. Trust the live evidence returned by a successful state-changing operation for immediate
    confirmation. Its default compact response retains screenshot availability metadata without embedding
    image bytes. Request an inline image on the original action only when pixels are needed; do not take a
@@ -112,7 +118,8 @@ profile, opens popups, enters frames, or diagnoses resource loading.
 `query_page` returns exact generation-scoped references rather than persistent locators. Copy the
 unique reference into an existing mutation tool; the action does not reevaluate the semantic query.
 Prefer a full actionable reference returned by `snapshot_page` when examining page structure or when
-semantic matching is insufficient. Same-document snapshots preserve stable
+semantic matching is insufficient. Request `{"response":{"snapshot":"interaction_only"}}` when only
+actionable references and their structural ancestry are needed. Same-document snapshots preserve stable
 node identities when possible; navigation, document replacement, target reattachment, or node removal
 can make a reference stale. On `stale_reference`, request a fresh snapshot and retry once.
 

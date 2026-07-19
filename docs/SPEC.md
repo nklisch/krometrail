@@ -79,7 +79,7 @@ Each captured frame records:
 - storage segment and byte offset;
 - capture warnings associated with the frame.
 
-Krometrail acknowledges each received CDP screencast frame immediately, before attempting bounded handoff. The CDP frame event's `sessionId` integer is retained only long enough to acknowledge that event; Krometrail does not treat it as frame ordering or continuity evidence. Ack latency covers only the interval from frame receipt to acknowledgement completion; disk writes and image analysis do not block CDP acknowledgement.
+Krometrail acknowledges each received CDP screencast frame immediately, before attempting bounded handoff. The CDP frame event's `sessionId` integer is retained only long enough to acknowledge that event; Krometrail does not treat it as frame ordering or continuity evidence. Ack latency covers only the interval from frame receipt to acknowledgement completion; disk writes and image analysis do not block CDP acknowledgement. The production acknowledgement deadline defaults to one second. Acknowledgement is one-shot: failure beyond the configured deadline is terminal for that capture stream, creates one explicit gap, and never retries an ambiguous token.
 
 After acknowledgement, Krometrail assigns a non-zero capture ordinal that increases for every acknowledged frame event observed for that session and target, including events later rejected or dropped. The ordinal supplies deterministic local order, including when monotonic clock readings are equal. It does not prove that Chrome emitted every rendered frame or that every Chrome event reached Krometrail, and ordinal arithmetic does not create inferred gaps.
 
@@ -114,7 +114,8 @@ snapshot, page-state, temporal-bundle, and diagnostic detail. Projection changes
 interaction anchor, warnings, retained evidence, and canonical resource identities remain authoritative and
 available. Omitting the projection selects the lower-cost agent response: compact structured detail and no
 inline image bytes. Callers explicitly request full structured detail, inline images, or the legacy presentation
-when needed. Status requests likewise default to a concise operational projection while preserving the complete
+when needed. Snapshot detail additionally supports `interaction_only`, which returns only ranked actionable nodes
+and their complete ancestor paths; page-state detail does not accept that value. Status requests likewise default to a concise operational projection while preserving the complete
 status contract as an explicit detail level.
 
 A batch of actions returns per-step status and timeline anchors. It returns a final live observation and can include per-step screenshots when requested.
@@ -124,6 +125,14 @@ A batch of actions returns per-step status and timeline anchors. It returns a fi
 Krometrail exposes a compact structured representation of the current page for agent navigation and element targeting.
 
 The snapshot includes relevant accessible content, roles, names, values, states, and actionable nodes. It may include DOM-derived information where necessary to resolve interaction geometry.
+
+Compact snapshot projection preserves a small canonical snapshot byte-for-byte. When a snapshot exceeds the
+48-node or 12-KiB presentation budget, selection first ranks focused actions, editable actions, other non-link
+actions, and links, using canonical preorder to break ties. An action is included only when its complete missing
+ancestor path fits atomically; compact mode then fills remaining budget with preorder context. The explicit
+`interaction_only` projection uses the same action selection without unrelated context fill. Both emit original
+preorder, preserve generation-scoped references and observation context, and add every presentation omission to
+the canonical omission count.
 
 Element references are scoped to the target attachment and document generation that produced them.
 A later snapshot of the same attached document preserves a reference while its backing DOM node

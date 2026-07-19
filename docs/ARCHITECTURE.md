@@ -236,8 +236,11 @@ For each target it owns:
 Target creation and closure do not affect unrelated target streams. A target-level failure is reported without terminating the browser session unless the browser connection itself is lost. Target state is reduced by one serialized state machine; asynchronous transport and process tasks only submit inputs or execute emitted effects. Outbound session events use bounded subscriber channels with revision-gap recovery through `targets()`; cdpkit's private upstream queue is not represented as a measurable product metric.
 
 Each target may retain one acknowledged viewport override. Applying or clearing it is transactional:
-the adapter changes device metrics, touch emulation, and mobile page scale, observes the effective CSS visual viewport,
-then commits supervisor state. Reconnect restores the exact target-key override before capture resumes;
+the adapter changes device metrics, touch emulation, and mobile page scale, then observes one bounded runtime
+projection plus CDP visual metrics. Desktop acknowledgement and capture use `window.innerWidth`/`innerHeight` as
+layout authority because Chrome can report both CDP layout and visual widths with reserved scrollbar space;
+mobile acknowledgement remains visual-viewport authoritative. The CDP visual viewport is retained as the reported
+content area before supervisor state commits. Reconnect restores the exact target-key override before capture resumes;
 a restore failure is target-local. Capture remains continuous across acknowledged geometry changes,
 and each frame retains its own viewport and device scale so artifact generation can split visual epochs.
 
@@ -288,7 +291,7 @@ segment writer
 
 The event-reading task never performs image decoding, artifact generation, or synchronous disk I/O.
 
-The ingestion queue is bounded. On receiving a frame, Krometrail immediately starts and completes the CDP acknowledgement before decoding and attempting bounded handoff. The event's `sessionId` integer is an opaque acknowledgement token in this boundary: it is echoed to `Page.screencastFrameAck` and is not persisted or compared. After acknowledgement, Krometrail assigns a per-target `CaptureOrdinal` that continues across attachment generations within the recording session. It deterministically orders observations but does not detect Chrome-side or transport-side loss; only explicit known loss and lifecycle events create gaps. Ack latency therefore measures only the interval from returned frame to acknowledgement completion, not frame receive wait or a wire-enqueue timestamp. When enqueue fails because the queue is saturated, Krometrail records an explicit capture gap after acknowledgement rather than stalling the browser connection or growing memory without limit. A deliberate `everyNthFrame` stride is applied by Chrome before this ingestion path and is not represented as a queue drop or inferred gap.
+The ingestion queue is bounded. On receiving a frame, Krometrail immediately starts and completes the CDP acknowledgement before decoding and attempting bounded handoff. The event's `sessionId` integer is an opaque acknowledgement token in this boundary: it is echoed to `Page.screencastFrameAck` and is not persisted or compared. The default deadline is one second, aligned with the qualified transport maximum. The reader never retries an acknowledgement; an invalid token, transport error, or elapsed deadline terminally fails that stream and records one explicit acknowledgement gap. After acknowledgement, Krometrail assigns a per-target `CaptureOrdinal` that continues across attachment generations within the recording session. It deterministically orders observations but does not detect Chrome-side or transport-side loss; only explicit known loss and lifecycle events create gaps. Ack latency therefore measures only the interval from returned frame to acknowledgement completion, not frame receive wait or a wire-enqueue timestamp. When enqueue fails because the queue is saturated, Krometrail records an explicit capture gap after acknowledgement rather than stalling the browser connection or growing memory without limit. A deliberate `everyNthFrame` stride is applied by Chrome before this ingestion path and is not represented as a queue drop or inferred gap.
 
 Compressed image bytes are stored without transcoding during ingestion.
 
@@ -334,6 +337,13 @@ fresh snapshot of the same attached document retains the generation and stable n
 for backing DOM nodes that remain present; disappeared bindings are removed. The adapter returns a structured stale-reference
 error instead of guessing at a replacement node. Coordinate actions bypass
 structured references and declare their coordinate space explicitly.
+
+The MCP response projector derives compact and interaction-only views only after this canonical snapshot is
+acquired and installed. One selector ranks focused, editable, other non-link, then link actions; admits each action
+together with its complete missing ancestor closure within the 48-node and 12-KiB budgets; and emits selected nodes
+in original preorder with exact presentation-omission accounting. Compact mode can fill remaining budget with
+preorder context, while interaction-only stops after action closures. Neither projection changes registry authority,
+generation, references, or canonical acquisition.
 
 ## Interaction Execution
 
@@ -577,7 +587,8 @@ Tool handlers do not contain CDP commands, SQL, image processing, or retention l
 
 The MCP response projector owns additive agent-facing detail selection. It can replace inline screenshots or
 full structures with compact summaries and canonical resource links without changing domain acquisition or
-retention. Concise status is a projection of the same `BrowserStatus`, not a second status model.
+retention. Snapshot detail alone adds `interaction_only`; page-state retains legacy, full, compact, and omit.
+Concise status is a projection of the same `BrowserStatus`, not a second status model.
 
 Target supervision remains the authority for pages, frames, and popup relationships. CDP adapters expose
 privacy-bounded page assets, clipboard operations, and download lifecycle through core ports; completed
@@ -645,6 +656,8 @@ Krometrail emits local structured logs for:
 - capture start and stop;
 - frame cadence and gaps;
 - queue saturation;
+- bounded acknowledgement failures with categorical reason, deadline, elapsed time, opaque lifecycle identity, and pipeline counters;
+- viewport acknowledgement mismatches with expected/observed numeric geometry, DPR/touch state, and mismatch flags;
 - segment rotation;
 - retention decisions;
 - temporal query timing;

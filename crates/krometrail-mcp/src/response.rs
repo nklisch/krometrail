@@ -1,8 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-    time::Instant,
-};
+use std::{collections::HashMap, sync::Arc, time::Instant};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use krometrail_core::{
@@ -41,6 +37,17 @@ pub(crate) enum StructuredResponseDetail {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+pub(crate) enum SnapshotResponseDetail {
+    Legacy,
+    Full,
+    #[default]
+    Compact,
+    InteractionOnly,
+    Omit,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum InlineImageDetail {
     Inline,
     #[default]
@@ -69,7 +76,7 @@ pub(crate) struct ResponseProjectionRequest {
     #[serde(default)]
     pub inline_images: InlineImageDetail,
     #[serde(default)]
-    pub snapshot: StructuredResponseDetail,
+    pub snapshot: SnapshotResponseDetail,
     #[serde(default)]
     pub page_state: StructuredResponseDetail,
     #[serde(default)]
@@ -83,7 +90,7 @@ impl ResponseProjectionRequest {
     const fn legacy() -> Self {
         Self {
             inline_images: InlineImageDetail::Inline,
-            snapshot: StructuredResponseDetail::Legacy,
+            snapshot: SnapshotResponseDetail::Legacy,
             page_state: StructuredResponseDetail::Legacy,
             diagnostics: DiagnosticDetail::Automatic,
             temporal: TemporalResponseDetail::Full,
@@ -1045,20 +1052,15 @@ fn project_live_observation(
     apply_structured_part(&mut page, preference.page_state, compact_page_state)?;
     let snapshot = match value.snapshot {
         ObservationPart::Available(snapshot)
-            if preference.snapshot == StructuredResponseDetail::Legacy
+            if preference.snapshot == SnapshotResponseDetail::Legacy
                 && matches!(&role, ImageRole::PostAction | ImageRole::BatchFinal) =>
-        {
-            ObservationPart::Available(compact_snapshot(snapshot)?)
-        }
-        ObservationPart::Available(snapshot)
-            if preference.snapshot == StructuredResponseDetail::Compact =>
         {
             ObservationPart::Available(compact_snapshot(snapshot)?)
         }
         snapshot => snapshot,
     };
     let mut snapshot = project_serializable_part(snapshot, &mut warnings)?;
-    apply_structured_part(&mut snapshot, preference.snapshot, compact_snapshot_value)?;
+    apply_snapshot_part(&mut snapshot, preference.snapshot)?;
     let (screenshot, image) = match value.screenshot {
         ObservationPart::Available(screenshot) => (
             json!({"available": screenshot.metadata()}),
@@ -1085,70 +1087,90 @@ fn project_live_observation(
     ))
 }
 
-fn compact_snapshot(snapshot: PageSnapshot) -> Result<PageSnapshot, ResponseInvariantError> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SnapshotProjection {
+    Compact,
+    InteractionOnly,
+}
+
+fn project_snapshot(
+    snapshot: PageSnapshot,
+    projection: SnapshotProjection,
+) -> Result<PageSnapshot, ResponseInvariantError> {
     let full_json_bytes = serde_json::to_vec(&snapshot.nodes)
         .map_err(|_| ResponseInvariantError)?
         .len();
-    if snapshot.nodes.len() <= MAX_AUTOMATIC_SNAPSHOT_NODES
+    if projection == SnapshotProjection::Compact
+        && snapshot.nodes.len() <= MAX_AUTOMATIC_SNAPSHOT_NODES
         && full_json_bytes <= MAX_AUTOMATIC_SNAPSHOT_JSON_BYTES
     {
         return Ok(snapshot);
     }
 
-    let parents: HashMap<_, _> = snapshot
+    let positions: HashMap<_, _> = snapshot
         .nodes
         .iter()
-        .map(|node| (node.id, node.parent))
+        .enumerate()
+        .map(|(index, node)| (node.id, index))
         .collect();
-    let mut priority = HashSet::new();
-    for node in snapshot.nodes.iter().filter(|node| node.actionable) {
-        let mut current = Some(node.id);
-        while let Some(node_id) = current {
-            if !priority.insert(node_id) {
-                break;
-            }
-            current = parents.get(&node_id).copied().flatten();
-        }
-    }
-
     let mut selected = vec![false; snapshot.nodes.len()];
-    let mut selected_ids = HashSet::new();
     let mut selected_count = 0;
     let mut serialized_bytes = 2; // JSON array brackets.
-    for (index, node) in snapshot.nodes.iter().enumerate() {
-        if priority.contains(&node.id)
-            && node
+
+    let mut actions = snapshot
+        .nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(index, node)| node.actionable.then_some(index))
+        .collect::<Vec<_>>();
+    actions.sort_by_key(|index| (snapshot_action_rank(&snapshot.nodes[*index]), *index));
+    for action in actions {
+        let mut missing_path = Vec::new();
+        let mut current = Some(action);
+        while let Some(index) = current {
+            if selected[index] {
+                break;
+            }
+            missing_path.push(index);
+            current = snapshot.nodes[index]
                 .parent
-                .is_none_or(|parent| selected_ids.contains(&parent))
-        {
+                .and_then(|parent| positions.get(&parent).copied());
+        }
+        missing_path.reverse();
+        let Some(next_bytes) = automatic_snapshot_path_bytes_after(
+            &snapshot.nodes,
+            &missing_path,
+            selected_count,
+            serialized_bytes,
+        )?
+        else {
+            continue;
+        };
+        selected_count += missing_path.len();
+        for index in missing_path {
+            selected[index] = true;
+        }
+        serialized_bytes = next_bytes;
+    }
+
+    if projection == SnapshotProjection::Compact {
+        for (index, node) in snapshot.nodes.iter().enumerate() {
+            if selected[index]
+                || !node.parent.is_none_or(|parent| {
+                    positions.get(&parent).is_some_and(|index| selected[*index])
+                })
+            {
+                continue;
+            }
             let Some(next_bytes) =
                 automatic_snapshot_bytes_after(node, selected_count, serialized_bytes)?
             else {
                 continue;
             };
             selected[index] = true;
-            selected_ids.insert(node.id);
             selected_count += 1;
             serialized_bytes = next_bytes;
         }
-    }
-    for (index, node) in snapshot.nodes.iter().enumerate() {
-        if selected[index]
-            || !node
-                .parent
-                .is_none_or(|parent| selected_ids.contains(&parent))
-        {
-            continue;
-        }
-        let Some(next_bytes) =
-            automatic_snapshot_bytes_after(node, selected_count, serialized_bytes)?
-        else {
-            continue;
-        };
-        selected[index] = true;
-        selected_ids.insert(node.id);
-        selected_count += 1;
-        serialized_bytes = next_bytes;
     }
 
     let original_node_count = snapshot.nodes.len();
@@ -1173,6 +1195,32 @@ fn compact_snapshot(snapshot: PageSnapshot) -> Result<PageSnapshot, ResponseInva
     .map_err(|_| ResponseInvariantError)
 }
 
+fn compact_snapshot(snapshot: PageSnapshot) -> Result<PageSnapshot, ResponseInvariantError> {
+    project_snapshot(snapshot, SnapshotProjection::Compact)
+}
+
+fn snapshot_action_rank(node: &krometrail_core::SnapshotNode) -> u8 {
+    if snapshot_boolean_property(node, "focused") {
+        0
+    } else if snapshot_boolean_property(node, "editable") {
+        1
+    } else if node.role != "link" {
+        2
+    } else {
+        3
+    }
+}
+
+fn snapshot_boolean_property(node: &krometrail_core::SnapshotNode, name: &str) -> bool {
+    node.properties.iter().any(|property| {
+        property.name == name
+            && matches!(
+                property.value,
+                krometrail_core::AccessibleValue::Boolean(true)
+            )
+    })
+}
+
 fn apply_response_projection(
     tool: &str,
     projection: &mut Projection,
@@ -1183,11 +1231,7 @@ fn apply_response_projection(
     }
 
     if tool == "snapshot_page" {
-        apply_root_structured_detail(
-            &mut projection.result,
-            preference.snapshot,
-            compact_snapshot_value,
-        )?;
+        apply_root_snapshot_detail(&mut projection.result, preference.snapshot)?;
     } else if tool == "inspect_page" {
         apply_root_structured_detail(
             &mut projection.result,
@@ -1197,6 +1241,27 @@ fn apply_response_projection(
     }
 
     Ok(())
+}
+
+fn apply_root_snapshot_detail(
+    value: &mut Value,
+    detail: SnapshotResponseDetail,
+) -> Result<(), ResponseInvariantError> {
+    match detail {
+        SnapshotResponseDetail::Legacy | SnapshotResponseDetail::Full => Ok(()),
+        SnapshotResponseDetail::Compact => {
+            *value = snapshot_projection_value(value, SnapshotProjection::Compact)?;
+            Ok(())
+        }
+        SnapshotResponseDetail::InteractionOnly => {
+            *value = snapshot_projection_value(value, SnapshotProjection::InteractionOnly)?;
+            Ok(())
+        }
+        SnapshotResponseDetail::Omit => {
+            *value = projection_omitted_part();
+            Ok(())
+        }
+    }
 }
 
 fn apply_root_structured_detail(
@@ -1239,6 +1304,32 @@ fn apply_structured_part(
     }
 }
 
+fn apply_snapshot_part(
+    part: &mut Value,
+    detail: SnapshotResponseDetail,
+) -> Result<(), ResponseInvariantError> {
+    match detail {
+        SnapshotResponseDetail::Legacy | SnapshotResponseDetail::Full => Ok(()),
+        SnapshotResponseDetail::Omit if part.get("available").is_some() => {
+            *part = projection_omitted_part();
+            Ok(())
+        }
+        SnapshotResponseDetail::Omit => Ok(()),
+        SnapshotResponseDetail::Compact | SnapshotResponseDetail::InteractionOnly => {
+            let Some(value) = part.get_mut("available") else {
+                return Ok(());
+            };
+            let projection = if detail == SnapshotResponseDetail::Compact {
+                SnapshotProjection::Compact
+            } else {
+                SnapshotProjection::InteractionOnly
+            };
+            *value = snapshot_projection_value(value, projection)?;
+            Ok(())
+        }
+    }
+}
+
 fn projection_omitted_part() -> Value {
     json!({"omitted": {"reason": "response_projection"}})
 }
@@ -1275,10 +1366,14 @@ fn compact_page_state(value: &Value) -> Result<Value, ResponseInvariantError> {
     }
 }
 
-fn compact_snapshot_value(value: &Value) -> Result<Value, ResponseInvariantError> {
+fn snapshot_projection_value(
+    value: &Value,
+    projection: SnapshotProjection,
+) -> Result<Value, ResponseInvariantError> {
     let snapshot: PageSnapshot =
         serde_json::from_value(value.clone()).map_err(|_| ResponseInvariantError)?;
-    serde_json::to_value(compact_snapshot(snapshot)?).map_err(|_| ResponseInvariantError)
+    serde_json::to_value(project_snapshot(snapshot, projection)?)
+        .map_err(|_| ResponseInvariantError)
 }
 
 fn apply_temporal_projection(
@@ -1396,6 +1491,22 @@ fn automatic_snapshot_bytes_after(
         .and_then(|bytes| bytes.checked_add(node_bytes))
         .ok_or(ResponseInvariantError)?;
     Ok((next_bytes <= MAX_AUTOMATIC_SNAPSHOT_JSON_BYTES).then_some(next_bytes))
+}
+
+fn automatic_snapshot_path_bytes_after(
+    nodes: &[krometrail_core::SnapshotNode],
+    path: &[usize],
+    selected_count: usize,
+    serialized_bytes: usize,
+) -> Result<Option<usize>, ResponseInvariantError> {
+    let mut bytes = serialized_bytes;
+    for (count, index) in (selected_count..).zip(path) {
+        let Some(next_bytes) = automatic_snapshot_bytes_after(&nodes[*index], count, bytes)? else {
+            return Ok(None);
+        };
+        bytes = next_bytes;
+    }
+    Ok(Some(bytes))
 }
 
 fn project_serializable_part<T: Serialize>(
@@ -1891,13 +2002,14 @@ fn image_mime_type(bytes: &[u8]) -> Option<&'static str> {
 mod tests {
     use super::*;
     use krometrail_core::{
-        BatchSkipReason, BatchStepResult, BatchStepStatus, BrowserOperationKind,
-        CaptureFailureStage, CaptureStatistics, CaptureStreamState, CaptureTimingSummary, CssPoint,
-        CssRect, CssSize, DeviceScaleFactor, ErrorContext, EveryNthFrame, FrameId, ImageFormat,
-        InteractionId, InteractionTiming, NodeReference, ObservationContext, PageChange,
-        PageOperationResult, PageSelection, PageSnapshot, PixelDimensions, PresentationRange,
-        PresentationTime, QueryPageResult, RangeResolutionOptions, ResolvedRange, ScreenshotTarget,
-        SemanticMatch, SemanticQueryOutcome, SessionId, SessionRange, SessionTime, Sha256Digest,
+        AccessibleProperty, AccessibleValue, BatchSkipReason, BatchStepResult, BatchStepStatus,
+        BrowserOperationKind, CaptureFailureStage, CaptureStatistics, CaptureStreamState,
+        CaptureTimingSummary, CssPoint, CssRect, CssSize, DeviceScaleFactor, ErrorContext,
+        EveryNthFrame, FrameId, ImageFormat, InteractionId, InteractionTiming, NodeReference,
+        ObservationContext, PageChange, PageOperationResult, PageSelection, PageSnapshot,
+        PixelDimensions, PresentationRange, PresentationTime, QueryPageResult,
+        RangeResolutionOptions, ResolvedRange, ScreenshotTarget, SemanticMatch,
+        SemanticQueryOutcome, SessionId, SessionRange, SessionTime, Sha256Digest,
         SnapshotGeneration, SnapshotNode, SnapshotNodeId, TargetCaptureStatus, TargetId,
         TemporalRangeAnchorKind, TemporalVideoGenerationClip, TemporalVideoManifest,
         VideoArtifactEvidenceHandle, VideoEncodedClip, VideoEncoderIdentity, VideoEncodingProfile,
@@ -2409,6 +2521,111 @@ mod tests {
     }
 
     #[test]
+    fn compact_snapshot_prioritizes_focused_editable_and_non_link_actions_over_early_links() {
+        let generation = SnapshotGeneration::new(1).unwrap();
+        let root_id = SnapshotNodeId::new(1).unwrap();
+        let mut nodes = vec![SnapshotNode {
+            id: root_id,
+            parent: None,
+            depth: 0,
+            role: "document".into(),
+            name: None,
+            value: None,
+            description: None,
+            properties: vec![],
+            actionable: false,
+            reference: None,
+        }];
+        for value in 2..=60 {
+            let id = SnapshotNodeId::new(value).unwrap();
+            nodes.push(SnapshotNode {
+                id,
+                parent: Some(root_id),
+                depth: 1,
+                role: "link".into(),
+                name: Some(format!("early-link-{value}")),
+                value: None,
+                description: None,
+                properties: vec![],
+                actionable: true,
+                reference: Some(NodeReference {
+                    target_id: target_id(),
+                    generation,
+                    node_id: id,
+                }),
+            });
+        }
+        let button_id = SnapshotNodeId::new(61).unwrap();
+        nodes.push(SnapshotNode {
+            id: button_id,
+            parent: Some(root_id),
+            depth: 1,
+            role: "button".into(),
+            name: Some("late button".into()),
+            value: None,
+            description: None,
+            properties: vec![],
+            actionable: true,
+            reference: Some(NodeReference {
+                target_id: target_id(),
+                generation,
+                node_id: button_id,
+            }),
+        });
+        let textbox_id = SnapshotNodeId::new(62).unwrap();
+        nodes.push(SnapshotNode {
+            id: textbox_id,
+            parent: Some(root_id),
+            depth: 1,
+            role: "textbox".into(),
+            name: Some("late editable".into()),
+            value: None,
+            description: None,
+            properties: vec![
+                AccessibleProperty::new("editable", AccessibleValue::Boolean(true)).unwrap(),
+            ],
+            actionable: true,
+            reference: Some(NodeReference {
+                target_id: target_id(),
+                generation,
+                node_id: textbox_id,
+            }),
+        });
+        let focused_link_id = SnapshotNodeId::new(63).unwrap();
+        nodes.push(SnapshotNode {
+            id: focused_link_id,
+            parent: Some(root_id),
+            depth: 1,
+            role: "link".into(),
+            name: Some("late focused link".into()),
+            value: None,
+            description: None,
+            properties: vec![
+                AccessibleProperty::new("focused", AccessibleValue::Boolean(true)).unwrap(),
+            ],
+            actionable: true,
+            reference: Some(NodeReference {
+                target_id: target_id(),
+                generation,
+                node_id: focused_link_id,
+            }),
+        });
+        let snapshot = PageSnapshot::new(context(), generation, nodes, 0).unwrap();
+
+        let compact = compact_snapshot(snapshot).unwrap();
+        for (id, category) in [
+            (focused_link_id, "focused"),
+            (textbox_id, "editable"),
+            (button_id, "non-link"),
+        ] {
+            assert!(
+                compact.nodes.iter().any(|node| node.id == id),
+                "{category} actions must outrank earlier links"
+            );
+        }
+    }
+
+    #[test]
     fn explicit_snapshot_and_live_observation_keep_full_snapshots() {
         let full = complex_snapshot();
         let snapshot = map_operation_result(
@@ -2505,7 +2722,7 @@ mod tests {
         .unwrap();
         assert_eq!(remaining["target"], "kept");
         assert_eq!(preference.inline_images, InlineImageDetail::Omit);
-        assert_eq!(preference.snapshot, StructuredResponseDetail::Compact);
+        assert_eq!(preference.snapshot, SnapshotResponseDetail::Compact);
         assert_eq!(preference.page_state, StructuredResponseDetail::Full);
         assert_eq!(preference.temporal, TemporalResponseDetail::Full);
         assert_eq!(preference.diagnostics, DiagnosticDetail::Omit);
@@ -2521,6 +2738,21 @@ mod tests {
         assert_eq!(error.code, ErrorCode::InvalidInput);
         assert!(error.message.as_str().contains("response.snapshot"));
         assert!(!error.message.as_str().contains(secret));
+
+        let page_state_error = split_response_projection(
+            serde_json::json!({"response": {"page_state": "interaction_only"}})
+                .as_object()
+                .unwrap()
+                .clone(),
+        )
+        .unwrap_err();
+        assert_eq!(page_state_error.code, ErrorCode::InvalidInput);
+        assert!(
+            page_state_error
+                .message
+                .as_str()
+                .contains("response.page_state")
+        );
     }
 
     #[test]
@@ -2540,13 +2772,13 @@ mod tests {
             .0
         };
         assert_eq!(
-            observe(StructuredResponseDetail::Full)["snapshot"]["available"]["nodes"]
+            observe(SnapshotResponseDetail::Full)["snapshot"]["available"]["nodes"]
                 .as_array()
                 .unwrap()
                 .len(),
             403
         );
-        let compact = observe(StructuredResponseDetail::Compact);
+        let compact = observe(SnapshotResponseDetail::Compact);
         assert!(
             compact["snapshot"]["available"]["nodes"]
                 .as_array()
@@ -2554,10 +2786,95 @@ mod tests {
                 .len()
                 <= MAX_AUTOMATIC_SNAPSHOT_NODES
         );
+        let interaction: PageSnapshot = serde_json::from_value(
+            observe(SnapshotResponseDetail::InteractionOnly)["snapshot"]["available"].clone(),
+        )
+        .unwrap();
         assert_eq!(
-            observe(StructuredResponseDetail::Omit)["snapshot"],
+            interaction
+                .nodes
+                .iter()
+                .map(|node| node.id.get())
+                .collect::<Vec<_>>(),
+            vec![1, 401, 402]
+        );
+        assert_eq!(interaction.context, full.context);
+        assert_eq!(interaction.generation, full.generation);
+        assert_eq!(interaction.nodes[2].reference, full.nodes[401].reference);
+        assert_eq!(interaction.omitted_node_count, 407);
+        assert_eq!(
+            observe(SnapshotResponseDetail::Omit)["snapshot"],
             projection_omitted_part()
         );
+    }
+
+    #[test]
+    fn interaction_only_root_projection_preserves_action_closure_and_exact_omissions() {
+        let full = complex_snapshot();
+        let mapped = map_operation_result_with_capture_projected(
+            "snapshot_page",
+            BrowserOperationResult::SnapshotPage(Box::new(full.clone())),
+            &[],
+            ResponseProjectionRequest {
+                snapshot: SnapshotResponseDetail::InteractionOnly,
+                ..ResponseProjectionRequest::default()
+            },
+        )
+        .unwrap();
+        let projected: PageSnapshot =
+            serde_json::from_value(mapped.response.result.clone()).unwrap();
+        assert_eq!(projected.nodes.len(), 3);
+        assert_eq!(projected.context, full.context);
+        assert_eq!(projected.generation, full.generation);
+        assert_eq!(projected.nodes[2].reference, full.nodes[401].reference);
+        assert_eq!(projected.omitted_node_count, 407);
+    }
+
+    #[test]
+    fn interaction_only_atomically_rejects_an_over_budget_ancestor_closure() {
+        let generation = SnapshotGeneration::new(1).unwrap();
+        let root_id = SnapshotNodeId::new(1).unwrap();
+        let action_id = SnapshotNodeId::new(2).unwrap();
+        let snapshot = PageSnapshot::new(
+            context(),
+            generation,
+            vec![
+                SnapshotNode {
+                    id: root_id,
+                    parent: None,
+                    depth: 0,
+                    role: "document".into(),
+                    name: Some("x".repeat(MAX_AUTOMATIC_SNAPSHOT_JSON_BYTES)),
+                    value: None,
+                    description: None,
+                    properties: vec![],
+                    actionable: false,
+                    reference: None,
+                },
+                SnapshotNode {
+                    id: action_id,
+                    parent: Some(root_id),
+                    depth: 1,
+                    role: "button".into(),
+                    name: Some("cannot fit without its root".into()),
+                    value: None,
+                    description: None,
+                    properties: vec![],
+                    actionable: true,
+                    reference: Some(NodeReference {
+                        target_id: target_id(),
+                        generation,
+                        node_id: action_id,
+                    }),
+                },
+            ],
+            3,
+        )
+        .unwrap();
+
+        let projected = project_snapshot(snapshot, SnapshotProjection::InteractionOnly).unwrap();
+        assert!(projected.nodes.is_empty());
+        assert_eq!(projected.omitted_node_count, 5);
     }
 
     #[test]
@@ -2647,7 +2964,7 @@ mod tests {
             "query_browser_events",
             value.clone(),
             ResponseProjectionRequest {
-                snapshot: StructuredResponseDetail::Omit,
+                snapshot: SnapshotResponseDetail::Omit,
                 page_state: StructuredResponseDetail::Omit,
                 ..ResponseProjectionRequest::default()
             },
@@ -2664,7 +2981,7 @@ mod tests {
             "query_browser_events",
             value.clone(),
             ResponseProjectionRequest {
-                snapshot: StructuredResponseDetail::Compact,
+                snapshot: SnapshotResponseDetail::Compact,
                 page_state: StructuredResponseDetail::Compact,
                 temporal: TemporalResponseDetail::Full,
                 ..ResponseProjectionRequest::default()
