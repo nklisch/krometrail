@@ -1,7 +1,7 @@
 ---
 id: feature-viewport-scoped-geometry
 kind: feature
-stage: implementing
+stage: review
 tags: [agent-ux, browser]
 parent: null
 depends_on: []
@@ -105,12 +105,12 @@ Over-cap branch (`backend_ids.len() > MAX_SNAPSHOT_NODES`):
 - Under-cap pages: existing full decode path unchanged (viewport_scope unused).
 
 **Acceptance Criteria**:
-- [ ] Deterministic double: 5001+-node DOMSnapshot + viewport rect → snapshot
+- [x] Deterministic double: 5001+-node DOMSnapshot + viewport rect → snapshot
       has `geometry_omitted: false`, document_rects only for intersecting
       nodes, and semantic metadata for those nodes.
-- [ ] Same fixture without viewport scope → `geometry_omitted: true` (existing
+- [x] Same fixture without viewport scope → `geometry_omitted: true` (existing
       behavior preserved; existing test keeps passing).
-- [ ] Truncation fixture (> cap intersecting entries) → capped rects and
+- [x] Truncation fixture (> cap intersecting entries) → capped rects and
       `geometry_omitted: true`.
 
 ### Unit 2: Single layout-metrics fetch feeding decode and response
@@ -123,9 +123,9 @@ viewport-anchored requests; thread `Option<CssRect>` through
 `with_visual_viewport` from the already-fetched rect.
 
 **Acceptance Criteria**:
-- [ ] Viewport-anchored snapshot issues exactly one `Page.getLayoutMetrics`
+- [x] Viewport-anchored snapshot issues exactly one `Page.getLayoutMetrics`
       command (assert on the deterministic transport double's command log).
-- [ ] Visual viewport on the response equals the pre-fetched rect.
+- [x] Visual viewport on the response equals the pre-fetched rect.
 
 ## Implementation Order
 1. Unit 1
@@ -142,3 +142,13 @@ viewport-anchored requests; thread `Option<CssRect>` through
   between the two samples skews selection. Mitigated by the existing document
   fingerprint staleness check and by margin-free intersection being best-effort
   presentation, not interaction authority (clicks re-resolve geometry).
+
+## Implementation notes
+- Execution capability: host implementation, because the existing decoder and scripted transport form one cohesive CDP boundary.
+- Review weight: standard, project default.
+- Files changed: `crates/krometrail-cdp/src/control/snapshot.rs`.
+- Tests added/removed: added over-cap viewport selection, semantic metadata, truncation accounting, and one-layout-metrics-fetch assertions; retained the document-anchor regression.
+- Simplification: consolidated viewport metrics acquisition so the same rect feeds decode and response attachment; no second fetch or compatibility path remains.
+- Discrepancies from design: none.
+- Adjacent issues parked: none.
+- Verification: `CARGO_TARGET_DIR=/tmp/krometrail-target cargo test -p krometrail-cdp control::snapshot::tests:: --locked` passed (27 tests).

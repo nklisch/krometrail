@@ -242,16 +242,7 @@ impl PageControl {
     ) -> Result<BrowserOperationResult> {
         let include_document_geometry =
             include_document_geometry || request.anchor == SnapshotPageAnchor::Viewport;
-        let snapshot = self
-            .capture_snapshot(
-                transport,
-                bound,
-                started_at,
-                false,
-                include_document_geometry,
-            )
-            .await?;
-        let snapshot = if request.anchor == SnapshotPageAnchor::Viewport {
+        let viewport_scope = if request.anchor == SnapshotPageAnchor::Viewport {
             let scope = CommandScope::Session(bound.transport_session.clone());
             let layout = transport
                 .send_raw(&scope, "Page.getLayoutMetrics", json!({}))
@@ -263,12 +254,26 @@ impl PageControl {
                 .get("result")
                 .filter(|value| value.get("cssVisualViewport").is_some())
                 .unwrap_or(&layout);
-            let visual_viewport = super::rect_from_viewport(
+            Some(super::rect_from_viewport(
                 layout_root.get("cssVisualViewport"),
                 "visual viewport",
                 bound.target_id,
-            )?;
-            snapshot.with_visual_viewport(visual_viewport)
+            )?)
+        } else {
+            None
+        };
+        let snapshot = self
+            .capture_snapshot(
+                transport,
+                bound,
+                started_at,
+                false,
+                include_document_geometry,
+                viewport_scope,
+            )
+            .await?;
+        let snapshot = if let Some(viewport) = viewport_scope {
+            snapshot.with_visual_viewport(viewport)
         } else {
             snapshot
         };
@@ -282,6 +287,7 @@ impl PageControl {
         started_at: krometrail_core::SessionTime,
         include_dom_semantics: bool,
         include_document_geometry: bool,
+        viewport_scope: Option<CssRect>,
     ) -> Result<PageSnapshot> {
         self.capture_snapshot_for_frame(
             transport,
@@ -289,6 +295,7 @@ impl PageControl {
             started_at,
             include_dom_semantics,
             include_document_geometry,
+            viewport_scope,
             None,
         )
         .await
@@ -314,6 +321,7 @@ impl PageControl {
                 started_at,
                 request.query.requires_dom_semantics(),
                 false,
+                None,
                 frame.as_ref(),
             )
             .await?;
@@ -321,6 +329,7 @@ impl PageControl {
         Ok(BrowserOperationResult::QueryPage(Box::new(result)))
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn capture_snapshot_for_frame(
         &mut self,
         transport: &dyn CdpTransport,
@@ -328,6 +337,7 @@ impl PageControl {
         started_at: krometrail_core::SessionTime,
         include_dom_semantics: bool,
         include_document_geometry: bool,
+        viewport_scope: Option<CssRect>,
         frame: Option<&ResolvedFrameDocument>,
     ) -> Result<PageSnapshot> {
         let scope = CommandScope::Session(bound.transport_session.clone());
@@ -387,6 +397,7 @@ impl PageControl {
                     &document,
                     bound.target_id,
                     include_document_geometry,
+                    viewport_scope,
                 )?;
                 let current = match frame {
                     Some(frame) => {
@@ -811,6 +822,7 @@ fn is_strict_descendant(
 struct DecodedDomNode {
     backend_node_id: i64,
     parent: Option<usize>,
+    id: Option<String>,
     is_label: bool,
     label_for: Option<String>,
     aria_labelledby: Option<String>,
@@ -829,7 +841,7 @@ fn decode_dom_snapshot(
     document: &DocumentFingerprint,
     target_id: TargetId,
 ) -> Result<HashMap<i64, SemanticNodeMetadata>> {
-    Ok(decode_dom_snapshot_with_geometry(response, document, target_id, false)?.metadata)
+    Ok(decode_dom_snapshot_with_geometry(response, document, target_id, false, None)?.metadata)
 }
 
 fn snapshot_node_limit_error(
@@ -862,6 +874,7 @@ fn decode_dom_snapshot_with_geometry(
     document: &DocumentFingerprint,
     target_id: TargetId,
     include_document_geometry: bool,
+    viewport_scope: Option<CssRect>,
 ) -> Result<DecodedDomSnapshot> {
     let root = response
         .get("result")
@@ -895,7 +908,30 @@ fn decode_dom_snapshot_with_geometry(
         .get("nodes")
         .ok_or_else(|| malformed(target_id, "DOM snapshot node table is missing"))?;
     let backend_ids = required_array(nodes, "backendNodeId", target_id)?;
+    let node_count = backend_ids.len();
+    let parents = required_parallel_array(nodes, "parentIndex", node_count, target_id)?;
+    let node_names = required_parallel_array(nodes, "nodeName", node_count, target_id)?;
+    let attributes = required_parallel_array(nodes, "attributes", node_count, target_id)?;
+    let layout = document
+        .get("layout")
+        .ok_or_else(|| malformed(target_id, "DOM snapshot layout table is missing"))?;
+    let layout_nodes = required_array(layout, "nodeIndex", target_id)?;
+    let layout_text = required_parallel_array(layout, "text", layout_nodes.len(), target_id)?;
     if backend_ids.len() > MAX_SNAPSHOT_NODES {
+        if let Some(viewport) = viewport_scope {
+            return decode_viewport_scoped_dom_snapshot(
+                strings,
+                backend_ids,
+                parents,
+                node_names,
+                attributes,
+                layout_nodes,
+                layout_text,
+                layout,
+                viewport,
+                target_id,
+            );
+        }
         if include_document_geometry {
             return Ok(DecodedDomSnapshot {
                 metadata: HashMap::new(),
@@ -909,86 +945,26 @@ fn decode_dom_snapshot_with_geometry(
             false,
         ));
     }
-    let node_count = backend_ids.len();
-    let parents = required_parallel_array(nodes, "parentIndex", node_count, target_id)?;
-    let node_names = required_parallel_array(nodes, "nodeName", node_count, target_id)?;
-    let attributes = required_parallel_array(nodes, "attributes", node_count, target_id)?;
     let mut text_bytes = 0_usize;
     let mut decoded = Vec::with_capacity(node_count);
     let mut id_to_index = HashMap::new();
     for index in 0..node_count {
-        let backend_node_id = backend_ids[index]
-            .as_i64()
-            .filter(|value| *value > 0)
-            .ok_or_else(|| malformed(target_id, "DOM snapshot backend node id is invalid"))?;
-        let parent = match parents[index].as_i64() {
-            Some(-1) => None,
-            Some(value)
-                if value >= 0 && usize::try_from(value).is_ok_and(|value| value < index) =>
-            {
-                Some(usize::try_from(value).expect("validated parent index"))
-            }
-            _ => return Err(malformed(target_id, "DOM snapshot parent index is invalid")),
-        };
-        let node_name = snapshot_string_value(strings, &node_names[index], target_id)
-            .map_err(|_| malformed(target_id, "DOM snapshot node-name string index is invalid"))?;
-        let attrs = attributes[index]
-            .as_array()
-            .filter(|values| values.len() % 2 == 0)
-            .ok_or_else(|| malformed(target_id, "DOM snapshot attributes are malformed"))?;
-        let mut id = None;
-        let mut label_for = None;
-        let mut aria_labelledby = None;
-        let mut test_id = None;
-        for pair in attrs.chunks_exact(2) {
-            let name = snapshot_string_value(strings, &pair[0], target_id).map_err(|_| {
-                malformed(
-                    target_id,
-                    "DOM snapshot attribute-name string index is invalid",
-                )
-            })?;
-            let destination = match name {
-                "id" => &mut id,
-                "for" => &mut label_for,
-                "aria-labelledby" => &mut aria_labelledby,
-                "data-testid" => &mut test_id,
-                _ => continue,
-            };
-            let value = optional_snapshot_string_value(strings, &pair[1], target_id)
-                .map_err(|_| {
-                    malformed(
-                        target_id,
-                        "DOM snapshot attribute-value string index is invalid",
-                    )
-                })?
-                .unwrap_or("");
-            text_bytes = text_bytes.saturating_add(value.len());
-            if text_bytes > MAX_SNAPSHOT_TEXT_BYTES {
-                return Err(malformed(
-                    target_id,
-                    "DOM snapshot exceeds the semantic text limit",
-                ));
-            }
-            *destination = bounded_semantic_value(value);
-        }
+        let node = decode_dom_node(
+            index,
+            backend_ids,
+            parents,
+            node_names,
+            attributes,
+            strings,
+            target_id,
+            &mut text_bytes,
+        )?;
+        let id = node.id.clone();
         if let Some(id) = &id {
             id_to_index.entry(id.clone()).or_insert(index);
         }
-        decoded.push(DecodedDomNode {
-            backend_node_id,
-            parent,
-            is_label: node_name.eq_ignore_ascii_case("label"),
-            label_for,
-            aria_labelledby,
-            test_id,
-        });
+        decoded.push(node);
     }
-
-    let layout = document
-        .get("layout")
-        .ok_or_else(|| malformed(target_id, "DOM snapshot layout table is missing"))?;
-    let layout_nodes = required_array(layout, "nodeIndex", target_id)?;
-    let layout_text = required_parallel_array(layout, "text", layout_nodes.len(), target_id)?;
     let layout_bounds = include_document_geometry
         .then(|| required_parallel_array(layout, "bounds", layout_nodes.len(), target_id))
         .transpose()?;
@@ -1110,6 +1086,265 @@ fn decode_dom_snapshot_with_geometry(
         metadata,
         document_rects,
         geometry_omitted: false,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn decode_dom_node(
+    index: usize,
+    backend_ids: &[Value],
+    parents: &[Value],
+    node_names: &[Value],
+    attributes: &[Value],
+    strings: &[Value],
+    target_id: TargetId,
+    text_bytes: &mut usize,
+) -> Result<DecodedDomNode> {
+    let backend_node_id = backend_ids[index]
+        .as_i64()
+        .filter(|value| *value > 0)
+        .ok_or_else(|| malformed(target_id, "DOM snapshot backend node id is invalid"))?;
+    let parent = match parents[index].as_i64() {
+        Some(-1) => None,
+        Some(value) if value >= 0 && usize::try_from(value).is_ok_and(|value| value < index) => {
+            Some(usize::try_from(value).expect("validated parent index"))
+        }
+        _ => return Err(malformed(target_id, "DOM snapshot parent index is invalid")),
+    };
+    let node_name = snapshot_string_value(strings, &node_names[index], target_id)
+        .map_err(|_| malformed(target_id, "DOM snapshot node-name string index is invalid"))?;
+    let attrs = attributes[index]
+        .as_array()
+        .filter(|values| values.len() % 2 == 0)
+        .ok_or_else(|| malformed(target_id, "DOM snapshot attributes are malformed"))?;
+    let mut id = None;
+    let mut label_for = None;
+    let mut aria_labelledby = None;
+    let mut test_id = None;
+    for pair in attrs.chunks_exact(2) {
+        let name = snapshot_string_value(strings, &pair[0], target_id).map_err(|_| {
+            malformed(
+                target_id,
+                "DOM snapshot attribute-name string index is invalid",
+            )
+        })?;
+        let destination = match name {
+            "id" => &mut id,
+            "for" => &mut label_for,
+            "aria-labelledby" => &mut aria_labelledby,
+            "data-testid" => &mut test_id,
+            _ => continue,
+        };
+        let value = optional_snapshot_string_value(strings, &pair[1], target_id)
+            .map_err(|_| {
+                malformed(
+                    target_id,
+                    "DOM snapshot attribute-value string index is invalid",
+                )
+            })?
+            .unwrap_or("");
+        *text_bytes = text_bytes.saturating_add(value.len());
+        if *text_bytes > MAX_SNAPSHOT_TEXT_BYTES {
+            return Err(malformed(
+                target_id,
+                "DOM snapshot exceeds the semantic text limit",
+            ));
+        }
+        *destination = bounded_semantic_value(value);
+    }
+    Ok(DecodedDomNode {
+        backend_node_id,
+        parent,
+        id,
+        is_label: node_name.eq_ignore_ascii_case("label"),
+        label_for,
+        aria_labelledby,
+        test_id,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn decode_viewport_scoped_dom_snapshot(
+    strings: &[Value],
+    backend_ids: &[Value],
+    parents: &[Value],
+    node_names: &[Value],
+    attributes: &[Value],
+    layout_nodes: &[Value],
+    layout_text: &[Value],
+    layout: &Value,
+    viewport: CssRect,
+    target_id: TargetId,
+) -> Result<DecodedDomSnapshot> {
+    let bounds = required_parallel_array(layout, "bounds", layout_nodes.len(), target_id)?;
+    let mut selected_indexes = Vec::new();
+    let mut geometry_omitted = false;
+    let mut document_rects = HashMap::new();
+    for (node_index, bounds) in layout_nodes.iter().zip(bounds) {
+        let Some(node_index) = node_index
+            .as_u64()
+            .and_then(|value| usize::try_from(value).ok())
+            .filter(|value| *value < backend_ids.len())
+        else {
+            return Err(malformed(
+                target_id,
+                "DOM snapshot layout node index is invalid",
+            ));
+        };
+        let Some(bounds) = bounds.as_array().filter(|values| values.len() == 4) else {
+            return Err(malformed(
+                target_id,
+                "DOM snapshot layout bounds are malformed",
+            ));
+        };
+        let values = bounds.iter().map(Value::as_f64).collect::<Option<Vec<_>>>();
+        let Some(values) = values.filter(|values| {
+            values.iter().all(|value| value.is_finite()) && values[2] > 0.0 && values[3] > 0.0
+        }) else {
+            continue;
+        };
+        let intersects = values[0] < viewport.origin.x + viewport.size.width
+            && values[0] + values[2] > viewport.origin.x
+            && values[1] < viewport.origin.y + viewport.size.height
+            && values[1] + values[3] > viewport.origin.y;
+        if !intersects {
+            continue;
+        }
+        if selected_indexes.len() >= MAX_SNAPSHOT_NODES {
+            geometry_omitted = true;
+            continue;
+        }
+        selected_indexes.push(node_index);
+        let rect = CssRect::new(
+            CssPoint::new(values[0], values[1])?,
+            CssSize::new(values[2], values[3])?,
+        )?;
+        let backend = backend_ids[node_index]
+            .as_i64()
+            .filter(|value| *value > 0)
+            .ok_or_else(|| malformed(target_id, "DOM snapshot backend node id is invalid"))?;
+        document_rects.insert(backend, rect);
+    }
+
+    let selected = selected_indexes.iter().copied().collect::<HashSet<_>>();
+    let mut text_bytes = 0_usize;
+    let mut decoded = HashMap::new();
+    let mut id_to_index = HashMap::new();
+    for index in &selected_indexes {
+        let node = decode_dom_node(
+            *index,
+            backend_ids,
+            parents,
+            node_names,
+            attributes,
+            strings,
+            target_id,
+            &mut text_bytes,
+        )?;
+        if let Some(id) = &node.id {
+            id_to_index.entry(id.clone()).or_insert(*index);
+        }
+        decoded.insert(*index, node);
+    }
+
+    let mut rendered = HashMap::<usize, String>::new();
+    for (node_index, text) in layout_nodes.iter().zip(layout_text) {
+        let node_index = node_index
+            .as_u64()
+            .and_then(|value| usize::try_from(value).ok())
+            .filter(|value| *value < backend_ids.len())
+            .ok_or_else(|| malformed(target_id, "DOM snapshot layout node index is invalid"))?;
+        let Some(text) =
+            optional_snapshot_string_value(strings, text, target_id).map_err(|_| {
+                malformed(
+                    target_id,
+                    "DOM snapshot layout-text string index is invalid",
+                )
+            })?
+        else {
+            continue;
+        };
+        if !selected.contains(&node_index) {
+            continue;
+        }
+        text_bytes = text_bytes.saturating_add(text.len());
+        if text_bytes > MAX_SNAPSHOT_TEXT_BYTES {
+            return Err(malformed(
+                target_id,
+                "DOM snapshot exceeds the semantic text limit",
+            ));
+        }
+        let mut ancestor = Some(node_index);
+        while let Some(index) = ancestor {
+            if selected.contains(&index) {
+                append_semantic_text(rendered.entry(index).or_default(), text);
+            }
+            ancestor = decoded.get(&index).and_then(|node| node.parent);
+        }
+    }
+
+    let mut metadata = decoded
+        .iter()
+        .map(|(index, node)| {
+            (
+                node.backend_node_id,
+                SemanticNodeMetadata {
+                    labels: Vec::new(),
+                    rendered_text: rendered.get(index).cloned().unwrap_or_default(),
+                    test_id: node.test_id.clone(),
+                },
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    for (label_index, label) in &decoded {
+        let text = rendered
+            .get(label_index)
+            .map(String::as_str)
+            .unwrap_or_default();
+        if text.is_empty() {
+            continue;
+        }
+        if let Some(target_index) = label
+            .label_for
+            .as_ref()
+            .and_then(|value| id_to_index.get(value))
+            .and_then(|index| decoded.get(index))
+        {
+            push_label(&mut metadata, target_index.backend_node_id, text);
+        }
+    }
+    for node in decoded.values() {
+        let mut parent = node.parent;
+        while let Some(parent_index) = parent {
+            if decoded
+                .get(&parent_index)
+                .is_some_and(|parent| parent.is_label)
+            {
+                let text = rendered
+                    .get(&parent_index)
+                    .map(String::as_str)
+                    .unwrap_or_default();
+                push_label(&mut metadata, node.backend_node_id, text);
+                break;
+            }
+            parent = decoded.get(&parent_index).and_then(|parent| parent.parent);
+        }
+        if let Some(labelledby) = &node.aria_labelledby {
+            let mut composed = String::new();
+            for id in labelledby.split_ascii_whitespace() {
+                if let Some(label_index) = id_to_index.get(id) {
+                    if let Some(text) = rendered.get(label_index) {
+                        append_semantic_text(&mut composed, text);
+                    }
+                }
+            }
+            push_label(&mut metadata, node.backend_node_id, &composed);
+        }
+    }
+    Ok(DecodedDomSnapshot {
+        metadata,
+        document_rects,
+        geometry_omitted,
     })
 }
 
@@ -1985,6 +2220,32 @@ mod tests {
         json!({"strings": strings, "documents": [parent, child]})
     }
 
+    fn large_viewport_dom_snapshot(layout_count: usize) -> Value {
+        let node_count = (MAX_SNAPSHOT_NODES + 1).max(layout_count);
+        let mut attributes = vec![json!([]); node_count];
+        attributes[10] = json!([2, 3]);
+        let bounds = (0..layout_count)
+            .map(|index| json!([index as f64, 10.0, 1.0, 10.0]))
+            .collect::<Vec<_>>();
+        json!({
+            "strings": ["main", "DIV", "data-testid", "on-screen", "visible text"],
+            "documents": [{
+                "frameId": 0,
+                "nodes": {
+                    "parentIndex": (0..node_count).map(|index| if index == 0 { -1 } else { 0 }).collect::<Vec<_>>(),
+                    "nodeName": vec![1; node_count],
+                    "backendNodeId": (1..=node_count).collect::<Vec<_>>(),
+                    "attributes": attributes
+                },
+                "layout": {
+                    "nodeIndex": (0..layout_count).collect::<Vec<_>>(),
+                    "text": vec![-1; layout_count],
+                    "bounds": bounds
+                }
+            }]
+        })
+    }
+
     fn script_frame_capture(transport: &SnapshotTransport, final_loader_id: &str) {
         for loader_id in ["child-loader", "child-loader", final_loader_id] {
             transport.push("Page.getFrameTree", frame_tree(loader_id));
@@ -2081,6 +2342,7 @@ mod tests {
                 krometrail_core::SessionTime::ZERO,
                 true,
                 false,
+                None,
                 Some(&resolved),
             )
             .await
@@ -2430,6 +2692,17 @@ mod tests {
         };
 
         assert_eq!(snapshot.visual_viewport.unwrap().size.width, 100.0);
+        assert_eq!(snapshot.visual_viewport.unwrap().origin.x, 0.0);
+        assert_eq!(
+            transport
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(method, _)| method == "Page.getLayoutMetrics")
+                .count(),
+            1
+        );
         assert!(
             snapshot
                 .nodes
@@ -2513,6 +2786,7 @@ mod tests {
                     krometrail_core::SessionTime::ZERO,
                     true,
                     false,
+                    None,
                     Some(&resolved),
                 )
                 .await
@@ -2688,11 +2962,72 @@ mod tests {
             },
             target(),
             true,
+            None,
         )
         .unwrap();
         assert!(!decoded.geometry_omitted);
         assert_eq!(decoded.document_rects[&31].origin.y, 40.0);
         assert_eq!(decoded.document_rects[&31].size.height, 24.0);
+    }
+
+    #[test]
+    fn over_cap_viewport_decode_keeps_intersecting_geometry_and_metadata() {
+        let viewport = CssRect::new(
+            CssPoint::new(0.0, 0.0).unwrap(),
+            CssSize::new(100.0, 100.0).unwrap(),
+        )
+        .unwrap();
+        let snapshot = large_viewport_dom_snapshot(11);
+        let decoded = decode_dom_snapshot_with_geometry(
+            &snapshot,
+            &DocumentFingerprint {
+                frame_id: "main".into(),
+                loader_id: "loader".into(),
+            },
+            target(),
+            true,
+            Some(viewport),
+        )
+        .unwrap();
+        assert!(!decoded.geometry_omitted);
+        assert_eq!(decoded.document_rects.len(), 11);
+        assert_eq!(decoded.metadata[&11].test_id.as_deref(), Some("on-screen"));
+
+        let omitted = decode_dom_snapshot_with_geometry(
+            &snapshot,
+            &DocumentFingerprint {
+                frame_id: "main".into(),
+                loader_id: "loader".into(),
+            },
+            target(),
+            true,
+            None,
+        )
+        .unwrap();
+        assert!(omitted.geometry_omitted);
+        assert!(omitted.document_rects.is_empty());
+    }
+
+    #[test]
+    fn over_cap_viewport_decode_accounts_for_selection_truncation() {
+        let viewport = CssRect::new(
+            CssPoint::new(0.0, 0.0).unwrap(),
+            CssSize::new(10_000.0, 100.0).unwrap(),
+        )
+        .unwrap();
+        let decoded = decode_dom_snapshot_with_geometry(
+            &large_viewport_dom_snapshot(MAX_SNAPSHOT_NODES + 1),
+            &DocumentFingerprint {
+                frame_id: "main".into(),
+                loader_id: "loader".into(),
+            },
+            target(),
+            true,
+            Some(viewport),
+        )
+        .unwrap();
+        assert!(decoded.geometry_omitted);
+        assert_eq!(decoded.document_rects.len(), MAX_SNAPSHOT_NODES);
     }
 
     #[test]
