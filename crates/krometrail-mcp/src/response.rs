@@ -1452,9 +1452,10 @@ fn compact_temporal_context(context: Option<&Value>) -> Option<Value> {
             "effective_range": events.get("effective_range"),
             "matched_count": events.get("matched_count"),
             "returned_count": events.get("returned_count"),
+            "events": events.get("events"),
             "next_cursor": events.get("next_cursor"),
-            "collection_gap_count": events.get("collection_gaps").and_then(Value::as_array).map_or(0, Vec::len),
-            "unavailable_range_count": events.get("unavailable_ranges").and_then(Value::as_array).map_or(0, Vec::len),
+            "collection_gaps": events.get("collection_gaps"),
+            "unavailable_ranges": events.get("unavailable_ranges"),
             "warnings": events.get("warnings"),
         })),
     }))
@@ -2772,7 +2773,7 @@ mod tests {
         });
         let mut concise = value.clone();
         project_temporal_value(&mut concise, ResponseDetail::Concise).unwrap();
-        assert!(concise["browser_events"].get("events").is_none());
+        assert_eq!(concise["browser_events"]["events"], json!([{}, {}]));
         let mut expanded = value.clone();
         project_temporal_value(&mut expanded, ResponseDetail::Expanded).unwrap();
         assert_eq!(expanded, value);

@@ -19,6 +19,23 @@ pub(crate) fn projected_input_schema(base: Arc<JsonObject>) -> Result<Arc<JsonOb
     if root.get("type") != Some(&Value::String("object".into())) {
         return Err(schema_error("projected MCP tool schema must be an object"));
     }
+    let response = type_input_schema::<ResponseRequest>()?;
+    if let Some(branches) = root.get_mut("oneOf").and_then(Value::as_array_mut) {
+        for branch in branches {
+            add_response_property(
+                branch
+                    .as_object_mut()
+                    .ok_or_else(|| schema_error("projected MCP schema branch must be an object"))?,
+                response.as_ref(),
+            )?;
+        }
+    } else {
+        add_response_property(&mut root, response.as_ref())?;
+    }
+    Ok(Arc::new(root))
+}
+
+fn add_response_property(root: &mut JsonObject, response: &JsonObject) -> Result<()> {
     let properties = root
         .entry("properties")
         .or_insert_with(|| Value::Object(JsonObject::new()))
@@ -29,9 +46,8 @@ pub(crate) fn projected_input_schema(base: Arc<JsonObject>) -> Result<Arc<JsonOb
             "projected MCP tool schema already declares response",
         ));
     }
-    let response = type_input_schema::<ResponseRequest>()?;
-    properties.insert("response".into(), Value::Object((*response).clone()));
-    Ok(Arc::new(root))
+    properties.insert("response".into(), Value::Object(response.clone()));
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, JsonSchema)]
@@ -41,21 +57,40 @@ pub(crate) struct ResolvedRangeHandleArgument {
 }
 
 pub(crate) fn range_handle_input_schema(base: Arc<JsonObject>) -> Result<Arc<JsonObject>> {
-    let mut root = (*base).clone();
-    if root.get("type") != Some(&Value::String("object".into())) {
+    if base.get("type") != Some(&Value::String("object".into())) {
         return Err(schema_error(
             "range-handle MCP tool schema must be an object",
         ));
     }
-    let properties = root
-        .get_mut("properties")
-        .and_then(Value::as_object_mut)
+    let properties = base
+        .get("properties")
+        .and_then(Value::as_object)
         .ok_or_else(|| schema_error("range-handle MCP tool schema properties must be an object"))?;
     if !properties.contains_key("range") || properties.contains_key("range_handle") {
         return Err(schema_error(
             "range-handle MCP tool schema must declare exactly one range property",
         ));
     }
+    let required = base
+        .get("required")
+        .and_then(Value::as_array)
+        .ok_or_else(|| schema_error("range-handle MCP tool schema must require range"))?;
+    if required
+        .iter()
+        .filter(|value| value.as_str() == Some("range"))
+        .count()
+        != 1
+    {
+        return Err(schema_error(
+            "range-handle MCP tool schema must require range exactly once",
+        ));
+    }
+    if base.contains_key("oneOf") {
+        return Err(schema_error(
+            "range-handle MCP tool schema already declares a root oneOf",
+        ));
+    }
+
     let handle_schema = type_input_schema::<ResolvedRangeHandleArgument>()?;
     let handle_property = handle_schema
         .get("properties")
@@ -63,9 +98,15 @@ pub(crate) fn range_handle_input_schema(base: Arc<JsonObject>) -> Result<Arc<Jso
         .and_then(|properties| properties.get("range_handle"))
         .cloned()
         .ok_or_else(|| schema_error("generated range-handle schema is missing its property"))?;
-    properties.insert("range_handle".into(), handle_property);
-
-    let required = root
+    let range_branch = (*base).clone();
+    let mut handle_branch = (*base).clone();
+    let handle_properties = handle_branch
+        .get_mut("properties")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| schema_error("range-handle MCP tool schema properties must be an object"))?;
+    handle_properties.remove("range");
+    handle_properties.insert("range_handle".into(), handle_property);
+    let required = handle_branch
         .get_mut("required")
         .and_then(Value::as_array_mut)
         .ok_or_else(|| schema_error("range-handle MCP tool schema must require range"))?;
@@ -79,26 +120,16 @@ pub(crate) fn range_handle_input_schema(base: Arc<JsonObject>) -> Result<Arc<Jso
             "range-handle MCP tool schema must require range exactly once",
         ));
     }
-    required.remove(range_positions[0]);
-    if root.contains_key("oneOf") {
-        return Err(schema_error(
-            "range-handle MCP tool schema already declares a root oneOf",
-        ));
-    }
-    root.insert(
-        "oneOf".into(),
-        serde_json::json!([
-            {
-                "required": ["range"],
-                "not": {"required": ["range_handle"]}
-            },
-            {
-                "required": ["range_handle"],
-                "not": {"required": ["range"]}
-            }
-        ]),
-    );
-    Ok(Arc::new(root))
+    required[range_positions[0]] = Value::String("range_handle".into());
+    Ok(Arc::new(
+        serde_json::json!({
+            "type": "object",
+            "oneOf": [range_branch, handle_branch]
+        })
+        .as_object()
+        .expect("range-handle schema is an object")
+        .clone(),
+    ))
 }
 
 pub(crate) fn operation_input_schema(
@@ -444,6 +475,33 @@ mod tests {
     }
 
     #[test]
+    fn projected_range_handle_schema_has_two_complete_discoverable_branches() {
+        let schema = projected_input_schema(
+            range_handle_input_schema(type_input_schema::<BrowserEventDetailRequest>().unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        let branches = schema["oneOf"].as_array().unwrap();
+        assert_eq!(branches.len(), 2);
+        for branch in branches {
+            assert_eq!(branch["type"], "object");
+            assert_eq!(branch["additionalProperties"], false);
+            let properties = branch["properties"].as_object().unwrap();
+            for property in ["clip", "filter", "selection", "focus_times", "response"] {
+                assert!(properties.contains_key(property), "missing {property}");
+            }
+        }
+        assert!(branches[0]["properties"].get("range").is_some());
+        assert!(branches[0]["properties"].get("range_handle").is_none());
+        assert!(branches[1]["properties"].get("range").is_none());
+        assert_eq!(branches[1]["properties"]["range_handle"]["type"], "string");
+        assert_eq!(
+            branches[1]["properties"]["selection"]["oneOf"][0]["properties"]["mode"]["const"],
+            "chronological"
+        );
+    }
+
+    #[test]
     fn temporal_video_schema_is_closed_inlined_and_publishes_fixed_output_limits() {
         let schema = type_input_schema::<TemporalVideoGenerationRequest>().unwrap();
         let schema = Value::Object(schema.as_ref().clone());
@@ -500,32 +558,17 @@ mod tests {
         ));
 
         for (name, schema) in schemas {
-            assert_eq!(schema["additionalProperties"], false, "{name}");
-            assert!(schema["properties"].get("range").is_some(), "{name}");
-            assert!(schema["properties"].get("range_handle").is_some(), "{name}");
-            assert_eq!(schema["properties"]["range_handle"]["type"], "string");
+            let branches = schema["oneOf"].as_array().unwrap();
+            assert_eq!(branches.len(), 2, "{name}");
+            assert_eq!(branches[0]["additionalProperties"], false, "{name}");
+            assert!(branches[0]["properties"].get("range").is_some(), "{name}");
             assert!(
-                !schema["required"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|value| value == "range"),
+                branches[0]["properties"].get("range_handle").is_none(),
                 "{name}"
             );
-            assert_eq!(
-                schema["oneOf"],
-                serde_json::json!([
-                    {
-                        "required": ["range"],
-                        "not": {"required": ["range_handle"]}
-                    },
-                    {
-                        "required": ["range_handle"],
-                        "not": {"required": ["range"]}
-                    }
-                ]),
-                "{name}"
-            );
+            assert_eq!(branches[1]["additionalProperties"], false, "{name}");
+            assert!(branches[1]["properties"].get("range").is_none(), "{name}");
+            assert_eq!(branches[1]["properties"]["range_handle"]["type"], "string");
         }
     }
 

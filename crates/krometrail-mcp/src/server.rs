@@ -2706,6 +2706,10 @@ mod tests {
             event_response["result"]["structuredContent"]["range_handle"],
             handle
         );
+        assert_eq!(
+            event_response["result"]["structuredContent"]["result"]["browser_events"]["events"],
+            json!([])
+        );
 
         let mut pin_arguments = serde_json::to_value(ProgressiveEvidenceRequest::QueryPinState(
             ResolvedRangeEvidenceRequest::new(range.clone()).unwrap(),
