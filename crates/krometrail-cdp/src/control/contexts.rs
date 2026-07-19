@@ -45,7 +45,7 @@ impl PageControl {
         let root_origin = frame_url(root).and_then(|url| inherited_origin(&url, None));
         let oopif_ids = oopif_frame_ids(transport).await;
         let (frame, frame_origin) =
-            find_frame_context(root, reference.frame_key.as_str(), root_origin.as_deref())
+            find_frame_context(root, reference.frame_key.as_str(), root_origin.as_ref())
                 .ok_or_else(|| {
                     operation_error(
                         ErrorCode::StaleReference,
@@ -82,7 +82,9 @@ impl PageControl {
                 Some(_) => {}
             }
         }
-        if !std::ptr::eq(frame, root) && frame_origin.as_deref() != root_origin.as_deref() {
+        if !std::ptr::eq(frame, root)
+            && !same_frame_origin(root_origin.as_ref(), frame_origin.as_ref())
+        {
             return Err(operation_error(
                 ErrorCode::Unsupported,
                 bound.target_id,
@@ -135,8 +137,8 @@ impl PageControl {
             bound,
             None,
             0,
-            root_origin.as_deref(),
-            root_origin.as_deref(),
+            root_origin.as_ref(),
+            root_origin.as_ref(),
             oopif_ids.as_ref(),
             &mut frames,
             &mut omitted,
@@ -240,8 +242,8 @@ fn collect_frames(
     bound: &BoundTarget,
     parent: Option<PageFrameReference>,
     depth: u16,
-    root_origin: Option<&str>,
-    parent_origin: Option<&str>,
+    root_origin: Option<&FrameOrigin>,
+    parent_origin: Option<&FrameOrigin>,
     oopif_ids: Option<&HashSet<String>>,
     frames: &mut Vec<PageFrameStatus>,
     omitted: &mut u32,
@@ -277,10 +279,7 @@ fn collect_frames(
         FrameAccess::Indeterminate
     } else if raw_frame_id.is_some_and(|id| oopif_ids.is_some_and(|ids| ids.contains(id))) {
         FrameAccess::OutOfProcess
-    // `None` is the effective opaque origin used for data documents and inherited srcdoc
-    // documents. The resolver applies the same equality check, so two such frames are
-    // inspectable when process qualification confirms the child is not an OOPIF.
-    } else if frame_origin.as_deref() == root_origin {
+    } else if same_frame_origin(root_origin, frame_origin.as_ref()) {
         FrameAccess::SameOriginSameProcess
     } else if frame_origin.is_some() {
         FrameAccess::CrossOrigin
@@ -302,7 +301,7 @@ fn collect_frames(
                 Some(reference.clone()),
                 depth.saturating_add(1),
                 root_origin,
-                frame_origin.as_deref(),
+                frame_origin.as_ref(),
                 oopif_ids,
                 frames,
                 omitted,
@@ -356,15 +355,51 @@ fn origin(raw: &str) -> Option<String> {
     Some(parsed.origin().ascii_serialization())
 }
 
-fn inherited_origin(raw: &str, parent: Option<&str>) -> Option<String> {
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum FrameOrigin {
+    Tuple(String),
+    Opaque { inherited_from_parent: bool },
+}
+
+fn inherited_origin(raw: &str, parent: Option<&FrameOrigin>) -> Option<FrameOrigin> {
     if matches!(
         raw.trim().to_ascii_lowercase().as_str(),
         "about:blank" | "about:srcdoc"
     ) {
-        return parent.map(str::to_owned);
+        return parent.map(FrameOrigin::inherited);
     }
     let value = origin(raw)?;
-    (value != "null").then_some(value)
+    if value == "null" {
+        Some(FrameOrigin::Opaque {
+            inherited_from_parent: false,
+        })
+    } else {
+        Some(FrameOrigin::Tuple(value))
+    }
+}
+
+impl FrameOrigin {
+    fn inherited(&self) -> Self {
+        match self {
+            Self::Tuple(value) => Self::Tuple(value.clone()),
+            Self::Opaque { .. } => Self::Opaque {
+                inherited_from_parent: true,
+            },
+        }
+    }
+}
+
+fn same_frame_origin(root: Option<&FrameOrigin>, child: Option<&FrameOrigin>) -> bool {
+    match (root, child) {
+        (Some(FrameOrigin::Tuple(root)), Some(FrameOrigin::Tuple(child))) => root == child,
+        (
+            Some(FrameOrigin::Opaque { .. }),
+            Some(FrameOrigin::Opaque {
+                inherited_from_parent: true,
+            }),
+        ) => true,
+        _ => false,
+    }
 }
 
 fn count_tree(tree: &Value) -> usize {
@@ -378,8 +413,8 @@ fn count_tree(tree: &Value) -> usize {
 fn find_frame_context<'a>(
     tree: &'a Value,
     token: &str,
-    parent_origin: Option<&str>,
-) -> Option<(&'a Value, Option<String>)> {
+    parent_origin: Option<&FrameOrigin>,
+) -> Option<(&'a Value, Option<FrameOrigin>)> {
     let url = frame_url(tree)?;
     let effective_origin = inherited_origin(&url, parent_origin);
     if frame_token(tree).as_deref() == Some(token) {
@@ -388,7 +423,7 @@ fn find_frame_context<'a>(
     tree.get("childFrames")?
         .as_array()?
         .iter()
-        .find_map(|child| find_frame_context(child, token, effective_origin.as_deref()))
+        .find_map(|child| find_frame_context(child, token, effective_origin.as_ref()))
 }
 
 fn parse_asset(value: &Value) -> Option<(f64, PageAssetMetadata)> {
@@ -545,13 +580,14 @@ mod tests {
         let oopif = HashSet::from(["oopif".to_owned()]);
         let mut frames = Vec::new();
         let mut omitted = 0;
+        let root_origin = FrameOrigin::Tuple("https://example.test".to_owned());
         collect_frames(
             &tree,
             &bound(),
             None,
             0,
-            Some("https://example.test"),
-            Some("https://example.test"),
+            Some(&root_origin),
+            Some(&root_origin),
             Some(&oopif),
             &mut frames,
             &mut omitted,
@@ -563,11 +599,11 @@ mod tests {
         assert_eq!(frames[2].access, FrameAccess::CrossOrigin);
         assert_eq!(frames[3].access, FrameAccess::OutOfProcess);
         assert_eq!(frames[4].access, FrameAccess::SameOriginSameProcess);
-        assert_eq!(frames[5].access, FrameAccess::Indeterminate);
+        assert_eq!(frames[5].access, FrameAccess::CrossOrigin);
     }
 
     #[test]
-    fn frame_inventory_qualifies_same_process_opaque_origins() {
+    fn frame_inventory_qualifies_only_inherited_same_process_opaque_origins() {
         let tree = json!({
             "frame":{"id":"root","loaderId":"root-loader","url":"data:text/html,root"},
             "childFrames":[
@@ -578,13 +614,14 @@ mod tests {
         let oopif = HashSet::new();
         let mut frames = Vec::new();
         let mut omitted = 0;
+        let root_origin = inherited_origin("data:text/html,root", None).unwrap();
         collect_frames(
             &tree,
             &bound(),
             None,
             0,
-            None,
-            None,
+            Some(&root_origin),
+            Some(&root_origin),
             Some(&oopif),
             &mut frames,
             &mut omitted,
@@ -593,6 +630,39 @@ mod tests {
 
         assert_eq!(frames[0].access, FrameAccess::MainDocument);
         assert_eq!(frames[1].access, FrameAccess::SameOriginSameProcess);
-        assert_eq!(frames[2].access, FrameAccess::SameOriginSameProcess);
+        assert_eq!(frames[2].access, FrameAccess::CrossOrigin);
+        let (_, srcdoc_origin) = find_frame_context(
+            &tree,
+            frame_token(&tree["childFrames"][0]).unwrap().as_str(),
+            Some(&root_origin),
+        )
+        .unwrap();
+        let (_, data_origin) = find_frame_context(
+            &tree,
+            frame_token(&tree["childFrames"][1]).unwrap().as_str(),
+            Some(&root_origin),
+        )
+        .unwrap();
+        assert!(same_frame_origin(
+            Some(&root_origin),
+            srcdoc_origin.as_ref()
+        ));
+        assert!(!same_frame_origin(Some(&root_origin), data_origin.as_ref()));
+        assert!(same_frame_origin(
+            Some(&FrameOrigin::Opaque {
+                inherited_from_parent: false,
+            }),
+            Some(&FrameOrigin::Opaque {
+                inherited_from_parent: true,
+            })
+        ));
+        assert!(!same_frame_origin(
+            Some(&FrameOrigin::Opaque {
+                inherited_from_parent: false,
+            }),
+            Some(&FrameOrigin::Opaque {
+                inherited_from_parent: false,
+            })
+        ));
     }
 }

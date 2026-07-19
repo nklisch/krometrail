@@ -8,7 +8,7 @@ depends_on: []
 release_binding: 1.1.0
 gate_origin: null
 created: 2026-07-18
-updated: 2026-07-18
+updated: 2026-07-19
 ---
 
 # Explicit clipboard and download workflows
@@ -282,3 +282,9 @@ Standard review initially requested changes for terminal/effect races, over-coun
 - `d3427e4` covers bounded overflow, stable resource-limit signaling, cancellation, and privacy-safe lifecycle event projection.
 
 Final verification: download authority tests 7/7, clipboard tests 3/3, local-I/O core tests 3/3, evidence tests 2/2, and `cargo clippy -p krometrail-core -p krometrail-cdp --all-targets --locked -- -D warnings` pass. The earlier MCP 61/61, workspace all-target check, and real managed-Chrome resource-lifetime qualification remain valid. Verdict: pass; feature moved from `review` to `done`.
+
+## Review-fix note (2026-07-19)
+
+Browser-reported download media types now share the extension fallback's inert safety boundary for
+HTML, XHTML, SVG, and script-capable types; the completed-resource test proves reported HTML cannot
+be served as active HTML.

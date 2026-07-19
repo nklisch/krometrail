@@ -222,3 +222,8 @@ second ranking system. Tall-screenshot handling should prefer guidance plus boun
   practice, the marker still names the generation so an agent can drill down.
 - **DOMSnapshot join misses nodes** (AX node without backend-id match): fall back to
   geometry-less for those nodes — ranking degrades gracefully to today's order.
+
+## Review-fix note (2026-07-19)
+
+Added an exact serialized concise/expanded projection regression for snapshots without document
+geometry, proving optional viewport anchoring remains behavior-neutral when geometry is absent.

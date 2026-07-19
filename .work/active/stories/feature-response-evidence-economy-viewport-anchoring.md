@@ -30,3 +30,8 @@ intersection when geometry is present, exact current behavior when absent.
 Implemented and verified: geometry-bearing scroll/set-viewport observations now attach bounded
 DOMSnapshot layout rectangles to AX nodes and viewport-anchor response ranking; ordinary snapshots
 remain geometry-less and avoid the DOMSnapshot layout pass.
+
+## Review-fix note (2026-07-19)
+
+The geometry-less path now has an exact serialized concise/expanded projection regression, proving
+optional `document_rect` remains behavior-neutral when absent.

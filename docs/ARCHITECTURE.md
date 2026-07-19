@@ -146,7 +146,9 @@ backing DOM-node bindings, document fingerprint, and attachment-generation fence
 its stale-reference boundary is described below.
 
 Semantic queries are bounded discovery operations over that same registry. Role/name, label, text, test-id,
-descendant, and qualified same-origin/same-process-frame scope (including an inherited opaque-origin frame)
+descendant, and qualified same-origin/same-process-frame scope (including a same-process `about:srcdoc`
+or `about:blank` frame whose opaque origin is inherited from its parent; fresh opaque URLs such as `data:`
+are rejected)
 produce an explicit `no_match`, `unique`, `ambiguous`, or `truncated`
 outcome. Only `unique` contains one generation-scoped `NodeReference`; the caller supplies that exact reference
 to a later mutation, where the registry revalidates its authority before dispatch. Semantic text never directly

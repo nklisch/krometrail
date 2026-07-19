@@ -12,9 +12,10 @@ page, frame, or resource boundary.
   `wait_for_page` with that cursor. Supply the opener's Krometrail target ID when unrelated pages
   must not satisfy the wait. These tools do not activate or focus a page.
 - Call `list_frames` only when the relevant content is inside an iframe. Main-document and qualified
-  same-origin/same-process entries may be inspected, including a same-process frame that shares an
-  inherited opaque origin with an opaque main document; cross-origin, out-of-process, stale, and
-  indeterminate entries fail explicitly. Refresh the inventory after frame navigation. Never retry a
+  same-origin/same-process entries may be inspected, including a same-process `about:srcdoc` or
+  `about:blank` frame that inherits an opaque origin from its opaque parent; a fresh opaque child URL
+  such as `data:` is not same-origin-qualified. Cross-origin, out-of-process, stale, and indeterminate
+  entries fail explicitly. Refresh the inventory after frame navigation. Never retry a
   failed frame action against main-document coordinates.
 - For an unnamed control whose visible identity comes from its row, card, or other bounded ancestor,
   use a role query with `container_text`. This is a semantic ancestor relationship, not a spatial-nearness

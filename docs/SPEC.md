@@ -153,8 +153,10 @@ Before executing an action against a reference, Krometrail verifies that the bac
 Snapshot references are the primary target form. Explicit CSS selectors remain a debugging escape hatch with weaker validation guarantees. Canvas, WebGL, video, and other DOM-opaque surfaces remain visible through screenshots and temporal capture even when structured targeting is unavailable; declared coordinate-space interaction is the final fallback.
 
 Callers can also describe a semantic locator by accessible role and name, label text, visible text, or test
-identifier, optionally scoped to a descendant and a qualified same-origin/same-process frame (including an
-inherited opaque-origin frame). A role query may qualify an unnamed
+identifier, optionally scoped to a descendant and a qualified same-origin/same-process frame (including a
+same-process `about:srcdoc` or `about:blank` frame whose opaque origin is inherited from its parent).
+Fresh opaque child documents such as `data:` frames are not same-origin-qualified, even when their
+parent is also opaque. A role query may qualify an unnamed
 control by text rendered within its nearest matching ancestor container; this bounded relationship never
 falls back to spatial proximity or unrelated page text. Krometrail resolves the locator through
 the active document snapshot registry and returns or acts through an exact generation-scoped reference. A no-match,

@@ -221,7 +221,7 @@ impl SystemChromeLauncher {
             .arg(format!("--user-data-dir={}", profile.path().display()))
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        command.arg(request.initial_url.as_deref().unwrap_or("about:blank"));
+        command.arg(initial_browser_url(request));
         // The process guard and profile lease both exist before the first await below.
         let mut process = match ManagedChromeProcess::spawn(&mut command) {
             Ok(process) => process,
@@ -414,6 +414,10 @@ fn emit_launch_failed(reason: &'static str) {
     tracing::warn!(event = "browser.launch.failed", reason);
 }
 
+fn initial_browser_url(request: &LaunchBrowser) -> &str {
+    request.initial_url.as_deref().unwrap_or("about:blank")
+}
+
 fn profile_error(error: ProfileError) -> LaunchError {
     match error {
         ProfileError::InUse => LaunchError::ProfileInUse,
@@ -455,6 +459,18 @@ mod tests {
         let _ = ManagedProfile::Reusable {
             name: ProfileIdentity::new("profile").unwrap(),
         };
+    }
+
+    #[test]
+    fn omitted_initial_url_seeds_recordable_about_blank_for_each_focus_mode() {
+        for focus in [
+            krometrail_core::BrowserFocusPolicy::Foreground,
+            krometrail_core::BrowserFocusPolicy::Preserve,
+        ] {
+            let mut request = LaunchBrowser::new(ManagedProfile::Temporary);
+            request.focus = focus;
+            assert_eq!(initial_browser_url(&request), "about:blank");
+        }
     }
 
     #[test]

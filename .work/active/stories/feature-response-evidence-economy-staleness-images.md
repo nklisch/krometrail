@@ -29,3 +29,7 @@ the staleness exception.
 ## Completion Note
 
 Implemented and verified Unit 2. Purpose-sensitive defaults now include staleness-prone scroll, viewport, and activation observations; tall decoded screenshots emit one bounded recovery warning without changing capture limits; SPEC, plugin skill text, and generated full documentation are current.
+
+## Review-fix note (2026-07-19)
+
+Direct capture tests now assert exactly one guidance warning above 8192px and none at the threshold.

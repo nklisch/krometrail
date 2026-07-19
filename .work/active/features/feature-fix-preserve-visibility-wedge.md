@@ -206,3 +206,8 @@ Verification: `cargo fmt --all -- --check`, `cargo check --workspace --all-targe
 test surfaced during verification and was parked as
 `idea-flaky-discovery-precedence-test` (fails ~40% on base too; not caused by this
 change).
+
+## Review-fix note (2026-07-19)
+
+Added deterministic launcher/reconcile coverage proving the seeded `about:blank` page remains the
+single selected, recordable supervised page under both foreground and preserve focus policies.

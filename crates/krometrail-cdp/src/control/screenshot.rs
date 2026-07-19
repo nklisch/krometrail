@@ -406,6 +406,155 @@ fn tall_screenshot_guidance(target_id: krometrail_core::TargetId, height: u32) -
     )
 }
 
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+mod tests {
+    use std::sync::Arc;
+
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use krometrail_core::{IdSource, IdValue, MonotonicClock, ObservedTime, SessionOrigin};
+
+    use super::*;
+    use crate::transport::{TransportClose, TransportError, TransportEvents, TransportSessionId};
+
+    struct TestClock;
+
+    impl MonotonicClock for TestClock {
+        fn now(&self) -> ObservedTime {
+            ObservedTime::from_nanos(0)
+        }
+    }
+
+    struct TestIds;
+
+    impl IdSource for TestIds {
+        fn next(&self) -> IdValue {
+            IdValue::from_uuid(uuid::Uuid::from_u128(2))
+        }
+    }
+
+    struct EmptyEvents;
+
+    impl TransportEvents for EmptyEvents {
+        fn next(
+            &mut self,
+        ) -> crate::transport::TransportFuture<
+            '_,
+            std::result::Result<Option<crate::transport::NamedEvent>, TransportError>,
+        > {
+            Box::pin(std::future::ready(Ok(None)))
+        }
+    }
+
+    struct ScreenshotTransport {
+        height: u32,
+    }
+
+    impl CdpTransport for ScreenshotTransport {
+        fn send_raw(
+            &self,
+            _scope: &CommandScope,
+            method: &str,
+            _params: Value,
+        ) -> crate::transport::TransportFuture<'_, std::result::Result<Value, TransportError>>
+        {
+            let response = match method {
+                "Page.getLayoutMetrics" => json!({
+                    "cssLayoutViewport": {"pageX": 0.0, "pageY": 0.0, "clientWidth": 800.0, "clientHeight": 600.0},
+                    "cssContentSize": {"x": 0.0, "y": 0.0, "width": 800.0, "height": self.height}
+                }),
+                "Runtime.evaluate" => json!({"result": {"value": 1.0}}),
+                "Page.captureScreenshot" => {
+                    json!({"data": STANDARD.encode(png_header(800, self.height))})
+                }
+                _ => json!({}),
+            };
+            Box::pin(std::future::ready(Ok(response)))
+        }
+
+        fn subscribe_named(
+            &self,
+            _scope: &CommandScope,
+            _method: &str,
+        ) -> crate::transport::TransportFuture<
+            '_,
+            std::result::Result<Box<dyn TransportEvents>, TransportError>,
+        > {
+            Box::pin(std::future::ready(Ok(
+                Box::new(EmptyEvents) as Box<dyn TransportEvents>
+            )))
+        }
+
+        fn close_reason(&self) -> Option<TransportClose> {
+            None
+        }
+
+        fn is_closed(&self) -> bool {
+            false
+        }
+    }
+
+    fn png_header(width: u32, height: u32) -> Vec<u8> {
+        let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+        bytes.extend_from_slice(&13_u32.to_be_bytes());
+        bytes.extend_from_slice(b"IHDR");
+        bytes.extend_from_slice(&width.to_be_bytes());
+        bytes.extend_from_slice(&height.to_be_bytes());
+        bytes
+    }
+
+    fn bound() -> BoundTarget {
+        BoundTarget {
+            target_id: krometrail_core::TargetId::from_uuid(uuid::Uuid::from_u128(1)),
+            browser_target_key: "target".to_owned(),
+            attachment_generation: 1,
+            transport_session: TransportSessionId::new("session").unwrap(),
+            visibility: krometrail_core::TargetVisibility::Visible,
+        }
+    }
+
+    fn control() -> PageControl {
+        PageControl::new(
+            Arc::new(TestClock),
+            Arc::new(TestIds),
+            krometrail_core::SessionId::from_uuid(uuid::Uuid::from_u128(3)),
+            SessionOrigin::new(ObservedTime::from_nanos(0)),
+        )
+    }
+
+    async fn capture_height(height: u32) -> EncodedScreenshot {
+        control()
+            .capture_screenshot(
+                &ScreenshotTransport { height },
+                &bound(),
+                ScreenshotRequest::new(
+                    krometrail_core::TargetId::from_uuid(uuid::Uuid::from_u128(1)),
+                    ScreenshotTarget::FullPage,
+                    krometrail_core::ImageFormat::Png,
+                    None,
+                )
+                .unwrap(),
+                krometrail_core::SessionTime::ZERO,
+            )
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn full_page_screenshot_above_height_guidance_threshold_has_one_warning() {
+        let screenshot = capture_height(TALL_SCREENSHOT_GUIDANCE_HEIGHT + 1).await;
+        assert_eq!(screenshot.metadata().image.height(), 8_193);
+        assert_eq!(screenshot.warnings().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn full_page_screenshot_at_height_guidance_threshold_has_no_warning() {
+        let screenshot = capture_height(TALL_SCREENSHOT_GUIDANCE_HEIGHT).await;
+        assert_eq!(screenshot.metadata().image.height(), 8_192);
+        assert!(screenshot.warnings().is_empty());
+    }
+}
+
 enum ComponentResult<T> {
     Completed(Result<T>),
     Interrupted(krometrail_core::KrometrailError),

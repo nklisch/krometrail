@@ -27,20 +27,19 @@ unsound for genuinely cross-process frames.
 
 ## Acceptance
 
-- Classifier and query gate agree for: same-origin frame, same-process opaque-origin
-  (srcdoc/data) frame, cross-origin out-of-process frame, stale frame reference.
+- Classifier and query gate agree for: same-origin frame, inherited same-process opaque-origin
+  (`about:srcdoc`/`about:blank`) frame, fresh opaque (`data:`) frame, cross-origin out-of-process
+  frame, and stale frame reference.
 - `list_frames` labels match what a subsequent frame-scoped query actually does.
 - Docs/skill text state the final contract.
 
 ## Completion notes
 
 The frame-scope resolver is authoritative: it revalidates the live frame tree and process
-inventory, rejects detected out-of-process and cross-origin frames, and permits a same-process
-frame when its effective origin equals the root. That equality intentionally includes two opaque
-origins (`None`), which covers a `data:` document with an inherited `srcdoc` frame. `list_frames`
-now uses the same equality, so those genuinely qualified frames report
-`same_origin_same_process`; unavailable process qualification remains `indeterminate` and fails
-closed.
+inventory, rejects detected out-of-process, cross-origin, and fresh opaque frames, and permits a
+same-process `about:srcdoc` or `about:blank` child when its opaque origin is inherited from the
+parent. `list_frames` uses the same predicate; unavailable process qualification remains
+`indeterminate` and fails closed.
 
 - Files changed: `crates/krometrail-cdp/src/control/contexts.rs`,
   `crates/krometrail-cdp/src/control/snapshot.rs`,
@@ -57,3 +56,9 @@ closed.
   story commits.
 - Stage intentionally remains `implementing` per the implementation request; no other work item
   was advanced.
+
+## Review-fix note (2026-07-19)
+
+Opaque-origin equality now qualifies only inherited `about:srcdoc`/`about:blank` children; fresh
+opaque URLs such as `data:` are labeled cross-origin and rejected by the same frame-scope gate.
+Regression coverage covers both inventory labeling and frame-query qualification.

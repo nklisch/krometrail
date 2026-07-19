@@ -3246,6 +3246,102 @@ mod tests {
     }
 
     #[test]
+    fn geometryless_snapshot_projection_keeps_legacy_concise_and_expanded_json() {
+        let generation = SnapshotGeneration::new(1).unwrap();
+        let root = SnapshotNodeId::new(1).unwrap();
+        let action = SnapshotNodeId::new(2).unwrap();
+        let reference = NodeReference {
+            target_id: target_id(),
+            generation,
+            node_id: action,
+        };
+        let snapshot = PageSnapshot::new(
+            context(),
+            generation,
+            vec![
+                SnapshotNode {
+                    id: root,
+                    parent: None,
+                    depth: 0,
+                    role: "document".into(),
+                    name: Some("Legacy page".into()),
+                    value: None,
+                    description: None,
+                    properties: vec![],
+                    actionable: false,
+                    reference: None,
+                    document_rect: None,
+                },
+                SnapshotNode {
+                    id: action,
+                    parent: Some(root),
+                    depth: 1,
+                    role: "button".into(),
+                    name: Some("Save".into()),
+                    value: None,
+                    description: None,
+                    properties: vec![],
+                    actionable: true,
+                    reference: Some(reference),
+                    document_rect: None,
+                },
+            ],
+            0,
+        )
+        .unwrap();
+
+        let concise = concise_snapshot(&snapshot, SnapshotNovelty::Novel, None).unwrap();
+        let expected_concise = json!({
+            "context": context(),
+            "generation": 1,
+            "targets": [{
+                "reference": reference,
+                "role": "button",
+                "name": "Save",
+                "value": null,
+                "states": []
+            }],
+            "omissions": {"source_nodes": 0, "presentation_targets": 0}
+        });
+        assert_eq!(
+            serde_json::to_vec(&concise).unwrap(),
+            serde_json::to_vec(&expected_concise).unwrap()
+        );
+
+        let expanded = expanded_snapshot(&snapshot, SnapshotNovelty::Novel, None).unwrap();
+        let expected_expanded = json!({
+            "context": context(),
+            "generation": 1,
+            "targets": [{
+                "reference": reference,
+                "role": "button",
+                "name": "Save",
+                "value": null,
+                "states": []
+            }],
+            "semantic_context": [{
+                "node_id": root,
+                "parent_node_id": null,
+                "depth": 0,
+                "role": "document",
+                "name": "Legacy page",
+                "value": null,
+                "description": null,
+                "states": []
+            }],
+            "omissions": {
+                "source_nodes": 0,
+                "presentation_targets": 0,
+                "presentation_context_nodes": 0
+            }
+        });
+        assert_eq!(
+            serde_json::to_vec(&expanded).unwrap(),
+            serde_json::to_vec(&expected_expanded).unwrap()
+        );
+    }
+
+    #[test]
     fn expanded_snapshot_complete_json_stays_within_its_budget() {
         let mut snapshot = complex_snapshot();
         snapshot

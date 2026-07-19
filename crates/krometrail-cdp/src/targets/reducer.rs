@@ -1141,6 +1141,58 @@ mod tests {
     }
 
     #[test]
+    fn seeded_about_blank_reconciles_to_one_selected_recordable_page_in_both_focus_modes() {
+        for focus in [
+            krometrail_core::BrowserFocusPolicy::Foreground,
+            krometrail_core::BrowserFocusPolicy::Preserve,
+        ] {
+            let state = reduce(
+                SupervisorState::new(compatibility()),
+                SupervisorInput::InitialTargets(vec![info("about-blank", "about:blank")]),
+            )
+            .unwrap()
+            .state;
+            let state = reduce(
+                state,
+                SupervisorInput::Attached {
+                    target_key: "about-blank".into(),
+                    session: crate::transport::TransportSessionId::new("session-about-blank")
+                        .unwrap(),
+                },
+            )
+            .unwrap()
+            .state;
+            let state = reduce(
+                state,
+                SupervisorInput::VisibilityChanged {
+                    target_key: "about-blank".into(),
+                    visibility: TargetVisibility::Hidden,
+                },
+            )
+            .unwrap()
+            .state;
+            let state = reduce(
+                state,
+                SupervisorInput::VisibilityChanged {
+                    target_key: "about-blank".into(),
+                    visibility: TargetVisibility::Visible,
+                },
+            )
+            .unwrap()
+            .state;
+            let ready = reduce(state, SupervisorInput::InitialReconciliationCompleted)
+                .unwrap()
+                .state;
+
+            assert_eq!(ready.targets().len(), 1, "focus mode: {focus:?}");
+            assert_eq!(ready.selected_target_key.as_deref(), Some("about-blank"));
+            let target = &ready.targets_by_key["about-blank"].target;
+            assert_eq!(target.target.url(), "about:blank");
+            assert_eq!(target.lifecycle, TargetLifecycle::Recording);
+        }
+    }
+
+    #[test]
     fn page_limit_failure_does_not_mutate_reducer_state_or_effects() {
         let infos = (0..MAX_KNOWN_PAGE_TARGETS)
             .map(|index| info(&format!("live-{index}"), "https://live.test"))

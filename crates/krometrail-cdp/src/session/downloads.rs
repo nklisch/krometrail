@@ -1123,7 +1123,7 @@ fn download_media_type(params: &Value) -> NonEmptyText {
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(str::to_owned)
+        .map(normalize_browser_media_type)
         .or_else(|| {
             params
                 .get("suggestedFilename")
@@ -1133,6 +1133,25 @@ fn download_media_type(params: &Value) -> NonEmptyText {
         })
         .unwrap_or_else(|| "application/octet-stream".to_owned());
     NonEmptyText::new(media_type).expect("download media type is non-empty")
+}
+
+fn normalize_browser_media_type(media_type: &str) -> String {
+    let essence = media_type
+        .split(';')
+        .next()
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    match essence.as_str() {
+        "text/html" | "application/xhtml+xml" => "text/plain".to_owned(),
+        "image/svg+xml" => "application/octet-stream".to_owned(),
+        "application/javascript"
+        | "text/javascript"
+        | "application/ecmascript"
+        | "text/ecmascript"
+        | "application/x-javascript" => "text/plain".to_owned(),
+        _ => media_type.to_owned(),
+    }
 }
 
 fn extension_media_type(filename: &str) -> Option<&'static str> {
@@ -1381,6 +1400,29 @@ mod tests {
                 .as_str(),
             "text/plain"
         );
+        for (reported, expected) in [
+            ("text/html", "text/plain"),
+            ("application/xhtml+xml; charset=utf-8", "text/plain"),
+            ("image/svg+xml", "application/octet-stream"),
+            ("text/javascript", "text/plain"),
+        ] {
+            assert_eq!(
+                download_media_type(&json!({
+                    "mimeType": reported,
+                    "suggestedFilename": "payload.bin"
+                }))
+                .as_str(),
+                expected
+            );
+        }
+        assert_eq!(
+            download_media_type(&json!({
+                "mimeType": "application/json; charset=utf-8",
+                "suggestedFilename": "payload.bin"
+            }))
+            .as_str(),
+            "application/json; charset=utf-8"
+        );
         for (filename, expected) in [
             ("hello.txt", "text/plain"),
             ("data.JSON", "application/json"),
@@ -1414,7 +1456,7 @@ mod tests {
                 &Transport {
                     calls: Mutex::new(Vec::new()),
                 },
-                &json!({"guid":"opaque-guid","url":"https://example.test/private?token=secret","suggestedFilename":"../report.txt"}),
+                &json!({"guid":"opaque-guid","url":"https://example.test/private?token=secret","mimeType":"text/html","suggestedFilename":"../report.txt"}),
             )
             .await;
         std::fs::write(authority.root.join("opaque-guid"), b"exact bytes").unwrap();

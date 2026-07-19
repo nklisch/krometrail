@@ -32,7 +32,8 @@ fallback. No content sniffing.
 ## Completion notes
 
 Managed download bookkeeping now captures a nonblank browser-reported `mimeType` when available,
-otherwise derives a bounded media type from `suggested_filename` (`txt`, `json`, `csv`, `md`,
+normalizes active-document and script-capable values to inert types, and otherwise derives a bounded
+media type from `suggested_filename` (`txt`, `json`, `csv`, `md`,
 `png`, `jpg`/`jpeg`, `gif`, `webp`, `pdf`, and `zip`). Unknown extensions retain
 `application/octet-stream`. HTML extensions map to `text/plain` so an MCP host cannot interpret a
 downloaded local resource as active HTML; no content sniffing was added.
@@ -45,3 +46,9 @@ downloaded local resource as active HTML; no content sniffing was added.
   three story commits.
 - Stage intentionally remains `implementing` per the implementation request; no other work item
   was advanced.
+
+## Review-fix note (2026-07-19)
+
+Browser-reported active-document and script MIME values now pass through inert download
+normalization before precedence is applied; HTML is served as `text/plain` and SVG as
+`application/octet-stream`, with direct resource-boundary regression coverage.
