@@ -1,7 +1,7 @@
 ---
 id: story-fix-incompatible-recording-cache-startup
 kind: story
-stage: review
+stage: done
 tags: [bug]
 parent: null
 depends_on: []
@@ -36,3 +36,14 @@ Classify incompatible schemas before mutation, close the old connection, remove 
 - **Regression evidence:** the new store test failed before implementation with the exact schema-6 `persistence_failed` error and passes afterward. A binary smoke test now starts the real MCP process against schema 6, observes clean protocol shutdown, verifies schema 7, verifies stale segments are gone, and verifies the managed profile remains.
 - **Four-step confirmation:** the focused regression passes; the full workspace test suite passes with loopback permission; the original MCP-startup reproduction passes through `tests/rust-runtime-smoke.rs`; and the live schema-6 cache was cleared while managed profiles and diagnostics remained. Formatting, workspace check, clippy with warnings denied, and the documentation build are green.
 - **Adjacent issues parked:** none.
+
+## Review (2026-07-19)
+
+**Verdict**: Approve
+
+**Blockers**: none
+**Important**: none
+**Nits**: none
+**Rejected**: none
+
+**Notes**: Bounded inline standalone-story review; no independent or cross-model reviewer ran. Correctness review confirmed that classification occurs before mutation, the old connection closes before deletion, reset is allowlisted to recording-cache members, and initialization retries once. Tests cover older, newer, and unversioned incompatible schemas plus the real MCP startup path. File-path handling remains fixed to owner-provided cache paths and emits source-safe failures. Public storage contracts, project patterns, troubleshooting, generated docs, and shipped skill guidance agree with the implementation. Feature/epic integration lenses were skipped because this is a standalone targeted repair.
