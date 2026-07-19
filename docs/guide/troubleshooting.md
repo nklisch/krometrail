@@ -16,6 +16,12 @@ Start with the symptom you can observe. Plugin-managed installs and standalone i
 
 The native plugin uses a private managed binary. It does **not** require a standalone `krometrail` command on `PATH`.
 
+An incompatible retained-evidence schema does not require manual recovery. Retained recordings and
+generated artifacts are cache: Krometrail clears only those incompatible cache members and continues
+startup. Managed browser profiles, diagnostics, and configuration remain untouched. A storage error
+that still prevents startup therefore indicates the cache could not be cleared or initialized; keep
+the bounded startup error for diagnosis rather than deleting the entire data directory.
+
 ## First activation cannot download the managed binary
 
 The first plugin activation needs HTTPS access to the Krometrail GitHub release and asset hosts. Later starts of the same plugin version use the verified local copy without checking the network.

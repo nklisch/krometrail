@@ -317,8 +317,11 @@ Segment publication treats writes, flushes, file sync, and rename as terminal wh
 
 Krometrail supports one current metadata-index format. It initializes an empty store directly to
 that format and opens exact current-format data without rewriting it. An unversioned non-empty,
-older, or newer index is rejected before schema mutation with a clear action to archive or remove
-the data directory and restart; the runtime does not migrate unsupported historical formats.
+older, or newer index is classified before schema mutation. Krometrail then clears the disposable
+recording cache—the index and sidecars, retained segments, generated artifacts, and deletion
+staging—initializes the current format, and continues startup. It does not migrate historical
+formats. Configuration, managed browser profiles, diagnostics, and other data-root members are not
+recording cache and remain untouched.
 
 When total stored data exceeds the budget, Krometrail removes the oldest unpinned segments across all sessions until usage returns below the limit.
 

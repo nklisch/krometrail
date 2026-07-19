@@ -1,7 +1,10 @@
 use std::{
-    io::{BufRead as _, BufReader, Read as _, Write as _},
+    io::{BufRead as _, BufReader, Read as _, Seek as _, SeekFrom, Write as _},
     process::{Command, Output, Stdio},
+    time::Duration,
 };
+
+use krometrail_store::{IndexStoreConfig, SqliteIndex};
 
 fn run(args: &[&str]) -> Output {
     let data = std::env::temp_dir().join(format!(
@@ -91,6 +94,58 @@ fn mcp_eof_exits_cleanly_without_non_protocol_output() {
     assert!(output.status.success(), "stderr: {}", text(&output.stderr));
     assert!(output.stdout.is_empty(), "stdout: {}", text(&output.stdout));
     assert!(output.stderr.is_empty(), "stderr: {}", text(&output.stderr));
+    std::fs::remove_dir_all(data).unwrap();
+}
+
+#[test]
+fn mcp_startup_replaces_an_incompatible_recording_cache() {
+    let data = std::env::temp_dir().join(format!(
+        "krometrail-mcp-stale-cache-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let database_path = data.join("index.sqlite3");
+    let segments_directory = data.join("segments");
+    drop(
+        SqliteIndex::open(IndexStoreConfig {
+            database_path: database_path.clone(),
+            segments_directory: segments_directory.clone(),
+            busy_timeout: Duration::from_millis(250),
+        })
+        .unwrap(),
+    );
+
+    let mut database = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&database_path)
+        .unwrap();
+    database.seek(SeekFrom::Start(60)).unwrap();
+    database.write_all(&6_u32.to_be_bytes()).unwrap();
+    database.sync_all().unwrap();
+    drop(database);
+    std::fs::write(segments_directory.join("stale.segment"), b"stale").unwrap();
+    std::fs::create_dir_all(data.join("browser-profiles/default")).unwrap();
+    std::fs::write(data.join("browser-profiles/default/profile"), b"preserve").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_krometrail"))
+        .arg("mcp")
+        .env("KROMETRAIL_DATA_DIR", &data)
+        .output()
+        .expect("MCP binary should replace stale cache and exit after stdin EOF");
+
+    assert!(output.status.success(), "stderr: {}", text(&output.stderr));
+    assert!(output.stdout.is_empty(), "stdout: {}", text(&output.stdout));
+    assert!(output.stderr.is_empty(), "stderr: {}", text(&output.stderr));
+    let database = std::fs::read(&database_path).unwrap();
+    assert_eq!(u32::from_be_bytes(database[60..64].try_into().unwrap()), 7);
+    assert!(!segments_directory.join("stale.segment").exists());
+    assert_eq!(
+        std::fs::read(data.join("browser-profiles/default/profile")).unwrap(),
+        b"preserve"
+    );
     std::fs::remove_dir_all(data).unwrap();
 }
 

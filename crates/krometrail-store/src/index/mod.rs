@@ -15,7 +15,7 @@ pub(crate) mod segments;
 mod timeline;
 
 use std::{
-    fs,
+    fs, io,
     path::PathBuf,
     sync::{Mutex, MutexGuard},
     time::Duration,
@@ -62,22 +62,26 @@ impl SqliteIndex {
         crate::permissions::ensure_private_directory(&config.segments_directory)
             .map_err(|_| persistence_error("could not create the segment directory"))?;
 
-        let mut connection = Connection::open_with_flags(
-            &config.database_path,
-            OpenFlags::SQLITE_OPEN_READ_WRITE
-                | OpenFlags::SQLITE_OPEN_CREATE
-                | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )
-        .map_err(|_| persistence_error("could not open the metadata database"))?;
-        crate::permissions::tighten_existing_file(&config.database_path)
-            .map_err(|_| persistence_error("could not protect the metadata database"))?;
-        connection
-            .busy_timeout(config.busy_timeout)
-            .map_err(|_| persistence_error("could not configure metadata lock contention"))?;
-        connection
-            .pragma_update(None, "foreign_keys", true)
-            .map_err(|_| persistence_error("could not enable metadata foreign keys"))?;
-        schema::initialize_or_validate(&mut connection)?;
+        let mut connection = open_metadata_connection(&config)?;
+        if let schema::SchemaState::Incompatible { found_version } =
+            schema::initialize_or_validate(&mut connection)?
+        {
+            drop(connection);
+            clear_recording_cache(&config)?;
+            crate::permissions::ensure_private_directory(&config.segments_directory)
+                .map_err(|_| persistence_error("could not recreate the segment directory"))?;
+            connection = open_metadata_connection(&config)?;
+            if schema::initialize_or_validate(&mut connection)? != schema::SchemaState::Ready {
+                return Err(persistence_error(
+                    "recording cache remained incompatible after reset",
+                ));
+            }
+            tracing::warn!(
+                found_version,
+                current_version = schema::CURRENT_SCHEMA_VERSION,
+                "cleared incompatible recording cache during startup"
+            );
+        }
         let journal: String = connection
             .query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))
             .map_err(|_| persistence_error("could not enable metadata write-ahead logging"))?;
@@ -135,6 +139,70 @@ impl SqliteIndex {
 
     pub(crate) fn segments_directory(&self) -> &std::path::Path {
         &self.segments_directory
+    }
+}
+
+fn open_metadata_connection(config: &IndexStoreConfig) -> krometrail_core::Result<Connection> {
+    let connection = Connection::open_with_flags(
+        &config.database_path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE
+            | OpenFlags::SQLITE_OPEN_CREATE
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|_| persistence_error("could not open the metadata database"))?;
+    crate::permissions::tighten_existing_file(&config.database_path)
+        .map_err(|_| persistence_error("could not protect the metadata database"))?;
+    connection
+        .busy_timeout(config.busy_timeout)
+        .map_err(|_| persistence_error("could not configure metadata lock contention"))?;
+    connection
+        .pragma_update(None, "foreign_keys", true)
+        .map_err(|_| persistence_error("could not enable metadata foreign keys"))?;
+    Ok(connection)
+}
+
+fn clear_recording_cache(config: &IndexStoreConfig) -> krometrail_core::Result<()> {
+    remove_file_if_present(&config.database_path)?;
+    for suffix in ["-wal", "-shm", "-journal"] {
+        let sidecar = config.database_path.with_file_name(format!(
+            "{}{}",
+            config
+                .database_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("index.sqlite3"),
+            suffix
+        ));
+        remove_file_if_present(&sidecar)?;
+    }
+    remove_directory_if_present(&config.segments_directory)?;
+    let data_directory = config
+        .database_path
+        .parent()
+        .ok_or_else(|| persistence_error("metadata database requires a parent directory"))?;
+    for name in ["artifacts", ".trash"] {
+        remove_directory_if_present(&data_directory.join(name))?;
+    }
+    Ok(())
+}
+
+fn remove_file_if_present(path: &std::path::Path) -> krometrail_core::Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err(persistence_error(
+            "could not clear incompatible recording cache",
+        )),
+    }
+}
+
+fn remove_directory_if_present(path: &std::path::Path) -> krometrail_core::Result<()> {
+    match fs::remove_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err(persistence_error(
+            "could not clear incompatible recording cache",
+        )),
     }
 }
 

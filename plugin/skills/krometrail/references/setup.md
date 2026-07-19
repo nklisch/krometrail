@@ -99,6 +99,12 @@ files from a native plugin cache into manual configuration.
 - **Server exits after a verified install:** if a standalone binary exists, run `krometrail --version`
   and `krometrail doctor` outside MCP for diagnostics. Do not replace the native launcher with a shell
   downloader.
+- **Release changes the retained-evidence schema:** no manual migration or data-directory deletion is
+  needed. Krometrail treats its index, segments, generated artifacts, and deletion staging as disposable
+  cache; it clears incompatible cache members and continues startup while preserving configuration,
+  managed browser profiles, diagnostics, and unrelated data-root members. If startup still reports
+  `persistence_failed`, preserve that bounded error because the cache reset or current initialization
+  itself failed.
 - **Browser not found:** install a supported local Chrome/Chromium build or pass an explicit executable
   through `start_browser` as advertised by its tool schema.
 - **Temporal-video tool absent:** FFmpeg was not qualified when this MCP server started. If the user
@@ -149,5 +155,7 @@ codex plugin marketplace remove krometrail
 Claude owns its plugin data lifecycle. Codex's fallback managed data is stored under
 `${XDG_DATA_HOME:-$HOME/.local/share}/krometrail/plugin` and can outlive plugin removal so an offline
 rollback remains possible. Independently installed binaries and retained browser evidence are always
-separate. Delete managed versions, standalone binaries, or retained evidence only when the user
-explicitly requests cleanup and after identifying the exact path and ownership.
+separate. Krometrail may automatically discard incompatible retained-evidence cache at startup; agents
+must not manually delete managed versions, standalone binaries, profiles, diagnostics, configuration,
+or entire data roots unless the user explicitly requests cleanup and the exact path and ownership are
+known.

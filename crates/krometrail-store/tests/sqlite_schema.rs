@@ -83,20 +83,81 @@ fn current_schema_reopens_and_has_the_declared_inventory() {
 }
 
 #[test]
-fn future_schema_is_refused_without_mutation() {
+fn future_schema_is_replaced_with_the_current_cache() {
     let directory = TempDir::new().unwrap();
     let config = config(&directory);
     let connection = Connection::open(&config.database_path).unwrap();
     connection.pragma_update(None, "user_version", 8).unwrap();
     drop(connection);
 
-    let error = SqliteIndex::open(config.clone()).err().unwrap();
-    assert_eq!(error.code, ErrorCode::PersistenceFailed);
+    drop(SqliteIndex::open(config.clone()).unwrap());
     let connection = Connection::open(&config.database_path).unwrap();
     let version: u32 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 8);
+    assert_eq!(version, 7);
+}
+
+#[test]
+fn incompatible_recording_cache_is_cleared_without_touching_other_data() {
+    let directory = TempDir::new().unwrap();
+    let config = config(&directory);
+    let connection = Connection::open(&config.database_path).unwrap();
+    connection
+        .execute("CREATE TABLE stale(value TEXT) STRICT", [])
+        .unwrap();
+    connection.pragma_update(None, "user_version", 6).unwrap();
+    drop(connection);
+
+    std::fs::create_dir_all(config.segments_directory.join("nested")).unwrap();
+    std::fs::write(
+        config.segments_directory.join("nested/stale.segment"),
+        b"stale",
+    )
+    .unwrap();
+    for cache in ["artifacts", ".trash"] {
+        std::fs::create_dir_all(directory.path().join(cache)).unwrap();
+        std::fs::write(directory.path().join(cache).join("stale"), b"stale").unwrap();
+    }
+    std::fs::create_dir_all(directory.path().join("browser-profiles/default")).unwrap();
+    std::fs::write(
+        directory.path().join("browser-profiles/default/profile"),
+        b"preserve",
+    )
+    .unwrap();
+    std::fs::write(directory.path().join("config.toml"), b"preserve").unwrap();
+
+    drop(SqliteIndex::open(config.clone()).unwrap());
+
+    let connection = Connection::open(&config.database_path).unwrap();
+    let version: u32 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 7);
+    let stale_table: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='stale')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(!stale_table);
+    assert!(
+        !config
+            .segments_directory
+            .join("nested/stale.segment")
+            .exists()
+    );
+    assert!(!directory.path().join("artifacts").exists());
+    assert!(!directory.path().join(".trash").exists());
+    assert_eq!(
+        std::fs::read(directory.path().join("browser-profiles/default/profile")).unwrap(),
+        b"preserve"
+    );
+    assert_eq!(
+        std::fs::read(directory.path().join("config.toml")).unwrap(),
+        b"preserve"
+    );
 }
 
 #[test]

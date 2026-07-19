@@ -4,6 +4,12 @@ use crate::persistence_error;
 
 pub(crate) const CURRENT_SCHEMA_VERSION: u32 = 7;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SchemaState {
+    Ready,
+    Incompatible { found_version: u32 },
+}
+
 pub(crate) const CURRENT_SCHEMA_SQL: &str = r#"
 CREATE TABLE sessions (
     session_id BLOB PRIMARY KEY CHECK(length(session_id) = 16),
@@ -256,18 +262,20 @@ WHEN NEW.retention_sequence IS NULL OR NEW.retention_sequence != OLD.retention_s
 BEGIN SELECT RAISE(ABORT, 'segment retention sequence is immutable'); END;
 "#;
 
-pub(crate) fn initialize_or_validate(connection: &mut Connection) -> krometrail_core::Result<()> {
+pub(crate) fn initialize_or_validate(
+    connection: &mut Connection,
+) -> krometrail_core::Result<SchemaState> {
     let version: u32 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(|_| persistence_error("could not read the metadata schema version"))?;
 
     if version == CURRENT_SCHEMA_VERSION {
-        return Ok(());
+        return Ok(SchemaState::Ready);
     }
     if version != 0 || has_user_tables(connection)? {
-        return Err(persistence_error(format!(
-            "metadata schema version {version} is incompatible with this Krometrail build; archive or remove the Krometrail data directory, then restart Krometrail"
-        )));
+        return Ok(SchemaState::Incompatible {
+            found_version: version,
+        });
     }
 
     let transaction = connection
@@ -281,7 +289,8 @@ pub(crate) fn initialize_or_validate(connection: &mut Connection) -> krometrail_
         .map_err(|_| persistence_error("could not record the metadata schema version"))?;
     transaction
         .commit()
-        .map_err(|_| persistence_error("could not commit metadata schema initialization"))
+        .map_err(|_| persistence_error("could not commit metadata schema initialization"))?;
+    Ok(SchemaState::Ready)
 }
 
 fn has_user_tables(connection: &Connection) -> krometrail_core::Result<bool> {
@@ -314,7 +323,10 @@ mod tests {
     #[test]
     fn empty_database_initializes_directly_to_current_schema() {
         let mut connection = Connection::open_in_memory().unwrap();
-        initialize_or_validate(&mut connection).unwrap();
+        assert_eq!(
+            initialize_or_validate(&mut connection).unwrap(),
+            SchemaState::Ready
+        );
 
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
@@ -481,7 +493,10 @@ mod tests {
     #[test]
     fn current_database_opens_without_mutation() {
         let mut connection = Connection::open_in_memory().unwrap();
-        initialize_or_validate(&mut connection).unwrap();
+        assert_eq!(
+            initialize_or_validate(&mut connection).unwrap(),
+            SchemaState::Ready
+        );
         connection
             .execute(
                 "INSERT INTO sessions(session_id,record_json) VALUES (?1,?2)",
@@ -490,7 +505,10 @@ mod tests {
             .unwrap();
         let before = catalog(&connection);
 
-        initialize_or_validate(&mut connection).unwrap();
+        assert_eq!(
+            initialize_or_validate(&mut connection).unwrap(),
+            SchemaState::Ready
+        );
 
         assert_eq!(catalog(&connection), before);
         assert_eq!(
@@ -502,7 +520,7 @@ mod tests {
     }
 
     #[test]
-    fn incompatible_versions_are_rejected_without_mutation() {
+    fn incompatible_versions_are_classified_without_mutation() {
         for version in [1, 2, 3, 4, 5, 6, 8, u32::MAX] {
             let mut connection = Connection::open_in_memory().unwrap();
             connection
@@ -514,12 +532,20 @@ mod tests {
             connection
                 .pragma_update(None, "user_version", version)
                 .unwrap();
+            let stored_version: u32 = connection
+                .pragma_query_value(None, "user_version", |row| row.get(0))
+                .unwrap();
             let before = catalog(&connection);
 
-            let error = initialize_or_validate(&mut connection).unwrap_err();
+            let state = initialize_or_validate(&mut connection).unwrap();
 
             assert_eq!(catalog(&connection), before);
-            assert!(error.to_string().contains("archive or remove"));
+            assert_eq!(
+                state,
+                SchemaState::Incompatible {
+                    found_version: stored_version
+                }
+            );
             assert_eq!(
                 connection
                     .query_row::<String, _, _>("SELECT value FROM retained", [], |row| row.get(0))
@@ -530,16 +556,16 @@ mod tests {
     }
 
     #[test]
-    fn unversioned_non_empty_database_is_rejected_without_mutation() {
+    fn unversioned_non_empty_database_is_classified_without_mutation() {
         let mut connection = Connection::open_in_memory().unwrap();
         connection
             .execute("CREATE TABLE retained(value TEXT) STRICT", [])
             .unwrap();
         let before = catalog(&connection);
 
-        let error = initialize_or_validate(&mut connection).unwrap_err();
+        let state = initialize_or_validate(&mut connection).unwrap();
 
         assert_eq!(catalog(&connection), before);
-        assert!(error.to_string().contains("archive or remove"));
+        assert_eq!(state, SchemaState::Incompatible { found_version: 0 });
     }
 }

@@ -7,7 +7,7 @@ Krometrail is a Rust 2024 workspace for local browser control and temporal visua
 Krometrail is an agent tool without supported third-party integrations. Optimize the executable, MCP surface, plugin, and retained evidence for the current agent workflow instead of preserving superseded shapes for hypothetical callers.
 
 - Replace obsolete request, response, installer, and persisted-format paths directly. Do not add compatibility shims, deprecated aliases, dual schemas, or migration prose unless a concrete supported consumer is identified first.
-- Keep one current persisted format. Open current data directly; reject an incompatible older store with a clear recovery action instead of maintaining historical migrations in the runtime.
+- Keep one current persisted format. Open current data directly; when retained cache has an incompatible format, clear only the known recording-cache members and initialize the current format. Configuration, managed browser profiles, and diagnostics are not store cache and must survive. Do not maintain historical migrations in the runtime.
 - Keep unpublished Rust internals clean and direct, and remove dead abstractions and tests when their behavior is removed.
 - Keep foundation documents and skill instructions current with the supported contract. Git carries history; current docs should not preserve superseded runtime instructions.
 - Continue validating inputs, invariants, privacy, provenance, and failure behavior rigorously. Removing compatibility work does not weaken correctness requirements.
