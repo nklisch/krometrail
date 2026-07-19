@@ -520,20 +520,11 @@ impl CaptureObserver for SessionCaptureObserver {
     }
 
     fn frame_event_stream_closed(&self, connection_generation: u64) {
-        let command_tx = self.command_tx.clone();
-        tokio::spawn(async move {
-            let _ = command_tx
-                .send(SupervisorCommand::Input(
-                    SupervisorInput::ForConnectionGeneration {
-                        generation: connection_generation,
-                        input: Box::new(SupervisorInput::ConnectionLost(TransportClose {
-                            reason: NonEmptyText::new("capture frame event stream closed")
-                                .expect("static reason is non-empty"),
-                        })),
-                    },
-                ))
-                .await;
-        });
+        self.notify_connection_lost(connection_generation, "capture frame event stream closed");
+    }
+
+    fn capture_stream_failed(&self, connection_generation: u64) {
+        self.notify_connection_lost(connection_generation, "capture stream failed");
     }
 
     fn visibility_changed(
@@ -558,6 +549,24 @@ impl CaptureObserver for SessionCaptureObserver {
         self.command_tx
             .try_send(SupervisorCommand::RefreshCaptureGeometry { transition })
             .is_ok()
+    }
+}
+
+impl SessionCaptureObserver {
+    fn notify_connection_lost(&self, connection_generation: u64, reason: &'static str) {
+        let command_tx = self.command_tx.clone();
+        tokio::spawn(async move {
+            let _ = command_tx
+                .send(SupervisorCommand::Input(
+                    SupervisorInput::ForConnectionGeneration {
+                        generation: connection_generation,
+                        input: Box::new(SupervisorInput::ConnectionLost(TransportClose {
+                            reason: NonEmptyText::new(reason).expect("static reason is non-empty"),
+                        })),
+                    },
+                ))
+                .await;
+        });
     }
 }
 

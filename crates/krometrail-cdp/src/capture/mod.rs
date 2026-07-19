@@ -173,6 +173,8 @@ pub(crate) trait CaptureObserver: Send + Sync {
 
     fn frame_event_stream_closed(&self, _connection_generation: u64) {}
 
+    fn capture_stream_failed(&self, _connection_generation: u64) {}
+
     fn visibility_changed(
         &self,
         _target_id: TargetId,

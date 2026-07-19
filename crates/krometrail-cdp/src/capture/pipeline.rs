@@ -762,6 +762,8 @@ impl StreamRuntime {
         );
         drop(state);
         self.fail_at(CaptureFailureStage::Acknowledgement);
+        self.observer
+            .capture_stream_failed(self.target.connection_generation);
     }
 }
 

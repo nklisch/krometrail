@@ -242,6 +242,7 @@ struct TestObserver {
     visibility: Mutex<Vec<krometrail_core::TargetVisibility>>,
     geometry_refreshes: Mutex<Vec<CaptureGeometryTransition>>,
     defer_geometry_refresh: AtomicBool,
+    capture_failures: Mutex<Vec<u64>>,
 }
 
 impl CaptureObserver for TestObserver {
@@ -251,6 +252,13 @@ impl CaptureObserver for TestObserver {
 
     fn gap_declared(&self, gap: krometrail_core::CaptureGap) {
         self.gaps.lock().unwrap().push(gap);
+    }
+
+    fn capture_stream_failed(&self, connection_generation: u64) {
+        self.capture_failures
+            .lock()
+            .unwrap()
+            .push(connection_generation);
     }
 
     fn visibility_changed(
@@ -2074,6 +2082,8 @@ async fn acknowledgement_beyond_an_explicit_short_deadline_fails_once_with_one_g
     let gaps = observer.gaps.lock().unwrap();
     assert_eq!(gaps.len(), 1);
     assert_eq!(gaps[0].reason(), &CaptureGapReason::AcknowledgementFailed);
+    drop(gaps);
+    assert_eq!(*observer.capture_failures.lock().unwrap(), vec![1]);
 }
 
 #[tokio::test]

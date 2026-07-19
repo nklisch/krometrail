@@ -8,6 +8,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use krometrail_cdp::{
     CaptureConfig, CdpTransport, CdpTransportFactory, CommandScope, NamedEvent,
     ProductionBrowserConnector, ReconnectPolicy, SupervisorConfig, TransportError, TransportEvents,
@@ -179,6 +180,147 @@ async fn closed_capture_frame_stream_reconnects_and_restores_capture_generation(
     let outcome = session.stop().await.unwrap();
     assert_eq!(outcome.closure(), krometrail_core::BrowserClosure::Detached);
     assert_eq!(outcome.quality(), krometrail_core::ShutdownQuality::Clean);
+}
+
+#[tokio::test]
+async fn failed_capture_acknowledgement_reconnects_without_retrying_the_token() {
+    let initial = Arc::new(support::scripted_cdp::ScriptedCdp::chrome());
+    initial.hold_events_open();
+    initial.push_response(
+        "Target.attachToTarget",
+        json!({"sessionId": "probe-session"}),
+    );
+    initial.push_response("Target.attachToTarget", json!({"sessionId": "session-a"}));
+    initial.push_failure("Page.screencastFrameAck", TransportError::CommandFailed);
+
+    let reconnected = Arc::new(support::scripted_cdp::ScriptedCdp::chrome());
+    reconnected.hold_events_open();
+    let targets = json!({"targetInfos": [{
+        "targetId": "target-a",
+        "type": "page",
+        "url": "http://fixture/",
+        "title": "fixture"
+    }]});
+    reconnected.push_response("Target.getTargets", targets.clone());
+    reconnected.push_response("Target.getTargets", targets);
+    reconnected.push_response(
+        "Target.attachToTarget",
+        json!({"sessionId": "probe-session-reconnected"}),
+    );
+    reconnected.push_response(
+        "Target.attachToTarget",
+        json!({"sessionId": "session-a-reconnected"}),
+    );
+
+    let factory = Arc::new(support::scripted_cdp::ScriptedCdpFactory::new([
+        Arc::clone(&initial),
+        Arc::clone(&reconnected),
+    ]));
+    let connector = ProductionBrowserConnector::new(
+        Arc::new(krometrail_cdp::SystemChromeLauncher::new(
+            krometrail_cdp::LauncherConfig::default(),
+        )),
+        factory,
+    )
+    .with_capture(
+        Arc::new(CaptureTestClock),
+        Arc::new(CaptureTestIds::default()),
+        Arc::new(CaptureTestSink),
+        Arc::new(support::retention::AlwaysAvailableRetention),
+        CaptureConfig::default(),
+    )
+    .with_config(SupervisorConfig {
+        reconnect: ReconnectPolicy {
+            delays: vec![Duration::ZERO].into_boxed_slice(),
+            attempt_timeout: Duration::from_secs(1),
+        },
+        subscriber_capacity: 64,
+        reconnect_target_limit: 8,
+        reconnect_attach_concurrency: 2,
+    });
+    let session = connector
+        .connect(BrowserConnectRequest::Attach(
+            AttachBrowser::new("ws://127.0.0.1:9222/devtools/browser/fake").unwrap(),
+        ))
+        .await
+        .unwrap();
+    let mut events = session.subscribe().await.unwrap();
+    initial
+        .wait_for_command_count("Page.startScreencast", 1)
+        .await;
+
+    initial.push_scoped_event(
+        "Page.screencastFrame",
+        Some("session-a"),
+        json!({"sessionId": 7, "data": "unused", "metadata": {}}),
+    );
+    reconnected
+        .wait_for_command_count("Page.startScreencast", 1)
+        .await;
+    assert_eq!(
+        initial
+            .command_calls()
+            .iter()
+            .filter(|call| call.method == "Page.screencastFrameAck")
+            .count(),
+        1
+    );
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if let Some(BrowserSessionEvent::CaptureGapDeclared { gap }) =
+                events.next().await.unwrap()
+                && gap.reason() == &CaptureGapReason::AcknowledgementFailed
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("the original acknowledgement gap remains observable during recovery");
+
+    let jpeg = [0xff, 0xd8, 0xff, 0xc0, 0, 8, 8, 0, 2, 0, 2, 1, 0xff, 0xd9];
+    reconnected.push_scoped_event(
+        "Page.screencastFrame",
+        Some("session-a-reconnected"),
+        json!({
+            "sessionId": 8,
+            "data": STANDARD.encode(jpeg),
+            "metadata": {
+                "deviceWidth": 800,
+                "deviceHeight": 600,
+                "pageScaleFactor": 1.0,
+                "timestamp": 1.0
+            }
+        }),
+    );
+    let status = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let status = session.status().await.unwrap();
+            if status.capture.len() == 1
+                && status.capture[0].attachment_generation() == 2
+                && status.capture[0].statistics().persisted_frames() == 1
+            {
+                break status;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("replacement capture generation persists a later frame");
+    assert_eq!(
+        status.capture[0].state(),
+        krometrail_core::CaptureStreamState::Capturing
+    );
+    assert_eq!(
+        reconnected
+            .command_calls()
+            .iter()
+            .filter(|call| call.method == "Page.screencastFrameAck")
+            .count(),
+        1
+    );
+    let outcome = session.stop().await.unwrap();
+    assert_eq!(outcome.closure(), krometrail_core::BrowserClosure::Detached);
 }
 
 #[tokio::test]
