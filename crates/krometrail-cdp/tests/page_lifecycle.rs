@@ -166,6 +166,28 @@ async fn scripted_session(transport: &ScriptedCdp) -> Arc<dyn krometrail_core::B
         .unwrap()
 }
 
+#[tokio::test]
+async fn unsolicited_auto_attached_session_releases_waiting_popup() {
+    let transport = ScriptedCdp::chrome();
+    let session = scripted_session(&transport).await;
+    transport.push_event(
+        "Target.attachedToTarget",
+        json!({
+            "sessionId": "popup-session",
+            "targetInfo": {"targetId": "popup", "type": "page", "url": "", "title": ""}
+        }),
+    );
+    transport
+        .wait_for_command("Runtime.runIfWaitingForDebugger")
+        .await;
+    assert!(transport.command_calls().iter().any(|call| {
+        call.method == "Runtime.runIfWaitingForDebugger"
+            && call.session.as_deref() == Some("popup-session")
+            && call.params == json!({})
+    }));
+    session.stop().await.unwrap();
+}
+
 fn assert_successful_observation(result: &krometrail_core::PageOperationResult) {
     assert!(matches!(result.outcome, PageOperationOutcome::Succeeded(_)));
     assert!(matches!(result.observation, ObservationPart::Available(_)));

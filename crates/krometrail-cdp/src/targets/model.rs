@@ -300,6 +300,10 @@ pub enum SupervisorInput {
         target_key: String,
         session: TransportSessionId,
     },
+    UnsolicitedAttached {
+        target_key: String,
+        session: TransportSessionId,
+    },
     TargetAttachFailed {
         target_key: String,
     },
@@ -355,6 +359,9 @@ pub enum SupervisorInput {
 pub enum SupervisorEffect {
     Attach {
         target_key: String,
+    },
+    ReleaseWaitingTarget {
+        session: TransportSessionId,
     },
     Detach {
         session: TransportSessionId,

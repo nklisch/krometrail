@@ -430,6 +430,7 @@ pub(super) async fn stage_reconnection_effects(
                 });
             }
             SupervisorEffect::Attach { .. }
+            | SupervisorEffect::ReleaseWaitingTarget { .. }
             | SupervisorEffect::RestoreSessionDomains { .. }
             | SupervisorEffect::ProbeInitialVisibility { .. }
             | SupervisorEffect::BeginReconnect

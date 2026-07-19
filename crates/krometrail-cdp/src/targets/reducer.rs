@@ -42,6 +42,7 @@ pub fn reduce(mut state: SupervisorState, input: SupervisorInput) -> Result<Redu
                 | SupervisorInput::TargetCreated(_)
                 | SupervisorInput::TargetInfoChanged(_)
                 | SupervisorInput::Attached { .. }
+                | SupervisorInput::UnsolicitedAttached { .. }
                 | SupervisorInput::TargetAttachFailed { .. }
                 | SupervisorInput::Detached { .. }
                 | SupervisorInput::TargetDestroyed { .. }
@@ -87,7 +88,11 @@ pub fn reduce(mut state: SupervisorState, input: SupervisorInput) -> Result<Redu
         SupervisorInput::Attached {
             target_key,
             session,
-        } => attach(&mut state, target_key, session, &mut effects, true)?,
+        } => attach(&mut state, target_key, session, &mut effects, true, false)?,
+        SupervisorInput::UnsolicitedAttached {
+            target_key,
+            session,
+        } => attach(&mut state, target_key, session, &mut effects, true, true)?,
         SupervisorInput::TargetAttachFailed { target_key } => {
             let failed_target_id = if let Some(target) = state.targets_by_key.get_mut(&target_key) {
                 if !matches!(
@@ -388,7 +393,7 @@ fn adopt_pending_attachment(
     let Some(session) = remove_pending_key(state, key) else {
         return Ok(());
     };
-    attach(state, key.to_owned(), session, effects, true)
+    attach(state, key.to_owned(), session, effects, true, false)
 }
 
 fn attach(
@@ -397,6 +402,7 @@ fn attach(
     session: crate::transport::TransportSessionId,
     effects: &mut Vec<SupervisorEffect>,
     probe_visibility: bool,
+    unsolicited: bool,
 ) -> Result<()> {
     let Some(target) = state.targets_by_key.get_mut(&key) else {
         // Chrome can auto-attach a popup before its URL becomes recordable. Keep that flat
@@ -407,6 +413,11 @@ fn attach(
             .insert(key.clone(), session.clone())
         {
             effects.push(SupervisorEffect::Detach { session: previous });
+        }
+        if unsolicited {
+            effects.push(SupervisorEffect::ReleaseWaitingTarget {
+                session: session.clone(),
+            });
         }
         if !state
             .pending_attached_order
@@ -804,7 +815,7 @@ fn reconcile_restored(
             },
         );
         if let Some(session) = reconnected.session {
-            attach(state, key, session, effects, false)?;
+            attach(state, key, session, effects, false, false)?;
         } else {
             effects.push(SupervisorEffect::Attach { target_key: key });
         }
@@ -827,7 +838,7 @@ fn reconcile_restored(
         (changed, needs_attachment)
     };
     if let Some(session) = reconnected.session {
-        attach(state, key, session, effects, false)?;
+        attach(state, key, session, effects, false, false)?;
     } else if needs_attachment {
         // A snapshot may omit the flat session when auto-attach raced discovery. Re-requesting the
         // exact target key is idempotent and is safer than treating a missing session as closure.
@@ -1346,7 +1357,7 @@ mod tests {
         let session = crate::transport::TransportSessionId::new("popup-session").unwrap();
         let reduction = reduce(
             SupervisorState::new(compatibility()),
-            SupervisorInput::Attached {
+            SupervisorInput::UnsolicitedAttached {
                 target_key: "unrecordable-popup".into(),
                 session: session.clone(),
             },
@@ -1359,6 +1370,18 @@ mod tests {
                 .pending_attached_sessions
                 .get("unrecordable-popup"),
             Some(&session)
+        );
+        assert_eq!(
+            reduction
+                .effects
+                .iter()
+                .filter(|effect| matches!(
+                    effect,
+                    SupervisorEffect::ReleaseWaitingTarget { session: attached }
+                        if attached == &session
+                ))
+                .count(),
+            1
         );
         let info = TransportTargetInfo::new(
             "unrecordable-popup",
@@ -2019,6 +2042,12 @@ mod tests {
                 },
             )
             .unwrap();
+            assert!(
+                reduction
+                    .effects
+                    .iter()
+                    .all(|effect| !matches!(effect, SupervisorEffect::ReleaseWaitingTarget { .. }))
+            );
             state = reduction.state;
             if index == 16 {
                 assert!(reduction.effects.iter().any(|effect| matches!(

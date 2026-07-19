@@ -281,6 +281,16 @@ session/reconnect.rs, session/operations.rs)
   not expose a persistent popup target, so the live qualification timed out.
   The observed evidence was a dispatched interaction with degraded post-action
   observation and no popup in the supervised context inventory.
+- Unit 1 root cause is confirmed on Chrome 149.0.7827.155: browser-level
+  `Target.setAutoAttach {autoAttach:true, waitForDebuggerOnStart:false,
+  flatten:true}` auto-attaches a `window.open` popup while its URL is empty,
+  suspends the initial navigation despite reporting `waitingForDebugger:false`,
+  and releases it when `Runtime.runIfWaitingForDebugger` is sent on the pending
+  session. Unsolicited pending attaches now emit that explicit release effect;
+  commanded attaches do not. The opt-in popup test was rerun with
+  `KROMETRAIL_REAL_CHROME_TESTS=1` but could not start Chrome in this sandbox:
+  the executable exited 133 during startup after Crashpad reported
+  `setsockopt: Operation not permitted`, before popup assertions ran.
 - Unit 2: dispatched interaction results retain their interaction record and
   degrade unavailable post-action observation parts; preflight and dispatch
   failures remain errors.

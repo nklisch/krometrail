@@ -23,5 +23,10 @@ implementation unit; this story is the durable checkpoint for that unit.
 Reducer coverage now retains unsolicited auto-attached popup sessions and
 adopts them when a recordable URL arrives, preserving opener identity. The
 post-dispatch observation path remains degraded-safe. Deterministic coverage
-passes; the opt-in live Chrome test is present but timed out in this environment
-because no persistent popup target was exposed.
+passes, including the session-scoped `Runtime.runIfWaitingForDebugger` release.
+The confirmed Chrome 149 root cause is that browser-level auto-attach suspends a
+popup's initial `window.open` navigation while falsely reporting
+`waitingForDebugger:false`; releasing the pending session unblocks the commit.
+The opt-in live Chrome test was rerun with its environment gate enabled but
+Chrome exited 133 during sandbox startup (`Crashpad setsockopt:
+Operation not permitted`) before the popup assertions could run.

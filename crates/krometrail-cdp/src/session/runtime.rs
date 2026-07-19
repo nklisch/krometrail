@@ -234,6 +234,22 @@ pub(super) async fn apply_effects(
                 *state = reduction.state;
                 queue.extend(reduction.effects);
             }
+            SupervisorEffect::ReleaseWaitingTarget { session } => {
+                if transport
+                    .send_raw(
+                        &CommandScope::Session(session.clone()),
+                        "Runtime.runIfWaitingForDebugger",
+                        serde_json::json!({}),
+                    )
+                    .await
+                    .is_err()
+                {
+                    tracing::debug!(
+                        session = %session.as_str(),
+                        "browser.target.release_waiting_failed"
+                    );
+                }
+            }
             SupervisorEffect::Detach { session } => {
                 let _ = transport
                     .send_raw(
@@ -285,6 +301,7 @@ pub(super) async fn apply_effects(
                             queued.target_id != context.target_id
                         }
                         SupervisorEffect::Detach { .. }
+                        | SupervisorEffect::ReleaseWaitingTarget { .. }
                         | SupervisorEffect::Publish(_)
                         | SupervisorEffect::BeginReconnect
                         | SupervisorEffect::Shutdown { .. } => true,
@@ -1002,7 +1019,7 @@ pub(super) fn parse_event(kind: TargetEventKind, event: NamedEvent) -> Option<Su
         TargetEventKind::Destroyed => Some(SupervisorInput::TargetDestroyed {
             target_key: event.params.get("targetId")?.as_str()?.to_owned(),
         }),
-        TargetEventKind::Attached => Some(SupervisorInput::Attached {
+        TargetEventKind::Attached => Some(SupervisorInput::UnsolicitedAttached {
             target_key: event
                 .params
                 .pointer("/targetInfo/targetId")?
