@@ -338,12 +338,11 @@ for backing DOM nodes that remain present; disappeared bindings are removed. The
 error instead of guessing at a replacement node. Coordinate actions bypass
 structured references and declare their coordinate space explicitly.
 
-The MCP response projector derives compact and interaction-only views only after this canonical snapshot is
-acquired and installed. One selector ranks focused, editable, other non-link, then link actions; admits each action
-together with its complete missing ancestor closure within the 48-node and 12-KiB budgets; and emits selected nodes
-in original preorder with exact presentation-omission accounting. Compact mode can fill remaining budget with
-preorder context, while interaction-only stops after action closures. Neither projection changes registry authority,
-generation, references, or canonical acquisition.
+The MCP response projector derives concise and expanded views only after the canonical snapshot is acquired and
+installed. Concise mode ranks focused, editable, other non-link, then link targets and maps them into a flattened
+bounded target index without structural ancestor closure. Expanded mode retains bounded semantic structure and
+context. Both preserve exact generation-scoped references and presentation-omission accounting; neither changes
+registry authority, generation, references, or canonical acquisition.
 
 ## Interaction Execution
 
@@ -585,10 +584,11 @@ Tool handlers:
 
 Tool handlers do not contain CDP commands, SQL, image processing, or retention logic.
 
-The MCP response projector owns additive agent-facing detail selection. It can replace inline screenshots or
-full structures with compact summaries and canonical resource links without changing domain acquisition or
-retention. Snapshot detail alone adds `interaction_only`; page-state retains legacy, full, compact, and omit.
-Concise status is a projection of the same `BrowserStatus`, not a second status model.
+The MCP response projector owns one agent-facing detail progression: concise by default, then expanded and full.
+It maps already-acquired structures into an action-centric summary or broader context without changing domain
+acquisition or retention. Inline image transport remains an orthogonal explicit opt-in. Errors, warnings,
+interaction anchors, resource identities, and privacy-bounded diagnostics on failed or degraded results are never
+projected away. Concise status is a projection of the same `BrowserStatus`, not a second status model.
 
 Target supervision remains the authority for pages, frames, and popup relationships. CDP adapters expose
 privacy-bounded page assets, clipboard operations, and download lifecycle through core ports; completed

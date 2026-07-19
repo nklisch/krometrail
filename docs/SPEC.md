@@ -109,16 +109,16 @@ Action dispatch or mutation, current-state observation, and retained temporal ca
 
 Read-only inspection operations do not generate additional screenshots unless requested.
 
-MCP callers can request an additive response projection that independently selects inline screenshot,
-snapshot, page-state, temporal-bundle, and diagnostic detail. Projection changes presentation only: the action outcome,
-interaction anchor, warnings, retained evidence, and canonical resource identities remain authoritative and
-available. Omitting the projection selects the lower-cost agent response: compact structured detail and no
-inline image bytes. Callers explicitly request full structured detail, inline images, or the legacy presentation
-when needed. Snapshot detail additionally supports `interaction_only`, which returns only ranked actionable nodes
-and their complete ancestor paths; page-state detail does not accept that value. Status requests likewise default to a concise operational projection while preserving the complete
-status contract as an explicit detail level.
+MCP responses use one detail progression: `concise`, `expanded`, and `full`. Omitting response preferences selects
+`concise`. Projection changes presentation only: the action outcome, interaction anchor, warnings, retained evidence,
+and canonical resource identities remain authoritative and available. Concise action responses contain the current
+page identity, navigation/focus changes, and a flattened generation-scoped target index rather than a pruned page
+tree. Expanded responses add bounded semantic and page context. Full responses expose the complete acquired
+structures. Inline pixels remain a separate explicit opt-in because image transport is independent from structured
+detail. Failed and degraded responses always include privacy-bounded diagnostics; callers cannot suppress the only
+actionable failure evidence. Status requests use the same concise-to-full direction.
 
-A batch of actions returns per-step status and timeline anchors. It returns a final live observation and can include per-step screenshots when requested.
+A batch of actions returns per-step status and timeline anchors. It returns a final live observation and includes per-step screenshot fields only when screenshots were requested.
 
 ## Structured Page Snapshots
 
@@ -126,13 +126,11 @@ Krometrail exposes a compact structured representation of the current page for a
 
 The snapshot includes relevant accessible content, roles, names, values, states, and actionable nodes. It may include DOM-derived information where necessary to resolve interaction geometry.
 
-Compact snapshot projection preserves a small canonical snapshot byte-for-byte. When a snapshot exceeds the
-48-node or 12-KiB presentation budget, selection first ranks focused actions, editable actions, other non-link
-actions, and links, using canonical preorder to break ties. An action is included only when its complete missing
-ancestor path fits atomically; compact mode then fills remaining budget with preorder context. The explicit
-`interaction_only` projection uses the same action selection without unrelated context fill. Both emit original
-preorder, preserve generation-scoped references and observation context, and add every presentation omission to
-the canonical omission count.
+Concise snapshot presentation ranks focused targets, editable targets, other non-link targets, and links, using
+canonical preorder to break ties. It emits a flattened bounded target index with each exact generation-scoped
+reference and the role, name, value, and states required for interaction; structural ancestors are not repeated.
+Expanded presentation adds bounded semantic structure and context. Full presentation returns the complete acquired
+snapshot. Every bounded projection reports exact presentation omissions.
 
 Element references are scoped to the target attachment and document generation that produced them.
 A later snapshot of the same attached document preserves a reference while its backing DOM node
@@ -219,11 +217,11 @@ The MCP surface provides composable standalone tools plus batching. Both derive 
 
 Page-scoped requests select the current page when `target` is omitted. Click defaults to the left
 button, no modifiers, one click, and no navigation wait; fill defaults to replace mode and no
-navigation wait; key input defaults to no focus locator and no navigation wait. Explicit stable
-1.x request values retain their existing meaning.
+navigation wait; key input defaults to no focus locator and no navigation wait. Explicit request
+values have the meanings declared by the current generated schema.
 
 Managed launches accept a `focus` policy of `foreground` or `preserve`; omission defaults to
-`foreground` for 1.x compatibility. The policy governs Krometrail-owned CDP foreground commands
+`foreground`. The policy governs Krometrail-owned CDP foreground commands
 after launch. It does not promise that the operating system will keep the initial Chrome process
 launch in the background. Under `foreground`, pointer, drag, and scroll operations foreground a
 hidden page through the managed CDP target authority before resolving or dispatching input. Under
