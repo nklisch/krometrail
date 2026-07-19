@@ -630,6 +630,13 @@ enum SemanticQueryWire {
 }
 
 impl SemanticQuery {
+    pub const fn requires_dom_semantics(&self) -> bool {
+        match self {
+            Self::Role { container_text, .. } => container_text.is_some(),
+            Self::Label { .. } | Self::Text { .. } | Self::TestId { .. } => true,
+        }
+    }
+
     pub fn role(role: impl Into<String>, name: Option<SemanticTextMatch>) -> Result<Self> {
         let role = validate_semantic_role(role.into())?;
         Ok(Self::Role {
@@ -1198,8 +1205,8 @@ mod tests {
         assert_eq!(request.target, PageSelection::Selected);
         assert_eq!(request.max_matches, DEFAULT_SEMANTIC_MATCH_LIMIT);
         let SemanticQuery::Role {
-            name: Some(name),
-            container_text: Some(container_text),
+            name: Some(ref name),
+            container_text: Some(ref container_text),
             ..
         } = request.query
         else {
@@ -1210,8 +1217,10 @@ mod tests {
         assert!(name.matches("save now"));
         assert_eq!(container_text.mode, SemanticTextMatchMode::Contains);
         assert!(container_text.matches("first Todo one item"));
+        assert!(request.query.requires_dom_semantics());
 
         let legacy = SemanticQuery::role("button", None).unwrap();
+        assert!(!legacy.requires_dom_semantics());
         assert!(
             serde_json::to_value(legacy)
                 .unwrap()
@@ -1235,6 +1244,14 @@ mod tests {
                 false
             )
             .is_err()
+        );
+
+        assert!(SemanticQuery::Label { text: name.clone() }.requires_dom_semantics());
+        assert!(SemanticQuery::Text { text: name.clone() }.requires_dom_semantics());
+        assert!(
+            SemanticQuery::test_id("save")
+                .unwrap()
+                .requires_dom_semantics()
         );
     }
 

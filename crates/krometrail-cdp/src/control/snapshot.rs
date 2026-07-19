@@ -101,7 +101,7 @@ struct ActiveSnapshot {
     node_by_backend: HashMap<i64, SnapshotNodeId>,
     semantic: HashMap<SnapshotNodeId, SemanticNodeMetadata>,
     parent_by_node: HashMap<SnapshotNodeId, Option<SnapshotNodeId>>,
-    semantic_captured: bool,
+    dom_semantics_captured: bool,
     next_node_id: u32,
 }
 
@@ -256,7 +256,13 @@ impl PageControl {
             }
         };
         let snapshot = self
-            .capture_snapshot_for_frame(transport, bound, started_at, true, frame.as_ref())
+            .capture_snapshot_for_frame(
+                transport,
+                bound,
+                started_at,
+                request.query.requires_dom_semantics(),
+                frame.as_ref(),
+            )
             .await?;
         let result = self.snapshots.query(bound, &request, &snapshot)?;
         Ok(BrowserOperationResult::QueryPage(Box::new(result)))
@@ -267,9 +273,9 @@ impl PageControl {
         transport: &dyn CdpTransport,
         bound: &BoundTarget,
         started_at: krometrail_core::SessionTime,
-        include_semantic: bool,
+        include_dom_semantics: bool,
     ) -> Result<PageSnapshot> {
-        self.capture_snapshot_for_frame(transport, bound, started_at, include_semantic, None)
+        self.capture_snapshot_for_frame(transport, bound, started_at, include_dom_semantics, None)
             .await
     }
 
@@ -278,7 +284,7 @@ impl PageControl {
         transport: &dyn CdpTransport,
         bound: &BoundTarget,
         started_at: krometrail_core::SessionTime,
-        include_semantic: bool,
+        include_dom_semantics: bool,
         frame: Option<&ResolvedFrameDocument>,
     ) -> Result<PageSnapshot> {
         let scope = CommandScope::Session(bound.transport_session.clone());
@@ -296,7 +302,7 @@ impl PageControl {
             .map_err(|error| {
                 transport_error(error, ErrorCode::PageObservationFailed, bound.target_id)
             })?;
-        let dom_response = if include_semantic {
+        let dom_response = if include_dom_semantics {
             Some(
                 transport
                     .send_raw(
@@ -381,7 +387,7 @@ impl PageControl {
                 node_by_backend,
                 semantic,
                 parent_by_node,
-                semantic_captured: include_semantic,
+                dom_semantics_captured: include_dom_semantics,
                 next_node_id,
             },
         );
@@ -453,18 +459,21 @@ impl SnapshotRegistry {
                     && active.attachment_generation == bound.attachment_generation
             })
             .ok_or_else(|| stale(bound.target_id, "semantic snapshot is no longer active"))?;
-        if !active.semantic_captured {
+        if request.query.requires_dom_semantics() && !active.dom_semantics_captured {
             return Err(operation_error(
                 ErrorCode::PageObservationFailed,
                 bound.target_id,
-                "semantic snapshot metadata is unavailable",
+                "this query requires DOM semantic acquisition, but the active snapshot contains accessibility data only",
             ));
         }
         if snapshot.omitted_node_count != 0 {
             return Err(operation_error(
                 ErrorCode::PageObservationFailed,
                 bound.target_id,
-                "semantic query requires a complete snapshot; omitted nodes could change the match outcome",
+                format!(
+                    "accessibility acquisition omitted {} nodes after the 5000-node or text-size limit; narrow the query to a smaller document",
+                    snapshot.omitted_node_count
+                ),
             ));
         }
         if let Some(scope) = request.scope {
@@ -782,7 +791,10 @@ fn decode_dom_snapshot(
     if backend_ids.len() > MAX_SNAPSHOT_NODES {
         return Err(malformed(
             target_id,
-            "DOM snapshot exceeds the 5000-node semantic limit",
+            format!(
+                "selected DOM semantic acquisition contains {} nodes, exceeding the 5000-node limit; narrow the query to a smaller document",
+                backend_ids.len()
+            ),
         ));
     }
     let node_count = backend_ids.len();
@@ -1769,6 +1781,35 @@ mod tests {
         json!({"strings": strings, "documents": [document(0, 0), document(1, 100)]})
     }
 
+    fn multi_document_snapshot_with_large_parent() -> Value {
+        let strings = vec!["main", "child", "DIV", "H1", "#text", "Nested heading"];
+        let parent_count = MAX_SNAPSHOT_NODES + 1;
+        let parent_indices = (0..parent_count)
+            .map(|index| if index == 0 { -1_i64 } else { 0_i64 })
+            .collect::<Vec<_>>();
+        let parent = json!({
+            "frameId": 0,
+            "nodes": {
+                "parentIndex": parent_indices,
+                "nodeName": vec![2; parent_count],
+                "backendNodeId": (1..=parent_count).collect::<Vec<_>>(),
+                "attributes": vec![Vec::<usize>::new(); parent_count]
+            },
+            "layout": {"nodeIndex": [], "text": []}
+        });
+        let child = json!({
+            "frameId": 1,
+            "nodes": {
+                "parentIndex": [-1, 0, 1],
+                "nodeName": [2, 3, 4],
+                "backendNodeId": [101, 102, 107],
+                "attributes": [[], [], []]
+            },
+            "layout": {"nodeIndex": [2], "text": [5]}
+        });
+        json!({"strings": strings, "documents": [parent, child]})
+    }
+
     fn script_frame_capture(transport: &SnapshotTransport, final_loader_id: &str) {
         for loader_id in ["child-loader", "child-loader", final_loader_id] {
             transport.push("Page.getFrameTree", frame_tree(loader_id));
@@ -1881,6 +1922,125 @@ mod tests {
                     method == "Accessibility.getFullAXTree" && params["frameId"] == "child"
                 })
         );
+    }
+
+    #[tokio::test]
+    async fn role_name_frame_query_uses_ax_without_capturing_dom_semantics() {
+        let transport = SnapshotTransport::default();
+        for _ in 0..2 {
+            transport.push("Page.getFrameTree", frame_tree("child-loader"));
+            transport.push("Target.getTargets", json!({"targetInfos": []}));
+        }
+        transport.push("Accessibility.getFullAXTree", child_ax_tree());
+        let mut control = page_control();
+        let bound = frame_bound();
+        let child = control
+            .list_frames(&transport, &bound)
+            .await
+            .unwrap()
+            .frames[1]
+            .reference
+            .clone();
+        let mut request = QueryPageRequest::new(
+            krometrail_core::PageSelection::Target(target()),
+            SemanticQuery::role(
+                "heading",
+                Some(
+                    krometrail_core::SemanticTextMatch::new(
+                        "Nested heading",
+                        krometrail_core::SemanticTextMatchMode::Exact,
+                        false,
+                    )
+                    .unwrap(),
+                ),
+            )
+            .unwrap(),
+            None,
+            10,
+        )
+        .unwrap();
+        request.document = krometrail_core::SemanticDocumentScope::Frame(child);
+
+        let BrowserOperationResult::QueryPage(result) = control
+            .query_page(
+                &transport,
+                &bound,
+                request,
+                krometrail_core::SessionTime::ZERO,
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected query result");
+        };
+        assert_eq!(
+            result.outcome,
+            krometrail_core::SemanticQueryOutcome::Unique
+        );
+        assert!(
+            transport
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(method, _)| method != "DOMSnapshot.captureSnapshot")
+        );
+    }
+
+    #[tokio::test]
+    async fn dom_query_limits_only_the_selected_frame_document() {
+        let transport = SnapshotTransport::default();
+        for _ in 0..3 {
+            transport.push("Page.getFrameTree", frame_tree("child-loader"));
+            transport.push("Target.getTargets", json!({"targetInfos": []}));
+        }
+        transport.push("Accessibility.getFullAXTree", child_ax_tree());
+        transport.push(
+            "DOMSnapshot.captureSnapshot",
+            multi_document_snapshot_with_large_parent(),
+        );
+        let mut control = page_control();
+        let bound = frame_bound();
+        let child = control
+            .list_frames(&transport, &bound)
+            .await
+            .unwrap()
+            .frames[1]
+            .reference
+            .clone();
+        let mut request = QueryPageRequest::new(
+            krometrail_core::PageSelection::Target(target()),
+            SemanticQuery::Text {
+                text: krometrail_core::SemanticTextMatch::new(
+                    "Nested heading",
+                    krometrail_core::SemanticTextMatchMode::Exact,
+                    false,
+                )
+                .unwrap(),
+            },
+            None,
+            10,
+        )
+        .unwrap();
+        request.document = krometrail_core::SemanticDocumentScope::Frame(child);
+
+        let BrowserOperationResult::QueryPage(result) = control
+            .query_page(
+                &transport,
+                &bound,
+                request,
+                krometrail_core::SessionTime::ZERO,
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected query result");
+        };
+        assert_eq!(
+            result.outcome,
+            krometrail_core::SemanticQueryOutcome::Unique
+        );
+        assert_eq!(result.matches[0].name.as_deref(), Some("Nested heading"));
     }
 
     #[tokio::test]
@@ -2239,7 +2399,7 @@ mod tests {
                     (unrelated_text, Some(generic_wrapper)),
                     (uncontained_checkbox, Some(generic_wrapper)),
                 ]),
-                semantic_captured: true,
+                dom_semantics_captured: true,
                 next_node_id: 9,
             },
         );
@@ -2409,7 +2569,7 @@ mod tests {
                     (second, Some(scope)),
                     (outside, Some(root)),
                 ]),
-                semantic_captured: true,
+                dom_semantics_captured: true,
                 next_node_id: 5,
             },
         );
@@ -2650,7 +2810,7 @@ mod tests {
             node_by_backend: HashMap::from([(42, node_id)]),
             semantic: HashMap::new(),
             parent_by_node: HashMap::new(),
-            semantic_captured: false,
+            dom_semantics_captured: false,
             next_node_id: 1,
         };
         let assert_stale = |error: krometrail_core::KrometrailError| {
@@ -2749,7 +2909,7 @@ mod tests {
                 node_by_backend: HashMap::from([(42, node_id)]),
                 semantic: HashMap::new(),
                 parent_by_node: HashMap::new(),
-                semantic_captured: false,
+                dom_semantics_captured: false,
                 next_node_id: 7,
             },
         );
