@@ -284,6 +284,27 @@ struct SnapshotFrames {
 }
 
 impl FrameSource for SnapshotFrames {
+    fn list_source_frames(
+        &self,
+        request: krometrail_core::SourceFramesRequest,
+    ) -> PortFuture<'_, krometrail_core::Result<krometrail_core::SourceFrameList>> {
+        self.inner.list_source_frames(request)
+    }
+
+    fn fetch_source_frames(
+        &self,
+        request: krometrail_core::SourceFramesRequest,
+    ) -> PortFuture<'_, krometrail_core::Result<krometrail_core::SourceFrameBatch>> {
+        self.inner.fetch_source_frames(request)
+    }
+
+    fn read_source_frame(
+        &self,
+        request: krometrail_core::RetrieveSourceFrameRequest,
+    ) -> PortFuture<'_, krometrail_core::Result<krometrail_core::SourceFrameRead>> {
+        self.inner.read_source_frame(request)
+    }
+
     fn frames_by_id(
         &self,
         frame_ids: Vec<FrameId>,

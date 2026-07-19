@@ -732,6 +732,12 @@ mod tests {
             let frames = self.handles(&request);
             Box::pin(std::future::ready(Ok(SourceFrameBatch { range, frames })))
         }
+        fn read_source_frame(
+            &self,
+            _request: krometrail_core::RetrieveSourceFrameRequest,
+        ) -> PortFuture<'_, Result<krometrail_core::SourceFrameRead>> {
+            panic!("unused")
+        }
         fn frames_by_id(&self, _: Vec<FrameId>) -> PortFuture<'_, Result<Vec<EncodedFrame>>> {
             panic!("unused")
         }

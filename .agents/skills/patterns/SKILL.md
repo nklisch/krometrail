@@ -23,7 +23,7 @@ Available patterns:
 - [exact-release-managed-activation.md](exact-release-managed-activation.md) — Plugin/runtime activation derives one exact release version, verifies it before execution, and avoids unconstrained latest-driven updates.
 - [hermetic-release-boundary-fixtures.md](hermetic-release-boundary-fixtures.md) — Distribution tests shadow external commands and release assets in temp state to verify release seams without network or user-home mutation.
 - [layered-cdp-qualification.md](layered-cdp-qualification.md) — Deterministic doubles, boundary fault injection, and explicit real-browser qualification form one test ladder.
-- [ordered-sql-migrations.md](ordered-sql-migrations.md) — Immutable numbered SQL revisions are centrally ordered and transactionally applied.
+- [current-sql-schema.md](current-sql-schema.md) — Bootstrap one declarative current schema and reject incompatible retained formats before mutation.
 - [canonical-json-schema-artifacts.md](canonical-json-schema-artifacts.md) — Rust models generate canonical checked-in JSON and schemas verified by digest and byte equality.
 - [narrowest-temporal-scope.md](narrowest-temporal-scope.md) — Constrain time-bearing values at every narrowing boundary, preserving semantic provenance while fitting concrete retained evidence.
 - [lifecycle-complete-browser-overrides.md](lifecycle-complete-browser-overrides.md) — Persisted target overrides must apply, clear, roll back, and replay every external-state facet as one acknowledged lifecycle contract.

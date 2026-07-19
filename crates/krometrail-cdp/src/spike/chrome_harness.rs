@@ -87,7 +87,7 @@ use super::{
     evidence::{
         BrowserEvidence, EVIDENCE_SCHEMA_VERSION, FixtureEvidence, GateConfiguration,
         GateProvenance, GateResult, GateStatus, RSS_SAMPLE_INTERVAL_SECONDS, RSS_WARMUP_SECONDS,
-        SanitizedEnvironment, SourceIdentity, TransportEvidenceV1, TransportGateId,
+        SanitizedEnvironment, SourceIdentity, TransportEvidenceV2, TransportGateId,
         attest_relevant_source_at, configuration_digest, rss_measurements_are_valid,
     },
     fixture_server::StaticFixtureServer,
@@ -260,7 +260,7 @@ pub async fn run_real_chrome_gate(
     chrome_binary: &Path,
     expected_revision: &str,
     repository_root: &Path,
-) -> Result<TransportEvidenceV1, SpikeError> {
+) -> Result<TransportEvidenceV2, SpikeError> {
     let hard_stop_seconds = configuration.hard_stop_seconds;
     let stage = StageTracker::new(QualificationStage::Initializing);
     run_with_hard_stop_stage(
@@ -285,7 +285,7 @@ async fn run_real_chrome_gate_inner(
     expected_revision: &str,
     repository_root: &Path,
     stage: StageTracker,
-) -> Result<TransportEvidenceV1, SpikeError> {
+) -> Result<TransportEvidenceV2, SpikeError> {
     let _removed_profiles = cleanup_stale_gate_profiles()?;
     let source_attestation = attest_relevant_source_at(repository_root, expected_revision)?;
     // Unknown future events cannot be made to occur in real Chrome. Run the exact candidate
@@ -855,7 +855,7 @@ async fn run_real_chrome_gate_inner(
         configuration_sha256: configuration_digest(&configuration),
         source_attestation: Some(source_attestation),
     };
-    let mut evidence = TransportEvidenceV1 {
+    let mut evidence = TransportEvidenceV2 {
         schema_version: EVIDENCE_SCHEMA_VERSION,
         candidate: factory.candidate(),
         source: SourceIdentity {
@@ -891,7 +891,7 @@ pub fn failure_evidence(
     expected_revision: &str,
     repository_root: &Path,
     error: &SpikeError,
-) -> TransportEvidenceV1 {
+) -> TransportEvidenceV2 {
     let gates = TransportGateId::ALL
         .into_iter()
         .map(|id| GateResult {
@@ -905,7 +905,7 @@ pub fn failure_evidence(
             ),
         })
         .collect();
-    TransportEvidenceV1 {
+    TransportEvidenceV2 {
         schema_version: EVIDENCE_SCHEMA_VERSION,
         candidate: factory.candidate(),
         source: SourceIdentity {

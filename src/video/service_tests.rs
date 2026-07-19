@@ -43,6 +43,25 @@ struct FakeFrames {
 }
 
 impl FrameSource for FakeFrames {
+    fn list_source_frames(
+        &self,
+        _: krometrail_core::SourceFramesRequest,
+    ) -> PortFuture<'_, krometrail_core::Result<krometrail_core::SourceFrameList>> {
+        panic!("unused")
+    }
+    fn fetch_source_frames(
+        &self,
+        _: krometrail_core::SourceFramesRequest,
+    ) -> PortFuture<'_, krometrail_core::Result<krometrail_core::SourceFrameBatch>> {
+        panic!("unused")
+    }
+    fn read_source_frame(
+        &self,
+        _: krometrail_core::RetrieveSourceFrameRequest,
+    ) -> PortFuture<'_, krometrail_core::Result<krometrail_core::SourceFrameRead>> {
+        panic!("unused")
+    }
+
     fn frames_by_id(
         &self,
         frame_ids: Vec<FrameId>,

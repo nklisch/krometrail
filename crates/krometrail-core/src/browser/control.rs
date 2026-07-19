@@ -134,10 +134,6 @@ impl<'de> Deserialize<'de> for BrowserStatus {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, Default, schemars::JsonSchema)]
 pub struct ListPagesRequest {}
 
-// Keep the former unit-value spelling source-compatible while publishing an object schema.
-#[allow(non_upper_case_globals)]
-pub const ListPagesRequest: ListPagesRequest = ListPagesRequest {};
-
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CreatePageRequest {
     pub initial_url: Option<NonEmptyText>,

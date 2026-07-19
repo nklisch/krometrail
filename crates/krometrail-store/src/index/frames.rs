@@ -3,8 +3,9 @@ use std::fs::File;
 use krometrail_core::{
     ByteOffset, CaptureOrdinal, CaptureWarning, CapturedFrame, DeviceScaleFactor, EncodedFrame,
     ErrorCode, FrameAddress, FrameAvailability, FrameId, FrameSource, ImageFormat, KrometrailError,
-    NonEmptyText, ObservationKind, ObservationPayloadRef, PortFuture, SessionId, SessionRange,
-    TargetId, TimelineObservation,
+    NonEmptyText, ObservationKind, ObservationPayloadRef, PortFuture, RetrieveSourceFrameRequest,
+    SessionId, SessionRange, SourceFrameBatch, SourceFrameList, SourceFrameRead,
+    SourceFramesRequest, TargetId, TimelineObservation,
 };
 use rusqlite::{OptionalExtension, Transaction, params};
 
@@ -252,6 +253,27 @@ fn decode_snapshot(raw: RawSnapshot) -> krometrail_core::Result<FrameReadSnapsho
 }
 
 impl FrameSource for SqliteIndex {
+    fn list_source_frames(
+        &self,
+        _request: SourceFramesRequest,
+    ) -> PortFuture<'_, krometrail_core::Result<SourceFrameList>> {
+        Box::pin(std::future::ready(Err(progressive_read_unsupported())))
+    }
+
+    fn fetch_source_frames(
+        &self,
+        _request: SourceFramesRequest,
+    ) -> PortFuture<'_, krometrail_core::Result<SourceFrameBatch>> {
+        Box::pin(std::future::ready(Err(progressive_read_unsupported())))
+    }
+
+    fn read_source_frame(
+        &self,
+        _request: RetrieveSourceFrameRequest,
+    ) -> PortFuture<'_, krometrail_core::Result<SourceFrameRead>> {
+        Box::pin(std::future::ready(Err(progressive_read_unsupported())))
+    }
+
     fn frames_by_id(
         &self,
         frame_ids: Vec<FrameId>,
@@ -529,6 +551,14 @@ impl FrameSource for SqliteIndex {
                 .map_err(|_| persistence_error("stored frame availability is invalid"))
         })
     }
+}
+
+fn progressive_read_unsupported() -> KrometrailError {
+    KrometrailError::new(
+        ErrorCode::Unsupported,
+        NonEmptyText::new("the metadata index is not a coherent progressive frame authority")
+            .expect("static frame-source error is non-empty"),
+    )
 }
 
 struct RawMetadata {

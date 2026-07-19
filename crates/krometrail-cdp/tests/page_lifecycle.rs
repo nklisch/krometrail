@@ -188,7 +188,7 @@ async fn status_and_page_mutations_share_exact_selected_target_state() {
 
     let listed = session
         .execute(
-            BrowserOperationRequest::ListPages(ListPagesRequest),
+            BrowserOperationRequest::ListPages(ListPagesRequest {}),
             krometrail_core::BrowserOperationContext::default(),
         )
         .await
@@ -663,7 +663,7 @@ async fn request_cancellation_isolated_from_the_session_before_and_during_dispat
     // Per-request cancellation must not poison the session or another operation.
     let listed = session
         .execute(
-            BrowserOperationRequest::ListPages(ListPagesRequest),
+            BrowserOperationRequest::ListPages(ListPagesRequest {}),
             BrowserOperationContext::default(),
         )
         .await

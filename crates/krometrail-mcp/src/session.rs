@@ -313,7 +313,7 @@ mod tests {
         assert_eq!(connector.connect_calls.load(Ordering::SeqCst), 1);
         let error = owner
             .execute(
-                BrowserOperationRequest::ListPages(ListPagesRequest),
+                BrowserOperationRequest::ListPages(ListPagesRequest {}),
                 BrowserOperationContext::default(),
             )
             .await

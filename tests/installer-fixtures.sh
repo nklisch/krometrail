@@ -60,6 +60,15 @@ else
 fi
 EOF
 	chmod +x "$dir/bin/curl"
+	cat > "$dir/bin/uname" <<'EOF'
+#!/bin/sh
+case "${1:-}" in
+	-s) printf 'Linux\n' ;;
+	-m) printf 'x86_64\n' ;;
+	*) printf 'Linux\n' ;;
+esac
+EOF
+	chmod +x "$dir/bin/uname"
 }
 
 write_artifact() {
@@ -67,7 +76,11 @@ write_artifact() {
 	local mode="$2"
 	printf '%s' "$3" > "$dir/artifact"
 	chmod "$mode" "$dir/artifact"
-	sha256sum "$dir/artifact" | sed 's#  .*#  krometrail-linux-x64#' > "$dir/checksums.txt"
+	if command -v sha256sum >/dev/null 2>&1; then
+		sha256sum "$dir/artifact" | sed 's#  .*#  krometrail-linux-x64#' > "$dir/checksums.txt"
+	else
+		shasum -a 256 "$dir/artifact" | sed 's#  .*#  krometrail-linux-x64#' > "$dir/checksums.txt"
+	fi
 }
 
 seed_previous_install() {
@@ -90,7 +103,7 @@ assert_previous_install_preserved() {
 run_installer() {
 	local dir="$1"
 	shift
-	local latest_tag="${FAKE_LATEST_TAG:-v0.2.20}"
+	local latest_tag="${FAKE_LATEST_TAG:-v1.1.2}"
 	local download_mode="${FAKE_DOWNLOAD_MODE:-success}"
 	PATH="$dir/bin:$PATH" \
 	HOME="$dir/home" \
@@ -109,38 +122,19 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Latest resolution must stop at the immutable legacy boundary before an
-# artifact URL is requested.
-latest_dir="$(mktemp -d)"
-tmp_dirs+=("$latest_dir")
-make_fixture "$latest_dir"
-write_artifact "$latest_dir" 0644 'legacy bytes\n'
-: > "$latest_dir/curl.log"
-if run_installer "$latest_dir" > "$latest_dir/output" 2>&1; then
-	fail "latest legacy release was accepted"
-fi
-require_text "$latest_dir/output" 'immutable legacy TypeScript/DAP boundary'
-require_text "$latest_dir/curl.log" 'https://api.github.com/repos/nklisch/krometrail/releases/latest'
-if grep -Fq -- '/releases/download/' "$latest_dir/curl.log"; then
-	fail "latest legacy resolution downloaded an artifact"
-fi
-if [[ -e "$latest_dir/install/krometrail" ]]; then
-	fail "latest legacy resolution created an installation"
-fi
-
-# Explicit legacy versions must be rejected without making any HTTP request.
+# Malformed explicit versions are rejected before making an HTTP request.
 explicit_dir="$(mktemp -d)"
 tmp_dirs+=("$explicit_dir")
 make_fixture "$explicit_dir"
-write_artifact "$explicit_dir" 0644 'legacy bytes\n'
-for legacy_version in v0.2.20 v0.2.19 v0.1.99; do
+write_artifact "$explicit_dir" 0644 'unused bytes\n'
+for invalid_version in v1 v1.2 v1.2.x v1.2.3.4; do
 	: > "$explicit_dir/curl.log"
-	if run_installer "$explicit_dir" --version "$legacy_version" > "$explicit_dir/output" 2>&1; then
-		fail "explicit legacy release ${legacy_version} was accepted"
+	if run_installer "$explicit_dir" --version "$invalid_version" > "$explicit_dir/output" 2>&1; then
+		fail "malformed release ${invalid_version} was accepted"
 	fi
-	require_text "$explicit_dir/output" "Release ${legacy_version} is blocked"
+	require_text "$explicit_dir/output" "Invalid release version: ${invalid_version}"
 	if [[ -s "$explicit_dir/curl.log" ]]; then
-		fail "explicit legacy rejection made a network request for ${legacy_version}"
+		fail "malformed release rejection made a network request for ${invalid_version}"
 	fi
 done
 
@@ -216,7 +210,7 @@ fi
 require_text "$download_failure_dir/output" 'Download failed'
 assert_previous_install_preserved "$download_failure_dir"
 
-# A configurable post-cutoff latest response must install successfully without
+# A configurable latest response must install successfully without
 # an explicit --version argument. This exercises both latest resolution and
 # exact identity validation in isolation from GitHub.
 latest_success_dir="$(mktemp -d)"
@@ -232,7 +226,7 @@ exit 1
 : > "$latest_success_dir/curl.log"
 if ! FAKE_LATEST_TAG=v0.2.22 run_installer "$latest_success_dir" > "$latest_success_dir/output" 2>&1; then
 	cat "$latest_success_dir/output" >&2
-	fail "synthetic post-cutoff latest Rust release was rejected"
+	fail "synthetic latest release was rejected"
 fi
 [[ -x "$latest_success_dir/install/krometrail" ]] || fail "successful latest install is not executable"
 require_text "$latest_success_dir/output" 'Installed krometrail v0.2.22'

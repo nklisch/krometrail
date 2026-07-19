@@ -887,7 +887,7 @@ fn request_for_scenario(
             BrowserOperationRequest::ObserveLive(LiveObservationRequest::new(context.target_id))
         }
         BrowserOperationKind::ListPages => {
-            BrowserOperationRequest::ListPages(krometrail_core::ListPagesRequest)
+            BrowserOperationRequest::ListPages(krometrail_core::ListPagesRequest {})
         }
         BrowserOperationKind::CreatePage => {
             BrowserOperationRequest::CreatePage(CreatePageRequest::new(Some(fixture.url()))?)

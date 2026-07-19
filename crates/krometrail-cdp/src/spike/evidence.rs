@@ -343,11 +343,6 @@ pub struct TransportDecisionV2 {
     pub rationale: String,
 }
 
-// Rust aliases keep the spike's internal call sites source-compatible while the serialized
-// contract is explicitly version 2. They are not accepted as legacy JSON schema aliases.
-pub type TransportEvidenceV1 = TransportEvidenceV2;
-pub type TransportDecisionV1 = TransportDecisionV2;
-
 const RELEVANT_SOURCE_PATHS: &[&str] = &[
     "Cargo.toml",
     "Cargo.lock",
@@ -620,7 +615,7 @@ fn git_command_bytes(root: &Path, args: &[&str]) -> Result<Vec<u8>, SpikeError> 
     Ok(output.stdout)
 }
 
-pub fn validate_evidence(value: &TransportEvidenceV1) -> Result<(), SpikeError> {
+pub fn validate_evidence(value: &TransportEvidenceV2) -> Result<(), SpikeError> {
     if value.schema_version != EVIDENCE_SCHEMA_VERSION {
         return Err(SpikeError::new(
             SpikeErrorCode::Evidence,
@@ -752,7 +747,7 @@ pub fn validate_evidence(value: &TransportEvidenceV1) -> Result<(), SpikeError> 
     Ok(())
 }
 
-fn validate_observed_capture_and_handoff(value: &TransportEvidenceV1) -> Result<(), SpikeError> {
+fn validate_observed_capture_and_handoff(value: &TransportEvidenceV2) -> Result<(), SpikeError> {
     let configuration = &value.configuration;
     for (gate_id, key, minimum) in [
         (
@@ -860,7 +855,7 @@ fn validate_observed_capture_and_handoff(value: &TransportEvidenceV1) -> Result<
     Ok(())
 }
 
-fn validate_observed_deadlines(value: &TransportEvidenceV1) -> Result<(), SpikeError> {
+fn validate_observed_deadlines(value: &TransportEvidenceV2) -> Result<(), SpikeError> {
     let disconnect = value
         .gates
         .iter()
@@ -1066,12 +1061,12 @@ fn validate_rss_measurements(
 /// Validate an evidence object before it crosses into the committed evidence tree.
 /// Machine-local paths, endpoints, and secret-bearing process details are rejected rather
 /// than silently normalized into an ambiguous report.
-pub fn sanitize_evidence(value: TransportEvidenceV1) -> Result<TransportEvidenceV1, SpikeError> {
+pub fn sanitize_evidence(value: TransportEvidenceV2) -> Result<TransportEvidenceV2, SpikeError> {
     validate_evidence(&value)?;
     Ok(value)
 }
 
-fn validate_sanitized_strings(value: &TransportEvidenceV1) -> Result<(), SpikeError> {
+fn validate_sanitized_strings(value: &TransportEvidenceV2) -> Result<(), SpikeError> {
     let encoded = serde_json::to_value(value)
         .map_err(|error| SpikeError::new(SpikeErrorCode::Evidence, error.to_string()))?;
     fn walk(value: &serde_json::Value) -> bool {
@@ -1101,7 +1096,7 @@ fn validate_sanitized_strings(value: &TransportEvidenceV1) -> Result<(), SpikeEr
     Ok(())
 }
 
-fn validate_sanitized_fields(value: &TransportEvidenceV1) -> Result<(), SpikeError> {
+fn validate_sanitized_fields(value: &TransportEvidenceV2) -> Result<(), SpikeError> {
     let identity = [
         ("candidate.name", value.candidate.name.as_str()),
         ("candidate.version", value.candidate.version.as_str()),
@@ -1498,7 +1493,7 @@ const CDPKIT_NAME: &str = "cdpkit";
 const CDPKIT_VERSION: &str = "0.4.0";
 const CDPKIT_CHECKSUM: &str = "c3fdb566d913b31e0014391a94c0db4ed871dbb76577dd1b2f2c5f6df158bfaa";
 
-fn gate(report: &TransportEvidenceV1, id: TransportGateId) -> Result<&GateResult, SpikeError> {
+fn gate(report: &TransportEvidenceV2, id: TransportGateId) -> Result<&GateResult, SpikeError> {
     report
         .gates
         .iter()
@@ -1561,7 +1556,7 @@ fn require_elapsed_below_hard_stop(
     Ok(())
 }
 
-fn validate_gate_contract(report: &TransportEvidenceV1) -> Result<(), SpikeError> {
+fn validate_gate_contract(report: &TransportEvidenceV2) -> Result<(), SpikeError> {
     for result in &report.gates {
         if result.status != GateStatus::Pass {
             return Err(SpikeError::for_gate(
@@ -1713,7 +1708,7 @@ fn validate_gate_contract(report: &TransportEvidenceV1) -> Result<(), SpikeError
 /// This is intentionally shared by local Linux runs and the hosted macOS workflow so
 /// platform qualification cannot silently diverge at the final validation boundary.
 pub fn validate_decisive_report(
-    report: &TransportEvidenceV1,
+    report: &TransportEvidenceV2,
     expected_platform: &str,
 ) -> Result<(), SpikeError> {
     let root = resolve_repository_root(None)?;
@@ -1721,7 +1716,7 @@ pub fn validate_decisive_report(
 }
 
 pub fn validate_decisive_report_at(
-    report: &TransportEvidenceV1,
+    report: &TransportEvidenceV2,
     expected_platform: &str,
     repository_root: &Path,
 ) -> Result<(), SpikeError> {
@@ -1811,13 +1806,13 @@ fn sha256_digest(bytes: &[u8]) -> String {
     format!("sha256:{:x}", hasher.finalize())
 }
 
-fn report_digest(report: &TransportEvidenceV1) -> Result<String, SpikeError> {
+fn report_digest(report: &TransportEvidenceV2) -> Result<String, SpikeError> {
     let bytes = serde_json::to_vec(report)
         .map_err(|error| SpikeError::new(SpikeErrorCode::Evidence, error.to_string()))?;
     Ok(sha256_digest(&bytes))
 }
 
-pub fn decide(reports: &[TransportEvidenceV1]) -> Result<TransportDecisionV1, SpikeError> {
+pub fn decide(reports: &[TransportEvidenceV2]) -> Result<TransportDecisionV2, SpikeError> {
     if reports.len() != 2 {
         return Err(SpikeError::new(
             SpikeErrorCode::Evidence,
@@ -1835,9 +1830,9 @@ pub fn decide(reports: &[TransportEvidenceV1]) -> Result<TransportDecisionV1, Sp
 }
 
 fn decide_with_digests(
-    reports: &[TransportEvidenceV1],
+    reports: &[TransportEvidenceV2],
     digests: &[String],
-) -> Result<TransportDecisionV1, SpikeError> {
+) -> Result<TransportDecisionV2, SpikeError> {
     if reports.len() != 2 || digests.len() != reports.len() {
         return Err(SpikeError::new(
             SpikeErrorCode::Evidence,
@@ -1918,7 +1913,7 @@ fn decide_with_digests(
         })
         .collect::<Vec<_>>();
     platform_evidence.sort_by(|left, right| left.platform.cmp(&right.platform));
-    Ok(TransportDecisionV1 {
+    Ok(TransportDecisionV2 {
         schema_version: EVIDENCE_SCHEMA_VERSION,
         decision: TransportDecision::AdoptCdpkit,
         candidate: reports[0].candidate.clone(),
@@ -1935,7 +1930,7 @@ fn decide_with_digests(
 pub fn decide_from_files(
     linux_path: &Path,
     macos_path: &Path,
-) -> Result<TransportDecisionV1, SpikeError> {
+) -> Result<TransportDecisionV2, SpikeError> {
     let root = resolve_repository_root(None)?;
     decide_from_files_at(linux_path, macos_path, &root)
 }
@@ -1944,7 +1939,7 @@ pub fn decide_from_files_at(
     linux_path: &Path,
     macos_path: &Path,
     repository_root: &Path,
-) -> Result<TransportDecisionV1, SpikeError> {
+) -> Result<TransportDecisionV2, SpikeError> {
     let paths = [("linux", linux_path), ("macos", macos_path)];
     let mut reports = Vec::with_capacity(paths.len());
     let mut digests = Vec::with_capacity(paths.len());
@@ -1955,7 +1950,7 @@ pub fn decide_from_files_at(
                 format!("cannot read {platform} evidence: {error}"),
             )
         })?;
-        let report = serde_json::from_slice::<TransportEvidenceV1>(&bytes).map_err(|error| {
+        let report = serde_json::from_slice::<TransportEvidenceV2>(&bytes).map_err(|error| {
             SpikeError::new(
                 SpikeErrorCode::Evidence,
                 format!("cannot decode {platform} evidence: {error}"),

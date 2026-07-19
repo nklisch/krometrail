@@ -1,7 +1,7 @@
 #!/bin/sh
 # Krometrail installer
-# Linux release assets are statically linked musl binaries; asset names are a
-# public compatibility contract and must stay aligned with the release matrix.
+# Linux release assets are statically linked musl binaries; asset names must
+# stay aligned with the release matrix.
 # Usage: curl -fsSL https://krometrail.dev/install.sh | sh
 #        curl -fsSL https://krometrail.dev/install.sh | sh -s -- --version VERSION
 #        KROMETRAIL_INSTALL_DIR=/usr/local/bin curl -fsSL https://krometrail.dev/install.sh | sh
@@ -11,10 +11,6 @@ set -eu
 REPO="nklisch/krometrail"
 BINARY_NAME="krometrail"
 GITHUB="https://github.com/${REPO}"
-# Immutable boundary: v0.2.20 is the preserved TypeScript/DAP release, not a
-# Rust release. Keep this cutoff in one place so neither latest nor explicit
-# version selection can accidentally serve the legacy runtime.
-LEGACY_RELEASE_CUTOFF="0.2.20"
 
 # --- Color output ---
 
@@ -56,7 +52,7 @@ Usage:
   curl -fsSL https://krometrail.dev/install.sh | sh -s -- [OPTIONS]
 
 Options:
-  --version VERSION        Install a specific current version (e.g. v1.0.0)
+  --version VERSION        Install a specific version (e.g. v1.0.0)
   --install-dir DIR        Install to DIR (default: ~/.local/bin)
   --no-modify-path         Don't offer to modify shell PATH
   -h, --help               Show this help
@@ -158,12 +154,12 @@ fetch() {
 
 resolve_version() {
 	if [ -n "$VERSION" ]; then
-		# Ensure version starts with v before validating the release boundary.
+		# Ensure version starts with v before validating its syntax.
 		case "$VERSION" in
 			v*) ;;
 			*)  VERSION="v${VERSION}" ;;
 		esac
-		reject_legacy_release
+		validate_release_version
 		info "Using requested version: ${VERSION}"
 		return
 	fi
@@ -181,17 +177,10 @@ resolve_version() {
 		exit 1
 	fi
 
-	reject_legacy_release
+	validate_release_version
 }
 
 # --- Release safety ---
-
-normalize_decimal() {
-	number="$1"
-	number="$(printf '%s' "$number" | sed 's/^0*//')"
-	[ -n "$number" ] || number="0"
-	printf '%s' "$number"
-}
 
 is_valid_release_version() {
 	candidate="$1"
@@ -214,37 +203,9 @@ is_valid_release_version() {
 	case "$release_patch" in ""|*[!0-9]*) return 1 ;; esac
 }
 
-is_legacy_release_version() {
-	candidate="$1"
-	case "$candidate" in
-		v*) release_without_prefix="${candidate#v}" ;;
-		*)  release_without_prefix="$candidate" ;;
-	esac
-	release_major="$(normalize_decimal "${release_without_prefix%%.*}")"
-	release_rest="${release_without_prefix#*.}"
-	release_minor="$(normalize_decimal "${release_rest%%.*}")"
-	release_patch="$(normalize_decimal "${release_rest#*.}")"
-
-	cutoff_major="$(normalize_decimal "${LEGACY_RELEASE_CUTOFF%%.*}")"
-	cutoff_rest="${LEGACY_RELEASE_CUTOFF#*.}"
-	cutoff_minor="$(normalize_decimal "${cutoff_rest%%.*}")"
-	cutoff_patch="$(normalize_decimal "${cutoff_rest#*.}")"
-
-	if [ "$release_major" -lt "$cutoff_major" ]; then return 0; fi
-	if [ "$release_major" -gt "$cutoff_major" ]; then return 1; fi
-	if [ "$release_minor" -lt "$cutoff_minor" ]; then return 0; fi
-	if [ "$release_minor" -gt "$cutoff_minor" ]; then return 1; fi
-	[ "$release_patch" -le "$cutoff_patch" ]
-}
-
-reject_legacy_release() {
+validate_release_version() {
 	if ! is_valid_release_version "$VERSION"; then
 		err "Invalid release version: ${VERSION} (expected vMAJOR.MINOR.PATCH)"
-		exit 1
-	fi
-	if is_legacy_release_version "$VERSION"; then
-		err "Release ${VERSION} is blocked: v${LEGACY_RELEASE_CUTOFF} is the immutable legacy TypeScript/DAP boundary."
-		err "Choose a release newer than v${LEGACY_RELEASE_CUTOFF}, or build from source instead."
 		exit 1
 	fi
 }

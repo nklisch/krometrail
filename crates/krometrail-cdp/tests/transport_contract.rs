@@ -8,11 +8,10 @@ use krometrail_cdp::spike::{
     CandidateContractEvidence, CandidateContractTrace, CandidateIdentity,
     CandidateRuntimeAssertions, CanonicalProtocolFixture, CanonicalWireObservation,
     CanonicalWireObservationKind, FixtureEvidence, GateConfiguration, GateProvenance, GateResult,
-    GateStatus, SanitizedEnvironment, ScriptedCdpPeer, SourceIdentity, TransportEvidenceV1,
-    TransportEvidenceV2, TransportGateId, canonical_decisive_configuration,
-    canonical_decisive_configuration_digest, committed_protocol_fixtures, configuration_digest,
-    decide_from_files, is_git_revision, ordered_protocol_fixture_digest, sanitize_evidence,
-    validate_evidence, write_json_schema,
+    GateStatus, SanitizedEnvironment, ScriptedCdpPeer, SourceIdentity, TransportEvidenceV2,
+    TransportGateId, canonical_decisive_configuration, canonical_decisive_configuration_digest,
+    committed_protocol_fixtures, configuration_digest, decide_from_files, is_git_revision,
+    ordered_protocol_fixture_digest, sanitize_evidence, validate_evidence, write_json_schema,
 };
 use krometrail_cdp::spike::{
     FakeTransport, FakeTransportFactory, SpikeError, SpikeErrorCode, SpikeTransport,
@@ -324,7 +323,7 @@ fn evidence_round_trips_and_requires_every_registered_gate() {
     validate_evidence(&value).unwrap();
     let encoded = serde_json::to_string_pretty(&value).unwrap();
     assert_eq!(
-        serde_json::from_str::<TransportEvidenceV1>(&encoded).unwrap(),
+        serde_json::from_str::<TransportEvidenceV2>(&encoded).unwrap(),
         value
     );
 }
@@ -566,7 +565,7 @@ fn evidence_rejects_duplicate_or_missing_gates_non_finite_values_and_leaks() {
     ))
     .unwrap();
     unknown["unexpected"] = serde_json::json!(true);
-    assert!(serde_json::from_value::<TransportEvidenceV1>(unknown).is_err());
+    assert!(serde_json::from_value::<TransportEvidenceV2>(unknown).is_err());
 }
 
 #[test]

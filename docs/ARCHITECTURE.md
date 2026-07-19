@@ -388,6 +388,11 @@ SQLite runs in write-ahead logging mode and contains:
 - artifact manifests;
 - usage accounting.
 
+The index has one declarative current schema. A new empty database is initialized to that complete
+shape in one transaction. An exact current-version database opens without schema writes; an
+unversioned non-empty, older, or newer database is rejected before schema mutation with an explicit
+archive/remove-and-restart recovery action. The runtime carries no historical migration chain.
+
 ### Segment Format
 
 A segment contains:

@@ -512,7 +512,7 @@ mod tests {
             BrowserOperationScope::Page(PageSelection::Selected)
         );
         assert_eq!(
-            BrowserOperationRequest::ListPages(ListPagesRequest).scope(),
+            BrowserOperationRequest::ListPages(ListPagesRequest {}).scope(),
             BrowserOperationScope::Browser
         );
     }
