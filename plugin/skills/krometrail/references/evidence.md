@@ -76,7 +76,13 @@ availability and request policy, it can include:
 - visual measurements and capture-quality warnings;
 - nearby interactions, navigation, console/exception, and failed-request context.
 
-The bundle favors context-sized evidence and omits inline image bytes by default. Its compact artifact handles summarize identity, type,
+Bundle artifact work defaults to the visual epoch containing the effective anchor, with nearest/earlier
+deterministic selection between spans. The full resolved range and gaps remain authoritative. Request
+`epochs: "all"` when investigating a geometry transition; direct artifact generation already uses all epochs.
+
+The bundle favors context-sized evidence and omits inline image bytes by default. Concise publishes one primary
+compact handle/resource plus exact selected-epoch and omitted outcome/resource counts. Expanded publishes compact
+handles/resources for every generated outcome; full preserves complete structures. Compact artifact handles summarize identity, type,
 geometry, hash, and frame counts. Read a handle's `manifest_uri` resource for the exact full manifest
 when a claim depends on ordered source and selected frame IDs, omissions, gaps, normalization, or
 generator parameters. Full-resolution images and exact source frames remain behind their adjacent MCP

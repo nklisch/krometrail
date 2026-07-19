@@ -1403,8 +1403,8 @@ fn compact_temporal_value(value: &Value) -> Result<Value, ResponseInvariantError
         compact.insert(
             "effective".into(),
             json!({
-                "version": effective.get("version"),
                 "artifact_anchor": effective.get("artifact_anchor"),
+                "epoch_scope": effective.get("epoch_scope"),
                 "focus_times": effective.get("focus_times"),
                 "artifact_generator_count": effective
                     .get("artifact_generators")
@@ -1521,45 +1521,32 @@ pub(crate) async fn map_temporal_bundle_result(
 ) -> Result<MappedResult, ResponseInvariantError> {
     let scope = artifact_scope(&bundle.range)?;
     let result = match response.detail {
+        ResponseDetail::Concise => concise_bundle_value(&bundle, scope)?,
+        ResponseDetail::Expanded => compact_bundle_value(&bundle, scope)?,
         ResponseDetail::Full => {
             serde_json::to_value(&bundle).map_err(|_| ResponseInvariantError)?
         }
-        ResponseDetail::Concise | ResponseDetail::Expanded => compact_bundle_value(&bundle, scope)?,
     };
     let mut projection = Projection::success(result);
-    let mut candidate: Option<(u8, u32, u32, ArtifactHandle)> = None;
-    if let krometrail_core::BundleArtifactEvidence::Available(generation) = &bundle.artifacts {
-        add_artifact_generation_resources(&mut projection, generation, scope, true)?;
-        for outcome in &generation.outcomes {
-            let ArtifactOutcome::Available {
-                epoch_index,
-                generator_index,
-                artifact,
-            } = outcome
-            else {
-                continue;
-            };
-            let rank = artifact_kind_rank(artifact.manifest.artifact_kind());
-            if rank >= 3 {
-                continue;
+    let generation = match &bundle.artifacts {
+        krometrail_core::BundleArtifactEvidence::Available(generation) => Some(generation),
+        krometrail_core::BundleArtifactEvidence::Unavailable { .. } => None,
+    };
+    let candidate = generation.and_then(primary_artifact);
+    if let Some(generation) = generation {
+        match response.detail {
+            ResponseDetail::Concise => {
+                if let Some((_, _, artifact)) = candidate {
+                    add_resource(&mut projection, artifact_resource(scope, artifact)?)?;
+                }
             }
-            let key = (rank, *epoch_index, *generator_index, artifact.artifact_id);
-            if candidate.as_ref().is_none_or(
-                |(old_rank, old_epoch, old_generator, old_artifact)| {
-                    key < (
-                        *old_rank,
-                        *old_epoch,
-                        *old_generator,
-                        old_artifact.artifact_id,
-                    )
-                },
-            ) {
-                candidate = Some((rank, *epoch_index, *generator_index, artifact.clone()));
+            ResponseDetail::Expanded | ResponseDetail::Full => {
+                add_artifact_generation_resources(&mut projection, generation, scope, true)?;
             }
         }
     }
     if response.inline_images
-        && let Some((_, _, _, artifact)) = candidate
+        && let Some((_, _, artifact)) = candidate
     {
         match read_inline_artifact(
             scope,
@@ -1596,7 +1583,6 @@ pub(crate) async fn map_temporal_bundle_result(
             Err(error) => projection.degrade_with(vec![error]),
         }
     }
-    project_temporal_value(&mut projection.result, response.detail)?;
     project_response(tool, &mut projection, response)?;
     Ok(mapped(tool, projection, format!("{tool} succeeded")))
 }
@@ -1718,6 +1704,108 @@ fn add_artifact_generation_resources(
         }
     }
     Ok(())
+}
+
+fn primary_artifact(generation: &ArtifactGenerationResult) -> Option<(u32, u32, &ArtifactHandle)> {
+    generation
+        .outcomes
+        .iter()
+        .filter_map(|outcome| match outcome {
+            ArtifactOutcome::Available {
+                epoch_index,
+                generator_index,
+                artifact,
+            } => Some((*epoch_index, *generator_index, artifact)),
+            ArtifactOutcome::Unavailable { .. } => None,
+        })
+        .min_by_key(|(epoch, generator, artifact)| {
+            (
+                artifact_kind_rank(artifact.manifest.artifact_kind()),
+                *epoch,
+                *generator,
+                artifact.artifact_id,
+            )
+        })
+}
+
+fn concise_bundle_value(
+    bundle: &TemporalDebugBundle,
+    scope: krometrail_core::EvidenceScope,
+) -> Result<Value, ResponseInvariantError> {
+    let context_value =
+        serde_json::to_value(&bundle.context).map_err(|_| ResponseInvariantError)?;
+    let context = compact_temporal_context(Some(&context_value));
+    let (
+        artifacts,
+        selected_epoch_count,
+        available,
+        unavailable,
+        omitted_outcomes,
+        resources,
+        omitted_resources,
+    ) = match &bundle.artifacts {
+        krometrail_core::BundleArtifactEvidence::Available(generation) => {
+            let available = generation
+                .outcomes
+                .iter()
+                .filter(|outcome| matches!(outcome, ArtifactOutcome::Available { .. }))
+                .count();
+            let unavailable = generation.outcomes.len() - available;
+            let primary = primary_artifact(generation)
+                .map(|(epoch_index, generator_index, artifact)| {
+                    Ok(json!({
+                        "epoch_index": epoch_index,
+                        "generator_index": generator_index,
+                        "artifact": compact_artifact_handle(scope, artifact)?,
+                    }))
+                })
+                .transpose()?;
+            let presented_outcomes = usize::from(primary.is_some());
+            let total_resources = available.saturating_mul(2);
+            (
+                json!({"status": "available", "primary": primary}),
+                generation.epochs.len(),
+                available,
+                unavailable,
+                generation.outcomes.len().saturating_sub(presented_outcomes),
+                presented_outcomes,
+                total_resources.saturating_sub(presented_outcomes),
+            )
+        }
+        krometrail_core::BundleArtifactEvidence::Unavailable { error } => (
+            json!({"status": "unavailable", "error": error}),
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ),
+    };
+    Ok(json!({
+        "range": bundle.range,
+        "header": bundle.header,
+        "effective": {
+            "artifact_anchor": bundle.effective.artifact_anchor,
+            "epoch_scope": bundle.effective.epoch_scope,
+            "focus_times": bundle.effective.focus_times,
+            "artifact_generator_count": bundle.effective.artifact_generators.len(),
+        },
+        "marker_count": bundle.markers.len(),
+        "artifacts": artifacts,
+        "artifact_counts": {
+            "selected_epochs": selected_epoch_count,
+            "available_outcomes": available,
+            "unavailable_outcomes": unavailable,
+            "omitted_outcomes": omitted_outcomes,
+            "published_resources": resources,
+            "omitted_resources": omitted_resources,
+        },
+        "context": context,
+        "warnings": bundle.warnings,
+        "degradations": bundle.degradations,
+        "expand_with": {"detail": "expanded"},
+    }))
 }
 
 fn compact_bundle_value(

@@ -224,10 +224,14 @@ plugin/MCP restart or session-data deletion. On `evidence_invalidated`, run
 process boundaries or preserving an exact external record. The handle never replaces artifact/video
 manifest provenance, ordered frame IDs, gap checks, or canonical evidence resource links.
 
-The default temporal bundle is a concise resource-and-provenance index without inline image bytes. Add
+The temporal bundle defaults artifact work to the visual epoch containing its effective anchor while retaining
+the complete resolved range and gaps. Use `{"epochs":"all"}` only when the investigation depends on a viewport,
+orientation, or device-scale transition; direct `generate_artifacts` requests remain all-epoch. The default
+response is a concise resource-and-provenance index with one primary compact handle/resource, exact
+epoch/outcome/resource omission counts, and no inline image bytes. Add
 `{"response":{"inline_images":true}}` when the primary orientation/storyboard image should be embedded
-immediately, use `expanded` for the complete bounded bundle context, or use `full` when the complete acquired
-generator, frame, and provenance structures are genuinely needed in the tool result. Otherwise follow the
+immediately, use `expanded` for compact handles/resources for every generated outcome, or use `full` when the
+complete acquired generator, frame, and provenance structures are genuinely needed in the tool result. Otherwise follow the
 returned canonical resource links for the exact artifact needed.
 
 Video and manifest resources stay local by default. Reading them through Krometrail or handing a

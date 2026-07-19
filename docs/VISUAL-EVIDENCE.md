@@ -99,6 +99,8 @@ Frames in one sequence use a common coordinate space and dimensions.
 
 A viewport resize, orientation change, device-scale change, or incompatible crop divides the input into separate visual epochs unless the caller explicitly requests a declared normalization. Artifacts do not silently stretch incompatible frames into alignment.
 
+The temporal debug bundle keeps the complete resolved range and gap provenance but defaults artifact work to the visual epoch containing its effective anchor. If the anchor falls between epoch spans, the nearest epoch is selected and an equal-distance tie chooses the earlier epoch. Callers investigating geometry transitions can request all epochs explicitly. Direct artifact generation continues to operate over every compatible epoch in the resolved range.
+
 Gaps divide continuous measurements. The renderer can place segments on one timeline, but calculations do not treat missing time as observed stability.
 
 ## Normalization

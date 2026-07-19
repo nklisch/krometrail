@@ -359,7 +359,9 @@ The temporal-vision capability supports:
 - report visual-change measurements;
 - combine related outputs into a temporal debug bundle.
 
-A temporal debug bundle is the primary investigation entry point. It contains a concise text summary, artifact references, source-frame references, provenance, resolved timing, capture-quality warnings, and a compact deterministic selection of errors, failed requests, navigation, and browser events nearest major visual changes. Focused tools provide source frames, region artifacts, individual artifact variants, verbose events, and pin controls for progressive detail.
+A temporal debug bundle is the primary investigation entry point. Its artifact work defaults to the visual epoch containing the effective anchor while preserving the complete resolved range, gaps, and original epoch identity. `epochs: "all"` explicitly expands acquisition across geometry transitions; direct artifact generation remains all-epoch by default. The bundle contains a concise text summary, artifact references, source-frame references, provenance, resolved timing, capture-quality warnings, and a compact deterministic selection of errors, failed requests, navigation, and browser events nearest major visual changes. Focused tools provide source frames, region artifacts, individual artifact variants, verbose events, and pin controls for progressive detail.
+
+Concise bundle responses publish one primary compact artifact handle/resource and exact selected-epoch, available/unavailable outcome, and omitted outcome/resource counts. Expanded responses publish compact handles and resources for every generated outcome. Full responses retain complete generator, frame, and provenance structures. Inline artifact bytes are read only when `inline_images` is explicitly enabled.
 
 Large images and raw frame collections are returned by file or MCP resource reference. The response may include a context-sized primary image for immediate model inspection. Request and response bodies are drill-down evidence rather than default bundle content.
 

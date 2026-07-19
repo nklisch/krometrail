@@ -474,6 +474,8 @@ ResolvedRange
 
 Artifact generation consumes only resolved ranges. This prevents each artifact implementation from interpreting natural anchors differently.
 
+After validating and partitioning exact source frames, the artifact service applies the caller's epoch selection before output counting, cache lookup, decoding, or generation. Generic artifact requests select all plans. The temporal debug-bundle service instead supplies its effective anchor by default, or all plans when the request explicitly asks for every epoch; selected plans retain their original descriptors and the result retains the full resolved-range authority.
+
 The application service can register an immutable resolved range in a process-local handle table keyed by an
 opaque identifier. MCP follow-up tools resolve a handle through this table before invoking existing range-based
 ports. The table stores validated `ResolvedRange` values, is scoped to the current process and session, and is
@@ -601,6 +603,8 @@ It maps already-acquired structures into an action-centric summary or broader co
 acquisition or retention. Inline image transport remains an orthogonal explicit opt-in. Errors, warnings,
 interaction anchors, resource identities, and privacy-bounded diagnostics on failed or degraded results are never
 projected away. Concise status is a projection of the same `BrowserStatus`, not a second status model.
+
+For a temporal bundle, concise projection selects one primary retained artifact and reports exact outcome/resource omissions; expanded publishes compact handles for all generated outcomes; full preserves the canonical structures. Artifact bytes are not read merely to construct a structured response.
 
 Target supervision remains the authority for pages, frames, and popup relationships. CDP adapters expose
 privacy-bounded page assets, clipboard operations, and download lifecycle through core ports; completed

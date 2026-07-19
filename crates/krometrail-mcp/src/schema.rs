@@ -398,7 +398,11 @@ mod tests {
     fn generated_temporal_request_schemas_are_object_roots() {
         assert!(type_input_schema::<BrowserEventDetailRequest>().is_ok());
         assert!(type_input_schema::<RetrieveSourceFrameRequest>().is_ok());
-        assert!(type_input_schema::<TemporalDebugBundleRequest>().is_ok());
+        let bundle = type_input_schema::<TemporalDebugBundleRequest>().unwrap();
+        let bundle = serde_json::to_string(bundle.as_ref()).unwrap();
+        assert!(bundle.contains("\"epochs\""));
+        assert!(bundle.contains("\"anchor\""));
+        assert!(bundle.contains("\"all\""));
         assert!(type_input_schema::<TemporalVideoGenerationRequest>().is_ok());
     }
 

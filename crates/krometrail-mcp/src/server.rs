@@ -373,7 +373,7 @@ mod tests {
         TemporalDebugBundleRequest, TemporalDebugBundles, TemporalDebugHeader,
         TemporalQueryRequest, TemporalRangeAnchor, TemporalRangeAnchorKind,
         TemporalVideoGeneration, TemporalVideoGenerationRequest, TemporalVideoGenerationResult,
-        VideoArtifactRead, ViewportState,
+        VideoArtifactRead, ViewportState, VisualEpoch,
     };
     use serde_json::{Value, json};
     use std::{
@@ -1134,6 +1134,7 @@ mod tests {
             .unwrap()
         };
         let artifact_manifest = manifest_for(artifact_id());
+        let core_dimensions = PixelDimensions::new(1, 1).unwrap();
         let media_type = NonEmptyText::new("image/png").unwrap();
         let artifact = ArtifactHandle {
             artifact_id: artifact_id(),
@@ -1212,12 +1213,29 @@ mod tests {
             Vec::new(),
             BundleArtifactEvidence::Available(ArtifactGenerationResult {
                 range,
-                epochs: Vec::new(),
-                outcomes: vec![ArtifactOutcome::Available {
-                    epoch_index: 0,
-                    generator_index: 0,
-                    artifact,
+                epochs: vec![VisualEpoch {
+                    index: 0,
+                    frame_ids: vec![frame_id()],
+                    image: core_dimensions,
+                    viewport: core_dimensions,
+                    device_scale_factor: DeviceScaleFactor::new(1.0).unwrap(),
                 }],
+                outcomes: vec![
+                    ArtifactOutcome::Available {
+                        epoch_index: 0,
+                        generator_index: 0,
+                        artifact,
+                    },
+                    ArtifactOutcome::Unavailable {
+                        epoch_index: 0,
+                        generator_index: 1,
+                        artifact_kind: temporal_vision::ArtifactKind::DifferenceMap,
+                        error: KrometrailError::new(
+                            krometrail_core::ErrorCode::ArtifactGenerationFailed,
+                            NonEmptyText::new("fixture secondary artifact unavailable").unwrap(),
+                        ),
+                    },
+                ],
             }),
             BundleContextEvidence::Unavailable {
                 error: KrometrailError::new(
@@ -3099,6 +3117,50 @@ mod tests {
         let BundleArtifactEvidence::Available(generation) = &spy.bundle.artifacts else {
             unreachable!()
         };
+        let concise = crate::response::map_temporal_bundle_result(
+            "temporal_debug_bundle",
+            spy.bundle.clone(),
+            spy.as_ref(),
+            std::time::Instant::now() + std::time::Duration::from_secs(1),
+            Arc::new(McpCancellation::new(
+                tokio_util::sync::CancellationToken::new(),
+            )),
+            crate::response::ResponseRequest::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(spy.progressive_calls.load(Ordering::SeqCst), 0);
+        assert!(concise.response.images.is_empty());
+        assert_eq!(concise.response.resources.len(), 1);
+        assert_eq!(
+            concise.response.result["artifact_counts"]["selected_epochs"],
+            1
+        );
+        assert_eq!(
+            concise.response.result["artifact_counts"]["available_outcomes"],
+            1
+        );
+        assert_eq!(
+            concise.response.result["artifact_counts"]["unavailable_outcomes"],
+            1
+        );
+        assert_eq!(
+            concise.response.result["artifact_counts"]["omitted_outcomes"],
+            1
+        );
+        assert_eq!(
+            concise.response.result["artifact_counts"]["published_resources"],
+            1
+        );
+        assert_eq!(
+            concise.response.result["artifact_counts"]["omitted_resources"],
+            1
+        );
+        assert!(
+            concise.response.result["artifacts"]["primary"]["artifact"]
+                .get("manifest")
+                .is_none()
+        );
         let generic = crate::response::map_progressive_result(
             "generate_artifacts",
             ProgressiveEvidenceResult::GenerateArtifacts(Box::new(generation.clone())),
@@ -3136,6 +3198,13 @@ mod tests {
             "temporal: full retains the pre-existing bundle projection"
         );
         assert!(structured["result"]["effective"]["artifact_generators"].is_array());
+        assert_eq!(
+            structured["result"]["artifacts"]["outcomes"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
         let image_metadata = &structured["images"][0]["metadata"];
         assert_eq!(image_metadata["kind"], "artifact");
         assert_eq!(image_metadata["media_type"], "image/png");

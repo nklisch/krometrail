@@ -199,7 +199,7 @@ This tests the value of representative-frame selection.
 
 ### Condition D: temporal bundle
 
-The agent receives:
+The agent begins with the default anchor-epoch bundle and receives:
 
 - before/during/after composite;
 - change-aware storyboard;
@@ -208,6 +208,8 @@ The agent receives:
 - source-frame references.
 
 This tests the complete compact temporal experience.
+
+Multi-epoch fixtures also exercise explicit `epochs: "all"`. Evaluation verifies that the default bounds artifact work to one deterministic anchor/nearest epoch without losing full-range or gap provenance, while explicit all-epoch requests preserve original epoch identities across geometry transitions.
 
 ### Condition E: progressive source access
 
