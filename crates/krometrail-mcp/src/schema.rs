@@ -11,7 +11,7 @@ use serde_json::Value;
 
 use crate::{
     config::McpConfig,
-    response::{ResponseProjectionRequest, ToolResponse},
+    response::{ResponseRequest, ToolResponse},
 };
 
 pub(crate) fn projected_input_schema(base: Arc<JsonObject>) -> Result<Arc<JsonObject>> {
@@ -29,7 +29,7 @@ pub(crate) fn projected_input_schema(base: Arc<JsonObject>) -> Result<Arc<JsonOb
             "projected MCP tool schema already declares response",
         ));
     }
-    let response = type_input_schema::<ResponseProjectionRequest>()?;
+    let response = type_input_schema::<ResponseRequest>()?;
     properties.insert("response".into(), Value::Object((*response).clone()));
     Ok(Arc::new(root))
 }
@@ -429,14 +429,12 @@ mod tests {
         );
         let response = &projected["properties"]["response"];
         assert_eq!(response["additionalProperties"], false);
+        assert_eq!(response["properties"].as_object().unwrap().len(), 2);
         assert_eq!(
-            response["properties"]["snapshot"]["enum"],
-            serde_json::json!(["legacy", "full", "compact", "interaction_only", "omit"])
+            response["properties"]["detail"]["enum"],
+            serde_json::json!(["concise", "expanded", "full"])
         );
-        assert_eq!(
-            response["properties"]["temporal"]["enum"],
-            serde_json::json!(["compact", "full"])
-        );
+        assert_eq!(response["properties"]["inline_images"]["type"], "boolean");
         assert!(base["properties"].get("response").is_none());
         assert_no_references(&Value::Object(projected.as_ref().clone()));
     }

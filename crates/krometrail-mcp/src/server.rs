@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, sync::Arc};
+use std::sync::Arc;
 
 use krometrail_core::{
     CancellationSignal, CapabilityId, ErrorCode, KrometrailError, NonEmptyText, Result, RetryAdvice,
@@ -20,7 +20,6 @@ use crate::{
     config::{DiagnosticContext, McpConfig, McpDependencies},
     registry::{MCP_REQUEST_DEADLINE, McpCancellation, build_router},
     resources::{read_resource_with_local, resource_templates},
-    response::{DiagnosticDetail, split_response_projection},
     session::BrowserSessionOwner,
 };
 
@@ -31,7 +30,6 @@ pub struct KrometrailMcpServer {
     dependencies: Arc<McpDependencies>,
     config: McpConfig,
     diagnostics: DiagnosticContext,
-    projection_routes: BTreeSet<String>,
 }
 
 impl KrometrailMcpServer {
@@ -52,24 +50,12 @@ impl KrometrailMcpServer {
             Arc::clone(&sessions),
         )?);
         let diagnostics = dependencies.diagnostics.clone();
-        let projection_routes = router
-            .list_all()
-            .into_iter()
-            .filter(|tool| {
-                tool.input_schema
-                    .get("properties")
-                    .and_then(serde_json::Value::as_object)
-                    .is_some_and(|properties| properties.contains_key("response"))
-            })
-            .map(|tool| tool.name.to_string())
-            .collect();
         let server = Self {
             sessions,
             router,
             dependencies,
             config: config.clone(),
             diagnostics,
-            projection_routes,
         };
         Ok(server)
     }
@@ -167,10 +153,6 @@ impl ServerHandler for KrometrailMcpServer {
         request: CallToolRequestParam,
         context: RequestContext<RoleServer>,
     ) -> std::result::Result<CallToolResult, ErrorData> {
-        let diagnostic_detail = requested_diagnostic_detail(
-            &request,
-            self.projection_routes.contains(request.name.as_ref()),
-        );
         let correlation_id = Uuid::new_v4().to_string();
         let route = request.name.to_string();
         let span = tracing::info_span!(
@@ -184,12 +166,7 @@ impl ServerHandler for KrometrailMcpServer {
                 .call(ToolCallContext::new(self, request, context))
                 .await;
             let outcome = match &mut result {
-                Ok(result) => attach_diagnostics(
-                    result,
-                    &correlation_id,
-                    &self.diagnostics,
-                    diagnostic_detail,
-                ),
+                Ok(result) => attach_diagnostics(result, &correlation_id, &self.diagnostics),
                 Err(error) => {
                     attach_error_diagnostics(error, &correlation_id, &self.diagnostics);
                     "failed"
@@ -255,7 +232,6 @@ fn attach_diagnostics(
     result: &mut CallToolResult,
     correlation_id: &str,
     context: &DiagnosticContext,
-    detail: DiagnosticDetail,
 ) -> &'static str {
     let Some(serde_json::Value::Object(response)) = result.structured_content.as_mut() else {
         return if result.is_error == Some(true) {
@@ -276,7 +252,7 @@ fn attach_diagnostics(
         "degraded" => "degraded",
         _ => "succeeded",
     };
-    if outcome != "succeeded" && detail == DiagnosticDetail::Automatic {
+    if outcome != "succeeded" {
         response.insert(
             "diagnostics".into(),
             serde_json::json!({
@@ -286,22 +262,6 @@ fn attach_diagnostics(
         );
     }
     outcome
-}
-
-fn requested_diagnostic_detail(
-    request: &CallToolRequestParam,
-    projection_enabled: bool,
-) -> DiagnosticDetail {
-    if !projection_enabled {
-        return DiagnosticDetail::Automatic;
-    }
-    request
-        .arguments
-        .clone()
-        .and_then(|arguments| split_response_projection(arguments).ok())
-        .map_or(DiagnosticDetail::Automatic, |(_, preference)| {
-            preference.diagnostics
-        })
 }
 
 pub struct McpService {
@@ -455,12 +415,7 @@ mod tests {
         );
         let mut failed = crate::response::visible_error("browser_click", error);
         assert_eq!(
-            attach_diagnostics(
-                &mut failed,
-                "correlation-1",
-                &context,
-                DiagnosticDetail::Automatic,
-            ),
+            attach_diagnostics(&mut failed, "correlation-1", &context),
             "failed"
         );
         let structured = failed.structured_content.unwrap();
@@ -475,12 +430,7 @@ mod tests {
         let mapped = crate::response::map_lifecycle_result("browser_status", json!({})).unwrap();
         let mut succeeded = crate::response::into_call_tool_result(mapped).unwrap();
         assert_eq!(
-            attach_diagnostics(
-                &mut succeeded,
-                "correlation-2",
-                &context,
-                DiagnosticDetail::Automatic,
-            ),
+            attach_diagnostics(&mut succeeded, "correlation-2", &context),
             "succeeded"
         );
         assert!(
@@ -497,20 +447,12 @@ mod tests {
         );
         let mut omitted = crate::response::visible_error("browser_click", error);
         assert_eq!(
-            attach_diagnostics(
-                &mut omitted,
-                "correlation-3",
-                &context,
-                DiagnosticDetail::Omit,
-            ),
+            attach_diagnostics(&mut omitted, "correlation-3", &context),
             "failed"
         );
-        assert!(
-            omitted
-                .structured_content
-                .unwrap()
-                .get("diagnostics")
-                .is_none()
+        assert_eq!(
+            omitted.structured_content.unwrap()["diagnostics"]["correlation_id"],
+            "correlation-3"
         );
     }
 
@@ -567,7 +509,7 @@ mod tests {
         let concise = crate::response::map_browser_status(
             "browser_status",
             status.clone(),
-            crate::response::BrowserStatusDetail::Concise,
+            crate::response::ResponseRequest::default(),
         )
         .unwrap();
         assert_eq!(concise.response.result["capture"][0]["state"], "failed");
@@ -592,7 +534,10 @@ mod tests {
         let full = crate::response::map_browser_status(
             "browser_status",
             status,
-            crate::response::BrowserStatusDetail::Full,
+            crate::response::ResponseRequest {
+                detail: crate::response::ResponseDetail::Full,
+                inline_images: false,
+            },
         )
         .unwrap();
         assert!(full.response.result.get("compatibility").is_some());
@@ -1706,7 +1651,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn response_projection_defaults_are_economical_and_diagnostics_omit_is_validated() {
+    async fn response_defaults_are_concise_and_diagnostics_are_always_actionable() {
         let connector = LifecycleConnector::new();
         let responses = invoke_control_tools(
             Arc::clone(&connector),
@@ -1715,13 +1660,13 @@ mod tests {
                 ("browser_status", json!({})),
                 (
                     "navigate_page",
-                    json!({"url":"", "response":{"diagnostics":"omit"}}),
+                    json!({"url":"", "response":{"detail":"expanded"}}),
                 ),
                 (
                     "navigate_page",
-                    json!({"url":"", "response":{"diagnostics":"omit", "snapshot":"not-valid"}}),
+                    json!({"url":"", "response":{"snapshot":"compact"}}),
                 ),
-                ("browser_status", json!({"response":{"diagnostics":"omit"}})),
+                ("browser_status", json!({"response":{"detail":"expanded"}})),
             ],
         )
         .await;
@@ -1731,23 +1676,15 @@ mod tests {
         assert!(
             responses[2]["result"]["structuredContent"]
                 .get("diagnostics")
-                .is_none()
+                .is_some()
         );
         assert!(
             responses[3]["result"]["structuredContent"]
                 .get("diagnostics")
                 .is_some()
         );
-        assert_eq!(responses[4]["result"]["isError"], true);
-        assert_eq!(
-            responses[4]["result"]["structuredContent"]["error"]["code"],
-            "invalid_input"
-        );
-        assert!(
-            responses[4]["result"]["structuredContent"]
-                .get("diagnostics")
-                .is_some()
-        );
+        assert_eq!(responses[4]["result"]["isError"], false);
+        assert!(responses[4]["result"]["structuredContent"]["result"]["pages"].is_array());
     }
 
     #[test]
@@ -3053,17 +2990,9 @@ mod tests {
 
         let projections = [
             None,
-            Some(json!({
-                "inline_images": "inline",
-                "snapshot": "legacy",
-                "page_state": "legacy"
-            })),
-            Some(json!({"snapshot": "full", "page_state": "full"})),
-            Some(json!({
-                "inline_images": "inline",
-                "snapshot": "full",
-                "page_state": "full"
-            })),
+            Some(json!({"detail": "expanded"})),
+            Some(json!({"detail": "full"})),
+            Some(json!({"detail": "full", "inline_images": true})),
         ];
         let mut responses = Vec::new();
         for (index, projection) in projections.into_iter().enumerate() {
@@ -3117,16 +3046,15 @@ mod tests {
             assert_eq!(projected["resources"], structured[0]["resources"]);
         }
 
-        let snapshot_node_count = |index: usize| {
-            structured[index]["result"]["observation"]["snapshot"]["available"]["nodes"]
-                .as_array()
-                .unwrap()
-                .len()
-        };
-        assert!(snapshot_node_count(0) <= 96);
-        assert_eq!(snapshot_node_count(1), snapshot_node_count(0));
-        assert_eq!(snapshot_node_count(2), 121);
-        assert_eq!(snapshot_node_count(3), 121);
+        let snapshots = structured
+            .iter()
+            .map(|value| &value["result"]["observation"]["snapshot"]["available"])
+            .collect::<Vec<_>>();
+        assert!(snapshots[0].get("targets").is_some());
+        assert!(snapshots[0].get("nodes").is_none());
+        assert!(snapshots[1].get("semantic_context").is_some());
+        assert_eq!(snapshots[2]["nodes"].as_array().unwrap().len(), 121);
+        assert_eq!(snapshots[3]["nodes"].as_array().unwrap().len(), 121);
         for projected in &structured {
             assert_eq!(
                 projected["result"]["observation"]["page"]["available"]["url"],
@@ -3143,11 +3071,12 @@ mod tests {
                 .count()
         };
         assert_eq!(inline_image_count(0), 0);
-        assert_eq!(inline_image_count(1), 1);
+        assert_eq!(inline_image_count(1), 0);
         assert_eq!(inline_image_count(2), 0);
         assert_eq!(inline_image_count(3), 1);
         assert!(structured[0]["images"].as_array().unwrap().is_empty());
-        assert_eq!(structured[1]["images"].as_array().unwrap().len(), 1);
+        assert!(structured[1]["images"].as_array().unwrap().is_empty());
+        assert_eq!(structured[3]["images"].as_array().unwrap().len(), 1);
 
         drop(write);
         drop(read);
@@ -3173,6 +3102,10 @@ mod tests {
         let generic = crate::response::map_progressive_result(
             "generate_artifacts",
             ProgressiveEvidenceResult::GenerateArtifacts(Box::new(generation.clone())),
+            crate::response::ResponseRequest {
+                detail: crate::response::ResponseDetail::Full,
+                inline_images: false,
+            },
         )
         .unwrap();
         assert_eq!(
@@ -3182,7 +3115,7 @@ mod tests {
         );
         assert_eq!(generic.response.resources.len(), 1);
         let mut arguments = serde_json::to_value(bundle_request()).unwrap();
-        arguments["response"] = json!({"inline_images":"inline", "temporal":"full"});
+        arguments["response"] = json!({"detail":"full", "inline_images":true});
         let dependencies = McpDependencies {
             browser: Arc::new(UnusedConnector),
             temporal_debug_bundles: Arc::clone(&spy) as Arc<dyn TemporalDebugBundles>,

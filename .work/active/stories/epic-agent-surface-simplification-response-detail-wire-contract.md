@@ -1,7 +1,7 @@
 ---
 id: epic-agent-surface-simplification-response-detail-wire-contract
 kind: story
-stage: implementing
+stage: done
 tags: [agent-ux, browser]
 parent: epic-agent-surface-simplification-response-detail
 depends_on: []
@@ -28,3 +28,10 @@ Delete diagnostic suppression from the request schema and server. Failed and deg
 ## Ordering
 
 This establishes the public types and parsing used by the projection checkpoint. It has no sibling dependency.
+
+## Implementation evidence
+
+- Replaced the five-selector matrix and browser-status-only request with `ResponseRequest { detail, inline_images }`.
+- Removed diagnostic suppression, projected-route discovery, compatibility constructors, and projected wrapper names.
+- Routed status, browser operations, and temporal tools through the same strict request decoder.
+- Verified the MCP crate's 59 unit tests, including closed-schema, always-on diagnostics, and protocol progression coverage.

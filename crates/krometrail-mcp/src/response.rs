@@ -1,4 +1,4 @@
-use std::{any::Any, collections::HashMap, sync::Arc, time::Instant};
+use std::{any::Any, sync::Arc, time::Instant};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use krometrail_core::{
@@ -22,95 +22,27 @@ use temporal_vision::{ArtifactKind, EvidenceClass, PixelDimensions};
 
 use crate::resources::{ResourceKind, ResourceProjection};
 
-const MAX_AUTOMATIC_SNAPSHOT_NODES: usize = 48;
-const MAX_AUTOMATIC_SNAPSHOT_JSON_BYTES: usize = 12 * 1024;
+const MAX_CONCISE_TARGETS: usize = 48;
+const MAX_CONCISE_TARGET_JSON_BYTES: usize = 12 * 1024;
+const MAX_EXPANDED_CONTEXT_NODES: usize = 96;
+const MAX_EXPANDED_SNAPSHOT_JSON_BYTES: usize = 32 * 1024;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum StructuredResponseDetail {
-    Legacy,
-    Full,
-    #[default]
-    Compact,
-    Omit,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum SnapshotResponseDetail {
-    Legacy,
-    Full,
-    #[default]
-    Compact,
-    InteractionOnly,
-    Omit,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum InlineImageDetail {
-    Inline,
-    #[default]
-    Omit,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum DiagnosticDetail {
-    #[default]
-    Automatic,
-    Omit,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum TemporalResponseDetail {
-    #[default]
-    Compact,
-    Full,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct ResponseProjectionRequest {
-    #[serde(default)]
-    pub inline_images: InlineImageDetail,
-    #[serde(default)]
-    pub snapshot: SnapshotResponseDetail,
-    #[serde(default)]
-    pub page_state: StructuredResponseDetail,
-    #[serde(default)]
-    pub diagnostics: DiagnosticDetail,
-    #[serde(default)]
-    pub temporal: TemporalResponseDetail,
-}
-
-impl ResponseProjectionRequest {
-    #[cfg(test)]
-    const fn legacy() -> Self {
-        Self {
-            inline_images: InlineImageDetail::Inline,
-            snapshot: SnapshotResponseDetail::Legacy,
-            page_state: StructuredResponseDetail::Legacy,
-            diagnostics: DiagnosticDetail::Automatic,
-            temporal: TemporalResponseDetail::Full,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum BrowserStatusDetail {
+pub(crate) enum ResponseDetail {
     #[default]
     Concise,
+    Expanded,
     Full,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct BrowserStatusRequest {
+pub(crate) struct ResponseRequest {
     #[serde(default)]
-    pub detail: BrowserStatusDetail,
+    pub detail: ResponseDetail,
+    #[serde(default)]
+    pub inline_images: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -147,17 +79,17 @@ pub(crate) struct ConciseBrowserStatus {
     pub every_nth_frame: EveryNthFrame,
 }
 
-pub(crate) fn split_response_projection(
+pub(crate) fn split_response_request(
     mut arguments: JsonObject,
-) -> krometrail_core::Result<(JsonObject, ResponseProjectionRequest)> {
+) -> krometrail_core::Result<(JsonObject, ResponseRequest)> {
     let preference = match arguments.remove("response") {
-        None => ResponseProjectionRequest::default(),
-        Some(value) => decode_projection(value)?,
+        None => ResponseRequest::default(),
+        Some(value) => decode_response_request(value)?,
     };
     Ok((arguments, preference))
 }
 
-fn decode_projection(value: Value) -> krometrail_core::Result<ResponseProjectionRequest> {
+fn decode_response_request(value: Value) -> krometrail_core::Result<ResponseRequest> {
     let encoded = serde_json::to_vec(&value).map_err(|_| invalid_projection("response"))?;
     let mut deserializer = serde_json::Deserializer::from_slice(&encoded);
     serde_path_to_error::deserialize(&mut deserializer).map_err(|error| {
@@ -433,33 +365,19 @@ pub(crate) fn map_operation_result(
     tool: &str,
     result: BrowserOperationResult,
 ) -> Result<MappedResult, ResponseInvariantError> {
-    map_operation_result_with_capture(tool, result, &[])
+    map_operation_result_with_capture(tool, result, &[], ResponseRequest::default())
 }
 
-#[cfg(test)]
 pub(crate) fn map_operation_result_with_capture(
     tool: &str,
     result: BrowserOperationResult,
     capture_statuses: &[krometrail_core::TargetCaptureStatus],
+    response: ResponseRequest,
 ) -> Result<MappedResult, ResponseInvariantError> {
-    map_operation_result_with_capture_projected(
-        tool,
-        result,
-        capture_statuses,
-        ResponseProjectionRequest::legacy(),
-    )
-}
-
-pub(crate) fn map_operation_result_with_capture_projected(
-    tool: &str,
-    result: BrowserOperationResult,
-    capture_statuses: &[krometrail_core::TargetCaptureStatus],
-    preference: ResponseProjectionRequest,
-) -> Result<MappedResult, ResponseInvariantError> {
-    let mut projection = project_operation(result, preference)?;
+    let mut projection = project_operation(result, response)?;
     let target_id = projection_target_id(&projection);
     add_capture_warnings(&mut projection, capture_statuses, target_id);
-    apply_response_projection(tool, &mut projection, preference)?;
+    project_response(tool, &mut projection, response)?;
     let status = projection.status;
     Ok(mapped(
         tool,
@@ -560,21 +478,28 @@ pub(crate) fn map_lifecycle_result<T: Serialize + 'static>(
 pub(crate) fn map_temporal_context_result<T: Serialize + 'static>(
     tool: &str,
     value: T,
-    preference: ResponseProjectionRequest,
+    response: ResponseRequest,
 ) -> Result<MappedResult, ResponseInvariantError> {
     let mut mapped = map_lifecycle_result(tool, value)?;
-    apply_temporal_projection(&mut mapped.response.result, preference.temporal)?;
+    project_temporal_value(&mut mapped.response.result, response.detail)?;
     Ok(mapped)
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct ExpandedBrowserStatus {
+    #[serde(flatten)]
+    pub concise: ConciseBrowserStatus,
+    pub pages: Vec<krometrail_core::PageStatus>,
 }
 
 pub(crate) fn map_browser_status(
     tool: &str,
     status: BrowserStatus,
-    detail: BrowserStatusDetail,
+    response: ResponseRequest,
 ) -> Result<MappedResult, ResponseInvariantError> {
-    match detail {
-        BrowserStatusDetail::Full => map_lifecycle_result(tool, status),
-        BrowserStatusDetail::Concise => {
+    match response.detail {
+        ResponseDetail::Full => map_lifecycle_result(tool, status),
+        ResponseDetail::Concise | ResponseDetail::Expanded => {
             let capture = status
                 .capture
                 .iter()
@@ -602,20 +527,28 @@ pub(crate) fn map_browser_status(
             };
             let page_count =
                 u32::try_from(status.pages.len()).map_err(|_| ResponseInvariantError)?;
-            map_lifecycle_result(
-                tool,
-                ConciseBrowserStatus {
-                    session_id: status.session_id,
-                    state: status.state,
-                    ownership: status.ownership,
-                    profile: status.profile,
-                    selected_target_id: status.selected_target_id,
-                    page_count,
-                    capture,
-                    retention,
-                    every_nth_frame: status.every_nth_frame,
-                },
-            )
+            let concise = ConciseBrowserStatus {
+                session_id: status.session_id,
+                state: status.state,
+                ownership: status.ownership,
+                profile: status.profile,
+                selected_target_id: status.selected_target_id,
+                page_count,
+                capture,
+                retention,
+                every_nth_frame: status.every_nth_frame,
+            };
+            if response.detail == ResponseDetail::Expanded {
+                map_lifecycle_result(
+                    tool,
+                    ExpandedBrowserStatus {
+                        concise,
+                        pages: status.pages,
+                    },
+                )
+            } else {
+                map_lifecycle_result(tool, concise)
+            }
         }
     }
 }
@@ -869,7 +802,7 @@ fn mapped(tool: &str, projection: Projection, summary: String) -> MappedResult {
 
 fn project_operation(
     result: BrowserOperationResult,
-    preference: ResponseProjectionRequest,
+    response: ResponseRequest,
 ) -> Result<Projection, ResponseInvariantError> {
     match result {
         BrowserOperationResult::InspectPage(value) => serializable(*value),
@@ -887,7 +820,7 @@ fn project_operation(
         BrowserOperationResult::EvaluatePage(value) => serializable(*value),
         BrowserOperationResult::ObserveLive(value) => {
             let (result, warnings, image) =
-                project_live_observation(*value, ImageRole::LiveObservation, None, preference)?;
+                project_live_observation(*value, ImageRole::LiveObservation, None, response)?;
             let mut projection = Projection::success(result);
             projection.degrade_with(warnings);
             projection.images.extend(image);
@@ -908,9 +841,9 @@ fn project_operation(
         | BrowserOperationResult::NavigatePage(value)
         | BrowserOperationResult::ReloadPage(value)
         | BrowserOperationResult::GoBack(value)
-        | BrowserOperationResult::GoForward(value) => project_page_operation(*value, preference),
+        | BrowserOperationResult::GoForward(value) => project_page_operation(*value, response),
         BrowserOperationResult::SetViewport(value) => {
-            let mut projection = project_page_operation(value.operation, preference)?;
+            let mut projection = project_page_operation(value.operation, response)?;
             let mut warnings = Vec::new();
             let effective = project_serializable_part(value.effective, &mut warnings)?;
             let result = projection
@@ -931,7 +864,7 @@ fn project_operation(
         }
         BrowserOperationResult::WriteClipboard(value) => {
             let bytes = value.utf8_bytes;
-            let mut projection = project_page_operation(value.operation, preference)?;
+            let mut projection = project_page_operation(value.operation, response)?;
             projection.result["utf8_bytes"] = serde_json::json!(bytes);
             Ok(projection)
         }
@@ -945,12 +878,8 @@ fn project_operation(
         | BrowserOperationResult::UploadFiles(value)
         | BrowserOperationResult::HandleDialog(value) => {
             let anchor = value.anchor().map_err(|_| ResponseInvariantError)?;
-            let (observation, warnings, image) = project_live_observation(
-                value.observation,
-                ImageRole::PostAction,
-                None,
-                preference,
-            )?;
+            let (observation, warnings, image) =
+                project_live_observation(value.observation, ImageRole::PostAction, None, response)?;
             let mut projection = Projection::success(json!({
                 "record": value.record,
                 "observation": observation,
@@ -969,17 +898,17 @@ fn project_operation(
             }
             Ok(projection)
         }
-        BrowserOperationResult::Batch(value) => project_batch(*value, preference),
+        BrowserOperationResult::Batch(value) => project_batch(*value, response),
     }
 }
 
 fn project_page_operation(
     value: PageOperationResult,
-    preference: ResponseProjectionRequest,
+    response: ResponseRequest,
 ) -> Result<Projection, ResponseInvariantError> {
     let interaction = value.interaction.clone();
     let (observation, warnings, image) =
-        project_live_observation_part(value.observation, ImageRole::PostAction, preference)?;
+        project_live_observation_part(value.observation, ImageRole::PostAction, response)?;
     let outcome = serde_json::to_value(&value.outcome).map_err(|_| ResponseInvariantError)?;
     let mut projection = Projection::success(json!({
         "interaction": interaction,
@@ -997,7 +926,7 @@ fn project_page_operation(
 
 fn project_batch(
     value: BatchResult,
-    preference: ResponseProjectionRequest,
+    response: ResponseRequest,
 ) -> Result<Projection, ResponseInvariantError> {
     let mut images = Vec::new();
     let mut step_values = Vec::with_capacity(value.steps.len());
@@ -1006,7 +935,7 @@ fn project_batch(
     for step in value.steps {
         let result = step
             .result
-            .map(|result| project_batch_step(result, preference))
+            .map(|result| project_batch_step(result, response))
             .transpose()?
             .flatten();
         if step.status != krometrail_core::BatchStepStatus::Succeeded {
@@ -1043,7 +972,7 @@ fn project_batch(
     }
 
     let (final_observation, final_warnings, final_image) =
-        project_live_observation_part(value.final_observation, ImageRole::BatchFinal, preference)?;
+        project_live_observation_part(value.final_observation, ImageRole::BatchFinal, response)?;
     images.extend(final_image);
     let outcome = value.outcome;
     let mut projection = Projection::success(json!({
@@ -1070,9 +999,9 @@ fn project_batch(
 
 fn project_batch_step(
     result: BrowserOperationResult,
-    preference: ResponseProjectionRequest,
+    response: ResponseRequest,
 ) -> Result<Option<Value>, ResponseInvariantError> {
-    let mut value = project_operation(result, preference)?.result;
+    let mut value = project_operation(result, response)?.result;
     let Some(object) = value.as_object_mut() else {
         return Ok(Some(value));
     };
@@ -1083,12 +1012,12 @@ fn project_batch_step(
 fn project_live_observation_part(
     value: ObservationPart<LiveObservation>,
     role: ImageRole,
-    preference: ResponseProjectionRequest,
+    response: ResponseRequest,
 ) -> Result<(Value, Vec<KrometrailError>, Option<EncodedMcpImage>), ResponseInvariantError> {
     match value {
         ObservationPart::Available(observation) => {
             let (value, warnings, image) =
-                project_live_observation(observation, role, None, preference)?;
+                project_live_observation(observation, role, None, response)?;
             Ok((json!({"available": value}), warnings, image))
         }
         ObservationPart::Unavailable(error) => {
@@ -1101,22 +1030,13 @@ fn project_live_observation(
     value: LiveObservation,
     role: ImageRole,
     step_index: Option<u32>,
-    preference: ResponseProjectionRequest,
+    response: ResponseRequest,
 ) -> Result<(Value, Vec<KrometrailError>, Option<EncodedMcpImage>), ResponseInvariantError> {
     let mut warnings = Vec::new();
     let mut page = project_serializable_part(value.page, &mut warnings)?;
-    apply_structured_part(&mut page, preference.page_state, compact_page_state)?;
-    let snapshot = match value.snapshot {
-        ObservationPart::Available(snapshot)
-            if preference.snapshot == SnapshotResponseDetail::Legacy
-                && matches!(&role, ImageRole::PostAction | ImageRole::BatchFinal) =>
-        {
-            ObservationPart::Available(compact_snapshot(snapshot)?)
-        }
-        snapshot => snapshot,
-    };
-    let mut snapshot = project_serializable_part(snapshot, &mut warnings)?;
-    apply_snapshot_part(&mut snapshot, preference.snapshot)?;
+    project_page_state_part(&mut page, response.detail)?;
+    let mut snapshot = project_serializable_part(value.snapshot, &mut warnings)?;
+    project_snapshot_part(&mut snapshot, response.detail)?;
     let (screenshot, image) = match value.screenshot {
         ObservationPart::Available(screenshot) => (
             json!({"available": screenshot.metadata()}),
@@ -1143,116 +1063,171 @@ fn project_live_observation(
     ))
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SnapshotProjection {
-    Compact,
-    InteractionOnly,
+#[derive(Clone, Debug, Serialize)]
+struct ExactTarget {
+    reference: krometrail_core::NodeReference,
+    role: String,
+    name: Option<String>,
+    value: Option<String>,
+    states: Vec<krometrail_core::AccessibleProperty>,
 }
 
-fn project_snapshot(
-    snapshot: PageSnapshot,
-    projection: SnapshotProjection,
-) -> Result<PageSnapshot, ResponseInvariantError> {
-    let full_json_bytes = serde_json::to_vec(&snapshot.nodes)
-        .map_err(|_| ResponseInvariantError)?
-        .len();
-    if projection == SnapshotProjection::Compact
-        && snapshot.nodes.len() <= MAX_AUTOMATIC_SNAPSHOT_NODES
-        && full_json_bytes <= MAX_AUTOMATIC_SNAPSHOT_JSON_BYTES
-    {
-        return Ok(snapshot);
-    }
+#[derive(Clone, Copy, Debug, Serialize)]
+struct TargetOmissions {
+    source_nodes: u32,
+    presentation_targets: u32,
+}
 
-    let positions: HashMap<_, _> = snapshot
-        .nodes
-        .iter()
-        .enumerate()
-        .map(|(index, node)| (node.id, index))
-        .collect();
-    let mut selected = vec![false; snapshot.nodes.len()];
-    let mut selected_count = 0;
-    let mut serialized_bytes = 2; // JSON array brackets.
+#[derive(Clone, Copy, Debug, Serialize)]
+struct ExpandedSnapshotOmissions {
+    source_nodes: u32,
+    presentation_targets: u32,
+    presentation_context_nodes: u32,
+}
 
+#[derive(Clone, Debug, Serialize)]
+struct ExactTargetIndex {
+    context: krometrail_core::ObservationContext,
+    generation: krometrail_core::SnapshotGeneration,
+    targets: Vec<ExactTarget>,
+    omissions: TargetOmissions,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct SemanticContextEntry {
+    node_id: krometrail_core::SnapshotNodeId,
+    parent_node_id: Option<krometrail_core::SnapshotNodeId>,
+    depth: u16,
+    role: String,
+    name: Option<String>,
+    value: Option<String>,
+    description: Option<String>,
+    states: Vec<krometrail_core::AccessibleProperty>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ExpandedSnapshot {
+    context: krometrail_core::ObservationContext,
+    generation: krometrail_core::SnapshotGeneration,
+    targets: Vec<ExactTarget>,
+    semantic_context: Vec<SemanticContextEntry>,
+    omissions: ExpandedSnapshotOmissions,
+}
+
+fn exact_target(
+    node: &krometrail_core::SnapshotNode,
+) -> Result<ExactTarget, ResponseInvariantError> {
+    Ok(ExactTarget {
+        reference: node.reference.ok_or(ResponseInvariantError)?,
+        role: node.role.clone(),
+        name: node.name.clone(),
+        value: node.value.clone(),
+        states: node.properties.clone(),
+    })
+}
+
+fn bounded_targets(snapshot: &PageSnapshot) -> Result<Vec<ExactTarget>, ResponseInvariantError> {
     let mut actions = snapshot
         .nodes
         .iter()
         .enumerate()
-        .filter_map(|(index, node)| node.actionable.then_some(index))
+        .filter(|(_, node)| node.actionable)
         .collect::<Vec<_>>();
-    actions.sort_by_key(|index| (snapshot_action_rank(&snapshot.nodes[*index]), *index));
-    for action in actions {
-        let mut missing_path = Vec::new();
-        let mut current = Some(action);
-        while let Some(index) = current {
-            if selected[index] {
-                break;
-            }
-            missing_path.push(index);
-            current = snapshot.nodes[index]
-                .parent
-                .and_then(|parent| positions.get(&parent).copied());
+    actions.sort_by_key(|(index, node)| (snapshot_action_rank(node), *index));
+    let mut targets = Vec::new();
+    let mut bytes = 2usize;
+    for (_, node) in actions {
+        if targets.len() == MAX_CONCISE_TARGETS {
+            break;
         }
-        missing_path.reverse();
-        let Some(next_bytes) = automatic_snapshot_path_bytes_after(
-            &snapshot.nodes,
-            &missing_path,
-            selected_count,
-            serialized_bytes,
-        )?
-        else {
+        let target = exact_target(node)?;
+        let entry_bytes = serde_json::to_vec(&target)
+            .map_err(|_| ResponseInvariantError)?
+            .len();
+        let next = bytes
+            .checked_add(usize::from(!targets.is_empty()))
+            .and_then(|value| value.checked_add(entry_bytes))
+            .ok_or(ResponseInvariantError)?;
+        if next > MAX_CONCISE_TARGET_JSON_BYTES {
             continue;
-        };
-        selected_count += missing_path.len();
-        for index in missing_path {
-            selected[index] = true;
         }
-        serialized_bytes = next_bytes;
+        bytes = next;
+        targets.push(target);
     }
-
-    if projection == SnapshotProjection::Compact {
-        for (index, node) in snapshot.nodes.iter().enumerate() {
-            if selected[index]
-                || !node.parent.is_none_or(|parent| {
-                    positions.get(&parent).is_some_and(|index| selected[*index])
-                })
-            {
-                continue;
-            }
-            let Some(next_bytes) =
-                automatic_snapshot_bytes_after(node, selected_count, serialized_bytes)?
-            else {
-                continue;
-            };
-            selected[index] = true;
-            selected_count += 1;
-            serialized_bytes = next_bytes;
-        }
-    }
-
-    let original_node_count = snapshot.nodes.len();
-    let nodes = snapshot
-        .nodes
-        .into_iter()
-        .zip(selected)
-        .filter_map(|(node, selected)| selected.then_some(node))
-        .collect::<Vec<_>>();
-    let presentation_omissions =
-        u32::try_from(original_node_count - nodes.len()).map_err(|_| ResponseInvariantError)?;
-    let omitted_node_count = snapshot
-        .omitted_node_count
-        .checked_add(presentation_omissions)
-        .ok_or(ResponseInvariantError)?;
-    PageSnapshot::new(
-        snapshot.context,
-        snapshot.generation,
-        nodes,
-        omitted_node_count,
-    )
-    .map_err(|_| ResponseInvariantError)
+    Ok(targets)
 }
 
-fn compact_snapshot(snapshot: PageSnapshot) -> Result<PageSnapshot, ResponseInvariantError> {
-    project_snapshot(snapshot, SnapshotProjection::Compact)
+fn concise_snapshot(snapshot: &PageSnapshot) -> Result<ExactTargetIndex, ResponseInvariantError> {
+    let actionable = snapshot.nodes.iter().filter(|node| node.actionable).count();
+    let targets = bounded_targets(snapshot)?;
+    Ok(ExactTargetIndex {
+        context: snapshot.context.clone(),
+        generation: snapshot.generation,
+        omissions: TargetOmissions {
+            source_nodes: snapshot.omitted_node_count,
+            presentation_targets: u32::try_from(actionable - targets.len())
+                .map_err(|_| ResponseInvariantError)?,
+        },
+        targets,
+    })
+}
+
+fn expanded_snapshot(snapshot: &PageSnapshot) -> Result<ExpandedSnapshot, ResponseInvariantError> {
+    let targets = bounded_targets(snapshot)?;
+    let actionable = snapshot.nodes.iter().filter(|node| node.actionable).count();
+    let mut candidates = snapshot
+        .nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, node)| !node.actionable)
+        .collect::<Vec<_>>();
+    candidates.sort_by_key(|(index, node)| (semantic_rank(node), *index));
+    let mut semantic_context = Vec::new();
+    let mut bytes = serde_json::to_vec(&targets)
+        .map_err(|_| ResponseInvariantError)?
+        .len()
+        + 2;
+    for (_, node) in candidates {
+        if semantic_context.len() == MAX_EXPANDED_CONTEXT_NODES {
+            break;
+        }
+        let entry = SemanticContextEntry {
+            node_id: node.id,
+            parent_node_id: node.parent,
+            depth: node.depth,
+            role: node.role.clone(),
+            name: node.name.clone(),
+            value: node.value.clone(),
+            description: node.description.clone(),
+            states: node.properties.clone(),
+        };
+        let entry_bytes = serde_json::to_vec(&entry)
+            .map_err(|_| ResponseInvariantError)?
+            .len();
+        let next = bytes
+            .checked_add(usize::from(!semantic_context.is_empty()))
+            .and_then(|value| value.checked_add(entry_bytes))
+            .ok_or(ResponseInvariantError)?;
+        if next > MAX_EXPANDED_SNAPSHOT_JSON_BYTES {
+            continue;
+        }
+        bytes = next;
+        semantic_context.push(entry);
+    }
+    let context_count = snapshot.nodes.len() - actionable;
+    Ok(ExpandedSnapshot {
+        context: snapshot.context.clone(),
+        generation: snapshot.generation,
+        omissions: ExpandedSnapshotOmissions {
+            source_nodes: snapshot.omitted_node_count,
+            presentation_targets: u32::try_from(actionable - targets.len())
+                .map_err(|_| ResponseInvariantError)?,
+            presentation_context_nodes: u32::try_from(context_count - semantic_context.len())
+                .map_err(|_| ResponseInvariantError)?,
+        },
+        targets,
+        semantic_context,
+    })
 }
 
 fn snapshot_action_rank(node: &krometrail_core::SnapshotNode) -> u8 {
@@ -1277,120 +1252,90 @@ fn snapshot_boolean_property(node: &krometrail_core::SnapshotNode, name: &str) -
     })
 }
 
-fn apply_response_projection(
+fn semantic_rank(node: &krometrail_core::SnapshotNode) -> u8 {
+    if matches!(
+        node.role.as_str(),
+        "alert" | "dialog" | "heading" | "status"
+    ) {
+        0
+    } else if node.name.is_some() || node.value.is_some() || node.description.is_some() {
+        1
+    } else {
+        2
+    }
+}
+
+fn project_response(
     tool: &str,
     projection: &mut Projection,
-    preference: ResponseProjectionRequest,
+    response: ResponseRequest,
 ) -> Result<(), ResponseInvariantError> {
-    if preference.inline_images == InlineImageDetail::Omit {
+    if !response.inline_images {
         projection.images.clear();
     }
-
     if tool == "snapshot_page" {
-        apply_root_snapshot_detail(&mut projection.result, preference.snapshot)?;
+        project_root_snapshot(&mut projection.result, response.detail)?;
     } else if tool == "inspect_page" {
-        apply_root_structured_detail(
-            &mut projection.result,
-            preference.page_state,
-            compact_page_state,
-        )?;
+        project_root_page_state(&mut projection.result, response.detail)?;
     }
-
     Ok(())
 }
 
-fn apply_root_snapshot_detail(
+fn project_root_snapshot(
     value: &mut Value,
-    detail: SnapshotResponseDetail,
+    detail: ResponseDetail,
 ) -> Result<(), ResponseInvariantError> {
     match detail {
-        SnapshotResponseDetail::Legacy | SnapshotResponseDetail::Full => Ok(()),
-        SnapshotResponseDetail::Compact => {
-            *value = snapshot_projection_value(value, SnapshotProjection::Compact)?;
-            Ok(())
+        ResponseDetail::Full => {}
+        ResponseDetail::Concise => {
+            *value = serde_json::to_value(concise_snapshot(
+                &serde_json::from_value(value.clone()).map_err(|_| ResponseInvariantError)?,
+            )?)
+            .map_err(|_| ResponseInvariantError)?
         }
-        SnapshotResponseDetail::InteractionOnly => {
-            *value = snapshot_projection_value(value, SnapshotProjection::InteractionOnly)?;
-            Ok(())
-        }
-        SnapshotResponseDetail::Omit => {
-            *value = projection_omitted_part();
-            Ok(())
+        ResponseDetail::Expanded => {
+            *value = serde_json::to_value(expanded_snapshot(
+                &serde_json::from_value(value.clone()).map_err(|_| ResponseInvariantError)?,
+            )?)
+            .map_err(|_| ResponseInvariantError)?
         }
     }
+    Ok(())
 }
 
-fn apply_root_structured_detail(
+fn project_root_page_state(
     value: &mut Value,
-    detail: StructuredResponseDetail,
-    compact: fn(&Value) -> Result<Value, ResponseInvariantError>,
+    detail: ResponseDetail,
 ) -> Result<(), ResponseInvariantError> {
-    match detail {
-        StructuredResponseDetail::Legacy | StructuredResponseDetail::Full => Ok(()),
-        StructuredResponseDetail::Compact => {
-            *value = compact(value)?;
-            Ok(())
-        }
-        StructuredResponseDetail::Omit => {
-            *value = projection_omitted_part();
-            Ok(())
-        }
+    if detail == ResponseDetail::Concise {
+        *value = concise_page_state(value)?;
     }
+    Ok(())
 }
 
-fn apply_structured_part(
+fn project_page_state_part(
     part: &mut Value,
-    detail: StructuredResponseDetail,
-    compact: fn(&Value) -> Result<Value, ResponseInvariantError>,
+    detail: ResponseDetail,
 ) -> Result<(), ResponseInvariantError> {
-    match detail {
-        StructuredResponseDetail::Legacy | StructuredResponseDetail::Full => Ok(()),
-        StructuredResponseDetail::Omit if part.get("available").is_some() => {
-            *part = projection_omitted_part();
-            Ok(())
-        }
-        StructuredResponseDetail::Omit => Ok(()),
-        StructuredResponseDetail::Compact => {
-            let Some(value) = part.get_mut("available") else {
-                return Ok(());
-            };
-            *value = compact(value)?;
-            Ok(())
-        }
+    if detail == ResponseDetail::Concise
+        && let Some(value) = part.get_mut("available")
+    {
+        *value = concise_page_state(value)?;
     }
+    Ok(())
 }
 
-fn apply_snapshot_part(
+fn project_snapshot_part(
     part: &mut Value,
-    detail: SnapshotResponseDetail,
+    detail: ResponseDetail,
 ) -> Result<(), ResponseInvariantError> {
-    match detail {
-        SnapshotResponseDetail::Legacy | SnapshotResponseDetail::Full => Ok(()),
-        SnapshotResponseDetail::Omit if part.get("available").is_some() => {
-            *part = projection_omitted_part();
-            Ok(())
-        }
-        SnapshotResponseDetail::Omit => Ok(()),
-        SnapshotResponseDetail::Compact | SnapshotResponseDetail::InteractionOnly => {
-            let Some(value) = part.get_mut("available") else {
-                return Ok(());
-            };
-            let projection = if detail == SnapshotResponseDetail::Compact {
-                SnapshotProjection::Compact
-            } else {
-                SnapshotProjection::InteractionOnly
-            };
-            *value = snapshot_projection_value(value, projection)?;
-            Ok(())
-        }
-    }
+    let Some(value) = part.get_mut("available") else {
+        return Ok(());
+    };
+    project_root_snapshot(value, detail)
 }
 
-fn projection_omitted_part() -> Value {
-    json!({"omitted": {"reason": "response_projection"}})
-}
-
-fn compact_page_state(value: &Value) -> Result<Value, ResponseInvariantError> {
+fn concise_page_state(value: &Value) -> Result<Value, ResponseInvariantError> {
     let Some(object) = value.as_object() else {
         return Ok(value.clone());
     };
@@ -1409,34 +1354,24 @@ fn compact_page_state(value: &Value) -> Result<Value, ResponseInvariantError> {
         "started_at",
         "completed_at",
     ];
-    let mut compact = serde_json::Map::new();
+    let mut concise = serde_json::Map::new();
     for key in retained {
         if let Some(value) = object.get(key) {
-            compact.insert(key.to_owned(), value.clone());
+            concise.insert(key.to_owned(), value.clone());
         }
     }
-    if compact.is_empty() {
+    if concise.is_empty() {
         Ok(value.clone())
     } else {
-        Ok(Value::Object(compact))
+        Ok(Value::Object(concise))
     }
 }
 
-fn snapshot_projection_value(
-    value: &Value,
-    projection: SnapshotProjection,
-) -> Result<Value, ResponseInvariantError> {
-    let snapshot: PageSnapshot =
-        serde_json::from_value(value.clone()).map_err(|_| ResponseInvariantError)?;
-    serde_json::to_value(project_snapshot(snapshot, projection)?)
-        .map_err(|_| ResponseInvariantError)
-}
-
-fn apply_temporal_projection(
+fn project_temporal_value(
     value: &mut Value,
-    detail: TemporalResponseDetail,
+    detail: ResponseDetail,
 ) -> Result<(), ResponseInvariantError> {
-    if detail == TemporalResponseDetail::Compact {
+    if detail == ResponseDetail::Concise {
         *value = compact_temporal_value(value)?;
     }
     Ok(())
@@ -1530,41 +1465,6 @@ fn compact_temporal_context_value(value: &Value) -> Result<Value, ResponseInvari
     }))
 }
 
-fn automatic_snapshot_bytes_after(
-    node: &krometrail_core::SnapshotNode,
-    selected_count: usize,
-    serialized_bytes: usize,
-) -> Result<Option<usize>, ResponseInvariantError> {
-    if selected_count >= MAX_AUTOMATIC_SNAPSHOT_NODES {
-        return Ok(None);
-    }
-    let node_bytes = serde_json::to_vec(node)
-        .map_err(|_| ResponseInvariantError)?
-        .len();
-    let separator_bytes = usize::from(selected_count != 0);
-    let next_bytes = serialized_bytes
-        .checked_add(separator_bytes)
-        .and_then(|bytes| bytes.checked_add(node_bytes))
-        .ok_or(ResponseInvariantError)?;
-    Ok((next_bytes <= MAX_AUTOMATIC_SNAPSHOT_JSON_BYTES).then_some(next_bytes))
-}
-
-fn automatic_snapshot_path_bytes_after(
-    nodes: &[krometrail_core::SnapshotNode],
-    path: &[usize],
-    selected_count: usize,
-    serialized_bytes: usize,
-) -> Result<Option<usize>, ResponseInvariantError> {
-    let mut bytes = serialized_bytes;
-    for (count, index) in (selected_count..).zip(path) {
-        let Some(next_bytes) = automatic_snapshot_bytes_after(&nodes[*index], count, bytes)? else {
-            return Ok(None);
-        };
-        bytes = next_bytes;
-    }
-    Ok(Some(bytes))
-}
-
 fn project_serializable_part<T: Serialize>(
     value: ObservationPart<T>,
     warnings: &mut Vec<KrometrailError>,
@@ -1602,13 +1502,13 @@ fn batch_outcome_error(outcome: BatchOutcome) -> KrometrailError {
     KrometrailError::new(code, NonEmptyText::new(message).unwrap()).with_retry(code.default_retry())
 }
 
-pub(crate) async fn map_temporal_bundle_result_projected(
+pub(crate) async fn map_temporal_bundle_result(
     tool: &str,
     bundle: TemporalDebugBundle,
     progressive: &dyn ProgressiveEvidence,
     deadline: Instant,
     cancellation: Arc<dyn krometrail_core::CancellationSignal>,
-    preference: ResponseProjectionRequest,
+    response: ResponseRequest,
 ) -> Result<MappedResult, ResponseInvariantError> {
     let scope = artifact_scope(&bundle.range)?;
     let mut projection = Projection::success(compact_bundle_value(&bundle, scope)?);
@@ -1643,7 +1543,9 @@ pub(crate) async fn map_temporal_bundle_result_projected(
             }
         }
     }
-    if let Some((_, _, _, artifact)) = candidate {
+    if response.inline_images
+        && let Some((_, _, _, artifact)) = candidate
+    {
         match read_inline_artifact(
             scope,
             artifact.artifact_id,
@@ -1679,16 +1581,17 @@ pub(crate) async fn map_temporal_bundle_result_projected(
             Err(error) => projection.degrade_with(vec![error]),
         }
     }
-    apply_temporal_projection(&mut projection.result, preference.temporal)?;
-    apply_response_projection(tool, &mut projection, preference)?;
+    project_temporal_value(&mut projection.result, response.detail)?;
+    project_response(tool, &mut projection, response)?;
     Ok(mapped(tool, projection, format!("{tool} succeeded")))
 }
 
 pub(crate) fn map_progressive_result(
     tool: &str,
     result: ProgressiveEvidenceResult,
+    response: ResponseRequest,
 ) -> Result<MappedResult, ResponseInvariantError> {
-    let projection = match result {
+    let mut projection = match result {
         ProgressiveEvidenceResult::RetrieveArtifact(read) => {
             // Resource-only operations never become tools, but retain a safe
             // projection if an adapter invokes this boundary directly.
@@ -1759,20 +1662,9 @@ pub(crate) fn map_progressive_result(
         | ProgressiveEvidenceResult::UnpinResolvedRange(change) => serializable(*change)?,
         ProgressiveEvidenceResult::QueryPinState(state) => serializable(*state)?,
     };
+    project_temporal_value(&mut projection.result, response.detail)?;
+    project_response(tool, &mut projection, response)?;
     Ok(mapped(tool, projection, format!("{tool} succeeded")))
-}
-
-pub(crate) fn map_progressive_result_projected(
-    tool: &str,
-    result: ProgressiveEvidenceResult,
-    preference: ResponseProjectionRequest,
-) -> Result<MappedResult, ResponseInvariantError> {
-    let mut mapped = map_progressive_result(tool, result)?;
-    if preference.inline_images == InlineImageDetail::Omit {
-        mapped.images.clear();
-        mapped.response.images.clear();
-    }
-    Ok(mapped)
 }
 
 fn add_artifact_generation_resources(
@@ -2060,48 +1952,18 @@ mod tests {
     use krometrail_core::{
         AccessibleProperty, AccessibleValue, BatchSkipReason, BatchStepResult, BatchStepStatus,
         BrowserOperationKind, CaptureFailureStage, CaptureStatistics, CaptureStreamState,
-        CaptureTimingSummary, CssPoint, CssRect, CssSize, DeviceScaleFactor, ErrorContext,
-        EveryNthFrame, FrameId, ImageFormat, InteractionId, InteractionTiming, NodeReference,
-        ObservationContext, PageChange, PageOperationResult, PageSelection, PageSnapshot,
-        PixelDimensions, PresentationRange, PresentationTime, QueryPageResult,
-        RangeResolutionOptions, ResolvedRange, ScreenshotTarget, SemanticMatch,
-        SemanticQueryOutcome, SessionId, SessionRange, SessionTime, Sha256Digest,
-        SnapshotGeneration, SnapshotNode, SnapshotNodeId, TargetCaptureStatus, TargetId,
-        TemporalRangeAnchorKind, TemporalVideoGenerationClip, TemporalVideoManifest,
-        VideoArtifactEvidenceHandle, VideoEncodedClip, VideoEncoderIdentity, VideoEncodingProfile,
-        VideoOutputGeometry, VideoPresentationPlan, VideoPresentationSegment, VideoSegmentSource,
-        VideoTimingBasis, ViewportOperationResult, ViewportOverride, ViewportPreset, VisualEpoch,
-        WaitCondition, WaitProbe, WaitRequest, WaitResult,
+        CaptureTimingSummary, CssPoint, CssRect, CssSize, DeviceScaleFactor, EveryNthFrame,
+        FrameId, ImageFormat, InteractionId, InteractionTiming, NodeReference, ObservationContext,
+        PageChange, PageOperationResult, PageSelection, PageSnapshot, PixelDimensions,
+        PresentationRange, PresentationTime, RangeResolutionOptions, ResolvedRange,
+        ScreenshotTarget, SessionId, SessionRange, SessionTime, Sha256Digest, SnapshotGeneration,
+        SnapshotNode, SnapshotNodeId, TargetCaptureStatus, TargetId, TemporalRangeAnchorKind,
+        TemporalVideoGenerationClip, TemporalVideoManifest, VideoArtifactEvidenceHandle,
+        VideoEncodedClip, VideoEncoderIdentity, VideoEncodingProfile, VideoOutputGeometry,
+        VideoPresentationPlan, VideoPresentationSegment, VideoSegmentSource, VideoTimingBasis,
+        VisualEpoch, WaitCondition, WaitProbe, WaitRequest, WaitResult,
     };
-    use std::{
-        sync::atomic::{AtomicUsize, Ordering},
-        time::Duration,
-    };
-
-    #[derive(Clone)]
-    struct EventCounter(Arc<AtomicUsize>);
-
-    impl tracing::Subscriber for EventCounter {
-        fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
-            true
-        }
-
-        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-            tracing::span::Id::from_u64(1)
-        }
-
-        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
-
-        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
-
-        fn event(&self, _event: &tracing::Event<'_>) {
-            self.0.fetch_add(1, Ordering::Relaxed);
-        }
-
-        fn enter(&self, _span: &tracing::span::Id) {}
-
-        fn exit(&self, _span: &tracing::span::Id) {}
-    }
+    use std::time::Duration;
 
     fn session_id() -> SessionId {
         "00000000-0000-0000-0000-000000000001".parse().unwrap()
@@ -2434,6 +2296,10 @@ mod tests {
             "take_screenshot",
             BrowserOperationResult::TakeScreenshot(Box::new(screenshot(ImageFormat::Png))),
             &[failed_capture(), failed_capture()],
+            ResponseRequest {
+                inline_images: true,
+                ..ResponseRequest::default()
+            },
         )
         .unwrap();
         assert_eq!(mapped.response.status, ToolResponseStatus::Degraded);
@@ -2470,176 +2336,48 @@ mod tests {
             "take_screenshot",
             BrowserOperationResult::TakeScreenshot(Box::new(screenshot(ImageFormat::Png))),
             &[failed_capture_for(other)],
+            ResponseRequest::default(),
         )
         .unwrap();
         assert_eq!(mapped.response.status, ToolResponseStatus::Succeeded);
         assert!(mapped.response.warnings.is_empty());
     }
-
     #[test]
-    fn viewport_projection_publishes_materialization_geometry_and_bounded_guidance() {
-        let materialization = ViewportOverride::Preset {
-            preset: ViewportPreset::MobilePhone,
-        }
-        .materialize();
-        let effective = krometrail_core::EffectiveViewport {
-            css_size: CssSize::new(390.0, 844.0).unwrap(),
-            layout_css_size: CssSize::new(980.0, 2_120.0).unwrap(),
-            device_scale_factor: DeviceScaleFactor::new(3.0).unwrap(),
-            mobile: true,
-            touch: true,
-            override_active: true,
-            viewport_meta_present: false,
-        };
-        let guidance = krometrail_core::viewport_guidance(materialization, &effective);
-        let timing = InteractionTiming::new(
-            SessionTime::from_nanos(1),
-            SessionTime::from_nanos(2),
-            SessionTime::from_nanos(3),
-            None,
+    fn response_request_defaults_to_concise_and_rejects_removed_fields() {
+        let (remaining, response) = split_response_request(
+            serde_json::json!({
+                "target_id": target_id(),
+                "response": {"detail": "expanded", "inline_images": true}
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
         )
         .unwrap();
-        let interaction = InteractionAnchor::new(
-            interaction_id(),
-            session_id(),
-            target_id(),
-            BrowserOperationKind::SetViewport,
-            timing,
-        )
-        .unwrap();
-        let unavailable = error(
-            ErrorCode::PageObservationFailed,
-            "test observation unavailable",
-        );
-        let operation = PageOperationResult::new(
-            interaction,
-            PageOperationOutcome::Succeeded(PageChange::ViewportConfigured {
-                override_active: true,
-            }),
-            ObservationPart::Unavailable(unavailable),
-        )
-        .unwrap();
-        let projection = project_operation(
-            BrowserOperationResult::SetViewport(Box::new(ViewportOperationResult {
-                operation,
-                effective: ObservationPart::Available(effective),
-                materialization,
-                guidance,
-            })),
-            ResponseProjectionRequest::default(),
-        )
-        .unwrap();
+        assert!(remaining.contains_key("target_id"));
+        assert_eq!(response.detail, ResponseDetail::Expanded);
+        assert!(response.inline_images);
 
-        assert_eq!(
-            projection.result["materialization"]["intent"],
-            "mobile_device"
-        );
-        assert_eq!(
-            projection.result["materialization"]["preset"],
-            "mobile_phone"
-        );
-        assert_eq!(
-            projection.result["materialization"]["metrics"]["width"],
-            390
-        );
-        assert_eq!(
-            projection.result["materialization"]["user_agent_emulated"],
-            false
-        );
-        assert_eq!(
-            projection.result["effective"]["available"]["layout_css_size"]["width"],
-            980.0
-        );
-        assert_eq!(
-            projection.result["guidance"][0]["code"],
-            "likely_missing_viewport_metadata"
-        );
-        assert!(projection.images.is_empty());
-    }
+        let (_, defaulted) = split_response_request(JsonObject::new()).unwrap();
+        assert_eq!(defaulted, ResponseRequest::default());
 
-    #[test]
-    fn equivalent_warnings_are_logged_and_retained_once_without_collapsing_same_code() {
-        let first = error(
-            ErrorCode::PageObservationFailed,
-            "dialog blocked observation",
-        );
-        let distinct = first.clone().with_context(ErrorContext {
-            target_id: Some(target_id()),
-            ..ErrorContext::default()
-        });
-        let events = Arc::new(AtomicUsize::new(0));
-        let counter = EventCounter(Arc::clone(&events));
-        let mut projection = Projection::success(json!({}));
-        tracing::subscriber::with_default(counter, || {
-            projection.degrade_with_stage(
-                vec![
-                    first.clone(),
-                    first.clone(),
-                    distinct.clone(),
-                    first.clone(),
-                ],
-                "live_observation",
-            );
-        });
-
-        assert_eq!(projection.warnings, vec![first, distinct]);
-        assert_eq!(events.load(Ordering::Relaxed), 2);
-    }
-
-    #[test]
-    fn automatic_live_observations_bound_complex_snapshots_with_exact_omissions() {
-        let full = complex_snapshot();
-        for role in [ImageRole::PostAction, ImageRole::BatchFinal] {
-            let (value, _, _) = project_live_observation(
-                live_with_snapshot(full.clone()),
-                role,
-                None,
-                ResponseProjectionRequest::legacy(),
-            )
-            .unwrap();
-            let compact: PageSnapshot =
-                serde_json::from_value(value["snapshot"]["available"].clone()).unwrap();
-            assert!(
-                compact.nodes.len() <= 48,
-                "automatic live snapshots must retain at most 48 nodes"
-            );
-            assert!(
-                serde_json::to_vec(&compact.nodes).unwrap().len() <= 12 * 1024,
-                "automatic live snapshots must fit the 12 KiB serialized-node budget"
-            );
-            assert_eq!(
-                compact.omitted_node_count,
-                full.omitted_node_count
-                    + u32::try_from(full.nodes.len() - compact.nodes.len()).unwrap()
-            );
-            let action = compact
-                .nodes
-                .iter()
-                .find(|node| node.actionable)
-                .expect("the late actionable node is prioritized");
-            let group = compact
-                .nodes
-                .iter()
-                .find(|node| Some(node.id) == action.parent)
-                .expect("the action's parent is retained");
-            assert!(
-                compact
-                    .nodes
-                    .iter()
-                    .any(|node| Some(node.id) == group.parent)
-            );
-            PageSnapshot::new(
-                compact.context.clone(),
-                compact.generation,
-                compact.nodes.clone(),
-                compact.omitted_node_count,
-            )
-            .unwrap();
+        for removed in [
+            json!({"snapshot": "compact"}),
+            json!({"page_state": "omit"}),
+            json!({"diagnostics": "omit"}),
+            json!({"temporal": "full"}),
+            json!({"inline_images": "inline"}),
+        ] {
+            let error =
+                split_response_request(json!({"response": removed}).as_object().unwrap().clone())
+                    .unwrap_err();
+            assert_eq!(error.code, ErrorCode::InvalidInput);
+            assert!(!error.message.as_str().contains("compact"));
         }
     }
 
     #[test]
-    fn compact_snapshot_prioritizes_focused_editable_and_non_link_actions_over_early_links() {
+    fn concise_snapshot_is_flat_bounded_and_action_ranked() {
         let generation = SnapshotGeneration::new(1).unwrap();
         let root_id = SnapshotNodeId::new(1).unwrap();
         let mut nodes = vec![SnapshotNode {
@@ -2647,21 +2385,21 @@ mod tests {
             parent: None,
             depth: 0,
             role: "document".into(),
-            name: None,
+            name: Some("news".into()),
             value: None,
             description: None,
             properties: vec![],
             actionable: false,
             reference: None,
         }];
-        for value in 2..=60 {
+        for value in 2..=80 {
             let id = SnapshotNodeId::new(value).unwrap();
             nodes.push(SnapshotNode {
                 id,
                 parent: Some(root_id),
                 depth: 1,
                 role: "link".into(),
-                name: Some(format!("early-link-{value}")),
+                name: Some(format!("early link {value}")),
                 value: None,
                 description: None,
                 properties: vec![],
@@ -2673,440 +2411,121 @@ mod tests {
                 }),
             });
         }
-        let button_id = SnapshotNodeId::new(61).unwrap();
+        let focused_id = SnapshotNodeId::new(81).unwrap();
         nodes.push(SnapshotNode {
-            id: button_id,
-            parent: Some(root_id),
-            depth: 1,
-            role: "button".into(),
-            name: Some("late button".into()),
-            value: None,
-            description: None,
-            properties: vec![],
-            actionable: true,
-            reference: Some(NodeReference {
-                target_id: target_id(),
-                generation,
-                node_id: button_id,
-            }),
-        });
-        let textbox_id = SnapshotNodeId::new(62).unwrap();
-        nodes.push(SnapshotNode {
-            id: textbox_id,
+            id: focused_id,
             parent: Some(root_id),
             depth: 1,
             role: "textbox".into(),
-            name: Some("late editable".into()),
-            value: None,
+            name: Some("late focused editor".into()),
+            value: Some("draft".into()),
             description: None,
             properties: vec![
+                AccessibleProperty::new("focused", AccessibleValue::Boolean(true)).unwrap(),
                 AccessibleProperty::new("editable", AccessibleValue::Boolean(true)).unwrap(),
             ],
             actionable: true,
             reference: Some(NodeReference {
                 target_id: target_id(),
                 generation,
-                node_id: textbox_id,
+                node_id: focused_id,
             }),
         });
-        let focused_link_id = SnapshotNodeId::new(63).unwrap();
-        nodes.push(SnapshotNode {
-            id: focused_link_id,
-            parent: Some(root_id),
-            depth: 1,
-            role: "link".into(),
-            name: Some("late focused link".into()),
-            value: None,
-            description: None,
-            properties: vec![
-                AccessibleProperty::new("focused", AccessibleValue::Boolean(true)).unwrap(),
-            ],
-            actionable: true,
-            reference: Some(NodeReference {
-                target_id: target_id(),
-                generation,
-                node_id: focused_link_id,
-            }),
-        });
-        let snapshot = PageSnapshot::new(context(), generation, nodes, 0).unwrap();
+        let snapshot = PageSnapshot::new(context(), generation, nodes, 9).unwrap();
+        let concise = concise_snapshot(&snapshot).unwrap();
+        assert!(concise.targets.len() <= MAX_CONCISE_TARGETS);
+        assert!(
+            serde_json::to_vec(&concise.targets).unwrap().len() <= MAX_CONCISE_TARGET_JSON_BYTES
+        );
+        assert_eq!(concise.targets[0].reference.node_id, focused_id);
+        assert_eq!(concise.omissions.source_nodes, 9);
+        assert_eq!(concise.omissions.presentation_targets, 32);
+    }
 
-        let compact = compact_snapshot(snapshot).unwrap();
-        for (id, category) in [
-            (focused_link_id, "focused"),
-            (textbox_id, "editable"),
-            (button_id, "non-link"),
-        ] {
-            assert!(
-                compact.nodes.iter().any(|node| node.id == id),
-                "{category} actions must outrank earlier links"
-            );
+    #[test]
+    fn response_detail_grows_without_changing_authoritative_envelope() {
+        let snapshot = complex_snapshot();
+        let operation = || BrowserOperationResult::SnapshotPage(Box::new(snapshot.clone()));
+        let concise = map_operation_result_with_capture(
+            "snapshot_page",
+            operation(),
+            &[],
+            ResponseRequest::default(),
+        )
+        .unwrap();
+        let expanded = map_operation_result_with_capture(
+            "snapshot_page",
+            operation(),
+            &[],
+            ResponseRequest {
+                detail: ResponseDetail::Expanded,
+                inline_images: false,
+            },
+        )
+        .unwrap();
+        let full = map_operation_result_with_capture(
+            "snapshot_page",
+            operation(),
+            &[],
+            ResponseRequest {
+                detail: ResponseDetail::Full,
+                inline_images: false,
+            },
+        )
+        .unwrap();
+        for mapped in [&concise, &expanded, &full] {
+            assert_eq!(mapped.response.status, ToolResponseStatus::Succeeded);
+            assert!(mapped.response.warnings.is_empty());
+            assert!(mapped.response.resources.is_empty());
         }
+        assert!(concise.response.result.get("targets").is_some());
+        assert!(concise.response.result.get("nodes").is_none());
+        assert!(expanded.response.result.get("semantic_context").is_some());
+        assert!(full.response.result.get("nodes").is_some());
     }
 
     #[test]
-    fn explicit_snapshot_and_live_observation_keep_full_snapshots() {
-        let full = complex_snapshot();
-        let snapshot = map_operation_result(
-            "snapshot_page",
-            BrowserOperationResult::SnapshotPage(Box::new(full.clone())),
-        )
-        .unwrap();
-        assert_eq!(
-            snapshot.response.result["nodes"].as_array().unwrap().len(),
-            403
-        );
-
-        let observed = map_operation_result(
-            "observe_live",
-            BrowserOperationResult::ObserveLive(Box::new(live_with_snapshot(full))),
-        )
-        .unwrap();
-        assert_eq!(
-            observed.response.result["snapshot"]["available"]["nodes"]
-                .as_array()
-                .unwrap()
-                .len(),
-            403
-        );
-    }
-
-    #[test]
-    fn semantic_query_response_is_bounded_structured_and_image_free() {
-        let generation = SnapshotGeneration::new(1).unwrap();
-        let reference = NodeReference {
-            target_id: target_id(),
-            generation,
-            node_id: SnapshotNodeId::new(1).unwrap(),
-        };
-        let result = QueryPageResult::new(
-            context(),
-            generation,
-            vec![SemanticMatch {
-                reference,
-                role: "button".into(),
-                name: Some("Save".into()),
-            }],
-            20,
-        )
-        .unwrap();
-        assert_eq!(result.outcome, SemanticQueryOutcome::Unique);
-        let mapped = map_operation_result(
-            "query_page",
-            BrowserOperationResult::QueryPage(Box::new(result)),
-        )
-        .unwrap();
-        assert!(mapped.images.is_empty());
-        assert!(mapped.response.images.is_empty());
-        assert!(mapped.response.resources.is_empty());
-        assert_eq!(mapped.response.result["outcome"], "unique");
-        assert_eq!(
-            mapped.response.result["matches"][0]["reference"]["node_id"],
-            1
-        );
-    }
-
-    #[test]
-    fn automatic_snapshot_below_limits_is_byte_equivalent() {
-        let full = complex_snapshot();
-        let small = PageSnapshot::new(
-            full.context,
-            full.generation,
-            full.nodes.into_iter().take(3).collect(),
-            full.omitted_node_count,
-        )
-        .unwrap();
-        let before = serde_json::to_vec(&small).unwrap();
-        let after = serde_json::to_vec(&compact_snapshot(small).unwrap()).unwrap();
-        assert_eq!(after, before);
-    }
-
-    #[test]
-    fn response_projection_validates_without_disclosing_supplied_values() {
-        let (remaining, preference) = split_response_projection(
-            serde_json::json!({
-                "target": "kept",
-                "response": {
-                    "inline_images": "omit",
-                    "snapshot": "compact",
-                    "page_state": "full",
-                    "temporal": "full",
-                    "diagnostics": "omit"
-                }
-            })
-            .as_object()
-            .unwrap()
-            .clone(),
-        )
-        .unwrap();
-        assert_eq!(remaining["target"], "kept");
-        assert_eq!(preference.inline_images, InlineImageDetail::Omit);
-        assert_eq!(preference.snapshot, SnapshotResponseDetail::Compact);
-        assert_eq!(preference.page_state, StructuredResponseDetail::Full);
-        assert_eq!(preference.temporal, TemporalResponseDetail::Full);
-        assert_eq!(preference.diagnostics, DiagnosticDetail::Omit);
-
-        let secret = "must-not-be-echoed";
-        let error = split_response_projection(
-            serde_json::json!({"response": {"snapshot": secret}})
-                .as_object()
-                .unwrap()
-                .clone(),
-        )
-        .unwrap_err();
-        assert_eq!(error.code, ErrorCode::InvalidInput);
-        assert!(error.message.as_str().contains("response.snapshot"));
-        assert!(!error.message.as_str().contains(secret));
-
-        let page_state_error = split_response_projection(
-            serde_json::json!({"response": {"page_state": "interaction_only"}})
-                .as_object()
-                .unwrap()
-                .clone(),
-        )
-        .unwrap_err();
-        assert_eq!(page_state_error.code, ErrorCode::InvalidInput);
-        assert!(
-            page_state_error
-                .message
-                .as_str()
-                .contains("response.page_state")
-        );
-    }
-
-    #[test]
-    fn explicit_snapshot_details_preserve_full_compact_and_omitted_truth() {
-        let full = complex_snapshot();
-        let observe = |detail| {
-            project_live_observation(
-                live_with_snapshot(full.clone()),
-                ImageRole::PostAction,
-                None,
-                ResponseProjectionRequest {
-                    snapshot: detail,
-                    ..ResponseProjectionRequest::default()
-                },
-            )
-            .unwrap()
-            .0
-        };
-        assert_eq!(
-            observe(SnapshotResponseDetail::Full)["snapshot"]["available"]["nodes"]
-                .as_array()
-                .unwrap()
-                .len(),
-            403
-        );
-        let compact = observe(SnapshotResponseDetail::Compact);
-        assert!(
-            compact["snapshot"]["available"]["nodes"]
-                .as_array()
-                .unwrap()
-                .len()
-                <= MAX_AUTOMATIC_SNAPSHOT_NODES
-        );
-        let interaction: PageSnapshot = serde_json::from_value(
-            observe(SnapshotResponseDetail::InteractionOnly)["snapshot"]["available"].clone(),
-        )
-        .unwrap();
-        assert_eq!(
-            interaction
-                .nodes
-                .iter()
-                .map(|node| node.id.get())
-                .collect::<Vec<_>>(),
-            vec![1, 401, 402]
-        );
-        assert_eq!(interaction.context, full.context);
-        assert_eq!(interaction.generation, full.generation);
-        assert_eq!(interaction.nodes[2].reference, full.nodes[401].reference);
-        assert_eq!(interaction.omitted_node_count, 407);
-        assert_eq!(
-            observe(SnapshotResponseDetail::Omit)["snapshot"],
-            projection_omitted_part()
-        );
-    }
-
-    #[test]
-    fn interaction_only_root_projection_preserves_action_closure_and_exact_omissions() {
-        let full = complex_snapshot();
-        let mapped = map_operation_result_with_capture_projected(
-            "snapshot_page",
-            BrowserOperationResult::SnapshotPage(Box::new(full.clone())),
-            &[],
-            ResponseProjectionRequest {
-                snapshot: SnapshotResponseDetail::InteractionOnly,
-                ..ResponseProjectionRequest::default()
-            },
-        )
-        .unwrap();
-        let projected: PageSnapshot =
-            serde_json::from_value(mapped.response.result.clone()).unwrap();
-        assert_eq!(projected.nodes.len(), 3);
-        assert_eq!(projected.context, full.context);
-        assert_eq!(projected.generation, full.generation);
-        assert_eq!(projected.nodes[2].reference, full.nodes[401].reference);
-        assert_eq!(projected.omitted_node_count, 407);
-    }
-
-    #[test]
-    fn interaction_only_atomically_rejects_an_over_budget_ancestor_closure() {
-        let generation = SnapshotGeneration::new(1).unwrap();
-        let root_id = SnapshotNodeId::new(1).unwrap();
-        let action_id = SnapshotNodeId::new(2).unwrap();
-        let snapshot = PageSnapshot::new(
-            context(),
-            generation,
-            vec![
-                SnapshotNode {
-                    id: root_id,
-                    parent: None,
-                    depth: 0,
-                    role: "document".into(),
-                    name: Some("x".repeat(MAX_AUTOMATIC_SNAPSHOT_JSON_BYTES)),
-                    value: None,
-                    description: None,
-                    properties: vec![],
-                    actionable: false,
-                    reference: None,
-                },
-                SnapshotNode {
-                    id: action_id,
-                    parent: Some(root_id),
-                    depth: 1,
-                    role: "button".into(),
-                    name: Some("cannot fit without its root".into()),
-                    value: None,
-                    description: None,
-                    properties: vec![],
-                    actionable: true,
-                    reference: Some(NodeReference {
-                        target_id: target_id(),
-                        generation,
-                        node_id: action_id,
-                    }),
-                },
-            ],
-            3,
-        )
-        .unwrap();
-
-        let projected = project_snapshot(snapshot, SnapshotProjection::InteractionOnly).unwrap();
-        assert!(projected.nodes.is_empty());
-        assert_eq!(projected.omitted_node_count, 5);
-    }
-
-    #[test]
-    fn omitted_inline_images_retain_screenshot_metadata_in_result() {
-        let mapped = map_operation_result_with_capture_projected(
+    fn inline_images_is_orthogonal_to_structured_detail() {
+        let operation =
+            || BrowserOperationResult::TakeScreenshot(Box::new(screenshot(ImageFormat::Png)));
+        let without = map_operation_result_with_capture(
             "take_screenshot",
-            BrowserOperationResult::TakeScreenshot(Box::new(screenshot(ImageFormat::Png))),
+            operation(),
             &[],
-            ResponseProjectionRequest {
-                inline_images: InlineImageDetail::Omit,
-                ..ResponseProjectionRequest::default()
+            ResponseRequest::default(),
+        )
+        .unwrap();
+        let with = map_operation_result_with_capture(
+            "take_screenshot",
+            operation(),
+            &[],
+            ResponseRequest {
+                detail: ResponseDetail::Concise,
+                inline_images: true,
             },
         )
         .unwrap();
-        assert!(mapped.response.images.is_empty());
-        assert!(mapped.images.is_empty());
-        assert_eq!(mapped.response.result["image"]["width"], 10);
+        assert_eq!(without.response.result, with.response.result);
+        assert!(without.images.is_empty());
+        assert_eq!(with.images.len(), 1);
     }
 
     #[test]
-    fn compact_temporal_projection_removes_repeated_rows_but_keeps_drill_down_facts() {
-        let frame_ids = (8..40)
-            .map(|value| FrameId::from_uuid(uuid::Uuid::from_u128(value)))
-            .collect::<Vec<_>>();
+    fn temporal_detail_defaults_to_concise_and_full_preserves_rows() {
         let value = json!({
-            "requested_query": {"verbose": "x".repeat(32_000)},
-            "range": {"session_id": session_id(), "target_id": target_id(), "frame_ids": frame_ids},
-            "effective": {"version": "v1", "artifact_anchor": 4, "artifact_generators": [{}, {}], "focus_times": [4]},
-            "header": {"summary": "observed"},
-            "markers": [{"id": 1}, {"id": 2}],
-            "artifacts": {"status": "available", "range": {"repeated": true}, "outcomes": [{"artifact": {"manifest_uri": "krometrail://manifest"}}]},
-            "context": {"status": "available", "range": {"repeated": true}, "capture_quality": {"requested_range": {"start": 0, "end": 5}, "retained_range": {"start": 0, "end": 5}, "frame_count": 1, "cadence": null, "gap_summary": {"gap_count": 0}, "retention_warnings": [], "warnings": [], "large": "x".repeat(32_000)}, "browser_events": {"effective_range": {"start": 0, "end": 5}, "matched_count": 50, "returned_count": 4, "next_cursor": null, "collection_gaps": [], "unavailable_ranges": [], "warnings": [], "events": ["x".repeat(32_000)]}},
-            "warnings": [],
-            "degradations": []
+            "range": {"scope": "fixture"},
+            "capture_quality": {"status": "available", "cadence": {}, "gap_summary": {}, "retention_warnings": [], "warnings": []},
+            "browser_events": {"status": "available", "effective_range": {}, "matched_count": 50, "returned_count": 2, "events": [{}, {}], "collection_gaps": [], "unavailable_ranges": [], "warnings": []}
         });
-        let (_, preference) = split_response_projection(
-            json!({"response": {"snapshot": "omit", "page_state": "omit"}})
-                .as_object()
-                .unwrap()
-                .clone(),
-        )
-        .unwrap();
-        assert_eq!(preference.temporal, TemporalResponseDetail::Compact);
-
-        let mut compact = value.clone();
-        apply_temporal_projection(&mut compact, preference.temporal).unwrap();
-        assert_eq!(compact["marker_count"], 2);
-        assert_eq!(compact["context"]["browser_events"]["matched_count"], 50);
-        assert_eq!(
-            compact["artifacts"]["outcomes"][0]["artifact"]["manifest_uri"],
-            "krometrail://manifest"
-        );
-        assert!(compact["artifacts"].get("range").is_none());
-        assert!(serde_json::to_vec(&compact).unwrap().len() < 4_096);
-
+        let mut concise = value.clone();
+        project_temporal_value(&mut concise, ResponseDetail::Concise).unwrap();
+        assert!(concise["browser_events"].get("events").is_none());
+        let mut expanded = value.clone();
+        project_temporal_value(&mut expanded, ResponseDetail::Expanded).unwrap();
+        assert_eq!(expanded, value);
         let mut full = value.clone();
-        apply_temporal_projection(&mut full, TemporalResponseDetail::Full).unwrap();
+        project_temporal_value(&mut full, ResponseDetail::Full).unwrap();
         assert_eq!(full, value);
-    }
-
-    #[test]
-    fn temporal_context_projection_uses_temporal_detail_independently() {
-        let value = json!({
-            "range": {"start": 0, "end": 5},
-            "capture_quality": {
-                "requested_range": {"start": 0, "end": 5},
-                "retained_range": {"start": 0, "end": 5},
-                "frame_count": 24,
-                "cadence": null,
-                "gap_summary": {"gap_count": 0},
-                "retention_warnings": [],
-                "warnings": [],
-                "verbose_per_frame": ["x".repeat(32_000)]
-            },
-            "browser_events": {
-                "effective_range": {"start": 0, "end": 5},
-                "matched_count": 24,
-                "returned_count": 24,
-                "events": ["x".repeat(32_000)],
-                "next_cursor": null,
-                "collection_gaps": [],
-                "unavailable_ranges": [],
-                "warnings": []
-            }
-        });
-        let compact = map_temporal_context_result(
-            "query_browser_events",
-            value.clone(),
-            ResponseProjectionRequest {
-                snapshot: SnapshotResponseDetail::Omit,
-                page_state: StructuredResponseDetail::Omit,
-                ..ResponseProjectionRequest::default()
-            },
-        )
-        .unwrap();
-        assert!(
-            compact.response.result["browser_events"]
-                .get("events")
-                .is_none()
-        );
-        assert!(serde_json::to_vec(&compact.response.result).unwrap().len() < 4_096);
-
-        let full = map_temporal_context_result(
-            "query_browser_events",
-            value.clone(),
-            ResponseProjectionRequest {
-                snapshot: SnapshotResponseDetail::Compact,
-                page_state: StructuredResponseDetail::Compact,
-                temporal: TemporalResponseDetail::Full,
-                ..ResponseProjectionRequest::default()
-            },
-        )
-        .unwrap();
-        assert_eq!(full.response.result, value);
     }
 
     #[test]
@@ -3135,9 +2554,14 @@ mod tests {
             (ImageFormat::Png, "image/png"),
             (ImageFormat::Jpeg, "image/jpeg"),
         ] {
-            let mapped = map_operation_result(
+            let mapped = map_operation_result_with_capture(
                 "take_screenshot",
                 BrowserOperationResult::TakeScreenshot(Box::new(screenshot(format))),
+                &[],
+                ResponseRequest {
+                    inline_images: true,
+                    ..ResponseRequest::default()
+                },
             )
             .unwrap();
             let result = into_call_tool_result(mapped).unwrap();

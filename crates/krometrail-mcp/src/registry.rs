@@ -28,11 +28,10 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     config::{McpConfig, McpDependencies},
     response::{
-        BrowserStatusRequest, into_call_tool_result, map_browser_status, map_lifecycle_result,
-        map_operation_result_with_capture_projected, map_progressive_result_projected,
-        map_temporal_bundle_result_projected, map_temporal_context_result,
-        map_temporal_video_result, split_response_projection, visible_error,
-        visible_error_with_capture,
+        into_call_tool_result, map_browser_status, map_lifecycle_result,
+        map_operation_result_with_capture, map_progressive_result, map_temporal_bundle_result,
+        map_temporal_context_result, map_temporal_video_result, split_response_request,
+        visible_error, visible_error_with_capture,
     },
     schema::{
         ResolvedRangeHandleArgument, generated_input_schema, operation_input_schema,
@@ -368,7 +367,7 @@ async fn call_temporal_video(
     if let Err(error) = budget.check() {
         return Ok(call_error_result(name, error));
     }
-    let (arguments, _) = match split_response_projection(context.arguments.unwrap_or_default()) {
+    let (arguments, _) = match split_response_request(context.arguments.unwrap_or_default()) {
         Ok(value) => value,
         Err(error) => return Ok(call_error_result(name, error)),
     };
@@ -462,7 +461,7 @@ async fn call_bundle(
         return Ok(call_error_result(name, error));
     }
     let (arguments, preference) =
-        match split_response_projection(context.arguments.unwrap_or_default()) {
+        match split_response_request(context.arguments.unwrap_or_default()) {
             Ok(value) => value,
             Err(error) => return Ok(call_error_result(name, error)),
         };
@@ -489,7 +488,7 @@ async fn call_bundle(
                 Ok(handle) => handle,
                 Err(error) => return Ok(call_error_result(name, error)),
             };
-            map_temporal_bundle_result_projected(
+            map_temporal_bundle_result(
                 name,
                 bundle,
                 dependencies.progressive_evidence.as_ref(),
@@ -520,7 +519,7 @@ async fn call_progressive(
         return Ok(call_error_result(name, error));
     }
     let (arguments, preference) =
-        match split_response_projection(context.arguments.unwrap_or_default()) {
+        match split_response_request(context.arguments.unwrap_or_default()) {
             Ok(value) => value,
             Err(error) => return Ok(call_error_result(name, error)),
         };
@@ -573,7 +572,7 @@ async fn call_progressive(
         ))
         .await;
     match result {
-        Ok(result) => map_progressive_result_projected(name, result, preference)
+        Ok(result) => map_progressive_result(name, result, preference)
             .map(|mapped| mapped.with_range_handle(handle))
             .map_err(|_| {
                 rmcp::ErrorData::internal_error("progressive response mapping failed", None)
@@ -594,7 +593,7 @@ async fn call_context(
         return Ok(call_error_result(name, error));
     }
     let (arguments, preference) =
-        match split_response_projection(context.arguments.unwrap_or_default()) {
+        match split_response_request(context.arguments.unwrap_or_default()) {
             Ok(value) => value,
             Err(error) => return Ok(call_error_result(name, error)),
         };
@@ -738,7 +737,9 @@ fn lifecycle_route(tool: LifecycleTool) -> Result<ToolRoute<KrometrailMcpServer>
     let schema = match tool.kind {
         LifecycleKind::Start => type_input_schema::<LaunchBrowser>()?,
         LifecycleKind::Attach => type_input_schema::<AttachBrowser>()?,
-        LifecycleKind::Status => type_input_schema::<BrowserStatusRequest>()?,
+        LifecycleKind::Status => {
+            projected_input_schema(type_input_schema::<rmcp::model::EmptyObject>()?)?
+        }
         LifecycleKind::Stop | LifecycleKind::Profiles => type_input_schema::<EmptyObject>()?,
     };
     let annotations = match tool.kind {
@@ -771,7 +772,7 @@ async fn call_operation(
     name: &'static str,
 ) -> std::result::Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
     let (arguments, preference) =
-        match split_response_projection(context.arguments.unwrap_or_default()) {
+        match split_response_request(context.arguments.unwrap_or_default()) {
             Ok(value) => value,
             Err(error) => return Ok(visible_error(name, error)),
         };
@@ -795,7 +796,7 @@ async fn call_operation(
         )
         .await
     {
-        Ok(executed) => map_operation_result_with_capture_projected(
+        Ok(executed) => map_operation_result_with_capture(
             name,
             executed.result,
             &executed.capture_statuses,
@@ -840,12 +841,18 @@ async fn call_lifecycle(
             Err(error) => Err(error),
         },
         LifecycleKind::Status => {
-            let detail = match parse_arguments::<BrowserStatusRequest>(arguments) {
-                Ok(request) => request.detail,
+            let response = match split_response_request(arguments) {
+                Ok((arguments, response)) if arguments.is_empty() => response,
+                Ok(_) => {
+                    return Ok(visible_error(
+                        tool.name,
+                        invalid_arguments("browser_status"),
+                    ));
+                }
                 Err(error) => return Ok(visible_error(tool.name, error)),
             };
             return match context.service.sessions().status().await {
-                Ok(status) => map_browser_status(tool.name, status, detail)
+                Ok(status) => map_browser_status(tool.name, status, response)
                     .map_err(|_| {
                         rmcp::ErrorData::internal_error(
                             "browser status response mapping failed",
