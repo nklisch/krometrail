@@ -1,7 +1,7 @@
 ---
 id: epic-agent-surface-simplification-current-contract
 kind: feature
-stage: implementing
+stage: review
 tags: [infra, storage]
 parent: epic-agent-surface-simplification
 depends_on: []
@@ -163,3 +163,14 @@ fn validate_release_version(candidate: &str) -> bool;
 ## Risks
 
 The single schema can accidentally omit a trigger or index even while tables compile; exact schema-shape comparison is required before deleting migration sources. An empty database with user-created tables must not be mistaken for a fresh Krometrail store.
+
+## Implementation notes
+
+- Execution capability: high; one owner carried the current retained format and runtime/distribution cleanup together so deleted shims were not recreated at an adjacent boundary.
+- Review weight: standard from the delegated caller.
+- Files changed: current SQLite schema/bootstrap and index composition; required frame-source and list-pages contracts/call sites; CDP spike V2 vocabulary; installer and fixtures; current-contract foundation/pattern guidance.
+- Tests added/removed: four current-schema boundary/shape tests replace historical migration coverage; workspace compilation enforces explicit frame-source obligations; current V2 transport and hermetic installer contracts passed.
+- Simplification: deleted seven migration/schema modules, historical migration fixtures, core progressive-read defaults, a request value constant, two transport aliases, historical release comparison/cutoff code, and the ordered-migration project pattern.
+- Discrepancies from design: the raw `SqliteIndex` explicitly rejects coherent progressive reads because it lacks the `RecordingStore` mutation/revalidation authority; full workspace compilation was owned by the aggregate epic while a concurrent persistence feature changed the shared shutdown API.
+- Adjacent issues parked: none.
+- Integrated verification: formatting, core all-target check, all 38 store library tests, all 24 CDP spike transport-contract tests, installer fixtures, and staged/working-tree diff checks passed.
