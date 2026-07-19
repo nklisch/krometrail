@@ -944,7 +944,7 @@ fn project_batch(
         if first_step_error.is_none() {
             first_step_error = step.error.clone();
         }
-        let screenshot = match step.screenshot {
+        let screenshot = step.screenshot.map(|screenshot| match screenshot {
             ObservationPart::Available(screenshot) => {
                 let metadata = screenshot.metadata().clone();
                 images.push(EncodedMcpImage::Screenshot {
@@ -955,8 +955,8 @@ fn project_batch(
                 json!({"available": metadata})
             }
             ObservationPart::Unavailable(error) => json!({"unavailable": error}),
-        };
-        step_values.push(json!({
+        });
+        let mut step_value = json!({
             "index": step.index,
             "operation": step.operation,
             "target_id": step.target_id,
@@ -967,8 +967,11 @@ fn project_batch(
             "result": result,
             "error": step.error,
             "skip_reason": step.skip_reason,
-            "screenshot": screenshot,
-        }));
+        });
+        if let Some(screenshot) = screenshot {
+            step_value["screenshot"] = screenshot;
+        }
+        step_values.push(step_value);
     }
 
     let (final_observation, final_warnings, final_image) =
@@ -2825,7 +2828,10 @@ mod tests {
             None,
             Some(batch_error.clone()),
             None,
-            ObservationPart::Unavailable(error(ErrorCode::ScreenshotFailed, "not requested")),
+            Some(ObservationPart::Unavailable(error(
+                ErrorCode::ScreenshotFailed,
+                "requested capture failed",
+            ))),
         )
         .unwrap();
         let skipped = BatchStepResult::new(
@@ -2839,7 +2845,7 @@ mod tests {
             None,
             None,
             Some(BatchSkipReason::PriorFailure),
-            ObservationPart::Unavailable(error(ErrorCode::ScreenshotFailed, "not requested")),
+            None,
         )
         .unwrap();
         let batch = BatchResult::new(
@@ -2856,6 +2862,12 @@ mod tests {
             map_operation_result("batch", BrowserOperationResult::Batch(Box::new(batch))).unwrap();
         assert_eq!(batch.response.status, ToolResponseStatus::Failed);
         assert_eq!(batch.response.result["steps"].as_array().unwrap().len(), 2);
+        assert!(batch.response.result["steps"][0]["screenshot"]["unavailable"].is_object());
+        assert!(
+            batch.response.result["steps"][1]
+                .get("screenshot")
+                .is_none()
+        );
 
         let timing = InteractionTiming::new(
             SessionTime::from_nanos(10),
@@ -2889,7 +2901,7 @@ mod tests {
             Some(BrowserOperationResult::NavigatePage(Box::new(page))),
             None,
             None,
-            ObservationPart::Unavailable(error(ErrorCode::ScreenshotFailed, "not requested")),
+            None,
         )
         .unwrap();
         let compact = BatchResult::new(
@@ -2934,7 +2946,7 @@ mod tests {
             Some(BrowserOperationResult::Wait(Box::new(satisfied_wait))),
             None,
             None,
-            ObservationPart::Unavailable(error(ErrorCode::ScreenshotFailed, "not requested")),
+            None,
         )
         .unwrap();
         let incomplete_evidence = error(

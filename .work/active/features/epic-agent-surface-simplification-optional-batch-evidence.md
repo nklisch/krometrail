@@ -1,7 +1,7 @@
 ---
 id: epic-agent-surface-simplification-optional-batch-evidence
 kind: feature
-stage: implementing
+stage: review
 tags: [agent-ux, browser]
 parent: epic-agent-surface-simplification
 depends_on: [epic-agent-surface-simplification-response-detail]
@@ -138,3 +138,21 @@ fn project_batch_step_screenshot(
 ## Risks
 
 Hand-built JSON can accidentally serialize `null`; tests must assert key absence. Existing post-action screenshots must be reused without causing an extra capture command.
+
+## Implementation notes
+
+- Execution capability: raised — the change crosses the canonical core result, CDP acquisition, and MCP projection, but remains one cohesive contract slice.
+- Review weight: standard (autopilot caller).
+- Files changed: `crates/krometrail-core/src/browser/batch.rs`, `crates/krometrail-cdp/src/control/batch.rs`, `crates/krometrail-cdp/tests/waits_and_batches.rs`, `crates/krometrail-mcp/src/response.rs`.
+- Tests added/removed: added the core absence/requested-failure distinction, CDP command accounting for disabled screenshots, and MCP key-absence/requested-failure assertions; removed placeholder expectations through the same focused coverage.
+- Simplification: deleted the fabricated `Unsupported` screenshot helper and made disabled/skipped evidence native absence; MCP now inserts the field only when evidence exists.
+- Discrepancies from design: none.
+- Adjacent issues parked: none.
+
+## Verification
+
+- `cargo check --workspace --all-targets --locked`
+- `cargo test -p krometrail-core browser::batch::tests --locked`
+- `cargo test -p krometrail-cdp --test waits_and_batches batch_stop_and_continue_policies_preserve_failed_wait_results --locked`
+- `cargo test -p krometrail-cdp --test waits_and_batches requested_step_screenshot_uses_standalone_path_before_one_final_observation --locked`
+- `cargo test -p krometrail-mcp response::tests::degradation_wait_timeout_page_anchor_and_batch_failure_remain_distinct --locked`

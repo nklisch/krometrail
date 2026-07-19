@@ -671,6 +671,16 @@ async fn batch_stop_and_continue_policies_preserve_failed_wait_results() {
             krometrail_core::ErrorCode::EvaluationFailed
         );
         assert_eq!(result.steps[1].status, expected_status);
+        assert!(result.steps.iter().all(|step| step.screenshot.is_none()));
+        assert_eq!(
+            transport
+                .command_calls()
+                .iter()
+                .filter(|call| call.method == "Page.captureScreenshot")
+                .count(),
+            1,
+            "disabled step evidence must not add screenshot commands beyond final observation"
+        );
         if policy == BatchFailurePolicy::ContinueOnFailure {
             let BrowserOperationResult::EvaluatePage(value) =
                 result.steps[1].result.as_ref().unwrap()
@@ -982,7 +992,7 @@ async fn requested_step_screenshot_uses_standalone_path_before_one_final_observa
     };
     assert!(matches!(
         result.steps[0].screenshot,
-        ObservationPart::Available(_)
+        Some(ObservationPart::Available(_))
     ));
     assert!(matches!(
         result.final_observation,
@@ -1507,14 +1517,15 @@ async fn opt_in_real_chrome_qualifies_ordered_batches_and_failure_policies() {
         result
             .steps
             .iter()
-            .filter(|step| matches!(step.screenshot, ObservationPart::Available(_)))
+            .filter(|step| matches!(step.screenshot, Some(ObservationPart::Available(_))))
             .count()
             >= 2,
         "requested screenshots must be returned when Chrome supplies them"
     );
     assert!(result.steps.iter().all(|step| match &step.screenshot {
-        ObservationPart::Available(_) => true,
-        ObservationPart::Unavailable(error) => error.code == ErrorCode::ScreenshotFailed,
+        Some(ObservationPart::Available(_)) => true,
+        Some(ObservationPart::Unavailable(error)) => error.code == ErrorCode::ScreenshotFailed,
+        None => false,
     }));
     let BrowserOperationResult::Click(click) = result.steps[0].result.as_ref().unwrap() else {
         panic!("click child")

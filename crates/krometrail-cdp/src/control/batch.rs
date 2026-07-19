@@ -4,8 +4,8 @@ use krometrail_core::{
     BatchFailurePolicy, BatchOutcome, BatchRequest, BatchResult, BatchSkipReason, BatchStepResult,
     BatchStepStatus, BrowserOperationRequest, BrowserOperationResult, BrowserOperationScope,
     EncodedScreenshot, ErrorCode, ImageFormat, InteractionAnchor, KrometrailError,
-    LiveObservationRequest, NonEmptyText, ObservationPart, PageOperationOutcome, PageSelection,
-    Result, ScreenshotRequest, ScreenshotTarget, TargetId, WaitOutcome, wait_timeout_error,
+    LiveObservationRequest, ObservationPart, PageOperationOutcome, PageSelection, Result,
+    ScreenshotRequest, ScreenshotTarget, TargetId, WaitOutcome, wait_timeout_error,
 };
 
 use super::{PageControl, bind_target, operation_error};
@@ -111,7 +111,7 @@ impl PageControl {
                     None,
                     Some(error),
                     None,
-                    unavailable_screenshot(target_id, "batch step did not execute"),
+                    None,
                 )?);
                 failure_seen = true;
                 termination = Some(BatchTermination::TargetUnavailable);
@@ -163,16 +163,11 @@ impl PageControl {
                 ),
             };
             let interaction = result.as_ref().map(result_anchor).transpose()?.flatten();
-            let mut screenshot = if request.options.include_step_screenshots {
-                result
-                    .as_ref()
-                    .and_then(existing_screenshot)
-                    .unwrap_or_else(|| {
-                        unavailable_screenshot(target_id, "per-step screenshot has not completed")
-                    })
-            } else {
-                unavailable_screenshot(target_id, "per-step screenshots were not requested")
-            };
+            let mut screenshot = request
+                .options
+                .include_step_screenshots
+                .then(|| result.as_ref().and_then(existing_screenshot))
+                .flatten();
 
             if request.options.include_step_screenshots
                 && result.as_ref().and_then(existing_screenshot).is_none()
@@ -202,20 +197,21 @@ impl PageControl {
                     DispatchOutcome::Completed(Ok(BrowserOperationResult::TakeScreenshot(
                         value,
                     ))) => {
-                        screenshot = ObservationPart::Available(*value);
+                        screenshot = Some(ObservationPart::Available(*value));
                     }
                     DispatchOutcome::Completed(Ok(_)) => unreachable!("screenshot dispatch result"),
                     DispatchOutcome::Completed(Err(screenshot_error)) => {
-                        screenshot = ObservationPart::Unavailable(screenshot_error);
+                        screenshot = Some(ObservationPart::Unavailable(screenshot_error));
                     }
                     DispatchOutcome::Interrupted(screenshot_error) => {
                         child_termination = error_termination(&screenshot_error)
                             .or(Some(BatchTermination::Cancelled));
-                        screenshot = ObservationPart::Unavailable(screenshot_error);
+                        screenshot = Some(ObservationPart::Unavailable(screenshot_error));
                     }
                     DispatchOutcome::TimedOut => {
                         child_termination = Some(BatchTermination::TimedOut);
-                        screenshot = ObservationPart::Unavailable(wait_timeout_error(target_id));
+                        screenshot =
+                            Some(ObservationPart::Unavailable(wait_timeout_error(target_id)));
                     }
                 }
             }
@@ -541,20 +537,7 @@ fn skipped_step(
         None,
         None,
         Some(reason),
-        unavailable_screenshot(target_id, "batch step was skipped"),
-    )
-}
-
-fn unavailable_screenshot(
-    target_id: TargetId,
-    message: &'static str,
-) -> ObservationPart<EncodedScreenshot> {
-    ObservationPart::Unavailable(
-        KrometrailError::new(ErrorCode::Unsupported, NonEmptyText::new(message).unwrap())
-            .with_context(krometrail_core::ErrorContext {
-                target_id: Some(target_id),
-                ..krometrail_core::ErrorContext::default()
-            }),
+        None,
     )
 }
 

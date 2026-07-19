@@ -170,7 +170,7 @@ pub struct BatchStepResult {
     pub result: Option<BrowserOperationResult>,
     pub error: Option<KrometrailError>,
     pub skip_reason: Option<BatchSkipReason>,
-    pub screenshot: ObservationPart<EncodedScreenshot>,
+    pub screenshot: Option<ObservationPart<EncodedScreenshot>>,
 }
 
 impl BatchStepResult {
@@ -186,7 +186,7 @@ impl BatchStepResult {
         result: Option<BrowserOperationResult>,
         error: Option<KrometrailError>,
         skip_reason: Option<BatchSkipReason>,
-        screenshot: ObservationPart<EncodedScreenshot>,
+        screenshot: Option<ObservationPart<EncodedScreenshot>>,
     ) -> Result<Self> {
         if let (Some(started), Some(completed)) = (started_at, completed_at) {
             if started > completed {
@@ -236,7 +236,7 @@ impl BatchStepResult {
                     || result.is_some()
                     || error.is_some()
                     || skip_reason.is_none()
-                    || matches!(screenshot, ObservationPart::Available(_))
+                    || matches!(screenshot, Some(ObservationPart::Available(_)))
                 {
                     return Err(invalid("skipped batch step has inconsistent fields"));
                 }
@@ -424,6 +424,53 @@ mod tests {
 
     fn target(value: u128) -> TargetId {
         TargetId::from_uuid(Uuid::from_u128(value))
+    }
+
+    #[test]
+    fn batch_step_screenshot_absence_differs_from_requested_failure() {
+        let target_id = target(1);
+        let skipped = BatchStepResult::new(
+            0,
+            BrowserOperationKind::Wait,
+            target_id,
+            BatchStepStatus::Skipped,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(BatchSkipReason::PriorFailure),
+            None,
+        )
+        .unwrap();
+        assert!(skipped.screenshot.is_none());
+
+        let operation_error = KrometrailError::new(
+            ErrorCode::InteractionFailed,
+            NonEmptyText::new("operation failed").unwrap(),
+        );
+        let screenshot_error = KrometrailError::new(
+            ErrorCode::ScreenshotFailed,
+            NonEmptyText::new("requested screenshot failed").unwrap(),
+        );
+        let failed = BatchStepResult::new(
+            1,
+            BrowserOperationKind::Wait,
+            target_id,
+            BatchStepStatus::Failed,
+            Some(SessionTime::from_nanos(1)),
+            Some(SessionTime::from_nanos(2)),
+            None,
+            None,
+            Some(operation_error),
+            None,
+            Some(ObservationPart::Unavailable(screenshot_error.clone())),
+        )
+        .unwrap();
+        assert_eq!(
+            failed.screenshot,
+            Some(ObservationPart::Unavailable(screenshot_error))
+        );
     }
 
     #[test]
