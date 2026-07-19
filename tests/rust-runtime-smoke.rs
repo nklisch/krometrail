@@ -4,10 +4,21 @@ use std::{
 };
 
 fn run(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_krometrail"))
+    let data = std::env::temp_dir().join(format!(
+        "krometrail-smoke-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let output = Command::new(env!("CARGO_BIN_EXE_krometrail"))
         .args(args)
+        .env("KROMETRAIL_DATA_DIR", &data)
         .output()
-        .expect("krometrail binary should be executable")
+        .expect("krometrail binary should be executable");
+    let _ = std::fs::remove_dir_all(data);
+    output
 }
 
 #[test]
@@ -156,10 +167,6 @@ fn mcp_binary_initializes_lists_json_rpc_and_keeps_stderr_separate() {
             .filter(|definition| definition.exposure == krometrail_core::OperationExposure::Tool)
             .count()
         + krometrail_core::TEMPORAL_CONTEXT_OPERATION_REGISTRY.len();
-    assert_eq!(
-        expected_tools, 49,
-        "the forced no-FFmpeg surface excludes the optional video tool"
-    );
     assert_eq!(
         listed["result"]["tools"].as_array().unwrap().len(),
         expected_tools

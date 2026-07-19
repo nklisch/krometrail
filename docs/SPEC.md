@@ -148,7 +148,10 @@ falls back to spatial proximity or unrelated page text. Krometrail resolves the 
 the active document snapshot registry and returns or acts through an exact generation-scoped reference. A no-match,
 ambiguous, or truncated result is an explicit successful query outcome, but it contains no actionable
 reference and never authorizes mutation. Semantic matching never silently selects one of several or potentially
-unreported nodes; callers narrow the query until it returns one unique reference before acting.
+unreported nodes; callers narrow the query until it returns one unique reference before acting. Plain
+role/name queries acquire only the selected document's accessibility tree. Container-text, label,
+rendered-text, and test-id queries additionally acquire DOM semantics. Completeness limits apply to
+the selected acquisition, not unrelated documents, and fail with bounded narrowing guidance.
 
 ## Browser-Control Surface
 
@@ -339,7 +342,7 @@ A temporal range can be specified by:
 - navigation or marker identifier;
 - a source-frame range.
 
-Natural anchors resolve to an explicit target and time range before artifact generation. When an interaction query omits an explicit range, Krometrail uses bounded pre-action context through the interaction lifecycle and post-action observation, plus bounded trailing context. The resolved range is returned with every response.
+Natural anchors resolve to an explicit target and time range before artifact generation. When an interaction query omits an explicit range, Krometrail uses bounded pre-action context through the interaction lifecycle and post-action observation, plus bounded trailing context. Under `AllowPartial`, an interaction or latest-interaction range that intersects retained capture may resolve to that exact intersection when its naturally derived edges extend beyond captured bounds. The response preserves the original requested range and interaction identity and reports affected-edge plus `PartiallyCaptured` warnings. Explicit ranges, `RequireComplete`, and wholly disjoint natural ranges remain exact failures. The resolved range is returned with every response.
 
 Range resolution can also return an opaque session-scoped handle. Temporal artifact, event, source-frame,
 pinning, and video requests accept either the complete resolved range or that handle. A handle resolves to the

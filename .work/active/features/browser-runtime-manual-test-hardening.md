@@ -1,7 +1,7 @@
 ---
 id: browser-runtime-manual-test-hardening
 kind: feature
-stage: implementing
+stage: review
 tags: [browser, agent-ux, testing]
 parent: null
 depends_on: []
@@ -57,9 +57,9 @@ The terminal path records exactly one acknowledgement gap/failure and signals th
 
 **Acceptance criteria**:
 
-- [ ] A deadline-exceeded acknowledgement sends exactly one acknowledgement command and records exactly one explicit gap.
-- [ ] Session supervision reconnects and a later attachment generation persists frames.
-- [ ] Queue depth and persistence remain outside acknowledgement timing, and the original failure remains visible in evidence quality.
+- [x] A deadline-exceeded acknowledgement sends exactly one acknowledgement command and records exactly one explicit gap.
+- [x] Session supervision reconnects and a later attachment generation persists frames.
+- [x] Queue depth and persistence remain outside acknowledgement timing, and the original failure remains visible in evidence quality.
 
 ### Unit 2: Acquire only semantic data required by the query
 
@@ -86,9 +86,9 @@ Role/name queries skip `DOMSnapshot.captureSnapshot`; label, rendered-text, test
 
 **Acceptance criteria**:
 
-- [ ] A tiny child-frame role/name query succeeds when the unrelated parent DOM exceeds 5,000 nodes.
-- [ ] Role/name queries do not issue DOMSnapshot capture, while semantic variants still do.
-- [ ] Any actual selected-frame or accessibility-tree limit failure identifies the failing acquisition and bounded node count with concrete narrowing guidance.
+- [x] A tiny child-frame role/name query succeeds when the unrelated parent DOM exceeds 5,000 nodes.
+- [x] Role/name queries do not issue DOMSnapshot capture, while semantic variants still do.
+- [x] Any actual selected-frame or accessibility-tree limit failure identifies the failing acquisition and bounded node count with concrete narrowing guidance.
 
 ### Unit 3: Clamp eligible natural interaction tails
 
@@ -109,9 +109,9 @@ An eligible nonempty intersection becomes the resolved range, while the original
 
 **Acceptance criteria**:
 
-- [ ] A latest static interaction whose completion is 26 ms after the last retained frame resolves under `AllowPartial` with `after_ms: 0`.
-- [ ] Explicit intervals, `RequireComplete`, and wholly disjoint natural ranges still fail.
-- [ ] No frame, stability, or continuity is invented beyond retained evidence.
+- [x] A latest static interaction whose completion is 26 ms after the last retained frame resolves under `AllowPartial` with `after_ms: 0`.
+- [x] Explicit intervals, `RequireComplete`, and wholly disjoint natural ranges still fail.
+- [x] No frame, stability, or continuity is invented beyond retained evidence.
 
 ### Unit 4: Explicitly foreground one page
 
@@ -135,9 +135,9 @@ The operation sends `Target.activateTarget` and `Page.bringToFront`, waits bound
 
 **Acceptance criteria**:
 
-- [ ] Explicit activation emits both foreground commands and returns a live observation after bounded visibility acknowledgement.
-- [ ] Failure remains `target_hidden` with no pointer event dispatched.
-- [ ] A later different hidden target is still protected by `preserve` and emits no activation/input until explicitly activated.
+- [x] Explicit activation emits both foreground commands and returns a live observation after bounded visibility acknowledgement.
+- [x] Failure remains `target_hidden` with no pointer event dispatched.
+- [x] A later different hidden target is still protected by `preserve` and emits no activation/input until explicitly activated.
 
 ## Implementation order
 
@@ -156,3 +156,27 @@ The operation sends `Target.activateTarget` and `Page.bringToFront`, waits bound
 ## Risks
 
 The acknowledgement failure may reflect a congested shared transport; reconnect is safe only through the existing generation fence and must not duplicate capture writers. Accessibility trees can independently exceed their cap even when DOM acquisition is skipped, so the error must distinguish that case. Explicit activation necessarily steals browser focus, which is why it must remain a named one-shot operation rather than an implicit retry.
+
+## Implementation outcome
+
+- Terminal capture acknowledgement failures retain their one-shot gap/failure truth and notify the existing generation-fenced reconnect path. The failed token is never retried; a later attachment generation persists new frames.
+- Semantic query acquisition now follows one core variant policy. Plain role/name queries remain AX-only, DOM-dependent variants retain exact selected-document semantics, and both bounded acquisition failures provide narrowing guidance.
+- `AllowPartial` clamps only intersecting interaction/latest-interaction natural ranges to retained capture bounds. Requested range and anchor identity remain authoritative, with explicit `PartiallyCaptured` and affected-edge warnings.
+- `activate_page` is a generated, non-batchable MCP operation that explicitly foregrounds the selected or named target through the shared bounded activation authority, returns live evidence, and leaves logical selection plus immutable focus policy unchanged.
+- Foundation docs and the plugin skill now describe all current contracts. The design's named `browser/action.rs` file did not exist; page request/result authority correctly remained in `browser/control.rs`.
+- Root smoke tests now derive their tool count from the operation registry without a stale numeric assertion and give every CLI probe a private writable data root.
+
+## Verification
+
+- `cargo fmt --all -- --check`
+- `cargo check --workspace --all-targets --locked`
+- `cargo test --workspace --all-targets --locked` (passed outside the managed sandbox; four loopback transport tests require local socket binding)
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`
+- `bun run docs:build`
+- Focused capture reconnect, semantic frame-query, interaction-tail, activation, generated-schema, and scripted page-lifecycle regressions all passed before the integrated suite.
+
+## Execution notes
+
+- `.work/bin/work-view` is a Linux executable and cannot run on this macOS host, so item/dependency state was inspected directly from the Markdown substrate.
+- The first sandboxed full test run denied four loopback socket binds with `EPERM`; the authoritative approved rerun outside that restriction passed.
+- Story commits: `c915567`, `c14ad33`, `6c4d61e`, `0a9a3d7`.

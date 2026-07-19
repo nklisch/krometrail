@@ -149,7 +149,10 @@ Semantic queries are bounded discovery operations over that same registry. Role/
 descendant, and same-origin-frame scope produce an explicit `no_match`, `unique`, `ambiguous`, or `truncated`
 outcome. Only `unique` contains one generation-scoped `NodeReference`; the caller supplies that exact reference
 to a later mutation, where the registry revalidates its authority before dispatch. Semantic text never directly
-authorizes mutation, and there is no parallel locator identity system.
+authorizes mutation, and there is no parallel locator identity system. `SemanticQuery` declares whether DOM
+semantics are required, so plain role/name discovery remains accessibility-only while DOM-dependent variants
+capture exactly one selected document's semantic metadata. Accessibility and selected-document caps remain
+independent fail-closed completeness boundaries.
 
 The core timeline contains ordered observations:
 
@@ -478,6 +481,10 @@ ResolvedRange
 ```
 
 Artifact generation consumes only resolved ranges. This prevents each artifact implementation from interpreting natural anchors differently.
+Retention classification may intersect only interaction/latest-interaction natural ranges with retained
+capture bounds under `AllowPartial`. It preserves the requested range and exact anchor reference while
+publishing a distinct captured-bound warning; explicit ranges, complete-retention policy, disjoint ranges,
+and internal eviction holes never enter that clamp path.
 
 After validating and partitioning exact source frames, the artifact service applies the caller's epoch selection before output counting, cache lookup, decoding, or generation. Generic artifact requests select all plans. The temporal debug-bundle service instead supplies its effective anchor by default, or all plans when the request explicitly asks for every epoch; selected plans retain their original descriptors and the result retains the full resolved-range authority.
 
