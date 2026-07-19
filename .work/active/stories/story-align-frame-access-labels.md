@@ -1,7 +1,7 @@
 ---
 id: story-align-frame-access-labels
 kind: story
-stage: implementing
+stage: done
 tags: [browser, agent-ux]
 parent: null
 depends_on: []

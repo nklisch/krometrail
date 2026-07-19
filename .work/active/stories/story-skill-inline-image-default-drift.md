@@ -1,7 +1,7 @@
 ---
 id: story-skill-inline-image-default-drift
 kind: story
-stage: implementing
+stage: done
 tags: [prose, agent-ux]
 parent: null
 depends_on: []

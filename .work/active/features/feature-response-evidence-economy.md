@@ -1,7 +1,7 @@
 ---
 id: feature-response-evidence-economy
 kind: feature
-stage: implementing
+stage: done
 tags: [agent-ux, browser, visual]
 parent: null
 depends_on: []

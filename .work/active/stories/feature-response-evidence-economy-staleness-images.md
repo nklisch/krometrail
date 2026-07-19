@@ -1,7 +1,7 @@
 ---
 id: feature-response-evidence-economy-staleness-images
 kind: story
-stage: implementing
+stage: done
 tags: [agent-ux, visual]
 parent: feature-response-evidence-economy
 depends_on: []

@@ -1,7 +1,7 @@
 ---
 id: feature-failure-surface-clarity
 kind: feature
-stage: implementing
+stage: done
 tags: [agent-ux, browser]
 parent: null
 depends_on: []

@@ -1,7 +1,7 @@
 ---
 id: feature-fix-preserve-visibility-wedge
 kind: feature
-stage: implementing
+stage: done
 tags: [bug, browser, agent-ux]
 parent: null
 depends_on: []

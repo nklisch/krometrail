@@ -1,7 +1,7 @@
 ---
 id: story-download-mime-fidelity
 kind: story
-stage: implementing
+stage: done
 tags: [agent-ux, browser]
 parent: null
 depends_on: []

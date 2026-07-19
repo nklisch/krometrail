@@ -1,7 +1,7 @@
 ---
 id: feature-response-evidence-economy-viewport-anchoring
 kind: story
-stage: implementing
+stage: done
 tags: [agent-ux, browser]
 parent: feature-response-evidence-economy
 depends_on: [feature-response-evidence-economy-dedupe-projection]

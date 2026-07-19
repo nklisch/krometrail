@@ -1,7 +1,7 @@
 ---
 id: feature-response-evidence-economy-dedupe-projection
 kind: story
-stage: implementing
+stage: done
 tags: [agent-ux]
 parent: feature-response-evidence-economy
 depends_on: []
