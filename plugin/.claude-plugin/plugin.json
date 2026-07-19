@@ -1,6 +1,6 @@
 {
   "name": "krometrail",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Local Chromium control and temporal visual evidence for AI agents.",
   "author": {
     "name": "nklisch"
