@@ -1,7 +1,7 @@
 ---
 id: epic-agent-surface-simplification-optional-batch-evidence
 kind: feature
-stage: review
+stage: done
 tags: [agent-ux, browser]
 parent: epic-agent-surface-simplification
 depends_on: [epic-agent-surface-simplification-response-detail]
@@ -138,6 +138,10 @@ fn project_batch_step_screenshot(
 ## Risks
 
 Hand-built JSON can accidentally serialize `null`; tests must assert key absence. Existing post-action screenshots must be reused without causing an extra capture command.
+
+## Review
+
+Approved in the single standard fresh-context pass with no blockers. The reviewer verified truthful `Option` semantics, disabled transport-command absence, existing evidence reuse, requested failure preservation, omitted MCP keys, inline behavior, focused regressions, and deletion of fabricated unsupported evidence.
 
 ## Implementation notes
 
