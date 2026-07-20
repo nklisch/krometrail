@@ -1,7 +1,7 @@
 ---
 id: feature-schema-domain-conformance-enforcement
 kind: feature
-stage: drafting
+stage: implementing
 tags: [agent-ux, testing, infra]
 parent: null
 depends_on: []
@@ -132,3 +132,240 @@ currently state the conformance invariant. Design should decide whether the
 invariant belongs there; if so it rolls forward in the same stride.
 
 Origin: 2026-07-20 sixth shakedown against v1.2.6.
+
+## Design decisions
+
+- **Tier 2 (sealed `WireEnum` trait) is DROPPED.** The scope brief flagged this as
+  partial and told design to confirm there was a real enforcement point before
+  committing. There is not. Schemas are generated through
+  `type_input_schema::<T>()` (`crates/krometrail-mcp/src/registry.rs:163-263`),
+  where `T` is the *request struct*, not the enum. A bound on individual wire
+  enums would have nothing to check it — the generic boundary sits a level above
+  where the bound would apply. Building it would be pure ceremony. Tier 1 makes
+  divergence unrepresentable for macro enums and tier 4 catches enums declared
+  outside the macro, which covers the ground tier 2 was meant to cover.
+
+- **Preserve schema `description` when hand-implementing `JsonSchema`.** The
+  current `derive(JsonSchema)` picks up doc comments and publishes them as
+  `description` (e.g. `FrequencyMode`'s "Quantity encoded as brightness in the
+  change-frequency panel"). A naive hand impl would silently drop them and
+  regress the agent surface. The macro will match `#[doc = $doc:literal]`
+  explicitly and reassemble the text with `concat!`, so descriptions survive.
+
+- **Rejected the one-line alternative.** Adding `#[serde(rename_all = "snake_case")]`
+  to the derived enum would fix all nine today, because every current `$wire`
+  literal happens to equal the snake_case of its identifier. It is rejected
+  because it re-breaks silently the first time a variant needs a wire name that
+  is not snake_case of its ident — which is the entire reason the `$wire` literal
+  exists. Deriving from `$wire` is correct by construction; `rename_all` is
+  correct by coincidence.
+
+- **`fit_limits` cannot be caught by this feature's test, and that is the point.**
+  See the honest-limits section below. The resolution is to make schema the
+  source of truth so domain-only rules stop existing.
+
+## Architectural choice
+
+**Chosen: single-source generation in the macro, plus a schema-driven conformance
+sweep.** The macro already holds both halves of the contract (`$variant` and
+`$wire`); it simply feeds them to two different consumers. Emitting `JsonSchema`
+from the same `$wire` literals that drive serde collapses that to one source.
+
+Considered and rejected:
+
+- *Fix the nine enums individually.* Treats the symptom. The tenth enum
+  reintroduces the bug.
+- *Generate the schema from serde at runtime and diff it in a test.* Catches
+  divergence but permits it to exist between commits, and needs a second
+  mechanism anyway for enums declared outside the macro.
+
+## Honest limits of the conformance sweep
+
+This matters enough to record explicitly, because the scope brief implied broader
+coverage than is achievable and implementation should not chase it.
+
+The sweep operates at the **deserialization** boundary. It can prove that every
+value the schema advertises is accepted by serde. It cannot prove acceptance by
+domain logic that runs *after* deserialization:
+
+| Defect | Layer | Sweep catches? |
+|---|---|---|
+| `frequency_mode` Pascal vs snake | deserialization | yes |
+| anchor scope optional-vs-required | deserialization | yes |
+| `region_filmstrip` rejects `fit_limits` | post-deserialization domain rule | **no** |
+
+`fit_limits` deserializes fine; it is rejected later inside artifact generation.
+Catching that class in a unit test would require invoking the domain, which for
+most tools needs a live browser session — not viable as a gate test.
+
+**The resolution is a contract rule, not more test machinery:** if the domain
+rejects an input unconditionally, the schema must not advertise it. Domain-only
+restrictions are the bug. Once `feature-wire-contract-corrections` narrows the
+`region_filmstrip` schema to the variants it actually accepts, the rule becomes
+schema-expressible and the sweep guards it forever after. This feature supplies
+the mechanism; that feature applies it.
+
+## Implementation Units
+
+### Unit 1: Emit `JsonSchema` from the wire literals
+**File**: `crates/temporal-vision/src/lib.rs`
+
+Replace `schemars::JsonSchema` in the derive list with a hand-written impl inside
+`stable_registry!`, generated from the same `$wire` literals as serde. Capture doc
+comments explicitly so `description` survives.
+
+```rust
+macro_rules! stable_registry {
+    (
+        $(#[doc = $doc:literal])*
+        $(#[$meta:meta])*
+        pub enum $name:ident {
+            $($variant:ident => $wire:literal),+ $(,)?
+        }
+    ) => {
+        $(#[doc = $doc])*
+        $(#[$meta])*
+        #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+        pub enum $name { $($variant),+ }
+
+        impl schemars::JsonSchema for $name {
+            fn schema_name() -> String { stringify!($name).to_owned() }
+            // enum values MUST come from $wire, never from stringify!($variant)
+            // description assembled from the captured $doc literals
+        }
+        // ... existing as_str / Display / Serialize / Deserialize unchanged
+    };
+}
+```
+
+**Implementation Notes**:
+- The doc-capture arm must precede `$(#[$meta])*` or the matcher will consume doc
+  attributes as generic meta and `concat!` will have nothing to work with.
+- `schema_name()` keeps the Rust identifier — that is a type name, not a wire
+  value, and changing it would churn `$ref` targets for no benefit.
+- Verify against the schemars version already in the lockfile; the `JsonSchema`
+  trait shape differs between 0.8 and 1.x. Match whatever the existing derive
+  produces so output stays byte-comparable where nothing should change.
+
+**Acceptance Criteria**:
+- [ ] All nine macro enums publish their `$wire` values in `enum`, not the Rust
+      identifiers.
+- [ ] `FrequencyMode`'s published `description` is unchanged from today.
+- [ ] Emitted responses containing `ErrorCode` / `ArtifactKind` validate against
+      the published schema — specifically `"code":"resource_limit_exceeded"` is
+      now schema-valid.
+- [ ] Adding a variant whose `$wire` is deliberately not snake_case of its
+      identifier still produces agreeing schema and serde.
+
+### Unit 2: Fold the plain-derive outliers into the macro
+**File**: `crates/krometrail-core/src/timeline/range.rs`
+
+Move `RetentionPolicy` (`:167`) and `CaptureGapPolicy` (`:172`) into
+`stable_registry!` with snake_case wire literals, so one door remains.
+
+**Implementation Notes**:
+- This changes accepted wire values: `AllowPartial` → `allow_partial`,
+  `RequireComplete` → `require_complete`, `Include` → `include`,
+  `Reject` → `reject`. Breaking input change, accepted under Current Contract
+  Discipline. No alias, no dual-accept.
+- `stable_registry!` currently lives in `temporal-vision`. Using it from
+  `krometrail-core` requires either exporting it or relocating it. Prefer
+  relocating to `krometrail-core` — it is a domain contract mechanism and
+  `temporal-vision` already depends inward, matching `injected-core-ports`.
+  Confirm no dependency inversion before moving.
+- Update every in-repo call site and any fixture or doc using the old spellings.
+
+**Acceptance Criteria**:
+- [ ] Both enums declare through the macro; no `derive(JsonSchema)` remains on
+      either.
+- [ ] Schema and serde both publish/accept only the snake_case forms.
+- [ ] Repo-wide search finds no remaining `AllowPartial` / `RequireComplete` /
+      `Include` / `Reject` wire spellings in requests, fixtures, or docs.
+
+### Unit 3: Generative schema/serde conformance sweep
+**File**: new test module under `crates/krometrail-mcp/`
+
+Walk every registered tool's input schema; for each string `enum` and each
+`oneOf` branch, construct a minimal instance and assert it deserializes into the
+tool's request type.
+
+**Implementation Notes**:
+- `registry.rs:295-361` already contains a pass that materializes every tool's
+  schema for validation — reuse that enumeration rather than writing a second
+  one; it is the existing single source of tool identity.
+- Minimal-instance construction must fill all `required` properties. For nested
+  `oneOf`, pick the first branch deterministically so failures are reproducible.
+- The assertion is *acceptance*, not round-trip equality. A value that
+  deserializes into a different-but-valid variant is not a failure; a value that
+  fails to deserialize is.
+- Test must name the offending tool, JSON pointer, and value on failure. A bare
+  "conformance failed" would be worse than the hand-written assertions it
+  replaces.
+
+**Acceptance Criteria**:
+- [ ] Every advertised string-enum value across every tool deserializes.
+- [ ] Every `oneOf` branch across every tool deserializes.
+- [ ] Reverting Unit 1 makes this test fail, naming `frequency_mode`.
+- [ ] Failure output identifies tool, pointer, and value.
+
+### Unit 4: Gate guard against new plain derives
+**File**: quality-gate scripting
+
+Reject `#[derive(..., JsonSchema)]` on an `enum` outside `stable_registry!`.
+
+**Implementation Notes**:
+- Structs are unaffected — `rename_all = "snake_case"` on the 185 struct types is
+  correct and consistent. This guard is enum-only.
+- A grep-level check is acceptable; a false positive is cheap to waive and the
+  maintenance cost of AST tooling is not justified here.
+
+**Acceptance Criteria**:
+- [ ] Adding a plain `derive(JsonSchema)` enum fails the gate with a message
+      naming the file and pointing at `stable_registry!`.
+- [ ] No false positive on any existing struct.
+
+## Implementation Order
+
+1. Unit 1 (macro emits schema from wire literals)
+2. Unit 2 (fold outliers — depends on Unit 1's macro shape)
+3. Unit 3 (conformance sweep — must be able to fail against pre-Unit-1 code)
+4. Unit 4 (gate guard — independent, last)
+
+No child stories. The four units are one cohesive delivery for a single owner
+with no useful intermediate checkpoint: Unit 3 is the acceptance evidence for
+Units 1–2, and splitting them would mean landing a guard that cannot yet pass.
+Spawning stories here would manufacture worker targets without adding a design
+checkpoint.
+
+## Testing
+
+- **Unit 3 is the primary test surface** and is itself deliverable — it protects
+  the whole schema/serde contract, not one instance.
+- **Regression assertion**: reverting Unit 1 must make Unit 3 fail on
+  `frequency_mode`. Without this the sweep could silently pass vacuously (e.g. if
+  it enumerates zero enums), which is the main way this kind of test rots.
+- **Vacuity guard**: assert the sweep visits a non-zero, plausible count of
+  enums and `oneOf` branches. A sweep that walks nothing passes everything.
+- **Test removal**: review `generated_video_schemas_publish_strict_wire_shapes_and_hard_bounds`
+  and the `IntervalAnchorScope` schema assertion added in v1.2.6. Keep the parts
+  asserting genuine domain intent (hard numeric bounds, strict-vs-tolerant
+  branch split); delete the parts that merely restate what the sweep now proves
+  universally. Do not delete wholesale.
+
+## Risks
+
+- **Riskiest assumption: schemars' `JsonSchema` trait can be hand-implemented
+  cleanly at the pinned version.** If its shape is more awkward than expected,
+  the fallback is `#[schemars(rename_all = "snake_case")]` on the derive plus a
+  macro-generated compile-time assertion that each `$wire` equals the snake_case
+  of its identifier — preserving the guarantee while keeping the derive. Weaker
+  (it forbids non-snake_case wire names rather than supporting them) but it
+  holds the invariant.
+- Unit 2's macro relocation could invert a crate dependency. If `krometrail-core`
+  cannot host the macro without inverting, leave it in `temporal-vision` and
+  export it rather than forcing the move.
+- Unit 3 may surface a large set of mismatches. That is its purpose, but they
+  belong to `feature-wire-contract-corrections`, not here. Resist fixing them in
+  this feature beyond what Units 1–2 fix structurally; record them for sizing.
+- Unit 4's grep could false-positive on doc comments or test fixtures mentioning
+  the derive. Scope it to non-test source and accept a waiver mechanism.
