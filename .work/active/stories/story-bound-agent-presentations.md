@@ -1,7 +1,7 @@
 ---
 id: story-bound-agent-presentations
 kind: story
-stage: review
+stage: done
 created: 2026-07-20
 updated: 2026-07-20
 tags: [agent-ux, browser]
@@ -25,3 +25,8 @@ Further bound default agent-facing presentations on dense pages. On the public K
 - Fix: concise targets are action-ranked at 24 rows/6 KiB with false boolean defaults omitted; expanded retains complete states at 48 rows/12 KiB. Asset projection derives counts by kind and separate source/presentation omissions from the canonical inventory, with 16-row/6 KiB concise and 64-row/16 KiB expanded bounds; full remains canonical.
 - Shared behavior: actions, batches, and live observation already route their final snapshot through the same projector, so no batch-specific truncator or alternate acquisition path was added.
 - Verification: `cargo test -p krometrail-mcp --lib --locked response::tests`; schema coverage proves frame document scope remains published.
+
+## Bounded inline review — 2026-07-20
+
+- Verdict: approved. Every concise/expanded response derives from a complete canonical result, keeps exact references and omission accounting, and leaves full detail unchanged.
+- Acceptance: dense snapshots and inventories enforce both row and byte bounds; salient action ranking, asset-kind totals, and source/presentation omissions are regression-covered.

@@ -1,7 +1,7 @@
 ---
 id: story-harden-frame-heavy-capture
 kind: story
-stage: review
+stage: done
 created: 2026-07-20
 updated: 2026-07-20
 tags: [browser, testing]
@@ -25,3 +25,8 @@ Recheck capture acknowledgement and queue behavior during a frame-heavy GitHub i
 - Fix: frames crossing an open geometry transition retain their pixels and last established geometry with `viewport_metadata_incomplete`. A committed refresh affects subsequent frames, and beginning/completing refresh no longer declares visual gaps.
 - Regression: acknowledgement-spanning, unresolved-refresh, native-event, and a 12-frame burst test prove exact warning, geometry, counter, and zero-gap behavior. Genuine queue saturation remains separately covered.
 - Verification: `cargo test -p krometrail-cdp --lib --locked capture::tests`.
+
+## Bounded inline review — 2026-07-20
+
+- Verdict: approved. The correction preserves immediate one-shot acknowledgement and genuine bounded-queue loss accounting while separating pixel availability from viewport-metadata confidence.
+- Acceptance: transition frames persist with explicit warning, post-commit geometry is exact, and burst counters prove 13 received/acknowledged/accepted/persisted with zero drops and gaps.

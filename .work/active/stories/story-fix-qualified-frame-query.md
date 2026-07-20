@@ -1,7 +1,7 @@
 ---
 id: story-fix-qualified-frame-query
 kind: story
-stage: review
+stage: done
 created: 2026-07-20
 updated: 2026-07-20
 tags: [browser, testing]
@@ -25,3 +25,8 @@ On `https://the-internet.herokuapp.com/iframe`, wait for TinyMCE to create its s
 - Fix: `snapshot_page` now accepts the same qualified `document` scope and returns the selected frame's acquired semantic tree, including non-actionable text, while `query_page` keeps its action-reference boundary.
 - Regression: a deterministic child-frame snapshot exposes readonly editor text with no invented reference and proves the child frame ID is sent to CDP.
 - Verification: `cargo test -p krometrail-cdp --lib --locked same_origin_frame_snapshot_exposes_non_actionable_semantic_content`.
+
+## Bounded inline review — 2026-07-20
+
+- Verdict: approved. The change reuses the existing frame revalidation and snapshot registry, exposes no raw CDP identity, and does not broaden actionable-reference authority.
+- Acceptance: readonly child-frame content is inspectable; query results remain mutation-safe; schema and skill guidance publish the intended split.
