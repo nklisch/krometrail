@@ -1359,15 +1359,7 @@ async fn runtime_geometry_change_keeps_one_continuous_stream_and_per_frame_metad
                 .contains(&krometrail_core::CaptureWarning::MissingSourceTime)
         );
     }
-    {
-        let gaps = observer.gaps.lock().unwrap();
-        assert_eq!(gaps.len(), 1);
-        assert_eq!(*gaps[0].reason(), CaptureGapReason::ScreencastPaused);
-        assert_eq!(
-            gaps[0].detail(),
-            Some("capture geometry transition completed")
-        );
-    }
+    assert!(observer.gaps.lock().unwrap().is_empty());
     let status = coordinator.statuses().pop().unwrap();
     assert_eq!(status.state(), CaptureStreamState::Capturing);
     assert_eq!(status.statistics().persisted_frames(), 2);
@@ -1383,7 +1375,7 @@ async fn runtime_geometry_change_keeps_one_continuous_stream_and_per_frame_metad
 }
 
 #[tokio::test]
-async fn acknowledgement_spanning_geometry_transition_is_dropped_with_exact_gap_evidence() {
+async fn acknowledgement_spanning_geometry_transition_retains_pixels_with_uncertain_metadata() {
     let ack_completed = Arc::new(AtomicBool::new(false));
     let transport =
         TestTransport::new(Arc::clone(&ack_completed), Arc::new(Mutex::new(Vec::new())));
@@ -1431,7 +1423,7 @@ async fn acknowledgement_spanning_geometry_transition_is_dropped_with_exact_gap_
     transport.frame(32).await;
     transport.wait_for_acks(2).await;
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
-        while sink.frames.lock().unwrap().len() != 1 {
+        while sink.frames.lock().unwrap().len() < 2 {
             tokio::task::yield_now().await;
         }
     })
@@ -1440,30 +1432,34 @@ async fn acknowledgement_spanning_geometry_transition_is_dropped_with_exact_gap_
 
     {
         let frames = sink.frames.lock().unwrap();
-        assert_eq!(frames[0].metadata().capture_ordinal().get(), 2);
+        assert_eq!(frames[0].metadata().capture_ordinal().get(), 1);
         assert_eq!(
             frames[0].metadata().viewport(),
+            krometrail_core::PixelDimensions::new(600, 500).unwrap()
+        );
+        assert!(
+            frames[0]
+                .metadata()
+                .warnings()
+                .contains(&krometrail_core::CaptureWarning::ViewportMetadataIncomplete)
+        );
+        assert_eq!(frames[1].metadata().capture_ordinal().get(), 2);
+        assert_eq!(
+            frames[1].metadata().viewport(),
             krometrail_core::PixelDimensions::new(390, 844).unwrap()
         );
-    }
-    {
-        let gaps = observer.gaps.lock().unwrap();
-        assert_eq!(gaps.len(), 2);
         assert!(
-            gaps.iter()
-                .all(|gap| *gap.reason() == CaptureGapReason::ScreencastPaused)
+            !frames[1]
+                .metadata()
+                .warnings()
+                .contains(&krometrail_core::CaptureWarning::ViewportMetadataIncomplete)
         );
-        assert!(gaps.iter().any(|gap| {
-            gap.detail() == Some("frame crossed an unproven capture geometry transition")
-                && gap
-                    .estimated_missing_frames()
-                    .is_some_and(|count| count.get() == 1)
-        }));
     }
+    assert!(observer.gaps.lock().unwrap().is_empty());
     let status = coordinator.statuses().pop().unwrap();
     assert_eq!(status.statistics().acknowledged_frames(), 2);
-    assert_eq!(status.statistics().accepted_frames(), 1);
-    assert_eq!(status.statistics().dropped_frames(), 1);
+    assert_eq!(status.statistics().accepted_frames(), 2);
+    assert_eq!(status.statistics().dropped_frames(), 0);
 
     assert!(
         coordinator
@@ -1478,7 +1474,107 @@ async fn acknowledgement_spanning_geometry_transition_is_dropped_with_exact_gap_
 }
 
 #[tokio::test]
-async fn unresolved_geometry_refresh_keeps_frames_fenced_until_authoritative_recovery() {
+async fn frame_burst_during_geometry_refresh_is_retained_without_visual_gaps() {
+    let ack_completed = Arc::new(AtomicBool::new(false));
+    let transport =
+        TestTransport::new(Arc::clone(&ack_completed), Arc::new(Mutex::new(Vec::new())));
+    let sink = Arc::new(TestSink::new(
+        ack_completed,
+        Arc::new(Mutex::new(Vec::new())),
+    ));
+    let observer = Arc::new(TestObserver::default());
+    let coordinator = coordinator(
+        CaptureConfig {
+            max_active_streams: NonZeroUsize::new(1).unwrap(),
+            queue_capacity: NonZeroUsize::new(16).unwrap(),
+            ..CaptureConfig::default()
+        },
+        Arc::new(TestClock::new()),
+        Arc::new(TestIds::new()),
+        Arc::clone(&sink),
+        Arc::clone(&observer),
+    );
+    let capture_target = target();
+    coordinator
+        .start_target(
+            capture_target.clone(),
+            Arc::clone(&transport) as Arc<dyn CdpTransport>,
+        )
+        .await
+        .unwrap();
+    let transition = coordinator
+        .begin_geometry_transition(
+            capture_target.target_id,
+            capture_target.attachment_generation,
+        )
+        .unwrap();
+    sink.release_first_frame.notify_one();
+    for token in 1..=12 {
+        transport.frame(token).await;
+    }
+    transport.wait_for_acks(12).await;
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while sink.frames.lock().unwrap().len() < 12 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(coordinator.commit_geometry_transition(
+        transition,
+        CaptureGeometry {
+            viewport: krometrail_core::PixelDimensions::new(390, 844).unwrap(),
+            device_scale_factor: krometrail_core::DeviceScaleFactor::new(3.0).unwrap(),
+        },
+    ));
+    transport.frame(13).await;
+    transport.wait_for_acks(13).await;
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while sink.frames.lock().unwrap().len() < 13 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+
+    {
+        let frames = sink.frames.lock().unwrap();
+        assert!(frames[..12].iter().all(|frame| {
+            frame
+                .metadata()
+                .warnings()
+                .contains(&krometrail_core::CaptureWarning::ViewportMetadataIncomplete)
+        }));
+        assert!(
+            !frames[12]
+                .metadata()
+                .warnings()
+                .contains(&krometrail_core::CaptureWarning::ViewportMetadataIncomplete)
+        );
+    }
+    let status = coordinator.statuses().pop().unwrap();
+    assert_eq!(status.statistics().received_frames(), 13);
+    assert_eq!(status.statistics().acknowledged_frames(), 13);
+    assert_eq!(status.statistics().accepted_frames(), 13);
+    assert_eq!(status.statistics().persisted_frames(), 13);
+    assert_eq!(status.statistics().dropped_frames(), 0);
+    assert_eq!(status.statistics().gap_count(), 0);
+    assert!(observer.gaps.lock().unwrap().is_empty());
+
+    assert!(
+        coordinator
+            .stop_target(
+                &capture_target,
+                CaptureStopReason::TargetClosed,
+                tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+            )
+            .await
+            .complete
+    );
+}
+
+#[tokio::test]
+async fn unresolved_geometry_refresh_retains_frames_with_last_known_metadata() {
     let ack_completed = Arc::new(AtomicBool::new(false));
     let transport =
         TestTransport::new(Arc::clone(&ack_completed), Arc::new(Mutex::new(Vec::new())));
@@ -1512,8 +1608,8 @@ async fn unresolved_geometry_refresh_keeps_frames_fenced_until_authoritative_rec
     transport.frame(51).await;
     transport.wait_for_acks(1).await;
 
-    // Retry exhaustion leaves the transition unresolved: last established geometry is not
-    // authority for any new frame after the browser announced a geometry change.
+    // Retry exhaustion leaves the transition unresolved. Pixels remain authoritative while the
+    // last established viewport metadata is explicitly marked incomplete.
     assert_eq!(
         coordinator
             .geometry_for_test(
@@ -1553,48 +1649,53 @@ async fn unresolved_geometry_refresh_keeps_frames_fenced_until_authoritative_rec
     sink.first_frame_started.notified().await;
     sink.release_first_frame.notify_one();
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
-        while sink.frames.lock().unwrap().len() != 1 {
+        while sink.frames.lock().unwrap().len() < 3 {
             tokio::task::yield_now().await;
         }
     })
     .await
     .unwrap();
 
-    let (ordinals, first_viewport) = {
+    let (ordinals, viewports, uncertain) = {
         let frames = sink.frames.lock().unwrap();
         (
             frames
                 .iter()
                 .map(|frame| frame.metadata().capture_ordinal().get())
                 .collect::<Vec<_>>(),
-            frames[0].metadata().viewport(),
+            frames
+                .iter()
+                .map(|frame| frame.metadata().viewport())
+                .collect::<Vec<_>>(),
+            frames
+                .iter()
+                .map(|frame| {
+                    frame
+                        .metadata()
+                        .warnings()
+                        .contains(&krometrail_core::CaptureWarning::ViewportMetadataIncomplete)
+                })
+                .collect::<Vec<_>>(),
         )
     };
-    assert_eq!(ordinals, vec![3]);
+    assert_eq!(ordinals, vec![1, 2, 3]);
     assert_eq!(
-        first_viewport,
-        krometrail_core::PixelDimensions::new(390, 844).unwrap()
+        viewports,
+        vec![
+            krometrail_core::PixelDimensions::new(600, 500).unwrap(),
+            krometrail_core::PixelDimensions::new(600, 500).unwrap(),
+            krometrail_core::PixelDimensions::new(390, 844).unwrap(),
+        ]
     );
+    assert_eq!(uncertain, vec![true, true, false]);
 
     let status = coordinator.statuses().pop().unwrap();
     assert_eq!(status.state(), CaptureStreamState::Capturing);
     assert_eq!(status.failure(), None);
     assert_eq!(status.statistics().acknowledged_frames(), 3);
-    assert_eq!(status.statistics().accepted_frames(), 1);
-    assert_eq!(status.statistics().dropped_frames(), 2);
-    assert_eq!(
-        observer
-            .gaps
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|gap| {
-                gap.detail() == Some("frame crossed an unproven capture geometry transition")
-                    && *gap.reason() == CaptureGapReason::ScreencastPaused
-            })
-            .count(),
-        2
-    );
+    assert_eq!(status.statistics().accepted_frames(), 3);
+    assert_eq!(status.statistics().dropped_frames(), 0);
+    assert!(observer.gaps.lock().unwrap().is_empty());
 
     assert!(
         coordinator
@@ -1680,7 +1781,7 @@ async fn native_resize_and_navigation_events_fence_generation_scoped_geometry_re
         );
         assert_eq!(frames[0].metadata().device_scale_factor().get(), 1.5);
     }
-    assert_eq!(observer.gaps.lock().unwrap().len(), 2);
+    assert!(observer.gaps.lock().unwrap().is_empty());
 
     assert!(
         coordinator

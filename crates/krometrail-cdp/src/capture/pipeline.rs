@@ -170,14 +170,19 @@ struct GeometryAuthority {
 #[derive(Clone, Copy, Debug)]
 struct GeometryTransitionState {
     token: CaptureGeometryTransition,
-    started_at: SessionTime,
-    completing: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
 struct GeometryFence {
     revision: u64,
-    established: bool,
+    geometry: CaptureGeometry,
+    uncertain: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct FrameGeometry {
+    geometry: CaptureGeometry,
+    metadata_uncertain: bool,
 }
 
 struct RuntimeState {
@@ -297,23 +302,26 @@ impl StreamRuntime {
             .expect("capture geometry lock poisoned");
         GeometryFence {
             revision: authority.revision,
-            established: authority.transition.is_none(),
+            geometry: authority.established,
+            uncertain: authority.transition.is_some(),
         }
     }
 
-    fn geometry_after_ack(&self, fence: GeometryFence) -> Option<CaptureGeometry> {
+    fn geometry_after_ack(&self, fence: GeometryFence) -> FrameGeometry {
         let authority = self
             .geometry
             .lock()
             .expect("capture geometry lock poisoned");
-        (fence.established
-            && authority.transition.is_none()
-            && authority.revision == fence.revision)
-            .then_some(authority.established)
+        let uncertain = fence.uncertain
+            || authority.transition.is_some()
+            || authority.revision != fence.revision;
+        FrameGeometry {
+            geometry: fence.geometry,
+            metadata_uncertain: uncertain,
+        }
     }
 
     fn begin_geometry_transition(&self) -> Option<(CaptureGeometryTransition, bool)> {
-        let started_at = self.session_time_for(self.dependencies.clock.now());
         let mut authority = self
             .geometry
             .lock()
@@ -328,11 +336,7 @@ impl StreamRuntime {
             revision,
         };
         authority.revision = revision;
-        authority.transition = Some(GeometryTransitionState {
-            token,
-            started_at,
-            completing: false,
-        });
+        authority.transition = Some(GeometryTransitionState { token });
         Some((token, true))
     }
 
@@ -340,31 +344,7 @@ impl StreamRuntime {
         &self,
         transition: CaptureGeometryTransition,
         geometry: Option<CaptureGeometry>,
-        detail: &'static str,
     ) -> bool {
-        let started_at = {
-            let mut authority = self
-                .geometry
-                .lock()
-                .expect("capture geometry lock poisoned");
-            let Some(active) = authority.transition.as_mut() else {
-                return false;
-            };
-            if active.token != transition || active.completing {
-                return false;
-            }
-            active.completing = true;
-            active.started_at
-        };
-        let ended_at = self
-            .session_time_for(self.dependencies.clock.now())
-            .max(started_at);
-        self.declare_gap_range(
-            CaptureGapReason::ScreencastPaused,
-            SessionRange::new(started_at, ended_at).expect("ordered transition range is valid"),
-            None,
-            Some(detail),
-        );
         let mut authority = self
             .geometry
             .lock()
@@ -372,7 +352,7 @@ impl StreamRuntime {
         let Some(active) = authority.transition else {
             return false;
         };
-        if active.token != transition || !active.completing {
+        if active.token != transition {
             return false;
         }
         if let Some(geometry) = geometry {
@@ -981,14 +961,7 @@ async fn frame_reader(
             }
         };
         runtime.transition(Transition::ActualFrame);
-        let Some(geometry) = runtime.geometry_after_ack(geometry_fence) else {
-            runtime.dropped_with_detail(
-                CaptureGapReason::ScreencastPaused,
-                session_time,
-                Some("frame crossed an unproven capture geometry transition"),
-            );
-            continue;
-        };
+        let geometry = runtime.geometry_after_ack(geometry_fence);
         let raw = match RawFrame::after_ack(
             event,
             ordinal,
@@ -1039,11 +1012,7 @@ async fn geometry_reader(runtime: Arc<StreamRuntime>, events: &mut Box<dyn Trans
             Ok(None) | Err(_) => {
                 let transition = runtime.begin_geometry_transition().map(|value| value.0);
                 if let Some(transition) = transition {
-                    runtime.finish_geometry_transition(
-                        transition,
-                        None,
-                        "capture geometry event stream failed",
-                    );
+                    runtime.finish_geometry_transition(transition, None);
                 }
                 runtime.fail_at(CaptureFailureStage::FrameEventStream);
                 break;
@@ -1711,7 +1680,7 @@ impl RawFrame {
         session_time: SessionTime,
         format: ImageFormat,
         max_payload_bytes: usize,
-        geometry: CaptureGeometry,
+        geometry: FrameGeometry,
     ) -> Result<Self, &'static str> {
         let object = event.params.as_object().ok_or("params_not_object")?;
         let data_value = object
@@ -1727,6 +1696,9 @@ impl RawFrame {
             .and_then(Value::as_object)
             .ok_or("metadata_missing_or_not_object")?;
         let mut warnings = Vec::new();
+        if geometry.metadata_uncertain {
+            warnings.push(CaptureWarning::ViewportMetadataIncomplete);
+        }
         let source_time = match metadata.get("timestamp").and_then(Value::as_f64) {
             Some(value) if value.is_finite() && value >= 0.0 => {
                 let scaled = value * 1_000_000_000.0;
@@ -1755,8 +1727,8 @@ impl RawFrame {
             observed_time,
             session_time,
             format,
-            viewport: geometry.viewport,
-            device_scale_factor: geometry.device_scale_factor,
+            viewport: geometry.geometry.viewport,
+            device_scale_factor: geometry.geometry.device_scale_factor,
             warnings,
         })
     }
@@ -1797,13 +1769,7 @@ pub(super) fn commit_geometry_transition(
         transition.target_id,
         transition.attachment_generation,
     )
-    .is_some_and(|runtime| {
-        runtime.finish_geometry_transition(
-            transition,
-            Some(geometry),
-            "capture geometry transition completed",
-        )
-    })
+    .is_some_and(|runtime| runtime.finish_geometry_transition(transition, Some(geometry)))
 }
 
 #[cfg(test)]

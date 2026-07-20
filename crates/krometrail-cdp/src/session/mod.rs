@@ -2210,7 +2210,7 @@ mod tests {
             coordinator.statuses().pop().unwrap().state(),
             CaptureStreamState::Capturing
         );
-        assert_eq!(observer.gaps.lock().unwrap().len(), 4);
+        assert!(observer.gaps.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -2413,7 +2413,7 @@ mod tests {
             state.targets_by_key["geometry-target"].target.lifecycle,
             TargetLifecycle::Failed
         );
-        assert_eq!(observer.gaps.lock().unwrap().len(), 3);
+        assert!(observer.gaps.lock().unwrap().is_empty());
         assert_eq!(sink.log.lock().unwrap().len(), 0);
     }
 
