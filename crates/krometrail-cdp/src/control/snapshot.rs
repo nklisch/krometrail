@@ -240,6 +240,12 @@ impl PageControl {
         started_at: krometrail_core::SessionTime,
         include_document_geometry: bool,
     ) -> Result<BrowserOperationResult> {
+        let frame = match &request.document {
+            krometrail_core::SemanticDocumentScope::MainDocument => None,
+            krometrail_core::SemanticDocumentScope::Frame(reference) => {
+                Some(Self::resolve_frame_document(transport, bound, reference).await?)
+            }
+        };
         let include_document_geometry =
             include_document_geometry || request.anchor == SnapshotPageAnchor::Viewport;
         let viewport_scope = if request.anchor == SnapshotPageAnchor::Viewport {
@@ -263,13 +269,14 @@ impl PageControl {
             None
         };
         let snapshot = self
-            .capture_snapshot(
+            .capture_snapshot_for_frame(
                 transport,
                 bound,
                 started_at,
                 false,
                 include_document_geometry,
                 viewport_scope,
+                frame.as_ref(),
             )
             .await?;
         let snapshot = if let Some(viewport) = viewport_scope {
@@ -278,27 +285,6 @@ impl PageControl {
             snapshot
         };
         Ok(BrowserOperationResult::SnapshotPage(Box::new(snapshot)))
-    }
-
-    async fn capture_snapshot(
-        &mut self,
-        transport: &dyn CdpTransport,
-        bound: &BoundTarget,
-        started_at: krometrail_core::SessionTime,
-        include_dom_semantics: bool,
-        include_document_geometry: bool,
-        viewport_scope: Option<CssRect>,
-    ) -> Result<PageSnapshot> {
-        self.capture_snapshot_for_frame(
-            transport,
-            bound,
-            started_at,
-            include_dom_semantics,
-            include_document_geometry,
-            viewport_scope,
-            None,
-        )
-        .await
     }
 
     pub(super) async fn query_page(
@@ -2434,6 +2420,61 @@ mod tests {
         assert_eq!(
             result.outcome,
             krometrail_core::SemanticQueryOutcome::Unique
+        );
+    }
+
+    #[tokio::test]
+    async fn same_origin_frame_snapshot_exposes_non_actionable_semantic_content() {
+        let transport = SnapshotTransport::default();
+        for _ in 0..2 {
+            transport.push("Page.getFrameTree", frame_tree("child-loader"));
+            transport.push("Target.getTargets", json!({"targetInfos": []}));
+        }
+        transport.push(
+            "Accessibility.getFullAXTree",
+            json!({"nodes":[
+                {"nodeId":"child-root","frameId":"child","ignored":false,"role":{"value":"document"},"childIds":["editor","text"]},
+                {"nodeId":"editor","frameId":"child","ignored":false,"role":{"value":"generic"},"name":{"value":"Rich Text Area"},"backendDOMNodeId":106},
+                {"nodeId":"text","frameId":"child","ignored":false,"role":{"value":"StaticText"},"name":{"value":"Your content goes here."},"backendDOMNodeId":107}
+            ]}),
+        );
+        let mut control = page_control();
+        let bound = frame_bound();
+        let child = control
+            .list_frames(&transport, &bound)
+            .await
+            .unwrap()
+            .frames[1]
+            .reference
+            .clone();
+        let mut request = SnapshotPageRequest::new(target());
+        request.document = krometrail_core::SemanticDocumentScope::Frame(child);
+
+        let BrowserOperationResult::SnapshotPage(snapshot) = control
+            .snapshot(
+                &transport,
+                &bound,
+                request,
+                krometrail_core::SessionTime::ZERO,
+                false,
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected snapshot result");
+        };
+        assert!(snapshot.nodes.iter().any(|node| {
+            node.name.as_deref() == Some("Your content goes here.") && node.reference.is_none()
+        }));
+        assert!(
+            transport
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(method, params)| {
+                    method == "Accessibility.getFullAXTree" && params["frameId"] == "child"
+                })
         );
     }
 

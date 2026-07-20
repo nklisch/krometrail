@@ -1086,11 +1086,14 @@ pub enum SnapshotPageAnchor {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SnapshotPageRequest {
     #[serde(default)]
     pub target: PageSelection,
     #[serde(default)]
     pub anchor: SnapshotPageAnchor,
+    #[serde(default)]
+    pub document: crate::browser::SemanticDocumentScope,
 }
 
 impl SnapshotPageRequest {
@@ -1098,6 +1101,7 @@ impl SnapshotPageRequest {
         Self {
             target: PageSelection::Target(target_id),
             anchor: SnapshotPageAnchor::Document,
+            document: crate::browser::SemanticDocumentScope::MainDocument,
         }
     }
 }
