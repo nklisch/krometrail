@@ -438,6 +438,25 @@ mod tests {
     }
 
     #[test]
+    fn ergonomic_wire_defaults_are_published_in_generated_tool_schemas() {
+        let handle_dialog =
+            operation_input_schema(BrowserOperationKind::HandleDialog, &McpConfig::default())
+                .unwrap();
+        let handle_dialog = serde_json::to_string(handle_dialog.as_ref()).unwrap();
+        assert!(handle_dialog.contains("prompt_text"));
+        assert!(!handle_dialog.contains("\"value\""));
+
+        for kind in [
+            ProgressiveEvidenceOperationKind::ListSourceFrames,
+            ProgressiveEvidenceOperationKind::FetchSourceFrames,
+            ProgressiveEvidenceOperationKind::GenerateArtifacts,
+            ProgressiveEvidenceOperationKind::GenerateRegionFilmstrip,
+        ] {
+            assert!(generated_input_schema(kind.input_schema()).is_ok());
+        }
+    }
+
+    #[test]
     fn stop_and_capture_failure_schemas_are_structured_and_current() {
         let stop = serde_json::to_value(schemars::schema_for!(krometrail_core::BrowserStopOutcome))
             .unwrap();

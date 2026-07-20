@@ -1,7 +1,7 @@
 ---
 id: feature-temporal-request-ergonomics
 kind: feature
-stage: implementing
+stage: review
 tags: [agent-ux, browser, visual]
 parent: null
 depends_on: []
@@ -82,10 +82,10 @@ pub enum DialogAction {
 ```
 
 **Acceptance**:
-- [ ] `{"kind":"accept"}` deserializes to `Accept { prompt_text: None }`.
-- [ ] `{"kind":"accept","prompt_text":"x"}` deserializes with the text.
-- [ ] `{"kind":"dismiss"}` unchanged.
-- [ ] Regenerated `handle_dialog` schema reflects the flattened shape.
+- [x] `{"kind":"accept"}` deserializes to `Accept { prompt_text: None }`.
+- [x] `{"kind":"accept","prompt_text":"x"}` deserializes with the text.
+- [x] `{"kind":"dismiss"}` unchanged.
+- [x] Regenerated `handle_dialog` schema reflects the flattened shape.
 
 ### Unit 2: Filmstrip & artifacts presentation defaults
 **File**: `crates/krometrail-core/src/progressive.rs`
@@ -99,14 +99,14 @@ default policy — confirm the intended default is `require_all` vs
 `allow_partial` from existing standalone defaults).
 
 **Acceptance**:
-- [ ] A `generate_region_filmstrip` call with only `region` (+range/handle)
+- [x] A `generate_region_filmstrip` call with only `region` (+range/handle)
       succeeds, using empty markers, black background/padding, default
       tile_limit/labels/output/display_scale, and the range's effective anchor.
-- [ ] Explicit values still validate exactly as before (bad anchor outside
+- [x] Explicit values still validate exactly as before (bad anchor outside
       range still rejected; FitLimits display_scale still rejected).
-- [ ] A `generate_artifacts` call with only `generators` (+range/handle)
+- [x] A `generate_artifacts` call with only `generators` (+range/handle)
       succeeds with empty markers and the default failure policy.
-- [ ] Canonical checked-in schemas regenerate and match (byte/digest gate).
+- [x] Canonical checked-in schemas regenerate and match (byte/digest gate).
 
 ### Unit 3: Source-frame unlimited sentinel
 **File**: `crates/krometrail-core/src/progressive.rs`
@@ -117,11 +117,11 @@ construction; run the existing over-ceiling and item≤total checks on
 materialized values. Update field doc comments.
 
 **Acceptance**:
-- [ ] `max_item_bytes: 0` resolves to `MAX_SOURCE_ITEM_BYTES`; likewise
+- [x] `max_item_bytes: 0` resolves to `MAX_SOURCE_ITEM_BYTES`; likewise
       `max_frames: 0` and `max_total_bytes: 0` to their ceilings.
-- [ ] A fully-zero limits triple resolves to all three ceilings and passes.
-- [ ] Over-ceiling explicit values still rejected with the sized message.
-- [ ] item>total (both explicit) still rejected.
+- [x] A fully-zero limits triple resolves to all three ceilings and passes.
+- [x] Over-ceiling explicit values still rejected with the sized message.
+- [x] item>total (both explicit) still rejected.
 
 ### Unit 4: Canvas-limit diagnostic
 **File**: `crates/temporal-vision/src/render/canvas.rs`
@@ -131,7 +131,7 @@ message naming width/height and the `output.max_*` to raise. Update call sites
 to pass the context they have.
 
 **Acceptance**:
-- [ ] The error message names the overflowing dimension and the output cap to
+- [x] The error message names the overflowing dimension and the output cap to
       increase; code stays `ResourceLimitExceeded`.
 
 ## Implementation Order
@@ -157,3 +157,22 @@ to pass the context they have.
 
 Origin: 2026-07-19 fourth shakedown friction report (batch bug is a separate
 feature: feature-batch-step-projection-parity).
+
+## Implementation notes
+
+- `generate_artifacts` now defaults `failure_policy` to `allow_partial`,
+  matching the existing standalone/bundle policy used by the MCP registry and
+  debug-bundle construction. Explicit policies remain unchanged.
+- Shared artifact default constructors are reused by the progressive
+  filmstrip wire instead of duplicating labels, output limits, colors, and
+  scale values. Omitted filmstrip anchors are materialized from
+  `ResolvedRange::resolved_anchor.effective_time`; explicit anchors still pass
+  through the existing range validation.
+- The repository publishes these MCP contracts from runtime-generated
+  schemars values and has no checked-in `handle_dialog` or progressive-tool
+  schema artifacts or blessing command. The schema generator test now covers
+  the changed tool families; no parallel generated files were introduced.
+- Width/height diagnostics use a contextual `canvas_output_limit_error` at the
+  storyboard and region-filmstrip layout checks. Other canvas arithmetic still
+  uses the generic bounded failure because those call sites do not have output
+  width/height caps available.

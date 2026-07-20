@@ -417,9 +417,12 @@ impl<'de> Deserialize<'de> for ScrollDelta {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DialogAction {
-    Accept { prompt_text: Option<NonEmptyText> },
+    Accept {
+        #[serde(default)]
+        prompt_text: Option<NonEmptyText>,
+    },
     Dismiss,
 }
 
@@ -1116,6 +1119,36 @@ mod tests {
         assert_eq!(fill.target, PageSelection::Selected);
         assert_eq!(fill.mode, FillMode::Replace);
         assert!(!fill.wait_for_navigation);
+    }
+
+    #[test]
+    fn dialog_action_accept_prompt_is_optional_and_flattened() {
+        assert_eq!(
+            serde_json::from_value::<DialogAction>(json!({"kind": "accept"})).unwrap(),
+            DialogAction::Accept { prompt_text: None }
+        );
+        let with_prompt = serde_json::from_value::<DialogAction>(json!({
+            "kind": "accept",
+            "prompt_text": "answer"
+        }))
+        .unwrap();
+        assert_eq!(
+            with_prompt,
+            DialogAction::Accept {
+                prompt_text: Some(NonEmptyText::new("answer").unwrap())
+            }
+        );
+        assert_eq!(
+            serde_json::from_value::<DialogAction>(json!({"kind": "dismiss"})).unwrap(),
+            DialogAction::Dismiss
+        );
+        assert!(
+            serde_json::from_value::<DialogAction>(json!({
+                "kind": "accept",
+                "value": {"prompt_text": "answer"}
+            }))
+            .is_err()
+        );
     }
     #[test]
     fn request_validation_and_sanitization_protect_boundaries() {

@@ -207,6 +207,33 @@ pub(crate) fn canvas_limit_error() -> VisionError {
     )
 }
 
+pub(crate) fn canvas_output_limit_error(
+    width: u32,
+    height: u32,
+    max_width: u32,
+    max_height: u32,
+) -> VisionError {
+    let width_overflow = width > max_width;
+    let height_overflow = height > max_height;
+    let message = match (width_overflow, height_overflow) {
+        (true, true) => format!(
+            "artifact raster width {width} exceeds output.max_width {max_width} and height {height} exceeds output.max_height {max_height}; raise output.max_width and output.max_height"
+        ),
+        (true, false) => format!(
+            "artifact raster width {width} exceeds output.max_width {max_width}; raise output.max_width"
+        ),
+        (false, true) => format!(
+            "artifact raster height {height} exceeds output.max_height {max_height}; raise output.max_height"
+        ),
+        (false, false) => "artifact raster exceeds configured layout or canvas limits".to_owned(),
+    };
+    VisionError {
+        code: ErrorCode::ResourceLimitExceeded,
+        message: message.into(),
+        index: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -218,5 +245,14 @@ mod tests {
         assert_eq!(center_map(0, 2, 4).unwrap(), 0);
         assert_eq!(center_map(3, 2, 4).unwrap(), 1);
         assert!(Canvas::new(PixelDimensions::new(2, 2).unwrap(), BLACK, 11).is_err());
+    }
+
+    #[test]
+    fn output_limit_error_names_the_overflowing_dimension_and_cap() {
+        let error = canvas_output_limit_error(401, 100, 400, 200);
+        assert_eq!(error.code, ErrorCode::ResourceLimitExceeded);
+        assert!(error.message.contains("width"));
+        assert!(error.message.contains("output.max_width"));
+        assert!(error.message.contains("raise output.max_width"));
     }
 }

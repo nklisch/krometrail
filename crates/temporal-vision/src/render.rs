@@ -14,7 +14,9 @@ use crate::{
     PixelDimensions, Result, SelectionReason, StoryboardSelection, StoryboardTileLimit, Timestamp,
     VisionError, generator_descriptor, normalize::make_parameters, select_storyboard_frames,
 };
-use canvas::{BLACK, Canvas, MUTED, PANEL, WARNING, WHITE, canvas_limit_error};
+use canvas::{
+    BLACK, Canvas, MUTED, PANEL, WARNING, WHITE, canvas_limit_error, canvas_output_limit_error,
+};
 use font::{CELL_WIDTH, draw_text, ellipsize};
 
 const PREFERRED_TILE_WIDTH: u32 = 240;
@@ -533,7 +535,12 @@ fn checked_layout(
         .and_then(|value| value.checked_add(TIMELINE_HEIGHT))
         .ok_or_else(canvas_limit_error)?;
     if width > limits.max_width() || height > limits.max_height() {
-        return Err(canvas_limit_error());
+        return Err(canvas_output_limit_error(
+            width,
+            height,
+            limits.max_width(),
+            limits.max_height(),
+        ));
     }
     let dimensions = PixelDimensions::new(width, height).map_err(|_| canvas_limit_error())?;
     let bytes = dimensions

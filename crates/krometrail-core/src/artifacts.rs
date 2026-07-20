@@ -34,7 +34,7 @@ pub const DEFAULT_ARTIFACT_BLACK_BACKGROUND: temporal_vision::Rgb8 =
 const DEFAULT_STORYBOARD_TITLE: &str = "TEMPORAL STORYBOARD";
 const DEFAULT_STORYBOARD_SOURCE: &str = "KROMETRAIL RETAINED SOURCE FRAMES";
 
-fn default_labels() -> ArtifactLabelsRequest {
+pub(crate) fn default_labels() -> ArtifactLabelsRequest {
     ArtifactLabelsRequest::new(
         NonEmptyText::new(DEFAULT_STORYBOARD_TITLE).expect("default title is non-empty"),
         NonEmptyText::new(DEFAULT_STORYBOARD_SOURCE).expect("default source is non-empty"),
@@ -50,7 +50,7 @@ fn default_normalization() -> NormalizationRequest {
     .expect("default artifact normalization is valid")
 }
 
-fn default_output() -> OutputLimitsRequest {
+pub(crate) fn default_output() -> OutputLimitsRequest {
     OutputLimitsRequest::new(
         DEFAULT_STORYBOARD_MAX_WIDTH,
         DEFAULT_STORYBOARD_MAX_HEIGHT,
@@ -76,11 +76,11 @@ fn default_frame_selector() -> FrameSelector {
     FrameSelector::First
 }
 
-fn default_analysis_scale() -> AnalysisScale {
+pub(crate) fn default_analysis_scale() -> AnalysisScale {
     AnalysisScale::Identity
 }
 
-fn default_artifact_tile_limit() -> u8 {
+pub(crate) fn default_artifact_tile_limit() -> u8 {
     DEFAULT_ARTIFACT_TILE_LIMIT
 }
 
@@ -88,12 +88,16 @@ fn default_artifact_noise_floor() -> u16 {
     DEFAULT_ARTIFACT_NOISE_FLOOR
 }
 
-fn default_black_background() -> temporal_vision::Rgb8 {
+pub(crate) fn default_black_background() -> temporal_vision::Rgb8 {
     DEFAULT_ARTIFACT_BLACK_BACKGROUND
 }
 
 fn default_include_orientation() -> bool {
     true
+}
+
+pub(crate) fn default_artifact_failure_policy() -> ArtifactFailurePolicy {
+    ArtifactFailurePolicy::AllowPartial
 }
 
 fn default_motion_decay_peak() -> u16 {
@@ -591,8 +595,10 @@ pub struct ArtifactGenerationRequest {
 #[allow(dead_code)]
 struct ArtifactGenerationRequestWire {
     range: ResolvedRange,
+    #[serde(default)]
     markers: Vec<ArtifactMarker>,
     generators: Vec<ArtifactGeneratorRequest>,
+    #[serde(default = "default_artifact_failure_policy")]
     failure_policy: ArtifactFailurePolicy,
 }
 
@@ -600,8 +606,10 @@ struct ArtifactGenerationRequestWire {
 #[serde(deny_unknown_fields)]
 struct ArtifactGenerationRequestDeserializeWire {
     range: ResolvedRange,
+    #[serde(default)]
     markers: Vec<ArtifactMarker>,
     generators: Vec<serde_json::Value>,
+    #[serde(default = "default_artifact_failure_policy")]
     failure_policy: ArtifactFailurePolicy,
 }
 
@@ -903,9 +911,7 @@ mod tests {
     fn direct_generator_defaults_match_the_bundle_policy() {
         let value = serde_json::json!({
             "range": range(),
-            "markers": [],
-            "generators": [{ "generator": "storyboard" }],
-            "failure_policy": "allow_partial"
+            "generators": [{ "generator": "storyboard" }]
         });
         let request: ArtifactGenerationRequest = serde_json::from_value(value).unwrap();
         let ArtifactGeneratorRequest::Storyboard(storyboard) = &request.generators()[0] else {
@@ -926,6 +932,11 @@ mod tests {
         assert_eq!(
             storyboard.output.max_encoded_bytes(),
             DEFAULT_STORYBOARD_MAX_BYTES
+        );
+        assert!(request.markers().is_empty());
+        assert_eq!(
+            request.failure_policy(),
+            ArtifactFailurePolicy::AllowPartial
         );
     }
 

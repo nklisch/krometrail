@@ -25,6 +25,11 @@ use crate::{
     validation::{delegate_json_schema, deserialize_validated},
 };
 
+use crate::artifacts::{
+    default_analysis_scale, default_artifact_tile_limit, default_black_background, default_labels,
+    default_output,
+};
+
 pub const MAX_SOURCE_READ_FRAMES: u16 = 64;
 pub const MAX_SOURCE_ITEM_BYTES: u64 = 32 * 1024 * 1024;
 pub const MAX_SOURCE_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
@@ -380,19 +385,36 @@ pub struct SourceReadLimitsRequest {
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct SourceReadLimitsWire {
+    /// Zero uses the configured maximum source-frame count.
     max_frames: u16,
+    /// Zero uses the configured maximum bytes for one source frame.
     max_item_bytes: u64,
+    /// Zero uses the configured maximum bytes for the complete source read.
     max_total_bytes: u64,
 }
 
 impl SourceReadLimitsRequest {
     pub fn new(max_frames: u16, max_item_bytes: u64, max_total_bytes: u64) -> Result<Self> {
-        let max_frames = NonZeroU16::new(max_frames)
-            .ok_or_else(|| invalid("source frame limit must be non-zero"))?;
-        let max_item_bytes = NonZeroU64::new(max_item_bytes)
-            .ok_or_else(|| invalid("source item byte limit must be non-zero"))?;
-        let max_total_bytes = NonZeroU64::new(max_total_bytes)
-            .ok_or_else(|| invalid("source total byte limit must be non-zero"))?;
+        let max_frames = if max_frames == 0 {
+            MAX_SOURCE_READ_FRAMES
+        } else {
+            max_frames
+        };
+        let max_item_bytes = if max_item_bytes == 0 {
+            MAX_SOURCE_ITEM_BYTES
+        } else {
+            max_item_bytes
+        };
+        let max_total_bytes = if max_total_bytes == 0 {
+            MAX_SOURCE_TOTAL_BYTES
+        } else {
+            max_total_bytes
+        };
+        let max_frames = NonZeroU16::new(max_frames).expect("source frame ceiling is non-zero");
+        let max_item_bytes =
+            NonZeroU64::new(max_item_bytes).expect("source item byte ceiling is non-zero");
+        let max_total_bytes =
+            NonZeroU64::new(max_total_bytes).expect("source total byte ceiling is non-zero");
         let mut actual = Vec::new();
         let mut limits = Vec::new();
         if max_frames.get() > MAX_SOURCE_READ_FRAMES {
@@ -1039,13 +1061,21 @@ pub struct RegionFilmstripEvidenceRequest {
 struct RegionFilmstripEvidenceRequestWire {
     range: ResolvedRange,
     region: ProgressiveRegion,
+    #[serde(default)]
     markers: Vec<ArtifactMarker>,
-    anchor: SessionTime,
+    #[serde(default)]
+    anchor: Option<SessionTime>,
+    #[serde(default = "default_artifact_tile_limit")]
     tile_limit: u8,
+    #[serde(default = "default_black_background")]
     background: temporal_vision::Rgb8,
+    #[serde(default = "default_black_background")]
     padding: temporal_vision::Rgb8,
+    #[serde(default = "default_analysis_scale")]
     display_scale: AnalysisScale,
+    #[serde(default = "default_labels")]
     labels: ArtifactLabelsRequest,
+    #[serde(default = "default_output")]
     output: OutputLimitsRequest,
 }
 
@@ -1170,11 +1200,14 @@ impl RegionFilmstripEvidenceRequest {
 impl<'de> Deserialize<'de> for RegionFilmstripEvidenceRequest {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
         deserialize_validated(deserializer, |wire: RegionFilmstripEvidenceRequestWire| {
+            let anchor = wire
+                .anchor
+                .unwrap_or(wire.range.resolved_anchor.effective_time);
             Self::new(
                 wire.range,
                 wire.region,
                 wire.markers,
-                wire.anchor,
+                anchor,
                 wire.tile_limit,
                 wire.background,
                 wire.padding,
@@ -1992,13 +2025,16 @@ mod tests {
     fn serde_revalidates_scope_selection_limits_and_resolved_range() {
         assert!(EvidenceScope::new(SessionId::from_uuid(Uuid::nil()), target()).is_err());
         for malformed in [
-            serde_json::json!({"max_frames": 0, "max_item_bytes": 1, "max_total_bytes": 1}),
             serde_json::json!({"max_frames": 65, "max_item_bytes": 1, "max_total_bytes": 1}),
             serde_json::json!({"max_frames": 1, "max_item_bytes": 2, "max_total_bytes": 1}),
             serde_json::json!({"max_frames": 1, "max_item_bytes": 1, "max_total_bytes": 1, "extra": true}),
         ] {
             assert!(serde_json::from_value::<SourceReadLimitsRequest>(malformed).is_err());
         }
+        let unlimited = SourceReadLimitsRequest::new(0, 0, 0).unwrap();
+        assert_eq!(unlimited.max_frames(), MAX_SOURCE_READ_FRAMES);
+        assert_eq!(unlimited.max_item_bytes(), MAX_SOURCE_ITEM_BYTES);
+        assert_eq!(unlimited.max_total_bytes(), MAX_SOURCE_TOTAL_BYTES);
         assert!(
             SourceFramesRequest::new(
                 range(),
@@ -2118,6 +2154,75 @@ mod tests {
             source_frame_id: frame(3),
         };
         assert!(wrong_scope.validate(&range()).is_err());
+    }
+
+    #[test]
+    fn region_filmstrip_wire_defaults_materialize_from_the_resolved_range() {
+        let request = RegionFilmstripEvidenceRequest::new(
+            range(),
+            ProgressiveRegion::SourcePixels {
+                rect: temporal_vision::SignedPixelRect::new(
+                    0,
+                    0,
+                    std::num::NonZeroU32::new(1).unwrap(),
+                    std::num::NonZeroU32::new(1).unwrap(),
+                )
+                .unwrap(),
+                source_frame_id: frame(3),
+            },
+            vec![],
+            SessionTime::from_nanos(2),
+            3,
+            temporal_vision::Rgb8::new(1, 2, 3),
+            temporal_vision::Rgb8::new(4, 5, 6),
+            AnalysisScale::Identity,
+            ArtifactLabelsRequest::new(
+                NonEmptyText::new("explicit title").unwrap(),
+                NonEmptyText::new("explicit source").unwrap(),
+            ),
+            OutputLimitsRequest::new(64, 64, 1024).unwrap(),
+        )
+        .unwrap();
+        let mut wire = serde_json::to_value(&request).unwrap();
+        let object = wire.as_object_mut().unwrap();
+        for field in [
+            "markers",
+            "anchor",
+            "tile_limit",
+            "background",
+            "padding",
+            "display_scale",
+            "labels",
+            "output",
+        ] {
+            object.remove(field);
+        }
+        let defaulted: RegionFilmstripEvidenceRequest = serde_json::from_value(wire).unwrap();
+        assert!(defaulted.markers.is_empty());
+        assert_eq!(
+            defaulted.anchor,
+            defaulted.range.resolved_anchor.effective_time
+        );
+        assert_eq!(defaulted.tile_limit, crate::DEFAULT_ARTIFACT_TILE_LIMIT);
+        assert_eq!(
+            defaulted.background,
+            crate::DEFAULT_ARTIFACT_BLACK_BACKGROUND
+        );
+        assert_eq!(defaulted.padding, crate::DEFAULT_ARTIFACT_BLACK_BACKGROUND);
+        assert_eq!(defaulted.display_scale, AnalysisScale::Identity);
+        assert_eq!(defaulted.labels.title.as_str(), "TEMPORAL STORYBOARD");
+        assert_eq!(
+            defaulted.labels.source.as_str(),
+            "KROMETRAIL RETAINED SOURCE FRAMES"
+        );
+        assert_eq!(
+            defaulted.output.max_width(),
+            crate::DEFAULT_STORYBOARD_MAX_WIDTH
+        );
+
+        let mut invalid = serde_json::to_value(&request).unwrap();
+        invalid["anchor"] = serde_json::json!(0);
+        assert!(serde_json::from_value::<RegionFilmstripEvidenceRequest>(invalid).is_err());
     }
 
     #[test]
