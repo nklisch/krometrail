@@ -1,7 +1,7 @@
 ---
 id: feature-schema-domain-conformance-enforcement
 kind: feature
-stage: implementing
+stage: done
 tags: [agent-ux, testing, infra]
 parent: null
 depends_on: []
@@ -369,3 +369,55 @@ checkpoint.
   this feature beyond what Units 1–2 fix structurally; record them for sizing.
 - Unit 4's grep could false-positive on doc comments or test fixtures mentioning
   the derive. Scope it to non-test source and accept a waiver mechanism.
+
+## Implementation notes
+
+- Execution capability: inline implementation; the macro, sweep, and guard are
+  one contract-enforcement surface.
+- Review weight: standard, from the project default.
+- Files changed: `crates/temporal-vision/src/lib.rs`,
+  `crates/krometrail-core/src/timeline/range.rs`,
+  `crates/krometrail-mcp/src/registry.rs`, the MCP schema tests, and the local
+  wire-enum quality gate.
+- Tests added/removed: nested batch recursion, schema-expressible conformance
+  cases, negative enum control, resolved-range wire assertions, and guard
+  self-test coverage.
+- Simplification: the sweep now counts only cases it actually generated and
+  validates projected response and range-handle subtrees instead of deleting
+  them before decoding.
+- Discrepancies from design: the macro remains in `temporal-vision`; moving it
+  into core would invert the existing dependency direction.
+- Adjacent issues parked: none.
+
+## Review (cross-model, Fable reviewing Luna — three passes)
+
+**Pass 1 NOT SHIP.** The relevant finding here was that tier 4's guard scanned
+only `crates/temporal-vision` — the one crate where tier 1 already makes
+divergence unrepresentable — while both historical outliers lived in the
+*unscanned* `krometrail-core`. The scope had been shrunk until the check passed
+rather than the heuristic taught about per-variant renames. Also: the vacuity
+guard derived its counts from walking raw schemas rather than generated cases,
+so gutting case generation entirely would still have passed both assertions.
+
+**Pass 2** confirmed the guard widened and measured the vacuity thresholds
+against reality — **547 enum cases / 460 oneOf branches** actual against
+thresholds of 400/350, tight enough to catch structural collapse. But it
+demonstrated two concrete false negatives with fixtures: any container
+`#[serde(...)]` attribute suppressed the flag, and a single per-variant
+`rename` exempted a whole enum even with bare PascalCase siblings.
+
+**Pass 3 SHIP.** Both false negatives verified closed using nine independent
+fixtures, zero false positives on the tree, and the self-tests confirmed to
+genuinely assert rather than merely run.
+
+Delivered against design: tier 1 emits `JsonSchema` from the `$wire` literals
+with doc descriptions preserved (trimmed, multi-line joined, omitted when
+absent); tier 2 remains correctly dropped; tier 3's sweep carries a negative
+control proving it still bites; tier 4 now scans all crates and runs in the
+documented local gate, not CI only. `repair_range` was corrected to fail on
+unknown anchor kinds rather than normalizing them, which had let the A2 defect
+class pass undetected.
+
+The macro stayed in `temporal-vision` and is exported — relocating it to
+`krometrail-core` would have inverted a crate dependency. This is the fallback
+the design authorized.

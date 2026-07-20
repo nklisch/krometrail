@@ -1,7 +1,7 @@
 ---
 id: feature-artifact-generator-ergonomics
 kind: feature
-stage: implementing
+stage: done
 tags: [visual, agent-ux]
 parent: null
 depends_on: []
@@ -148,6 +148,12 @@ Origin: 2026-07-20 sixth shakedown against v1.2.6.
   changes it ~17x. Returning that silently is quietly wrong, and returning it
   scaled invites reading an estimate as a measurement.
 
+  The byte-budget correction computes one effective frame budget from both the
+  source-frame and decoded-byte limits. Count and magnitude refuse whenever
+  that shared budget would select fewer frames, including byte-only overflow
+  below the frame-count limit; uniform sampling uses the same budget when
+  decimation is semantically allowed.
+
 - **Open for implementation to establish: is the aggregate decode bound
   necessary?** `decoded_bytes` is a `try_fold` sum across all frames, implying
   every frame is held decoded simultaneously. `difference_map` and
@@ -253,10 +259,9 @@ response-level warning so it cannot be missed without a second fetch.
 **Implementation Notes**:
 - Refuse with an error naming the conflict and offering the two real options:
   narrow the range, or switch to `normalized_frequency`.
-- `magnitude` needs a decision: design's reading is that it survives sampling
-  (it is an extremum/aggregate, not a tally) so it may decimate — implementation
-  should confirm against the accumulator semantics before treating it as safe,
-  and fall back to the `count` treatment if uncertain.
+- `magnitude` is treated like `count`: its per-transition magnitude sum and
+  published absolute maximum are not sampling-safe, so oversized requests must
+  remain exhaustive or narrow the range.
 
 **Acceptance Criteria**:
 - [ ] `count` + oversized range refuses, naming both options.
@@ -297,10 +302,76 @@ semantically broken.
   overlook, this feature is net-negative — an agent that silently analyses 6% of
   frames and reports confidently is worse than one that errors. Unit 3 is not
   optional polish.
-- `magnitude` mode is assumed sampling-safe on reasoning, not verified. If that
-  assumption is wrong and it ships decimating, it produces quietly wrong output
-  in the same way `count` would. Verify before trusting.
+- The initial sampling-safe magnitude assumption was reversed after checking
+  the accumulator: `magnitude_sum` is a per-transition tally and long sampled
+  strides change the measured transitions. Magnitude now receives the count
+  treatment and has a regression test.
 - Streaming decode (if pursued) touches memory behavior under concurrency and
   should not be folded in opportunistically.
 - `bounded_plan` was hardened in v1.2.6 for gap and marker correctness. New
   callers must not bypass the marker/gap re-clamping that hardening added.
+
+## Implementation notes
+
+- Execution capability: inline implementation; resource planning, generator
+  semantics, and response disclosure must be changed as one behavior.
+- Review weight: standard, from the project default.
+- Files changed: `src/artifacts/epoch.rs`, `src/artifacts/service.rs`,
+  `src/artifacts/service_tests.rs`, `src/artifacts/generators.rs`, and the MCP
+  response projection.
+- Tests added/removed: realistic 1673x1288 byte-budget sampling, exhaustive
+  recovery, wire-default, magnitude refusal, and analysis-only warning tests.
+- Simplification: response warnings are derived only from difference-map and
+  motion-history manifests; routine storyboard/filmstrip tiling is not treated
+  as degraded analysis.
+- Discrepancies from design: magnitude sampling was rejected after verification;
+  streaming decode remains parked because the current change is complete without
+  altering decode ownership or concurrency behavior.
+- Adjacent issues parked: none.
+
+## Review (cross-model, Fable reviewing Luna — three passes)
+
+**Pass 1 NOT SHIP**, two blockers plus a falsified design premise.
+
+The headline deliverable did not work: sampling bounded frame count only, so at
+the shakedown's 1673x1288 viewport 120 frames is ~1.03GB against a 768MiB
+budget — the exact 744-frame case this feature exists to fix still errored, just
+on a different limit. The test covering it passed because it used tiny synthetic
+frames: green for the wrong reason.
+
+The sampling warning matched *any* manifest carrying `analysis_sampling`, which
+storyboards and filmstrips have carried since v1.2.6 whenever tiling selects
+fewer frames. Nearly every routine response would have flipped to `Degraded`
+carrying recovery advice (`set sampling to exhaustive`) that produces a hard
+rejection, since those request types have no `sampling` field and are
+`deny_unknown_fields`. The design named warning fatigue as the thing that makes
+this feature net-negative; it very nearly shipped exactly that.
+
+**`magnitude` was reversed.** The design reasoned it sampling-safe as an
+"aggregate not a tally" and instructed implementation to verify — neither did.
+Review checked the accumulator: `magnitude_sum` is a per-transition sum, one
+addition per changed adjacent frame pair, i.e. a weighted tally, and
+`max_magnitude` is rendered into the legend exactly parallel to count's
+`max_change_count`. It would have shipped silently wrong under sampling in the
+identical way `count` would have. It now refuses alongside `count`.
+
+**Pass 2** confirmed those fixed but found a defect *introduced by the fix*: the
+count/magnitude refusal keyed on frame count while the new byte-budget path
+decimated on bytes, so an input fitting the frame budget but not the byte budget
+slipped past the refusal into a silently wrong count map — an input that had
+refused before the fix pass.
+
+Corrected structurally rather than by patching the condition:
+`analysis_effective_max_frames` computes one budget from both limits, and
+refusal and decimation both consume it. Two conditions that must agree is how
+the bug happened; one value with two consumers is why it cannot recur.
+
+**Pass 3 SHIP.** Verified the `.max(1)` floor cannot mask a refusal, the trailing
+decoded-byte check remains reachable and correct after decimation, max-per-frame
+is conservative in the right direction, and the new tests discriminate against
+the pass-2 shape.
+
+Parked as `idea-analysis-sampling-provenance-accuracy`: undecimated analysis
+manifests still label `mode: "uniform_bounded"`, and `uniform_bounded` plus an
+explicit frame reference can drop that frame with a misleading error. Both are
+disclosed-failure or provenance-label issues rather than silent corruption.

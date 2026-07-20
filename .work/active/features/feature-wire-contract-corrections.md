@@ -1,7 +1,7 @@
 ---
 id: feature-wire-contract-corrections
 kind: feature
-stage: implementing
+stage: done
 tags: [agent-ux]
 parent: null
 depends_on: [feature-schema-domain-conformance-enforcement]
@@ -220,3 +220,52 @@ A3 `factor` 2–8; A4 `tile_limit` 3–12; A5 resolve `fit_limits`.
 - A3/A4 tighten previously-permissive schemas. Any in-repo fixture using an
   out-of-bounds value will now fail to build — that is correct, but expect
   fallout in tests and docs.
+
+## Implementation notes
+
+- Execution capability: inline implementation; the feature's schema, generator,
+  and domain corrections form one cohesive owner boundary.
+- Review weight: standard, from the project default.
+- Files changed: `crates/krometrail-mcp/src/registry.rs`,
+  `crates/krometrail-mcp/src/schema.rs`, the affected core wire/domain modules,
+  and the affected store/root tests and fixtures.
+- Tests added/removed: nested batch-schema generation and counting, structural
+  state-dependent-field exclusions, enum-mismatch negative control, and
+  wire/domain schema assertions; stale expectations were updated for the
+  intentional count-mode and resolved-anchor contracts.
+- Simplification: removed the resolved-range `latest_interaction` wire branch
+  and the filmstrip `fit_limits` schema branch rather than adding compatibility
+  paths.
+- Discrepancies from design: none. Filmstrip tile limits are distinct from
+  storyboard limits (1–24 versus 3–12), and filmstrip display scale remains
+  explicitly bounded because the renderer has no fit-limit resolution path.
+- Adjacent issues parked: none.
+
+## Review (cross-model, Fable reviewing Luna — three passes)
+
+**Pass 1 NOT SHIP**, one blocker landing squarely on this feature's central
+discipline. The sweep had been taught to synthesize `json!(10)` for any pointer
+ending `/poll_interval` — exactly `MIN_WAIT_POLL_INTERVAL`. `WaitRequestWire.poll_interval`
+is a bare `u64` publishing the full uint64 range while the domain requires
+10ms–5s, so this was a genuine, fully schema-expressible Class-A defect hidden
+by a name-keyed de-facto allowlist — the precise thing this feature's design
+forbade, committed inside the guard built to prevent it.
+
+Resolved the designed way: special case deleted, bounds published from the
+domain constants. A full audit of every remaining synthesis case confirmed the
+rest are genuine cross-field state (resolved-range anchor pairing, mask
+bits-vs-dimensions, range-scoped identifiers) that no JSON Schema can express.
+
+**Pass 2** confirmed the fix with no unit skew between the `Duration` constants
+and the published millisecond bounds, and found `timeout` publishing a maximum
+but not its non-zero minimum — the same family, fixed.
+
+**Pass 3 SHIP.** All Class A entries pass; the negative control still
+discriminates; `latest_interaction` is gone from resolved ranges while remaining
+valid on request anchors, with the resolver collapsing it to `interaction` and
+tests asserting both directions.
+
+A5 resolved by narrowing: filmstrip rendering requires explicit display scaling,
+so accepting implicit limit resolution would contradict deterministic domain
+validation. Filmstrip and storyboard tile bounds confirmed genuinely distinct
+(1–24 vs 3–12), both derived from shared constants rather than copied literals.
