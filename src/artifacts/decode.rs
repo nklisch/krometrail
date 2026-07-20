@@ -167,4 +167,8 @@ fn limit_error(message: impl Into<String>) -> KrometrailError {
         ErrorCode::ResourceLimitExceeded,
         NonEmptyText::new(message).expect("decoder limit errors are non-empty"),
     )
+    .with_recovery(
+        NonEmptyText::new("narrow the source range or reduce the source-frame dimensions")
+            .expect("decoder limit recovery is non-empty"),
+    )
 }

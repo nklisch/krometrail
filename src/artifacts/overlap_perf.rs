@@ -481,6 +481,7 @@ fn request(
         ArtifactGeneratorRequest::DifferenceMap(DifferenceMapRequest {
             reference: FrameSelector::First,
             frequency_mode: FrequencyMode::NormalizedFrequency,
+            sampling: krometrail_core::ArtifactSampling::UniformBounded,
             repeated_change_separation_nanos: None,
             noise_floor: 512,
             normalization,

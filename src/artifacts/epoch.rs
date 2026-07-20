@@ -375,7 +375,7 @@ fn plan_epoch(
     })
 }
 
-fn decoded_len(frame: &EncodedFrame) -> Result<usize> {
+pub(crate) fn decoded_len(frame: &EncodedFrame) -> Result<usize> {
     let metadata = frame.metadata();
     let pixels =
         usize::try_from(u64::from(metadata.image().width()) * u64::from(metadata.image().height()))
@@ -586,6 +586,10 @@ fn limit_error(message: impl Into<String>) -> KrometrailError {
     KrometrailError::new(
         ErrorCode::ResourceLimitExceeded,
         NonEmptyText::new(message).expect("adaptation limit errors are non-empty"),
+    )
+    .with_recovery(
+        NonEmptyText::new("narrow the source range or reduce the artifact scope")
+            .expect("adaptation limit recovery is non-empty"),
     )
 }
 

@@ -1051,6 +1051,8 @@ where
             object([
                 ("source_frame_count", unsigned_usize(source_frame_count)?),
                 ("analyzed_frame_count", unsigned_usize(indices.len())?),
+                ("mode", ParameterValue::Text("uniform_bounded".into())),
+                ("spacing", ParameterValue::Text("uniform".into())),
                 (
                     "analyzed_source_indices",
                     ParameterValue::List(

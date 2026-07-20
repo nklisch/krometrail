@@ -59,6 +59,7 @@ Browser fixtures are target applications, not a second Krometrail runtime. Their
 
 ```bash
 cargo fmt --all -- --check
+bash scripts/check-wire-enum-schemas.sh
 cargo check --workspace --all-targets --locked
 cargo test --workspace --all-targets --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings

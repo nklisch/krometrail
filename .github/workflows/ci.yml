@@ -27,6 +27,8 @@ jobs:
 
       - name: Check formatting
         run: cargo fmt --all --check
+      - name: Check wire enum schema declarations
+        run: bash scripts/check-wire-enum-schemas.sh
 
       - name: Check workspace
         run: cargo check --workspace --all-targets --locked

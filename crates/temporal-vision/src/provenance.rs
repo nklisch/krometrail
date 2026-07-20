@@ -252,6 +252,80 @@ impl Parameters {
     pub fn iter(&self) -> impl ExactSizeIterator<Item = (&str, &ParameterValue)> {
         self.0.iter().map(|(name, value)| (name.as_ref(), value))
     }
+
+    pub(crate) fn insert(&mut self, name: &'static str, value: ParameterValue) -> Result<()> {
+        if name.is_empty() {
+            return Err(VisionError::new(
+                ErrorCode::InvalidParameter,
+                "parameter names must not be empty",
+            ));
+        }
+        value.validate()?;
+        self.0.insert(name.into(), value);
+        Ok(())
+    }
+}
+
+pub(crate) fn analysis_sampling_parameters<F, M, G, P>(
+    source: &FrameSequence<F, M, G, P>,
+) -> Result<Option<ParameterValue>>
+where
+    F: Eq,
+    M: Eq,
+    G: Eq,
+    P: AsRef<[u8]>,
+{
+    let Some(indices) = source.source_indices() else {
+        return Ok(None);
+    };
+    let source_frame_count = u64::try_from(source.source_frame_count()).map_err(|_| {
+        VisionError::new(
+            ErrorCode::InvalidManifest,
+            "analysis sampling source frame count exceeds the manifest format",
+        )
+    })?;
+    let analyzed_frame_count = u64::try_from(indices.len()).map_err(|_| {
+        VisionError::new(
+            ErrorCode::InvalidManifest,
+            "analysis sampling frame count exceeds the manifest format",
+        )
+    })?;
+    let analyzed_source_indices = indices
+        .iter()
+        .map(|index| {
+            u64::try_from(*index)
+                .map(ParameterValue::Unsigned)
+                .map_err(|_| {
+                    VisionError::new(
+                        ErrorCode::InvalidManifest,
+                        "analysis sampling source index exceeds the manifest format",
+                    )
+                })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(Some(ParameterValue::Object(
+        [
+            (
+                "source_frame_count".into(),
+                ParameterValue::Unsigned(source_frame_count),
+            ),
+            (
+                "analyzed_frame_count".into(),
+                ParameterValue::Unsigned(analyzed_frame_count),
+            ),
+            (
+                "analyzed_source_indices".into(),
+                ParameterValue::List(analyzed_source_indices),
+            ),
+            (
+                "mode".into(),
+                ParameterValue::Text("uniform_bounded".into()),
+            ),
+            ("spacing".into(), ParameterValue::Text("uniform".into())),
+        ]
+        .into_iter()
+        .collect(),
+    )))
 }
 
 impl<'de> Deserialize<'de> for Parameters {

@@ -101,6 +101,7 @@ pub use viewport::{
 };
 pub(crate) use wait::validate_operation_timeout;
 pub use wait::{
-    ElementState, MAX_OPERATION_TIMEOUT, MAX_WAIT_POLL_INTERVAL, MIN_WAIT_POLL_INTERVAL, UrlMatch,
-    WaitCondition, WaitOutcome, WaitPresence, WaitProbe, WaitRequest, WaitResult, WaitTextMatch,
+    ElementState, MAX_OPERATION_TIMEOUT, MAX_WAIT_POLL_INTERVAL, MIN_OPERATION_TIMEOUT_MILLIS,
+    MIN_WAIT_POLL_INTERVAL, UrlMatch, WaitCondition, WaitOutcome, WaitPresence, WaitProbe,
+    WaitRequest, WaitResult, WaitTextMatch,
 };

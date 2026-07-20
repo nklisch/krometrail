@@ -1,16 +1,61 @@
 //! Browser-agnostic temporal visual analysis contracts.
 
+#[macro_export]
 macro_rules! stable_registry {
+    (
+        $(#[doc = $doc:literal])+
+        $(#[$meta:meta])*
+        pub enum $name:ident {
+            $($variant:ident => $wire:literal),+ $(,)?
+        }
+    ) => {
+        $crate::stable_registry!(@define [$($doc),*] $(#[$meta])* pub enum $name {
+            $($variant => $wire),+
+        });
+    };
     (
         $(#[$meta:meta])*
         pub enum $name:ident {
             $($variant:ident => $wire:literal),+ $(,)?
         }
     ) => {
+        $crate::stable_registry!(@define [] $(#[$meta])* pub enum $name {
+            $($variant => $wire),+
+        });
+    };
+    (@define [$($doc:literal),*] $(#[$meta:meta])* pub enum $name:ident {
+        $($variant:ident => $wire:literal),+ $(,)?
+    }) => {
+        $(#[doc = $doc])*
         $(#[$meta])*
-        #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, schemars::JsonSchema)]
+        #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
         pub enum $name {
             $($variant),+
+        }
+
+        impl schemars::JsonSchema for $name {
+            fn schema_name() -> schemars::_private::alloc::borrow::Cow<'static, str> {
+                schemars::_private::alloc::borrow::Cow::Borrowed(stringify!($name))
+            }
+
+            fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+                let mut schema = schemars::json_schema!({
+                    "type": "string",
+                    "enum": [$($wire),+]
+                })
+                ;
+                let description = $crate::normalize_registry_doc(concat!($($doc, " "),*));
+                if !description.is_empty() {
+                    schema
+                        .as_object_mut()
+                        .expect("stable registry schema is an object")
+                        .insert(
+                            "description".into(),
+                            schemars::_private::serde_json::Value::String(description),
+                        );
+                }
+                schema
+            }
         }
 
         impl $name {
@@ -54,6 +99,11 @@ macro_rules! stable_registry {
             }
         }
     };
+}
+
+#[doc(hidden)]
+pub fn normalize_registry_doc(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 mod artifact;

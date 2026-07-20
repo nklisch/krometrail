@@ -21,6 +21,12 @@ use crate::{
 
 /// Shared defaults for direct artifact generation and the temporal bundle policy.
 pub const DEFAULT_ARTIFACT_TILE_LIMIT: u8 = 8;
+pub const MIN_ANALYSIS_DOWNSCALE_FACTOR: u8 = 2;
+pub const MAX_ANALYSIS_DOWNSCALE_FACTOR: u8 = 8;
+pub const MIN_STORYBOARD_TILE_LIMIT: u8 = 3;
+pub const MAX_STORYBOARD_TILE_LIMIT: u8 = 12;
+pub const MIN_FILMSTRIP_TILE_LIMIT: u8 = 1;
+pub const MAX_FILMSTRIP_TILE_LIMIT: u8 = 24;
 pub const DEFAULT_ARTIFACT_NOISE_FLOOR: u16 = 512;
 pub const DEFAULT_STORYBOARD_MAX_WIDTH: u32 = 1920;
 pub const DEFAULT_STORYBOARD_MAX_HEIGHT: u32 = 2048;
@@ -70,6 +76,10 @@ fn default_difference_output() -> OutputLimitsRequest {
 
 fn default_frequency_mode() -> temporal_vision::FrequencyMode {
     temporal_vision::FrequencyMode::NormalizedFrequency
+}
+
+fn default_artifact_sampling() -> ArtifactSampling {
+    ArtifactSampling::UniformBounded
 }
 
 fn default_frame_selector() -> FrameSelector {
@@ -196,7 +206,13 @@ pub enum ArtifactFailurePolicy {
 #[serde(tag = "scale", content = "factor", rename_all = "snake_case")]
 pub enum AnalysisScale {
     Identity,
-    Down(u8),
+    Down(
+        #[schemars(range(
+            min = MIN_ANALYSIS_DOWNSCALE_FACTOR,
+            max = MAX_ANALYSIS_DOWNSCALE_FACTOR
+        ))]
+        u8,
+    ),
     FitLimits,
 }
 
@@ -204,12 +220,28 @@ impl AnalysisScale {
     pub fn validate(self) -> Result<()> {
         match self {
             Self::Identity | Self::FitLimits => Ok(()),
-            Self::Down(2..=8) => Ok(()),
+            Self::Down(MIN_ANALYSIS_DOWNSCALE_FACTOR..=MAX_ANALYSIS_DOWNSCALE_FACTOR) => Ok(()),
             Self::Down(_) => Err(invalid(
                 "analysis downscale factor must be between two and eight",
             )),
         }
     }
+}
+
+/// Filmstrip display scaling: preserve source pixels or use an exact integer downscale factor.
+#[derive(schemars::JsonSchema)]
+#[schemars(rename = "ExplicitAnalysisScale")]
+#[allow(dead_code)]
+#[serde(tag = "scale", content = "factor", rename_all = "snake_case")]
+pub(crate) enum ExplicitAnalysisScale {
+    Identity,
+    Down(
+        #[schemars(range(
+            min = MIN_ANALYSIS_DOWNSCALE_FACTOR,
+            max = MAX_ANALYSIS_DOWNSCALE_FACTOR
+        ))]
+        u8,
+    ),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -308,6 +340,14 @@ pub enum FrameSelector {
     Frame(FrameId),
 }
 
+temporal_vision::stable_registry! {
+    /// Whether an artifact analyzes every retained frame or a bounded uniform subset.
+    pub enum ArtifactSampling {
+        Exhaustive => "exhaustive",
+        UniformBounded => "uniform_bounded",
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct StoryboardRequest {
@@ -332,6 +372,7 @@ struct StoryboardRequestWire {
     #[serde(default)]
     anchor: Option<SessionTime>,
     #[serde(default = "default_artifact_tile_limit")]
+    #[schemars(range(min = MIN_STORYBOARD_TILE_LIMIT, max = MAX_STORYBOARD_TILE_LIMIT))]
     tile_limit: u8,
     #[serde(default = "default_artifact_noise_floor")]
     noise_floor: u16,
@@ -369,6 +410,8 @@ pub struct DifferenceMapRequest {
     pub reference: FrameSelector,
     #[serde(default = "default_frequency_mode")]
     pub frequency_mode: temporal_vision::FrequencyMode,
+    #[serde(default = "default_artifact_sampling")]
+    pub sampling: ArtifactSampling,
     #[serde(default)]
     pub repeated_change_separation_nanos: Option<u64>,
     #[serde(default = "default_artifact_noise_floor")]
@@ -414,6 +457,7 @@ struct RegionFilmstripRequestWire {
     #[serde(default)]
     anchor: Option<SessionTime>,
     #[serde(default = "default_artifact_tile_limit")]
+    #[schemars(range(min = MIN_FILMSTRIP_TILE_LIMIT, max = MAX_FILMSTRIP_TILE_LIMIT))]
     tile_limit: u8,
     #[serde(default)]
     locator: Option<FrameId>,
@@ -422,6 +466,7 @@ struct RegionFilmstripRequestWire {
     #[serde(default = "default_black_background")]
     padding: temporal_vision::Rgb8,
     #[serde(default = "default_analysis_scale")]
+    #[schemars(with = "ExplicitAnalysisScale")]
     display_scale: AnalysisScale,
     #[serde(default = "default_labels")]
     labels: ArtifactLabelsRequest,
@@ -454,6 +499,8 @@ crate::validation::delegate_json_schema!(RegionFilmstripRequest => RegionFilmstr
 pub struct MotionHistoryRequest {
     #[serde(default = "default_frame_selector")]
     pub reference: FrameSelector,
+    #[serde(default = "default_artifact_sampling")]
+    pub sampling: ArtifactSampling,
     #[serde(default = "default_artifact_noise_floor")]
     pub noise_floor: u16,
     #[serde(default = "default_normalization")]
@@ -494,7 +541,9 @@ impl ArtifactGeneratorRequest {
         };
         match self {
             Self::Storyboard(request) => {
-                if !(3..=12).contains(&request.tile_limit) {
+                if !(MIN_STORYBOARD_TILE_LIMIT..=MAX_STORYBOARD_TILE_LIMIT)
+                    .contains(&request.tile_limit)
+                {
                     return Err(invalid(
                         "storyboard tile limit must be between three and twelve",
                     ));
@@ -509,7 +558,9 @@ impl ArtifactGeneratorRequest {
                 request.normalization.validate()
             }
             Self::RegionFilmstrip(request) => {
-                if !(1..=24).contains(&request.tile_limit) {
+                if !(MIN_FILMSTRIP_TILE_LIMIT..=MAX_FILMSTRIP_TILE_LIMIT)
+                    .contains(&request.tile_limit)
+                {
                     return Err(invalid(
                         "filmstrip tile limit must be between one and twenty-four",
                     ));
@@ -938,6 +989,16 @@ mod tests {
             request.failure_policy(),
             ArtifactFailurePolicy::AllowPartial
         );
+    }
+
+    #[test]
+    fn wire_analysis_sampling_defaults_to_uniform_bounded() {
+        let difference: DifferenceMapRequest = serde_json::from_value(serde_json::json!({}))
+            .expect("difference-map defaults should deserialize");
+        let motion: MotionHistoryRequest = serde_json::from_value(serde_json::json!({}))
+            .expect("motion-history defaults should deserialize");
+        assert_eq!(difference.sampling, ArtifactSampling::UniformBounded);
+        assert_eq!(motion.sampling, ArtifactSampling::UniformBounded);
     }
 
     #[test]

@@ -26,6 +26,7 @@ use crate::{
 };
 
 use crate::artifacts::{
+    ExplicitAnalysisScale, MAX_FILMSTRIP_TILE_LIMIT, MIN_FILMSTRIP_TILE_LIMIT,
     default_analysis_scale, default_artifact_tile_limit, default_black_background, default_labels,
     default_output,
 };
@@ -1066,12 +1067,14 @@ struct RegionFilmstripEvidenceRequestWire {
     #[serde(default)]
     anchor: Option<SessionTime>,
     #[serde(default = "default_artifact_tile_limit")]
+    #[schemars(range(min = MIN_FILMSTRIP_TILE_LIMIT, max = MAX_FILMSTRIP_TILE_LIMIT))]
     tile_limit: u8,
     #[serde(default = "default_black_background")]
     background: temporal_vision::Rgb8,
     #[serde(default = "default_black_background")]
     padding: temporal_vision::Rgb8,
     #[serde(default = "default_analysis_scale")]
+    #[schemars(with = "ExplicitAnalysisScale")]
     display_scale: AnalysisScale,
     #[serde(default = "default_labels")]
     labels: ArtifactLabelsRequest,
@@ -1095,7 +1098,7 @@ impl RegionFilmstripEvidenceRequest {
     ) -> Result<Self> {
         validate_resolved_range(&range)?;
         region.validate(&range)?;
-        if !(1..=24).contains(&tile_limit) {
+        if !(MIN_FILMSTRIP_TILE_LIMIT..=MAX_FILMSTRIP_TILE_LIMIT).contains(&tile_limit) {
             return Err(invalid(
                 "region filmstrip tile limit must be between one and twenty-four",
             ));

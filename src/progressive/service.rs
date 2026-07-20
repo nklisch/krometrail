@@ -555,6 +555,7 @@ mod tests {
                 ArtifactGeneratorRequest::DifferenceMap(DifferenceMapRequest {
                     reference: FrameSelector::First,
                     frequency_mode: FrequencyMode::Count,
+                    sampling: krometrail_core::ArtifactSampling::Exhaustive,
                     repeated_change_separation_nanos: None,
                     noise_floor: 0,
                     normalization,
@@ -583,6 +584,7 @@ mod tests {
                 }),
                 ArtifactGeneratorRequest::MotionHistory(MotionHistoryRequest {
                     reference: FrameSelector::Last,
+                    sampling: krometrail_core::ArtifactSampling::Exhaustive,
                     noise_floor: 0,
                     normalization,
                     decay_peak: u16::MAX,

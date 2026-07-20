@@ -21,6 +21,7 @@ Run these commands from the repository root:
 
 ```bash
 cargo fmt --all -- --check
+bash scripts/check-wire-enum-schemas.sh
 cargo check --workspace --all-targets --locked
 cargo test --workspace --all-targets --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings

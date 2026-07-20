@@ -11,7 +11,7 @@ use crate::{
     error::{
         ErrorCode, ErrorContext, KrometrailError, NonEmptyText, RetryAdvice, invalid, invalid_time,
     },
-    validation::deserialize_validated,
+    validation::{delegate_json_schema, deserialize_validated},
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -164,15 +164,18 @@ impl<'de> Deserialize<'de> for InteractionWindow {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-pub enum RetentionPolicy {
-    RequireComplete,
-    AllowPartial,
+temporal_vision::stable_registry! {
+    pub enum RetentionPolicy {
+        RequireComplete => "require_complete",
+        AllowPartial => "allow_partial",
+    }
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-pub enum CaptureGapPolicy {
-    Include,
-    Reject,
+
+temporal_vision::stable_registry! {
+    pub enum CaptureGapPolicy {
+        Include => "include",
+        Reject => "reject",
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -425,6 +428,7 @@ impl<'de> Deserialize<'de> for FrameAvailability {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum RetentionWarning {
     RequestedStartBeforeOldestRetained {
         requested: SessionTime,
@@ -567,7 +571,7 @@ impl<'de> Deserialize<'de> for ResolvedAnchor {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResolvedRange {
     pub session_id: SessionId,
@@ -584,6 +588,53 @@ pub struct ResolvedRange {
     pub retention_warnings: Vec<RetentionWarning>,
     pub options: RangeResolutionOptions,
 }
+
+/// A resolved range carries the resolver-selected kind, not the request-only
+/// `latest_interaction` anchor that has already collapsed to `interaction`.
+#[derive(Deserialize, schemars::JsonSchema)]
+#[schemars(rename = "ResolvedRangeAnchorKind")]
+#[serde(rename_all = "snake_case")]
+enum ResolvedRangeAnchorKindWire {
+    SessionTime,
+    WallClock,
+    Interaction,
+    Navigation,
+    Marker,
+    SourceFrame,
+}
+
+impl From<ResolvedRangeAnchorKindWire> for TemporalRangeAnchorKind {
+    fn from(value: ResolvedRangeAnchorKindWire) -> Self {
+        match value {
+            ResolvedRangeAnchorKindWire::SessionTime => Self::SessionTime,
+            ResolvedRangeAnchorKindWire::WallClock => Self::WallClock,
+            ResolvedRangeAnchorKindWire::Interaction => Self::Interaction,
+            ResolvedRangeAnchorKindWire::Navigation => Self::Navigation,
+            ResolvedRangeAnchorKindWire::Marker => Self::Marker,
+            ResolvedRangeAnchorKindWire::SourceFrame => Self::SourceFrame,
+        }
+    }
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ResolvedRangeWire {
+    session_id: SessionId,
+    target_id: TargetId,
+    anchor_kind: ResolvedRangeAnchorKindWire,
+    resolved_anchor: ResolvedAnchor,
+    requested_range: SessionRange,
+    resolved_range: SessionRange,
+    frame_ids: Vec<FrameId>,
+    interaction_ids: Vec<InteractionId>,
+    navigation_ids: Vec<NavigationId>,
+    marker_ids: Vec<MarkerId>,
+    gaps: Vec<CaptureGap>,
+    retention_warnings: Vec<RetentionWarning>,
+    options: RangeResolutionOptions,
+}
+
+delegate_json_schema!(ResolvedRange => ResolvedRangeWire);
 
 impl ResolvedRange {
     /// Compatibility constructor for explicit ranges used by internal callers.
@@ -767,28 +818,11 @@ impl<'de> Deserialize<'de> for ResolvedRange {
     fn deserialize<D: serde::Deserializer<'de>>(
         deserializer: D,
     ) -> std::result::Result<Self, D::Error> {
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Wire {
-            session_id: SessionId,
-            target_id: TargetId,
-            anchor_kind: TemporalRangeAnchorKind,
-            resolved_anchor: ResolvedAnchor,
-            requested_range: SessionRange,
-            resolved_range: SessionRange,
-            frame_ids: Vec<FrameId>,
-            interaction_ids: Vec<InteractionId>,
-            navigation_ids: Vec<NavigationId>,
-            marker_ids: Vec<MarkerId>,
-            gaps: Vec<CaptureGap>,
-            retention_warnings: Vec<RetentionWarning>,
-            options: RangeResolutionOptions,
-        }
-        let wire = Wire::deserialize(deserializer)?;
+        let wire = ResolvedRangeWire::deserialize(deserializer)?;
         Self::new_with_anchor(
             wire.session_id,
             wire.target_id,
-            wire.anchor_kind,
+            wire.anchor_kind.into(),
             wire.resolved_anchor,
             wire.requested_range,
             wire.resolved_range,
@@ -814,7 +848,7 @@ fn validate_anchor_kind(
             TemporalRangeAnchorKind::SessionTime | TemporalRangeAnchorKind::WallClock,
             ResolvedAnchorReference::Interval
         ) | (
-            TemporalRangeAnchorKind::Interaction | TemporalRangeAnchorKind::LatestInteraction,
+            TemporalRangeAnchorKind::Interaction,
             ResolvedAnchorReference::Interaction { .. }
         ) | (
             TemporalRangeAnchorKind::Navigation,
@@ -1144,11 +1178,7 @@ where
                     ));
                 }
                 let window = window.unwrap_or(options.implicit_interaction_window);
-                seed_from_interaction(
-                    interaction,
-                    window,
-                    TemporalRangeAnchorKind::LatestInteraction,
-                )
+                seed_from_interaction(interaction, window, TemporalRangeAnchorKind::Interaction)
             }
             TemporalRangeAnchor::Navigation {
                 scope,
@@ -1769,13 +1799,6 @@ mod tests {
                 SessionTime::from_nanos(7),
             ),
             (
-                TemporalRangeAnchorKind::LatestInteraction,
-                ResolvedAnchorReference::Interaction {
-                    interaction_id: interaction,
-                },
-                SessionTime::from_nanos(7),
-            ),
-            (
                 TemporalRangeAnchorKind::Navigation,
                 ResolvedAnchorReference::Navigation {
                     navigation_id: navigation,
@@ -1821,6 +1844,24 @@ mod tests {
                 value
             );
         }
+        let valid = ResolvedRange::new(
+            session,
+            target,
+            TemporalRangeAnchorKind::SessionTime,
+            requested,
+            requested,
+            vec![frame],
+            vec![interaction],
+            vec![navigation],
+            vec![marker],
+            vec![],
+            vec![],
+            RangeResolutionOptions::DEFAULT,
+        )
+        .unwrap();
+        let mut invalid_wire = serde_json::to_value(valid).unwrap();
+        invalid_wire["anchor_kind"] = serde_json::json!("latest_interaction");
+        assert!(serde_json::from_value::<ResolvedRange>(invalid_wire).is_err());
     }
 
     #[test]

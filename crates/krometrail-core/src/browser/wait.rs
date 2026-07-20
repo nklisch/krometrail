@@ -10,9 +10,13 @@ use crate::{
 
 use super::{DocumentReadiness, ElementLocator, ObservationContext, PageSelection};
 
-pub const MAX_OPERATION_TIMEOUT: Duration = Duration::from_secs(120);
-pub const MIN_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(10);
-pub const MAX_WAIT_POLL_INTERVAL: Duration = Duration::from_secs(5);
+pub const MAX_OPERATION_TIMEOUT_MILLIS: u64 = 120_000;
+pub const MIN_OPERATION_TIMEOUT_MILLIS: u64 = 1;
+pub const MIN_WAIT_POLL_INTERVAL_MILLIS: u64 = 10;
+pub const MAX_WAIT_POLL_INTERVAL_MILLIS: u64 = 5_000;
+pub const MAX_OPERATION_TIMEOUT: Duration = Duration::from_millis(MAX_OPERATION_TIMEOUT_MILLIS);
+pub const MIN_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(MIN_WAIT_POLL_INTERVAL_MILLIS);
+pub const MAX_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(MAX_WAIT_POLL_INTERVAL_MILLIS);
 const MAX_WAIT_TEXT_BYTES: usize = 16 * 1024;
 const MAX_WAIT_EXPRESSION_BYTES: usize = 16 * 1024;
 const MAX_WAIT_SELECTOR_BYTES: usize = 4 * 1024;
@@ -241,7 +245,9 @@ struct WaitRequestWire {
     #[serde(default)]
     target: PageSelection,
     condition: WaitCondition,
+    #[schemars(range(min = MIN_OPERATION_TIMEOUT_MILLIS, max = MAX_OPERATION_TIMEOUT_MILLIS))]
     timeout: u64,
+    #[schemars(range(min = MIN_WAIT_POLL_INTERVAL_MILLIS, max = MAX_WAIT_POLL_INTERVAL_MILLIS))]
     poll_interval: u64,
 }
 
@@ -415,6 +421,9 @@ impl<'de> Deserialize<'de> for WaitResult {
 
 pub(crate) fn validate_operation_timeout(timeout: Duration) -> Result<()> {
     validate_millisecond_duration(timeout, "operation timeout")?;
+    if duration_millis(timeout)? < MIN_OPERATION_TIMEOUT_MILLIS {
+        return Err(invalid("operation timeout must be at least 1 millisecond"));
+    }
     if timeout > MAX_OPERATION_TIMEOUT {
         return Err(invalid("operation timeout must not exceed 120 seconds"));
     }

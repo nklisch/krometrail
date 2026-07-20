@@ -223,6 +223,26 @@ struct TestRig {
     request: ArtifactGenerationRequest,
 }
 
+fn encoded_fixture(image: PixelDimensions, position: usize) -> Vec<u8> {
+    if image.width() == 2 && image.height() == 2 {
+        return PNG.to_vec();
+    }
+    let pixel_count =
+        usize::try_from(image.width()).unwrap() * usize::try_from(image.height()).unwrap();
+    let mut rgba = vec![0_u8; pixel_count * 4];
+    rgba[0..4].copy_from_slice(&[position as u8, 96, 192, 255]);
+    let mut encoded = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut encoded)
+        .write_image(
+            &rgba,
+            image.width(),
+            image.height(),
+            image::ExtendedColorType::Rgba8,
+        )
+        .unwrap();
+    encoded
+}
+
 fn rig(two_epochs: bool, limits: ArtifactWorkLimits) -> TestRig {
     rig_with_transition(two_epochs, false, limits)
 }
@@ -237,6 +257,22 @@ fn rig_with_transition(
 
 fn rig_with_transition_and_frame_count(
     frame_count: usize,
+    viewport_transition: bool,
+    scale_transition: bool,
+    limits: ArtifactWorkLimits,
+) -> TestRig {
+    rig_with_frame_dimensions(
+        frame_count,
+        PixelDimensions::new(2, 2).unwrap(),
+        viewport_transition,
+        scale_transition,
+        limits,
+    )
+}
+
+fn rig_with_frame_dimensions(
+    frame_count: usize,
+    image: PixelDimensions,
     viewport_transition: bool,
     scale_transition: bool,
     limits: ArtifactWorkLimits,
@@ -256,14 +292,14 @@ fn rig_with_transition_and_frame_count(
                     ObservedTime::from_nanos(ordinal + 10),
                     SessionTime::from_nanos(ordinal),
                     ImageFormat::Png,
-                    PixelDimensions::new(2, 2).unwrap(),
+                    image,
                     PixelDimensions::new(
                         if viewport_transition && position == 2 {
-                            3
+                            image.width().saturating_add(1)
                         } else {
-                            2
+                            image.width()
                         },
-                        2,
+                        image.height(),
                     )
                     .unwrap(),
                     DeviceScaleFactor::new(if scale_transition && position == 2 {
@@ -275,7 +311,7 @@ fn rig_with_transition_and_frame_count(
                     vec![],
                 )
                 .unwrap(),
-                PNG.to_vec(),
+                encoded_fixture(image, position),
             )
             .unwrap()
         })
@@ -320,6 +356,7 @@ fn rig_with_transition_and_frame_count(
         ArtifactGeneratorRequest::DifferenceMap(DifferenceMapRequest {
             reference: FrameSelector::First,
             frequency_mode: FrequencyMode::Count,
+            sampling: krometrail_core::ArtifactSampling::Exhaustive,
             repeated_change_separation_nanos: None,
             noise_floor: 0,
             normalization,
@@ -354,6 +391,7 @@ fn rig_with_transition_and_frame_count(
         }),
         ArtifactGeneratorRequest::MotionHistory(MotionHistoryRequest {
             reference: FrameSelector::Last,
+            sampling: krometrail_core::ArtifactSampling::Exhaustive,
             noise_floor: 0,
             normalization,
             decay_peak: u16::MAX,
@@ -457,8 +495,293 @@ async fn allow_partial_keeps_bounded_storyboard_when_exhaustive_planning_is_refu
         result.outcomes.get(1),
         Some(ArtifactOutcome::Unavailable { error, artifact_kind, .. })
             if *artifact_kind == temporal_vision::ArtifactKind::DifferenceMap
-                && error.message.as_str() == "exhaustive artifact generator exceeds the source-frame limit"
+                && error.message.as_str().contains("count-mode")
+                && error.message.as_str().contains("exceeds limit")
+                && error.recovery.as_ref().is_some_and(|recovery| {
+                    recovery.as_str().contains("narrow the range")
+                        && recovery.as_str().contains("normalized_frequency")
+                })
     ));
+}
+
+#[tokio::test]
+async fn analysis_generators_sample_by_default_and_disclose_their_source_counts() {
+    let mut rig =
+        rig_with_transition_and_frame_count(367, false, false, ArtifactWorkLimits::default());
+    let mut generators = rig.request.generators().to_vec();
+    let ArtifactGeneratorRequest::DifferenceMap(difference) = &mut generators[1] else {
+        panic!("default second generator is difference map");
+    };
+    difference.frequency_mode = FrequencyMode::NormalizedFrequency;
+    difference.sampling = krometrail_core::ArtifactSampling::UniformBounded;
+    let ArtifactGeneratorRequest::MotionHistory(motion) = &mut generators[3] else {
+        panic!("default fourth generator is motion history");
+    };
+    motion.sampling = krometrail_core::ArtifactSampling::UniformBounded;
+    generators.truncate(4);
+    rig.request = ArtifactGenerationRequest::new(
+        rig.request.range().clone(),
+        vec![],
+        vec![generators[1].clone(), generators[3].clone()],
+        ArtifactFailurePolicy::RequireAll,
+    )
+    .unwrap();
+
+    let result = rig
+        .service
+        .generate(rig.request, ArtifactGenerationContext::default())
+        .await
+        .expect("bounded analysis generators should succeed");
+    assert_eq!(result.outcomes.len(), 2);
+    for outcome in result.outcomes {
+        let ArtifactOutcome::Available { artifact, .. } = outcome else {
+            panic!("bounded analysis generator should be available");
+        };
+        let sampling = artifact
+            .manifest
+            .parameters()
+            .get("analysis_sampling")
+            .expect("sampled analysis must disclose source counts");
+        let temporal_vision::ParameterValue::Object(values) = sampling else {
+            panic!("analysis_sampling must be an object");
+        };
+        assert_eq!(
+            values["source_frame_count"],
+            temporal_vision::ParameterValue::Unsigned(367)
+        );
+        assert_eq!(
+            values["analyzed_frame_count"],
+            temporal_vision::ParameterValue::Unsigned(120)
+        );
+        assert_eq!(
+            values["mode"],
+            temporal_vision::ParameterValue::Text("uniform_bounded".into())
+        );
+        assert_eq!(
+            values["spacing"],
+            temporal_vision::ParameterValue::Text("uniform".into())
+        );
+    }
+}
+
+#[tokio::test]
+async fn realistic_dimensions_sample_to_the_decoded_byte_budget_by_default() {
+    const WIDTH: u32 = 1_673;
+    const HEIGHT: u32 = 1_288;
+    let per_frame_decoded_bytes = WIDTH as usize * HEIGHT as usize * 4;
+    let limits = ArtifactWorkLimits {
+        max_decoded_bytes: NonZeroUsize::new(per_frame_decoded_bytes * 3).unwrap(),
+        ..ArtifactWorkLimits::default()
+    };
+    let mut rig = rig_with_frame_dimensions(
+        4,
+        PixelDimensions::new(WIDTH, HEIGHT).unwrap(),
+        false,
+        false,
+        limits,
+    );
+    let difference = serde_json::from_value::<DifferenceMapRequest>(serde_json::json!({}))
+        .expect("difference-map wire defaults should be complete");
+    let motion = serde_json::from_value::<MotionHistoryRequest>(serde_json::json!({}))
+        .expect("motion-history wire defaults should be complete");
+    rig.request = ArtifactGenerationRequest::new(
+        rig.request.range().clone(),
+        vec![],
+        vec![
+            ArtifactGeneratorRequest::DifferenceMap(difference),
+            ArtifactGeneratorRequest::MotionHistory(motion),
+        ],
+        ArtifactFailurePolicy::RequireAll,
+    )
+    .unwrap();
+
+    let result = rig
+        .service
+        .generate(rig.request, ArtifactGenerationContext::default())
+        .await
+        .expect("byte-bounded default analysis should succeed");
+    assert_eq!(result.outcomes.len(), 2);
+    for outcome in result.outcomes {
+        let ArtifactOutcome::Available { artifact, .. } = outcome else {
+            panic!("realistic byte-bounded analysis should produce both artifacts");
+        };
+        let temporal_vision::ParameterValue::Object(values) = artifact
+            .manifest
+            .parameters()
+            .get("analysis_sampling")
+            .expect("sampled analysis must disclose its source counts")
+        else {
+            panic!("analysis_sampling must be an object");
+        };
+        assert_eq!(
+            values["source_frame_count"],
+            temporal_vision::ParameterValue::Unsigned(4)
+        );
+        assert_eq!(
+            values["analyzed_frame_count"],
+            temporal_vision::ParameterValue::Unsigned(3)
+        );
+    }
+}
+
+async fn oversized_exact_difference_refuses_at_the_byte_bound(frequency_mode: FrequencyMode) {
+    const WIDTH: u32 = 1_673;
+    const HEIGHT: u32 = 1_288;
+    let per_frame_decoded_bytes = WIDTH as usize * HEIGHT as usize * 4;
+    let mut rig = rig_with_frame_dimensions(
+        2,
+        PixelDimensions::new(WIDTH, HEIGHT).unwrap(),
+        false,
+        false,
+        ArtifactWorkLimits {
+            max_decoded_bytes: NonZeroUsize::new(per_frame_decoded_bytes).unwrap(),
+            ..ArtifactWorkLimits::default()
+        },
+    );
+    let mut difference = match rig.request.generators()[1].clone() {
+        ArtifactGeneratorRequest::DifferenceMap(request) => request,
+        _ => panic!("default second generator is difference map"),
+    };
+    difference.frequency_mode = frequency_mode;
+    difference.sampling = krometrail_core::ArtifactSampling::UniformBounded;
+    rig.request = ArtifactGenerationRequest::new(
+        rig.request.range().clone(),
+        vec![],
+        vec![ArtifactGeneratorRequest::DifferenceMap(difference)],
+        ArtifactFailurePolicy::RequireAll,
+    )
+    .unwrap();
+
+    let error = rig
+        .service
+        .generate(rig.request, ArtifactGenerationContext::default())
+        .await
+        .expect_err("oversized exact difference maps must not be sampled");
+    assert!(error.message.as_str().contains("exceeds limit"));
+    assert!(
+        error
+            .recovery
+            .as_ref()
+            .is_some_and(|recovery| recovery.as_str().contains("narrow the range"))
+    );
+    assert!(
+        error
+            .recovery
+            .as_ref()
+            .is_some_and(|recovery| recovery.as_str().contains("normalized_frequency"))
+    );
+}
+
+#[tokio::test]
+async fn count_maps_refuse_when_bytes_force_sampling_below_frame_limit() {
+    oversized_exact_difference_refuses_at_the_byte_bound(FrequencyMode::Count).await;
+}
+
+#[tokio::test]
+async fn magnitude_maps_refuse_when_bytes_force_sampling_below_frame_limit() {
+    oversized_exact_difference_refuses_at_the_byte_bound(FrequencyMode::Magnitude).await;
+}
+
+#[tokio::test]
+async fn count_maps_refuse_sampling_and_offer_the_two_real_levers() {
+    let mut rig =
+        rig_with_transition_and_frame_count(367, false, false, ArtifactWorkLimits::default());
+    let mut difference = match rig.request.generators()[1].clone() {
+        ArtifactGeneratorRequest::DifferenceMap(request) => request,
+        _ => panic!("default second generator is difference map"),
+    };
+    difference.sampling = krometrail_core::ArtifactSampling::UniformBounded;
+    rig.request = ArtifactGenerationRequest::new(
+        rig.request.range().clone(),
+        vec![],
+        vec![ArtifactGeneratorRequest::DifferenceMap(difference)],
+        ArtifactFailurePolicy::RequireAll,
+    )
+    .unwrap();
+
+    let error = rig
+        .service
+        .generate(rig.request, ArtifactGenerationContext::default())
+        .await
+        .expect_err("count maps must not be silently sampled");
+    assert!(error.message.as_str().contains("count-mode"));
+    assert!(error.message.as_str().contains("exceeds limit"));
+    assert!(
+        error
+            .recovery
+            .as_ref()
+            .is_some_and(|recovery| recovery.as_str().contains("narrow the range"))
+    );
+    assert!(
+        error
+            .recovery
+            .as_ref()
+            .is_some_and(|recovery| recovery.as_str().contains("normalized_frequency"))
+    );
+}
+
+#[tokio::test]
+async fn magnitude_maps_refuse_sampling_like_count_maps() {
+    let mut rig =
+        rig_with_transition_and_frame_count(367, false, false, ArtifactWorkLimits::default());
+    let mut difference = match rig.request.generators()[1].clone() {
+        ArtifactGeneratorRequest::DifferenceMap(request) => request,
+        _ => panic!("default second generator is difference map"),
+    };
+    difference.frequency_mode = FrequencyMode::Magnitude;
+    difference.sampling = krometrail_core::ArtifactSampling::UniformBounded;
+    rig.request = ArtifactGenerationRequest::new(
+        rig.request.range().clone(),
+        vec![],
+        vec![ArtifactGeneratorRequest::DifferenceMap(difference)],
+        ArtifactFailurePolicy::RequireAll,
+    )
+    .unwrap();
+
+    let error = rig
+        .service
+        .generate(rig.request, ArtifactGenerationContext::default())
+        .await
+        .expect_err("magnitude maps must not be silently sampled");
+    assert!(error.message.as_str().contains("magnitude-mode"));
+    assert!(
+        error
+            .recovery
+            .as_ref()
+            .is_some_and(|recovery| recovery.as_str().contains("normalized_frequency"))
+    );
+}
+
+#[tokio::test]
+async fn exhaustive_analysis_refusal_names_a_working_sampling_lever() {
+    let mut rig =
+        rig_with_transition_and_frame_count(367, false, false, ArtifactWorkLimits::default());
+    let mut difference = match rig.request.generators()[1].clone() {
+        ArtifactGeneratorRequest::DifferenceMap(request) => request,
+        _ => panic!("default second generator is difference map"),
+    };
+    difference.frequency_mode = FrequencyMode::NormalizedFrequency;
+    difference.sampling = krometrail_core::ArtifactSampling::Exhaustive;
+    rig.request = ArtifactGenerationRequest::new(
+        rig.request.range().clone(),
+        vec![],
+        vec![ArtifactGeneratorRequest::DifferenceMap(difference)],
+        ArtifactFailurePolicy::RequireAll,
+    )
+    .unwrap();
+
+    let error = rig
+        .service
+        .generate(rig.request, ArtifactGenerationContext::default())
+        .await
+        .expect_err("exhaustive oversized analysis should refuse");
+    assert!(error.message.as_str().contains("exhaustive"));
+    assert!(
+        error
+            .recovery
+            .as_ref()
+            .is_some_and(|recovery| recovery.as_str().contains("uniform_bounded"))
+    );
 }
 
 #[tokio::test]
@@ -760,6 +1083,7 @@ async fn deadlines_cancellation_and_partial_epoch_reference_fail_explicitly() {
     let generator = ArtifactGeneratorRequest::DifferenceMap(DifferenceMapRequest {
         reference: FrameSelector::Frame(first_frame),
         frequency_mode: FrequencyMode::Count,
+        sampling: krometrail_core::ArtifactSampling::Exhaustive,
         repeated_change_separation_nanos: None,
         noise_floor: 0,
         normalization: NormalizationRequest::new(None, Rgb8::new(0, 0, 0), AnalysisScale::Identity)

@@ -325,7 +325,7 @@ async fn all_anchor_forms_resolve_once_with_exact_implicit_window_and_ordering()
                 target_id: fixture.target,
                 window: None,
             },
-            TemporalRangeAnchorKind::LatestInteraction,
+            TemporalRangeAnchorKind::Interaction,
         ),
         (
             TemporalRangeAnchor::Navigation {

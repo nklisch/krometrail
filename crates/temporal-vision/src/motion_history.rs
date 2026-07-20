@@ -10,6 +10,7 @@ use crate::{
     generator_descriptor,
     measure::{classify_pixel_change, linear_luminance},
     measure_adjacent,
+    provenance::analysis_sampling_parameters,
     render::{
         ArtifactLabels, RenderLimits,
         canvas::{BLACK, Canvas, MUTED, PANEL, WARNING, WHITE, canvas_limit_error},
@@ -833,7 +834,7 @@ where
     G: Eq,
     P: AsRef<[u8]>,
 {
-    parameter_map([
+    let mut values = parameter_map([
         ("title", ParameterValue::Text(request.labels.title().into())),
         (
             "source",
@@ -921,7 +922,11 @@ where
             "max_encoded_bytes",
             unsigned_usize(request.limits.max_encoded_bytes())?,
         ),
-    ])
+    ])?;
+    if let Some(sampling) = analysis_sampling_parameters(source)? {
+        values.insert("analysis_sampling", sampling)?;
+    }
+    Ok(values)
 }
 
 fn rgb_parameter(color: Rgb8) -> ParameterValue {

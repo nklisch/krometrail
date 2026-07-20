@@ -634,6 +634,7 @@ async fn manual_1080p_workload_reports_artifact_and_ingestion_metrics() {
             krometrail_core::DifferenceMapRequest {
                 reference: FrameSelector::First,
                 frequency_mode: temporal_vision::FrequencyMode::Count,
+                sampling: krometrail_core::ArtifactSampling::Exhaustive,
                 repeated_change_separation_nanos: None,
                 noise_floor: 0,
                 normalization: NormalizationRequest::new(

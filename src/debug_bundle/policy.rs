@@ -106,6 +106,7 @@ fn difference_map_request() -> DifferenceMapRequest {
     DifferenceMapRequest {
         reference: FrameSelector::First,
         frequency_mode: FrequencyMode::NormalizedFrequency,
+        sampling: krometrail_core::ArtifactSampling::UniformBounded,
         repeated_change_separation_nanos: None,
         noise_floor: DEFAULT_NOISE_FLOOR,
         normalization: NormalizationRequest::new(None, BLACK_BACKGROUND, AnalysisScale::FitLimits)

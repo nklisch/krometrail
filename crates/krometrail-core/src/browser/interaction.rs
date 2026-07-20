@@ -93,6 +93,15 @@ enum InteractionLocatorWire {
     },
 }
 
+/// Schema-only view for operations whose domain requires an element locator.
+#[derive(schemars::JsonSchema)]
+#[schemars(rename = "ElementOnlyInteractionLocator")]
+#[allow(dead_code)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+enum ElementOnlyInteractionLocator {
+    Element(ElementLocator),
+}
+
 impl InteractionLocator {
     pub fn element(locator: ElementLocator) -> Self {
         Self::Element(locator)
@@ -428,7 +437,13 @@ pub enum DialogAction {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(transparent)]
-pub struct ValidatedFilePath(String);
+pub struct ValidatedFilePath(
+    #[schemars(
+        length(max = MAX_PATH_BYTES),
+        regex(pattern = "^(?:/|[A-Za-z]:[\\\\/])")
+    )]
+    String,
+);
 impl ValidatedFilePath {
     pub fn new(path: impl Into<String>) -> Result<Self> {
         let path = path.into();
@@ -554,6 +569,7 @@ pub struct FillRequest {
 struct FillRequestWire {
     #[serde(default)]
     target: PageSelection,
+    #[schemars(with = "ElementOnlyInteractionLocator")]
     locator: InteractionLocator,
     value: NonEmptyText,
     #[serde(default)]
@@ -653,6 +669,7 @@ pub struct SelectOptionRequest {
 struct SelectOptionRequestWire {
     #[serde(default)]
     target: PageSelection,
+    #[schemars(with = "ElementOnlyInteractionLocator")]
     locator: InteractionLocator,
     value: SelectValue,
 }
@@ -707,6 +724,7 @@ pub struct UploadFilesRequest {
 struct UploadFilesRequestWire {
     #[serde(default)]
     target: PageSelection,
+    #[schemars(with = "ElementOnlyInteractionLocator")]
     locator: InteractionLocator,
     files: Vec<ValidatedFilePath>,
 }

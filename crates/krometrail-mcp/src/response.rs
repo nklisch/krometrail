@@ -2121,6 +2121,7 @@ pub(crate) async fn map_temporal_bundle_result(
     };
     let candidate = generation.and_then(primary_artifact);
     if let Some(generation) = generation {
+        add_analysis_sampling_warnings(&mut projection, generation);
         match response.detail {
             ResponseDetail::Concise => {
                 if let Some((_, _, artifact)) = candidate {
@@ -2271,6 +2272,7 @@ pub(crate) async fn map_progressive_result(
                 serializable(generation.clone())?
             };
             add_artifact_generation_resources(&mut projection, &generation, scope, false)?;
+            add_analysis_sampling_warnings(&mut projection, &generation);
             projection
         }
         ProgressiveEvidenceResult::GenerateRegionFilmstrip(evidence) => {
@@ -2294,6 +2296,7 @@ pub(crate) async fn map_progressive_result(
                 scope,
                 false,
             )?;
+            add_analysis_sampling_warnings(&mut projection, &generation_for_links);
             projection
         }
         ProgressiveEvidenceResult::PinResolvedRange(change)
@@ -2330,6 +2333,71 @@ fn add_artifact_generation_resources(
         }
     }
     Ok(())
+}
+
+fn add_analysis_sampling_warnings(
+    projection: &mut Projection,
+    generation: &ArtifactGenerationResult,
+) {
+    let warnings = generation
+        .outcomes
+        .iter()
+        .filter_map(|outcome| match outcome {
+            ArtifactOutcome::Available { artifact, .. } => {
+                let kind = artifact.manifest.artifact_kind();
+                if !matches!(
+                    kind,
+                    ArtifactKind::DifferenceMap | ArtifactKind::MotionHistory
+                ) {
+                    return None;
+                }
+                let values = match artifact.manifest.parameters().get("analysis_sampling") {
+                    Some(temporal_vision::ParameterValue::Object(values)) => values,
+                    _ => return None,
+                };
+                let source = match values.get("source_frame_count") {
+                    Some(temporal_vision::ParameterValue::Unsigned(source)) => *source,
+                    _ => return None,
+                };
+                let analyzed = match values.get("analyzed_frame_count") {
+                    Some(temporal_vision::ParameterValue::Unsigned(analyzed)) => *analyzed,
+                    _ => return None,
+                };
+                analysis_sampling_warning(kind, source, analyzed)
+            }
+            ArtifactOutcome::Unavailable { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    projection.degrade_with_stage(warnings, "artifact_generation");
+}
+
+fn analysis_sampling_warning(
+    kind: ArtifactKind,
+    source_frame_count: u64,
+    analyzed_frame_count: u64,
+) -> Option<KrometrailError> {
+    if !matches!(
+        kind,
+        ArtifactKind::DifferenceMap | ArtifactKind::MotionHistory
+    ) || source_frame_count == analyzed_frame_count
+    {
+        return None;
+    }
+    Some(
+        KrometrailError::new(
+            ErrorCode::ResourceLimitExceeded,
+            NonEmptyText::new(format!(
+                "{kind} analysis sampled {analyzed_frame_count} of {source_frame_count} source frames with uniform spacing"
+            ))
+            .expect("sampling warning is non-empty"),
+        )
+        .with_recovery(
+            NonEmptyText::new(
+                "set sampling to exhaustive when an exact all-frame analysis is required",
+            )
+            .expect("sampling warning recovery is non-empty"),
+        ),
+    )
 }
 
 fn primary_artifact(generation: &ArtifactGenerationResult) -> Option<(u32, u32, &ArtifactHandle)> {
@@ -2861,6 +2929,141 @@ mod tests {
     }
     fn error(code: ErrorCode, message: &str) -> KrometrailError {
         KrometrailError::new(code, NonEmptyText::new(message).unwrap())
+    }
+
+    fn generated_sampled_difference_generation() -> ArtifactGenerationResult {
+        use temporal_vision::{
+            DifferenceMapLimits, DifferenceMapParameters, Frame, FrameSequence, FrequencyMode,
+            IntegerScale, MeasurementParameters, NormalizationParameters, PixelFormat,
+            ProcessingLimits, Rgb8, TimePalette, TimeRange, Timestamp, normalize_sequence,
+            render_difference_map,
+        };
+
+        let dimensions = temporal_vision::PixelDimensions::new(2, 2).unwrap();
+        let source_frames = (0..4)
+            .map(|index| {
+                Frame::new(
+                    FrameId::from_uuid(uuid::Uuid::from_u128(100 + index)),
+                    Timestamp::from_nanos(index as u64),
+                    dimensions,
+                    PixelFormat::Rgba8SrgbStraight,
+                    vec![index as u8; 16].into_boxed_slice(),
+                )
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let source_frame_ids = source_frames
+            .iter()
+            .map(|frame| *frame.id())
+            .collect::<Vec<_>>();
+        let source_range =
+            TimeRange::new(Timestamp::from_nanos(0), Timestamp::from_nanos(3)).unwrap();
+        let analyzed: temporal_vision::FrameSequence<
+            FrameId,
+            krometrail_core::ArtifactMarkerId,
+            krometrail_core::GapId,
+            Box<[u8]>,
+        > = FrameSequence::new(
+            vec![
+                source_frames[0].clone(),
+                source_frames[2].clone(),
+                source_frames[3].clone(),
+            ],
+            vec![],
+            vec![],
+            None,
+            None,
+        )
+        .unwrap()
+        .with_source_provenance(source_frame_ids.clone(), vec![0, 2, 3], source_range)
+        .unwrap();
+        let normalized = normalize_sequence(
+            &analyzed,
+            NormalizationParameters::new(
+                Rgb8::new(0, 0, 0),
+                None,
+                IntegerScale::IDENTITY,
+                ProcessingLimits::default(),
+            ),
+        )
+        .unwrap();
+        let generated = render_difference_map(
+            ArtifactId::from_uuid(uuid::Uuid::from_u128(200)),
+            &analyzed,
+            &normalized,
+            DifferenceMapParameters::new(
+                0,
+                FrequencyMode::NormalizedFrequency,
+                TimePalette::Spectral,
+                None,
+                MeasurementParameters::new(0),
+                Rgb8::new(0, 0, 0),
+                DifferenceMapLimits::default(),
+            ),
+        )
+        .unwrap();
+        let artifact = ArtifactHandle {
+            artifact_id: *generated.manifest().artifact_id(),
+            cache: ArtifactCacheDisposition::Generated,
+            media_type: NonEmptyText::new("image/png").unwrap(),
+            encoded_byte_len: generated.image().bytes().len() as u64,
+            manifest: generated.manifest().clone(),
+        };
+        let range =
+            SessionRange::new(SessionTime::from_nanos(0), SessionTime::from_nanos(3)).unwrap();
+        let resolved = ResolvedRange::new(
+            session_id(),
+            target_id(),
+            TemporalRangeAnchorKind::SessionTime,
+            range,
+            range,
+            source_frame_ids,
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            RangeResolutionOptions::DEFAULT,
+        )
+        .unwrap();
+        ArtifactGenerationResult {
+            range: resolved,
+            epochs: vec![],
+            outcomes: vec![ArtifactOutcome::Available {
+                epoch_index: 0,
+                generator_index: 0,
+                artifact,
+            }],
+        }
+    }
+
+    #[test]
+    fn analysis_sampling_warning_reads_parameters_from_generated_manifest() {
+        let generation = generated_sampled_difference_generation();
+        let mut projection = Projection::success(json!({}));
+        add_analysis_sampling_warnings(&mut projection, &generation);
+        assert_eq!(projection.status, ToolResponseStatus::Degraded);
+        assert_eq!(projection.warnings.len(), 1);
+        assert!(projection.warnings[0].message.as_str().contains("3 of 4"));
+    }
+
+    #[test]
+    fn analysis_sampling_warning_is_limited_to_analysis_generators() {
+        let warning = analysis_sampling_warning(ArtifactKind::DifferenceMap, 744, 43)
+            .expect("sampled analysis must warn");
+        assert!(warning.message.as_str().contains("43 of 744"));
+        assert!(warning.message.as_str().contains("uniform spacing"));
+        assert!(
+            warning
+                .recovery
+                .as_ref()
+                .is_some_and(|recovery| recovery.as_str().contains("exhaustive"))
+        );
+
+        for kind in [ArtifactKind::Storyboard, ArtifactKind::RegionFilmstrip] {
+            assert!(analysis_sampling_warning(kind, 744, 43).is_none());
+        }
+        assert!(analysis_sampling_warning(ArtifactKind::MotionHistory, 43, 43).is_none());
     }
 
     fn video_result() -> TemporalVideoGenerationResult {

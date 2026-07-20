@@ -488,7 +488,7 @@ ResolvedRange
 
 Artifact generation consumes only resolved ranges. This prevents each artifact implementation from interpreting natural anchors differently.
 Retention classification may intersect only interaction/latest-interaction natural ranges with retained
-capture bounds under `AllowPartial`. It preserves the requested range and exact anchor reference while
+capture bounds under `allow_partial`. It preserves the requested range and exact anchor reference while
 publishing a distinct captured-bound warning; explicit ranges, complete-retention policy, disjoint ranges,
 and internal eviction holes never enter that clamp path.
 

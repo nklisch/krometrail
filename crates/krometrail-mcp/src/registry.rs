@@ -1132,6 +1132,8 @@ mod tests {
     use super::*;
     use crate::config::McpConfig;
     use crate::response::ResponseRequest;
+    use krometrail_core::{BrowserOperationRequest, ProgressiveEvidenceRequest};
+    use serde_json::{Map, Value, json};
 
     #[test]
     fn route_registry_and_schema_validation_fail_closed() {
@@ -1140,6 +1142,680 @@ mod tests {
         register_route_name(&mut names, "duplicate", "first").unwrap();
         assert!(register_route_name(&mut names, "duplicate", "second").is_err());
         assert!(generated_input_schema(schemars::schema_for!(String)).is_err());
+    }
+
+    #[test]
+    fn registered_tool_schemas_accept_every_advertised_enum_and_one_of_branch() {
+        #[derive(Clone)]
+        struct Case {
+            value: Value,
+            pointer: String,
+            advertised: String,
+            enum_visits: usize,
+            one_of_branch_visits: usize,
+        }
+
+        fn batch_operation_kinds(schema: &Value) -> Vec<BrowserOperationKind> {
+            schema
+                .get("properties")
+                .and_then(Value::as_object)
+                .and_then(|properties| properties.get("operation"))
+                .and_then(|operation| operation.get("enum"))
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(|name| {
+                    BrowserOperationKind::from_stable_name(name)
+                        .expect("batch schema operation is registered")
+                })
+                .collect()
+        }
+
+        fn is_flat_batch_step_schema(schema: &Value) -> bool {
+            let Some(properties) = schema.get("properties").and_then(Value::as_object) else {
+                return false;
+            };
+            schema.get("type") == Some(&Value::String("object".into()))
+                && properties
+                    .get("request")
+                    .and_then(|request| request.get("description"))
+                    == Some(&Value::String(
+                        "The same arguments advertised by the named standalone operation.".into(),
+                    ))
+                && properties.get("operation").is_some()
+                && schema
+                    .get("required")
+                    .and_then(Value::as_array)
+                    .is_some_and(|required| {
+                        required.iter().any(|value| value == "operation")
+                            && required.iter().any(|value| value == "request")
+                    })
+        }
+
+        fn schema_cases(schema: &Value, pointer: &str) -> Vec<Case> {
+            if is_flat_batch_step_schema(schema) {
+                let mut cases = Vec::new();
+                for kind in batch_operation_kinds(schema) {
+                    let request_schema = Value::Object(
+                        operation_input_schema(kind, &McpConfig::default())
+                            .expect("registered batch operation has a schema")
+                            .as_ref()
+                            .clone(),
+                    );
+                    for request_case in schema_cases(&request_schema, &format!("{pointer}/request"))
+                    {
+                        let mut step = Map::new();
+                        step.insert("operation".into(), Value::String(kind.stable_name().into()));
+                        step.insert("request".into(), request_case.value);
+                        cases.push(Case {
+                            value: Value::Object(step),
+                            pointer: request_case.pointer,
+                            advertised: if request_case.advertised == "minimal required instance" {
+                                format!("batch operation \"{}\"", kind.stable_name())
+                            } else {
+                                format!(
+                                    "batch operation \"{}\" {}",
+                                    kind.stable_name(),
+                                    request_case.advertised
+                                )
+                            },
+                            enum_visits: request_case.enum_visits,
+                            one_of_branch_visits: request_case.one_of_branch_visits,
+                        });
+                    }
+                }
+                return cases;
+            }
+            if let Some(branches) = schema.get("oneOf").and_then(Value::as_array) {
+                let mut cases = Vec::new();
+                for (index, branch) in branches.iter().enumerate() {
+                    let branch_cases = schema_cases(branch, pointer);
+                    if let Some(first) = branch_cases.first() {
+                        cases.push(Case {
+                            value: first.value.clone(),
+                            pointer: pointer.to_owned(),
+                            advertised: format!("oneOf branch {index}"),
+                            enum_visits: first.enum_visits,
+                            one_of_branch_visits: first.one_of_branch_visits + 1,
+                        });
+                    }
+                    cases.extend(branch_cases);
+                }
+                return cases;
+            }
+            if let Some(branches) = schema.get("allOf").and_then(Value::as_array) {
+                let mut merged = Map::new();
+                let mut required = Vec::new();
+                for branch in branches {
+                    if let Some(properties) = branch.get("properties").and_then(Value::as_object) {
+                        merged
+                            .entry("properties")
+                            .or_insert_with(|| Value::Object(Map::new()))
+                            .as_object_mut()
+                            .unwrap()
+                            .extend(properties.clone());
+                    }
+                    if let Some(values) = branch.get("required").and_then(Value::as_array) {
+                        required.extend(values.iter().cloned());
+                    }
+                }
+                if !required.is_empty() {
+                    merged.insert("required".into(), Value::Array(required));
+                }
+                return schema_cases(&Value::Object(merged), pointer);
+            }
+            if let Some(values) = schema.get("enum").and_then(Value::as_array) {
+                return values
+                    .iter()
+                    .map(|value| Case {
+                        value: value.clone(),
+                        pointer: pointer.to_owned(),
+                        advertised: value.to_string(),
+                        enum_visits: 1,
+                        one_of_branch_visits: 0,
+                    })
+                    .collect();
+            }
+            if let Some(value) = schema.get("const") {
+                return vec![Case {
+                    value: value.clone(),
+                    pointer: pointer.to_owned(),
+                    advertised: value.to_string(),
+                    enum_visits: 0,
+                    one_of_branch_visits: 0,
+                }];
+            }
+            if schema.get("type") == Some(&Value::String("object".into()))
+                || schema.get("properties").is_some()
+            {
+                let properties = schema
+                    .get("properties")
+                    .and_then(Value::as_object)
+                    .cloned()
+                    .unwrap_or_default();
+                let required = schema
+                    .get("required")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                let mut base = Map::new();
+                let mut base_enum_visits = 0;
+                let mut base_one_of_branch_visits = 0;
+                let required_names = required
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<BTreeSet<_>>();
+                for name in required_names.iter().copied() {
+                    let child_pointer = format!("{pointer}/{name}");
+                    let child_cases = schema_cases(
+                        properties
+                            .get(name)
+                            .expect("required property has a schema"),
+                        &child_pointer,
+                    );
+                    let first = child_cases
+                        .first()
+                        .expect("required property has a minimal instance");
+                    base.insert(name.to_owned(), first.value.clone());
+                    base_enum_visits += first.enum_visits;
+                    base_one_of_branch_visits += first.one_of_branch_visits;
+                }
+                let mut cases = vec![Case {
+                    value: Value::Object(base.clone()),
+                    pointer: pointer.to_owned(),
+                    advertised: "minimal required instance".into(),
+                    enum_visits: base_enum_visits,
+                    one_of_branch_visits: base_one_of_branch_visits,
+                }];
+                for (name, property_schema) in properties {
+                    // JSON Schema cannot express same-request containment such as a marker's
+                    // time or a frame selector's id belonging to the sibling resolved range.
+                    // Do not invent state-dependent values here; this sweep stays at the
+                    // schema-expressible boundary and leaves those invariants to domain tests.
+                    if !required_names.contains(name.as_str())
+                        && state_dependent_property(&base, &name)
+                        && name != "reference"
+                    {
+                        continue;
+                    }
+                    let child_pointer = format!("{pointer}/{name}");
+                    let child_cases = schema_cases(&property_schema, &child_pointer);
+                    let children = if required_names.contains(name.as_str()) {
+                        child_cases.into_iter().skip(1).collect::<Vec<_>>()
+                    } else {
+                        child_cases
+                    };
+                    for child in children {
+                        if state_dependent_case(&base, &name, &child.value) {
+                            continue;
+                        }
+                        let mut value = base.clone();
+                        value.insert(name.clone(), child.value);
+                        cases.push(Case {
+                            value: Value::Object(value),
+                            pointer: child.pointer,
+                            advertised: child.advertised,
+                            enum_visits: child.enum_visits,
+                            one_of_branch_visits: child.one_of_branch_visits,
+                        });
+                    }
+                }
+                return cases;
+            }
+            if schema.get("type") == Some(&Value::String("array".into())) {
+                let item_schema = schema.get("items").unwrap_or(&Value::Null);
+                let item_cases = schema_cases(item_schema, &format!("{pointer}/0"));
+                return item_cases
+                    .into_iter()
+                    .map(|item| Case {
+                        value: Value::Array(vec![item.value]),
+                        pointer: item.pointer,
+                        advertised: item.advertised,
+                        enum_visits: item.enum_visits,
+                        one_of_branch_visits: item.one_of_branch_visits,
+                    })
+                    .collect();
+            }
+            let value = match schema.get("type").and_then(Value::as_str) {
+                Some("boolean") => Value::Bool(false),
+                Some("integer") | Some("number") => schema
+                    .get("minimum")
+                    .and_then(|minimum| {
+                        if minimum.as_f64().is_some_and(|value| value > 0.0) {
+                            Some(minimum.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_else(|| json!(1)),
+                Some("string") => match schema.get("format").and_then(Value::as_str) {
+                    Some("uuid") => json!("00000000-0000-0000-0000-000000000001"),
+                    Some("uri") | Some("uri-reference") => json!("https://example.com"),
+                    _ if schema.get("pattern").is_some() => json!("/tmp/krometrail-upload"),
+                    _ => json!("x"),
+                },
+                _ => Value::Null,
+            };
+            vec![Case {
+                value,
+                pointer: pointer.to_owned(),
+                advertised: "minimal scalar instance".into(),
+                enum_visits: 0,
+                one_of_branch_visits: 0,
+            }]
+        }
+
+        fn state_dependent_property(base: &Map<String, Value>, name: &str) -> bool {
+            let has_range = base.contains_key("range") || base.contains_key("range_handle");
+            match name {
+                "markers" | "focus_times" => has_range,
+                "anchor" => {
+                    has_range && (base.contains_key("generators") || base.contains_key("region"))
+                }
+                "reference" => {
+                    base.get("generator")
+                        .and_then(Value::as_str)
+                        .is_some_and(|generator| {
+                            matches!(generator, "difference_map" | "motion_history")
+                        })
+                }
+                _ => false,
+            }
+        }
+
+        fn state_dependent_case(base: &Map<String, Value>, name: &str, value: &Value) -> bool {
+            name == "reference"
+                && base
+                    .get("generator")
+                    .and_then(Value::as_str)
+                    .is_some_and(|generator| {
+                        matches!(generator, "difference_map" | "motion_history")
+                    })
+                && value.get("frame").and_then(Value::as_str) == Some("frame")
+        }
+
+        fn resolved_range() -> Value {
+            json!({
+                "session_id": "00000000-0000-0000-0000-000000000001",
+                "target_id": "00000000-0000-0000-0000-000000000002",
+                "anchor_kind": "session_time",
+                "resolved_anchor": {
+                    "reference": {"source": "interval"},
+                    "requested_time": 0,
+                    "effective_time": 0
+                },
+                "requested_range": {"start": 0, "end": 0},
+                "resolved_range": {"start": 0, "end": 0},
+                "frame_ids": ["00000000-0000-0000-0000-000000000003"],
+                "interaction_ids": [],
+                "navigation_ids": [],
+                "marker_ids": [],
+                "gaps": [],
+                "retention_warnings": [],
+                "options": {
+                    "retention": "require_complete",
+                    "capture_gaps": "include",
+                    "implicit_interaction_window": {"before_ms": 150, "after_ms": 250}
+                }
+            })
+        }
+
+        fn repair_range(value: &mut Value) -> std::result::Result<(), String> {
+            let Some(range) = value.get_mut("range").and_then(Value::as_object_mut) else {
+                return Ok(());
+            };
+            let anchor_kind = range
+                .get("anchor_kind")
+                .and_then(Value::as_str)
+                .unwrap_or("session_time");
+            let reference_source = range
+                .get("resolved_anchor")
+                .and_then(Value::as_object)
+                .and_then(|anchor| anchor.get("reference"))
+                .and_then(Value::as_object)
+                .and_then(|reference| reference.get("source"))
+                .and_then(Value::as_str)
+                .unwrap_or("interval");
+            if !matches!(
+                reference_source,
+                "interval" | "interaction" | "navigation" | "marker" | "source_frames"
+            ) {
+                return Err(format!(
+                    "unknown resolved anchor reference source {reference_source:?}"
+                ));
+            }
+            let (anchor_kind, reference) = match anchor_kind {
+                "interaction" => (
+                    "interaction",
+                    json!({
+                        "source": "interaction",
+                        "interaction_id": "00000000-0000-0000-0000-000000000004"
+                    }),
+                ),
+                "navigation" => (
+                    "navigation",
+                    json!({
+                        "source": "navigation",
+                        "navigation_id": "00000000-0000-0000-0000-000000000005"
+                    }),
+                ),
+                "marker" => (
+                    "marker",
+                    json!({
+                        "source": "marker",
+                        "marker_id": "00000000-0000-0000-0000-000000000006"
+                    }),
+                ),
+                "source_frame" => (
+                    "source_frame",
+                    json!({
+                        "source": "source_frames",
+                        "start_frame_id": "00000000-0000-0000-0000-000000000003",
+                        "end_frame_id": "00000000-0000-0000-0000-000000000003"
+                    }),
+                ),
+                "wall_clock" => ("wall_clock", json!({"source": "interval"})),
+                "session_time" => ("session_time", json!({"source": "interval"})),
+                unknown => {
+                    return Err(format!(
+                        "unknown resolved anchor kind {unknown:?} advertised by schema"
+                    ));
+                }
+            };
+            let mut valid = resolved_range();
+            let valid = valid.as_object_mut().unwrap();
+            valid.insert("anchor_kind".into(), json!(anchor_kind));
+            valid["resolved_anchor"]["reference"] = reference;
+            *range = valid.clone();
+            Ok(())
+        }
+
+        fn decode(tool: &str, mut value: Value) -> std::result::Result<(), String> {
+            repair_range(&mut value)?;
+            let mut response_result = Ok(());
+            if let Some(object) = value.as_object_mut() {
+                if let Some(response) = object.remove("response") {
+                    response_result = serde_json::from_value::<ResponseRequest>(response)
+                        .map(|_| ())
+                        .map_err(|error| format!("response subtree: {error}"));
+                }
+                if let Some(range_handle) = object.remove("range_handle") {
+                    serde_json::from_value::<crate::schema::ResolvedRangeHandleArgument>(
+                        json!({"range_handle": range_handle}),
+                    )
+                    .map_err(|error| format!("range_handle subtree: {error}"))?;
+                    object.insert("range".into(), resolved_range());
+                }
+                if let Some(region) = object.get_mut("region").and_then(Value::as_object_mut) {
+                    region.insert(
+                        "source_frame_id".into(),
+                        json!("00000000-0000-0000-0000-000000000003"),
+                    );
+                    if let Some(shape) = region.get_mut("shape").and_then(Value::as_object_mut) {
+                        if let Some(mask) = shape.get_mut("mask").and_then(Value::as_object_mut) {
+                            mask.insert("bits".into(), json!([128]));
+                            mask.insert("dimensions".into(), json!({"width": 1, "height": 1}));
+                        }
+                    }
+                    if let Some(session_id) = region.get_mut("session_id") {
+                        *session_id = json!("00000000-0000-0000-0000-000000000001");
+                    }
+                    if let Some(reference) =
+                        region.get_mut("reference").and_then(Value::as_object_mut)
+                    {
+                        reference.insert(
+                            "target_id".into(),
+                            json!("00000000-0000-0000-0000-000000000002"),
+                        );
+                    }
+                }
+                if let Some(selection) = object.get_mut("selection").and_then(Value::as_object_mut)
+                {
+                    if let Some(frame_id) = selection.get_mut("frame_id") {
+                        *frame_id = json!("00000000-0000-0000-0000-000000000003");
+                    }
+                    if let Some(frame_ids) =
+                        selection.get_mut("frame_ids").and_then(Value::as_array_mut)
+                    {
+                        for frame_id in frame_ids {
+                            *frame_id = json!("00000000-0000-0000-0000-000000000003");
+                        }
+                    }
+                }
+                if let Some(frame_id) = object.get_mut("frame_id") {
+                    *frame_id = json!("00000000-0000-0000-0000-000000000003");
+                }
+            }
+            let decoded = match tool {
+                "start_browser" => {
+                    serde_json::from_value::<krometrail_core::LaunchBrowser>(value).map(|_| ())
+                }
+                "attach_browser" => {
+                    serde_json::from_value::<krometrail_core::AttachBrowser>(value).map(|_| ())
+                }
+                "browser_status" | "stop_browser" | "list_managed_profiles" => {
+                    serde_json::from_value::<rmcp::model::EmptyObject>(value).map(|_| ())
+                }
+                name if BROWSER_OPERATION_REGISTRY
+                    .iter()
+                    .any(|definition| definition.stable_name == name) =>
+                {
+                    serde_json::from_value::<BrowserOperationRequest>(
+                        json!({"operation": name, "request": value}),
+                    )
+                    .map(|_| ())
+                }
+                name if krometrail_core::PROGRESSIVE_EVIDENCE_REGISTRY
+                    .iter()
+                    .any(|definition| definition.stable_name == name) =>
+                {
+                    serde_json::from_value::<ProgressiveEvidenceRequest>(
+                        json!({"operation": name, "request": value}),
+                    )
+                    .map(|_| ())
+                }
+                "temporal_debug_bundle" => {
+                    serde_json::from_value::<krometrail_core::TemporalDebugBundleRequest>(value)
+                        .map(|_| ())
+                }
+                "resolve_temporal_range" => {
+                    serde_json::from_value::<krometrail_core::TemporalQueryRequest>(value)
+                        .map(|_| ())
+                }
+                "generate_temporal_video" => {
+                    serde_json::from_value::<krometrail_core::TemporalVideoGenerationRequest>(value)
+                        .map(|_| ())
+                }
+                name if TEMPORAL_CONTEXT_OPERATION_REGISTRY
+                    .iter()
+                    .any(|definition| definition.stable_name == name) =>
+                {
+                    serde_json::from_value::<krometrail_core::BrowserEventDetailRequest>(value)
+                        .map(|_| ())
+                }
+                _ => return Err("tool is not in the registered decoder set".into()),
+            };
+            response_result.and_then(|_| decoded.map_err(|error| error.to_string()))
+        }
+
+        fn replace_frequency_mode_enum(value: &mut Value) -> bool {
+            match value {
+                Value::Object(object) => {
+                    if let Some(values) = object.get_mut("enum").and_then(Value::as_array_mut) {
+                        if let Some(value) = values
+                            .iter_mut()
+                            .find(|value| value.as_str() == Some("count"))
+                        {
+                            *value = Value::String("Count".into());
+                            return true;
+                        }
+                    }
+                    object.values_mut().any(replace_frequency_mode_enum)
+                }
+                Value::Array(values) => values.iter_mut().any(replace_frequency_mode_enum),
+                Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => false,
+            }
+        }
+
+        let config = McpConfig::default();
+        let mut contracts = Vec::new();
+        for lifecycle in LIFECYCLE_TOOLS {
+            let schema = match lifecycle.kind {
+                LifecycleKind::Start => type_input_schema::<krometrail_core::LaunchBrowser>(),
+                LifecycleKind::Attach => type_input_schema::<krometrail_core::AttachBrowser>(),
+                LifecycleKind::Status => {
+                    projected_input_schema(type_input_schema::<rmcp::model::EmptyObject>().unwrap())
+                }
+                LifecycleKind::Stop | LifecycleKind::Profiles => {
+                    type_input_schema::<rmcp::model::EmptyObject>()
+                }
+            }
+            .unwrap();
+            contracts.push((lifecycle.name, Value::Object(schema.as_ref().clone())));
+        }
+        for definition in BROWSER_OPERATION_REGISTRY {
+            contracts.push((
+                definition.stable_name,
+                Value::Object(
+                    projected_input_schema(
+                        operation_input_schema(definition.kind, &config).unwrap(),
+                    )
+                    .unwrap()
+                    .as_ref()
+                    .clone(),
+                ),
+            ));
+        }
+        for definition in krometrail_core::PROGRESSIVE_EVIDENCE_REGISTRY {
+            if definition.exposure == OperationExposure::Tool {
+                contracts.push((
+                    definition.stable_name,
+                    Value::Object(
+                        progressive_input_schema(definition.kind)
+                            .unwrap()
+                            .as_ref()
+                            .clone(),
+                    ),
+                ));
+            }
+        }
+        contracts.extend([
+            (
+                TEMPORAL_DEBUG_BUNDLE_OPERATION.stable_name,
+                Value::Object(
+                    projected_input_schema(
+                        type_input_schema::<krometrail_core::TemporalDebugBundleRequest>().unwrap(),
+                    )
+                    .unwrap()
+                    .as_ref()
+                    .clone(),
+                ),
+            ),
+            (
+                TEMPORAL_RANGE_RESOLUTION_OPERATION.stable_name,
+                Value::Object(
+                    projected_input_schema(
+                        type_input_schema::<krometrail_core::TemporalQueryRequest>().unwrap(),
+                    )
+                    .unwrap()
+                    .as_ref()
+                    .clone(),
+                ),
+            ),
+            (
+                TEMPORAL_VIDEO_OPERATION.stable_name,
+                Value::Object(
+                    projected_input_schema(
+                        range_handle_input_schema(
+                            type_input_schema::<krometrail_core::TemporalVideoGenerationRequest>()
+                                .unwrap(),
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap()
+                    .as_ref()
+                    .clone(),
+                ),
+            ),
+        ]);
+        for definition in TEMPORAL_CONTEXT_OPERATION_REGISTRY {
+            contracts.push((
+                definition.stable_name,
+                Value::Object(
+                    projected_input_schema(
+                        range_handle_input_schema(
+                            generated_input_schema(definition.kind.input_schema()).unwrap(),
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap()
+                    .as_ref()
+                    .clone(),
+                ),
+            ));
+        }
+
+        let mut negative_control_schema = contracts
+            .iter()
+            .find(|(tool, _)| *tool == "generate_artifacts")
+            .expect("generate_artifacts is registered")
+            .1
+            .clone();
+        let mut unknown_anchor = json!({"range": resolved_range()});
+        unknown_anchor["range"]["anchor_kind"] = json!("latest_interaction");
+        assert!(
+            repair_range(&mut unknown_anchor)
+                .expect_err("unknown resolved anchor kinds must fail the sweep")
+                .contains("unknown resolved anchor kind")
+        );
+        assert!(replace_frequency_mode_enum(&mut negative_control_schema));
+        let negative_control_failure = schema_cases(&negative_control_schema, "$")
+            .into_iter()
+            .filter_map(|case| {
+                decode("generate_artifacts", case.value.clone())
+                    .err()
+                    .map(|error| (case, error))
+            })
+            .find(|(case, error)| {
+                case.advertised.contains("\"Count\"") && error.contains("unknown variant `Count`")
+            })
+            .expect("reintroduced enum mismatch must fail the conformance sweep");
+        eprintln!(
+            "negative control observed: tool=generate_artifacts pointer={} advertised={} error={}",
+            negative_control_failure.0.pointer,
+            negative_control_failure.0.advertised,
+            negative_control_failure.1
+        );
+
+        let mut enum_count = 0;
+        let mut one_of_branch_count = 0;
+        let mut failures = Vec::new();
+        for (tool, schema) in contracts {
+            for case in schema_cases(&schema, "$") {
+                enum_count += case.enum_visits;
+                one_of_branch_count += case.one_of_branch_visits;
+                if let Err(error) = decode(tool, case.value.clone()) {
+                    failures.push(format!(
+                        "tool={tool} pointer={} value={} advertised={} error={error}",
+                        case.pointer, case.value, case.advertised
+                    ));
+                }
+            }
+        }
+        assert!(
+            enum_count > 400,
+            "schema sweep generated implausibly few string-enum cases: {enum_count}"
+        );
+        assert!(
+            one_of_branch_count > 350,
+            "schema sweep generated implausibly few oneOf branch cases: {one_of_branch_count}"
+        );
+        assert!(
+            failures.is_empty(),
+            "schema/domain conformance failures:\n{}",
+            failures.join("\n")
+        );
     }
 
     #[test]

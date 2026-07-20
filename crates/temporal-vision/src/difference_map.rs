@@ -6,6 +6,7 @@ use crate::{
     NormalizationStep, NormalizedSequence, ParameterValue, Parameters, PixelDimensions, PixelRect,
     Result, Rgb8, Timestamp, VisionError, generator_descriptor,
     measure::{classify_pixel_change, intersecting_gap_count, linear_luminance},
+    provenance::analysis_sampling_parameters,
     render::{
         canvas::{BLACK, Canvas, MUTED, PANEL, WARNING, WHITE, canvas_limit_error},
         font::{CELL_WIDTH, draw_text, ellipsize},
@@ -501,7 +502,7 @@ where
                 .clone(),
         ],
         normalization,
-        manifest_parameters(parameters, &data)?,
+        manifest_parameters(sequence, parameters, &data)?,
         layout.image,
         hash,
     )?;
@@ -847,11 +848,18 @@ fn display_step() -> Result<NormalizationStep> {
     )
 }
 
-fn manifest_parameters(
+fn manifest_parameters<F, M, G, P>(
+    source: &FrameSequence<F, M, G, P>,
     request: DifferenceMapParameters,
     data: &DifferenceMapData,
-) -> Result<Parameters> {
-    parameters([
+) -> Result<Parameters>
+where
+    F: Eq,
+    M: Eq,
+    G: Eq,
+    P: AsRef<[u8]>,
+{
+    let mut values = parameters([
         (
             "algorithm_version",
             ParameterValue::Text(
@@ -962,7 +970,11 @@ fn manifest_parameters(
             "max_output_bytes",
             unsigned_usize(request.limits.max_output_bytes())?,
         ),
-    ])
+    ])?;
+    if let Some(sampling) = analysis_sampling_parameters(source)? {
+        values.insert("analysis_sampling", sampling)?;
+    }
+    Ok(values)
 }
 
 fn parameters<const N: usize>(entries: [(&'static str, ParameterValue); N]) -> Result<Parameters> {

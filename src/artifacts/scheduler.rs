@@ -249,6 +249,26 @@ pub(crate) fn limit_error(message: &'static str) -> KrometrailError {
         ErrorCode::ResourceLimitExceeded,
         NonEmptyText::new(message).unwrap(),
     )
+    .with_recovery(
+        NonEmptyText::new("narrow the source range or reduce the artifact scope")
+            .expect("scheduler limit recovery is non-empty"),
+    )
+}
+
+pub(crate) fn resource_limit_error(
+    subject: impl Into<String>,
+    actual: impl std::fmt::Display,
+    limit: impl std::fmt::Display,
+    recovery: impl Into<String>,
+) -> KrometrailError {
+    KrometrailError::limit_exceeded(
+        ErrorCode::ResourceLimitExceeded,
+        subject,
+        actual,
+        limit,
+        None::<String>,
+    )
+    .with_recovery(NonEmptyText::new(recovery.into()).unwrap())
 }
 
 #[cfg(test)]

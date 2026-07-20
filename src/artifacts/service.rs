@@ -25,7 +25,7 @@ use super::{
     },
     scheduler::{
         ArtifactScheduler, ArtifactWorkLimits, cancelled_error, controlled, deadline_error,
-        limit_error,
+        limit_error, resource_limit_error,
     },
     single_flight::{FlightArtifact, FlightArtifacts, FlightValue, SingleFlight},
 };
@@ -626,23 +626,78 @@ fn plan_for_generator(
         krometrail_core::ArtifactGeneratorRequest::RegionFilmstrip(request) => {
             bounded_plan(plan, usize::from(request.tile_limit), request.locator)
         }
-        krometrail_core::ArtifactGeneratorRequest::DifferenceMap(_)
-        | krometrail_core::ArtifactGeneratorRequest::MotionHistory(_) => {
-            if plan.frames.len() > limits.max_source_frames.get() {
-                Err(limit_error(
-                    "exhaustive artifact generator exceeds the source-frame limit",
+        krometrail_core::ArtifactGeneratorRequest::DifferenceMap(request) => {
+            let effective_max_frames = analysis_effective_max_frames(plan, limits)?;
+            if matches!(
+                request.frequency_mode,
+                temporal_vision::FrequencyMode::Count | temporal_vision::FrequencyMode::Magnitude
+            ) && plan.frames.len() > effective_max_frames
+            {
+                Err(resource_limit_error(
+                    "count-mode and magnitude-mode difference map source frames",
+                    plan.frames.len(),
+                    effective_max_frames,
+                    "narrow the range, or switch to frequency_mode normalized_frequency",
+                ))
+            } else {
+                plan_for_analysis_sampling(request.sampling, plan, limits, effective_max_frames)
+            }
+        }
+        krometrail_core::ArtifactGeneratorRequest::MotionHistory(request) => {
+            let effective_max_frames = analysis_effective_max_frames(plan, limits)?;
+            plan_for_analysis_sampling(request.sampling, plan, limits, effective_max_frames)
+        }
+    }?;
+    if generator_plan.decoded_bytes > limits.max_decoded_bytes.get() {
+        return Err(resource_limit_error(
+            "decoded source-frame bytes",
+            generator_plan.decoded_bytes,
+            limits.max_decoded_bytes.get(),
+            "narrow the range; normalization.scale does not reduce this limit because source frames are decoded at their original dimensions before normalization",
+        ));
+    }
+    Ok(generator_plan)
+}
+
+fn plan_for_analysis_sampling(
+    sampling: krometrail_core::ArtifactSampling,
+    plan: &EpochPlan,
+    limits: ArtifactWorkLimits,
+    effective_max_frames: usize,
+) -> Result<EpochPlan> {
+    match sampling {
+        krometrail_core::ArtifactSampling::Exhaustive => {
+            if plan.frames.len() > effective_max_frames {
+                Err(resource_limit_error(
+                    "exhaustive analysis source plan",
+                    format!(
+                        "{} frames and {} decoded bytes",
+                        plan.frames.len(),
+                        plan.decoded_bytes
+                    ),
+                    format!(
+                        "{} frames and {} decoded bytes",
+                        limits.max_source_frames.get(),
+                        limits.max_decoded_bytes.get()
+                    ),
+                    "narrow the range or set sampling to uniform_bounded",
                 ))
             } else {
                 Ok(plan.clone())
             }
         }
-    }?;
-    if generator_plan.decoded_bytes > limits.max_decoded_bytes.get() {
-        return Err(limit_error(
-            "artifact generator exceeds the decoded-byte limit",
-        ));
+        krometrail_core::ArtifactSampling::UniformBounded => {
+            bounded_plan(plan, effective_max_frames, None)
+        }
     }
-    Ok(generator_plan)
+}
+
+fn analysis_effective_max_frames(plan: &EpochPlan, limits: ArtifactWorkLimits) -> Result<usize> {
+    let per_frame_decoded_bytes = plan.frames.iter().try_fold(0, |maximum, frame| {
+        Ok::<_, KrometrailError>(maximum.max(super::epoch::decoded_len(frame)?))
+    })?;
+    let byte_frame_limit = limits.max_decoded_bytes.get() / per_frame_decoded_bytes;
+    Ok(limits.max_source_frames.get().min(byte_frame_limit).max(1))
 }
 
 impl ArtifactGeneration for TemporalVisionArtifactService {

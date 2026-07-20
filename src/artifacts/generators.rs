@@ -5,8 +5,8 @@ use std::{
 
 use krometrail_core::{
     AnalysisScale, ArtifactGeneratorRequest, ArtifactId, ArtifactManifest, ErrorCode, FrameId,
-    FrameSelector, KrometrailError, NonEmptyText, NormalizationRequest, OutputLimitsRequest,
-    Result,
+    FrameSelector, KrometrailError, MAX_ANALYSIS_DOWNSCALE_FACTOR, MIN_ANALYSIS_DOWNSCALE_FACTOR,
+    NonEmptyText, NormalizationRequest, OutputLimitsRequest, Result,
 };
 use temporal_vision::{
     ArtifactKind, ArtifactLabels, DifferenceMapLimits, DifferenceMapParameters, FilmstripTileLimit,
@@ -466,7 +466,7 @@ fn normalized_dimensions(
                 )
             } else {
                 format!(
-                    "analysis downscale factor {factor} must exactly divide both dimensions {width}x{height}; common factors representable by analysis.scale are {common:?}; requests are limited to factors 2..=8"
+                    "analysis downscale factor {factor} must exactly divide both dimensions {width}x{height}; common factors representable by analysis.scale are {common:?}; requests are limited to factors {MIN_ANALYSIS_DOWNSCALE_FACTOR}..={MAX_ANALYSIS_DOWNSCALE_FACTOR}"
                 )
             };
             Err(generation_error(message))
@@ -658,7 +658,10 @@ mod tests {
         let error = normalized_dimensions(request(AnalysisScale::Down(2)), 47, 94).unwrap_err();
         let message = error.message.to_string();
         assert!(message.contains("[47]"));
-        assert!(message.contains("limited to factors 2..=8"));
+        assert_eq!(
+            message,
+            "analysis downscale factor 2 must exactly divide both dimensions 47x94; common factors representable by analysis.scale are [47]; requests are limited to factors 2..=8"
+        );
     }
 
     #[test]

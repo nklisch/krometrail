@@ -422,8 +422,8 @@ mod tests {
     use super::*;
     use krometrail_core::{
         BrowserEventDetailRequest, CapabilityId, ProgressiveEvidenceOperationKind,
-        RetrieveSourceFrameRequest, TemporalDebugBundleRequest, TemporalQueryRequest,
-        TemporalVideoGenerationRequest,
+        RegionFilmstripRequest, ResolvedRange, RetrieveSourceFrameRequest, StoryboardRequest,
+        TemporalDebugBundleRequest, TemporalQueryRequest, TemporalVideoGenerationRequest,
     };
 
     #[test]
@@ -454,6 +454,90 @@ mod tests {
         }
         let interaction = find_tagged_variant(&schema, "anchor", "interaction").unwrap();
         assert!(interaction["properties"]["scope"].get("required").is_none());
+    }
+
+    #[test]
+    fn operation_schemas_match_locator_domain_and_resolved_anchor_domain() {
+        let config = McpConfig::new(vec![CapabilityId::Control]).unwrap();
+        for kind in [
+            BrowserOperationKind::Fill,
+            BrowserOperationKind::SelectOption,
+            BrowserOperationKind::UploadFiles,
+        ] {
+            let schema = operation_input_schema(kind, &config).unwrap();
+            let locator = &schema["properties"]["locator"];
+            assert!(
+                !locator.to_string().contains("coordinate"),
+                "{} must not advertise coordinate locators",
+                kind.stable_name()
+            );
+        }
+        for kind in [BrowserOperationKind::Click, BrowserOperationKind::Hover] {
+            let schema = operation_input_schema(kind, &config).unwrap();
+            assert!(
+                schema["properties"]["locator"]
+                    .to_string()
+                    .contains("coordinate"),
+                "{} must retain coordinate locators",
+                kind.stable_name()
+            );
+        }
+
+        let resolved = type_input_schema::<ResolvedRange>().unwrap();
+        let resolved_anchor_kinds = resolved["properties"]["anchor_kind"]["enum"]
+            .as_array()
+            .unwrap();
+        assert!(
+            !resolved_anchor_kinds
+                .iter()
+                .any(|value| value.as_str() == Some("latest_interaction"))
+        );
+        let request = type_input_schema::<TemporalQueryRequest>().unwrap();
+        assert!(
+            serde_json::to_string(request.as_ref())
+                .unwrap()
+                .contains("latest_interaction")
+        );
+
+        let storyboard = type_input_schema::<StoryboardRequest>().unwrap();
+        assert_eq!(storyboard["properties"]["tile_limit"]["minimum"], 3);
+        assert_eq!(storyboard["properties"]["tile_limit"]["maximum"], 12);
+        let storyboard_json = serde_json::to_string(storyboard.as_ref()).unwrap();
+        assert!(storyboard_json.contains("\"minimum\":2"));
+        assert!(storyboard_json.contains("\"maximum\":8"));
+
+        let region = type_input_schema::<RegionFilmstripRequest>().unwrap();
+        assert_eq!(region["properties"]["tile_limit"]["minimum"], 1);
+        assert_eq!(region["properties"]["tile_limit"]["maximum"], 24);
+        assert!(
+            !serde_json::to_string(region.as_ref())
+                .unwrap()
+                .contains("fit_limits")
+        );
+
+        let progressive_region = generated_input_schema(
+            ProgressiveEvidenceOperationKind::GenerateRegionFilmstrip.input_schema(),
+        )
+        .unwrap();
+        assert!(
+            !serde_json::to_string(progressive_region.as_ref())
+                .unwrap()
+                .contains("fit_limits")
+        );
+    }
+
+    #[test]
+    fn stable_registry_schema_descriptions_are_trimmed_and_omitted_when_absent() {
+        let frequency =
+            serde_json::to_value(schemars::schema_for!(temporal_vision::FrequencyMode)).unwrap();
+        assert_eq!(
+            frequency["description"],
+            "Quantity encoded as brightness in the change-frequency panel."
+        );
+
+        let retention =
+            serde_json::to_value(schemars::schema_for!(krometrail_core::RetentionPolicy)).unwrap();
+        assert!(retention.get("description").is_none());
     }
 
     #[test]
@@ -818,6 +902,10 @@ mod tests {
     fn published_wait_schema_explains_unscoped_exact_text_semantics() {
         let config = McpConfig::default();
         let schema = operation_input_schema(BrowserOperationKind::Wait, &config).unwrap();
+        assert_eq!(schema["properties"]["timeout"]["minimum"], 1);
+        assert_eq!(schema["properties"]["timeout"]["maximum"], 120_000);
+        assert_eq!(schema["properties"]["poll_interval"]["minimum"], 10);
+        assert_eq!(schema["properties"]["poll_interval"]["maximum"], 5_000);
         let schema = Value::Object(schema.as_ref().clone());
         let text = find_tagged_variant(&schema, "condition", "text")
             .expect("wait schema contains the text condition");
