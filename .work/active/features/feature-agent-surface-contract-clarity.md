@@ -1,14 +1,14 @@
 ---
 id: feature-agent-surface-contract-clarity
 kind: feature
-stage: implementing
+stage: done
 tags: [agent-ux, browser]
 parent: null
 depends_on: []
 release_binding: null
 gate_origin: null
 created: 2026-07-19
-updated: 2026-07-19
+updated: 2026-07-20
 ---
 
 # Agent surface contract clarity
@@ -164,3 +164,41 @@ action rank. Share the identifiability predicate with `semantic_rank`.
   key, never a filter.
 
 Origin: 2026-07-19 fifth shakedown friction report.
+
+## Implementation notes
+
+- **Unit 1**: added a strict `IntervalAnchorScope` with non-optional
+  `session_id`/`target_id`, used by the `SessionTime` and `WallClock` variants
+  of both the domain and wire anchor enums; the hand-written `Deserialize` was
+  updated in lockstep. `AnchorScope` remains in legitimate use by the five
+  tolerant anchors. `required_scope` was removed rather than left dead. Omitting
+  either id on a strict branch now fails at deserialization with a
+  `missing field` message instead of at a later domain check.
+- **Unit 2**: identifiability (`name || value || description`, the predicate
+  already used by `semantic_rank`) is inserted as a sort term between action
+  rank and DOM index, in both the geometry-available and geometry-omitted sort
+  branches. It is strictly a sort key — anonymous actionable nodes remain in the
+  candidate pool and referenceable. The 48-entry cap and JSON byte budget are
+  untouched.
+
+## Review (cross-model, Fable reviewing Luna)
+
+Verdict SHIP for both units across all three review passes — neither unit
+attracted a blocker, major, or minor at any point.
+
+Independently verified: the strict/tolerant split is correct by construction
+rather than by a hand-patched schema, so the Rust type, serde, and the
+generated MCP schema agree; the schema test asserts `required: [session_id,
+target_id]` on exactly the two strict branches, guarding against drift back to
+optional; all five tolerant anchors were confirmed to still accept
+`AnchorScope::new(None, None)`; `deny_unknown_fields` and the wall-clock
+`start <= end` check are preserved; no alias or dual-accept path was added, so
+Current Contract Discipline holds. For ranking, the reviewer confirmed the name
+term is never a filter, that an anonymous focused input (rank 0) still outranks
+a named link (rank 3), and that both properties carry test coverage. There are
+no checked-in MCP schema artifacts to regenerate — they are produced at runtime
+from schemars.
+
+The frame-URL redaction item from the shakedown was closed as
+working-as-designed during design and never entered implementation; see the
+Design decisions section above.
