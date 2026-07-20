@@ -4,11 +4,11 @@ use std::time::{Duration, SystemTime};
 use krometrail_core::{
     AnchorScope, BrowserProduct, BrowserProductVersion, BrowserVersion, CaptureGap,
     CaptureGapPolicy, CaptureGapReason, CaptureGapStore, CaptureOrdinal, CapturedFrame,
-    DeviceScaleFactor, DiskBudgetBytes, EncodedFrame, ErrorCode, FrameId, ImageFormat, MarkerId,
-    ObservationKind, ObservationPayloadRef, ObservedTime, PageTarget, ProfileIdentity, ProfileRef,
-    RangeResolutionOptions, RecordingCatalog, RecordingSession, RecordingSink, SessionId,
-    SessionRange, SessionTime, TargetId, TemporalRangeAnchor, TemporalRangeResolver,
-    TimelineObservation, TimelineStore,
+    DeviceScaleFactor, DiskBudgetBytes, EncodedFrame, ErrorCode, FrameId, ImageFormat,
+    IntervalAnchorScope, MarkerId, ObservationKind, ObservationPayloadRef, ObservedTime,
+    PageTarget, ProfileIdentity, ProfileRef, RangeResolutionOptions, RecordingCatalog,
+    RecordingSession, RecordingSink, SessionId, SessionRange, SessionTime, TargetId,
+    TemporalRangeAnchor, TemporalRangeResolver, TimelineObservation, TimelineStore,
 };
 use krometrail_store::{
     IndexStoreConfig, RecordingStore, RotationConfig, SegmentStoreConfig, SegmentWriter,
@@ -149,7 +149,7 @@ impl Fixture {
 #[tokio::test]
 async fn explicit_session_and_wall_clock_ranges_share_frame_order() {
     let fixture = Fixture::new().await;
-    let scope = AnchorScope::new(Some(fixture.session), Some(fixture.target));
+    let scope = IntervalAnchorScope::new(fixture.session, fixture.target);
     let session_range = TemporalRangeAnchor::SessionTime {
         scope,
         range: SessionRange::new(SessionTime::from_nanos(1), SessionTime::from_nanos(10)).unwrap(),
@@ -451,7 +451,7 @@ async fn durable_interaction_anchors_resolve_and_uncaptured_edges_are_not_partia
         .resolver()
         .resolve(
             TemporalRangeAnchor::SessionTime {
-                scope: AnchorScope::new(Some(fixture.session), Some(fixture.target)),
+                scope: IntervalAnchorScope::new(fixture.session, fixture.target),
                 range: SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(20)).unwrap(),
             },
             partial,
@@ -483,7 +483,7 @@ async fn source_frame_scope_mismatch_is_invalid_input() {
 #[tokio::test]
 async fn wall_clock_before_session_and_empty_target_are_not_found() {
     let fixture = Fixture::new().await;
-    let scope = AnchorScope::new(Some(fixture.session), Some(fixture.target));
+    let scope = IntervalAnchorScope::new(fixture.session, fixture.target);
     let before = fixture
         .resolver()
         .resolve(
@@ -503,7 +503,7 @@ async fn wall_clock_before_session_and_empty_target_are_not_found() {
         .resolver()
         .resolve(
             TemporalRangeAnchor::SessionTime {
-                scope: AnchorScope::new(Some(fixture.session), Some(empty_target)),
+                scope: IntervalAnchorScope::new(fixture.session, empty_target),
                 range: SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(10)).unwrap(),
             },
             RangeResolutionOptions::DEFAULT,

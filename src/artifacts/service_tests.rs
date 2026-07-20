@@ -964,14 +964,11 @@ fn default_limits_fit_reproduced_high_dpi_sequence_with_fixed_combined_budget() 
     )
     .pop()
     .unwrap();
-    let error = match prepare_generator(&difference_map, &oversized_plan[0], limits) {
-        Ok(_) => panic!("oversized sequence must fail before allocation"),
-        Err(error) => error,
+    let prepared = prepare_generator(&difference_map, &oversized_plan[0], limits).unwrap();
+    let ArtifactGeneratorRequest::DifferenceMap(request) = prepared.request else {
+        unreachable!()
     };
-    assert_eq!(
-        error.code,
-        krometrail_core::ErrorCode::ResourceLimitExceeded
-    );
+    assert_eq!(request.normalization.scale, AnalysisScale::Down(3));
 }
 
 #[tokio::test]

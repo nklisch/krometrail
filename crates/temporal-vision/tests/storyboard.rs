@@ -115,6 +115,49 @@ fn request(tile_limit: StoryboardTileLimit, limits: RenderLimits) -> StoryboardP
     )
 }
 
+fn narrow_fixture() -> (SourceSequence, NormalizedFrames) {
+    let dimensions = PixelDimensions::new(1, 1).unwrap();
+    let frames = (0..12)
+        .map(|index| {
+            Frame::new(
+                FrameId(format!("00000000-0000-0000-0000-{index:012}")),
+                Timestamp::from_nanos(index * 10_000_000),
+                dimensions,
+                PixelFormat::Rgba8SrgbStraight,
+                vec![0, 0, 0, 255].into_boxed_slice(),
+            )
+            .unwrap()
+        })
+        .collect();
+    let source = FrameSequence::new(
+        frames,
+        vec![
+            Marker::new(
+                MarkerId("marker".into()),
+                Timestamp::ZERO,
+                "navigation",
+                "a marker with enough evidence text to exceed the tile width",
+            )
+            .unwrap(),
+        ],
+        Vec::<DeclaredGap<GapId>>::new(),
+        None,
+        None,
+    )
+    .unwrap();
+    let normalized = normalize_sequence(
+        &source,
+        NormalizationParameters::new(
+            Rgb8::new(0, 0, 0),
+            None,
+            IntegerScale::IDENTITY,
+            ProcessingLimits::default(),
+        ),
+    )
+    .unwrap();
+    (source, normalized)
+}
+
 #[test]
 fn selection_preserves_anchor_priority_ties_segments_and_exact_roles() {
     let (source, normalized) = fixture();
@@ -390,8 +433,62 @@ fn public_generator_returns_traceable_deterministic_pngs_and_manifests() {
 
     assert_eq!(
         first.storyboard().manifest().output_hash().to_string(),
-        "b606148fe214fd4d68545e1ad3379299f427a8c75e1797f7f7dd34358b1d2417"
+        "0a3f793d5a2edbcde11c425b456eb29832c735df88f4c21d45ccb9cb920d7e71"
     );
+}
+
+#[test]
+fn narrow_storyboard_keeps_fitting_labels_and_annotation_band() {
+    let (source, normalized) = narrow_fixture();
+    let rendered = generate_storyboard(
+        ArtifactId("narrow-storyboard".into()),
+        None,
+        &source,
+        &normalized,
+        StoryboardParameters::new(
+            Timestamp::from_nanos(50_000_000),
+            StoryboardTileLimit::new(12).unwrap(),
+            MeasurementParameters::new(0),
+            ArtifactLabels::new("narrow storyboard", "synthetic viewport").unwrap(),
+            RenderLimits::new(
+                NonZeroU32::new(1_920).unwrap(),
+                NonZeroU32::new(4_096).unwrap(),
+                NonZeroUsize::new(64 * 1024 * 1024).unwrap(),
+                NonZeroUsize::new(64 * 1024 * 1024).unwrap(),
+            ),
+        ),
+    )
+    .unwrap();
+    let (dimensions, pixels) = decode_rgb(rendered.storyboard().image().bytes());
+    assert_eq!(dimensions.width(), 1_920);
+    assert_eq!(dimensions.height(), 306);
+    assert!(region_has_color(
+        &pixels,
+        dimensions,
+        0,
+        52 + 160,
+        160,
+        70,
+        [244, 247, 250]
+    ));
+    assert!(region_has_color(
+        &pixels,
+        dimensions,
+        0,
+        52 + 160 + 12,
+        160,
+        12,
+        [174, 184, 198]
+    ));
+    assert!(region_has_color(
+        &pixels,
+        dimensions,
+        0,
+        52 + 160 + 36,
+        160,
+        12,
+        [174, 184, 198]
+    ));
 }
 
 #[test]

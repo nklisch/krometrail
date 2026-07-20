@@ -67,6 +67,22 @@ pub struct AnchorScope {
     pub session_id: Option<SessionId>,
     pub target_id: Option<TargetId>,
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct IntervalAnchorScope {
+    pub session_id: SessionId,
+    pub target_id: TargetId,
+}
+
+impl IntervalAnchorScope {
+    pub const fn new(session_id: SessionId, target_id: TargetId) -> Self {
+        Self {
+            session_id,
+            target_id,
+        }
+    }
+}
 impl AnchorScope {
     pub const fn new(session_id: Option<SessionId>, target_id: Option<TargetId>) -> Self {
         Self {
@@ -182,11 +198,11 @@ impl RangeResolutionOptions {
 #[serde(tag = "anchor", rename_all = "snake_case")]
 pub enum TemporalRangeAnchor {
     SessionTime {
-        scope: AnchorScope,
+        scope: IntervalAnchorScope,
         range: SessionRange,
     },
     WallClock {
-        scope: AnchorScope,
+        scope: IntervalAnchorScope,
         start: SystemTime,
         end: SystemTime,
     },
@@ -220,11 +236,11 @@ pub enum TemporalRangeAnchor {
 #[serde(tag = "anchor", rename_all = "snake_case", deny_unknown_fields)]
 enum TemporalRangeAnchorWire {
     SessionTime {
-        scope: AnchorScope,
+        scope: IntervalAnchorScope,
         range: SessionRange,
     },
     WallClock {
-        scope: AnchorScope,
+        scope: IntervalAnchorScope,
         start: SystemTime,
         end: SystemTime,
     },
@@ -270,15 +286,12 @@ impl TemporalRangeAnchor {
 
     pub fn validate(&self) -> Result<()> {
         match self {
-            Self::SessionTime { scope, .. } => {
-                required_scope(*scope)?;
-            }
+            Self::SessionTime { .. } => {}
             Self::WallClock { scope, start, end } => {
-                required_scope(*scope)?;
                 if start > end {
                     return Err(invalid_with_context(
                         "wall-clock range start must not exceed its end",
-                        scope_context(*scope),
+                        interval_scope_context(*scope),
                     ));
                 }
             }
@@ -895,6 +908,14 @@ pub(crate) fn scope_context(scope: AnchorScope) -> ErrorContext {
     }
 }
 
+fn interval_scope_context(scope: IntervalAnchorScope) -> ErrorContext {
+    ErrorContext {
+        session_id: Some(scope.session_id),
+        target_id: Some(scope.target_id),
+        ..ErrorContext::default()
+    }
+}
+
 use crate::{
     CaptureGapStore, CapturedFrame, FrameSource, InteractionAnchorSource, ObservationPayloadRef,
     PortFuture, RecordingCatalog, TimelineAnchorSource, TimelineStore,
@@ -981,7 +1002,7 @@ where
     ) -> Result<RangeSeed> {
         match anchor {
             TemporalRangeAnchor::SessionTime { scope, range } => {
-                let (session_id, target_id) = required_scope(scope)?;
+                let (session_id, target_id) = (scope.session_id, scope.target_id);
                 self.validate_catalog_scope(session_id, target_id).await?;
                 Ok(RangeSeed {
                     session_id,
@@ -994,17 +1015,17 @@ where
                 })
             }
             TemporalRangeAnchor::WallClock { scope, start, end } => {
-                let (session_id, target_id) = required_scope(scope)?;
+                let (session_id, target_id) = (scope.session_id, scope.target_id);
                 if start > end {
                     return Err(invalid_with_context(
                         "wall-clock range start must not exceed its end",
-                        scope_context(scope),
+                        interval_scope_context(scope),
                     ));
                 }
                 let session = self.catalog.session(session_id).await?.ok_or_else(|| {
                     not_found(
                         "wall-clock resolution requires complete session metadata",
-                        scope_context(scope),
+                        interval_scope_context(scope),
                     )
                 })?;
                 let start = wall_clock_offset(start, session.started_at(), scope)?;
@@ -1258,6 +1279,7 @@ where
             .gaps
             .gaps(seed.session_id, seed.target_id, resolved_range)
             .await?;
+        let gaps = clip_capture_gaps(gaps, resolved_range)?;
         if options.capture_gaps == CaptureGapPolicy::Reject && !gaps.is_empty() {
             return Err(range_not_found(
                 "requested range contains known capture gaps",
@@ -1507,6 +1529,42 @@ fn ranges_intersect(left: SessionRange, right: SessionRange) -> bool {
     left.start() <= right.end() && right.start() <= left.end()
 }
 
+fn clip_capture_gaps(gaps: Vec<CaptureGap>, range: SessionRange) -> Result<Vec<CaptureGap>> {
+    gaps.into_iter()
+        .filter_map(|gap| {
+            if !ranges_intersect(gap.range(), range) {
+                return if gap.estimated_missing_frames().is_some() {
+                    Some(Err(persistence_range_error(
+                        "capture-gap source returned estimated loss outside the resolved range",
+                    )))
+                } else {
+                    None
+                };
+            }
+            let clipped_range = SessionRange::new(
+                SessionTime::from_nanos(
+                    gap.range().start().as_nanos().max(range.start().as_nanos()),
+                ),
+                SessionTime::from_nanos(gap.range().end().as_nanos().min(range.end().as_nanos())),
+            )
+            .expect("intersecting capture gaps form a valid range");
+            Some(
+                CaptureGap::new(
+                    gap.id(),
+                    gap.session_id(),
+                    gap.target_id(),
+                    clipped_range,
+                    gap.observed_time(),
+                    *gap.reason(),
+                    gap.estimated_missing_frames(),
+                    gap.detail().map(str::to_owned),
+                )
+                .map_err(|_| persistence_range_error("capture gap could not be clipped")),
+            )
+        })
+        .collect()
+}
+
 fn intersection(left: SessionRange, right: SessionRange) -> SessionRange {
     SessionRange::new(left.start().max(right.start()), left.end().min(right.end()))
         .expect("intersecting ranges form a valid intersection")
@@ -1544,16 +1602,6 @@ fn range_not_found(
     error
 }
 
-fn required_scope(scope: AnchorScope) -> Result<(SessionId, TargetId)> {
-    match (scope.session_id, scope.target_id) {
-        (Some(session_id), Some(target_id)) => Ok((session_id, target_id)),
-        _ => Err(invalid_with_context(
-            "range anchor requires both session and target scope",
-            scope_context(scope),
-        )),
-    }
-}
-
 fn validate_scope_match(
     scope: AnchorScope,
     session_id: SessionId,
@@ -1573,12 +1621,12 @@ fn validate_scope_match(
 fn wall_clock_offset(
     value: SystemTime,
     started_at: SystemTime,
-    scope: AnchorScope,
+    scope: IntervalAnchorScope,
 ) -> Result<SessionTime> {
     let duration = value.duration_since(started_at).map_err(|_| {
         not_found(
             "wall-clock timestamp precedes the recording session",
-            scope_context(scope),
+            interval_scope_context(scope),
         )
     })?;
     let nanos = u64::try_from(duration.as_nanos())
@@ -1631,7 +1679,7 @@ impl ErrorContextInteraction for ErrorContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CaptureGapReason, InteractionTiming};
+    use crate::{CaptureGapReason, InteractionTiming, IntervalAnchorScope};
     use std::num::NonZeroU64;
     fn ids() -> (
         SessionId,
@@ -1689,7 +1737,7 @@ mod tests {
         assert_eq!(TemporalRangeAnchorKind::from_stable_name("future"), None);
         let (session, target, _, _, _, _) = ids();
         let anchor = TemporalRangeAnchor::SessionTime {
-            scope: AnchorScope::new(Some(session), Some(target)),
+            scope: IntervalAnchorScope::new(session, target),
             range: SessionRange::new(SessionTime::ZERO, SessionTime::ZERO).unwrap(),
         };
         assert_eq!(
@@ -1972,5 +2020,45 @@ mod tests {
         )
         .unwrap();
         assert_eq!(gap.target_id(), target);
+    }
+
+    #[test]
+    fn resolver_gap_clipping_preserves_estimated_loss() {
+        let (session, target, _, _, _, _) = ids();
+        let gap = CaptureGap::new(
+            crate::GapId::from_uuid(uuid::Uuid::from_u128(3)),
+            session,
+            target,
+            SessionRange::new(SessionTime::from_nanos(1), SessionTime::from_nanos(20)).unwrap(),
+            crate::ObservedTime::from_nanos(20),
+            CaptureGapReason::CaptureStopped,
+            NonZeroU64::new(7),
+            Some("capture tail".into()),
+        )
+        .unwrap();
+        let resolved =
+            SessionRange::new(SessionTime::from_nanos(5), SessionTime::from_nanos(10)).unwrap();
+        let clipped = clip_capture_gaps(vec![gap], resolved).unwrap();
+        assert_eq!(clipped.len(), 1);
+        assert_eq!(clipped[0].range(), resolved);
+        assert_eq!(clipped[0].estimated_missing_frames(), NonZeroU64::new(7));
+        assert_eq!(clipped[0].detail(), Some("capture tail"));
+
+        let outside = CaptureGap::new(
+            crate::GapId::from_uuid(uuid::Uuid::from_u128(4)),
+            session,
+            target,
+            SessionRange::new(SessionTime::from_nanos(30), SessionTime::from_nanos(40)).unwrap(),
+            crate::ObservedTime::from_nanos(40),
+            CaptureGapReason::CaptureStopped,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(
+            clip_capture_gaps(vec![outside], resolved)
+                .unwrap()
+                .is_empty()
+        );
     }
 }

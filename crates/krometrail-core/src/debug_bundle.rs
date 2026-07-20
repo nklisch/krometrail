@@ -670,17 +670,17 @@ pub trait TemporalDebugBundles: Send + Sync {
 mod tests {
     use super::*;
     use crate::{
-        AnchorScope, CaptureGapPolicy, InteractionId, RetentionPolicy, SessionId, SessionRange,
-        TargetId,
+        CaptureGapPolicy, InteractionId, IntervalAnchorScope, RetentionPolicy, SessionId,
+        SessionRange, TargetId,
     };
     use uuid::Uuid;
 
     fn query() -> TemporalQueryRequest {
         TemporalQueryRequest::new(
             TemporalRangeAnchor::SessionTime {
-                scope: AnchorScope::new(
-                    Some(SessionId::from_uuid(Uuid::from_u128(1))),
-                    Some(TargetId::from_uuid(Uuid::from_u128(2))),
+                scope: IntervalAnchorScope::new(
+                    SessionId::from_uuid(Uuid::from_u128(1)),
+                    TargetId::from_uuid(Uuid::from_u128(2)),
                 ),
                 range: SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(10)).unwrap(),
             },

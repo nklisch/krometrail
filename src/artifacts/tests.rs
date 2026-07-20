@@ -1,9 +1,9 @@
 use image::ImageEncoder;
 use krometrail_core::{
-    ArtifactMarker, ArtifactMarkerId, CaptureGap, CaptureGapReason, CaptureOrdinal, CapturedFrame,
-    DeviceScaleFactor, EncodedFrame, FrameId, ImageFormat, NonEmptyText, ObservedTime,
-    PixelDimensions, RangeResolutionOptions, ResolvedRange, SessionId, SessionRange, SessionTime,
-    TargetId, TemporalRangeAnchorKind,
+    ArtifactId, ArtifactMarker, ArtifactMarkerId, CaptureGap, CaptureGapReason, CaptureOrdinal,
+    CapturedFrame, DeviceScaleFactor, EncodedFrame, FrameId, ImageFormat, NonEmptyText,
+    ObservedTime, PixelDimensions, RangeResolutionOptions, ResolvedRange, SessionId, SessionRange,
+    SessionTime, TargetId, TemporalRangeAnchorKind,
 };
 use std::num::NonZeroU64;
 use uuid::Uuid;
@@ -14,6 +14,10 @@ use super::{
         ADAPTER_VERSION, AdaptationLimits, WorkCancellation, validate_and_partition,
         validate_and_plan,
     },
+};
+use temporal_vision::{
+    ArtifactLabels, IntegerScale, MeasurementParameters, NormalizationParameters, RenderLimits,
+    StoryboardParameters, StoryboardTileLimit, normalize_sequence,
 };
 
 const JPEG: &[u8] = include_bytes!("../../tests/fixtures/artifacts/chrome-rgb.jpg");
@@ -90,7 +94,7 @@ fn range(frames: &[EncodedFrame], gaps: Vec<CaptureGap>) -> ResolvedRange {
 #[test]
 fn real_jpeg_and_png_decode_to_declared_straight_rgba8() {
     assert!(DECODER_PROFILE.contains("image-0.25.9"));
-    assert_eq!(ADAPTER_VERSION, "krometrail-artifact-adapter-v2");
+    assert_eq!(ADAPTER_VERSION, "krometrail-artifact-adapter-v3");
     let jpeg = frame(
         metadata(1, 1, 1, ImageFormat::Jpeg, (2, 2), (2, 2), 1.0),
         JPEG,
@@ -269,6 +273,54 @@ fn epochs_preserve_ties_formats_gaps_markers_and_exact_geometry_boundaries() {
         plans[1].descriptor.device_scale_factor.get().to_bits(),
         plans[2].descriptor.device_scale_factor.get().to_bits(),
     );
+    assert_eq!(plans.iter().filter(|plan| !plan.gaps.is_empty()).count(), 1);
+    let manifest_gap_data: Vec<_> = epochs
+        .iter()
+        .enumerate()
+        .map(|(index, epoch)| {
+            let normalized = normalize_sequence(
+                &epoch.sequence,
+                NormalizationParameters::new(
+                    temporal_vision::Rgb8::new(0, 0, 0),
+                    None,
+                    IntegerScale::IDENTITY,
+                    temporal_vision::ProcessingLimits::default(),
+                ),
+            )
+            .unwrap();
+            let generated = temporal_vision::generate_storyboard(
+                ArtifactId::from_uuid(Uuid::from_u128(300 + u128::try_from(index).unwrap())),
+                None,
+                &epoch.sequence,
+                &normalized,
+                StoryboardParameters::new(
+                    epoch.sequence.range().start(),
+                    StoryboardTileLimit::new(3).unwrap(),
+                    MeasurementParameters::new(0),
+                    ArtifactLabels::new("epoch", "test").unwrap(),
+                    RenderLimits::default(),
+                ),
+            )
+            .unwrap();
+            let storyboard = generated.storyboard();
+            let image = image::load_from_memory(storyboard.image().bytes())
+                .unwrap()
+                .to_rgb8();
+            (
+                storyboard.manifest().gaps().len(),
+                image.pixels().any(|pixel| pixel.0 == [255, 196, 64]),
+            )
+        })
+        .collect();
+    assert_eq!(
+        manifest_gap_data
+            .iter()
+            .map(|(count, _)| *count)
+            .collect::<Vec<_>>(),
+        [1, 0, 0]
+    );
+    assert!(!manifest_gap_data[1].1);
+    assert!(!manifest_gap_data[2].1);
 }
 
 #[test]

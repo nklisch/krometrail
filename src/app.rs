@@ -1000,7 +1000,7 @@ mod tests {
             .temporal_queries
             .resolve_range(
                 krometrail_core::TemporalQueryRequest::strict(TemporalRangeAnchor::SessionTime {
-                    scope: krometrail_core::AnchorScope::new(Some(session), Some(target)),
+                    scope: krometrail_core::IntervalAnchorScope::new(session, target),
                     range: SessionRange::new(
                         SessionTime::from_nanos(1),
                         SessionTime::from_nanos(1),
@@ -1047,7 +1047,7 @@ mod tests {
 
         let request = TemporalDebugBundleRequest::new(
             krometrail_core::TemporalQueryRequest::strict(TemporalRangeAnchor::SessionTime {
-                scope: krometrail_core::AnchorScope::new(Some(session), Some(target)),
+                scope: krometrail_core::IntervalAnchorScope::new(session, target),
                 range: SessionRange::new(SessionTime::from_nanos(1), SessionTime::from_nanos(1))
                     .unwrap(),
             })

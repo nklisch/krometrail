@@ -64,7 +64,7 @@ fn resolved_range() -> ResolvedRange {
 fn request() -> TemporalDebugBundleRequest {
     TemporalDebugBundleRequest::default_policy(
         TemporalQueryRequest::strict(TemporalRangeAnchor::SessionTime {
-            scope: krometrail_core::AnchorScope::new(Some(session()), Some(target())),
+            scope: krometrail_core::IntervalAnchorScope::new(session(), target()),
             range: SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(1_000_000))
                 .unwrap(),
         })
@@ -1648,7 +1648,7 @@ mod qualification {
         TemporalDebugBundleRequest::default_policy(
             TemporalQueryRequest::new(
                 TemporalRangeAnchor::SessionTime {
-                    scope: krometrail_core::AnchorScope::new(Some(rig.session), Some(rig.target)),
+                    scope: krometrail_core::IntervalAnchorScope::new(rig.session, rig.target),
                     range: SessionRange::new(
                         SessionTime::from_nanos(1),
                         SessionTime::from_nanos(4),
@@ -1827,7 +1827,7 @@ mod qualification {
         let req_include = TemporalDebugBundleRequest::new(
             TemporalQueryRequest::new(
                 TemporalRangeAnchor::SessionTime {
-                    scope: krometrail_core::AnchorScope::new(Some(rig.session), Some(rig.target)),
+                    scope: krometrail_core::IntervalAnchorScope::new(rig.session, rig.target),
                     range: SessionRange::new(
                         SessionTime::from_nanos(1),
                         SessionTime::from_nanos(4),
@@ -1846,7 +1846,7 @@ mod qualification {
         let req_omit = TemporalDebugBundleRequest::new(
             TemporalQueryRequest::new(
                 TemporalRangeAnchor::SessionTime {
-                    scope: krometrail_core::AnchorScope::new(Some(rig.session), Some(rig.target)),
+                    scope: krometrail_core::IntervalAnchorScope::new(rig.session, rig.target),
                     range: SessionRange::new(
                         SessionTime::from_nanos(1),
                         SessionTime::from_nanos(4),

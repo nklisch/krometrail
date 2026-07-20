@@ -9,13 +9,13 @@ use krometrail_core::{
     CaptureOrdinal, CapturedFrame, DeviceScaleFactor, DialogAction, DiskBudgetBytes,
     ElementLocator, EncodedFrame, FillMode, FillRequest, FrameId, FrameSource, HandleDialogRequest,
     ImageFormat, InteractionAnchor, InteractionEvidenceSink, InteractionId, InteractionLocator,
-    InteractionOutcome, InteractionRecord, InteractionTiming, LocatorSummary, MarkerId,
-    NavigationId, NonEmptyText, ObservationContext, ObservationKind, ObservationPayloadRef,
-    ObservedTime, PageSelection, PageTarget, PixelDimensions, ProfileIdentity, ProfileRef,
-    RecordingCatalog, RecordingSink, RetentionPolicy, RetentionStore, SessionId, SessionRange,
-    SessionTime, TargetId, TemporalQuery, TemporalQueryRequest, TemporalRangeAnchor,
-    TemporalRangeAnchorKind, TimelineObservation, TimelineStore, UploadFilesRequest,
-    ValidatedFilePath,
+    InteractionOutcome, InteractionRecord, InteractionTiming, IntervalAnchorScope, LocatorSummary,
+    MarkerId, NavigationId, NonEmptyText, ObservationContext, ObservationKind,
+    ObservationPayloadRef, ObservedTime, PageSelection, PageTarget, PixelDimensions,
+    ProfileIdentity, ProfileRef, RecordingCatalog, RecordingSink, RetentionPolicy, RetentionStore,
+    SessionId, SessionRange, SessionTime, TargetId, TemporalQuery, TemporalQueryRequest,
+    TemporalRangeAnchor, TemporalRangeAnchorKind, TimelineObservation, TimelineStore,
+    UploadFilesRequest, ValidatedFilePath,
 };
 use krometrail_store::{
     IndexStoreConfig, RecordingStore, RotationConfig, SegmentStoreConfig, SegmentWriter,
@@ -220,6 +220,10 @@ impl Fixture {
         AnchorScope::new(Some(self.session), Some(self.target))
     }
 
+    fn interval_scope(&self) -> IntervalAnchorScope {
+        IntervalAnchorScope::new(self.session, self.target)
+    }
+
     async fn resolve(&self, anchor: TemporalRangeAnchor) -> krometrail_core::ResolvedRange {
         self.store
             .resolve_range(TemporalQueryRequest::strict(anchor).unwrap())
@@ -294,14 +298,14 @@ async fn all_anchor_forms_resolve_once_with_exact_implicit_window_and_ordering()
     let anchors = [
         (
             TemporalRangeAnchor::SessionTime {
-                scope: fixture.scope(),
+                scope: fixture.interval_scope(),
                 range: SessionRange::new(at(100), at(500)).unwrap(),
             },
             TemporalRangeAnchorKind::SessionTime,
         ),
         (
             TemporalRangeAnchor::WallClock {
-                scope: fixture.scope(),
+                scope: fixture.interval_scope(),
                 start: SystemTime::UNIX_EPOCH + Duration::from_millis(100),
                 end: SystemTime::UNIX_EPOCH + Duration::from_millis(500),
             },
@@ -452,7 +456,7 @@ async fn wrong_scope_and_retention_truth_are_explicit_and_contiguous_only() {
 
     fixture.simulate_eviction(SessionRange::new(at(0), at(200)).unwrap());
     let anchor = TemporalRangeAnchor::SessionTime {
-        scope: fixture.scope(),
+        scope: fixture.interval_scope(),
         range: SessionRange::new(at(0), at(500)).unwrap(),
     };
     assert_eq!(
@@ -561,7 +565,7 @@ async fn wrong_scope_and_retention_truth_are_explicit_and_contiguous_only() {
         .resolve_range(
             TemporalQueryRequest::new(
                 TemporalRangeAnchor::SessionTime {
-                    scope: fixture.scope(),
+                    scope: fixture.interval_scope(),
                     range: SessionRange::new(at(0), at(200)).unwrap(),
                 },
                 RetentionPolicy::AllowPartial,
@@ -583,7 +587,7 @@ async fn wrong_scope_and_retention_truth_are_explicit_and_contiguous_only() {
             .resolve_range(
                 TemporalQueryRequest::new(
                     TemporalRangeAnchor::SessionTime {
-                        scope: internal.scope(),
+                        scope: internal.interval_scope(),
                         range: SessionRange::new(at(0), at(700)).unwrap(),
                     },
                     RetentionPolicy::AllowPartial,
@@ -605,7 +609,7 @@ async fn wrong_scope_and_retention_truth_are_explicit_and_contiguous_only() {
             .resolve_range(
                 TemporalQueryRequest::new(
                     TemporalRangeAnchor::SessionTime {
-                        scope: fully.scope(),
+                        scope: fully.interval_scope(),
                         range: SessionRange::new(at(0), at(800)).unwrap(),
                     },
                     RetentionPolicy::AllowPartial,
@@ -626,7 +630,7 @@ async fn wrong_scope_and_retention_truth_are_explicit_and_contiguous_only() {
         .resolve_range(
             TemporalQueryRequest::new(
                 TemporalRangeAnchor::SessionTime {
-                    scope: never.scope(),
+                    scope: never.interval_scope(),
                     range: requested,
                 },
                 RetentionPolicy::AllowPartial,

@@ -17,7 +17,7 @@ use crate::{
 use canvas::{
     BLACK, Canvas, MUTED, PANEL, WARNING, WHITE, canvas_limit_error, canvas_output_limit_error,
 };
-use font::{CELL_WIDTH, draw_text, ellipsize};
+use font::{CELL_WIDTH, draw_text, ellipsize, untruncated};
 
 const PREFERRED_TILE_WIDTH: u32 = 240;
 const MINIMUM_TILE_WIDTH: u32 = 160;
@@ -289,7 +289,13 @@ fn render_storyboard<F: Display + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
     let layout = checked_layout(
         selection.selected_frames().len(),
         normalized.dimensions(),
-        STORY_ANNOTATION_HEIGHT,
+        story_annotation_height(
+            selection,
+            source,
+            marker_assignments,
+            parameters.anchor,
+            parameters.limits,
+        ),
         parameters.limits,
     )?;
     let mut canvas = Canvas::new(
@@ -306,16 +312,18 @@ fn render_storyboard<F: Display + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
     )?;
     let image_y = HEADER_HEIGHT;
     let annotation_y = image_y + layout.image_height;
+    if layout.annotation_height > 0 {
+        canvas.fill_rect(
+            0,
+            annotation_y,
+            layout.dimensions.width(),
+            layout.annotation_height,
+            PANEL,
+        )?;
+    }
     canvas.fill_rect(
         0,
-        annotation_y,
-        layout.dimensions.width(),
-        STORY_ANNOTATION_HEIGHT,
-        PANEL,
-    )?;
-    canvas.fill_rect(
-        0,
-        annotation_y + STORY_ANNOTATION_HEIGHT,
+        annotation_y + layout.annotation_height,
         layout.dimensions.width(),
         TIMELINE_HEIGHT,
         BLACK,
@@ -361,16 +369,18 @@ fn render_storyboard<F: Display + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
                 hatch_x,
                 annotation_y,
                 8,
-                STORY_ANNOTATION_HEIGHT + TIMELINE_HEIGHT,
+                layout.annotation_height + TIMELINE_HEIGHT,
                 WARNING,
             )?;
-            let label_x = boundary_x.saturating_sub(18);
-            draw_text(&mut canvas, label_x, annotation_y + 50, "GAP", WARNING)?;
+            if layout.annotation_height > 0 {
+                let label_x = boundary_x.saturating_sub(18);
+                draw_text(&mut canvas, label_x, annotation_y + 50, "GAP", WARNING)?;
+            }
         }
     }
     draw_timeline(
         &mut canvas,
-        annotation_y + STORY_ANNOTATION_HEIGHT,
+        annotation_y + layout.annotation_height,
         source,
         layout.dimensions.width(),
     )?;
@@ -444,27 +454,30 @@ fn render_orientation<F: Display + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
         let max_cells = usize::try_from(layout.tile_width / CELL_WIDTH)
             .unwrap_or(0)
             .saturating_sub(1);
-        draw_text(
+        draw_untruncated(
             &mut canvas,
             panel_x + 3,
             annotation_y + 2,
-            &ellipsize(label, max_cells),
+            label,
+            max_cells,
             WHITE,
         )?;
         let source_label = format!("FRAME {}", source.frames()[frame_index].id());
-        draw_text(
+        draw_ellipsized(
             &mut canvas,
             panel_x + 3,
             annotation_y + 14,
-            &ellipsize(&source_label, max_cells),
+            &source_label,
+            max_cells,
             MUTED,
         )?;
         let time = time_and_offset(source.frames()[frame_index].timestamp(), parameters.anchor);
-        draw_text(
+        draw_untruncated(
             &mut canvas,
             panel_x + 3,
             annotation_y + 26,
-            &ellipsize(&time, max_cells),
+            &time,
+            max_cells,
             MUTED,
         )?;
     }
@@ -503,6 +516,7 @@ struct Layout {
     dimensions: PixelDimensions,
     tile_width: u32,
     image_height: u32,
+    annotation_height: u32,
 }
 
 fn checked_layout(
@@ -554,6 +568,7 @@ fn checked_layout(
         dimensions,
         tile_width,
         image_height,
+        annotation_height,
     })
 }
 
@@ -567,27 +582,15 @@ fn draw_header<F: Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
     let max_cells = usize::try_from(canvas.dimensions().width() / CELL_WIDTH)
         .unwrap_or(0)
         .saturating_sub(1);
-    draw_text(
-        canvas,
-        4,
-        2,
-        &ellipsize(parameters.labels.title(), max_cells),
-        WHITE,
-    )?;
-    draw_text(
-        canvas,
-        4,
-        14,
-        &ellipsize(parameters.labels.source(), max_cells),
-        MUTED,
-    )?;
+    draw_untruncated(canvas, 4, 2, parameters.labels.title(), max_cells, WHITE)?;
+    draw_untruncated(canvas, 4, 14, parameters.labels.source(), max_cells, MUTED)?;
     let range = format!(
         "RANGE {} - {} | ANCHOR {}",
         format_time(source.range().start()),
         format_time(source.range().end()),
         format_time(parameters.anchor)
     );
-    draw_text(canvas, 4, 26, &ellipsize(&range, max_cells), MUTED)?;
+    draw_untruncated(canvas, 4, 26, &range, max_cells, MUTED)?;
     let warning = match (has_gaps, omitted_anchors) {
         (true, 0) => "GAP - UNSEEN BEHAVIOR MAY HAVE OCCURRED".to_owned(),
         (false, count) if count > 0 => format!("ANCHORS OMITTED: {count}; SEE MANIFEST"),
@@ -597,13 +600,15 @@ fn draw_header<F: Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
         (false, 0) => "SOURCE-DERIVED | SELECTED FRAMES; SEE MANIFEST".to_owned(),
         _ => unreachable!(),
     };
-    draw_text(
+    draw_untruncated(
         canvas,
         4,
         38,
-        &ellipsize(&warning, max_cells),
+        &warning,
+        max_cells,
         if has_gaps { WARNING } else { MUTED },
-    )
+    )?;
+    Ok(())
 }
 
 fn draw_story_annotation<F: Display + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
@@ -618,6 +623,73 @@ fn draw_story_annotation<F: Display + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
     let max_cells = usize::try_from(tile_width / CELL_WIDTH)
         .unwrap_or(0)
         .saturating_sub(1);
+    let lines = story_annotation_lines(selected, source, marker_indices, anchor);
+    for (line, text) in lines.iter().enumerate() {
+        let x = tile_x + 3;
+        let y = annotation_y + 2 + line as u32 * 12;
+        let color = if line == 0 { WHITE } else { MUTED };
+        if matches!(line, 1 | 3) {
+            draw_ellipsized(canvas, x, y, text, max_cells, color)?;
+        } else {
+            draw_untruncated(canvas, x, y, text, max_cells, color)?;
+        }
+    }
+    Ok(())
+}
+
+fn draw_timeline<F: Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
+    canvas: &mut Canvas,
+    y: u32,
+    source: &FrameSequence<F, M, G, P>,
+    width: u32,
+) -> Result<()> {
+    let cells = usize::try_from(width / CELL_WIDTH).unwrap_or(0);
+    draw_untruncated(canvas, 4, y + 6, "TIME ->", cells, WHITE)?;
+    let end = format!(
+        "{} -> {}",
+        format_time(source.range().start()),
+        format_time(source.range().end())
+    );
+    let text_width = u32::try_from(end.chars().count())
+        .unwrap_or(u32::MAX)
+        .saturating_mul(CELL_WIDTH);
+    let x = width.saturating_sub(text_width + 4);
+    draw_untruncated(canvas, x, y + 6, &end, cells, MUTED)?;
+    Ok(())
+}
+
+fn draw_untruncated(
+    canvas: &mut Canvas,
+    x: u32,
+    y: u32,
+    text: &str,
+    max_cells: usize,
+    color: [u8; 3],
+) -> Result<bool> {
+    let Some(text) = untruncated(text, max_cells) else {
+        return Ok(false);
+    };
+    draw_text(canvas, x, y, &text, color)?;
+    Ok(true)
+}
+
+fn draw_ellipsized(
+    canvas: &mut Canvas,
+    x: u32,
+    y: u32,
+    text: &str,
+    max_cells: usize,
+    color: [u8; 3],
+) -> Result<()> {
+    draw_text(canvas, x, y, &ellipsize(text, max_cells), color)
+}
+
+fn story_annotation_lines<F: Display + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
+    selected: &crate::SelectedFrame<F>,
+    source: &FrameSequence<F, M, G, P>,
+    marker_indices: &[usize],
+    anchor: Timestamp,
+) -> [String; 5] {
     let marker_text = if marker_indices.is_empty() {
         "MARKERS NONE".to_owned()
     } else {
@@ -633,7 +705,7 @@ fn draw_story_annotation<F: Display + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
                 .join(" | ")
         )
     };
-    let lines = [
+    [
         time_and_offset(selected.timestamp(), anchor),
         format!("FRAME {}", selected.frame_id()),
         format!(
@@ -647,37 +719,38 @@ fn draw_story_annotation<F: Display + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
         ),
         marker_text,
         "SOURCE FRAME - AUTHORITATIVE".to_owned(),
-    ];
-    for (line, text) in lines.iter().enumerate() {
-        draw_text(
-            canvas,
-            tile_x + 3,
-            annotation_y + 2 + line as u32 * 12,
-            &ellipsize(text, max_cells),
-            if line == 0 { WHITE } else { MUTED },
-        )?;
-    }
-    Ok(())
+    ]
 }
 
-fn draw_timeline<F: Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
-    canvas: &mut Canvas,
-    y: u32,
+fn story_annotation_height<F: Display + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
+    selection: &StoryboardSelection<F>,
     source: &FrameSequence<F, M, G, P>,
-    width: u32,
-) -> Result<()> {
-    draw_text(canvas, 4, y + 6, "TIME ->", WHITE)?;
-    let end = format!(
-        "{} -> {}",
-        format_time(source.range().start()),
-        format_time(source.range().end())
-    );
-    let cells = usize::try_from(width / CELL_WIDTH).unwrap_or(0);
-    let text_width = u32::try_from(end.chars().count())
-        .unwrap_or(u32::MAX)
-        .saturating_mul(CELL_WIDTH);
-    let x = width.saturating_sub(text_width + 4);
-    draw_text(canvas, x, y + 6, &ellipsize(&end, cells), MUTED)
+    marker_assignments: &[Vec<usize>],
+    anchor: Timestamp,
+    limits: RenderLimits,
+) -> u32 {
+    let Some(tile_count) = u32::try_from(selection.selected_frames().len()).ok() else {
+        return STORY_ANNOTATION_HEIGHT;
+    };
+    let tile_width = PREFERRED_TILE_WIDTH.min(limits.max_width() / tile_count.max(1));
+    let max_cells = usize::try_from(tile_width / CELL_WIDTH)
+        .unwrap_or(0)
+        .saturating_sub(1);
+    let any_label_fits = selection
+        .selected_frames()
+        .iter()
+        .zip(marker_assignments)
+        .any(|(selected, markers)| {
+            story_annotation_lines(selected, source, markers, anchor)
+                .iter()
+                .enumerate()
+                .any(|(line, text)| matches!(line, 1 | 3) || untruncated(text, max_cells).is_some())
+        });
+    if any_label_fits {
+        STORY_ANNOTATION_HEIGHT
+    } else {
+        0
+    }
 }
 
 fn format_time(timestamp: Timestamp) -> String {

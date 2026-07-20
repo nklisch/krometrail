@@ -200,7 +200,7 @@ fn public_plan_and_render_are_traceable_gap_aware_and_deterministic() {
     assert_eq!(manifest.output_hash().as_bytes(), &digest);
     assert_eq!(
         manifest.output_hash().to_string(),
-        "2184d8633e2f04eda4a9e4bd285364b9c819c66eec2a7c6d8db5ef265ced2207"
+        "197ca7ca6534bea8672d390624d60b2d105356473533d30a417acb416af09137"
     );
 
     let (dimensions, pixels) = decode_rgb(image.bytes());
@@ -209,8 +209,8 @@ fn public_plan_and_render_are_traceable_gap_aware_and_deterministic() {
     assert_eq!(rgb_at(&pixels, dimensions, 0, 40), [0, 0, 0]);
     assert_eq!(rgb_at(&pixels, dimensions, 11, 40), [191, 132, 0]);
     assert_eq!(rgb_at(&pixels, dimensions, 10, 39), [255, 255, 255]);
-    // Annotation rows and the gap band are visibly rasterized outside source pixels.
-    assert!(region_has_non_background(
+    // The narrow output suppresses unreadable annotation labels; the gap band remains visible.
+    assert!(!region_has_non_background(
         &pixels,
         dimensions,
         0,

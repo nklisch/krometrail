@@ -343,10 +343,10 @@ mod tests {
     use super::*;
     use crate::registry::lifecycle_tool_names;
     use krometrail_core::{
-        AnalysisScale, AnchorScope, ArtifactCacheDisposition, ArtifactEvidenceHandle,
-        ArtifactFailurePolicy, ArtifactGenerationRequest, ArtifactGenerationResult,
-        ArtifactGeneratorRequest, ArtifactHandle, ArtifactLabelsRequest, ArtifactOutcome,
-        ArtifactRead, BROWSER_OPERATION_REGISTRY, BrowserActionRequest, BrowserCompatibility,
+        AnalysisScale, ArtifactCacheDisposition, ArtifactEvidenceHandle, ArtifactFailurePolicy,
+        ArtifactGenerationRequest, ArtifactGenerationResult, ArtifactGeneratorRequest,
+        ArtifactHandle, ArtifactLabelsRequest, ArtifactOutcome, ArtifactRead,
+        BROWSER_OPERATION_REGISTRY, BrowserActionRequest, BrowserCompatibility,
         BrowserConnectRequest, BrowserConnector, BrowserEventDetailRequest, BrowserEventFilter,
         BrowserInstallation, BrowserOperationContext, BrowserOperationKind,
         BrowserOperationRequest, BrowserOperationResult, BrowserOwnership, BrowserProduct,
@@ -1080,7 +1080,7 @@ mod tests {
     fn bundle_request() -> TemporalDebugBundleRequest {
         TemporalDebugBundleRequest::default_policy(
             TemporalQueryRequest::strict(TemporalRangeAnchor::SessionTime {
-                scope: AnchorScope::new(Some(session_id()), Some(target_id())),
+                scope: krometrail_core::IntervalAnchorScope::new(session_id(), target_id()),
                 range: SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(10)).unwrap(),
             })
             .unwrap(),

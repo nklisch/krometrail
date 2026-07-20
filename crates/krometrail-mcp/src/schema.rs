@@ -422,7 +422,8 @@ mod tests {
     use super::*;
     use krometrail_core::{
         BrowserEventDetailRequest, CapabilityId, ProgressiveEvidenceOperationKind,
-        RetrieveSourceFrameRequest, TemporalDebugBundleRequest, TemporalVideoGenerationRequest,
+        RetrieveSourceFrameRequest, TemporalDebugBundleRequest, TemporalQueryRequest,
+        TemporalVideoGenerationRequest,
     };
 
     #[test]
@@ -435,6 +436,24 @@ mod tests {
         assert!(bundle.contains("\"anchor\""));
         assert!(bundle.contains("\"all\""));
         assert!(type_input_schema::<TemporalVideoGenerationRequest>().is_ok());
+    }
+
+    #[test]
+    fn interval_anchor_schema_requires_scope_ids_only_on_strict_branches() {
+        let schema = type_input_schema::<TemporalQueryRequest>().unwrap();
+        let schema = Value::Object(schema.as_ref().clone());
+        for anchor in ["session_time", "wall_clock"] {
+            let branch = find_tagged_variant(&schema, "anchor", anchor).unwrap();
+            let scope = &branch["properties"]["scope"];
+            assert_eq!(
+                scope["required"],
+                serde_json::json!(["session_id", "target_id"])
+            );
+            assert_eq!(scope["properties"]["session_id"]["type"], "string");
+            assert_eq!(scope["properties"]["target_id"]["type"], "string");
+        }
+        let interaction = find_tagged_variant(&schema, "anchor", "interaction").unwrap();
+        assert!(interaction["properties"]["scope"].get("required").is_none());
     }
 
     #[test]

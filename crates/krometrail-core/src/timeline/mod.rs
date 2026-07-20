@@ -21,8 +21,8 @@ pub use query::{
     TemporalRangeResolution, TemporalRangeResolutionOperationDefinition,
 };
 pub use range::{
-    AnchorScope, CaptureGapPolicy, FrameAvailability, InteractionWindow, MAX_NATURAL_ANCHOR_WINDOW,
-    RangeResolutionOptions, ResolvedAnchor, ResolvedAnchorReference, ResolvedRange,
-    RetentionPolicy, RetentionWarning, TemporalRangeAnchor, TemporalRangeAnchorKind,
+    AnchorScope, CaptureGapPolicy, FrameAvailability, InteractionWindow, IntervalAnchorScope,
+    MAX_NATURAL_ANCHOR_WINDOW, RangeResolutionOptions, ResolvedAnchor, ResolvedAnchorReference,
+    ResolvedRange, RetentionPolicy, RetentionWarning, TemporalRangeAnchor, TemporalRangeAnchorKind,
     TemporalRangeResolver,
 };

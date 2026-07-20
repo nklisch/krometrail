@@ -29,6 +29,11 @@ pub(crate) fn ellipsize(value: &str, max_cells: usize) -> String {
         .collect()
 }
 
+pub(crate) fn untruncated(value: &str, max_cells: usize) -> Option<String> {
+    let escaped = escape_text(value);
+    (ellipsize(value, max_cells) == escaped).then_some(escaped)
+}
+
 pub(crate) fn draw_text(
     canvas: &mut Canvas,
     x: u32,

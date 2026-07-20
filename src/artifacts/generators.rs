@@ -351,7 +351,13 @@ fn fit_scale(
             limit_error("decoded frames and bounded output exceed the combined memory limit")
         })?
         .min(limits.max_normalized_bytes.get());
-    for factor in [1_u8, 2, 4, 8] {
+    let (width, height) = crop_adjusted_dimensions(
+        request,
+        epoch.descriptor.image.width(),
+        epoch.descriptor.image.height(),
+    );
+    let factors = admissible_downscale_factors(width, height);
+    for factor in std::iter::once(1).chain(factors.iter().copied()) {
         let scale = if factor == 1 {
             AnalysisScale::Identity
         } else {
@@ -364,26 +370,10 @@ fn fit_scale(
             return Ok(scale);
         }
     }
-    let smallest_scale = AnalysisScale::Down(8);
-    let (width, height) = normalized_dimensions(
-        NormalizationRequest {
-            scale: smallest_scale,
-            ..request
-        },
-        epoch.descriptor.image.width(),
-        epoch.descriptor.image.height(),
-    )
-    .or_else(|_| {
-        normalized_dimensions(
-            NormalizationRequest {
-                scale: AnalysisScale::Identity,
-                ..request
-            },
-            epoch.descriptor.image.width(),
-            epoch.descriptor.image.height(),
-        )
-    })
-    .unwrap_or((u32::MAX, u32::MAX));
+    let fallback_factor = factors.last().copied();
+    let (width, height) = fallback_factor
+        .map(|factor| (width / u32::from(factor), height / u32::from(factor)))
+        .unwrap_or((width, height));
     let pixels = u64::from(width).saturating_mul(u64::from(height));
     let frame_count = u64::try_from(epoch.frames.len()).unwrap_or(u64::MAX);
     let retained = pixels.saturating_mul(6).saturating_mul(frame_count);
@@ -396,7 +386,7 @@ fn fit_scale(
     )
     .with_recovery(
         NonEmptyText::new(
-            "select fewer source frames, crop the analysis region, or use a larger artifact budget",
+            "narrow the range, crop the analysis region, or pass an explicit smaller normalization.scale",
         )
         .expect("analysis limit recovery is non-empty"),
     ))
@@ -460,9 +450,7 @@ fn normalized_dimensions(
     source_width: u32,
     source_height: u32,
 ) -> Result<(u32, u32)> {
-    let (width, height) = request.crop.map_or((source_width, source_height), |crop| {
-        (crop.width(), crop.height())
-    });
+    let (width, height) = crop_adjusted_dimensions(request, source_width, source_height);
     match request.scale {
         AnalysisScale::Identity => Ok((width, height)),
         AnalysisScale::Down(factor)
@@ -470,11 +458,51 @@ fn normalized_dimensions(
         {
             Ok((width / u32::from(factor), height / u32::from(factor)))
         }
-        AnalysisScale::Down(_) => Err(generation_error(
-            "analysis downscale must exactly divide both dimensions",
-        )),
+        AnalysisScale::Down(factor) => {
+            let common = common_downscale_factors(width, height);
+            let message = if common.is_empty() {
+                format!(
+                    "analysis downscale factor {factor} must exactly divide both dimensions {width}x{height}; no common integer downscale factor exists, so crop the analysis region"
+                )
+            } else {
+                format!(
+                    "analysis downscale factor {factor} must exactly divide both dimensions {width}x{height}; common factors representable by analysis.scale are {common:?}; requests are limited to factors 2..=8"
+                )
+            };
+            Err(generation_error(message))
+        }
         AnalysisScale::FitLimits => Err(generation_error("fit-limits scale was not materialized")),
     }
+}
+
+fn crop_adjusted_dimensions(
+    request: NormalizationRequest,
+    source_width: u32,
+    source_height: u32,
+) -> (u32, u32) {
+    request.crop.map_or((source_width, source_height), |crop| {
+        (crop.width(), crop.height())
+    })
+}
+
+fn admissible_downscale_factors(width: u32, height: u32) -> Vec<u8> {
+    common_downscale_factors(width, height)
+        .into_iter()
+        .filter(|factor| *factor <= 8)
+        .collect()
+}
+
+fn common_downscale_factors(width: u32, height: u32) -> Vec<u8> {
+    let mut left = width;
+    let mut right = height;
+    while right != 0 {
+        let remainder = left % right;
+        left = right;
+        right = remainder;
+    }
+    (2..=u8::MAX)
+        .filter(|factor| left % u32::from(*factor) == 0)
+        .collect()
 }
 
 fn to_normalization(
@@ -501,6 +529,144 @@ fn integer_scale(scale: AnalysisScale) -> Result<IntegerScale> {
         )
         .map_err(vision_error),
         AnalysisScale::FitLimits => Err(generation_error("fit-limits scale was not materialized")),
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+mod tests {
+    use std::num::NonZeroUsize;
+
+    use krometrail_core::{
+        CaptureOrdinal, CapturedFrame, DeviceScaleFactor, EncodedFrame, ErrorCode, ImageFormat,
+        SessionId, SessionTime, TargetId, VisualEpoch,
+    };
+    use temporal_vision::{Rgb8, TimeRange, Timestamp};
+    use uuid::Uuid;
+
+    use super::*;
+
+    fn epoch(width: u32, height: u32, frame_count: usize) -> super::super::epoch::EpochPlan {
+        let session_id = SessionId::from_uuid(Uuid::from_u128(1));
+        let target_id = TargetId::from_uuid(Uuid::from_u128(2));
+        let image = krometrail_core::PixelDimensions::new(width, height).unwrap();
+        let frames: Vec<_> = (0..frame_count)
+            .map(|index| {
+                let ordinal = u64::try_from(index + 1).unwrap();
+                let metadata = CapturedFrame::new(
+                    krometrail_core::FrameId::from_uuid(Uuid::from_u128(
+                        100 + u128::try_from(index).unwrap(),
+                    )),
+                    session_id,
+                    target_id,
+                    CaptureOrdinal::new(ordinal).unwrap(),
+                    None,
+                    krometrail_core::ObservedTime::from_nanos(ordinal + 1),
+                    SessionTime::from_nanos(ordinal),
+                    ImageFormat::Png,
+                    image,
+                    image,
+                    DeviceScaleFactor::new(1.0).unwrap(),
+                    vec![],
+                )
+                .unwrap();
+                EncodedFrame::new(metadata, vec![1]).unwrap()
+            })
+            .collect();
+        let descriptor = VisualEpoch {
+            index: 0,
+            frame_ids: frames.iter().map(|frame| frame.metadata().id()).collect(),
+            image,
+            viewport: image,
+            device_scale_factor: DeviceScaleFactor::new(1.0).unwrap(),
+        };
+        super::super::epoch::EpochPlan {
+            descriptor,
+            source_fingerprints: vec![],
+            cache_sources: vec![],
+            frames,
+            markers: vec![],
+            gaps: vec![],
+            decoded_bytes: 0,
+            source_frame_ids: vec![],
+            source_indices: vec![],
+            source_range: TimeRange::new(Timestamp::from_nanos(1), Timestamp::from_nanos(2))
+                .unwrap(),
+        }
+    }
+
+    fn request(scale: AnalysisScale) -> NormalizationRequest {
+        NormalizationRequest::new(None, Rgb8::new(0, 0, 0), scale).unwrap()
+    }
+
+    fn limits(max_normalized_bytes: usize) -> ArtifactWorkLimits {
+        ArtifactWorkLimits {
+            max_normalized_bytes: NonZeroUsize::new(max_normalized_bytes).unwrap(),
+            ..ArtifactWorkLimits::default()
+        }
+    }
+
+    #[test]
+    fn fit_scale_uses_real_divisors_for_non_power_of_two_viewports() {
+        let plan = epoch(1673, 1288, 42);
+        let scale = fit_scale(
+            request(AnalysisScale::FitLimits),
+            &plan,
+            limits(20_000_000),
+            0,
+        )
+        .unwrap();
+        assert_eq!(scale, AnalysisScale::Down(7));
+    }
+
+    #[test]
+    fn fit_scale_keeps_smallest_admissible_factor_for_standard_viewports() {
+        let plan = epoch(1920, 1080, 1);
+        let scale = fit_scale(
+            request(AnalysisScale::FitLimits),
+            &plan,
+            limits(4_000_000),
+            0,
+        )
+        .unwrap();
+        assert_eq!(scale, AnalysisScale::Down(2));
+    }
+
+    #[test]
+    fn fit_scale_returns_resource_limit_error_when_no_admissible_factor_fits() {
+        let plan = epoch(1673, 1289, 1);
+        let error = fit_scale(
+            request(AnalysisScale::FitLimits),
+            &plan,
+            limits(1_000_000),
+            0,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::ResourceLimitExceeded);
+    }
+
+    #[test]
+    fn explicit_downscale_error_reports_dimensions_and_admissible_factors() {
+        let error = normalized_dimensions(request(AnalysisScale::Down(2)), 1673, 1288).unwrap_err();
+        let message = error.message.to_string();
+        assert!(message.contains("1673x1288"));
+        assert!(message.contains("[7]"));
+    }
+
+    #[test]
+    fn explicit_downscale_error_reports_common_factors_beyond_fit_search_bound() {
+        let error = normalized_dimensions(request(AnalysisScale::Down(2)), 47, 94).unwrap_err();
+        let message = error.message.to_string();
+        assert!(message.contains("[47]"));
+        assert!(message.contains("limited to factors 2..=8"));
+    }
+
+    #[test]
+    fn explicit_downscale_error_explains_that_cropping_is_required_without_common_factors() {
+        let error = normalized_dimensions(request(AnalysisScale::Down(2)), 47, 48).unwrap_err();
+        let message = error.message.to_string();
+        assert!(message.contains("no common integer downscale factor exists"));
+        assert!(message.contains("crop the analysis region"));
     }
 }
 
@@ -592,7 +758,7 @@ fn vision_error(error: temporal_vision::VisionError) -> KrometrailError {
     if code == ErrorCode::ResourceLimitExceeded {
         error.with_recovery(
             NonEmptyText::new(
-                "select fewer source frames, crop the analysis region, or use a larger artifact budget",
+                "select fewer source frames, crop the analysis region, or reduce the requested output dimensions",
             )
             .expect("visual limit recovery is non-empty"),
         )

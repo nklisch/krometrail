@@ -1509,11 +1509,18 @@ fn bounded_targets(
             (
                 u8::from(!intersects_viewport(node, visual_viewport)),
                 snapshot_action_rank(node),
+                u8::from(!snapshot_is_identifiable(node)),
                 *index,
             )
         });
     } else {
-        actions.sort_by_key(|(index, node)| (snapshot_action_rank(node), *index));
+        actions.sort_by_key(|(index, node)| {
+            (
+                snapshot_action_rank(node),
+                u8::from(!snapshot_is_identifiable(node)),
+                *index,
+            )
+        });
     }
     let mut targets = Vec::new();
     let mut bytes = 2usize;
@@ -1703,11 +1710,15 @@ fn semantic_rank(node: &krometrail_core::SnapshotNode) -> u8 {
         "alert" | "dialog" | "heading" | "status"
     ) {
         0
-    } else if node.name.is_some() || node.value.is_some() || node.description.is_some() {
+    } else if snapshot_is_identifiable(node) {
         1
     } else {
         2
     }
+}
+
+fn snapshot_is_identifiable(node: &krometrail_core::SnapshotNode) -> bool {
+    node.name.is_some() || node.value.is_some() || node.description.is_some()
 }
 
 fn project_response(
@@ -3348,6 +3359,106 @@ mod tests {
                 .iter()
                 .any(|state| state["name"] == "focusable")
         );
+    }
+
+    #[test]
+    fn concise_target_ranking_prefers_identifiable_controls_without_filtering_anonymous_nodes() {
+        let generation = SnapshotGeneration::new(1).unwrap();
+        let root_id = SnapshotNodeId::new(1).unwrap();
+        let mut nodes = vec![SnapshotNode {
+            id: root_id,
+            parent: None,
+            depth: 0,
+            role: "document".into(),
+            name: Some("controls".into()),
+            value: None,
+            description: None,
+            properties: vec![],
+            actionable: false,
+            reference: None,
+            document_rect: None,
+        }];
+        for value in 2..=61 {
+            let id = SnapshotNodeId::new(value).unwrap();
+            nodes.push(SnapshotNode {
+                id,
+                parent: Some(root_id),
+                depth: 1,
+                role: "button".into(),
+                name: (value <= 13).then(|| format!("button {value}")),
+                value: None,
+                description: None,
+                properties: vec![],
+                actionable: true,
+                reference: Some(NodeReference {
+                    target_id: target_id(),
+                    generation,
+                    node_id: id,
+                }),
+                document_rect: None,
+            });
+        }
+        let snapshot = PageSnapshot::new(context(), generation, nodes, 0).unwrap();
+        let concise = concise_snapshot(&snapshot, SnapshotNovelty::Novel, None).unwrap();
+        let targets = concise["targets"].as_array().unwrap();
+        assert_eq!(targets.len(), MAX_CONCISE_TARGETS);
+        assert_eq!(
+            targets
+                .iter()
+                .filter(|target| target["name"].is_string())
+                .count(),
+            12
+        );
+        assert!(targets.iter().all(|target| target["reference"].is_object()));
+
+        let focused_id = SnapshotNodeId::new(62).unwrap();
+        let named_link_id = SnapshotNodeId::new(63).unwrap();
+        let focused = SnapshotNode {
+            id: focused_id,
+            parent: Some(root_id),
+            depth: 1,
+            role: "textbox".into(),
+            name: None,
+            value: None,
+            description: None,
+            properties: vec![
+                AccessibleProperty::new("focused", AccessibleValue::Boolean(true)).unwrap(),
+            ],
+            actionable: true,
+            reference: Some(NodeReference {
+                target_id: target_id(),
+                generation,
+                node_id: focused_id,
+            }),
+            document_rect: None,
+        };
+        let named_link = SnapshotNode {
+            id: named_link_id,
+            parent: Some(root_id),
+            depth: 1,
+            role: "link".into(),
+            name: Some("named link".into()),
+            value: None,
+            description: None,
+            properties: vec![],
+            actionable: true,
+            reference: Some(NodeReference {
+                target_id: target_id(),
+                generation,
+                node_id: named_link_id,
+            }),
+            document_rect: None,
+        };
+        let snapshot = PageSnapshot::new(
+            context(),
+            generation,
+            vec![snapshot.nodes[0].clone(), focused, named_link],
+            0,
+        )
+        .unwrap();
+        let targets = bounded_targets(&snapshot, true, None).unwrap();
+        assert_eq!(targets[0].reference.node_id, focused_id);
+        assert_eq!(targets[1].reference.node_id, named_link_id);
     }
 
     #[test]

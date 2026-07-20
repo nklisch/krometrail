@@ -13,7 +13,7 @@ use crate::{
     render::{
         ArtifactLabels, RenderLimits,
         canvas::{BLACK, Canvas, MUTED, PANEL, WARNING, WHITE, canvas_limit_error},
-        font::{CELL_WIDTH, draw_text, ellipsize},
+        font::{CELL_WIDTH, draw_text, untruncated},
     },
 };
 
@@ -789,7 +789,10 @@ fn draw_clipped_text(
     if cells == 0 {
         return Ok(());
     }
-    draw_text(canvas, x, y, &ellipsize(text, cells), color)
+    if let Some(text) = untruncated(text, cells) {
+        draw_text(canvas, x, y, &text, color)?;
+    }
+    Ok(())
 }
 
 fn format_time(timestamp: Timestamp) -> String {
@@ -958,6 +961,7 @@ fn motion_limit_error() -> VisionError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
     use std::num::{NonZeroU32, NonZeroUsize};
 
     use crate::{
@@ -996,6 +1000,90 @@ mod tests {
         assert_eq!(build_outline(&full, dimensions).unwrap(), [0xf7, 0x80]);
         let isolated = [0x10, 0x00];
         assert_eq!(build_outline(&isolated, dimensions).unwrap(), isolated);
+    }
+
+    #[test]
+    fn narrow_motion_history_omits_unreadable_label_bands() {
+        let dimensions = PixelDimensions::new(239, 1).unwrap();
+        let source = FrameSequence::new(
+            vec![
+                Frame::new(
+                    0_u8,
+                    Timestamp::ZERO,
+                    dimensions,
+                    PixelFormat::Rgba8SrgbStraight,
+                    (0..dimensions.width())
+                        .flat_map(|_| [0, 0, 0, 255])
+                        .collect::<Vec<_>>()
+                        .into_boxed_slice(),
+                )
+                .unwrap(),
+            ],
+            Vec::<Marker<u8>>::new(),
+            Vec::<DeclaredGap<u8>>::new(),
+            None,
+            None,
+        )
+        .unwrap();
+        let normalized = normalize_sequence(
+            &source,
+            NormalizationParameters::new(
+                Rgb8::new(0, 0, 0),
+                None,
+                IntegerScale::IDENTITY,
+                ProcessingLimits::default(),
+            ),
+        )
+        .unwrap();
+        let labels = ArtifactLabels::new(
+            "a deliberately long title that cannot fit",
+            "a deliberately long source context that cannot fit",
+        )
+        .unwrap();
+        let rendered = generate_motion_history(
+            1_u8,
+            &source,
+            &normalized,
+            MotionHistoryParameters::new(
+                0,
+                MeasurementParameters::new(0),
+                MotionDecay::default(),
+                64,
+                Rgb8::new(255, 176, 0),
+                Rgb8::new(255, 255, 255),
+                labels,
+                RenderLimits::default(),
+            ),
+        )
+        .unwrap();
+        let decoder = png::Decoder::new(Cursor::new(rendered.image().bytes()));
+        let mut reader = decoder.read_info().unwrap();
+        let mut pixels = vec![0_u8; reader.output_buffer_size()];
+        let info = reader.next_frame(&mut pixels).unwrap();
+        assert_eq!(info.color_type, png::ColorType::Rgb);
+        assert_eq!(info.width, dimensions.width());
+        assert_eq!(
+            info.height,
+            HEADER_HEIGHT + dimensions.height() + FOOTER_HEIGHT
+        );
+        let image = &pixels[..info.buffer_size()];
+        for y in 0..HEADER_HEIGHT {
+            for x in 0..dimensions.width() {
+                let offset = (y * dimensions.width() + x) as usize * 3;
+                assert_eq!(&image[offset..offset + 3], BLACK);
+            }
+        }
+        let footer_y = HEADER_HEIGHT + dimensions.height();
+        for y in footer_y..footer_y + FOOTER_HEIGHT {
+            if (footer_y + LEGEND_Y_OFFSET..footer_y + LEGEND_Y_OFFSET + LEGEND_HEIGHT).contains(&y)
+            {
+                continue;
+            }
+            for x in 0..dimensions.width() {
+                let offset = (y * dimensions.width() + x) as usize * 3;
+                assert_eq!(&image[offset..offset + 3], PANEL);
+            }
+        }
     }
 
     #[test]
