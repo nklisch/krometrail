@@ -1,7 +1,7 @@
 ---
 id: feature-temporal-request-ergonomics
 kind: feature
-stage: review
+stage: done
 tags: [agent-ux, browser, visual]
 parent: null
 depends_on: []
@@ -176,3 +176,23 @@ feature: feature-batch-step-projection-parity).
   storyboard and region-filmstrip layout checks. Other canvas arithmetic still
   uses the generic bounded failure because those call sites do not have output
   width/height caps available.
+
+## Review (cross-model, Fable reviewing Luna)
+
+Verdict SHIP — no blockers/majors/minors. Verified: dialog internal-tag +
+deny_unknown_fields + defaulted Option round-trips all three shapes and rejects
+the old `value`-wrapper; a repo-wide grep found no other consumer of the old
+`{"kind":"accept","value":{…}}` JSON shape. Filmstrip default anchor
+(`resolved_anchor.effective_time`) is guaranteed inside `resolved_range` because
+`ResolvedRange::validate()` enforces exactly that invariant on every range, so
+the defaulted anchor can never fail the filmstrip re-check. Source-frame
+`0→ceiling` is applied before all downstream checks so the `NonZero::expect`
+can't panic. Canvas-diagnostic branch selection and call-site argument order
+verified. No checked-in MCP tool-schema artifacts exist (generated at runtime
+from schemars), so nothing needed regeneration.
+
+- **Nit (not fixed, defensible)**: `max_item_bytes: 0` (→ 32 MB ceiling) with a
+  small explicit `max_total_bytes` is rejected by the item≤total check, and the
+  message reports the materialized 32 MB the caller never typed. A per-item cap
+  above the aggregate cap is meaningless, so rejection is correct; only the
+  message could name the sentinel. Left as-is.

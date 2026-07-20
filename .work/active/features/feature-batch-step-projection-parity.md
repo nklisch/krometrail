@@ -1,7 +1,7 @@
 ---
 id: feature-batch-step-projection-parity
 kind: feature
-stage: review
+stage: done
 tags: [bug, agent-ux, browser]
 parent: null
 depends_on: []
@@ -122,3 +122,13 @@ Origin: `.work/backlog/idea-batch-step-snapshot-projection-bypass.md`.
 - Added deterministic response tests covering a large concise snapshot,
   concise inspect-page parity, full snapshot parity, and the existing batch
   observation-removal/failure behavior.
+
+## Review (cross-model, Fable reviewing Luna)
+
+Verdict SHIP — no blockers/majors/minors. Verified: `project_tool_root` keyed
+on `stable_name()` matches the standalone tool names with no collision; batch
+and standalone feed `project_tool_root` the identical `serializable(*value)`
+root (so `visual_viewport` ranking is preserved); the full-detail test proves
+byte-for-byte step-vs-standalone parity; `observation`-key removal is a no-op
+for snapshot/inspect and other ops project inert; no double-projection at the
+batch tool root. Independent full workspace gate re-run green.
