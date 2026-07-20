@@ -1116,7 +1116,9 @@ fn project_batch(
     for step in value.steps {
         let result = step
             .result
-            .map(|result| project_batch_step(result, response, SnapshotNovelty::Novel))
+            .map(|result| {
+                project_batch_step(result, step.operation, response, SnapshotNovelty::Novel)
+            })
             .transpose()?
             .flatten();
         if step.status != krometrail_core::BatchStepStatus::Succeeded {
@@ -1189,14 +1191,17 @@ fn project_batch(
 
 fn project_batch_step(
     result: BrowserOperationResult,
+    operation: BrowserOperationKind,
     response: ResponseRequest,
     novelty: SnapshotNovelty,
 ) -> Result<Option<Value>, ResponseInvariantError> {
     let mut value = project_operation(result, response, novelty)?.result;
-    let Some(object) = value.as_object_mut() else {
-        return Ok(Some(value));
-    };
-    object.remove("observation");
+    if let Some(object) = value.as_object_mut() {
+        object.remove("observation");
+    }
+    if value.is_object() {
+        project_tool_root(operation.stable_name(), &mut value, response)?;
+    }
     Ok(Some(value))
 }
 
@@ -1713,22 +1718,30 @@ fn project_response(
     if !response.includes_images_for(tool) {
         projection.images.clear();
     }
-    if tool == "snapshot_page" {
-        let visual_viewport = projection
-            .result
+    project_tool_root(tool, &mut projection.result, response)?;
+    Ok(())
+}
+
+fn project_tool_root(
+    operation: &str,
+    result: &mut Value,
+    response: ResponseRequest,
+) -> Result<(), ResponseInvariantError> {
+    if operation == "snapshot_page" {
+        let visual_viewport = result
             .get("visual_viewport")
             .map(|value| {
                 serde_json::from_value::<CssRect>(value.clone()).map_err(|_| ResponseInvariantError)
             })
             .transpose()?;
         project_root_snapshot(
-            &mut projection.result,
+            result,
             response.detail,
             SnapshotNovelty::Novel,
             visual_viewport.as_ref(),
         )?;
-    } else if tool == "inspect_page" {
-        project_root_page_state(&mut projection.result, response.detail)?;
+    } else if operation == "inspect_page" {
+        project_root_page_state(result, response.detail)?;
     }
     Ok(())
 }
@@ -2674,14 +2687,15 @@ mod tests {
         DeviceScaleFactor, ErrorContext, EveryNthFrame, FrameId, ImageFormat, InteractionId,
         InteractionOutcome, InteractionRecord, InteractionResult, InteractionTiming,
         LocatorSummary, NodeReference, ObservationContext, ObservedTime, PageChange,
-        PageOperationResult, PageSelection, PageSnapshot, PixelDimensions, PresentationRange,
-        PresentationTime, RangeResolutionOptions, ResolvedRange, SanitizedParameters,
-        ScreenshotTarget, SessionId, SessionRange, SessionTime, Sha256Digest, SnapshotGeneration,
-        SnapshotNode, SnapshotNodeId, SourceFrameRead, TargetCaptureStatus, TargetId,
-        TemporalRangeAnchorKind, TemporalVideoGenerationClip, TemporalVideoManifest,
+        PageOperationResult, PageSelection, PageSnapshot, PageState, PixelDimensions,
+        PresentationRange, PresentationTime, RangeResolutionOptions, ResolvedRange,
+        SanitizedParameters, ScreenshotTarget, SessionId, SessionRange, SessionTime, Sha256Digest,
+        SnapshotGeneration, SnapshotNode, SnapshotNodeId, SourceFrameRead, TargetCaptureStatus,
+        TargetId, TemporalRangeAnchorKind, TemporalVideoGenerationClip, TemporalVideoManifest,
         VideoArtifactEvidenceHandle, VideoEncodedClip, VideoEncoderIdentity, VideoEncodingProfile,
         VideoOutputGeometry, VideoPresentationPlan, VideoPresentationSegment, VideoSegmentSource,
-        VideoTimingBasis, VisualEpoch, WaitCondition, WaitProbe, WaitRequest, WaitResult,
+        VideoTimingBasis, ViewportState, VisualEpoch, WaitCondition, WaitProbe, WaitRequest,
+        WaitResult,
     };
     use std::time::Duration;
 
@@ -2991,6 +3005,34 @@ mod tests {
             snapshot: ObservationPart::Available(snapshot),
             screenshot: ObservationPart::Unavailable(unavailable),
         }
+    }
+
+    fn page_state() -> PageState {
+        let rect = CssRect::new(
+            CssPoint::new(0.0, 0.0).unwrap(),
+            CssSize::new(1280.0, 720.0).unwrap(),
+        )
+        .unwrap();
+        PageState::new(
+            context(),
+            "https://example.test",
+            "Projection fixture",
+            ViewportState::new(
+                rect,
+                rect,
+                CssSize::new(1280.0, 2400.0).unwrap(),
+                DeviceScaleFactor::new(1.0).unwrap(),
+                1.0,
+            )
+            .unwrap(),
+            krometrail_core::NavigationState::new(
+                0,
+                1,
+                krometrail_core::DocumentReadiness::Complete,
+            )
+            .unwrap(),
+        )
+        .unwrap()
     }
 
     fn source_frame_batch(frame_count: u32) -> SourceFrameBatch {
@@ -3682,6 +3724,114 @@ mod tests {
         assert!(concise.response.result.get("nodes").is_none());
         assert!(expanded.response.result.get("semantic_context").is_some());
         assert!(full.response.result.get("nodes").is_some());
+    }
+
+    #[test]
+    fn batch_step_root_projection_matches_standalone_tools() {
+        let snapshot_step = BatchStepResult::new(
+            0,
+            BrowserOperationKind::SnapshotPage,
+            target_id(),
+            BatchStepStatus::Succeeded,
+            Some(SessionTime::from_nanos(10)),
+            Some(SessionTime::from_nanos(15)),
+            None,
+            Some(BrowserOperationResult::SnapshotPage(Box::new(
+                complex_snapshot(),
+            ))),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let batch = BatchResult::new(
+            interaction_id(),
+            target_id(),
+            SessionTime::from_nanos(10),
+            SessionTime::from_nanos(20),
+            BatchOutcome::Completed,
+            vec![snapshot_step],
+            ObservationPart::Available(live_with_snapshot(complex_snapshot())),
+        )
+        .unwrap();
+
+        let concise = map_operation_result_with_capture(
+            "batch",
+            BrowserOperationResult::Batch(Box::new(batch.clone())),
+            &[],
+            ResponseRequest::default(),
+        )
+        .unwrap();
+        let step_result = &concise.response.result["steps"][0]["result"];
+        assert!(step_result.get("targets").is_some());
+        assert!(step_result.get("nodes").is_none());
+        assert!(serde_json::to_vec(step_result).unwrap().len() < 32 * 1024);
+
+        let full_response = ResponseRequest {
+            detail: ResponseDetail::Full,
+            inline_images: Some(false),
+        };
+        let batch_full = map_operation_result_with_capture(
+            "batch",
+            BrowserOperationResult::Batch(Box::new(batch)),
+            &[],
+            full_response,
+        )
+        .unwrap();
+        let standalone_full = map_operation_result_with_capture(
+            "snapshot_page",
+            BrowserOperationResult::SnapshotPage(Box::new(complex_snapshot())),
+            &[],
+            full_response,
+        )
+        .unwrap();
+        assert_eq!(
+            batch_full.response.result["steps"][0]["result"],
+            standalone_full.response.result
+        );
+
+        let inspect_step = BatchStepResult::new(
+            0,
+            BrowserOperationKind::InspectPage,
+            target_id(),
+            BatchStepStatus::Succeeded,
+            Some(SessionTime::from_nanos(10)),
+            Some(SessionTime::from_nanos(15)),
+            None,
+            Some(BrowserOperationResult::InspectPage(Box::new(page_state()))),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let inspect_batch = BatchResult::new(
+            interaction_id(),
+            target_id(),
+            SessionTime::from_nanos(10),
+            SessionTime::from_nanos(20),
+            BatchOutcome::Completed,
+            vec![inspect_step],
+            ObservationPart::Available(live_with_snapshot(complex_snapshot())),
+        )
+        .unwrap();
+        let inspect_batch = map_operation_result_with_capture(
+            "batch",
+            BrowserOperationResult::Batch(Box::new(inspect_batch)),
+            &[],
+            ResponseRequest::default(),
+        )
+        .unwrap();
+        let inspect_standalone = map_operation_result_with_capture(
+            "inspect_page",
+            BrowserOperationResult::InspectPage(Box::new(page_state())),
+            &[],
+            ResponseRequest::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            inspect_batch.response.result["steps"][0]["result"],
+            inspect_standalone.response.result
+        );
     }
 
     #[test]

@@ -1,7 +1,7 @@
 ---
 id: feature-batch-step-projection-parity
 kind: feature
-stage: implementing
+stage: review
 tags: [bug, agent-ux, browser]
 parent: null
 depends_on: []
@@ -86,15 +86,15 @@ when the projected value is an object.
   `project_root_snapshot` applies unchanged.
 
 **Acceptance Criteria**:
-- [ ] Batch containing a `snapshot_page` step at concise detail projects the
+- [x] Batch containing a `snapshot_page` step at concise detail projects the
       step result to the bounded `targets` ranking (no raw `nodes` array);
       assert a large-snapshot step stays under a bound (e.g. < 32 KB) where the
       unprojected tree would exceed it.
-- [ ] Batch `inspect_page` step at concise detail yields concise page state,
+- [x] Batch `inspect_page` step at concise detail yields concise page state,
       matching the standalone concise `inspect_page` shape.
-- [ ] `detail: full` batch step still returns the complete snapshot (parity
+- [x] `detail: full` batch step still returns the complete snapshot (parity
       with standalone full).
-- [ ] Non-snapshot/inspect steps are byte-identical to today (regression).
+- [x] Non-snapshot/inspect steps are byte-identical to today (regression).
 
 ## Testing
 - Interface test in response.rs tests: a two-step batch (some interaction +
@@ -112,3 +112,13 @@ when the projected value is an object.
   acceptance test).
 
 Origin: `.work/backlog/idea-batch-step-snapshot-projection-bypass.md`.
+
+## Implementation notes
+
+- Added `project_tool_root`, keyed by `BrowserOperationKind::stable_name()`, and
+  used it from both standalone response projection and batch step projection.
+  This keeps the canonical result acquisition and detail-tiered presentation
+  path shared without changing the wire or domain types.
+- Added deterministic response tests covering a large concise snapshot,
+  concise inspect-page parity, full snapshot parity, and the existing batch
+  observation-removal/failure behavior.
