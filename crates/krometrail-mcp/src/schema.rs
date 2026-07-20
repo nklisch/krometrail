@@ -802,6 +802,19 @@ mod tests {
     }
 
     #[test]
+    fn published_snapshot_schema_accepts_qualified_document_scope() {
+        let schema =
+            operation_input_schema(BrowserOperationKind::SnapshotPage, &McpConfig::default())
+                .unwrap();
+        let document = &schema["properties"]["document"];
+        let encoded = serde_json::to_string(document).unwrap();
+        assert!(encoded.contains("main_document"));
+        assert!(encoded.contains("frame"));
+        assert!(encoded.contains("frame_key"));
+        assert!(encoded.contains("attachment_generation"));
+    }
+
+    #[test]
     fn published_wait_schema_explains_unscoped_exact_text_semantics() {
         let config = McpConfig::default();
         let schema = operation_input_schema(BrowserOperationKind::Wait, &config).unwrap();

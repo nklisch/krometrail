@@ -133,11 +133,12 @@ A batch of actions returns per-step status and timeline anchors. It returns a fi
 
 Krometrail exposes a compact structured representation of the current page for agent navigation and element targeting.
 
-The snapshot includes relevant accessible content, roles, names, values, states, and actionable nodes. It may include DOM-derived information where necessary to resolve interaction geometry.
+The snapshot includes relevant accessible content, roles, names, values, states, and actionable nodes. It may include DOM-derived information where necessary to resolve interaction geometry. A caller may select the main document or a qualified same-origin, same-process frame. Frame-scoped snapshots are the structured inspection path for non-actionable frame content; frame-scoped semantic queries remain actionable-reference discovery.
 
 Concise snapshot presentation ranks focused targets, editable targets, other non-link targets, and links, using
 canonical preorder to break ties. It emits a flattened bounded target index with each exact generation-scoped
-reference and the role, name, value, and states required for interaction; structural ancestors are not repeated.
+reference and the role, name, value, and salient non-default states required for interaction; structural ancestors
+and false boolean state defaults are not repeated.
 Structural web-area and document roots do not become interaction targets from generic focusable or clickable signals.
 Expanded presentation adds bounded semantic structure and context. Full presentation returns the complete acquired
 snapshot. Every bounded projection reports exact presentation omissions. When an automatic post-action observation
@@ -195,6 +196,10 @@ The control capability provides operations for:
 - read or write the selected page clipboard only through an explicit tool request;
 - observe popup and download lifecycle metadata and retrieve completed local download resources within the
   managed session boundary.
+
+Page-asset acquisition remains bounded and complete before presentation. Concise responses include a small row
+sample, deterministic counts by asset kind, and separate source-versus-presentation omission counts. Expanded
+responses include a broader bounded sample; full returns every acquired row.
 
 ### Viewport emulation
 

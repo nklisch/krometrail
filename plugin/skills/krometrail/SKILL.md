@@ -124,7 +124,7 @@ revise `no_match` queries. A descendant `scope` must be an exact current referen
 scope node itself. The default document is the current main document. When `list_frames` reports a
 qualified same-origin/same-process frame, including a same-process `about:srcdoc` or `about:blank`
 frame with an opaque origin inherited from its parent, pass its complete frame reference as the
-`document` scope. Fresh opaque child URLs such as `data:` are not qualified, even under an opaque root.
+`document` scope. Use `snapshot_page` with `response.detail: expanded` or `full` to inspect non-actionable content inside that frame; `query_page` returns only actionable references. Fresh opaque child URLs such as `data:` are not qualified, even under an opaque root.
 Refresh after frame navigation. Cross-origin, out-of-process, stale, or indeterminate frame scope
 fails explicitly; never retry it against main-document coordinates.
 

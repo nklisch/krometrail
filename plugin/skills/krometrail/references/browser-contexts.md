@@ -16,13 +16,17 @@ page, frame, or resource boundary.
   `about:blank` frame that inherits an opaque origin from its opaque parent; a fresh opaque child URL
   such as `data:` is not same-origin-qualified. Cross-origin, out-of-process, stale, and indeterminate
   entries fail explicitly. Refresh the inventory after frame navigation. Never retry a
-  failed frame action against main-document coordinates.
+  failed frame action against main-document coordinates. Pass a qualified frame as `document` to
+  `snapshot_page` for non-actionable semantic inspection, or to `query_page` when discovering an
+  actionable reference.
 - For an unnamed control whose visible identity comes from its row, card, or other bounded ancestor,
   use a role query with `container_text`. This is a semantic ancestor relationship, not a spatial-nearness
   heuristic; narrow ambiguous outcomes before acting.
 - Call `list_page_assets` when resource identity, kind, timing, or browser-disclosed sizes can explain
-  a layout or loading issue. The inventory is capped at 256 entries, reports omissions, strips URL
-  query/fragment data, and never contains headers, bodies, cookies, raw URLs, or local paths.
+  a layout or loading issue. Concise output gives counts by kind plus a small representative row set;
+  request `expanded` for more rows or `full` for the complete acquired inventory. Acquisition is capped
+  at 256 entries, reports source and presentation omissions separately, strips URL query/fragment data,
+  and never contains headers, bodies, cookies, raw URLs, or local paths.
 
 Prefer semantic queries and exact returned node references inside a supported document scope.
 Frame, page, and node references are generation-scoped evidence, not durable locators.

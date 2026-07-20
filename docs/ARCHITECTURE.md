@@ -145,7 +145,7 @@ actionable references. The CDP control adapter owns the active per-target regist
 backing DOM-node bindings, document fingerprint, and attachment-generation fence;
 its stale-reference boundary is described below.
 
-Semantic queries are bounded discovery operations over that same registry. Role/name, label, text, test-id,
+Snapshots and semantic queries are bounded operations over that same registry. Snapshot requests may select the main document or a qualified same-origin/same-process frame and return that document's complete acquired semantic tree, including non-actionable content. Role/name, label, text, test-id,
 descendant, and qualified same-origin/same-process-frame scope (including a same-process `about:srcdoc`
 or `about:blank` frame whose opaque origin is inherited from its parent; fresh opaque URLs such as `data:`
 are rejected)
@@ -221,7 +221,7 @@ The CDP adapter owns:
 
 The adapter exposes typed domain operations through ports defined by `krometrail-core`.
 
-The production adapter uses exact cdpkit 0.4.0 behind the replaceable `krometrail-cdp::transport` boundary. `ProductionBrowserConnector` composes browser discovery and launch, compatibility probing, flat target sessions, supervised reconnect and target restoration, capture configuration, bounded frame handoff, recording, browser-event collection, and ownership-aware shutdown. The production path acknowledges each screencast frame before bounded handoff and records known loss as explicit capture-gap evidence.
+The production adapter uses exact cdpkit 0.4.0 behind the replaceable `krometrail-cdp::transport` boundary. `ProductionBrowserConnector` composes browser discovery and launch, compatibility probing, flat target sessions, supervised reconnect and target restoration, capture configuration, bounded frame handoff, recording, browser-event collection, and ownership-aware shutdown. The production path acknowledges each screencast frame before bounded handoff and records known loss as explicit capture-gap evidence. Geometry refresh never invents visual loss: frames received while viewport metadata is being re-established retain the last known geometry with `viewport_metadata_incomplete`, then subsequent frames use the refreshed geometry.
 
 The qualification spike remains a separate feature-gated, non-default test surface. Its cdpkit limitations remain binding: named-event parameters are not wildcard or full-envelope receive, the subscriber queue is unbounded and its depth is not inspectable, and cdpkit does not transparently reconnect or rebuild targets. Krometrail retains those responsibilities in the production supervisor; a routing, decoder, lifecycle patch, or fork would require a new transport decision.
 

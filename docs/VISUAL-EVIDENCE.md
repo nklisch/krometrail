@@ -358,6 +358,8 @@ Every level references the level beneath it. The agent does not need to request 
 
 The capture path receives a CDP frame, immediately acknowledges it, and only then attempts bounded handoff. A failed enqueue is an explicit capture gap after acknowledgement; acknowledgement does not mean that the frame was retained. Ack latency is measured from returned frame to acknowledgement completion, excluding the receive wait and any later handoff or persistence work.
 
+A pending capture-geometry refresh is metadata uncertainty, not missing visual evidence. Frames remain retained with the last established viewport and a `viewport_metadata_incomplete` warning until refresh completes; no capture gap is declared solely for beginning or completing that refresh.
+
 Artifacts never interpolate across an undeclared capture gap.
 
 A gap appears:

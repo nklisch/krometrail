@@ -7,13 +7,13 @@ use krometrail_core::{
     BrowserOwnership, BrowserSessionState, BrowserStatus, BrowserStopOutcome, CaptureFailure,
     CaptureStreamState, CssRect, EncodedScreenshot, ErrorCode, EveryNthFrame, InteractionAnchor,
     InteractionId, InteractionTiming, KrometrailError, LiveObservation, NonEmptyText,
-    ObservationPart, PageOperationOutcome, PageOperationResult, PageSnapshot, ProfileRef,
-    ProgressiveEvidence, ProgressiveEvidenceContext, ProgressiveEvidenceRequest,
-    ProgressiveEvidenceResult, RecordingBudgetState, ResolvedRangeHandleId,
-    RetrieveArtifactRequest, RetryAdvice, ScreenshotMetadata, SessionId, SessionTime,
-    ShutdownQuality, SourceFrameBatch, SourceFrameHandle, TargetId, TemporalDebugBundle,
-    TemporalRangeAnchorKind, TemporalRangeResolution, TemporalVideoGenerationResult,
-    VideoPresentationPolicy, WaitOutcome,
+    ObservationPart, PageAssetInventory, PageAssetKind, PageAssetMetadata, PageOperationOutcome,
+    PageOperationResult, PageSnapshot, ProfileRef, ProgressiveEvidence, ProgressiveEvidenceContext,
+    ProgressiveEvidenceRequest, ProgressiveEvidenceResult, RecordingBudgetState,
+    ResolvedRangeHandleId, RetrieveArtifactRequest, RetryAdvice, ScreenshotMetadata, SessionId,
+    SessionTime, ShutdownQuality, SourceFrameBatch, SourceFrameHandle, TargetId,
+    TemporalDebugBundle, TemporalRangeAnchorKind, TemporalRangeResolution,
+    TemporalVideoGenerationResult, VideoPresentationPolicy, WaitOutcome,
 };
 use rmcp::model::JsonObject;
 use rmcp::model::{CallToolResult, Content, RawResource};
@@ -25,10 +25,16 @@ use temporal_vision::{ArtifactKind, EvidenceClass, PixelDimensions};
 use crate::resources::{ResourceKind, ResourceProjection};
 use crate::session::SnapshotNovelty;
 
-const MAX_CONCISE_TARGETS: usize = 48;
-const MAX_CONCISE_TARGET_JSON_BYTES: usize = 12 * 1024;
+const MAX_CONCISE_TARGETS: usize = 24;
+const MAX_CONCISE_TARGET_JSON_BYTES: usize = 6 * 1024;
+const MAX_EXPANDED_TARGETS: usize = 48;
+const MAX_EXPANDED_TARGET_JSON_BYTES: usize = 12 * 1024;
 const MAX_EXPANDED_CONTEXT_NODES: usize = 96;
 const MAX_EXPANDED_SNAPSHOT_JSON_BYTES: usize = 32 * 1024;
+const MAX_CONCISE_ASSETS: usize = 16;
+const MAX_CONCISE_ASSET_JSON_BYTES: usize = 6 * 1024;
+const MAX_EXPANDED_ASSETS: usize = 64;
+const MAX_EXPANDED_ASSET_JSON_BYTES: usize = 16 * 1024;
 const MAX_SEMANTIC_OUTCOMES: usize = 8;
 const MAX_SEMANTIC_OUTCOME_JSON_BYTES: usize = 4 * 1024;
 
@@ -968,7 +974,9 @@ fn project_operation(
         BrowserOperationResult::ListPageContexts(value) => serializable(*value),
         BrowserOperationResult::WaitForPage(value) => serializable(*value),
         BrowserOperationResult::ListFrames(value) => serializable(*value),
-        BrowserOperationResult::ListPageAssets(value) => serializable(*value),
+        BrowserOperationResult::ListPageAssets(value) => {
+            serializable(project_page_assets(*value, response.detail)?)
+        }
         BrowserOperationResult::ReadClipboard(value) => serializable(*value),
         BrowserOperationResult::ListDownloads(value)
         | BrowserOperationResult::WaitForDownload(value) => serializable(*value),
@@ -1454,6 +1462,97 @@ fn compact_source_frame_row(
     })
 }
 
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+struct AssetKindCounts {
+    script: u32,
+    stylesheet: u32,
+    image: u32,
+    font: u32,
+    media: u32,
+    fetch: u32,
+    xml_http_request: u32,
+    other: u32,
+}
+
+impl AssetKindCounts {
+    fn record(&mut self, kind: PageAssetKind) {
+        let count = match kind {
+            PageAssetKind::Script => &mut self.script,
+            PageAssetKind::Stylesheet => &mut self.stylesheet,
+            PageAssetKind::Image => &mut self.image,
+            PageAssetKind::Font => &mut self.font,
+            PageAssetKind::Media => &mut self.media,
+            PageAssetKind::Fetch => &mut self.fetch,
+            PageAssetKind::XmlHttpRequest => &mut self.xml_http_request,
+            PageAssetKind::Other => &mut self.other,
+        };
+        *count = count.saturating_add(1);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+struct AssetOmissions {
+    source_assets: u32,
+    presentation_assets: u32,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ProjectedAssetInventory {
+    target_id: TargetId,
+    by_kind: AssetKindCounts,
+    assets: Vec<PageAssetMetadata>,
+    omissions: AssetOmissions,
+}
+
+fn project_page_assets(
+    inventory: PageAssetInventory,
+    detail: ResponseDetail,
+) -> Result<Value, ResponseInvariantError> {
+    if detail == ResponseDetail::Full {
+        return serde_json::to_value(inventory).map_err(|_| ResponseInvariantError);
+    }
+    let mut by_kind = AssetKindCounts::default();
+    for asset in &inventory.assets {
+        by_kind.record(asset.kind);
+    }
+    let (max_rows, max_bytes) = match detail {
+        ResponseDetail::Concise => (MAX_CONCISE_ASSETS, MAX_CONCISE_ASSET_JSON_BYTES),
+        ResponseDetail::Expanded => (MAX_EXPANDED_ASSETS, MAX_EXPANDED_ASSET_JSON_BYTES),
+        ResponseDetail::Full => unreachable!("full projection returned above"),
+    };
+    let mut assets = Vec::new();
+    let mut bytes = 2usize;
+    for asset in inventory.assets.iter().cloned() {
+        if assets.len() == max_rows {
+            break;
+        }
+        let entry_bytes = serde_json::to_vec(&asset)
+            .map_err(|_| ResponseInvariantError)?
+            .len();
+        let next = bytes
+            .checked_add(usize::from(!assets.is_empty()))
+            .and_then(|value| value.checked_add(entry_bytes))
+            .ok_or(ResponseInvariantError)?;
+        if next > max_bytes {
+            continue;
+        }
+        bytes = next;
+        assets.push(asset);
+    }
+    let presentation_assets = inventory.assets.len().saturating_sub(assets.len());
+    serde_json::to_value(ProjectedAssetInventory {
+        target_id: inventory.target_id,
+        by_kind,
+        omissions: AssetOmissions {
+            source_assets: inventory.omitted_asset_count,
+            presentation_assets: u32::try_from(presentation_assets)
+                .map_err(|_| ResponseInvariantError)?,
+        },
+        assets,
+    })
+    .map_err(|_| ResponseInvariantError)
+}
+
 fn compact_resolved_range(
     range: &krometrail_core::ResolvedRange,
 ) -> Result<CompactResolvedRange, ResponseInvariantError> {
@@ -1481,7 +1580,14 @@ fn exact_target(
     let states = node
         .properties
         .iter()
-        .filter(|property| !(concise && property.name == "focusable"))
+        .filter(|property| {
+            !(concise
+                && (property.name == "focusable"
+                    || matches!(
+                        property.value,
+                        krometrail_core::AccessibleValue::Boolean(false)
+                    )))
+        })
         .cloned()
         .collect();
     Ok(ExactTarget {
@@ -1522,10 +1628,15 @@ fn bounded_targets(
             )
         });
     }
+    let (max_targets, max_bytes) = if concise {
+        (MAX_CONCISE_TARGETS, MAX_CONCISE_TARGET_JSON_BYTES)
+    } else {
+        (MAX_EXPANDED_TARGETS, MAX_EXPANDED_TARGET_JSON_BYTES)
+    };
     let mut targets = Vec::new();
     let mut bytes = 2usize;
     for (_, node) in actions {
-        if targets.len() == MAX_CONCISE_TARGETS {
+        if targets.len() == max_targets {
             break;
         }
         let target = exact_target(node, concise)?;
@@ -1536,7 +1647,7 @@ fn bounded_targets(
             .checked_add(usize::from(!targets.is_empty()))
             .and_then(|value| value.checked_add(entry_bytes))
             .ok_or(ResponseInvariantError)?;
-        if next > MAX_CONCISE_TARGET_JSON_BYTES {
+        if next > max_bytes {
             continue;
         }
         bytes = next;
@@ -3331,6 +3442,7 @@ mod tests {
                 AccessibleProperty::new("focused", AccessibleValue::Boolean(true)).unwrap(),
                 AccessibleProperty::new("editable", AccessibleValue::Boolean(true)).unwrap(),
                 AccessibleProperty::new("focusable", AccessibleValue::Boolean(true)).unwrap(),
+                AccessibleProperty::new("disabled", AccessibleValue::Boolean(false)).unwrap(),
             ],
             actionable: true,
             reference: Some(NodeReference {
@@ -3351,13 +3463,28 @@ mod tests {
             serde_json::to_value(focused_id).unwrap()
         );
         assert_eq!(concise["omissions"]["source_nodes"], 9);
-        assert_eq!(concise["omissions"]["presentation_targets"], 32);
+        assert_eq!(concise["omissions"]["presentation_targets"], 56);
         assert!(
             !concise["targets"][0]["states"]
                 .as_array()
                 .unwrap()
                 .iter()
                 .any(|state| state["name"] == "focusable")
+        );
+        assert!(
+            !concise["targets"][0]["states"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|state| state["name"] == "disabled")
+        );
+        let expanded = expanded_snapshot(&snapshot, SnapshotNovelty::Novel, None).unwrap();
+        assert!(
+            expanded["targets"][0]["states"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|state| state["name"] == "disabled")
         );
     }
 
@@ -3672,6 +3799,72 @@ mod tests {
             serde_json::to_vec(&expanded).unwrap(),
             serde_json::to_vec(&expected_expanded).unwrap()
         );
+    }
+
+    #[test]
+    fn page_asset_detail_is_aggregated_and_progressively_bounded() {
+        let inventory = || PageAssetInventory {
+            target_id: target_id(),
+            assets: (0..100)
+                .map(|index| PageAssetMetadata {
+                    url: krometrail_core::SanitizedUrl::sanitize(&format!(
+                        "https://example.test/asset-{index}.js"
+                    ))
+                    .unwrap(),
+                    kind: match index % 4 {
+                        0 => PageAssetKind::Script,
+                        1 => PageAssetKind::Stylesheet,
+                        2 => PageAssetKind::Image,
+                        _ => PageAssetKind::Fetch,
+                    },
+                    duration_ms: index as f64,
+                    transfer_bytes: Some(100),
+                    encoded_body_bytes: Some(90),
+                    decoded_body_bytes: Some(120),
+                })
+                .collect(),
+            omitted_asset_count: 7,
+        };
+        let project = |detail| {
+            project_operation(
+                BrowserOperationResult::ListPageAssets(Box::new(inventory())),
+                ResponseRequest {
+                    detail,
+                    inline_images: None,
+                },
+                SnapshotNovelty::Novel,
+            )
+            .unwrap()
+            .result
+        };
+        let concise = project(ResponseDetail::Concise);
+        let expanded = project(ResponseDetail::Expanded);
+        let full = project(ResponseDetail::Full);
+
+        assert_eq!(concise["by_kind"]["script"], 25);
+        assert_eq!(concise["by_kind"]["stylesheet"], 25);
+        assert_eq!(concise["by_kind"]["image"], 25);
+        assert_eq!(concise["by_kind"]["fetch"], 25);
+        assert_eq!(concise["omissions"]["source_assets"], 7);
+        let concise_rows = concise["assets"].as_array().unwrap().len();
+        let expanded_rows = expanded["assets"].as_array().unwrap().len();
+        assert!(concise_rows <= MAX_CONCISE_ASSETS);
+        assert!(expanded_rows <= MAX_EXPANDED_ASSETS);
+        assert!(expanded_rows > concise_rows);
+        assert!(
+            serde_json::to_vec(&concise["assets"]).unwrap().len() <= MAX_CONCISE_ASSET_JSON_BYTES
+        );
+        assert_eq!(
+            concise["omissions"]["presentation_assets"],
+            u32::try_from(100 - concise_rows).unwrap()
+        );
+        assert_eq!(
+            expanded["omissions"]["presentation_assets"],
+            u32::try_from(100 - expanded_rows).unwrap()
+        );
+        assert_eq!(full["assets"].as_array().unwrap().len(), 100);
+        assert_eq!(full["omitted_asset_count"], 7);
+        assert!(full.get("by_kind").is_none());
     }
 
     #[test]
