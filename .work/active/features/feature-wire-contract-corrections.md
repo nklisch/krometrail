@@ -1,7 +1,7 @@
 ---
 id: feature-wire-contract-corrections
 kind: feature
-stage: drafting
+stage: implementing
 tags: [agent-ux]
 parent: null
 depends_on: [feature-schema-domain-conformance-enforcement]
@@ -78,3 +78,145 @@ feature's own cleanup pass so the two do not both claim the same removals.
   cheaper to change would be the wrong instinct.
 
 Origin: 2026-07-20 sixth shakedown against v1.2.6.
+
+## Sizing (from the conformance sweep)
+
+The prerequisite feature's sweep ran and reported eight failure classes. Triage
+splits them in two, and the split is the central design decision here: **three of
+the eight are not contract defects at all — they are the sweep asserting beyond
+what a JSON Schema can express.**
+
+### Class A — genuine: schema advertises what the domain rejects
+
+| # | Tools | Advertised | Domain |
+|---|---|---|---|
+| A1 | `fill`, `select_option`, `upload_files` | coordinate locator branch | element locator only |
+| A2 | 9 range-consuming tools | `anchor_kind: latest_interaction` | `interval`/`interaction`/`navigation`/`marker`/`source_frames` |
+| A3 | `generate_artifacts`, `generate_region_filmstrip` | `scale.factor` 0–255 (uint8) | 2–8 |
+| A4 | `generate_artifacts` storyboard | `tile_limit` 0–255 (uint8) | 3–12 |
+| A5 | `region_filmstrip` | `display_scale: fit_limits` | rejected, "must be explicit" |
+
+All five resolve the same way: **narrow the schema to what the domain accepts.**
+Per the prerequisite feature's contract rule, a domain-only restriction is itself
+the bug — once expressed in the schema, the sweep guards it permanently.
+
+A2 is worth stating precisely: `latest_interaction` is a *request* anchor that
+collapses to `interaction` once resolved. The resolved-range wire type should
+therefore never advertise it. This is a modelling leak, not a missing branch —
+do not "fix" it by teaching the resolver to accept `latest_interaction`.
+
+A3 and A4 are not merely conformance fixes; publishing real bounds is a genuine
+agent-surface improvement, since `0–255` actively misleads a caller into
+constructing invalid requests.
+
+### Class B — sweep defects, fix in the sweep not the contract
+
+| # | Symptom | Why it is not a contract defect |
+|---|---|---|
+| B1 | `batch` steps → `missing field 'query'` etc. | Generator emitted `"request":{}`; it does not recurse into each operation's nested request schema. The schema **does** declare those required fields correctly. |
+| B2 | difference-map `reference.id` → "outside the resolved range" | Sweep invented a UUID absent from its own synthetic range. |
+| B3 | markers `session_time: 1`, `focus_times: [1]` → outside range | Same: synthetic scalar unrelated to the synthetic range. |
+
+B2 and B3 are **cross-field state validation** — "this identifier must appear in
+`frame_ids` of this same request", "this timestamp must fall inside
+`resolved_range`". No JSON Schema can express an intra-document consistency rule
+of that kind, so a conformance sweep must not fail on it. Left unaddressed these
+are permanently unfixable red, which would train everyone to ignore the sweep.
+
+B1 is a straightforward generator bug: recurse into nested request schemas and
+fill their `required` properties.
+
+## Design decisions
+
+- **Narrow schema, never widen domain, for all of Class A.** Each restriction is
+  deliberate and load-bearing (element-only locators, admissible downscale
+  factors, legible tile counts). Widening the domain to match an over-broad
+  schema would degrade real invariants to satisfy a test.
+- **Scope the sweep to schema-expressible constraints.** It must assert enum
+  membership, `oneOf` branch validity, and declared numeric bounds. It must not
+  assert cross-field or state-dependent consistency. This is a correction to the
+  sweep delivered by the prerequisite feature, made here because the sweep only
+  revealed its own over-reach once run against the full surface.
+- **Do not suppress Class B with an allowlist.** An ignore-list would let genuine
+  future regressions hide behind it. Fix B1's generator; scope B2/B3 out by
+  construction so there is nothing to suppress.
+
+## Implementation Units
+
+### Unit 1: Recurse into nested request schemas (B1)
+**File**: the conformance sweep module in `crates/krometrail-mcp/`
+
+Minimal-instance generation must descend into `batch` step request schemas and
+satisfy their `required` properties rather than emitting `{}`.
+
+**Acceptance Criteria**:
+- [ ] Every `batch` operation yields a structurally complete minimal instance.
+- [ ] No `missing field` failures remain.
+- [ ] The vacuity guard still passes (nested branches counted as visited).
+
+### Unit 2: Scope the sweep to schema-expressible constraints (B2, B3)
+**File**: the conformance sweep module in `crates/krometrail-mcp/`
+
+Exclude cross-field/state-dependent validation from the sweep's remit.
+
+**Implementation Notes**:
+- Prefer exclusion **by construction** (do not synthesize values for fields whose
+  validity depends on other fields) over catching-and-ignoring errors by message.
+  Matching on error strings would silently swallow real regressions when wording
+  changes.
+- Record the boundary in a comment so a later reader does not "helpfully" widen
+  the sweep back into state validation.
+
+**Acceptance Criteria**:
+- [ ] No failures from identifier- or timestamp-in-range rules.
+- [ ] The exclusion is structural, not error-message matching.
+- [ ] A deliberately introduced *enum* mismatch still fails (exclusion did not
+      blunt the sweep).
+
+### Unit 3: Narrow Class A schemas
+**Files**: browser operation schemas; `crates/krometrail-core/src/timeline/range.rs`; artifact request types
+
+A1 element-only locators; A2 drop `latest_interaction` from resolved-range wire;
+A3 `factor` 2–8; A4 `tile_limit` 3–12; A5 resolve `fit_limits`.
+
+**Implementation Notes**:
+- A5 needs a decision recorded either way: narrow the schema (if filmstrips
+  genuinely cannot resolve limits) or accept it in the domain (if incidental).
+  Prefer narrowing unless accepting is trivially correct.
+- A3/A4 bounds must come from the same constants the domain validates against —
+  do not hand-copy numbers that can drift.
+
+**Acceptance Criteria**:
+- [ ] All five Class A entries pass the sweep.
+- [ ] Each narrowed bound derives from the domain's own constant.
+- [ ] Previously-valid requests still succeed; only genuinely-rejected inputs are
+      no longer advertised.
+- [ ] A5's resolution is recorded with rationale.
+
+## Implementation Order
+
+1. Unit 1 (B1 generator recursion)
+2. Unit 2 (B2/B3 scoping) — 1 and 2 together clear the false positives
+3. Unit 3 (Class A narrowing) — real fixes, verified against a sweep that now
+   only reports real things
+
+## Testing
+
+- The sweep itself is the acceptance evidence; it must go from 8 failure classes
+  to zero **without** any suppression mechanism.
+- Negative control: a deliberately reintroduced enum mismatch must still fail.
+  Without this, Units 1–2 could pass by disabling the sweep.
+- A1/A2 need assertions that the removed branches are genuinely unreachable, not
+  merely unadvertised.
+
+## Risks
+
+- **Largest risk: Units 1–2 make the sweep quieter, and quieting a test is
+  exactly how a guard gets defeated.** The negative control is mandatory, not
+  optional, and review should treat its absence as a blocker.
+- A2 touches a wire enum shared across nine tools; removing a variant from the
+  resolved-range type must not remove it from the *request* anchor type where it
+  is valid and useful.
+- A3/A4 tighten previously-permissive schemas. Any in-repo fixture using an
+  out-of-bounds value will now fail to build — that is correct, but expect
+  fallout in tests and docs.
