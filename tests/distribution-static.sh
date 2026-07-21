@@ -176,7 +176,8 @@ require_text "$RELEASE" 'ref: ${{ needs.validate-release-tag.outputs.tag_sha }}'
 require_text "$RELEASE" 'RELEASE_SHA:'
 require_text "$RELEASE" 'git rev-parse HEAD'
 require_text "$RELEASE" 'verify-release-tag-identity.sh'
-require_text "$RELEASE" 'Verify publication tag identity after upload'
+require_text "$RELEASE" 'Verify publication tag identity before publish'
+require_text "$RELEASE" 'Verify publication tag identity after publish'
 require_text "$RELEASE" 'workflow_dispatch:'
 require_text "$BUMP" '["cargo", "update", "-p"'
 require_text "$BUMP" '--precise'
@@ -472,6 +473,13 @@ fi
 cmp -s "$lock_tmp/Cargo.toml" "$lock_tmp/Cargo.toml.before" || fail "failed lock validation did not restore Cargo.toml"
 cmp -s "$lock_tmp/Cargo.lock" "$lock_tmp/Cargo.lock.before" || fail "failed lock validation did not restore Cargo.lock"
 rm -rf "$lock_tmp"
+
+# Releases must be created as a draft, verified complete, then published, so a
+# consumer resolving an exact version never observes a partial asset set.
+require_text "$RELEASE" 'draft: true'
+require_text "$RELEASE" 'Verify draft carries the complete asset set'
+require_text "$RELEASE" 'gh release edit "$RELEASE_TAG" --draft=false'
+grep -q 'isDraft' "$RELEASE" || fail "release workflow must assert the draft state before publishing"
 
 bash "$INSTALLER_FIXTURES"
 bash "$PLUGIN_BOOTSTRAP_FIXTURES"
