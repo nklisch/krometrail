@@ -67,6 +67,40 @@ pub(crate) struct ManagedFfmpegProcess {
     output_watch: Option<(PathBuf, u64)>,
 }
 
+/// Retry budget for a spawn that fails with `ETXTBSY`.
+const TRANSIENT_SPAWN_RETRIES: usize = 4;
+
+/// Spawn, retrying briefly on `ExecutableFileBusy`.
+///
+/// `ETXTBSY` is raised when the file being exec'd is open for writing by any
+/// process. A concurrent `Command::spawn` elsewhere in this process forks and
+/// inherits every open descriptor, so an unrelated thread writing an executable
+/// can make this exec fail. The inherited descriptor follows the inode, so
+/// staging-and-renaming the target does not close the window — only retrying
+/// does. The same reasoning and budget apply in the browser launcher's version
+/// probe (`krometrail-cdp` `launcher/discovery.rs`).
+///
+/// In production the equivalent trigger is a package manager rewriting the
+/// user's `ffmpeg` while Krometrail spawns it.
+async fn spawn_retrying_transient_exec_busy(
+    command: &mut Command,
+) -> std::io::Result<tokio::process::Child> {
+    let mut retry = 0;
+    loop {
+        match command.spawn() {
+            Ok(child) => return Ok(child),
+            Err(error)
+                if error.kind() == std::io::ErrorKind::ExecutableFileBusy
+                    && retry < TRANSIENT_SPAWN_RETRIES =>
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(1 << retry)).await;
+                retry += 1;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 impl ManagedFfmpegProcess {
     pub(crate) async fn spawn(
         executable: &Path,
@@ -97,9 +131,11 @@ impl ManagedFfmpegProcess {
             .env_clear();
         configure_tree_before_spawn(&mut command, limits.cpu_seconds)?;
 
-        let mut child = command.spawn().map_err(|_| {
-            AdapterFailure::new(AdapterFailureStage::Spawn, AdapterFailureKind::Spawn)
-        })?;
+        let mut child = spawn_retrying_transient_exec_busy(&mut command)
+            .await
+            .map_err(|_| {
+                AdapterFailure::new(AdapterFailureStage::Spawn, AdapterFailureKind::Spawn)
+            })?;
         let pid = child.id().ok_or_else(|| {
             AdapterFailure::new(AdapterFailureStage::Spawn, AdapterFailureKind::Spawn)
         })?;

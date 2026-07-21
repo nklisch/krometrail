@@ -144,12 +144,29 @@ fn redact_fragments(input: &str) -> (String, u16) {
     let mut output = String::with_capacity(input.len().min(MAX_REDACTED_TEXT_BYTES));
     let mut count = 0u16;
     let mut redact_next_value = false;
+    // Set when a structured token ended inside an unterminated quoted secret.
+    // The replacement has already been emitted, so every following token is
+    // dropped until the closing quote - otherwise a value containing spaces
+    // ({"token":"secret value with spaces"}) leaks everything after the first
+    // whitespace token.
+    let mut inside_quoted_secret = false;
 
     for (index, segment) in segments.iter().enumerate() {
         let token_len = segment.trim_end_matches(char::is_whitespace).len();
         let (token, whitespace) = segment.split_at(token_len);
         if token.is_empty() {
-            output.push_str(whitespace);
+            if !inside_quoted_secret {
+                output.push_str(whitespace);
+            }
+            continue;
+        }
+
+        if inside_quoted_secret {
+            if let Some(closing) = token.find('"') {
+                output.push_str(&token[closing..]);
+                output.push_str(whitespace);
+                inside_quoted_secret = false;
+            }
             continue;
         }
 
@@ -182,7 +199,10 @@ fn redact_fragments(input: &str) -> (String, u16) {
             // to structured tokens that carry no nested secret.
             output.push_str(&structured.text);
             count = count.saturating_add(structured.count);
-            redact_next_value = structured.value_continues;
+            if structured.value_continues {
+                inside_quoted_secret = true;
+                continue;
+            }
         } else if let Some(separator) = token.find(['=', ':']) {
             let key = normalize_key(&token[..separator]);
             if is_sensitive_key(&key) {
@@ -358,6 +378,8 @@ fn normalize_key(value: &str) -> String {
 }
 
 fn is_sensitive_key(value: &str) -> bool {
+    // `normalize_key` has already stripped non-alphanumerics, so `access_token`,
+    // `access-token`, and `"accessToken"` all arrive here as `accesstoken`.
     matches!(
         value,
         "password"
@@ -369,6 +391,19 @@ fn is_sensitive_key(value: &str) -> bool {
             | "session"
             | "cookie"
             | "setcookie"
+            | "accesstoken"
+            | "refreshtoken"
+            | "idtoken"
+            | "authtoken"
+            | "bearertoken"
+            | "clientsecret"
+            | "apisecret"
+            | "privatekey"
+            | "secretkey"
+            | "sessionid"
+            | "sessiontoken"
+            | "credentials"
+            | "passphrase"
     )
 }
 
@@ -387,11 +422,16 @@ fn looks_like_absolute_path(value: &str) -> bool {
     if value.starts_with('/') || value.starts_with('\\') {
         return true;
     }
-    // Any `X:` prefix is a Windows drive designator, whether it is absolute
-    // (C:\dir, C:/dir) or drive-relative (C:file). The single-letter
-    // constraint keeps ordinary `key:value` text out of this branch.
+    // A Windows drive designator is `X:`, but the single-letter test alone
+    // redacts ordinary prose such as `A:todo`. Require the remainder to look
+    // like a path - either a separator is present (C:\dir, C:/dir, C:foo\bar)
+    // or nothing follows the colon at all.
     let bytes = value.as_bytes();
-    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+    if bytes.len() < 2 || !bytes[0].is_ascii_alphabetic() || bytes[1] != b':' {
+        return false;
+    }
+    let remainder = &value[2..];
+    remainder.is_empty() || remainder.contains(['/', '\\'])
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
@@ -903,6 +943,55 @@ mod tests {
     }
 
     #[test]
+    fn nested_secret_values_containing_whitespace_are_fully_redacted() {
+        // Continuation used to redact exactly one following token, leaking the
+        // remainder of a quoted value that contained spaces.
+        for (input, forbidden) in [
+            (
+                r#"{"token":"secret value with spaces"}"#,
+                ["secret", "value", "spaces"],
+            ),
+            (r#"{"password":"a b c"} trailing"#, ["a b c", "a b", "b c"]),
+        ] {
+            let redacted = EventRedactor.text(input);
+            for needle in forbidden {
+                assert!(
+                    !redacted.text().contains(needle),
+                    "{needle} leaked from {input} -> {}",
+                    redacted.text()
+                );
+            }
+            assert!(redacted.redaction_count() > 0);
+        }
+        // Text following the closing quote must survive.
+        let redacted = EventRedactor.text(r#"{"password":"a b c"} trailing"#);
+        assert!(
+            redacted.text().contains("trailing"),
+            "content after the secret was swallowed: {}",
+            redacted.text()
+        );
+    }
+
+    #[test]
+    fn common_secret_key_aliases_are_recognized() {
+        for input in [
+            r#"{"access_token":"abc123"}"#,
+            r#"{"refresh_token":"abc123"}"#,
+            r#"{"client_secret":"abc123"}"#,
+            r#"{"privateKey":"abc123"}"#,
+            "access-token=abc123",
+        ] {
+            let redacted = EventRedactor.text(input);
+            assert!(
+                !redacted.text().contains("abc123"),
+                "alias key not recognized: {input} -> {}",
+                redacted.text()
+            );
+            assert!(redacted.redaction_count() > 0, "no redaction for {input}");
+        }
+    }
+
+    #[test]
     fn structured_tokens_without_nested_secrets_keep_url_and_path_redaction() {
         // The structured branch must not shadow the existing URL/path handling
         // when it has nothing of its own to redact.
@@ -946,7 +1035,15 @@ mod tests {
     fn ordinary_key_value_text_is_not_mistaken_for_a_windows_path() {
         // The single-letter drive constraint keeps ordinary prose out of the
         // path branch; only `X:` prefixes are treated as drive designators.
-        for input in ["note:something", "status:ok", "level:info"] {
+        // `A:todo` is prose, not a drive-relative path: a bare `X:` prefix only
+        // counts when a path separator follows or nothing does.
+        for input in [
+            "note:something",
+            "status:ok",
+            "level:info",
+            "A:todo",
+            "B:note",
+        ] {
             let redacted = EventRedactor.text(input);
             assert_eq!(
                 redacted.text(),
