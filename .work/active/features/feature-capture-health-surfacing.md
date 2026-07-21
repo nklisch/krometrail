@@ -1,7 +1,7 @@
 ---
 id: feature-capture-health-surfacing
 kind: feature
-stage: review
+stage: done
 tags: [agent-ux, browser, bug]
 parent: null
 depends_on: []

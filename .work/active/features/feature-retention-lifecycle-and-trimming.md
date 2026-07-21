@@ -1,7 +1,7 @@
 ---
 id: feature-retention-lifecycle-and-trimming
 kind: feature
-stage: review
+stage: done
 tags: [storage, agent-ux, bug]
 parent: null
 depends_on: []

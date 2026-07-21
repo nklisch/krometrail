@@ -1,7 +1,7 @@
 ---
 id: feature-boundary-hardening
 kind: feature
-stage: review
+stage: done
 tags: [security, browser, distribution, infra]
 parent: null
 depends_on: []

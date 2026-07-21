@@ -1,7 +1,7 @@
 ---
 id: feature-test-and-runtime-hygiene
 kind: feature
-stage: review
+stage: done
 tags: [testing, cleanup, browser, infra]
 parent: null
 depends_on: []

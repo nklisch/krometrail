@@ -1,7 +1,7 @@
 ---
 id: feature-multi-instance-store-isolation
 kind: feature
-stage: review
+stage: done
 tags: [storage, bug, security, infra]
 parent: null
 depends_on: []

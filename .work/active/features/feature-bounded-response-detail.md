@@ -1,7 +1,7 @@
 ---
 id: feature-bounded-response-detail
 kind: feature
-stage: review
+stage: done
 tags: [agent-ux, browser, bug]
 parent: null
 depends_on: []
