@@ -287,9 +287,36 @@ fn redact_fragments(input: &str) -> (String, u16) {
     (output, count)
 }
 
+/// Every placeholder the redactor emits.
+///
+/// The recogniser below is the only place this set is consulted, so a new
+/// placeholder cannot be honoured in one code path and unknown in another —
+/// which is exactly how `[redacted-url]` and `[redacted-path]` came to be
+/// treated as ordinary text by the structured scanner while `[redacted]` was
+/// recognised.
+const REDACTION_PLACEHOLDERS: [&str; 3] = [REDACTED_VALUE, REDACTED_URL, REDACTED_PATH];
+
+/// Byte length of the placeholder run starting at the front of `value`, or
+/// `None` when `value` does not start with one.
+///
+/// Adjacent placeholders are consumed as a single run. Matching only one would
+/// leave the next placeholder as an unrecognised remainder, and because every
+/// placeholder opens with `[`, that remainder reads as a fresh nested value —
+/// so `[redacted][redacted]secret` would slip its tail past the scanner.
+fn redacted_placeholder_run(value: &str) -> Option<usize> {
+    let mut length = 0;
+    while let Some(matched) = REDACTION_PLACEHOLDERS
+        .iter()
+        .find(|placeholder| value[length..].starts_with(**placeholder))
+    {
+        length += matched.len();
+    }
+    (length > 0).then_some(length)
+}
+
 fn is_redacted_placeholder(value: &str) -> bool {
-    value.strip_prefix(REDACTED_VALUE).is_some_and(|suffix| {
-        suffix
+    redacted_placeholder_run(value).is_some_and(|length| {
+        value[length..]
             .chars()
             .all(|character| character.is_ascii_punctuation())
     })
@@ -360,24 +387,27 @@ fn redact_structured_token(token: &str) -> Option<StructuredRedaction> {
         // is not sensitive - and emit the secret verbatim.
         if matches!(character, '{' | '[') && opens_sensitive_value(fragment_text) {
             // Re-running the redactor over its own output must be a no-op, and
-            // `[redacted]` opens with a structural delimiter like any array
+            // every placeholder opens with a structural delimiter like any array
             // would. Without this branch the placeholder would be treated as a
             // fresh nested value and redacted again on every pass — reporting a
             // redaction while changing nothing, which is exactly what
-            // `RedactedText::new` refuses.
-            if let Some(rest) = token[index..].strip_prefix(REDACTED_VALUE) {
+            // `RedactedText::new` refuses. Worse, the generic nested-value branch
+            // matches brackets, so the placeholder's own closing `]` would end
+            // the value it thinks it is consuming and release everything after it.
+            if let Some(run) = redacted_placeholder_run(&token[index..]) {
+                let rest = &token[index + run..];
                 text.push_str(fragment_text);
                 text.push_str(REDACTED_VALUE);
-                // Anything between the placeholder and the next structural
+                // Anything between the placeholder run and the next structural
                 // delimiter is not part of it. It sits where the value's own
                 // bytes would sit, so it is dropped and counted rather than
-                // emitted — otherwise text carrying a literal `[redacted]`
-                // prefix could smuggle a secret straight through.
+                // emitted — otherwise text carrying a literal placeholder prefix
+                // could smuggle a secret straight through.
                 let trailing = rest.find(STRUCTURAL_DELIMITERS).unwrap_or(rest.len());
                 if trailing > 0 {
                     count = count.saturating_add(1);
                 }
-                resume_at = index + REDACTED_VALUE.len() + trailing;
+                resume_at = index + run + trailing;
                 fragment_start = resume_at;
                 continue;
             }
@@ -1209,6 +1239,21 @@ mod tests {
         "[redacted-url]",
         "[redacted-path]",
         r#"{"url":[redacted-url]}"#,
+        // The typed placeholders and adjacent repeats. Each of these is a
+        // separate way to write "a placeholder sits here", and the structured
+        // scanner used to recognise only the shortest one — so the rest read as
+        // fresh nested values whose bracket matching ended at the placeholder's
+        // own `]`, releasing everything after it.
+        r#"{"a":1,"token":[redacted-url]MYSECRET}"#,
+        r#"{"a":1,"token":[redacted-path]MYSECRET}"#,
+        r#"{"a":1,"token":[redacted][redacted]MYSECRET}"#,
+        r#"{"a":1,"token":[redacted][redacted-url]MYSECRET}"#,
+        r#"{"a":1,"token":[redacted-url][redacted-path][redacted]MYSECRET}"#,
+        r#"{"token":[redacted][redacted]}"#,
+        "token:[redacted][redacted]",
+        "token:[redacted-url]",
+        "token: [redacted-path]",
+        "[redacted][redacted-url][redacted-path]",
     ];
 
     /// The redactor must be a projection: redacting already-redacted text is a
@@ -1458,6 +1503,38 @@ mod tests {
                 redacted.text()
             );
             assert!(redacted.redaction_count() > 0, "no redaction for {input}");
+        }
+    }
+
+    /// A literal placeholder written into the input must not buy the text after
+    /// it a free pass.
+    ///
+    /// The structured scanner has to leave already-redacted text alone, so it
+    /// recognises a placeholder where a nested value would start. Recognising
+    /// only `[redacted]` made the other two typed placeholders — and any
+    /// adjacent repeat — read as ordinary nested values instead, and because
+    /// that branch matches brackets, the placeholder's own `]` closed the value
+    /// it thought it was consuming and released the rest verbatim.
+    #[test]
+    fn typed_and_repeated_placeholders_cannot_smuggle_a_secret_through() {
+        for input in [
+            r#"{"a":1,"token":[redacted-url]MYSECRET}"#,
+            r#"{"a":1,"token":[redacted-path]MYSECRET}"#,
+            r#"{"a":1,"token":[redacted][redacted]MYSECRET}"#,
+            r#"{"a":1,"token":[redacted][redacted-url]MYSECRET}"#,
+            r#"{"a":1,"token":[redacted-url][redacted-path][redacted]MYSECRET}"#,
+            r#"{"a":1,"token":[redacted]MYSECRET}"#,
+        ] {
+            let redacted = EventRedactor.text(input);
+            assert!(
+                !redacted.text().contains("MYSECRET"),
+                "a placeholder prefix smuggled the value after it through: {input} -> {}",
+                redacted.text()
+            );
+            assert!(
+                redacted.redaction_count() > 0,
+                "the smuggled value was dropped without being counted: {input}"
+            );
         }
     }
 

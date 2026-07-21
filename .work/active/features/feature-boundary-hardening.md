@@ -236,3 +236,47 @@ truncation length over the same corpus. Both failed before the fix.
   backslash for `\\` rather than dropping it, which is what makes a second pass
   see the escape hiding behind it. Pinned by a new case in
   `secrets_do_not_escape_through_nesting_escaping_or_quoting`.
+
+### Typed and repeated placeholders (round 4)
+
+The round-3 fix taught the structured scanner to recognise `[redacted]` where a
+nested value would start, so already-redacted text survives a second pass. It
+enumerated the placeholder set in exactly one place and not the other:
+`[redacted-url]` and `[redacted-path]` were still read as ordinary nested values.
+That branch matches brackets, so the placeholder's own `]` closed the value it
+thought it was consuming and released everything after it verbatim.
+
+Two leaks, both confirmed against the pre-fix build:
+
+- `{"a":1,"token":[redacted-url]MYSECRET}` -> `{"a":1,"token":[redacted]MYSECRET}`
+- `{"a":1,"token":[redacted][redacted]MYSECRET}` — the first placeholder was
+  consumed, the second read as a fresh nested value, and the token fell through
+  to the flat single-separator scan, which emitted it unchanged.
+
+Fixed by replacing the two parallel string comparisons with one recogniser.
+`REDACTION_PLACEHOLDERS` holds all three; `redacted_placeholder_run` answers "is
+there a placeholder at this position, and how long is the run" and consumes
+*adjacent* placeholders as a single run, so a repeat cannot be split into a
+recognised prefix and an unrecognised remainder. `is_redacted_placeholder` and
+the structured scanner both go through it, so the set can no longer be honoured
+in one path and unknown in another — which was the actual defect.
+
+New corpus entries: the two inputs above, the `[redacted-path]` variant, mixed
+adjacent runs, and the flat `token:[redacted-url]` / `token: [redacted-path]`
+forms. The idempotence and truncation sweeps therefore cover them automatically.
+`typed_and_repeated_placeholders_cannot_smuggle_a_secret_through` pins the leak
+directly. Both it and the idempotence sweep fail on the pre-fix logic:
+
+```
+a placeholder prefix smuggled the value after it through:
+  {"a":1,"token":[redacted-url]MYSECRET} -> {"a":1,"token":[redacted]MYSECRET}
+
+second redaction pass changed the text:
+  "{\"a\":1,\"token\":[redacted-url]MYSECRET}"
+    -> "{\"a\":1,\"token\":[redacted]MYSECRET}"
+    -> "{\"a\":1,\"token\":[redacted]}"
+```
+
+Scope note: browser-event text redaction is now classified as best-effort defence
+in depth, not a guarantee (see `docs/SPEC.md`). This fix was taken because it is
+small and the corpus is the contract; further exotic bypasses are not chased.

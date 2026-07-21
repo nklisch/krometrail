@@ -414,3 +414,49 @@ lower bound on the worst case, and that is enough to disqualify the old formula.
 The wrong bound is also removed from the `effective_budget` doc comment, and
 `sequential_joins_exceed_the_equal_share_overshoot_formula` pins it as a unit test
 so the formula cannot quietly return.
+
+### Convergence claim corrected (round 4)
+
+The round-3 wording closed with "every source of excess is transient under
+trimming, age-out, and exit". That is false as written. There is no background
+trim or age-out scheduler: every reclaim walk runs inside an instance's own
+append (`recording.rs:587-610`), enforcement pass, or artifact publication, and
+`reclaim` (`recording.rs:895-929`) is only ever reached from those paths.
+Age-out is checked on the same operation-driven walks, so it does not expire an
+idle instance's evidence "on its own schedule". Exit handling was the only one of
+the three that held.
+
+Counter-example, worked to the end in `docs/SPEC.md`: three sequential joins
+reach `11T/6`; if all three instances then go idle, usage stays at `11T/6`
+indefinitely. It does not grow, and no instance is over-granted from that point
+on because each one's next operation is judged against its current share — but
+nothing reclaims the excess until some instance does work or a process exits.
+
+Took option (a), correcting the claim rather than adding a periodic trim. A
+background scheduler would be a real design change: it needs a timer per store, a
+policy for waking an idle process, and interaction with the pin and grace rules,
+all to reclaim disk that no one is contending for. An idle instance consumes
+nothing further, so operation-driven reclaim is defensible behaviour; the defect
+was the documentation claiming more than the code does. `docs/SPEC.md` now says
+reclaim is operation-driven, states the idle outcome explicitly, and drops the
+convergence claim. A short paragraph in the Reclaim section says the same thing
+for age-out generally.
+
+Not restated in softer words: the text says outright that Krometrail does not
+claim the combined footprint converges on its own.
+
+### Deferred: lock contention grants the full budget
+
+`recording.rs:841-843` maps a `None` from `BudgetRegistry::publish` — which
+includes lock contention, not just a failed write — to the full configured
+budget. Two instances can both hit contention, both receive unrecorded full
+grants, and each append nearly the whole total. Confirmed with a probe test:
+two contended instances were jointly granted 2_000_000 against a 1_000_000
+total.
+
+Not fixed here. The usage ledger is being deleted outright in a follow-up pass:
+allocation becomes `total / live_count`, which needs only the live-instance count
+already available from the instance lock files, and therefore has no publish
+path, no staleness cache, and no unrecorded-reservation fallback for contention
+to fall through. The defect is real but its whole mechanism is being removed, so
+a fix here would be throwaway.
