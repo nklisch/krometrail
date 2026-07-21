@@ -1,9 +1,53 @@
 ---
-id: idea-instance-lock-released-after-bootstrap
+id: feature-instance-ownership-lifetime
+kind: feature
+stage: drafting
+tags: [storage, security]
+parent: null
+depends_on: []
+release_binding: null
+gate_origin: null
 created: 2026-07-21
 updated: 2026-07-21
-tags: [bug, critical, data-loss, storage]
 ---
+
+# Instance ownership lifetime
+
+## Brief
+
+The v1.3.0 instance-isolation guarantee does not hold at runtime. Any second
+`krometrail` process started against the same data directory deletes the retained
+recording store of every already-running instance, silently. `docs/SPEC.md:387` already
+states the correct contract — "holds an advisory lock on it for its lifetime … a second
+process cannot disturb a running one's capture" — so this is the code failing its own
+specification, not a specification that needs to move. No foundation-doc roll-forward.
+
+This feature restores that contract, removes the directory leak the same subsystem causes,
+and corrects one imprecise errno mapping found alongside it. All three live in
+`crates/krometrail-store/src/instance.rs` and `src/app.rs`.
+
+## Strategic decisions
+
+- **Release shape**: ship as hotfix **1.3.1** carrying all three storage fixes (guard
+  lifetime, instance-directory leak, `EINTR` mapping) — they share one file and one mental
+  model, and v1.3.0 is losing user evidence in the field today. The agent-surface
+  frictions found in the same shakedown are deliberately *not* in this release; they go to
+  1.4.0 as `feature-agent-surface-diagnosability`.
+
+## Simplification opportunity
+
+The fix should make the misuse unrepresentable rather than merely corrected. Options for
+design to weigh: `#[must_use]` on the acquire functions; or having `InstanceCensus` /
+`RecordingStore` take the `InstanceOwnership` by value instead of a borrowed `&Path`, so
+the type system ties the lock to the store that depends on it and a future refactor cannot
+silently drop it again. Prefer the structural option if it does not distort the ports.
+
+No code is expected to be deleted. The added bootstrap-level test is net-new surface that
+existing store-level tests do not cover.
+
+---
+
+## Findings (from the eighth shakedown, v1.3.0)
 
 Critical: the v1.3.0 instance-isolation guarantee does not hold at runtime. Any second
 `krometrail` process started against the same data directory **deletes the retained

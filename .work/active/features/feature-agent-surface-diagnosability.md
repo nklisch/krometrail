@@ -1,9 +1,59 @@
 ---
-id: idea-shakedown-agent-surface-frictions
+id: feature-agent-surface-diagnosability
+kind: feature
+stage: drafting
+tags: [agent-ux, browser]
+parent: null
+depends_on: []
+release_binding: null
+gate_origin: null
 created: 2026-07-21
 updated: 2026-07-21
-tags: [bug, agent-surface, diagnosability]
 ---
+
+# Agent surface diagnosability
+
+## Brief
+
+Four frictions found during the eighth shakedown against released v1.3.0. Each one cost a
+wasted round trip or actively sent diagnosis in the wrong direction. They cluster because
+they are one failure repeated: the surface declines to say something it already knows.
+Krometrail tracks dialogs but does not report them; the batch route has a correlation id
+and an error code but drops both on hard failure; `query_page` knows a `contains` retry
+would match but returns a bare `no_match`; `list_frames` holds frame identity and hashes
+it away.
+
+Fixing these is additive to the response contract, not a change of shape. Detail level,
+action outcomes, and interaction identity are untouched.
+
+## Strategic decisions
+
+- **Release shape**: ships in **1.4.0**, after the 1.3.1 storage hotfix
+  (`feature-instance-ownership-lifetime`). No dependency between the two — they touch
+  disjoint code — but the storage fix is urgent and this is not, so it must not be gated
+  behind this work.
+- **Frame identity**: expose **both** the frame `name` and, when a frame shares the main
+  document's origin, its real path. Name alone is insufficient because real pages
+  routinely leave frames unnamed; path alone loses the author's own label. This relaxes a
+  redaction rule for same-origin frames only, so it needs a `docs/SPEC.md` line stating
+  the boundary — origin-preserved hashing on third-party network events is unchanged and
+  stays as-is. The relaxation is defensible because the agent can already read that
+  frame's full content via `snapshot_page` and its full URL via `evaluate_page`; the
+  redaction was costing targeting and buying nothing.
+
+## Simplification opportunity
+
+The dialog work should add *one* piece of reported state consumed at three sites (blocked
+observation, `handle_dialog`, `browser_status`) rather than three independent special
+cases. If the three sites each grow their own dialog check, the design is wrong.
+
+The batch hard-failure path should reuse the projection the degraded path already builds —
+that path already returns per-step results, warnings, and a correlation id correctly. This
+is plausibly deletion of a separate failure path rather than addition to it.
+
+---
+
+## Findings (from the eighth shakedown, v1.3.0)
 
 Four agent-surface frictions found during the eighth shakedown against released v1.3.0.
 Each one cost a wasted round trip or sent diagnosis in the wrong direction. All are
