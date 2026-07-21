@@ -1089,6 +1089,18 @@ pub enum BrowserDialogType {
     Other,
 }
 
+impl BrowserDialogType {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Alert => "alert",
+            Self::Confirm => "confirm",
+            Self::Prompt => "prompt",
+            Self::BeforeUnload => "beforeunload",
+            Self::Other => "other",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DialogOpenedEvent {

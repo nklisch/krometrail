@@ -543,39 +543,68 @@ impl SnapshotRegistry {
             self.active_reference_backend(bound, scope)?;
         }
 
-        let matches = snapshot
+        let in_scope = |node: &SnapshotNode| {
+            !request.scope.is_some_and(|scope| {
+                !is_strict_descendant(node.id, scope.node_id, &active.parent_by_node)
+            })
+        };
+        let evaluate = |query: &krometrail_core::SemanticQuery, node: &SnapshotNode| {
+            semantic_query_matches(
+                query,
+                node,
+                active
+                    .semantic
+                    .get(&node.id)
+                    .unwrap_or(&SemanticNodeMetadata::default()),
+                &active.parent_by_node,
+                &active.semantic,
+                &snapshot.nodes,
+            )
+        };
+
+        let matches: Vec<SemanticMatch> = snapshot
             .nodes
             .iter()
             .filter_map(|node| {
                 let reference = node.reference?;
-                if request.scope.is_some_and(|scope| {
-                    !is_strict_descendant(node.id, scope.node_id, &active.parent_by_node)
-                }) {
+                if !in_scope(node) {
                     return None;
                 }
-                semantic_query_matches(
-                    &request.query,
-                    node,
-                    active
-                        .semantic
-                        .get(&node.id)
-                        .unwrap_or(&SemanticNodeMetadata::default()),
-                    &active.parent_by_node,
-                    &active.semantic,
-                    &snapshot.nodes,
-                )
-                .then(|| SemanticMatch {
+                evaluate(&request.query, node).then(|| SemanticMatch {
                     reference,
                     role: node.role.clone(),
                     name: node.name.clone(),
                 })
             })
             .collect();
-        QueryPageResult::new(
+
+        // Sites decorate accessible names routinely ("Cargo.toml, (File)"), so an exact-mode
+        // query that finds nothing is usually one relaxation away from the intended node. Report
+        // how many nodes a `contains` retry would reach instead of leaving the caller to guess.
+        // The scan runs only on the empty result, over the same already-bounded snapshot nodes,
+        // and stops at the declared candidate cap.
+        let relaxed_match_candidates = if matches.is_empty() {
+            request.query.relaxed_to_contains().map(|relaxed| {
+                let limit = usize::from(krometrail_core::MAX_SEMANTIC_RELAXED_CANDIDATES);
+                let count = snapshot
+                    .nodes
+                    .iter()
+                    .filter(|node| node.reference.is_some() && in_scope(node))
+                    .filter(|node| evaluate(&relaxed, node))
+                    .take(limit)
+                    .count();
+                krometrail_core::RelaxedMatchCandidates::new(count)
+            })
+        } else {
+            None
+        };
+
+        QueryPageResult::with_relaxed_candidates(
             snapshot.context.clone(),
             snapshot.generation,
             matches,
             request.max_matches,
+            relaxed_match_candidates,
         )
     }
 
@@ -3326,6 +3355,158 @@ mod tests {
                 .outcome,
             krometrail_core::SemanticQueryOutcome::NoMatch
         );
+    }
+
+    /// Reproduces the decorated-accessible-name case: `role=link, name={exact "Cargo.toml"}`
+    /// finds nothing on a page whose real name is `"Cargo.toml, (File)"`. The empty result must
+    /// say how many nodes a `contains` retry would reach, and must stay silent when the query
+    /// matched or when relaxing would change nothing.
+    #[test]
+    fn exact_no_match_reports_how_many_nodes_a_contains_retry_would_reach() {
+        let generation = SnapshotGeneration::new(1).unwrap();
+        let root = SnapshotNodeId::new(1).unwrap();
+        let reference = |node_id| NodeReference {
+            target_id: target(),
+            generation,
+            node_id,
+        };
+        let node = |id: SnapshotNodeId, role: &str, name: &str| SnapshotNode {
+            id,
+            parent: (id != root).then_some(root),
+            depth: u16::from(id != root),
+            role: role.into(),
+            name: (!name.is_empty()).then(|| name.to_owned()),
+            value: None,
+            description: None,
+            properties: vec![],
+            actionable: id != root,
+            reference: (id != root).then(|| reference(id)),
+            document_rect: None,
+        };
+        let nodes = vec![
+            node(root, "document", ""),
+            node(
+                SnapshotNodeId::new(2).unwrap(),
+                "link",
+                "Cargo.toml, (File)",
+            ),
+            node(
+                SnapshotNodeId::new(3).unwrap(),
+                "link",
+                "Cargo.lock, (File)",
+            ),
+            node(
+                SnapshotNodeId::new(4).unwrap(),
+                "link",
+                "vendor/Cargo.toml, (File)",
+            ),
+            // A different role must not be counted as a relaxed candidate.
+            node(SnapshotNodeId::new(5).unwrap(), "button", "Cargo.toml"),
+        ];
+        let context = ObservationContext::new(
+            krometrail_core::SessionId::from_uuid(uuid::Uuid::from_u128(9)),
+            target(),
+            4,
+            krometrail_core::SessionTime::ZERO,
+            krometrail_core::SessionTime::ZERO,
+        )
+        .unwrap();
+        let snapshot = PageSnapshot::new(context, generation, nodes, 0).unwrap();
+        let bound = BoundTarget {
+            target_id: target(),
+            browser_target_key: "target-a".into(),
+            attachment_generation: 4,
+            transport_session: crate::transport::TransportSessionId::new("session-a").unwrap(),
+            visibility: krometrail_core::TargetVisibility::Visible,
+        };
+        let mut registry = SnapshotRegistry::default();
+        registry.install(
+            target(),
+            ActiveSnapshot {
+                generation,
+                attachment_generation: 4,
+                document: DocumentFingerprint {
+                    frame_id: "main".into(),
+                    loader_id: "loader".into(),
+                },
+                frame: None,
+                bindings: HashMap::new(),
+                node_by_backend: HashMap::new(),
+                semantic: HashMap::new(),
+                parent_by_node: HashMap::from([
+                    (root, None),
+                    (SnapshotNodeId::new(2).unwrap(), Some(root)),
+                    (SnapshotNodeId::new(3).unwrap(), Some(root)),
+                    (SnapshotNodeId::new(4).unwrap(), Some(root)),
+                    (SnapshotNodeId::new(5).unwrap(), Some(root)),
+                ]),
+                dom_semantics_captured: false,
+                next_node_id: 5,
+            },
+        );
+        let query = |value: &str, mode| {
+            SemanticQuery::role(
+                "link",
+                Some(krometrail_core::SemanticTextMatch::new(value, mode, false).unwrap()),
+            )
+            .unwrap()
+        };
+        let request = |query| {
+            QueryPageRequest::new(
+                krometrail_core::PageSelection::Target(target()),
+                query,
+                None,
+                20,
+            )
+            .unwrap()
+        };
+
+        let exact = registry
+            .query(
+                &bound,
+                &request(query(
+                    "Cargo.toml",
+                    krometrail_core::SemanticTextMatchMode::Exact,
+                )),
+                &snapshot,
+            )
+            .unwrap();
+        assert_eq!(
+            exact.outcome,
+            krometrail_core::SemanticQueryOutcome::NoMatch
+        );
+        let candidates = exact
+            .relaxed_match_candidates
+            .expect("an exact no-match reports its relaxed candidate count");
+        assert_eq!(candidates.count, 2);
+        assert!(!candidates.saturated);
+
+        // The relaxed query itself matches, so there is nothing to explain.
+        let relaxed = registry
+            .query(
+                &bound,
+                &request(query(
+                    "Cargo.toml",
+                    krometrail_core::SemanticTextMatchMode::Contains,
+                )),
+                &snapshot,
+            )
+            .unwrap();
+        assert_eq!(relaxed.matches.len(), 2);
+        assert!(relaxed.relaxed_match_candidates.is_none());
+
+        // An exact no-match whose relaxation also matches nothing stays silent.
+        let hopeless = registry
+            .query(
+                &bound,
+                &request(query(
+                    "Makefile",
+                    krometrail_core::SemanticTextMatchMode::Exact,
+                )),
+                &snapshot,
+            )
+            .unwrap();
+        assert!(hopeless.relaxed_match_candidates.is_none());
     }
 
     #[test]

@@ -456,6 +456,56 @@ mod tests {
         );
     }
 
+    /// A dialog blocks its page's renderer, so a default (concise) status call must name it.
+    /// Reporting it only where full page rows appear is how the blindness went unnoticed.
+    #[test]
+    fn concise_status_names_pages_holding_an_open_dialog() {
+        let page = |open_dialog| krometrail_core::PageStatus {
+            target: krometrail_core::SupervisedTarget {
+                target: krometrail_core::PageTarget::new(
+                    target_id(),
+                    "target-key",
+                    "https://example.test",
+                    "Example",
+                )
+                .unwrap(),
+                lifecycle: krometrail_core::TargetLifecycle::Attached,
+                visibility: krometrail_core::TargetVisibility::Visible,
+                attachment_generation: 1,
+            },
+            selected: true,
+            open_dialog,
+        };
+
+        let mut status = protocol_status();
+        status.pages = vec![page(krometrail_core::OpenDialogState::None)];
+        let quiet = crate::response::map_browser_status(
+            "browser_status",
+            status.clone(),
+            crate::response::ResponseRequest::default(),
+        )
+        .unwrap();
+        assert!(quiet.response.result.get("open_dialogs").is_none());
+
+        status.pages = vec![page(krometrail_core::OpenDialogState::Open(
+            krometrail_core::BrowserDialogType::Prompt,
+        ))];
+        let blocked = crate::response::map_browser_status(
+            "browser_status",
+            status,
+            crate::response::ResponseRequest::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            blocked.response.result["open_dialogs"][0]["dialog_type"],
+            "prompt"
+        );
+        assert_eq!(
+            blocked.response.result["open_dialogs"][0]["target_id"],
+            target_id().to_string()
+        );
+    }
+
     #[test]
     fn concise_status_retains_capture_failure_and_retention_pressure() {
         let mut status = protocol_status();

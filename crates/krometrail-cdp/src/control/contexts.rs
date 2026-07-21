@@ -286,13 +286,15 @@ fn collect_frames(
     } else {
         FrameAccess::Indeterminate
     };
-    frames.push(PageFrameStatus {
-        reference: reference.clone(),
+    frames.push(PageFrameStatus::new(
+        reference.clone(),
         parent,
         depth,
         access,
-        url: SanitizedUrl::sanitize(&url)?,
-    });
+        SanitizedUrl::sanitize(&url)?,
+        tree.pointer("/frame/name").and_then(Value::as_str),
+        &url,
+    )?);
     if let Some(children) = tree.get("childFrames").and_then(Value::as_array) {
         for child in children {
             collect_frames(
@@ -600,6 +602,62 @@ mod tests {
         assert_eq!(frames[3].access, FrameAccess::OutOfProcess);
         assert_eq!(frames[4].access, FrameAccess::SameOriginSameProcess);
         assert_eq!(frames[5].access, FrameAccess::CrossOrigin);
+    }
+
+    /// On a nested same-origin frameset every frame previously reported the same hashed path, so
+    /// frames were indistinguishable without probing each one. The listing must carry the frame
+    /// tree's `name` and, for same-origin frames only, the real path.
+    #[test]
+    fn frame_inventory_carries_names_and_same_origin_paths() {
+        let tree = json!({
+            "frame":{"id":"root","loaderId":"root-loader","name":"","url":"https://example.test/frameset.html"},
+            "childFrames":[
+                {"frame":{"id":"left","loaderId":"l","name":"left","url":"https://example.test/frames/left.html"}},
+                {"frame":{"id":"mid","loaderId":"m","url":"https://example.test/frames/middle.html"}},
+                {"frame":{"id":"ad","loaderId":"a","name":"ad","url":"https://other.test/tracker/pixel.html"}}
+            ]
+        });
+        let oopif = HashSet::new();
+        let mut frames = Vec::new();
+        let mut omitted = 0;
+        let root_origin = FrameOrigin::Tuple("https://example.test".to_owned());
+        collect_frames(
+            &tree,
+            &bound(),
+            None,
+            0,
+            Some(&root_origin),
+            Some(&root_origin),
+            Some(&oopif),
+            &mut frames,
+            &mut omitted,
+        )
+        .unwrap();
+
+        let path = |index: usize| {
+            frames[index]
+                .same_origin_path
+                .as_ref()
+                .map(krometrail_core::NonEmptyText::as_str)
+        };
+        let name = |index: usize| {
+            frames[index]
+                .name
+                .as_ref()
+                .map(krometrail_core::NonEmptyText::as_str)
+        };
+
+        assert_eq!(path(0), Some("/frameset.html"));
+        assert_eq!(name(0), None);
+        assert_eq!(path(1), Some("/frames/left.html"));
+        assert_eq!(name(1), Some("left"));
+        // An unnamed same-origin frame is still distinguishable by path.
+        assert_eq!(path(2), Some("/frames/middle.html"));
+        assert_eq!(name(2), None);
+        // Third-party frame identity stays redacted; only its author-assigned name is exposed.
+        assert_eq!(frames[3].access, FrameAccess::CrossOrigin);
+        assert_eq!(path(3), None);
+        assert_eq!(name(3), Some("ad"));
     }
 
     #[test]

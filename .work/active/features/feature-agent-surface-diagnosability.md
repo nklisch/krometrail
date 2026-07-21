@@ -1,7 +1,7 @@
 ---
 id: feature-agent-surface-diagnosability
 kind: feature
-stage: drafting
+stage: implementing
 tags: [agent-ux, browser]
 parent: null
 depends_on: []
@@ -50,6 +50,59 @@ cases. If the three sites each grow their own dialog check, the design is wrong.
 The batch hard-failure path should reuse the projection the degraded path already builds —
 that path already returns per-step results, warnings, and a correlation id correctly. This
 is plausibly deletion of a separate failure path rather than addition to it.
+
+## Implementation notes
+
+Two of the four findings were real but **mis-characterised in my original report**. Both
+corrections came from implementation, and both matter for anyone reading the findings
+below:
+
+- **Dialog (`handle_dialog` half).** `handle_dialog` *did* already map to a structured
+  `dialog_not_open` code — but only for `TransportError::CommandFailed`. Chrome answers
+  "No dialog is showing" with a **protocol** error, which maps to
+  `TransportError::Protocol` and fell into the catch-all `Err(_)` arm, producing the bare
+  `"browser rejected the dialog operation"`. The finding stands; the cause was a
+  mis-classified transport variant, not a missing code path.
+- **Batch.** The structured content *always* carried steps, error code, and correlation id.
+  What was bare was the **text summary line**: the mapped-failure path produced
+  `format!("{tool} failed")` while every `visible_error` failure produced
+  `"{tool} failed: {message}"`. I was reading the text line and concluded the response
+  carried nothing. The fix is the deletion anticipated in the Simplification section — the
+  separate summary branch is gone, and failures now derive their summary from the
+  projection's own error, uniformly for every tool.
+
+Design points worth preserving:
+
+- **`OpenDialogState` has three states, not two**: `None | Open(kind) | Unknown`. Absence of
+  an installed dialog source is `Unknown`, so no consumer can read missing evidence as
+  "no dialog open". `list_page_contexts` reports `Unknown` rather than performing a fourth
+  ad-hoc lookup, because supervisor state does not own the event authority.
+- **One state, three consumers, as required.** The re-coding happens in `classify_open_dialog`
+  inside `execute_operation` — the single funnel every operation including batch steps
+  passes through — plus the dialog control boundary and `browser_status`. `wait_timed_out`
+  is deliberately excluded: its code is load-bearing for `batch.rs::error_termination`, and
+  its recovery already points at page status, which now names the dialog. `handle_dialog`
+  itself is exempt because it *is* the recovery.
+- **`open_dialogs` is in the concise projection**, not only on `PageStatus`. Concise is the
+  default and drops page rows entirely, so page-level-only reporting would have left the
+  default call exactly as blind as before.
+- **The relaxed-match scan is bounded and only runs on an empty result**, over the same
+  already-bounded snapshot nodes, capped at `MAX_SEMANTIC_RELAXED_CANDIDATES = 100`. It is
+  suppressed when the query matched (it would read as a second, unranked match set) and
+  when relaxation would also match nothing. `test_id` does not relax — an identifier is not
+  decorated prose.
+- **Frame path exposure is narrow**: `MainDocument | SameOriginSameProcess` only, bounded to
+  512 bytes, query and fragment stripped. `SanitizedUrl` is untouched, so third-party
+  network-event redaction is unchanged. `docs/SPEC.md` states the boundary and records that
+  this is the only unhashed path Krometrail reports.
+
+**One existing test changed deliberately.**
+`browser_events.rs::explicitly_disabled_events_add_no_recording_streams_or_domain_enables`
+asserted that `Page.javascriptDialogClosed` is *not* subscribed when browser events are
+disabled. That encoded the old behaviour. Dialog state must be truthful whether or not
+event persistence is on, so both dialog sources are now installed as operation signals —
+they persist nothing and enable no optional domain — and the test asserts that instead. No
+test was weakened or deleted.
 
 ---
 

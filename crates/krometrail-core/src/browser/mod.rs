@@ -31,8 +31,9 @@ pub use contexts::{
 pub use control::{
     ActivatePageRequest, BrowserStatus, ClosePageRequest, CreatePageRequest,
     DEFAULT_MANAGED_PROFILE_NAME, GoBackRequest, GoForwardRequest, InteractionAnchor,
-    InteractionTiming, ListPagesRequest, NavigatePageRequest, PageChange, PageOperationOutcome,
-    PageOperationResult, OpenDialogState, PageSelection, PageStatus, ReloadPageRequest, SelectPageRequest,
+    InteractionTiming, ListPagesRequest, NavigatePageRequest, OpenDialogState, PageChange,
+    PageOperationOutcome, PageOperationResult, PageSelection, PageStatus, ReloadPageRequest,
+    SelectPageRequest,
 };
 pub use events::{
     BROWSER_EVENT_REGISTRY, BrowserDialogType, BrowserEvent, BrowserEventBatch, BrowserEventClass,
@@ -67,12 +68,12 @@ pub use observation::{
     AccessibleProperty, AccessibleValue, CoordinateSpace, CssPoint, CssRect, CssSize,
     DEFAULT_SEMANTIC_MATCH_LIMIT, DocumentReadiness, ElementLocator, EncodedScreenshot,
     EvaluationResult, EvaluationValue, InspectPageRequest, LiveObservation, LiveObservationRequest,
-    MAX_SEMANTIC_MATCH_LIMIT, MAX_SEMANTIC_QUERY_TEXT_BYTES, NavigationState, NodeReference,
-    ObservationContext, ObservationPart, PageSnapshot, PageState, QueryPageRequest,
-    QueryPageResult, ReadOnlyEvaluationRequest, ScreenshotMetadata, ScreenshotRequest,
-    ScreenshotTarget, SemanticMatch, SemanticQuery, SemanticQueryOutcome, SemanticTextMatch,
-    SemanticTextMatchMode, SnapshotGeneration, SnapshotNode, SnapshotNodeId, SnapshotPageAnchor,
-    SnapshotPageRequest, ViewportState,
+    MAX_SEMANTIC_MATCH_LIMIT, MAX_SEMANTIC_QUERY_TEXT_BYTES, MAX_SEMANTIC_RELAXED_CANDIDATES,
+    NavigationState, NodeReference, ObservationContext, ObservationPart, PageSnapshot, PageState,
+    QueryPageRequest, QueryPageResult, ReadOnlyEvaluationRequest, RelaxedMatchCandidates,
+    ScreenshotMetadata, ScreenshotRequest, ScreenshotTarget, SemanticMatch, SemanticQuery,
+    SemanticQueryOutcome, SemanticTextMatch, SemanticTextMatchMode, SnapshotGeneration,
+    SnapshotNode, SnapshotNodeId, SnapshotPageAnchor, SnapshotPageRequest, ViewportState,
 };
 pub use operation::{
     BROWSER_OPERATION_REGISTRY, BrowserOperationDefinition, BrowserOperationKind,

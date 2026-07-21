@@ -168,6 +168,7 @@ mod tests {
                     .map(|(index, target)| crate::PageStatus {
                         target,
                         selected: index == 0,
+                        open_dialog: crate::OpenDialogState::None,
                     })
                     .collect()
             };

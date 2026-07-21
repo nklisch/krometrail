@@ -131,6 +131,7 @@ impl PageControl {
                 .into_iter()
                 .map(|target| PageStatus {
                     selected: Some(target.target.id()) == selected,
+                    open_dialog: browser_events.open_dialog_state(target.target.id()),
                     target,
                 })
                 .collect();

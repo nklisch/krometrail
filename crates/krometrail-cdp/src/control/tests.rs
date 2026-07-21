@@ -745,11 +745,70 @@ mod interactions {
             target: PageSelection::Target(target()),
             action: DialogAction::Dismiss,
         };
-        let error = dialog::handle_dialog(&transport, &bound, &dialog_request, &cancel, 0)
-            .await
-            .unwrap_err();
+        let error = dialog::handle_dialog(
+            &transport,
+            &bound,
+            &dialog_request,
+            krometrail_core::OpenDialogState::Unknown,
+            &cancel,
+            0,
+        )
+        .await
+        .unwrap_err();
         assert_eq!(error.code, ErrorCode::NotFound);
         assert!(!error.message.as_str().contains("private"));
+    }
+
+    /// Chrome answers `Page.handleJavaScriptDialog` with a protocol error, not a transport
+    /// command failure, when no dialog is showing. That is the same "not open" boundary and must
+    /// not surface as a generic interaction rejection without a structured code.
+    #[tokio::test]
+    async fn dialog_rejection_reports_the_not_open_boundary_for_protocol_errors() {
+        let transport = RecordingTransport::default();
+        let bound = bound();
+        let cancel = OperationCancellation::default();
+        transport.push("Page.handleJavaScriptDialog", Err(TransportError::Protocol));
+        let request = HandleDialogRequest {
+            target: PageSelection::Target(target()),
+            action: DialogAction::Dismiss,
+        };
+        let error = dialog::handle_dialog(
+            &transport,
+            &bound,
+            &request,
+            krometrail_core::OpenDialogState::Unknown,
+            &cancel,
+            0,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::NotFound);
+        assert!(error.message.as_str().contains("dialog_not_open"));
+    }
+
+    /// Reported open-dialog state is the authority when it is known: `handle_dialog` reports the
+    /// no-dialog boundary without dispatching a user-visible dialog action.
+    #[tokio::test]
+    async fn known_absent_dialog_state_short_circuits_handle_dialog() {
+        let transport = RecordingTransport::default();
+        let bound = bound();
+        let cancel = OperationCancellation::default();
+        let request = HandleDialogRequest {
+            target: PageSelection::Target(target()),
+            action: DialogAction::Dismiss,
+        };
+        let error = dialog::handle_dialog(
+            &transport,
+            &bound,
+            &request,
+            krometrail_core::OpenDialogState::None,
+            &cancel,
+            0,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::NotFound);
+        assert!(transport.calls("Page.handleJavaScriptDialog").is_empty());
     }
 
     #[tokio::test]

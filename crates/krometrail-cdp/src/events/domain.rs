@@ -7,9 +7,9 @@ use std::{
 };
 
 use krometrail_core::{
-    BrowserEventClass, BrowserEventGapReason, BrowserEventPayload, BrowserEventSink, IdSource,
-    MonotonicClock, SessionId, SessionOrigin, SessionTime, TargetCaptureStatus, TargetId,
-    TargetLifecycle, TargetVisibility,
+    BrowserDialogType, BrowserEventClass, BrowserEventGapReason, BrowserEventPayload,
+    BrowserEventSink, IdSource, MonotonicClock, OpenDialogState, SessionId, SessionOrigin,
+    SessionTime, TargetCaptureStatus, TargetId, TargetLifecycle, TargetVisibility,
 };
 use serde_json::{Value, json};
 use tokio::{sync::broadcast, task::JoinHandle};
@@ -24,6 +24,7 @@ use super::{
     network::{NetworkActivity, NetworkActivityReceiver},
     normalize::{EventNormalizer, SEMANTIC_SOURCE_REGISTRY, SourceDomain},
     pipeline::{EventPipeline, SubmitOutcome, TargetGeneration, TargetIngress},
+    privacy,
     signals::{PageSignalKind, PageSignalReceiver},
 };
 
@@ -107,6 +108,10 @@ struct TargetEventRuntime {
     pumps: Mutex<Vec<JoinHandle<()>>>,
     network_sender: broadcast::Sender<NetworkActivity>,
     page_signal_sender: broadcast::Sender<PageSignalKind>,
+    // The one piece of reported open-dialog state. It is maintained from the always-installed
+    // dialog signal sources, independent of whether semantic events are persisted, because the
+    // blocked-observation, handle_dialog, and page-status sites all read it.
+    open_dialog: Mutex<Option<BrowserDialogType>>,
     network_enabled: AtomicBool,
     network_setup: tokio::sync::Mutex<()>,
 }
@@ -186,6 +191,7 @@ impl SessionDomainAuthority {
             pumps: Mutex::new(Vec::new()),
             network_sender,
             page_signal_sender,
+            open_dialog: Mutex::new(None),
             network_enabled: AtomicBool::new(false),
             network_setup: tokio::sync::Mutex::new(()),
         });
@@ -214,7 +220,9 @@ impl SessionDomainAuthority {
         {
             let operation_signal = matches!(
                 source.method,
-                "Page.lifecycleEvent" | "Page.javascriptDialogOpening"
+                "Page.lifecycleEvent"
+                    | "Page.javascriptDialogOpening"
+                    | "Page.javascriptDialogClosed"
             );
             if !self.pipeline.semantic_enabled() && !operation_signal {
                 continue;
@@ -314,6 +322,43 @@ impl SessionDomainAuthority {
         Ok(EventRestoreOutcome {
             unavailable_classes: unavailable.into_vec(),
         })
+    }
+
+    /// The single reported open-dialog state for a page.
+    ///
+    /// Returns `Unknown` when no current event runtime has the dialog sources installed, so a
+    /// caller never reads absence of evidence as evidence of absence.
+    pub(crate) fn open_dialog_state(&self, target_id: TargetId) -> OpenDialogState {
+        let key = self
+            .current
+            .lock()
+            .expect("event current-target lock")
+            .get(&target_id)
+            .cloned();
+        let Some(runtime) = key.and_then(|key| {
+            self.targets
+                .lock()
+                .expect("event runtime registry lock")
+                .get(&key)
+                .map(Arc::clone)
+        }) else {
+            return OpenDialogState::Unknown;
+        };
+        if !runtime.accepting.load(Ordering::Acquire) {
+            return OpenDialogState::Unknown;
+        }
+        let installed = runtime.installed.lock().expect("installed source lock");
+        if !installed.contains("Page.javascriptDialogOpening")
+            || !installed.contains("Page.javascriptDialogClosed")
+        {
+            return OpenDialogState::Unknown;
+        }
+        drop(installed);
+        runtime
+            .open_dialog
+            .lock()
+            .expect("open dialog lock")
+            .map_or(OpenDialogState::None, OpenDialogState::Open)
     }
 
     pub(crate) fn page_signal(
@@ -700,6 +745,16 @@ async fn pump_non_network(
     while runtime.accepting.load(Ordering::Acquire) {
         match events.next().await {
             Ok(Some(event)) => {
+                match method {
+                    "Page.javascriptDialogOpening" => {
+                        *runtime.open_dialog.lock().expect("open dialog lock") =
+                            Some(privacy::dialog_type(event.params.get("type")));
+                    }
+                    "Page.javascriptDialogClosed" => {
+                        runtime.open_dialog.lock().expect("open dialog lock").take();
+                    }
+                    _ => {}
+                }
                 let signal = match method {
                     "Page.lifecycleEvent" => Some(PageSignalKind::Lifecycle),
                     "Page.javascriptDialogOpening" => Some(PageSignalKind::DialogOpening),

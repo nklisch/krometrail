@@ -185,7 +185,10 @@ fn same_origin_frame_path(access: FrameAccess, raw_url: &str) -> Option<NonEmpty
         return None;
     }
     let without_fragment = raw_url.split('#').next().unwrap_or(raw_url);
-    let without_query = without_fragment.split('?').next().unwrap_or(without_fragment);
+    let without_query = without_fragment
+        .split('?')
+        .next()
+        .unwrap_or(without_fragment);
     let (_, remainder) = without_query.split_once("://")?;
     let (_, path) = remainder.split_once('/')?;
     let path = format!("/{path}");
@@ -224,6 +227,95 @@ mod tests {
     #[test]
     fn page_sequence_rejects_zero() {
         assert!(serde_json::from_str::<PageSequence>("0").is_err());
+    }
+
+    fn frame_reference() -> PageFrameReference {
+        PageFrameReference {
+            target_id: TargetId::from_uuid("11111111-1111-4111-8111-111111111111".parse().unwrap()),
+            attachment_generation: 1,
+            frame_key: NonEmptyText::new("frame-0").unwrap(),
+        }
+    }
+
+    fn frame(access: FrameAccess, raw_url: &str, raw_name: Option<&str>) -> PageFrameStatus {
+        PageFrameStatus::new(
+            frame_reference(),
+            None,
+            0,
+            access,
+            SanitizedUrl::sanitize(raw_url).unwrap(),
+            raw_name,
+            raw_url,
+        )
+        .unwrap()
+    }
+
+    /// The same-origin relaxation boundary: a frame sharing the main document's origin exposes its
+    /// real path, and every other access class keeps the hashed path.
+    #[test]
+    fn only_same_origin_frames_expose_a_real_path() {
+        let same_origin = frame(
+            FrameAccess::SameOriginSameProcess,
+            "https://example.test/nested/left.html?token=secret#frag",
+            Some("left"),
+        );
+        assert_eq!(
+            same_origin
+                .same_origin_path
+                .as_ref()
+                .map(NonEmptyText::as_str),
+            Some("/nested/left.html")
+        );
+        assert_eq!(
+            same_origin.name.as_ref().map(NonEmptyText::as_str),
+            Some("left")
+        );
+
+        for access in [
+            FrameAccess::CrossOrigin,
+            FrameAccess::OutOfProcess,
+            FrameAccess::Indeterminate,
+        ] {
+            let redacted = frame(access, "https://other.test/tracker/pixel.html", Some("ad"));
+            assert!(redacted.same_origin_path.is_none(), "{access:?}");
+            // Name stays available: it is author-assigned markup, not the third-party URL.
+            assert_eq!(redacted.name.as_ref().map(NonEmptyText::as_str), Some("ad"));
+        }
+    }
+
+    #[test]
+    fn frame_labels_and_paths_are_bounded_and_control_free() {
+        let oversized = "x".repeat(MAX_FRAME_NAME_BYTES + 1);
+        assert!(
+            frame(
+                FrameAccess::MainDocument,
+                "https://a.test/",
+                Some(&oversized)
+            )
+            .name
+            .is_none()
+        );
+        assert!(
+            frame(
+                FrameAccess::MainDocument,
+                "https://a.test/",
+                Some("a\u{7}b")
+            )
+            .name
+            .is_none()
+        );
+        let long_path = format!("https://a.test/{}", "p".repeat(MAX_FRAME_PATH_BYTES + 1));
+        assert!(
+            frame(FrameAccess::MainDocument, &long_path, None)
+                .same_origin_path
+                .is_none()
+        );
+        // An origin-only URL has no path to report.
+        assert!(
+            frame(FrameAccess::MainDocument, "https://a.test", None)
+                .same_origin_path
+                .is_none()
+        );
     }
 
     #[test]

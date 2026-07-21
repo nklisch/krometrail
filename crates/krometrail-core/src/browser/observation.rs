@@ -708,7 +708,9 @@ impl SemanticQuery {
                 name,
                 container_text,
             } => {
-                let relaxed_name = name.as_ref().and_then(SemanticTextMatch::relaxed_to_contains);
+                let relaxed_name = name
+                    .as_ref()
+                    .and_then(SemanticTextMatch::relaxed_to_contains);
                 let relaxed_container = container_text
                     .as_ref()
                     .and_then(SemanticTextMatch::relaxed_to_contains);
@@ -721,9 +723,7 @@ impl SemanticQuery {
                     container_text: relaxed_container.or_else(|| container_text.clone()),
                 })
             }
-            Self::Label { text } => text
-                .relaxed_to_contains()
-                .map(|text| Self::Label { text }),
+            Self::Label { text } => text.relaxed_to_contains().map(|text| Self::Label { text }),
             Self::Text { text } => text.relaxed_to_contains().map(|text| Self::Text { text }),
             // A test id is an exact identifier, not decorated prose; there is nothing to relax.
             Self::TestId { .. } => None,
@@ -1444,6 +1444,108 @@ mod tests {
             SemanticQuery::test_id("save")
                 .unwrap()
                 .requires_dom_semantics()
+        );
+    }
+
+    /// A no-match result is only useful if it says what a relaxed retry would reach, and only on
+    /// the empty result — beside real matches it would read as a second, unranked match set.
+    #[test]
+    fn relaxed_candidates_are_reported_only_for_an_empty_result() {
+        let generation = SnapshotGeneration::new(7).unwrap();
+        let candidates = RelaxedMatchCandidates::new(3);
+        let no_match = QueryPageResult::with_relaxed_candidates(
+            context(),
+            generation,
+            vec![],
+            2,
+            Some(candidates),
+        )
+        .unwrap();
+        assert_eq!(no_match.outcome, SemanticQueryOutcome::NoMatch);
+        assert_eq!(no_match.relaxed_match_candidates, Some(candidates));
+
+        let matched = QueryPageResult::with_relaxed_candidates(
+            context(),
+            generation,
+            vec![SemanticMatch {
+                reference: NodeReference {
+                    target_id: target(),
+                    generation,
+                    node_id: SnapshotNodeId::new(1).unwrap(),
+                },
+                role: "link".into(),
+                name: Some("Cargo.toml, (File)".into()),
+            }],
+            2,
+            Some(candidates),
+        )
+        .unwrap();
+        assert!(matched.relaxed_match_candidates.is_none());
+
+        // A relaxation that would also match nothing is silence, not a zero.
+        let empty = QueryPageResult::with_relaxed_candidates(
+            context(),
+            generation,
+            vec![],
+            2,
+            Some(RelaxedMatchCandidates::new(0)),
+        )
+        .unwrap();
+        assert!(empty.relaxed_match_candidates.is_none());
+    }
+
+    #[test]
+    fn relaxed_candidate_counts_saturate_at_the_declared_bound() {
+        let under = RelaxedMatchCandidates::new(4);
+        assert_eq!((under.count, under.saturated), (4, false));
+        let at_cap =
+            RelaxedMatchCandidates::new(usize::from(MAX_SEMANTIC_RELAXED_CANDIDATES) + 500);
+        assert_eq!(at_cap.count, MAX_SEMANTIC_RELAXED_CANDIDATES);
+        assert!(at_cap.saturated);
+    }
+
+    /// Only exact matchers relax; a query with nothing exact has no relaxation to report, and a
+    /// test id is an identifier rather than decorated prose.
+    #[test]
+    fn query_relaxation_targets_exact_text_matchers_only() {
+        let exact =
+            SemanticTextMatch::new("Cargo.toml", SemanticTextMatchMode::Exact, false).unwrap();
+        let contains =
+            SemanticTextMatch::new("Cargo", SemanticTextMatchMode::Contains, false).unwrap();
+
+        let relaxed = SemanticQuery::role("link", Some(exact.clone()))
+            .unwrap()
+            .relaxed_to_contains()
+            .expect("an exact name matcher relaxes");
+        let SemanticQuery::Role { name, .. } = &relaxed else {
+            panic!("relaxation preserves the query kind");
+        };
+        let name = name.as_ref().expect("relaxed name is retained");
+        assert_eq!(name.mode, SemanticTextMatchMode::Contains);
+        assert!(name.matches("Cargo.toml, (File)"));
+
+        assert!(
+            SemanticQuery::role("link", Some(contains))
+                .unwrap()
+                .relaxed_to_contains()
+                .is_none()
+        );
+        assert!(
+            SemanticQuery::role("link", None)
+                .unwrap()
+                .relaxed_to_contains()
+                .is_none()
+        );
+        assert!(
+            SemanticQuery::test_id("save")
+                .unwrap()
+                .relaxed_to_contains()
+                .is_none()
+        );
+        assert!(
+            SemanticQuery::Label { text: exact }
+                .relaxed_to_contains()
+                .is_some()
         );
     }
 

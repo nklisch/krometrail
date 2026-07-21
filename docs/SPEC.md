@@ -167,7 +167,12 @@ control by text rendered within its nearest matching ancestor container; this bo
 falls back to spatial proximity or unrelated page text. Krometrail resolves the locator through
 the active document snapshot registry and returns or acts through an exact generation-scoped reference. A no-match,
 ambiguous, or truncated result is an explicit successful query outcome, but it contains no actionable
-reference and never authorizes mutation. Semantic matching never silently selects one of several or potentially
+reference and never authorizes mutation. A no-match result for a query that used an exact text matcher
+additionally reports how many nodes the same query would have matched with every exact matcher relaxed to
+`contains`, so a decorated accessible name such as `"Cargo.toml, (File)"` produces one informed follow-up
+rather than a guess-and-retry loop. That count is scanned over the same bounded snapshot nodes, is capped at
+a declared candidate limit, and reports saturation at the cap. It is omitted when the query used no exact
+matcher, when the relaxation would still match nothing, or when the query matched. Semantic matching never silently selects one of several or potentially
 unreported nodes; callers narrow the query until it returns one unique reference before acting. Plain
 role/name queries acquire only the selected document's accessibility tree. Container-text, label,
 rendered-text, and test-id queries additionally acquire DOM semantics. Completeness limits apply to
@@ -200,6 +205,30 @@ The control capability provides operations for:
 Page-asset acquisition remains bounded and complete before presentation. Concise responses include a small row
 sample, deterministic counts by asset kind, and separate source-versus-presentation omission counts. Expanded
 responses include a broader bounded sample; full returns every acquired row.
+
+#### Frame identity
+
+Frame listings must let an agent tell one frame from another. Each listed frame reports its author-assigned
+`name` from the browser's frame tree, bounded in length and free of control characters. A frame whose document
+shares the main document's origin — the main document itself and same-origin, same-process frames — also
+reports its real URL path.
+
+That same-origin path is the only place Krometrail reports an unhashed URL path. It is bounded, carries no
+query string, fragment, or credentials, and is defensible because the agent can already read that frame's full
+content through a frame-scoped snapshot and its full URL through page evaluation in the same session over the
+same tool surface; hashing it cost targeting and protected nothing. Cross-origin, out-of-process, and
+indeterminate frames report no path, and origin-preserved path hashing everywhere else — browser network
+events above all — is unchanged.
+
+#### Open dialogs
+
+An open modal JavaScript dialog blocks the renderer, so it is reported state rather than an inference drawn
+separately at each surface. Page status reports, per page, whether a dialog is open and of what type, or
+`unknown` when dialog observation is not installed for that page. Because a dialog blocks the page, browser
+status names the affected pages at every detail level rather than only where full page rows appear. A renderer operation that fails while a
+dialog is known to be open reports a distinct dialog-open error code whose recovery is to handle the dialog,
+not to retry or inspect browser compatibility. `handle_dialog` against a page with no open dialog reports the
+stable not-found boundary with a structured code rather than a generic rejection.
 
 ### Viewport emulation
 
@@ -256,6 +285,8 @@ responsible for the paths they supply.
 ### Batching
 
 Related actions can be submitted as an ordered batch. Every step receives its own status, timing, and timeline anchor. Execution stops on the first failed step unless the request explicitly permits continuation.
+
+A failed batch reports the same evidence a degraded batch reports: every step result the batch produced, and a top-level error naming the failing step index, its operation, its stable error code, and its cause. There is no separate failure shape that drops that evidence, and a failed operation's summary text states its cause rather than only naming the tool.
 
 The MCP surface provides composable standalone tools plus batching. Both derive actions and schemas from the same capability registry and shared domain contracts.
 

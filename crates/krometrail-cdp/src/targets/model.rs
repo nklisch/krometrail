@@ -186,6 +186,9 @@ impl SupervisorState {
                     target: target.target.clone(),
                     selected: self.selected_target_key.as_deref()
                         == Some(target.target.target.browser_target_key()),
+                    // Supervisor state does not own the event authority that tracks dialogs.
+                    // browser_status and list_pages are the reporting sites for that state.
+                    open_dialog: krometrail_core::OpenDialogState::Unknown,
                 },
                 sequence: target.page_sequence,
                 opener_target_id: target.opener_target_id.filter(|id| {

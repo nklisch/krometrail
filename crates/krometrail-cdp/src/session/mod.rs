@@ -673,6 +673,7 @@ impl BrowserSessionPort for ProductionSession {
     }
 
     fn status(&self) -> PortFuture<'_, Result<BrowserStatus>> {
+        let browser_events = self.shared.browser_events.as_ref();
         let (session_state, compatibility, selected_target_id, pages) = {
             let state = self.shared.state.lock().expect("session state lock");
             let selected_target_id = if state.session_state == BrowserSessionState::Ended {
@@ -689,6 +690,7 @@ impl BrowserSessionPort for ProductionSession {
                 .into_iter()
                 .map(|target| PageStatus {
                     selected: Some(target.target.id()) == selected_target_id,
+                    open_dialog: browser_events.open_dialog_state(target.target.id()),
                     target,
                 })
                 .collect();

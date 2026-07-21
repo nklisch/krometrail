@@ -528,7 +528,6 @@ async fn explicitly_disabled_events_add_no_recording_streams_or_domain_enables()
         "Network.loadingFailed",
         "Page.frameNavigated",
         "Page.navigatedWithinDocument",
-        "Page.javascriptDialogClosed",
     ] {
         assert!(
             transport
@@ -536,6 +535,21 @@ async fn explicitly_disabled_events_add_no_recording_streams_or_domain_enables()
                 .iter()
                 .all(|(subscribed, _)| subscribed != method),
             "disabled browser events installed {method}",
+        );
+    }
+    // Both dialog sources are authority-owned operation signals: dialog-opening drives the
+    // non-deadlocking interaction boundary and dialog-closed keeps reported open-dialog state
+    // truthful. Neither persists an event nor enables an optional domain.
+    for method in [
+        "Page.javascriptDialogOpening",
+        "Page.javascriptDialogClosed",
+    ] {
+        assert!(
+            transport
+                .subscriptions()
+                .iter()
+                .any(|(subscribed, _)| subscribed == method),
+            "disabled browser events omitted the {method} operation signal",
         );
     }
     for method in ["Log.enable", "Network.enable"] {
@@ -848,4 +862,97 @@ async fn two_target_reconnect_persists_sanitized_events_into_same_range_context(
     session.stop().await.unwrap();
     drop(session);
     fixture.cleanup();
+}
+
+/// The dialog-blindness repro. An open modal blocks every renderer observation, and before this
+/// the surface reported a generic `page_observation_failed` whose recovery ("retry once; inspect
+/// browser compatibility") was wrong in both halves, while `browser_status` said nothing at all.
+///
+/// One piece of reported state now drives both: page status names the open dialog, and a blocked
+/// operation is re-coded to the dialog-open boundary. Browser events are explicitly disabled here
+/// to prove the state does not depend on semantic event persistence.
+#[tokio::test]
+async fn an_open_dialog_is_reported_state_that_recodes_blocked_observation() {
+    let transport = ScriptedCdp::chrome();
+    transport.hold_events_open();
+    transport.push_response("Target.getTargets", two_targets());
+    transport.push_response("Target.getTargets", two_targets());
+    transport.push_response(
+        "Target.attachToTarget",
+        json!({"sessionId":"probe-session"}),
+    );
+    transport.push_response("Target.attachToTarget", json!({"sessionId":"session-a"}));
+    transport.push_response("Target.attachToTarget", json!({"sessionId":"session-b"}));
+    transport.push_scoped_event(
+        "Page.javascriptDialogOpening",
+        Some("session-a"),
+        json!({"type":"prompt","message":"m","defaultPrompt":"d"}),
+    );
+
+    let session = ProductionBrowserConnector::new(
+        Arc::new(krometrail_cdp::SystemChromeLauncher::new(
+            krometrail_cdp::LauncherConfig::default(),
+        )),
+        Arc::new(ScriptedFactory(transport.clone())),
+    )
+    .with_browser_events(
+        Arc::new(TestClock::default()) as Arc<dyn MonotonicClock>,
+        Arc::new(TestIds::default()) as Arc<dyn IdSource>,
+        Arc::new(RecordingEventSink::default()) as Arc<dyn BrowserEventSink>,
+        BrowserEventConfig::disabled(),
+    )
+    .connect(BrowserConnectRequest::Attach(
+        AttachBrowser::new("ws://127.0.0.1:9222/devtools/browser/dialog-state").unwrap(),
+    ))
+    .await
+    .unwrap();
+
+    let mut blocked = None;
+    for _ in 0..200 {
+        let status = session.status().await.unwrap();
+        if let Some(page) = status.pages.iter().find(|page| page.open_dialog.is_open()) {
+            blocked = Some(page.target.target.id());
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let blocked = blocked.expect("page status reports the open dialog");
+
+    let status = session.status().await.unwrap();
+    let page = status
+        .pages
+        .iter()
+        .find(|page| page.target.target.id() == blocked)
+        .unwrap();
+    assert_eq!(
+        page.open_dialog,
+        krometrail_core::OpenDialogState::Open(krometrail_core::BrowserDialogType::Prompt)
+    );
+    // Every other supervised page is known to have no dialog rather than reported as unknown.
+    assert!(
+        status
+            .pages
+            .iter()
+            .filter(|page| page.target.target.id() != blocked)
+            .all(|page| page.open_dialog.is_known_absent())
+    );
+
+    transport.push_failure("Page.getFrameTree", TransportError::CommandFailed);
+    let error = session
+        .execute(
+            krometrail_core::BrowserOperationRequest::ListFrames(
+                krometrail_core::ListFramesRequest {
+                    target: krometrail_core::PageSelection::Target(blocked),
+                },
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, krometrail_core::ErrorCode::DialogOpen);
+    let recovery = error.recovery.as_ref().unwrap().as_str();
+    assert!(recovery.contains("handle_dialog"), "{recovery}");
+    assert!(!recovery.contains("compatibility"), "{recovery}");
+
+    session.stop().await.unwrap();
 }

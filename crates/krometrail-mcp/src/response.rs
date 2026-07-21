@@ -139,6 +139,13 @@ impl RetainedBounds {
     }
 }
 
+/// One page reported as holding an open modal JavaScript dialog.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub(crate) struct ConciseOpenDialog {
+    pub target_id: TargetId,
+    pub dialog_type: krometrail_core::BrowserDialogType,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct ConciseBrowserStatus {
     pub session_id: SessionId,
@@ -147,6 +154,10 @@ pub(crate) struct ConciseBrowserStatus {
     pub profile: ProfileRef,
     pub selected_target_id: Option<TargetId>,
     pub page_count: u32,
+    /// Pages holding an open dialog. A dialog blocks that page's renderer, so a status call
+    /// must surface it at every detail level rather than only where full page rows appear.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub open_dialogs: Vec<ConciseOpenDialog>,
     pub capture: Vec<ConciseCaptureStatus>,
     pub retention: ConciseRetentionStatus,
     pub every_nth_frame: EveryNthFrame,
@@ -542,18 +553,19 @@ pub(crate) fn map_operation_result_with_novelty(
 ) -> Result<MappedResult, ResponseInvariantError> {
     let mut projection = project_operation(result, response, novelty)?;
     project_response(tool, &mut projection, response)?;
-    let status = projection.status;
-    Ok(mapped(
-        tool,
-        projection,
-        match status {
-            ToolResponseStatus::Succeeded => format!("{tool} succeeded"),
-            ToolResponseStatus::Degraded => {
-                format!("{tool} succeeded with incomplete live evidence")
-            }
-            ToolResponseStatus::Failed => format!("{tool} failed"),
-        },
-    ))
+    // A failed operation states its cause in the same shape as `visible_error`. A bare
+    // "{tool} failed" text line was the only thing a caller reading tool text ever saw.
+    let summary = match projection.status {
+        ToolResponseStatus::Succeeded => format!("{tool} succeeded"),
+        ToolResponseStatus::Degraded => {
+            format!("{tool} succeeded with incomplete live evidence")
+        }
+        ToolResponseStatus::Failed => projection.error.as_ref().map_or_else(
+            || format!("{tool} failed"),
+            |error| format!("{tool} failed: {}", error.message),
+        ),
+    };
+    Ok(mapped(tool, projection, summary))
 }
 
 fn capture_failed_warning(status: &krometrail_core::TargetCaptureStatus) -> KrometrailError {
@@ -704,6 +716,16 @@ pub(crate) fn map_browser_status(
                 profile: status.profile,
                 selected_target_id: status.selected_target_id,
                 page_count,
+                open_dialogs: status
+                    .pages
+                    .iter()
+                    .filter_map(|page| {
+                        Some(ConciseOpenDialog {
+                            target_id: page.target.target.id(),
+                            dialog_type: page.open_dialog.dialog_type()?,
+                        })
+                    })
+                    .collect(),
                 capture,
                 retention,
                 every_nth_frame: status.every_nth_frame,
@@ -1226,7 +1248,7 @@ fn project_batch(
     let mut images = Vec::new();
     let mut screenshot_warnings = Vec::new();
     let mut step_values = Vec::with_capacity(value.steps.len());
-    let mut first_step_error = None;
+    let mut first_step_failure: Option<(u32, BrowserOperationKind, KrometrailError)> = None;
     let mut step_failure_seen = false;
     for step in value.steps {
         let result = step
@@ -1239,8 +1261,10 @@ fn project_batch(
         if step.status != krometrail_core::BatchStepStatus::Succeeded {
             step_failure_seen = true;
         }
-        if first_step_error.is_none() {
-            first_step_error = step.error.clone();
+        if first_step_failure.is_none()
+            && let Some(error) = step.error.clone()
+        {
+            first_step_failure = Some((step.index, step.operation, error));
         }
         let screenshot = step.screenshot.map(|screenshot| match screenshot {
             ObservationPart::Available(screenshot) => {
@@ -1299,7 +1323,10 @@ fn project_batch(
         // evidence. If every step succeeded, preserve the already-applied mutations and expose the
         // missing evidence as degradation instead of encouraging callers to replay the batch.
         BatchOutcome::CompletedWithFailures if !step_failure_seen => {}
-        _ => projection.fail_with(first_step_error.unwrap_or_else(|| batch_outcome_error(outcome))),
+        _ => projection.fail_with(first_step_failure.map_or_else(
+            || batch_outcome_error(outcome),
+            |(index, operation, error)| batch_step_error(index, operation, error),
+        )),
     }
     Ok(projection)
 }
@@ -2219,6 +2246,22 @@ fn serializable<T: Serialize>(value: T) -> Result<Projection, ResponseInvariantE
     serde_json::to_value(value)
         .map(Projection::success)
         .map_err(|_| ResponseInvariantError)
+}
+
+/// Name the failing step on the batch's own error. The step index, operation, and cause are
+/// already in `steps`; a caller reading only the top-level failure should not have to correlate.
+fn batch_step_error(
+    index: u32,
+    operation: BrowserOperationKind,
+    error: KrometrailError,
+) -> KrometrailError {
+    let message = NonEmptyText::new(format!(
+        "batch step {index} ({}) failed: {}",
+        operation.stable_name(),
+        error.message.as_str()
+    ))
+    .expect("batch step failure message is non-empty");
+    KrometrailError { message, ..error }
 }
 
 fn batch_outcome_error(outcome: BatchOutcome) -> KrometrailError {
@@ -5023,6 +5066,18 @@ mod tests {
         let batch =
             map_operation_result("batch", BrowserOperationResult::Batch(Box::new(batch))).unwrap();
         assert_eq!(batch.response.status, ToolResponseStatus::Failed);
+        // A failed batch carries the same evidence the degraded path builds: partial step
+        // results, the failing step's index and operation, and the step's stable error code.
+        assert_eq!(
+            batch.summary,
+            "batch failed: batch step 0 (click) failed: step failed"
+        );
+        let reported = batch
+            .response
+            .error
+            .as_ref()
+            .expect("failure carries error");
+        assert_eq!(reported.code, ErrorCode::InteractionFailed);
         assert_eq!(batch.response.result["steps"].as_array().unwrap().len(), 2);
         assert!(batch.response.result["steps"][0]["screenshot"]["unavailable"].is_object());
         assert!(

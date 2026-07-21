@@ -1,4 +1,4 @@
-use krometrail_core::{DialogAction, ErrorCode, HandleDialogRequest, Result};
+use krometrail_core::{DialogAction, ErrorCode, HandleDialogRequest, OpenDialogState, Result};
 use serde_json::{Map, Value};
 
 use super::{
@@ -12,13 +12,21 @@ use crate::transport::{CdpTransport, CommandScope, TransportError};
 /// dialog state and events to this exact flat session. There is no reliable benefit in probing,
 /// yielding, or retrying: a rejected command is either the stable "not open" boundary or a real
 /// transport/protocol failure, and retries could repeat a user-visible dialog action.
+///
+/// `dialog_state` is the same reported open-dialog state that page status and the
+/// blocked-observation boundary read. Only a positive `None` short-circuits; `Unknown` still
+/// dispatches so a page without installed dialog sources keeps working.
 pub(super) async fn handle_dialog(
     transport: &dyn CdpTransport,
     bound: &BoundTarget,
     request: &HandleDialogRequest,
+    dialog_state: OpenDialogState,
     cancel: &OperationCancellation,
     generation: u64,
 ) -> Result<()> {
+    if dialog_state.is_known_absent() {
+        return Err(dialog_not_open(bound.target_id));
+    }
     let response = cancel
         .race(
             generation,
@@ -32,7 +40,12 @@ pub(super) async fn handle_dialog(
         .await?;
     match response {
         Ok(_) => Ok(()),
-        Err(TransportError::CommandFailed) => Err(dialog_not_open(bound.target_id)),
+        // Chrome rejects `Page.handleJavaScriptDialog` with a protocol error ("No dialog is
+        // showing") rather than a transport-level command failure. Both classify as the stable
+        // "not open" boundary; neither is a compatibility or connectivity problem.
+        Err(TransportError::CommandFailed | TransportError::Protocol) => {
+            Err(dialog_not_open(bound.target_id))
+        }
         Err(
             TransportError::Disconnected
             | TransportError::Closed

@@ -163,6 +163,9 @@ impl PageControl {
         } else {
             None
         };
+        // The one reported open-dialog state, read once per interaction and consumed by the
+        // handle_dialog boundary and by blocked-observation classification below.
+        let dialog_state = browser_events.open_dialog_state(bound.target_id);
         // Subscribe before input dispatch. A JavaScript modal can block both the command response
         // and every subsequent observation command, so command-error classification alone cannot
         // provide a non-deadlocking interaction boundary.
@@ -179,7 +182,7 @@ impl PageControl {
         let dispatch = async {
             if let Some(events) = dialog_events.as_mut() {
                 tokio::select! {
-                    result = self.dispatch_action(transport, &bound, &request, &resolved, cancel, generation) => {
+                    result = self.dispatch_action(transport, &bound, &request, &resolved, dialog_state, cancel, generation) => {
                         result?;
                         Ok(false)
                     }
@@ -188,8 +191,16 @@ impl PageControl {
                     }
                 }
             } else {
-                self.dispatch_action(transport, &bound, &request, &resolved, cancel, generation)
-                    .await?;
+                self.dispatch_action(
+                    transport,
+                    &bound,
+                    &request,
+                    &resolved,
+                    dialog_state,
+                    cancel,
+                    generation,
+                )
+                .await?;
                 Ok(false)
             }
         };
@@ -396,12 +407,14 @@ impl PageControl {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn dispatch_action(
         &self,
         transport: &dyn CdpTransport,
         bound: &BoundTarget,
         request: &BrowserOperationRequest,
         resolved: &ResolvedTarget,
+        dialog_state: krometrail_core::OpenDialogState,
         cancel: &OperationCancellation,
         generation: u64,
     ) -> Result<()> {
@@ -455,7 +468,15 @@ impl PageControl {
                     .await
             }
             BrowserOperationRequest::HandleDialog(request) => {
-                super::dialog::handle_dialog(transport, bound, request, cancel, generation).await
+                super::dialog::handle_dialog(
+                    transport,
+                    bound,
+                    request,
+                    dialog_state,
+                    cancel,
+                    generation,
+                )
+                .await
             }
             _ => Err(interaction_error(
                 bound.target_id,

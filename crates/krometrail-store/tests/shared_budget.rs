@@ -552,7 +552,9 @@ async fn a_census_that_never_enumerated_does_not_grant_the_whole_total() {
     let data = TempDir::new().unwrap();
     let total = 4_000_000_u64;
 
-    let first = open_instance(&data, total, true);
+    // Held, not read: these two exist so the census under test has peers it
+    // could have found, had it ever been able to enumerate.
+    let _first = open_instance(&data, total, true);
     let second = open_instance(&data, total, true);
 
     // Claimed while the directory is still writable, because the census under

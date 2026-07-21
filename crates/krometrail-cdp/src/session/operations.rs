@@ -36,6 +36,7 @@ pub(crate) async fn execute_operation(
         ));
     }
     let outer_batch = matches!(request, BrowserOperationRequest::Batch(_));
+    let direct_target = direct_request_target(&request);
     let result = execute_operation_unfenced(
         page_control,
         state,
@@ -45,7 +46,8 @@ pub(crate) async fn execute_operation(
         cancellation,
         context,
     )
-    .await?;
+    .await
+    .map_err(|error| classify_open_dialog(error, kind, direct_target, shared))?;
     if state_changing && !outer_batch {
         let sink = shared
             .interaction_evidence
@@ -60,6 +62,53 @@ pub(crate) async fn execute_operation(
         .await?;
     }
     Ok(result)
+}
+
+/// The blocked-observation consumption site for reported open-dialog state.
+///
+/// An open modal JavaScript dialog stops the renderer from answering observation, evaluation, and
+/// input commands. Every one of those surfaces reports a generic failure whose recovery ("retry
+/// once; inspect browser compatibility") is wrong for this cause: retrying never succeeds while
+/// the dialog is open, and compatibility is irrelevant. Re-code the failure once, here, from the
+/// same state that page status and `handle_dialog` read.
+fn classify_open_dialog(
+    error: KrometrailError,
+    kind: krometrail_core::BrowserOperationKind,
+    direct_target: Option<krometrail_core::TargetId>,
+    shared: &Arc<SessionShared>,
+) -> KrometrailError {
+    // handle_dialog is the recovery for this state, so its own failures keep their own codes.
+    if kind == krometrail_core::BrowserOperationKind::HandleDialog {
+        return error;
+    }
+    // Only codes whose recovery actively misdirects for this cause. A wait timeout is deliberately
+    // excluded: its recovery already sends the caller to page status, which now names the dialog,
+    // and its code is load-bearing for batch termination.
+    if !matches!(
+        error.code,
+        ErrorCode::PageObservationFailed
+            | ErrorCode::ScreenshotFailed
+            | ErrorCode::EvaluationFailed
+            | ErrorCode::InteractionFailed
+    ) {
+        return error;
+    }
+    let Some(target_id) = error.context.target_id.or(direct_target) else {
+        return error;
+    };
+    let state = shared.browser_events.open_dialog_state(target_id);
+    let Some(dialog_type) = state.dialog_type() else {
+        return error;
+    };
+    KrometrailError::from_browser_failure(
+        ErrorCode::DialogOpen,
+        NonEmptyText::new(format!(
+            "an open {} JavaScript dialog is blocking the renderer on this page",
+            dialog_type.as_str()
+        ))
+        .expect("dialog-open message is non-empty"),
+    )
+    .with_context(error.context)
 }
 
 pub(super) async fn execute_operation_unfenced(
