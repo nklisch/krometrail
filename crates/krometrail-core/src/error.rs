@@ -32,6 +32,7 @@ define_stable_enum! {
         StaleReference => "stale_reference",
         ReferenceNotActionable => "reference_not_actionable",
         PageObservationFailed => "page_observation_failed",
+        DialogOpen => "dialog_open",
         ScreenshotFailed => "screenshot_failed",
         EvaluationFailed => "evaluation_failed",
         NavigationFailed => "navigation_failed",
@@ -259,6 +260,7 @@ impl ErrorCode {
             Self::TargetHidden
             | Self::StaleReference
             | Self::ReferenceNotActionable
+            | Self::DialogOpen
             | Self::BudgetExhausted => RetryAdvice::AfterRecovery,
             Self::VideoEncoderUnavailable => RetryAdvice::AfterRecovery,
             Self::CaptureFailed => RetryAdvice::AfterRecovery,
@@ -288,6 +290,9 @@ impl ErrorCode {
             Self::PageObservationFailed => {
                 Some("retry once; if it fails again, inspect browser compatibility and status")
             }
+            Self::DialogOpen => Some(
+                "call handle_dialog to accept or dismiss the open JavaScript dialog, then retry; retrying before that never succeeds",
+            ),
             Self::ScreenshotFailed => {
                 Some("retry once; if it fails again, inspect browser compatibility and status")
             }

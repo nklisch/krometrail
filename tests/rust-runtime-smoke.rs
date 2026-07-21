@@ -357,6 +357,83 @@ fn mcp_without_qualified_ffmpeg_keeps_the_still_surface_and_omits_video() {
     std::fs::remove_dir_all(data).unwrap();
 }
 
+/// A running process must hold its instance root's lock for as long as it lives.
+///
+/// The store-level tests bind the ownership guard to a live local, so they prove
+/// the primitive and never the application. This is the assertion that was
+/// missing: with the guard dropped at the end of bootstrap, a live root reads as
+/// abandoned, and the next process to start reclaims it — deleting the running
+/// process's index and segments while it keeps writing to the deleted inodes.
+#[test]
+fn mcp_holds_its_instance_lock_for_the_life_of_the_process() {
+    if !krometrail_store::OWNERSHIP_IS_ENFORCED {
+        // Without provable ownership every root reads as live, so there is no
+        // claim to make in either direction and nothing here is meaningful.
+        return;
+    }
+    let data = std::env::temp_dir().join(format!(
+        "krometrail-instance-lock-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let mut child = Command::new(env!("CARGO_BIN_EXE_krometrail"))
+        .arg("mcp")
+        .env("KROMETRAIL_DATA_DIR", &data)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("MCP binary should spawn");
+
+    let root = wait_for_instance_root(&data.join("instances"));
+
+    // While the process runs, its root is not claimable by anyone else.
+    let claim = krometrail_store::InstanceOwnership::acquire_existing(&root)
+        .expect("claiming a live instance root should not error");
+    assert!(
+        claim.is_none(),
+        "a running process's instance root was claimable, so any second process \
+         would reclaim it and delete this one's evidence: {root:?}"
+    );
+    drop(claim);
+
+    // Exit releases it, so an abandoned root stays reclaimable.
+    drop(child.stdin.take());
+    let status = child.wait().unwrap();
+    assert!(status.success());
+    let claim = krometrail_store::InstanceOwnership::acquire_existing(&root)
+        .expect("claiming an abandoned instance root should not error");
+    assert!(
+        claim.is_some(),
+        "an exited process's instance root stayed locked: {root:?}"
+    );
+    drop(claim);
+    let _ = std::fs::remove_dir_all(data);
+}
+
+fn wait_for_instance_root(instances: &std::path::Path) -> std::path::PathBuf {
+    for _ in 0..200 {
+        if let Ok(entries) = std::fs::read_dir(instances) {
+            let roots: Vec<_> = entries
+                .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+                .filter(|path| path.is_dir())
+                .collect();
+            // Wait for the lock file too: the root exists for a moment before it
+            // is claimed, and reading it in that window would test nothing.
+            if let Some(root) = roots.first()
+                && root.join(".owner.lock").is_file()
+            {
+                return root.clone();
+            }
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    panic!("startup never created a locked instance root under {instances:?}");
+}
+
 fn text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }

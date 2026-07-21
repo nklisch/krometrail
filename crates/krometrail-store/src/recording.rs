@@ -737,6 +737,24 @@ impl RecordingStore {
         })
     }
 
+    /// Live instances currently dividing the total budget with this store.
+    ///
+    /// One without a census: a store outside a multi-instance data directory
+    /// enforces the configured budget alone, which is the same thing as being
+    /// the only live instance.
+    ///
+    /// This exists so that a caller asking how the budget is being divided reads
+    /// the answer from the census this store actually enforces against, rather
+    /// than standing up a second census over the same directory. A lookalike
+    /// census is not the same object: it holds no instance lock, and it was
+    /// precisely that divergence between the tested shape and the running one
+    /// that let the ownership-lifetime defect through.
+    pub fn live_instances(&self) -> u64 {
+        self.census
+            .as_ref()
+            .map_or(1, |census| census.live_instances().max(1))
+    }
+
     /// Age cutoff for the configured policy, read from the index's own clock.
     fn expiry_cutoff(&self) -> krometrail_core::Result<Option<i64>> {
         let Some(max_age) = self.retention.max_age() else {

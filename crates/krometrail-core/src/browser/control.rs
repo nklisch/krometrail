@@ -26,10 +26,46 @@ pub enum PageSelection {
     Target(TargetId),
 }
 
+/// The one piece of reported modal-dialog state. A JavaScript dialog blocks every renderer
+/// observation on its page, so the same value drives the blocked-observation error code, the
+/// `handle_dialog` no-dialog boundary, and page status.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenDialogState {
+    /// The page has no open JavaScript dialog.
+    #[default]
+    None,
+    /// A JavaScript dialog of this type is open and blocking renderer observation.
+    Open(super::BrowserDialogType),
+    /// Dialog observation is not installed for this page, so openness is not known.
+    Unknown,
+}
+
+impl OpenDialogState {
+    pub const fn is_open(self) -> bool {
+        matches!(self, Self::Open(_))
+    }
+
+    /// True only when the page is known to have no open dialog. `Unknown` is not a denial.
+    pub const fn is_known_absent(self) -> bool {
+        matches!(self, Self::None)
+    }
+
+    pub const fn dialog_type(self) -> Option<super::BrowserDialogType> {
+        match self {
+            Self::Open(dialog_type) => Some(dialog_type),
+            Self::None | Self::Unknown => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PageStatus {
     pub target: SupervisedTarget,
     pub selected: bool,
+    /// Reported open-dialog state for this page. A page whose dialog observation is not
+    /// installed reports `unknown` rather than implying that no dialog is open.
+    pub open_dialog: OpenDialogState,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]

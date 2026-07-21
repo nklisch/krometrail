@@ -17,6 +17,9 @@ use crate::{
 
 pub const DEFAULT_SEMANTIC_MATCH_LIMIT: u16 = 20;
 pub const MAX_SEMANTIC_MATCH_LIMIT: u16 = 100;
+/// The declared bound on the `no_match` relaxed-candidate scan. Counting stops here and the
+/// reported count is marked saturated rather than becoming an unbounded page scan.
+pub const MAX_SEMANTIC_RELAXED_CANDIDATES: u16 = 100;
 pub const MAX_SEMANTIC_QUERY_TEXT_BYTES: usize = 1_024;
 
 #[derive(
@@ -588,6 +591,18 @@ impl SemanticTextMatch {
         })
     }
 
+    /// The same matcher with `exact` relaxed to `contains`. `None` when it is already relaxed.
+    fn relaxed_to_contains(&self) -> Option<Self> {
+        match self.mode {
+            SemanticTextMatchMode::Exact => Some(Self {
+                value: self.value.clone(),
+                mode: SemanticTextMatchMode::Contains,
+                case_sensitive: self.case_sensitive,
+            }),
+            SemanticTextMatchMode::Contains => None,
+        }
+    }
+
     pub fn matches(&self, candidate: &str) -> bool {
         let expected = normalize_semantic_text(self.value.as_str(), self.case_sensitive);
         let candidate = normalize_semantic_text(candidate, self.case_sensitive);
@@ -678,6 +693,40 @@ impl SemanticQuery {
         match self {
             Self::Role { container_text, .. } => container_text.is_some(),
             Self::Label { .. } | Self::Text { .. } | Self::TestId { .. } => true,
+        }
+    }
+
+    /// The same query with every `exact` text matcher relaxed to `contains`.
+    ///
+    /// `None` when the query holds no exact matcher, so there is no relaxation to report and no
+    /// second pass to run. Sites decorate accessible names routinely (`"Cargo.toml, (File)"`), so
+    /// this is how a `no_match` result reports that an informed `contains` retry would land.
+    pub fn relaxed_to_contains(&self) -> Option<Self> {
+        match self {
+            Self::Role {
+                role,
+                name,
+                container_text,
+            } => {
+                let relaxed_name = name.as_ref().and_then(SemanticTextMatch::relaxed_to_contains);
+                let relaxed_container = container_text
+                    .as_ref()
+                    .and_then(SemanticTextMatch::relaxed_to_contains);
+                if relaxed_name.is_none() && relaxed_container.is_none() {
+                    return None;
+                }
+                Some(Self::Role {
+                    role: role.clone(),
+                    name: relaxed_name.or_else(|| name.clone()),
+                    container_text: relaxed_container.or_else(|| container_text.clone()),
+                })
+            }
+            Self::Label { text } => text
+                .relaxed_to_contains()
+                .map(|text| Self::Label { text }),
+            Self::Text { text } => text.relaxed_to_contains().map(|text| Self::Text { text }),
+            // A test id is an exact identifier, not decorated prose; there is nothing to relax.
+            Self::TestId { .. } => None,
         }
     }
 
@@ -840,6 +889,27 @@ pub struct SemanticMatch {
     pub name: Option<String>,
 }
 
+/// How many nodes an exact-mode query would have matched under `contains`.
+///
+/// Reported only on `no_match` for a query that used at least one exact text matcher. The scan is
+/// capped at [`MAX_SEMANTIC_RELAXED_CANDIDATES`]; `saturated` marks the cap being reached.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RelaxedMatchCandidates {
+    pub count: u16,
+    pub saturated: bool,
+}
+
+impl RelaxedMatchCandidates {
+    pub fn new(count: usize) -> Self {
+        let limit = usize::from(MAX_SEMANTIC_RELAXED_CANDIDATES);
+        Self {
+            count: u16::try_from(count.min(limit)).unwrap_or(MAX_SEMANTIC_RELAXED_CANDIDATES),
+            saturated: count >= limit,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct QueryPageResult {
     pub context: ObservationContext,
@@ -847,14 +917,28 @@ pub struct QueryPageResult {
     pub outcome: SemanticQueryOutcome,
     pub matches: Vec<SemanticMatch>,
     pub omitted_match_count: u32,
+    /// Present only on `no_match` when the query used an exact text matcher and a relaxed
+    /// `contains` retry would have matched at least one node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relaxed_match_candidates: Option<RelaxedMatchCandidates>,
 }
 
 impl QueryPageResult {
     pub fn new(
         context: ObservationContext,
         generation: SnapshotGeneration,
+        matches: Vec<SemanticMatch>,
+        max_matches: u16,
+    ) -> Result<Self> {
+        Self::with_relaxed_candidates(context, generation, matches, max_matches, None)
+    }
+
+    pub fn with_relaxed_candidates(
+        context: ObservationContext,
+        generation: SnapshotGeneration,
         mut matches: Vec<SemanticMatch>,
         max_matches: u16,
+        relaxed_match_candidates: Option<RelaxedMatchCandidates>,
     ) -> Result<Self> {
         if !(1..=MAX_SEMANTIC_MATCH_LIMIT).contains(&max_matches) {
             return Err(invalid("semantic match limit must be between 1 and 100"));
@@ -878,12 +962,18 @@ impl QueryPageResult {
             count if count <= usize::from(max_matches) => SemanticQueryOutcome::Ambiguous,
             _ => SemanticQueryOutcome::Truncated,
         };
+        // Relaxed-candidate accounting exists to explain an empty result. Reporting it beside a
+        // real match set would invite callers to treat it as a second, unranked match set.
+        let relaxed_match_candidates = relaxed_match_candidates
+            .filter(|_| outcome == SemanticQueryOutcome::NoMatch)
+            .filter(|candidates| candidates.count > 0);
         Ok(Self {
             context,
             generation,
             outcome,
             matches,
             omitted_match_count,
+            relaxed_match_candidates,
         })
     }
 }

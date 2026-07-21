@@ -162,6 +162,8 @@ impl InstanceOwnership {
     /// holds this name, and on a host with no locking that is the *only* signal
     /// there is. Establishing the claim by construction, rather than by trusting
     /// UUID collision probability, is what makes "exclusive by name" a fact.
+    #[must_use = "dropping this releases the instance lock and lets another \
+                  process reclaim this root's evidence"]
     pub fn acquire_new(data_directory: &Path) -> krometrail_core::Result<Self> {
         let instances = data_directory.join(INSTANCES_DIRECTORY);
         permissions::ensure_private_directory(&instances)
@@ -189,6 +191,8 @@ impl InstanceOwnership {
     /// test: there is no window in which a caller has decided a root is abandoned
     /// but does not yet own it, so a reclaimer always acts as the root's
     /// legitimate owner rather than reaching into someone else's.
+    #[must_use = "dropping this releases the instance lock and lets another \
+                  process reclaim this root's evidence"]
     pub fn acquire_existing(root: &Path) -> krometrail_core::Result<Option<Self>> {
         let lock = open_lock_file(root)?;
         if !try_lock_exclusive(&lock)? {
@@ -268,7 +272,48 @@ pub fn reclaim_instance_root(ownership: &InstanceOwnership) -> krometrail_core::
         }
         remove_directory_if_present(&root.join(name))?;
     }
+    remove_emptied_root(ownership);
     Ok(bytes)
+}
+
+/// Removes a reclaimed root once nothing but its lock file is left in it.
+///
+/// Without this every process start leaves a permanent directory behind: the
+/// allowlist removes the cache members and never the root that held them, so the
+/// roots accumulate forever and every future census stats all of them.
+///
+/// Removal happens only when the root holds nothing except the lock. An
+/// unexpected member — an operator's file, a future non-cache directory — means
+/// the root survives along with it, which is the same rule the allowlist follows.
+///
+/// The race this has to survive is a claimant that opened the lock file just
+/// before it was unlinked: its `flock` then succeeds on an orphaned inode, so it
+/// believes it owns this root. What stops it acting on that belief is the
+/// identity check it already performs — `acquire_existing` reads the directory's
+/// identity *after* locking, and `still_owns_its_root` requires that identity to
+/// exist. Once the root is gone the identity is `None` and every removal that
+/// claimant might attempt fails closed. Neither check may be relaxed.
+///
+/// Best effort throughout: a claimant may also recreate the lock between the
+/// unlink and the `rmdir`, which makes the `rmdir` fail. Leaving a root behind
+/// costs an empty directory, so nothing here is worth failing a reclaim over.
+fn remove_emptied_root(ownership: &InstanceOwnership) {
+    let root = ownership.root();
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    let only_the_lock = entries.flatten().all(|entry| {
+        entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name == INSTANCE_LOCK_FILE)
+    });
+    if !only_the_lock || !ownership.still_owns_its_root() {
+        return;
+    }
+    if fs::remove_file(root.join(INSTANCE_LOCK_FILE)).is_ok() {
+        let _ = fs::remove_dir(root);
+    }
 }
 
 fn swapped_root_error() -> krometrail_core::KrometrailError {
@@ -503,6 +548,19 @@ unsafe fn errno_slot() -> *mut i32 {
 pub struct InstanceCensus {
     data_directory: PathBuf,
     owned_root: PathBuf,
+    /// This instance's own claim to be live.
+    ///
+    /// The census hardcodes itself into every count — `proved_live` starts at
+    /// one, the one peer no census can miss. This field is what makes that claim
+    /// true rather than merely asserted: holding the lock is exactly what a peer
+    /// tests when it asks whether this root is live. Keeping the two together
+    /// means the claim cannot outlive its own evidence.
+    ///
+    /// It is therefore load-bearing while being read by nothing. The lock is
+    /// released when this is dropped, so the census — and through it the
+    /// `RecordingStore` that owns the census — is what pins the lock to the
+    /// life of the process.
+    _ownership: InstanceOwnership,
     /// The instances directory, opened once at construction.
     ///
     /// `None` means the directory could not be opened then — which is the one
@@ -537,11 +595,19 @@ pub struct InstanceCensus {
 const ASSUMED_LIVE_INSTANCES_WITHOUT_EVIDENCE: u64 = 4;
 
 impl InstanceCensus {
-    pub fn new(data_directory: &Path, owned_root: &Path) -> Self {
+    /// Takes over this process's instance ownership for the census's lifetime.
+    ///
+    /// Ownership is moved rather than borrowed so that the advisory lock cannot
+    /// be dropped while a census still claims this instance is live. The census
+    /// lives in the `RecordingStore`, so this ties the lock to the store that
+    /// depends on it.
+    pub fn new(data_directory: &Path, ownership: InstanceOwnership) -> Self {
+        let owned_root = ownership.root().to_path_buf();
         let census = Self {
             handle: InstancesDirectoryHandle::open(&data_directory.join(INSTANCES_DIRECTORY)),
             data_directory: data_directory.to_path_buf(),
-            owned_root: owned_root.to_path_buf(),
+            owned_root,
+            _ownership: ownership,
             // This instance itself, which is the one peer no census can miss.
             proved_live: AtomicU64::new(1),
         };
@@ -693,17 +759,36 @@ fn remove_directory_if_present(path: &Path) -> krometrail_core::Result<()> {
 pub(crate) fn try_lock_exclusive(file: &File) -> krometrail_core::Result<bool> {
     use std::os::unix::io::AsRawFd;
 
-    // SAFETY: `file` owns a valid descriptor for the duration of this call.
-    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-    if result == 0 {
-        return Ok(true);
+    // `EINTR` means the call was interrupted before it decided anything, so the
+    // only correct response is to reissue it. Reporting "held" instead is safe —
+    // a live root is never reclaimed by mistake — but it is not *true*, and a
+    // signal arriving at the wrong moment would make a genuinely abandoned root
+    // look live and keep its disk forever. Retry a bounded number of times so an
+    // unlucky signal costs a syscall rather than a wrong answer.
+    for _ in 0..INTERRUPTED_LOCK_ATTEMPTS {
+        // SAFETY: `file` owns a valid descriptor for the duration of this call.
+        let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        if result == 0 {
+            return Ok(true);
+        }
+        match io::Error::last_os_error().raw_os_error() {
+            Some(code) if code == libc::EWOULDBLOCK || code == libc::EAGAIN => return Ok(false),
+            Some(code) if code == libc::EINTR => continue,
+            _ => return Err(persistence_error("could not acquire the instance lock")),
+        }
     }
-    let error = io::Error::last_os_error();
-    match error.raw_os_error() {
-        Some(code) if code == libc::EWOULDBLOCK || code == libc::EINTR => Ok(false),
-        _ => Err(persistence_error("could not acquire the instance lock")),
-    }
+    Err(persistence_error(
+        "the instance lock was interrupted repeatedly",
+    ))
 }
+
+/// Attempts allowed for a `flock` that keeps being interrupted by signals.
+///
+/// Interruption is transient by definition, so a small bound is enough; the only
+/// thing that must not happen is looping forever on a process being signalled
+/// continuously.
+#[cfg(unix)]
+const INTERRUPTED_LOCK_ATTEMPTS: u8 = 8;
 
 // Windows is a best-effort target. The standard library cannot express a
 // deny-share open, so no lock can be taken — and "no lock" must read as "not

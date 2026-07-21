@@ -161,6 +161,35 @@ while alive, released on exit.
 - **No test removal expected.** The existing store-level tests are correct and stay; they
   simply were never the tests that could catch this.
 
+## Implementation notes
+
+- **Unit 4 first, and it failed as predicted** against unmodified v1.3.0 code:
+  "a running process's instance root was claimable". That is the bug reproduced at the
+  application level, which no store-level test could do.
+- **Unit 1** landed as designed. The lock now lives in `InstanceCensus._ownership`, the
+  census lives in `RecordingStore`, and the store reaches the runtime as `Arc` clones
+  (`storage.frames` and friends are the same `Arc<RecordingStore>`). So the lock is held
+  for as long as storage exists — and if nothing held storage, there would be no capture
+  at all. The lifetime is therefore tied to something that visibly cannot be dropped.
+- **The compile errors were the design working.** Moving ownership by value broke
+  `crates/krometrail-store/tests/shared_budget.rs` in nine places, all of the same shape:
+  the tests stood up a *second, lookalike* census over a root they did not own, purely to
+  read `live_instances()`. That lookalike holds no lock — it is exactly the divergence
+  between the tested shape and the running one that let this defect through. Rather than
+  reconstruct the lookalike, `RecordingStore::live_instances()` was added so the tests read
+  the count from the census the store actually enforces against. One test
+  (`a_census_that_never_enumerated_...`) legitimately needs a census built *after*
+  enumeration is broken, so it now claims its observer ownership up front, before
+  `instances/` is made execute-only — a root cannot be created once it is.
+- **Unit 2** removes the root only when nothing but `.owner.lock` remains, and steps over
+  every failure. The unlink/`rmdir` race is closed by the identity checks that already
+  existed, not by new locking; the comment says so explicitly so a later change does not
+  "simplify" them away.
+- **Unit 3** now retries `EINTR` up to a bounded 8 attempts and maps only
+  `EWOULDBLOCK`/`EAGAIN` to `Ok(false)`.
+- **Existing leaked roots self-heal**: with Unit 2 in place, the first 1.3.1 start reclaims
+  the empty roots left by earlier versions. No migration or manual cleanup is needed.
+
 ## Risks
 
 - Moving `InstanceOwnership` into `InstanceCensus` makes the census non-`Clone` and ties it

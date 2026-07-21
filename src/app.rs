@@ -420,7 +420,9 @@ fn open_storage_with_budget(
     // instances: each one enforces `total / live`. The count comes from the
     // instance locks already held, so there is nothing to publish and nothing to
     // go stale.
-    let census = krometrail_store::InstanceCensus::new(data_directory, &instance_root);
+    // Ownership moves into the census, which the store holds, so the advisory
+    // lock lives exactly as long as the storage that depends on it.
+    let census = krometrail_store::InstanceCensus::new(data_directory, ownership);
     let store = Arc::new(RecordingStore::with_retention(
         segments,
         Arc::clone(&index),

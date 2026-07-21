@@ -260,3 +260,54 @@ fn reclamation_refuses_a_root_that_changes_identity_under_the_lock() {
     );
     assert!(decoy.join("index.sqlite3").is_file());
 }
+
+/// A reclaimed root does not survive as an empty directory.
+///
+/// The allowlist removes the cache members and says nothing about the root that
+/// held them, so without this every process start would leave a permanent
+/// directory behind and every later census would stat all of them.
+#[cfg(unix)]
+#[test]
+fn reclamation_removes_a_root_it_has_emptied() {
+    let directory = TempDir::new().unwrap();
+    let owner = InstanceOwnership::acquire_new(directory.path()).unwrap();
+    let root = owner.root().to_path_buf();
+    fs::create_dir_all(root.join("segments")).unwrap();
+    fs::write(root.join("segments/a.kts"), b"segment").unwrap();
+    fs::write(root.join("index.sqlite3"), b"index").unwrap();
+
+    reclaim_instance_root(&owner).unwrap();
+
+    assert!(
+        !root.exists(),
+        "an emptied instance root was left behind: {root:?}"
+    );
+}
+
+/// An unexpected member keeps the whole root, lock included.
+///
+/// Removing the root is only safe because nothing unaccounted-for is in it. The
+/// allowlist already refuses to sweep away a member it does not recognise; the
+/// root has to follow the same rule rather than deleting the member's home out
+/// from under it.
+#[cfg(unix)]
+#[test]
+fn reclamation_keeps_a_root_holding_something_it_does_not_recognise() {
+    let directory = TempDir::new().unwrap();
+    let owner = InstanceOwnership::acquire_new(directory.path()).unwrap();
+    let root = owner.root().to_path_buf();
+    fs::write(root.join("index.sqlite3"), b"index").unwrap();
+    fs::write(root.join("operator-notes.txt"), b"not ours to delete").unwrap();
+
+    reclaim_instance_root(&owner).unwrap();
+
+    assert!(
+        !root.join("index.sqlite3").exists(),
+        "cache member survived"
+    );
+    assert_eq!(
+        fs::read(root.join("operator-notes.txt")).unwrap(),
+        b"not ours to delete"
+    );
+    assert!(root.join(".owner.lock").is_file(), "lock was removed");
+}

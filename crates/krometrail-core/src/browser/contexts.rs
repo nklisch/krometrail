@@ -9,6 +9,8 @@ use super::{PageSelection, PageStatus};
 
 pub const MAX_KNOWN_PAGE_TARGETS: usize = 128;
 pub const MAX_PAGE_FRAMES: usize = 256;
+pub const MAX_FRAME_NAME_BYTES: usize = 128;
+pub const MAX_FRAME_PATH_BYTES: usize = 512;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, JsonSchema)]
 #[serde(transparent)]
@@ -126,6 +128,71 @@ pub struct PageFrameStatus {
     pub depth: u16,
     pub access: FrameAccess,
     pub url: SanitizedUrl,
+    /// The frame element's author-assigned `name`, bounded and control-character free.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<NonEmptyText>,
+    /// The frame document's real URL path, exposed only for a frame that shares the main
+    /// document's origin. Cross-origin and out-of-process frames keep `url`'s hashed path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub same_origin_path: Option<NonEmptyText>,
+}
+
+impl PageFrameStatus {
+    pub fn new(
+        reference: PageFrameReference,
+        parent: Option<PageFrameReference>,
+        depth: u16,
+        access: FrameAccess,
+        url: SanitizedUrl,
+        raw_name: Option<&str>,
+        raw_url: &str,
+    ) -> crate::Result<Self> {
+        if depth == 0 && parent.is_some() {
+            return Err(invalid("a root frame must not declare a parent frame"));
+        }
+        Ok(Self {
+            reference,
+            parent,
+            depth,
+            access,
+            url,
+            name: raw_name.and_then(bounded_frame_label),
+            same_origin_path: same_origin_frame_path(access, raw_url),
+        })
+    }
+}
+
+/// Frame `name` is author-controlled page text. Bound it and reject control characters before it
+/// reaches a response, exactly as every other author-controlled identity is bounded.
+fn bounded_frame_label(raw: &str) -> Option<NonEmptyText> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty()
+        || trimmed.len() > MAX_FRAME_NAME_BYTES
+        || trimmed.chars().any(char::is_control)
+    {
+        return None;
+    }
+    NonEmptyText::new(trimmed).ok()
+}
+
+/// The same-origin frame-path relaxation. Only a frame that shares the main document's origin
+/// gets its real path; everything else keeps the hashed path in `SanitizedUrl`.
+fn same_origin_frame_path(access: FrameAccess, raw_url: &str) -> Option<NonEmptyText> {
+    if !matches!(
+        access,
+        FrameAccess::MainDocument | FrameAccess::SameOriginSameProcess
+    ) {
+        return None;
+    }
+    let without_fragment = raw_url.split('#').next().unwrap_or(raw_url);
+    let without_query = without_fragment.split('?').next().unwrap_or(without_fragment);
+    let (_, remainder) = without_query.split_once("://")?;
+    let (_, path) = remainder.split_once('/')?;
+    let path = format!("/{path}");
+    if path.len() > MAX_FRAME_PATH_BYTES || path.chars().any(char::is_control) {
+        return None;
+    }
+    NonEmptyText::new(path).ok()
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]

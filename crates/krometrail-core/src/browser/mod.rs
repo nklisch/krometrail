@@ -32,7 +32,7 @@ pub use control::{
     ActivatePageRequest, BrowserStatus, ClosePageRequest, CreatePageRequest,
     DEFAULT_MANAGED_PROFILE_NAME, GoBackRequest, GoForwardRequest, InteractionAnchor,
     InteractionTiming, ListPagesRequest, NavigatePageRequest, PageChange, PageOperationOutcome,
-    PageOperationResult, PageSelection, PageStatus, ReloadPageRequest, SelectPageRequest,
+    PageOperationResult, OpenDialogState, PageSelection, PageStatus, ReloadPageRequest, SelectPageRequest,
 };
 pub use events::{
     BROWSER_EVENT_REGISTRY, BrowserDialogType, BrowserEvent, BrowserEventBatch, BrowserEventClass,

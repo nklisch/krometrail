@@ -5,7 +5,7 @@
 //! already hold, so it is exact when it is read — there is no published usage, no
 //! staleness window, and no failure path that could grant more than a share.
 
-use std::{fs, sync::Arc, time::Duration};
+use std::{fs, path::PathBuf, sync::Arc, time::Duration};
 
 use krometrail_core::{
     CaptureOrdinal, CapturedFrame, DeviceScaleFactor, DiskBudgetBytes, EncodedFrame, FrameId,
@@ -52,7 +52,13 @@ fn frame(session: u128, target: u128, id: u128, ordinal: u64, bytes: usize) -> E
 
 /// One instance: its own root, its own store, and a share of the total budget.
 struct Instance {
-    _ownership: InstanceOwnership,
+    root: PathBuf,
+    /// Held only when this instance has no census to hold it.
+    ///
+    /// A shared instance moves its ownership into its census, which is what
+    /// keeps the lock alive for as long as the store enforces against it. An
+    /// unshared instance has no census, so the lock has nowhere else to live.
+    _ownership: Option<InstanceOwnership>,
     store: RecordingStore,
 }
 
@@ -80,6 +86,13 @@ fn open_instance(data: &TempDir, total_budget: u64, shared: bool) -> Instance {
         })
         .unwrap(),
     );
+    // A shared instance's lock lives in its census; an unshared one has no
+    // census, so the instance keeps the lock itself.
+    let (census, retained) = if shared {
+        (Some(InstanceCensus::new(data.path(), ownership)), None)
+    } else {
+        (None, Some(ownership))
+    };
     let store = RecordingStore::with_retention(
         writer,
         index,
@@ -90,11 +103,12 @@ fn open_instance(data: &TempDir, total_budget: u64, shared: bool) -> Instance {
             Duration::ZERO,
         )
         .unwrap(),
-        shared.then(|| InstanceCensus::new(data.path(), &root)),
+        census,
     )
     .unwrap();
     Instance {
-        _ownership: ownership,
+        root,
+        _ownership: retained,
         store,
     }
 }
@@ -173,13 +187,10 @@ async fn a_lone_instance_gets_the_whole_total() {
     let total = 4_000_000_u64;
     let alone = open_instance(&data, total, true);
 
-    assert_eq!(
-        InstanceCensus::new(data.path(), alone._ownership.root()).live_instances(),
-        1
-    );
+    assert_eq!(alone.store.live_instances(), 1);
 
     fill(&alone, 1, 200, 40_000).await;
-    let used = instance_root_bytes(alone._ownership.root());
+    let used = instance_root_bytes(&alone.root);
     assert!(
         used > total / 2,
         "a lone instance must be able to use more than an equal share of two: \
@@ -206,10 +217,7 @@ async fn two_live_instances_each_enforce_half_the_total() {
     let first = open_instance(&data, total, true);
     let second = open_instance(&data, total, true);
 
-    assert_eq!(
-        InstanceCensus::new(data.path(), first._ownership.root()).live_instances(),
-        2
-    );
+    assert_eq!(first.store.live_instances(), 2);
 
     // The peer fills first, so the second instance decides against a peer that is
     // already holding everything it is entitled to. Under a usage-sharing policy
@@ -218,8 +226,8 @@ async fn two_live_instances_each_enforce_half_the_total() {
     fill(&first, 1, 200, 40_000).await;
     fill(&second, 2, 200, 40_000).await;
 
-    let first_bytes = instance_root_bytes(first._ownership.root());
-    let second_bytes = instance_root_bytes(second._ownership.root());
+    let first_bytes = instance_root_bytes(&first.root);
+    let second_bytes = instance_root_bytes(&second.root);
     assert!(
         first_bytes <= share + ACCOUNTING_SLACK,
         "an instance exceeded its share: {first_bytes} of {share}"
@@ -249,8 +257,7 @@ async fn concurrently_growing_instances_stay_inside_one_total() {
     let second = open_instance(&data, total, true);
     fill_concurrently(&[(&first, 1), (&second, 2)], 200, 40_000).await;
 
-    let combined = instance_root_bytes(first._ownership.root())
-        + instance_root_bytes(second._ownership.root());
+    let combined = instance_root_bytes(&first.root) + instance_root_bytes(&second.root);
     assert!(
         combined <= total + 2 * ACCOUNTING_SLACK,
         "combined usage {combined} exceeded the total budget {total}"
@@ -263,8 +270,7 @@ async fn concurrently_growing_instances_stay_inside_one_total() {
     let alone = open_instance(&isolated, total, false);
     let other = open_instance(&isolated, total, false);
     fill_concurrently(&[(&alone, 1), (&other, 2)], 200, 40_000).await;
-    let unshared =
-        instance_root_bytes(alone._ownership.root()) + instance_root_bytes(other._ownership.root());
+    let unshared = instance_root_bytes(&alone.root) + instance_root_bytes(&other.root);
     assert!(
         combined < unshared,
         "shared accounting must bound the combined footprint: shared {combined} \
@@ -307,8 +313,7 @@ async fn one_oversized_frame_cannot_escape_a_share() {
         );
     }
 
-    let combined = instance_root_bytes(first._ownership.root())
-        + instance_root_bytes(second._ownership.root());
+    let combined = instance_root_bytes(&first.root) + instance_root_bytes(&second.root);
     assert!(
         combined <= total + 2 * ACCOUNTING_SLACK,
         "one oversized frame per instance pushed the combined footprint to {combined}, \
@@ -341,10 +346,7 @@ async fn three_live_instances_each_enforce_a_third_of_the_total() {
     let second = open_instance(&data, total, true);
     let third = open_instance(&data, total, true);
 
-    assert_eq!(
-        InstanceCensus::new(data.path(), first._ownership.root()).live_instances(),
-        3
-    );
+    assert_eq!(first.store.live_instances(), 3);
 
     // Sequential filling, which is what produced the ledger's overshoot: each
     // instance runs to its ceiling before the next one starts writing.
@@ -353,9 +355,9 @@ async fn three_live_instances_each_enforce_a_third_of_the_total() {
     fill(&third, 3, 300, 40_000).await;
 
     let roots = [
-        instance_root_bytes(first._ownership.root()),
-        instance_root_bytes(second._ownership.root()),
-        instance_root_bytes(third._ownership.root()),
+        instance_root_bytes(&first.root),
+        instance_root_bytes(&second.root),
+        instance_root_bytes(&third.root),
     ];
     for used in roots {
         assert!(
@@ -402,7 +404,7 @@ async fn an_instance_cannot_exceed_its_share_without_flushing() {
         }
     }
 
-    let used = instance_root_bytes(first._ownership.root());
+    let used = instance_root_bytes(&first.root);
     assert!(
         used <= share + ACCOUNTING_SLACK,
         "an unflushed instance holds {used} against a {share} share"
@@ -440,8 +442,7 @@ async fn a_failed_census_does_not_widen_a_share() {
     let first = open_instance(&data, total, true);
     let second = open_instance(&data, total, true);
 
-    let census = InstanceCensus::new(data.path(), first._ownership.root());
-    assert_eq!(census.live_instances(), 2);
+    assert_eq!(first.store.live_instances(), 2);
 
     // One operation with the peer already present, so the instance's own census
     // has proved a live count of two before enumeration is taken away.
@@ -461,13 +462,13 @@ async fn a_failed_census_does_not_widen_a_share() {
     }
 
     assert_eq!(
-        census.live_instances(),
+        first.store.live_instances(),
         2,
         "a census that cannot enumerate must not report fewer live instances than it has proved"
     );
 
     fill(&first, 1, 300, 40_000).await;
-    let used = instance_root_bytes(first._ownership.root());
+    let used = instance_root_bytes(&first.root);
     fs::set_permissions(&instances, restore).unwrap();
 
     assert!(
@@ -505,8 +506,7 @@ async fn a_retained_directory_handle_enumerates_after_permissions_change() {
 
     // Constructed while the directory is still readable, which is when the
     // descriptor is opened and the access check happens.
-    let census = InstanceCensus::new(data.path(), first._ownership.root());
-    assert_eq!(census.live_instances(), 2);
+    assert_eq!(first.store.live_instances(), 2);
 
     let instances = data.path().join("instances");
     let restore = fs::metadata(&instances).unwrap().permissions();
@@ -520,7 +520,7 @@ async fn a_retained_directory_handle_enumerates_after_permissions_change() {
     // peer's lock is observable to anything that can list the directory.
     drop(second);
 
-    let live = census.live_instances();
+    let live = first.store.live_instances();
     fs::set_permissions(&instances, restore).unwrap();
     assert_eq!(
         live, 1,
@@ -555,6 +555,11 @@ async fn a_census_that_never_enumerated_does_not_grant_the_whole_total() {
     let first = open_instance(&data, total, true);
     let second = open_instance(&data, total, true);
 
+    // Claimed while the directory is still writable, because the census under
+    // test is built after it is not. A census owns its instance root, and no
+    // root can be created once `instances/` is execute-only.
+    let observer = InstanceOwnership::acquire_new(data.path()).unwrap();
+
     let instances = data.path().join("instances");
     let restore = fs::metadata(&instances).unwrap().permissions();
     fs::set_permissions(&instances, fs::Permissions::from_mode(0o111)).unwrap();
@@ -565,7 +570,7 @@ async fn a_census_that_never_enumerated_does_not_grant_the_whole_total() {
 
     // Constructed only now: there is no descriptor to retain and no successful
     // enumeration anywhere in this census's history.
-    let census = InstanceCensus::new(data.path(), first._ownership.root());
+    let census = InstanceCensus::new(data.path(), observer);
     let live = census.live_instances();
     fs::set_permissions(&instances, restore).unwrap();
 
@@ -590,20 +595,19 @@ async fn a_dead_instance_root_does_not_count_toward_the_live_set() {
 
     let departed = open_instance(&data, total, true);
     fill(&departed, 1, 20, 40_000).await;
-    assert!(instance_root_bytes(departed._ownership.root()) > 0);
+    assert!(instance_root_bytes(&departed.root) > 0);
 
     let survivor = open_instance(&data, total, true);
-    let census = InstanceCensus::new(data.path(), survivor._ownership.root());
-    assert_eq!(census.live_instances(), 2);
+    assert_eq!(survivor.store.live_instances(), 2);
 
     // The departed process exits. Its data is still on disk — reclaiming it is a
     // separate tier — but it no longer holds a lock, so it no longer holds a
     // share.
     drop(departed);
-    assert_eq!(census.live_instances(), 1);
+    assert_eq!(survivor.store.live_instances(), 1);
 
     fill(&survivor, 2, 200, 40_000).await;
-    let used = instance_root_bytes(survivor._ownership.root());
+    let used = instance_root_bytes(&survivor.root);
     assert!(
         used > total / 2,
         "a lone survivor must regain the whole budget: used {used} of {total}"
@@ -622,7 +626,7 @@ async fn an_instance_that_grew_alone_trims_on_its_next_operation() {
 
     let first = open_instance(&data, total, true);
     fill(&first, 1, 200, 40_000).await;
-    let grown = instance_root_bytes(first._ownership.root());
+    let grown = instance_root_bytes(&first.root);
     assert!(
         grown > total / 2,
         "the instance must first grow past what an equal share of two allows: \
@@ -632,12 +636,9 @@ async fn an_instance_that_grew_alone_trims_on_its_next_operation() {
     // A peer joins. Nothing happens to the first instance's disk until it acts:
     // there is no background trimmer.
     let second = open_instance(&data, total, true);
+    assert_eq!(first.store.live_instances(), 2);
     assert_eq!(
-        InstanceCensus::new(data.path(), first._ownership.root()).live_instances(),
-        2
-    );
-    assert_eq!(
-        instance_root_bytes(first._ownership.root()),
+        instance_root_bytes(&first.root),
         grown,
         "an idle instance must not shrink on its own; reclaim is operation-driven"
     );
@@ -645,7 +646,7 @@ async fn an_instance_that_grew_alone_trims_on_its_next_operation() {
     // Its next append is judged against the new share, and the in-session trim on
     // that same path reclaims down toward it.
     assert!(append_one(&first, 1, 500, 40_000).await);
-    let trimmed = instance_root_bytes(first._ownership.root());
+    let trimmed = instance_root_bytes(&first.root);
     assert!(
         trimmed <= total / 2 + ACCOUNTING_SLACK,
         "the first operation after a peer joined must trim toward the new share: \
