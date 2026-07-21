@@ -27,6 +27,32 @@ harm and should not be treated as cosmetic.
   days later, holding profile directories under
   `target/temporal-evaluation/live/`. This is the second independent sighting.
   Real leaked OS resources, not test-harness cosmetics.
+
+  **Investigation 2026-07-20 (do not re-derive this):** the ordinary teardown
+  path is already correct — `ManagedChromeProcess` has a `Drop` impl that
+  force-kills, including the owned process group
+  (`crates/krometrail-cdp/src/launcher/process.rs:282-286`, `:38-50`,
+  `:182`). `live_evaluation.rs:711` also calls `session.stop()` on the normal
+  path, and no `?` early-returns between session creation and that call, so
+  ordinary failures still reach it.
+
+  The leak is **orphaning, not missing cleanup**: if the harness process is
+  SIGKILLed (test timeout, CI cancel, manual kill), no `Drop` runs and Chrome
+  survives indefinitely as an orphan. `QualificationLifecycle::cleanup` and its
+  `Drop` (`src/app/live_evaluation.rs:244-265`) shut down the fixture server and
+  remove the profile tree but never terminate the browser, so unwind alone does
+  not save it either.
+
+  Structural fix direction: make the browser die with its parent regardless of
+  clean shutdown — on Linux `prctl(PR_SET_PDEATHSIG, SIGKILL)` in the child
+  before exec, alongside the existing process-group kill. A guard that only runs
+  on the happy path or on unwind cannot fix an orphan by construction. Also
+  consider terminating the browser in `QualificationLifecycle::Drop` so panic
+  unwind is covered even before the PDEATHSIG backstop applies.
+
+  Not implemented in this pass only because `crates/krometrail-cdp/` was owned
+  by a concurrent lane; the analysis above is complete enough to implement
+  directly.
 - **Flaky test (pre-existing, unresolved):**
   `krometrail-cdp` lib test
   `launcher::discovery::tests::precedence_deduplicates_canonical_paths_and_classifies_versions`
