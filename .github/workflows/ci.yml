@@ -84,3 +84,15 @@ jobs:
 
       - name: Check distribution contracts
         run: bash tests/distribution-static.sh
+
+      # These suites are hermetic (no network, Chrome, or model calls) and were
+      # previously only syntax-checked, so installer and plugin regressions
+      # could not fail CI.
+      - name: Check installer contracts
+        run: bash tests/installer-fixtures.sh
+
+      - name: Check plugin bootstrap contracts
+        run: bash tests/plugin-bootstrap-fixtures.sh
+
+      - name: Check plugin package contracts
+        run: bash tests/plugin-static.sh

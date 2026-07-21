@@ -263,6 +263,20 @@ verify_checksum() {
 
 # --- PATH management ---
 
+# Quote a literal path for safe inclusion in a POSIX shell profile.
+# Wraps in single quotes and renders any embedded single quote as '\'' so the
+# result expands to the exact literal path regardless of whitespace, quotes,
+# dollar signs, backticks, or newlines in the input.
+posix_shell_quote() {
+	printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
+# Quote a literal path for safe inclusion in a fish config.
+# fish single-quoted strings honour only \' and \\ as escapes.
+fish_shell_quote() {
+	printf "'%s'" "$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e "s/'/\\\\'/g")"
+}
+
 add_to_path() {
 	install_dir="$1"
 
@@ -274,7 +288,7 @@ add_to_path() {
 	if [ "$NO_MODIFY_PATH" -eq 1 ]; then
 		warn "${install_dir} is not in your PATH"
 		echo ""
-		echo "  Add manually:  export PATH=\"${install_dir}:\$PATH\""
+		echo "  Add manually:  export PATH=$(posix_shell_quote "$install_dir"):\"\$PATH\""
 		echo ""
 		return
 	fi
@@ -282,7 +296,7 @@ add_to_path() {
 	# Detect shell profile
 	shell_name="$(basename "${SHELL:-/bin/sh}")"
 	profile=""
-	line="export PATH=\"${install_dir}:\$PATH\""
+	line="export PATH=$(posix_shell_quote "$install_dir"):\"\$PATH\""
 
 	case "$shell_name" in
 		zsh)
@@ -299,7 +313,7 @@ add_to_path() {
 			;;
 		fish)
 			profile="$HOME/.config/fish/config.fish"
-			line="fish_add_path ${install_dir}"
+			line="fish_add_path $(fish_shell_quote "$install_dir")"
 			;;
 		*)
 			profile="$HOME/.profile"
