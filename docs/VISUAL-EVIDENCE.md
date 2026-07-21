@@ -398,8 +398,9 @@ ArtifactManifest
   algorithm
   algorithm_version
   source_frame_ids        # ordered source-frame identifiers
-  selected_frame_ids
-  omitted_frame_count
+  analyzed_frame_ids      # frames that contributed to the result
+  selected_frame_ids      # frames the output renders or references
+  omitted_frame_count     # source - analyzed: contributed nothing
   range
   markers
   gaps
@@ -409,6 +410,27 @@ ArtifactManifest
   output_dimensions
   output_hash
 ```
+
+A manifest names three distinct frame populations, because "what evidence was
+examined?" and "what does the picture show?" are different questions:
+
+- `source_frame_ids` — every frame retained in the epoch.
+- `analyzed_frame_ids` — the frames that actually contributed to the result. For
+  an analysis artifact this is the sampled set; for a storyboard it is the frames
+  read.
+- `selected_frame_ids` — the frames the output renders or directly references. A
+  difference map references one frame while analyzing many.
+
+`omitted_frame_count` is `source - analyzed`: frames that contributed nothing.
+Frames that were analyzed but not rendered are `analyzed - selected`, derivable
+by any reader. Conflating these two is why a difference map that analyzed 93 of
+474 frames once reported 473 omissions.
+
+An analysis artifact that dropped frames must disclose its sampling, and a
+disclosure whose counts disagree with the manifest is rejected when the manifest
+is constructed and again when it is deserialized. An artifact that analyzed every
+frame emits no sampling block at all, so the block's presence is itself the
+signal that sampling occurred.
 
 Rendered annotations are derived from the manifest. Machine-readable and visible labels cannot disagree without failing artifact generation.
 
