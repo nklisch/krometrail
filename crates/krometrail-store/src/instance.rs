@@ -15,6 +15,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use uuid::Uuid;
@@ -87,10 +88,14 @@ fn directory_identity(_path: &Path) -> Option<DirectoryIdentity> {
 
 /// A sibling instance root found by enumeration, pinned to the directory object
 /// that was classified rather than to the path it was seen at.
+///
+/// `identity` is `None` when the root could not be pinned at enumeration time.
+/// Such a root is undecidable, and both consumers must take the safe branch from
+/// the same fact: it is never reclaimed, and it always counts as live.
 #[derive(Clone, Debug)]
 pub struct InstanceRootCandidate {
     path: PathBuf,
-    identity: DirectoryIdentity,
+    identity: Option<DirectoryIdentity>,
 }
 
 impl InstanceRootCandidate {
@@ -100,17 +105,26 @@ impl InstanceRootCandidate {
 
     /// Takes ownership of this root if nothing live holds it.
     ///
-    /// `Ok(None)` covers both "a live process holds it" and "the path no longer
-    /// resolves to the directory that was classified". The second case is a
-    /// refusal, not a failure: a root that changed identity under us is exactly
-    /// the case where continuing would delete from somewhere we never inspected.
+    /// `Ok(None)` covers "a live process holds it", "the root could never be
+    /// pinned", and "the path no longer resolves to the directory that was
+    /// classified". None of these is a failure; each is a refusal. A root that
+    /// changed identity under us, or that was never identifiable in the first
+    /// place, is exactly the case where continuing would delete from somewhere
+    /// this process never inspected.
+    ///
+    /// Refusing also settles the count: the census reads an unclaimable root as
+    /// live, so an undecidable root tightens this instance's share instead of
+    /// vanishing from the total.
     pub fn claim(&self) -> krometrail_core::Result<Option<InstanceOwnership>> {
+        let Some(identity) = self.identity else {
+            return Ok(None);
+        };
         let Some(ownership) = InstanceOwnership::acquire_existing(&self.path)? else {
             return Ok(None);
         };
         // Re-read under the held lock. Everything after this point trusts the
         // identity recorded on the ownership, not the path.
-        if ownership.identity != Some(self.identity) {
+        if ownership.identity != Some(identity) {
             return Ok(None);
         }
         Ok(Some(ownership))
@@ -294,10 +308,11 @@ pub fn sibling_instance_roots(
             continue;
         }
         // Pin the directory that was just classified. A candidate that cannot be
-        // pinned is skipped rather than carried forward as a bare path.
-        let Some(identity) = directory_identity(&path) else {
-            continue;
-        };
+        // pinned is carried forward unpinned rather than dropped: dropping it
+        // would hide a root from the census and widen every instance's share.
+        // `claim` refuses an unpinned root, which makes it unreclaimable and
+        // live at once.
+        let identity = directory_identity(&path);
         roots.push(InstanceRootCandidate { path, identity });
     }
     roots.sort_by(|left, right| left.path.cmp(&right.path));
@@ -316,6 +331,13 @@ pub fn sibling_instance_roots(
 pub struct InstanceCensus {
     data_directory: PathBuf,
     owned_root: PathBuf,
+    /// The highest live count this census has ever *proved*.
+    ///
+    /// Not a cache of the answer — the answer is always recomputed. This is the
+    /// floor a failed count falls back to, and it exists so that failing to
+    /// count can never be more permissive than counting. It only rises, so the
+    /// fallback share only ever narrows.
+    proved_live: AtomicU64,
 }
 
 impl InstanceCensus {
@@ -323,6 +345,8 @@ impl InstanceCensus {
         Self {
             data_directory: data_directory.to_path_buf(),
             owned_root: owned_root.to_path_buf(),
+            // This instance itself, which is the one peer no census can miss.
+            proved_live: AtomicU64::new(1),
         }
     }
 
@@ -340,16 +364,27 @@ impl InstanceCensus {
     /// directory scan plus a non-blocking lock attempt per sibling — measured at
     /// roughly 3.5 µs alone and 7 µs with one peer, against an append that
     /// already performs a segment write and a SQLite transaction.
+    ///
+    /// Enumeration can still fail — a transient `read_dir` error, an entry that
+    /// cannot be classified. That failure must not widen a share. Granting the
+    /// full total whenever counting broke is the same optimistic-grant defect the
+    /// usage ledger was deleted for: two instances that both stumble would each
+    /// be handed `total`. So a failed count reuses the highest count already
+    /// proved instead. That is monotonically safe, never blocks capture (there is
+    /// always a number, at worst this instance's own `1`), and self-corrects the
+    /// moment enumeration works again.
     pub fn live_instances(&self) -> u64 {
         let Ok(siblings) = sibling_instance_roots(&self.data_directory, &self.owned_root) else {
-            return 1;
+            return self.proved_live.load(Ordering::Relaxed).max(1);
         };
-        siblings.iter().fold(1, |live, candidate| {
+        let live = siblings.iter().fold(1_u64, |live, candidate| {
             // `Ok(Some(_))` means the root was claimable, so nothing owns it. The
             // claim is released immediately; reclamation re-acquires it later.
             let dead = matches!(candidate.claim(), Ok(Some(_)));
             if dead { live } else { live.saturating_add(1) }
-        })
+        });
+        self.proved_live.fetch_max(live, Ordering::Relaxed);
+        live
     }
 }
 

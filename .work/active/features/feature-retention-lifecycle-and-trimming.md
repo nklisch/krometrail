@@ -142,6 +142,15 @@ reshaping the walk.
     read: ~3.5 µs alone, ~7 µs with one live peer, ~30 µs with eight — against an
     append that already does a segment write and a SQLite transaction. Not worth
     a cache.
+  - *Counting fails closed.* Enumeration can fail transiently. A failed count
+    reuses the highest count this census has already **proved** (`proved_live`,
+    an `AtomicU64` that only rises) instead of assuming `1`. Assuming `1` was an
+    optimistic grant issued because coordination broke — the exact defect class
+    the ledger was deleted for — and two instances that both stumbled would each
+    have been handed `total`. The fallback never widens a share, never blocks
+    (there is always a number, at worst this instance's own `1` before any
+    successful census), and self-corrects on the next successful read. See
+    "Fifth round outcome" below.
   - *A lone instance gets the whole total* (`total / 1`), so a single-process
     install is unaffected. An undecidable sibling counts as live, which tightens
     this instance rather than letting the total overshoot. Where ownership cannot
@@ -484,3 +493,71 @@ Documented in `docs/SPEC.md`: each instance enforces `<= total/N` at every write
 so once every instance has performed one operation since the last join, combined
 usage is `<= total`. The operation-driven carve-out is kept and stated plainly, as
 is the accepted cost — two live instances each get `total/2` even if one is idle.
+
+## Fifth round outcome: the census made to fail closed
+
+The fifth adversarial pass confirmed the deletion holds — equal-share
+enforcement, dead-root and reclaim locking safety, the operation-driven carve-out
+in `docs/SPEC.md`, and the oversized-frame trade all survived. Three items
+remained.
+
+### The census failed open (blocking)
+
+`InstanceCensus::live_instances` mapped an enumeration failure to `1`, and
+`effective_budget` maps `1` to the full configured total. Two live instances that
+both hit a transient `read_dir` or entry error would each have been granted
+`total`, for a combined `2T`.
+
+This is the ledger's defect class exactly: an optimistic grant issued *because*
+coordination failed. The ledger's "write failed → grant anyway" and "lock
+contention → grant anyway" were both removed in round four; this one survived in
+the replacement.
+
+**Fix.** `InstanceCensus` carries `proved_live: AtomicU64`, seeded at `1` — this
+instance, the one peer no census can miss. Every successful count does
+`fetch_max`; a failed enumeration returns the remembered value instead of `1`.
+The property held is *an enumeration failure must never widen this instance's
+share*. It is monotonically safe (the value only rises, so the fallback share only
+narrows), it never stalls capture (there is always a usable number), and it
+self-corrects the moment enumeration succeeds again. It is deliberately **not** a
+cache of the answer: the answer is still recomputed on every decision, and
+`proved_live` is only the floor a failure falls back to.
+
+Regression: `a_failed_census_does_not_widen_a_share` in
+`crates/krometrail-store/tests/shared_budget.rs`. It opens two instances, lets the
+first prove a live count of two, then chmods `instances/` to `0o111` — traversal
+into each root still works, the directory read the census depends on does not —
+and asserts both that the count stays at 2 and that the first instance's footprint
+stays inside `total/2`. Pre-fix it failed with `left: 1, right: 2`.
+
+### Coverage restored after the deletion
+
+Two properties that the thirteen deleted ledger tests had covered are still true
+under equal division and were unpinned:
+
+- `three_live_instances_each_enforce_a_third_of_the_total` — every other test used
+  two instances, and two is the sharing case easiest to get right by accident. The
+  `11T/6` counter-example that drove this redesign was a three-instance sequential
+  join, so three is the shape worth pinning.
+- `an_instance_cannot_exceed_its_share_without_flushing` — the `append_one` helper
+  flushes on every append, so no test exercised growth with no durability boundary
+  between writes. That path exposed the round-3 staleness bug. The mechanism is
+  gone, but "an instance cannot exceed its share regardless of flush cadence" is
+  still true.
+
+Note on the second: the first draft of it asserted that the share *refuses*
+appends once consumed. That is a wrong model and the test said so immediately —
+all 300 appends were admitted. The share is held by eviction on the append path
+(`ensure_append_capacity` → `trim_locked` / `cleanup_to`), not by refusal; refusal
+happens only when a single frame cannot fit even an emptied share, which is what
+`one_oversized_frame_cannot_escape_a_share` already covers. The test now asserts
+the footprint bound and a lower bound proving the store actually wrote.
+
+### Reclaim wording corrected, not strengthened
+
+`src/app.rs` does not retry a failed non-blocking claim in
+`reclaim_abandoned_instances`, so a dead root can be stepped over. `docs/SPEC.md`
+claimed the next start removes it, which is stronger than the code: repeated races
+could skip it repeatedly. Corrected the wording rather than adding a retry — this
+is disk, not correctness, and nothing live references the bytes. The spec now says
+a *later* start removes it and that removal is best effort per start.

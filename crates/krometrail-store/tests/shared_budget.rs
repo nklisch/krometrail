@@ -323,6 +323,161 @@ async fn one_oversized_frame_cannot_escape_a_share() {
     );
 }
 
+/// Two is the smallest sharing case and the easiest one to get right by accident.
+/// Three is the shape that broke the usage ledger: a sequential join order where
+/// each instance decided against a different, later-invalidated view of the
+/// others. Equal division has no view to invalidate — every instance enforces
+/// `total / 3` from the count it reads at the write.
+#[tokio::test]
+async fn three_live_instances_each_enforce_a_third_of_the_total() {
+    if !OWNERSHIP_IS_ENFORCED {
+        return;
+    }
+    let total = 6_000_000_u64;
+    let share = total / 3;
+
+    let data = TempDir::new().unwrap();
+    let first = open_instance(&data, total, true);
+    let second = open_instance(&data, total, true);
+    let third = open_instance(&data, total, true);
+
+    assert_eq!(
+        InstanceCensus::new(data.path(), first._ownership.root()).live_instances(),
+        3
+    );
+
+    // Sequential filling, which is what produced the ledger's overshoot: each
+    // instance runs to its ceiling before the next one starts writing.
+    fill(&first, 1, 300, 40_000).await;
+    fill(&second, 2, 300, 40_000).await;
+    fill(&third, 3, 300, 40_000).await;
+
+    let roots = [
+        instance_root_bytes(first._ownership.root()),
+        instance_root_bytes(second._ownership.root()),
+        instance_root_bytes(third._ownership.root()),
+    ];
+    for used in roots {
+        assert!(
+            used <= share + ACCOUNTING_SLACK,
+            "an instance exceeded a third of the total: {used} of {share}"
+        );
+    }
+    let combined: u64 = roots.iter().sum();
+    assert!(
+        combined <= total + 3 * ACCOUNTING_SLACK,
+        "combined usage {combined} exceeded the total budget {total}"
+    );
+}
+
+/// Every other test here flushes after each append, so a durability boundary sits
+/// between one write and the next. Nothing in the guarantee depends on that: the
+/// share is checked on the append path itself, before any segment is sealed. An
+/// instance that never flushes must still stop at its share.
+#[tokio::test]
+async fn an_instance_cannot_exceed_its_share_without_flushing() {
+    if !OWNERSHIP_IS_ENFORCED {
+        return;
+    }
+    let total = 4_000_000_u64;
+    let share = total / 2;
+    let bytes = 40_000_usize;
+    let attempts = 300_u64;
+
+    let data = TempDir::new().unwrap();
+    let first = open_instance(&data, total, true);
+    let second = open_instance(&data, total, true);
+
+    // Offered far more than the share, with no flush anywhere in the loop. The
+    // append path is the only thing standing between this and the whole total.
+    let offered = attempts * u64::try_from(bytes).unwrap();
+    assert!(
+        offered > 2 * share,
+        "the test must overrun the share to test it"
+    );
+    for ordinal in 1..=attempts {
+        let value = frame(1, 1_001, 1_000 + u128::from(ordinal), ordinal, bytes);
+        if first.store.append_frame(value).await.is_err() {
+            break;
+        }
+    }
+
+    let used = instance_root_bytes(first._ownership.root());
+    assert!(
+        used <= share + ACCOUNTING_SLACK,
+        "an unflushed instance holds {used} against a {share} share"
+    );
+    // It really did write: the bound above is enforcement, not an empty store.
+    assert!(
+        used > share / 4,
+        "an unflushed instance recorded almost nothing ({used} bytes), so the \
+         bound above proves nothing"
+    );
+
+    drop(second);
+}
+
+/// Counting is coordination, and coordination that fails must fail closed.
+///
+/// This is the defect class the usage ledger died of: every optimistic grant it
+/// issued — write failed, lock contended — was a grant made because coordination
+/// had broken. A census that answered "one" when it could not enumerate would be
+/// the same bug in a smaller machine, handing each of two live instances the full
+/// total. The census instead reuses the highest live count it has already proved,
+/// which can only ever narrow a share.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_failed_census_does_not_widen_a_share() {
+    use std::os::unix::fs::PermissionsExt;
+
+    if !OWNERSHIP_IS_ENFORCED {
+        return;
+    }
+    let total = 4_000_000_u64;
+    let share = total / 2;
+
+    let data = TempDir::new().unwrap();
+    let first = open_instance(&data, total, true);
+    let second = open_instance(&data, total, true);
+
+    let census = InstanceCensus::new(data.path(), first._ownership.root());
+    assert_eq!(census.live_instances(), 2);
+
+    // One operation with the peer already present, so the instance's own census
+    // has proved a live count of two before enumeration is taken away.
+    assert!(append_one(&first, 1, 1, 40_000).await);
+
+    // Break enumeration without making the roots unreachable: execute-only still
+    // permits traversal into each instance root, but denies the directory read the
+    // census depends on.
+    let instances = data.path().join("instances");
+    let restore = fs::metadata(&instances).unwrap().permissions();
+    fs::set_permissions(&instances, fs::Permissions::from_mode(0o111)).unwrap();
+    if fs::read_dir(&instances).is_ok() {
+        // A process that bypasses directory permissions (root) cannot have this
+        // fault injected at all.
+        fs::set_permissions(&instances, restore).unwrap();
+        return;
+    }
+
+    assert_eq!(
+        census.live_instances(),
+        2,
+        "a census that cannot enumerate must not report fewer live instances than it has proved"
+    );
+
+    fill(&first, 1, 300, 40_000).await;
+    let used = instance_root_bytes(first._ownership.root());
+    fs::set_permissions(&instances, restore).unwrap();
+
+    assert!(
+        used <= share + ACCOUNTING_SLACK,
+        "a failed census widened an instance's share: it holds {used} against a {share} share"
+    );
+
+    drop(second);
+}
+
 /// A root whose process exited is not live, so it must not divide the budget. The
 /// survivor regains the whole total on its next operation.
 #[tokio::test]

@@ -273,3 +273,29 @@ the name. Owner-only permissions are applied exactly as before on Unix.
 Regression: `an_exclusive_private_directory_refuses_a_path_that_already_exists`
 and `an_exclusive_private_directory_still_creates_missing_parents` in the
 `permissions` unit tests.
+
+## Fifth cross-model review round: undecidable roots count as live
+
+`sibling_instance_roots` classified a directory entry and then pinned it with
+`directory_identity`. A root that could not be pinned — a stat that failed, a
+directory that vanished between `read_dir` and the stat — was **skipped**, which
+dropped it from the enumeration entirely.
+
+Two consumers read that enumeration, and skipping was wrong for one of them.
+Reclamation must not act on an unpinnable root, and skipping achieved that. But
+`InstanceCensus` counts the same list, and a skipped root is a root that does not
+count toward `N` — so every instance's share widened. That contradicted the rule
+this module already documented ("a sibling that cannot be classified counts as
+live") and disagreed with `live_instances`, which already treats a *claim*
+failure as live.
+
+**Fix.** `InstanceRootCandidate::identity` is now `Option<DirectoryIdentity>`, and
+an unpinnable root is carried forward unpinned rather than dropped. `claim()`
+refuses an unpinned root with `Ok(None)` — the same refusal it already returns for
+"a live process holds it" and "the path changed identity under us". One fact now
+drives both consumers from the same place: an undecidable root is unreclaimable
+*and* live. Symlinks are still excluded earlier, by the non-following
+`file_type()` check, so this does not widen what reclamation can reach.
+
+See `feature-retention-lifecycle-and-trimming`, "Fifth round outcome", for the
+companion fix that made the census itself fail closed on enumeration failure.
